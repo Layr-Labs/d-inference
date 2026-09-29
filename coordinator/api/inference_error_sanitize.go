@@ -14,9 +14,10 @@ import (
 // prompts, paths, URLs, tool arguments, or arbitrary byte-encoding schemes and
 // must not influence control flow or leave this function.
 //
-// Missing/unknown failure codes are accepted for mixed-fleet wire compatibility
-// but fail closed as generation_failure. The booleans let the caller emit
-// cardinality-safe drift counters without retaining or tagging the bad values.
+// Every routable provider sets failure_code on every error frame, so a
+// missing or unknown code is protocol drift: it fails closed as
+// generation_failure. The booleans let the caller emit cardinality-safe drift
+// counters without retaining or tagging the bad values.
 func sanitizeProviderInferenceError(msg *protocol.InferenceErrorMessage) (safe protocol.InferenceErrorMessage, invalidCode, invalidCause bool) {
 	if msg == nil {
 		return protocol.InferenceErrorMessage{
@@ -39,13 +40,8 @@ func sanitizeProviderInferenceError(msg *protocol.InferenceErrorMessage) (safe p
 		safe.Profile = append(json.RawMessage(nil), msg.Profile...)
 	}
 	safe.FailureCode = msg.FailureCode
-	legacyFrame := safe.FailureCode == ""
 	if !safe.FailureCode.Valid() {
-		if legacyFrame {
-			safe.FailureCode = legacyInferenceFailureCode(msg.StatusCode, msg.ErrorReason, msg.TerminalCause)
-		} else {
-			safe.FailureCode = protocol.FailureCodeGenerationFailure
-		}
+		safe.FailureCode = protocol.FailureCodeGenerationFailure
 		invalidCode = true
 	}
 
@@ -79,84 +75,10 @@ func sanitizeProviderInferenceError(msg *protocol.InferenceErrorMessage) (safe p
 		safe.FeasibleAfterMS = msg.FeasibleAfterMS
 	}
 	safe.CapacitySeq = msg.CapacitySeq
-	// Older providers used a bare 429 to mean queue saturation. Preserve that
-	// bounded distinction during rolling upgrades; typed capacity frames remain
-	// reason-driven, so capacity_timeout continues to canonicalize to 503.
-	if legacyFrame &&
-		msg.StatusCode == http.StatusTooManyRequests &&
-		suppliedReason == "" &&
-		msg.TerminalCause == "" {
-		suppliedReason = errorReasonQueueFull
-	}
 	safe.ErrorReason = safeInferenceErrorReason(safe.FailureCode, suppliedReason)
 	safe.StatusCode = safeInferenceFailureStatus(safe.FailureCode, safe.ErrorReason, safe.TerminalCause, msg.StatusCode)
 	safe.Error = safeInferenceFailureMessage(safe.FailureCode)
 	return safe, invalidCode, invalidCause
-}
-
-// legacyInferenceFailureCode keeps a rolling upgrade operational without ever
-// consulting legacy Error prose. Only bounded status/reason/cause values may
-// refine the fail-closed generation_failure default.
-func legacyInferenceFailureCode(status int, reason, terminalCause string) protocol.InferenceFailureCode {
-	normalizedReason := normalizeInferenceErrorReason(reason)
-	switch terminalCause {
-	case terminalCauseAdmissionTimeout:
-		return protocol.FailureCodeCapacity
-	case terminalCauseCancelled:
-		return protocol.FailureCodeCancelled
-	}
-	if isJinjaTemplateErrorReason(normalizedReason) {
-		return protocol.FailureCodeTemplateRender
-	}
-	switch normalizedReason {
-	case errorReasonModelLoad:
-		switch status {
-		case http.StatusNotFound:
-			return protocol.FailureCodeModelUnavailable
-		case http.StatusServiceUnavailable:
-			return protocol.FailureCodeCapacity
-		default:
-			return protocol.FailureCodeInternalFailure
-		}
-	case errorReasonCapacityTimeout,
-		errorReasonQueueFull,
-		errorReasonTokenBudgetExhaust,
-		errorReasonRequestExceedsContext,
-		errorReasonRequestExceedsNode,
-		errorReasonRequestExceedsNodeBudget,
-		errorReasonRequestExceedsBatchBudget,
-		errorReasonCapacityBusy,
-		errorReasonDeadlineUnreachable,
-		errorReasonDraining:
-		return protocol.FailureCodeCapacity
-	case errorReasonCancelled:
-		return protocol.FailureCodeCancelled
-	case errorReasonClientError:
-		return protocol.FailureCodeInvalidRequest
-	case errorReasonToolNoncompliance:
-		return protocol.FailureCodeGenerationFailure
-	}
-	switch status {
-	case http.StatusBadRequest:
-		return protocol.FailureCodeInvalidRequest
-	case http.StatusUnprocessableEntity:
-		// A legacy bare 422 was also used for model-output validation faults.
-		// Without a bounded reason, treating it as a client fault would erase
-		// provider health signals and stop failover. Fail closed as generation.
-		return protocol.FailureCodeGenerationFailure
-	case http.StatusRequestEntityTooLarge:
-		return protocol.FailureCodeMediaTooLarge
-	case http.StatusUnsupportedMediaType:
-		return protocol.FailureCodeUnsupportedMedia
-	case http.StatusNotFound:
-		return protocol.FailureCodeModelUnavailable
-	case http.StatusTooManyRequests, http.StatusServiceUnavailable:
-		return protocol.FailureCodeCapacity
-	case 499:
-		return protocol.FailureCodeCancelled
-	default:
-		return protocol.FailureCodeGenerationFailure
-	}
 }
 
 // safeInferenceFailureMessage is the only provider-failure prose allowed to

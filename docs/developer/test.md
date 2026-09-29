@@ -1,13 +1,12 @@
 # Test
 
-> Last updated: 2026-09-26 · commit `002317b97`
+> Last updated: 2026-09-28 · commit `1902940eb`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
 lint — and which CI workflow runs what. `make test` runs every unit suite plus
 the docs lint locally; CI runs a subset per pull request (see the CI workflow
-map: the console UI job lints and builds but does not run vitest, and the
-benchmark-wrapper tests run only locally). The e2e suite needs an Apple Silicon
+map: the benchmark-wrapper tests run only locally). The e2e suite needs an Apple Silicon
 Mac with the test checkpoints cached.
 
 The Nemotron coordinator-serving path uses typed SDK events. `OpenAIServiceTests`
@@ -337,6 +336,23 @@ observed-only usage, cancellation and the unchanged direct-service throwing
 contract. Successful tool-generation gates remain separate: a correctly framed
 error does not satisfy a required tool call or repair its generated arguments.
 
+## Model revision validation
+
+Model revision changes are covered by `ModelPrefetchDownloaderTests`,
+`ModelRevisionActivationTests`, `ModelRevisionPublicationTests`, and the existing MTP drain suites in
+`provider-swift/Tests/ProviderCoreTests`. Run them with a source-matched metallib.
+Coordinator lifecycle tests cover memory/cached stores and, when `DATABASE_URL`
+points to a disposable database, `TestPostgresModelRevisionLifecycle`.
+`python3 scripts/test_publish_model_revision.py` tests publication ordering,
+immutable reservations and per-revision HF arguments/request bodies. API and
+store regressions cover retired re-registration, publisher attribution, failed
+live refresh retries and alias-lineage eligibility; HF download fixtures change
+the pinned repo/commit/subdirectory between two revisions. Renamed-file fixtures
+exercise equal aggregates through both download paths, and controlled reserve/client
+suspensions verify cancellation, rollback, pending alias cleanup and retry. These
+fixture tests do not qualify a full-weight fleet swap.
+
+
 ## SDK 27 release qualification
 
 The `qualify-sdk` job in `.github/workflows/release-swift.yml` runs production
@@ -626,7 +642,8 @@ by evidence manifests. Live Go source remains subject to the formatting gate.
 make coordinator-test                      # cd coordinator && go test ./...
 # what CI runs (repo root, race detector, Postgres-backed store tests included):
 DATABASE_URL='postgres://testbed:testbed@127.0.0.1:5432/testbed?sslmode=disable' \
-  go test -race -coverprofile=coverage.out -covermode=atomic $(go list ./... | grep -v /e2e)
+  go test -race -coverprofile=coverage.out -covermode=atomic \
+    $(go list ./... | grep -vx 'github.com/eigeninference/d-inference/e2e')
 go tool cover -func=coverage.out | tail -n 1   # total statement coverage
 gofmt -l .                                 # must print nothing
 golangci-lint run                          # .golangci.yml
@@ -648,18 +665,6 @@ Store tests that need Postgres skip themselves when `DATABASE_URL` is unset
 `postgres:16` service with user/password/db `testbed`. The pre-push hook runs
 `go test $(go list ./... | grep -v /internal/api)` from `coordinator/` to skip
 the slow WebSocket integration tests; run the full set before merging.
-
-#### Provider config cleanup
-
-The CPU-only `e2e/testbed/provider_config_cleanup_test.go` tests retain a fixed
-unstamped legacy fixture to exercise schema-stamped cleanup. Current configs
-come from `BuildProviderTOML` and already include `config_version = 3`. Both
-current and migrated pre-existing files must remain byte-identical; an owned
-file created during a test must be removed after shutdown.
-
-```bash
-go test ./e2e/testbed -run '^TestCleanup' -count=1
-```
 
 #### Coordinator startup and reconnect recovery
 
@@ -684,15 +689,14 @@ tests truncate tables and create/drop isolated databases; never point
 ```bash
 cd coordinator
 # DATABASE_URL must name a throwaway local database.
-go test -p 1 ./store ./cmd/coordinator -run 'Test(EarningsSummary|LegacyFloor|RecordProviderEarningMaintains|ProviderRestore|PostgresRestore|Maintenance)' -count=1
+go test -p 1 ./store ./cmd/coordinator -run 'Test(FreshDatabaseSchema|RecordProviderEarningMaintains|BaseRewardEarningPaths|ProviderEarningsJobIndex|ProviderRestore|PostgresRestore|ProviderAndReputation|Maintenance)' -count=1
 go test -race ./api ./registry -run 'Test(ProviderRestore|ProviderPendingRestore|RestoreProviderState|AttachCachedMDAProof|StageDurableMDAChain)' -count=1
 ```
 
-These check captured-history recovery across old-style live writes and canceled
-application, refusal to silently replan an aborted initial snapshot, resumable
-per-key updates without double-counting, original floor-writer/old-boot/new-migration
-upgrade replay, preservation of lifetime totals when retained detail differs, base-reward work
-exclusion, a repeated boot while earnings history is exclusively locked,
+These check that a fresh database gets the withdrawable balance column and the
+usage-totals counter row, live summary maintenance without double-counting a
+retried job, base-reward work exclusion, a repeated boot while earnings history
+is exclusively locked,
 concurrent reconnect exclusion, late initial/reputation-write ordering, atomic
 provider/reputation publication and rollback, and newest-prior
 identity lookup through CachedStore,
@@ -700,8 +704,7 @@ index applicability, MDA trust caps, and a migration-only subprocess that exits
 without HTTP startup or admin-key seeding. They do not measure production startup
 latency or validate an overlapping coordinator handoff.
 
-Startup recovery regressions also cover old settlement commits around the pinned
-snapshot/attempt-marker boundary, catalog-verified index definitions and isolated
+Startup recovery regressions also cover catalog-verified index definitions and isolated
 planner applicability, transient provider/reputation retries, a shared deadline,
 1013 registration teardown before duplicate eviction, and routing/capacity/load
 exclusion while a verified identity is restoring. Tests use disposable stores and
@@ -742,14 +745,15 @@ A number measured on macOS can differ from the Linux number in CI.
 CI also applies the [restored-resource cleanup](build.md#restored-swiftpm-runtime-resources)
 before building the debug test product.
 
-`BetaCommandTests` and `IdleCommandTests` pass `migrateOnDisk: false` through
-`setBetaFeature` and `setIdleUnloadMinutes` to the existing runtime-snapshot
-loader. Their unique temporary config directories are the only mutation and
-cleanup targets; they never create or remove the operator's canonical config.
-The mixed-mutation fixture checks both explicit pins and unrelated legacy
-settings. Run these with `RuntimeSnapshotConfigTests` when changing
-`provider-swift/Sources/darkbloom/ConfigMutation.swift` (`withMutableConfig`).
-CLI calls retain default-on migration before the sidecar lock and reload.
+`BetaCommandTests` and `IdleCommandTests` drive `setBetaFeature` and
+`setIdleUnloadMinutes` with an explicit `configPath` in a unique temporary
+directory. That directory is the only mutation and cleanup target; the tests
+never create or remove the operator's canonical config. The mixed-mutation
+fixture checks both explicit pins and unrelated settings. Run these with
+`RuntimeSnapshotConfigTests` when changing
+`provider-swift/Sources/darkbloom/ConfigMutation.swift` (`withMutableConfig`),
+which loads the runtime snapshot, takes the sidecar lock, reloads and saves;
+loading a config never migrates or rewrites it.
 
 `WatchdogCommandTests` fails immediately if writing its temporary TOML fails.
 Config-only assertions supply an empty environment to `Watchdog.settings`, while
@@ -763,16 +767,17 @@ suites from process-wide environment changes.
 so removing hidden-entry skipping changes the manifest. `TemplateRenderCheckTests`
 uses templates that reject an incorrect BOS value for both tokenizer-config
 forms and require the empty default when the config is absent.
-`storeRejectsTamperedMetadata` in
-`provider-swift/Tests/ProviderCoreTests/KVCache/EncryptedKVStoreTests.swift`
-keeps changed metadata valid JSON and requires a `KVCacheKEKError` from the
-authenticated read; it separately retains malformed-metadata rejection.
+`tamperFailsClosed` in
+`provider-swift/Tests/ProviderCoreTests/KVCacheSSD/SSDPrefixCacheTests.swift`
+keeps changed metadata valid JSON and requires
+`SSDBlockStoreError.authenticationFailed` from the authenticated read; it
+separately retains schema-validation rejection.
 Run these after building and staging the test product as described below:
 
 ```bash
 cd provider-swift
 swift test --skip-build --no-parallel \
-  --filter 'HiddenFileSkippingTest|TemplateRenderCheckTests|storeRejectsTamperedMetadata'
+  --filter 'HiddenFileSkippingTest|TemplateRenderCheckTests|tamperFailsClosed'
 ```
 
 These fixtures use temporary files and an in-memory KEK. They do not exercise
@@ -1810,7 +1815,7 @@ binary that already has `mlx.metallib` beside it.
 | Env var | Read in | Effect |
 |---|---|---|
 | `DARKBLOOM_REPO_ROOT` | `e2e/testbed/suite.go` | Repo root (auto-detected from cwd when unset) |
-| `DARKBLOOM_PROVIDER_BINARY` | `e2e/testbed/provider.go`, `e2e/mixed_version_test.go` | Use this provider binary instead of building; needs `mlx.metallib` beside it |
+| `DARKBLOOM_PROVIDER_BINARY` | `e2e/testbed/provider.go` | Use this provider binary instead of building; needs `mlx.metallib` beside it |
 | `TESTBED_PROVIDER_CONFIG` | `e2e/testbed/provider.go` | `release` (default) or `debug` SwiftPM configuration for the built provider |
 | `DARKBLOOM_TESTBED_MODEL` / `DARKBLOOM_TESTBED_MODEL_B` | `e2e/testbed/config.go` | Override the default (`mlx-community/gpt-oss-20b-MXFP4-Q8`) and secondary (`mlx-community/gemma-4-26B-A4B-it-qat-4bit`) checkpoints; must be CBv2-servable |
 | `TESTBED_MODEL_ID` | `e2e/testbed/suite.go` | Per-suite model override |
@@ -1820,7 +1825,7 @@ binary that already has `mlx.metallib` beside it.
 | `DARKBLOOM_CBV2_PAGED_KV` | `e2e/testbed/config.go` | Provider fleet kill switch; CI refuses to run the paged gate when it is set |
 | `DARKBLOOM_PROMPT_SIDECAR_BINARY` | `e2e/exact_cache_routing_test.go` | Path to a built `promptsidecar` for exact-cache routing |
 | `DARKBLOOM_EXACT_CACHE_TEST_MODEL` | `e2e/exact_cache_routing_test.go` | Override the exact-cache fixture (`mlx-community/gemma-4-e2b-it-4bit`) |
-| `DARKBLOOM_MIXED_VERSION`, `DARKBLOOM_MIXED_VERSION_EXPECT` | `e2e/mixed_version_test.go` | Enable the released-v0.7.12 lane; required tier `artifact` (verify pinned digests) or `full` (boot the released provider — needs SIP enabled) |
+| `DARKBLOOM_EXACT_CACHE_RECURRENT_MODEL` | `e2e/exact_cache_recurrent_test.go` | Opt-in: a cached `qwen3_5` or `qwen3_5_moe` checkpoint (for example `EigenLabs/Qwen3.5-9B-MLX-4bit-mtp`) for the recurrent company-leaves lane; skipped when unset. The suite sets `PrefixCacheMode: "ssd"` because the provider enables the SSD cache by default only for production catalog IDs |
 | `DARKBLOOM_QWEN38_E2E`, `DARKBLOOM_QWEN38_MTP_PATH`, `DARKBLOOM_QWEN38_MTP_MANIFEST_PATH`, `DARKBLOOM_QWEN38_MTP_REVISION` | `e2e/integration_test.go` | Opt-in Qwen3.8 real-process tools/video lane with a local MTP build |
 | `DARKBLOOM_FULL_NETWORK_SMOKE` | `e2e/integration_test.go` | Opt-in full-network multi-model routing smoke |
 | `BENCHMARK_MD_PATH` | `e2e/benchmark_test.go` | Where `TestBenchmark*` writes the Markdown results table |
@@ -1832,7 +1837,7 @@ binary that already has `mlx.metallib` beside it.
 | `e2e/integration_test.go` | `TestIntegration_NonStreamingInference`, `_StreamingInference`, `_GreedyDeterminism`, `_MultipleRequestsAccounting`, `_E2EEncryptionCorrectness`, `_BillingBalanceDeduction`, `_ProviderPayoutSplit`, `_InsufficientBalance`, `_InvalidModel`, `_StreamingContentValidation`, `_ConcurrentRequests`, `_AttestationHeaders`, `_SwiftProviderRealRoutingGates`, `_FullNetworkSingleSwiftProviderMultiModelRouting`, `_ReferralRewardDistribution`, `_Qwen38RealProcessToolsAndVideo`; plus `TestQwen38GatePolicy`, `TestQwen38ExpectedBuiltKVBackend` |
 | `e2e/profile_test.go` | `TestProfile_SingleProviderNonStreaming`, `TestProfile_RequestProfilesRecorded` |
 | `e2e/exact_cache_routing_test.go` | `TestIntegrationExactCacheRouting` (expected red on paged with the e2b fixture; informational step in CI) |
-| `e2e/mixed_version_test.go` | `TestIntegrationMixedVersionReleasedV0712Provider`, `TestIntegrationMixedVersionGateContract` |
+| `e2e/exact_cache_recurrent_test.go` | `TestIntegrationExactCacheRecurrentCompanyLeaves` (opt-in via `DARKBLOOM_EXACT_CACHE_RECURRENT_MODEL`): primes an ~18k-token Qwen prompt (fleet-novel, `skipped_novel`), streams a second tenant and after its first token streams the donor beside it (plain chunks), cancels the second tenant after four of its tokens arrive at the slowed beside-a-prefill cadence and while the donor is still prefilling (its remaining ranges run solo on the stripe), and asserts the repeat restores within one 4,096 stripe of the prompt end and more than 8,192 tokens through the real coordinator |
 | `e2e/benchmark_test.go` | `TestBenchmark_SingleProviderStreaming`, `_SingleProviderNonStreaming`, `_MultiModelMultiProvider`, `_HighConcurrency`, `_QueueSaturation`, `_ManyUsers`, `_SingleModelScaling`, `_HeavyLoad_100Concurrent_10KB`; config tests `TestBenchmarkSuiteConfig*`, `TestBenchmarkControlSuiteIsIsolatedAndMatchesPosture`, `TestBenchmarkCapacitySaturationPolicy` |
 
 ### 9. Prompt-contract parity fixtures and vectors
@@ -1875,7 +1880,7 @@ coordinator-provisioned artifacts. What the vectors protect is explained in
 
 The pinned inventory contains seven artifacts: the five release models and two
 additional Gemma variants. All 18 shared cases run against every artifact,
-producing 126 token-array and scoped-hash comparisons. The common corpus uses
+producing 154 token-array and scoped-hash comparisons. The common corpus uses
 histories and reasoning settings accepted by each family; family-specific argument and
 Harmony regressions remain in the provider's focused test suites.
 
@@ -1953,8 +1958,8 @@ token IDs are accepted.
 
 | Workflow | Trigger | Jobs (name → what runs) |
 |---|---|---|
-| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — `scripts/check-release-version.sh`, `scripts/sync-install-embed.sh check`, `scripts/test-prod-env-refresh.sh` · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race -coverprofile=… -covermode=atomic $(go list ./... \| grep -v /e2e)` with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence; total statement coverage in the job summary, `coverage.out` kept 14 days as the `coordinator-coverage` artifact · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh`, then `cargo llvm-cov` (0.9.1) line coverage in the job summary · **Provider Tests** (macOS 12-vcpu) — `swift build --build-tests`, metallib staging, `swift test`, `verify-prompt-parity.sh`, six nested suites via `run-nested-suite.sh` (each its own step, `if: !cancelled()`), `test-install-atomic.sh` · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper`, warms the SwiftPM cache · **Console UI Lint & Build** — Node 22, `npm ci`, `npx eslint src/`, `npm run build` |
-| [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 120 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (expected red, `continue-on-error`) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`) → current coordinator vs released v0.7.12 provider (`scripts/fetch-v0712-provider.sh`, `DARKBLOOM_MIXED_VERSION_EXPECT=artifact`, fails unless `MIXED_VERSION_TIER_ARTIFACT_OK` appears) → released v0.7.12 coordinator (`git worktree add … v0.7.12`) vs candidate provider (`NonStreamingInference`, `StreamingInference`) |
+| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — `scripts/check-release-version.sh`, `scripts/sync-install-embed.sh check`, `scripts/test-prod-env-refresh.sh` · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race -coverprofile=… -covermode=atomic` over every package except the top-level `e2e` integration package (`coordinator/internal/e2e` and `e2e/testbed/...` run) with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence; total statement coverage in the job summary, `coverage.out` kept 14 days as the `coordinator-coverage` artifact · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh`, then `cargo llvm-cov` (0.9.1) line coverage in the job summary · **Provider Tests** (macOS 12-vcpu) — `swift build --build-tests`, metallib staging, `swift test`, `verify-prompt-parity.sh`, six nested suites via `run-nested-suite.sh` (each its own step, `if: !cancelled()`), `test-install-atomic.sh` · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper`, warms the SwiftPM cache · **Console UI Lint & Build** — Node 22, `npm ci`, `npx eslint src/`, `npm test` (vitest run), `npm run build` |
+| [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 75 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (expected red, `continue-on-error`) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`) |
 | [`.github/workflows/benchmarks.yml`](../../.github/workflows/benchmarks.yml) | PR, gated by the `benchmarks` environment (manual approval) | **E2E Benchmarks** — `go test ./e2e/ -count=1 -v -timeout 40m -p=1 -run 'TestBenchmark'`, posts `BENCHMARK_MD_PATH` as a PR comment |
 | [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml) | tag `v*`, manual | Provider release; see [`../operations/provider-release.md`](../operations/provider-release.md) |
 | [`.github/workflows/provider-signing-validation.yml`](../../.github/workflows/provider-signing-validation.yml) | manual only | Build an exact signed source revision, validate Developer ID signing/provisioning/notarization in a separate job, and retain an Actions artifact; no GitHub environment, deployment, release registration or model execution |
@@ -1976,7 +1981,7 @@ token IDs are accepted.
 | `DATABASE_URL not set — skipping PostgreSQL integration test` | store tests skipped | export `DATABASE_URL` to a Postgres 16 with a `testbed` database |
 | `neither docker nor postgres found in PATH` | e2e cannot start Postgres | start Docker, or put `postgresql@16/bin` on `PATH` |
 | `configured provider metallib not found beside binary` | `DARKBLOOM_PROVIDER_BINARY` set without `mlx.metallib` next to it | `./scripts/fetch-metallib.sh "$(dirname "$DARKBLOOM_PROVIDER_BINARY")"` |
-| provider never registers a model in e2e | checkpoint not in the HF cache, or not CBv2-servable (`gpt_oss`/`gemma4` families only) | download the pinned snapshot; check `DARKBLOOM_TESTBED_MODEL` |
+| provider never registers a model in e2e | checkpoint not in the HF cache, not CBv2-servable, or gated to other hardware (the Qwen3.8-27B builds need Apple M5 with NAX and the provider prints `No models selected.`) | download the pinned snapshot; check `DARKBLOOM_TESTBED_MODEL` |
 | nested suite step fails with "executed 0 tests" | swift-testing pass routed at an executable target / wrong filter | rebuild with `swift build --build-tests` in `libs/mlx-swift-lm`; keep suite names exact |
 | paged gate fails immediately with `DARKBLOOM_CBV2_PAGED_KV=… is set` | kill switch in your shell | `unset DARKBLOOM_CBV2_PAGED_KV` |
 
@@ -1998,7 +2003,11 @@ DARKBLOOM_LIVE_MLX_GPTOSS_MODEL_DIRECTORY=/absolute/verified-gpt-oss-20b \
 ```
 
 `provider-swift/Tests/ProviderCoreTests/Inference/Live/GPTOSS/GPTOSSCheckpointRestartLiveTests.swift`
-(`sameKeyNewEngineRestoresBranchedPrompt`) donates a complete encrypted historical
+(`sameKeyNewEngineRestoresBranchedPrompt`; the same file also gates
+`batchedDonorRestoresDeepBoundary`, whose donor starts solo and gains decode
+company and must restore at least 5,120 of about 6,400 tokens,
+`growingConversationRestoresDeepest`, and `forkedPromptRestoresHintedBoundary`,
+which restores the boundary a coordinator hint named) donates a complete encrypted historical
 checkpoint, shuts down the engine/store, reconstructs both and requests a branched
 prompt first. It requires disk reads, exact checkpoint-boundary hit accounting,
 expected answer markers, tenant and changed-prefix misses, cache-off controls,
@@ -2050,6 +2059,40 @@ The focused construction and load-policy suites are `GPTOSSDefaultPrefixCacheWir
 and unsupported backends, fresh load hashes and identity rejection. A passing
 construction suite does not replace the real-checkpoint fixture above. Live test
 skips must be reported as unrun qualification.
+
+## Qwen recurrent checkpoint retention (live)
+
+`provider-swift/Tests/ProviderCoreTests/Inference/Live/Qwen/Qwen35CheckpointRetentionLiveTests.swift`
+drives real Qwen weights through the production paged assembly (bridge, SSD
+complete-checkpoint store, inline MTP head when the artifact embeds one) and
+checks chunk-agnostic capture, fork-target retention, restore text against a
+cold control, and the company-leaves shape (six 512-token chunks, then the
+2,048-token stripe). Gates and overrides:
+
+```bash
+cd provider-swift
+DARKBLOOM_LIVE_MLX_TESTS=1 \
+DARKBLOOM_LIVE_MLX_QWEN35_CHECKPOINT_RETENTION=1 \
+swift test --filter Qwen35CheckpointRetentionLiveTests
+# MoE sanity run (needs both gates):
+DARKBLOOM_LIVE_MLX_TESTS=1 DARKBLOOM_LIVE_MLX_QWEN35_CHECKPOINT_RETENTION=1 \
+DARKBLOOM_LIVE_MLX_QWEN36_MOE_CHECKPOINT=1 \
+swift test --filter Qwen35CheckpointRetentionLiveTests/moePartitionSanity
+```
+
+| Variable | Meaning |
+|---|---|
+| `DARKBLOOM_LIVE_MLX_QWEN_RETENTION_MODEL` | Another cached `qwen3_5` checkpoint for the dense runs (default `EigenLabs/Qwen3.5-9B-MLX-4bit-mtp`). A `language_model_only` artifact loads without VLM extraction |
+| `DARKBLOOM_LIVE_MLX_QWEN_MOE_MODEL` | Another cached `qwen3_5_moe` checkpoint for the MoE run (default Qwen3.6-35B-A3B; Qwen3.5-35B-A3B is the same architecture) |
+| `DARKBLOOM_LIVE_MLX_QWEN_RETENTION_BUDGET_GIB` | Dense-run slot budget in GiB (default 32) |
+
+The suite pins the solo stripe at 2,048 tokens; production dense Qwen stripes
+at 4,096. `EigenLabs/Qwen3.8-27B-MTP-4bit` is the standalone MTP-head
+artifact, not a model; and the Qwen3.8-27B builds are gated to Apple M5 with
+NAX in the provider (`ModelRuntimeRequirements`), so on other chips the
+fixture bypasses a product gate and trips the 30-second engine step watchdog
+in prefill. Results and the parity evidence behind the capture rule:
+[2026-09-27 report](../reports/2026-09-27-qwen-chunk-partition-parity.md).
 
 ## Connected coordinator/provider HTTP cache gate
 
@@ -2311,7 +2354,9 @@ fixing them, and verify fixes are pushed before resolving threads. A passing
 local suite does not establish that the post-push review cycle has completed.
 
 After the optimized provider is packaged with its resources, run
-`Darkbloom.app/Contents/MacOS/darkbloom runtime-smoke`. Require all four markers:
+`DARKBLOOM_NO_UPDATE_CHECK=1 DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18 MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 MLX_GATHER_QMM_EXPERT_SLICES=1 Darkbloom.app/Contents/MacOS/darkbloom runtime-smoke`
+(the child validates retained latches that MLX reads at its first Metal touch,
+so the caller seeds them, exactly as `SelfUpdater` and `install.sh` do). Require all four markers:
 `app-attest-callback-runtime-smoke: ok`, `gemma-optimizations-runtime-smoke: ok`,
 `paged-kernel-runtime-smoke: ok`, and `qwen4-metal-resources-runtime-smoke: ok`. Callback completion and expiry are exercised
 without Apple service calls or a Keychain item. This linked-binary check catches

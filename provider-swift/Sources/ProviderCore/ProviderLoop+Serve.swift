@@ -85,6 +85,7 @@ extension ProviderLoop {
             return
         }
         startMTPUpgradeMonitor()
+        startModelRevisionMonitor()
 
         // Unified mode: also expose a local OpenAI endpoint off the same loaded
         // models. It starts after the bounded metadata prewarm, but still before
@@ -162,7 +163,6 @@ extension ProviderLoop {
             backendName: "mlx-swift",
             heartbeatInterval: TimeInterval(loopConfig.config.coordinator.heartbeatIntervalSecs),
             publicKey: keyPair.publicKeyBase64,
-            walletAddress: nil,
             attestation: nil,
             registrationAttestation: registrationAttestation,
             authToken: loopConfig.authToken,
@@ -290,7 +290,7 @@ extension ProviderLoop {
                 case .inferenceRequest(
                     let requestId, let ciphertext, let senderPublicKey,
                     let cacheReceiptNonce, let cacheScope, let prefixCacheProtocol,
-                    let cacheReceiptBoundaryMode,
+                    let cacheReceiptBoundaryMode, let cacheRepeatedPrefixTokens,
                     let toolSchemaMetadataProtocol, let firstContentDeadline,
                     let receivedAt,
                     let profile
@@ -303,6 +303,7 @@ extension ProviderLoop {
                         authenticatedCacheScope: cacheScope,
                         prefixCacheProtocol: prefixCacheProtocol,
                         cacheReceiptBoundaryMode: cacheReceiptBoundaryMode,
+                        cacheRepeatedPrefixTokens: cacheRepeatedPrefixTokens,
                         toolSchemaMetadataProtocol: toolSchemaMetadataProtocol,
                         firstContentDeadline: firstContentDeadline,
                         receivedAt: receivedAt,
@@ -381,6 +382,10 @@ extension ProviderLoop {
         for task in desiredPrefetchRetryTasks.values { task.cancel() }
         desiredPrefetchRetryTasks.removeAll()
         desiredPrefetchRetryAttempts.removeAll()
+        modelRevisionMonitorTask?.cancel()
+        modelRevisionAttempt?.task.cancel()
+        await modelRevisionMonitorTask?.value
+        modelRevisionMonitorTask = nil
         let mtpUpgradeTask = mtpUpgradeMonitorTask
         mtpUpgradeMonitorTask = nil
         mtpUpgradeTask?.cancel()
@@ -449,14 +454,9 @@ extension ProviderLoop {
         // textBackendInprocess + textProxyDisabled: always true on the Swift
         //   provider -- inference runs in-process via mlx-swift-lm, no HTTP
         //   proxy is involved.
-        // pythonRuntimeLocked + dangerousModulesBlocked: report false. There
-        //   is no Python runtime to lock anymore. Coordinator's Swift-runtime
-        //   trust path (registry.BackendUsesSwiftRuntime) doesn't read these.
         return PrivacyCapabilities(
             textBackendInprocess: true,
             textProxyDisabled: true,
-            pythonRuntimeLocked: false,
-            dangerousModulesBlocked: false,
             sipEnabled: securityPosture?.sipEnabled ?? SecurityChecks.isSIPEnabled(),
             antiDebugEnabled: securityPosture?.antiDebugEnabled ?? false,
             coreDumpsDisabled: securityPosture?.coreDumpsDisabled ?? false,
@@ -488,8 +488,6 @@ extension ProviderLoop {
         }
 
         return RuntimeHashes(
-            pythonHash: existing?.pythonHash,
-            runtimeHash: existing?.runtimeHash,
             templateHashes: templates
         )
     }

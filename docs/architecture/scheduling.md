@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-26 · commit `8a1b36f70`
+> Last updated: 2026-09-28 · commit `1902940eb`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -9,6 +9,16 @@ derived from them, demand-driven model loads, and the warm-pool controller
 that keeps enough providers resident for each model. Choosing *which*
 eligible provider gets a request is the subject of
 [`routing.md`](routing.md); this page stops where that choice begins.
+
+For automatic same-ID weight updates, desired state includes a revision and
+aggregate hash for providers advertising `model_revisions_v1`. The provider
+stages the update without occupying a GPU slot. If an alias target is ineligible,
+its eligible previous or retired lineage build still receives revision updates.
+Only an emitted alias target suppresses competing lineage targets. The provider
+then closes admission for that
+model and drains accepted work before activation. Other resident models remain
+available; new cold loads wait through the activation boundary. See
+[model revisions](model-revisions.md) for backoff, snapshot selection and rollback.
 
 ## Draining providers
 
@@ -33,7 +43,7 @@ snapshot through `RefreshDesiredModels` in `coordinator/registry/model_commands.
 The API then sends `models_replace_resumed`, and the provider waits for the
 matching receipt before reporting success.
 That refresh bypasses per-connection delivery deduplication, retains the existing
-capability/version guards and retired-alias lineage, and emits an empty snapshot
+backend/capability guards and retired-alias lineage, and emits an empty snapshot
 when deselected aliases no longer apply. The provider preserves a snapshot that
 arrives while its commit is awaiting acknowledgement and resumes convergence
 after reopening admission. A failed receipt write or missing readiness neither
@@ -77,7 +87,14 @@ overrides and their defaults are in
 `Enqueue` sweeps the model's stale entries, then returns `ErrQueueFull` when
 the queue already holds `maxSize` requests. Each waiter blocks in
 `WaitForProviderContext` on its own `maxWait` timer and on the request's
-absolute first-content clock. The queue's error vocabulary:
+absolute first-content clock. Public deadline-bound dispatch only waits when
+credible release evidence leaves time for first content. Current occupancy-only
+reports cannot establish a future release, so a full public request returns its
+early overload response instead of spending the configured maximum. Explicit
+owner and deadline-exempt queue behavior remains. See
+[first-content routing](first-content-routing.md).
+
+The queue's error vocabulary:
 
 | Error | Meaning |
 |---|---|
@@ -203,8 +220,13 @@ the slot that the provider has not yet reflected (`pendingMaxTokens −
 committedTokenBudget`, floored at 0). A budget-clamped pair
 ([`routing.md`](routing.md#gray-box-capacity-signals)) and a slot that reports
 `KVBytesPerToken` with a zero budget (`knownZeroTokenBudget`) are refused
-outright. `pooledBudgetAdmits` then checks the provider-wide pool that all
-slots share, in bytes when the provider reports byte-mode budgets.
+outright. `pooledBudgetAdmits` then checks the provider-wide pool: the sum of
+every slot's private grant (`providerPooledTokenBudget`,
+`coordinator/registry/pooled_admission.go`) charged with every model's
+coordinator-pending tokens, in bytes when every budget slot reports
+`KVBytesPerToken`. It rejects what a per-slot check cannot see: pending work
+for a cold model that has no slot yet, and a grant that a re-slice shrank
+below its live use. A cold request is charged against the same pool.
 
 **Memory fallback** for slots without a token budget: a resident model needs
 no weight memory; a non-resident one needs `modelSizeGB` plus the request's

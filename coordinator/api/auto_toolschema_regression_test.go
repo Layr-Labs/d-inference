@@ -223,7 +223,7 @@ func TestToolConstraintCapabilityErrorSeparatesPermanentFromTransient(t *testing
 		return response
 	}
 
-	// Above the tools floor but advertising no tool-constraint protocol: the
+	// Tool-capable but advertising no tool-constraint protocol: the
 	// fleet serves the model, nobody ever enforces on it — permanent.
 	served := failFast(t, true, true, func(p *registry.Provider) {
 		p.Mu().Lock()

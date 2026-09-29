@@ -1,6 +1,6 @@
 # Admin UI (`admin-ui/`)
 
-> Last updated: 2026-09-26 · commit `b1aac01b5`
+> Last updated: 2026-09-28 · commit `18fad5efe`
 
 `admin-ui/` is the internal, read-only operations dashboard: a separate Next.js 16 / React 19 application (`admin-ui/package.json`) whose pages are React Server Components that run parameterised `SELECT` statements against the coordinator database's read-only replica at request time. It has one authentication surface (HTTP Basic, enforced by `admin-ui/src/proxy.ts`), one raw App Attest evidence download route and no other API routes, and no browser-side data fetching. It is not the consumer console — that is [`console-ui.md`](console-ui.md) — and it never talks to the coordinator's HTTP API.
 
@@ -59,7 +59,7 @@ Every page under `admin-ui/src/app/` exports `runtime = "nodejs"` and is a serve
 | `/billing` | `admin-ui/src/app/billing/page.tsx` | `billing.ts` (`listTopBalances`, `listRecentLedger`) | `balances`, `ledger_entries`, `users` |
 | `/earnings` | `admin-ui/src/app/earnings/page.tsx` | `earnings.ts` (`listTopEarners`, `listRecentEarnings`) | `earnings_summary`, `provider_earnings`, `users` |
 | `/api-keys` | `admin-ui/src/app/api-keys/page.tsx` | `apikeys.ts` (`listApiKeys`, `countApiKeys`) | `api_keys`, `users` |
-| `/models` | `admin-ui/src/app/models/page.tsx` | `models.ts` (`listModels`, `countModels`; `DEFAULT_INPUT_PRICE_MICRO`, `DEFAULT_OUTPUT_PRICE_MICRO` mirror the coordinator's fallback prices — values in [`../../reference/pricing-model.md`](../../reference/pricing-model.md)) | `model_registry`, `model_active_versions`, `model_versions`, `model_prices` |
+| `/models` | `admin-ui/src/app/models/page.tsx` | `models.ts` (`listModels`, `countModels`); `lib/pricing.ts` (`DEFAULT_INPUT_PRICE_MICRO`, `DEFAULT_OUTPUT_PRICE_MICRO`, `derivedCacheReadMicro` mirror the coordinator's fallback prices and default cache-read discount — values in [`../../reference/pricing-model.md`](../../reference/pricing-model.md)). `cache_read_price` is read via `to_jsonb(mp) ->> 'cache_read_price'` so the page survives a replica the coordinator has not migrated yet (missing key → NULL → "(derived)") | `model_registry`, `model_active_versions`, `model_versions`, `model_prices` |
 | `/openrouter` | `admin-ui/src/app/openrouter/page.tsx` | `openrouter.ts` (`listOpenRouterAccounts`; `email ILIKE '%@openrouter.ai%'`) | `users`, `balances`, `api_keys`, `ledger_entries`, `usage` |
 | `/releases` | `admin-ui/src/app/releases/page.tsx` | `releases.ts` (`listReleases`, `countReleases`) | `releases` |
 | `/referrals` | `admin-ui/src/app/referrals/page.tsx` | `referrals.ts` (`listReferrers`, `listInviteCodes`) | `referrers`, `referrals`, `users`, `invite_codes` |

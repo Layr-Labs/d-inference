@@ -3,6 +3,102 @@
 ## Unreleased — archived analytics reader
 
 - Add an opt-in validated local snapshot path for leaderboard/network totals/network series, with source freshness checks and clear 503 responses when unavailable. Default database mode shares coalesced leaderboard results across aliases and limits, propagates query failures as 503, and uses a 5-minute public analytics cadence.
+## Unreleased — automatic model artifact revisions
+
+- Reject cached or staged revisions with unmanifested integrity files, so an added template, tokenizer or weight file cannot be activated under the original approved hash.
+
+- Return retryable publication errors when alias refresh fails, and accept retained approved hashes during drained model replacement. Retired and unapproved hashes remain rejected.
+
+- Preserve model writer locks across cache removal and refuse removal during an active download or update. Revalidate replacement and rollback snapshots under the activation lease before draining. Keep a first verified download discoverable if the process exits immediately after publishing its snapshot.
+
+- Restore missing or damaged revision receipts only after re-verifying cached bytes, avoiding repeated activation of an already-selected revision. Preserve rollback through valid linked model cache directories.
+
+- Keep a revision's stored download source on `publish-revision` retries, including retries after a committed promotion returns 503. Explicit mirror edits through normal registration remain supported.
+
+- Let each revision declare a different pinned Hugging Face repo, commit and subdirectory through publishing flags or the API, with checksum-verified R2 fallback. Preserve retirement and original upload attribution across registration retries, report failed live refreshes or provider desired-state sends as retryable errors, and retain updates for eligible alias lineage builds.
+
+- Add automatic artifact revisions for existing model IDs: publish immutable R2 bytes and a manifest once, then supporting providers resume/verify downloads, drain accepted requests and activate with rollback. Retain approved older hashes during convergence; add explicit inactive-revision retirement. Share the idle-upgrade lifecycle with Gemma MTP.
+
+## Unreleased — coordinator first-content routing
+
+- Rank eligible providers by cache-adjusted first-content forecasts by default, prefer credible deadline-feasible choices, and spread near-equal choices by whole-machine service work within a 100-ms band. Preserve physical prompt/output reservations and explicit owner routing.
+- Preserve valid prefill observations through 20,000 tokens/s. Track accepted capacity and observed performance freshness separately; missing or stale evidence stays unknown.
+- Revalidate reservations and retained alternatives against the original request deadline. After two predictive refusals, require fresh feasible evidence; bound quote fanout to two and launch at most one feasible backup.
+
+## Unreleased — cached prompt pricing
+
+- Bill prompt tokens a provider serves from its prefix cache at a per-model `cache_read_price` instead of the input price, on the same `cached_tokens` count the consumer receives in `usage.prompt_tokens_details`; a malformed cache report bills at the full input price. Rows without an explicit rate derive half the input price; `cache_read_price` is accepted by `PUT /v1/admin/pricing`, `PUT /v1/pricing` and model registration (`0 ≤ cache_read_price ≤ input_price`).
+- Advertise the same rate to OpenRouter as `pricing.input_cache_read` in the provider feed, so a service-account debit equals the feed's per-token math (previously the feed declared `"0"` while cached tokens were billed at the full input price). No cache-write SKU: caching is provider-initiated.
+- Publish `cache_read_price` on `GET /v1/pricing`, persist `cached_tokens` on usage rows and `GET /v1/payments/usage`, and surface the rate in the console model catalog and the admin models table. Reservations are unchanged (worst case assumes no cache hit); settlement refunds the discount and emits `billing.cache_read_discount_micro_usd`. The `*_usd` strings returned by `PUT /v1/admin/pricing` and `PUT /v1/pricing` drop the trailing " per 1M tokens" to match `GET /v1/pricing`. Cost arithmetic saturates instead of wrapping on absurd provider-reported counts.
+- `/v1/completions` and `/v1/messages` report a validated cache hit in usage, streamed or not: `prompt_tokens_details.cached_tokens` for completions (streams: on the final chunk), and `cache_read_input_tokens` (excluded from `input_tokens`, as Anthropic counts it) for messages (streams: on `message_delta`). The console model catalog resolves an alias's prices from its embedded `/v1/models` pricing, so aliases show input, output and cached-input rates.
+- Requests settled against a model-token grant keep pricing every prompt token at the input rate (no cache-read discount on that path) and record `cached_tokens = 0`.
+- The coordinator refuses to start if `usage.cached_tokens` or `model_prices.cache_read_price` cannot be added at boot (for example a lock timeout behind a long query on `usage`), instead of booting with price lookups and usage inserts failing.
+- On deploy every existing price row — platform and provider custom — starts billing cache hits at half its own input price until an explicit `cache_read_price` is set; the feed's `input_cache_read` moves from `"0"` to that rate.
+
+## Unreleased — provider readiness diagnostics
+
+- Explain cold model-load memory failures in `darkbloom status`, a color-coded `darkbloom doctor` readiness summary, and the owner My Macs page. The provider reports live no-eviction usable memory and serving headroom separately from the eviction-aware routing capacity; older providers remain compatible and show unknown rather than a guessed verdict.
+
+## Release candidate v0.9.12 — model download cache recovery (not shipped; 2026-09-27)
+
+- Recover downloads and background prefetch when a model cache entry is a dangling symlink, including links to unavailable external drives. Preserve the original link under a hidden `.models--<id>.unavailable-link-<UUID>` sibling and download into a real directory in the selected cache. Valid directory links and regular files are preserved.
+- Align `ProviderCore.version` and the coordinator display fallback at 0.9.12. Publication remains a separate release operation.
+
+## Unreleased — coordinator legacy-compat cleanup
+
+- `EIGENINFERENCE_MIN_PROVIDER_VERSION` now also excludes providers that report no version from routing. The reference `deploy/environments/prod.env` now says 0.9.5 instead of 0.7.5, but that file changes nothing on the host: the live value in `/etc/d-inference/env` must be raised to at least 0.9.5 by a human, after a fleet-version census, before this coordinator is deployed (`docs/operations/coordinator-deploy.md`). Every registration attestation must carry a fresh timestamp, including from a provider that reports no version.
+- The one-shot `backfill_withdrawable_balance_v1`, `backfill_usage_totals_v1` and `backfill_earnings_summary_v1` migrations are retired. Production already ran them. The coordinator now refuses to start on a database whose `balances`, `usage` or `provider_earnings` rows never went through them (or whose `balances` lacks `withdrawable_micro_usd`), naming the missing marker; boot a coordinator built from v0.9.10, which still runs them, once to apply them. An empty database records the markers at first boot.
+- Remove the Python-era wire fields: `python_hash`/`runtime_hash` (registration, attestation response, signed status), `hypervisor_active`, and the `python_runtime_locked`/`dangerous_modules_blocked` privacy flags. Providers that still send them keep working. `POST /v1/releases` now rejects `python_hash`/`runtime_hash`; `/v1/runtime/manifest` and `/v1/me` no longer return them.
+- Drop compatibility paths for providers below the new floor: the pre-0.6.7 vision penalty strip and the `desired_models` version gate. The tool-call 503 no longer cites a provider version.
+- Security: remove the unauthenticated `GET /v1/provider/earnings?wallet=…` lookup, which returned any account's balance and ledger to anyone holding its ID (threat model T-031). It now returns 404; earnings stay available through the authenticated account endpoints.
+- Remove the retired `POST /v1/telemetry/events` route (it only ever answered 410); it now returns 404. The coordinator has no client telemetry ingestion and no server-side field allowlist.
+- Attestation challenges fail closed: for a provider with an attested key, a missing `status_signature` or an omitted `secure_boot_enabled` fails the challenge instead of being accepted as advisory.
+- An `inference_error` without `failure_code` is counted as drift and fails closed as `generation_failure`; status, reason and cause no longer reclassify it, and a bare 429 no longer means queue full.
+- App Attest serves protocol 3 only. Registrations announcing protocol 1 or 2 get no shadow frames and are counted as `rollout`/`provider_upgrade_required`; stored enrollments from before protocol 3 never resume.
+- `inference_request` no longer carries an empty plaintext `body` object.
+- Provider releases trigger only on `vX.Y.Z` tags; the `vX.Y.Z-swift[.N]` alias is gone.
+
+### Provider
+
+- `provider.toml`: the retired boolean `[backend] mtp` key is ignored with a startup warning. A bare `mtp = true` or `mtp = false` without `mtp_mode` is treated as the `mtp_mode` default, `auto`; to keep MTP off, set `mtp_mode = "off"`. `config_version` is ignored and no longer written, and loading a config never rewrites it (no stamp migration, no coordinator-URL rewrite, no copy from legacy locations). Only `~/.config/darkbloom/provider.toml` or `--config` is read.
+- Self-update and `install.sh` install only signed `Darkbloom.app` bundles: flat-only and pre-paged artifacts are refused, and the `eigeninference-enclave` alias is no longer created. `install.sh` no longer migrates `~/.dginf`/`~/.eigeninference`.
+- Model downloads fail closed for a catalog entry without a verified manifest (`r2_prefix` + `aggregate_sha256`).
+- Removed: `darkbloom-enclave wallet-address`; Rust-era credential, launchd-label and Secure Enclave v1 key fallbacks; the provider's App Attest shadow protocols 1 and 2 (protocol 3 only).
+- The bare `runtime-smoke` self-bootstrap for pre-0.8.10 updaters is gone: an updater from 0.7.8–0.8.9 may fail the packaged smoke check (it fails only on hosts where MLX touches Metal early) and then needs an `install.sh` reinstall. Those versions are below the 0.9.5 routing floor anyway.
+
+## Release candidate v0.9.11 — prefix cache hit rate (not shipped; 2026-09-27)
+
+- Align `ProviderCore.version` and the coordinator display fallback at 0.9.11. The new inference-request field is optional in both directions, so the coordinator and providers can be upgraded in either order; upgrade the coordinator first to keep the 0.9.10 rollout order.
+
+Production ran exact prefix-cache routing at 100% and measured a 1.4–5.2% hit rate per model. See the [analysis](docs/reports/2026-09-26-prefix-cache-hit-rate-analysis.md) and the [rollout procedure](docs/operations/cache-routing-rollout.md). Coordinator and provider changes are independent on the wire: an older provider ignores the new request field, and an older coordinator leaves providers on their previous donation behavior.
+
+### Provider
+
+- Keep the SSD cache epoch across budget eviction, TTL expiry and corrupt-file removal. Only a whole-root rebuild at load mints a new epoch, so the coordinator no longer forgets a provider's remaining checkpoints each time one file is removed.
+- Raise the SSD prefix-cache TTL from 15 to 30 minutes (default equals maximum; the environment override can only shorten it). Recorded as the SEC-035 re-acceptance in the threat model.
+- Write a complete checkpoint only on evidence of demand: the coordinator's `cache_repeated_prefix_tokens` at or above the 1,024-token floor, or a prior local sighting. Fleet-novel checkpoints report `skipped_novel` and touch neither disk nor the write budget. The first request for a prefix is served cold and not written, the second is written, the third can hit.
+- Capture GPT-OSS 20B and Gemma QAT checkpoints at every 1,024-token boundary regardless of prefill chunk size, including inside a solo stripe, and retain at most three per donor: the first boundary, the boundary at the observed shared-prefix length, and the deepest.
+- Report a file that disappeared under a reader as an absent miss rather than corruption; let expiry proceed when a root's only registered store has lost ownership.
+- Capture recurrent (Qwen, Nemotron, Bonsai) complete checkpoints at every 256-token-aligned prefill range end, whatever chunk produced it. The uniform-chunk rule disarmed capture when decode company left mid-prompt, so long Qwen prompts published only the boundaries before the first chunk change; measured on real weights, dense Qwen3.5-9B state is bit-identical across chunk partitions and the MoE varies cold already ([report](docs/reports/2026-09-27-qwen-chunk-partition-parity.md)). Files written under the old rule stay valid; adopters resume under ordinary chunking.
+- Retain the coordinator's fork target for recurrent donors too: first boundary, deepest boundary at or below `cache_repeated_prefix_tokens`, and the rolling latest, with a fixed 1,024-token adjacency drop for every layout.
+- Count recurrent donors whose capture a packed prefill cohort disarmed, once per request, in the heartbeat's `recurrent_capture_disarmed_packed_total` (DogStatsD `provider.prefix_cache.recurrent_capture_disarmed_packed`).
+- Enable SSD prefix caching and the paged KV backend by default for the exact catalog ID `Qwen3.5-9B`. Providers reported `config_disabled` for it and served it on contiguous KV under `auto`, so it could not join cache routing; the coordinator's `EIGENINFERENCE_CACHE_ROUTING_ALLOWED_ARTIFACTS` tuple for it is a separate operations change.
+
+### Coordinator
+
+- Prefer a proven cache holder inside the existing 3-second near-tie band instead of collapsing the band whenever a cache credit exists. New selection path `cache_credit` and opportunity reason `selected_near_tie`.
+- Bound the proof fence to 60 seconds, doubling per consecutive mismatch to a 10-minute maximum, and drop only the mismatched prompt's holders. Previously a mismatch fenced the capability until the provider's epoch changed and dropped every holder for the model.
+- Drop a provider's deeper holders when it proves a hit at a shorter boundary (`shorter_hit`).
+- Size the holder index (250,000) and observed-demand index (1,000,000) for a 30-minute window and expire holders from an expiry-ordered heap in bounded passes.
+- Forward observed repeat demand to providers as `cache_repeated_prefix_tokens`.
+
+### Prompt sidecar
+
+- Mirror five provider prompt transformations that caused proof mismatches: tool-call argument key order, integral doubles in arguments, extra keys in tool `function` objects, Harmony channel framing in assistant history, and `output_text` content parts. Prompt-contract IDs are unchanged. Decline to plan for decomposed Unicode object keys and for Harmony control tokens that share a grapheme with a neighbour.
+
+### Operations
+
+- Rollout procedure for sidecar capacity, plan QPS, holder TTL and the Nemotron Lightning and Bonsai 2 allowlist tuples. The sanitized production env reference now matches the live cache-routing values.
 
 ## Release candidate v0.9.10 — live switching and App Attest recovery (not shipped; 2026-09-27)
 

@@ -86,7 +86,7 @@ func TestIntegration_ReferralRewardDistribution(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 
 	// Calculate expected amounts.
-	totalCost := payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens)
+	totalCost := payments.DefaultRates().CostWithMinimum(billableUsage(usage))
 	expectedProviderPayout := payments.ProviderPayout(totalCost) // provider payout at the default fee
 	expectedPlatformFee := payments.PlatformFee(totalCost)       // platform fee at the default rate (0% during alpha)
 
@@ -250,7 +250,7 @@ func TestIntegration_DeviceAuthFullFlow(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 
 	// Step 7: Verify earnings went to the linked account.
-	expectedPayout := payments.ProviderPayout(payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens))
+	expectedPayout := payments.ProviderPayout(payments.DefaultRates().CostWithMinimum(billableUsage(usage)))
 
 	accountBalance := st.GetBalance(accountID)
 	if accountBalance != expectedPayout {
@@ -264,9 +264,9 @@ func TestIntegration_DeviceAuthFullFlow(t *testing.T) {
 	}
 
 	// Step 8: Verify per-node earnings were recorded.
-	earnings, err := st.GetProviderEarnings(pubKey, 10)
+	earnings, err := st.GetAccountEarnings(accountID, 10)
 	if err != nil {
-		t.Fatalf("get provider earnings: %v", err)
+		t.Fatalf("get account earnings: %v", err)
 	}
 	if len(earnings) == 0 {
 		t.Fatal("expected at least one provider earning record")
@@ -275,6 +275,9 @@ func TestIntegration_DeviceAuthFullFlow(t *testing.T) {
 	e := earnings[0]
 	if e.AccountID != accountID {
 		t.Errorf("earning account_id = %q, want %q", e.AccountID, accountID)
+	}
+	if e.ProviderKey != pubKey {
+		t.Errorf("earning provider_key = %q, want %q", e.ProviderKey, pubKey)
 	}
 	if e.AmountMicroUSD != expectedPayout {
 		t.Errorf("earning amount = %d, want %d", e.AmountMicroUSD, expectedPayout)
@@ -376,8 +379,8 @@ func TestIntegration_MultiNodeSameAccount(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 
 	// Verify the SAME account got credited twice.
-	expectedPayout1 := payments.ProviderPayout(payments.CalculateCost(model1, usage1.PromptTokens, usage1.CompletionTokens))
-	expectedPayout2 := payments.ProviderPayout(payments.CalculateCost(model2, usage2.PromptTokens, usage2.CompletionTokens))
+	expectedPayout1 := payments.ProviderPayout(payments.DefaultRates().CostWithMinimum(billableUsage(usage1)))
+	expectedPayout2 := payments.ProviderPayout(payments.DefaultRates().CostWithMinimum(billableUsage(usage2)))
 	expectedTotalBalance := expectedPayout1 + expectedPayout2
 
 	actualBalance := st.GetBalance(accountID)

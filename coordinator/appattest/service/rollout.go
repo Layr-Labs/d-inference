@@ -3,18 +3,11 @@ package service
 import (
 	"crypto/sha256"
 	"encoding/binary"
-	"strings"
-
-	"golang.org/x/mod/semver"
 )
 
-// Never send an Apple operation to the released 0.9.3 callback timer. This is
-// an operational version floor, not evidence that a client runs approved code.
-const appAttestSafeProviderVersion = "0.9.4"
-
-func appAttestRolloutDecision(version, account, machine string, percent int) string {
-	decision := appAttestAccountRolloutDecision(version, account, percent)
-	if decision != "provider_upgrade_required" && machine == "" {
+func appAttestRolloutDecision(account, machine string, percent int) string {
+	decision := appAttestAccountRolloutDecision(account, percent)
+	if machine == "" {
 		return "identity_required"
 	}
 	return decision
@@ -23,10 +16,7 @@ func appAttestRolloutDecision(version, account, machine string, percent int) str
 // Account membership is known at authenticated registration, before a canonical
 // machine ID exists. Both identity admission and the later exchange use this
 // exact cohort decision; a claimed serial or provisional ID never chooses it.
-func appAttestAccountRolloutDecision(version, account string, percent int) string {
-	if !appAttestProviderVersionSafe(version) {
-		return "provider_upgrade_required"
-	}
+func appAttestAccountRolloutDecision(account string, percent int) string {
 	if account == "" {
 		return "identity_required"
 	}
@@ -57,9 +47,4 @@ func appAttestKeyRotationCohortDecision(account string, percent int) string {
 		return "cohort_excluded"
 	}
 	return "enabled"
-}
-
-func appAttestProviderVersionSafe(version string) bool {
-	v := "v" + strings.TrimPrefix(version, "v")
-	return semver.IsValid(v) && semver.Compare(v, "v"+appAttestSafeProviderVersion) >= 0
 }

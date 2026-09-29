@@ -8,12 +8,14 @@ import (
 	"encoding/asn1"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/attestation"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 const knownGoodBinaryHashForTest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -52,28 +54,70 @@ func testChallengeSignature(nonce, timestamp, encryptionKey string) string {
 // the trust-reuse fast-skip in tests.
 func testStatusSignature(t *testing.T, in attestation.StatusCanonicalInput, encryptionKey string) string {
 	t.Helper()
-	rawKey, ok := testAttestationChallengeKeys.Load(encryptionKey)
-	if !ok {
+	if _, ok := testAttestationChallengeKeys.Load(encryptionKey); !ok {
 		t.Fatalf("no challenge signer registered for %q", encryptionKey)
 	}
+	sig, err := signTestStatus(in, encryptionKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sig
+}
+
+// testResponseStatusSignature returns the status_signature a current provider
+// sends with resp for the challenge (nonce, timestamp): the canonical status
+// of resp's own fields, signed by the key registered for encryptionKey. It
+// returns "" when no signer is registered (an unattested test provider).
+func testResponseStatusSignature(nonce, timestamp, encryptionKey string, resp *protocol.AttestationResponseMessage) string {
+	if _, ok := testAttestationChallengeKeys.Load(encryptionKey); !ok {
+		return ""
+	}
+	sig, _ := signTestStatus(testResponseStatusInput(nonce, timestamp, resp), encryptionKey)
+	return sig
+}
+
+// withTestStatusSignature sets resp's status_signature the way a current
+// provider does and returns resp.
+func withTestStatusSignature(nonce, timestamp, encryptionKey string, resp *protocol.AttestationResponseMessage) *protocol.AttestationResponseMessage {
+	resp.StatusSignature = testResponseStatusSignature(nonce, timestamp, encryptionKey, resp)
+	return resp
+}
+
+// testResponseStatusInput is the canonical status input for resp's fields.
+func testResponseStatusInput(nonce, timestamp string, resp *protocol.AttestationResponseMessage) attestation.StatusCanonicalInput {
+	return attestation.StatusCanonicalInput{
+		Nonce:             nonce,
+		Timestamp:         timestamp,
+		RDMADisabled:      resp.RDMADisabled,
+		SIPEnabled:        resp.SIPEnabled,
+		SecureBootEnabled: resp.SecureBootEnabled,
+		BinaryHash:        resp.BinaryHash,
+		ActiveModelHash:   resp.ActiveModelHash,
+		TemplateHashes:    resp.TemplateHashes,
+		ModelHashes:       resp.ModelHashes,
+	}
+}
+
+func signTestStatus(in attestation.StatusCanonicalInput, encryptionKey string) (string, error) {
+	rawKey, _ := testAttestationChallengeKeys.Load(encryptionKey)
 	privKey, ok := rawKey.(*ecdsa.PrivateKey)
 	if !ok || privKey == nil {
-		t.Fatalf("invalid challenge signer for %q", encryptionKey)
+		return "", fmt.Errorf("invalid challenge signer for %q", encryptionKey)
 	}
 	canonical, err := attestation.BuildStatusCanonical(in)
 	if err != nil {
-		t.Fatalf("BuildStatusCanonical: %v", err)
+		return "", fmt.Errorf("BuildStatusCanonical: %w", err)
 	}
 	hash := sha256.Sum256(canonical)
 	r, s, err := ecdsa.Sign(rand.Reader, privKey, hash[:])
 	if err != nil {
-		t.Fatalf("sign status: %v", err)
+		return "", fmt.Errorf("sign status: %w", err)
 	}
 	sigDER, err := asn1.Marshal(ecdsaSigHelper{R: r, S: s})
 	if err != nil {
-		t.Fatalf("marshal status sig: %v", err)
+		return "", fmt.Errorf("marshal status sig: %w", err)
 	}
-	return base64.StdEncoding.EncodeToString(sigDER)
+	return base64.StdEncoding.EncodeToString(sigDER), nil
 }
 
 func createTestAttestationJSON(t *testing.T, encryptionKey string) json.RawMessage {

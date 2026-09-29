@@ -44,14 +44,12 @@ func planWiringProvider(t *testing.T, reg *registry.Registry, id, model string, 
 		PublicKey:               "fX6XYH7p2hmM3ogeXaAsY+p8M6UKD1df/LJUN9Nj9Nw=",
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities: &protocol.PrivacyCapabilities{
-			TextBackendInprocess:    true,
-			TextProxyDisabled:       true,
-			PythonRuntimeLocked:     true,
-			DangerousModulesBlocked: true,
-			SIPEnabled:              true,
-			AntiDebugEnabled:        true,
-			CoreDumpsDisabled:       true,
-			EnvScrubbed:             true,
+			TextBackendInprocess: true,
+			TextProxyDisabled:    true,
+			SIPEnabled:           true,
+			AntiDebugEnabled:     true,
+			CoreDumpsDisabled:    true,
+			EnvScrubbed:          true,
 		},
 	})
 	p.Mu().Lock()
@@ -249,20 +247,16 @@ func TestGovernorSuppressionFallsThroughToNoBackup(t *testing.T) {
 	}
 }
 
-// TestGovernorBypassesCapacitySilentFleet pins the dual-path escape (plan
-// decision #3): a fleet that reports NO capacity signals for the model gives
-// the governor meaningless inputs, so legacy providers keep today's
-// unconditional hedge — verdict allow, never a suppression they cannot
-// influence.
-func TestGovernorBypassesCapacitySilentFleet(t *testing.T) {
+// A capacity-silent fleet cannot establish a feasible spare hedge.
+func TestGovernorSuppressesCapacitySilentFleet(t *testing.T) {
 	d, _ := firstTokenWaitState(t, 0, 500*time.Millisecond)
 	d.speculativeAt = 30 * time.Millisecond
 
 	if got := d.waitFirstChunk(); got != outcomeRetry {
 		t.Fatalf("waitFirstChunk=%v, want timeout-driven outcomeRetry", got)
 	}
-	if d.hedgeGovernorVerdict != hedgeAllow.String() {
-		t.Fatalf("verdict=%q, want %q — a capacity-silent fleet must keep the legacy hedge path", d.hedgeGovernorVerdict, hedgeAllow.String())
+	if d.hedgeGovernorVerdict != hedgeSuppressNoIdleCapacity.String() {
+		t.Fatalf("verdict=%q, want %q — capacity-silent fleet cannot justify a hedge", d.hedgeGovernorVerdict, hedgeSuppressNoIdleCapacity.String())
 	}
 	if got := d.s.hedgeGov.activeHedgeCount(); got != 0 {
 		t.Fatalf("activeHedges=%d after resolution, want 0", got)
@@ -275,14 +269,16 @@ func TestGovernorBypassesCapacitySilentFleet(t *testing.T) {
 // retained), and the admitted-but-never-dispatched hedge slot is released —
 // exactly-once accounting even when the funnel refuses the backup.
 func TestGovernorAllowKeepsLegacyBackupPath(t *testing.T) {
-	d, _ := firstTokenWaitState(t, 0, 500*time.Millisecond)
+	d, _ := firstTokenWaitState(t, 0, 3*time.Second)
 	d.speculativeAt = 30 * time.Millisecond
+	d.estimatedPromptTokens = 500
 	d.rawBody = []byte(`{"model":"first-token-deadline-model"}`)
 	// An idle, trusted, model-resident alternative: the governor's spare
 	// capacity condition holds. It has no socket, so the legacy backup
 	// dispatch reserves it and then fails the deferred write — the allow path
 	// is observable without a live provider.
 	planWiringProvider(t, d.s.registry, "idle-backup", d.model, 0)
+	reportIdleFirstContentEvidence(d.s.registry, "idle-backup", d.model)
 
 	if got := d.waitFirstChunk(); got != outcomeRetry {
 		t.Fatalf("waitFirstChunk=%v, want timeout-driven outcomeRetry", got)
@@ -480,7 +476,10 @@ func TestCollectCapacityQuotesRefinesOnlyOnHighConfidence(t *testing.T) {
 	s := newTestServerForDispatch(t)
 	const model = "collect-quotes-model"
 	for i := range 4 {
-		planWiringProvider(t, s.registry, fmt.Sprintf("cq%d", i), model, int64(i)*400)
+		p := planWiringProvider(t, s.registry, fmt.Sprintf("cq%d", i), model, 0)
+		// A quote may refine a qualified local forecast, but cannot create
+		// feasibility from missing performance or workload evidence.
+		reportIdleFirstContentEvidence(s.registry, p.ID, model)
 	}
 	receivedAt := time.Now()
 	deadline := 9 * time.Second
@@ -495,7 +494,9 @@ func TestCollectCapacityQuotesRefinesOnlyOnHighConfidence(t *testing.T) {
 		quote := &protocol.CapacityQuoteMessage{
 			Type:          protocol.TypeCapacityQuote,
 			QuoteID:       "q-" + confidence,
+			CapacitySeq:   2,
 			AdmissibleNow: true,
+			TTFTP50MS:     6000,
 			TTFTP90MS:     7000,
 			Confidence:    confidence,
 		}

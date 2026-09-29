@@ -270,47 +270,26 @@ func TestVisionRoutingHelpers(t *testing.T) {
 	}
 }
 
-func TestSwiftProviderPrivateTextWithoutPythonCaps(t *testing.T) {
+// TestNonSwiftBackendNotRoutable: only the Swift (mlx-swift) backend is
+// routable; any other backend string is refused private text and routing.
+func TestNonSwiftBackendNotRoutable(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	msg.Backend = BackendMLXSwift
-	msg.PrivacyCapabilities.PythonRuntimeLocked = false
-	msg.PrivacyCapabilities.DangerousModulesBlocked = false
+	msg.Backend = "not-mlx-swift"
 
-	p := reg.Register("p-swift-nopython", nil, msg)
-	testMakeTextRoutable(p)
-
-	reg.mu.RLock()
-	routable := reg.providerSupportsPrivateTextLocked(p)
-	reg.mu.RUnlock()
-	if !routable {
-		t.Fatal("Swift provider should support private text without PythonRuntimeLocked/DangerousModulesBlocked")
-	}
-
-	found := findRoutableProvider(reg, "mlx-community/Qwen3.5-9B-Instruct-4bit")
-	if found == nil {
-		t.Fatal("Swift provider without Python caps should be routable for text models")
-	}
-}
-
-func TestPythonProviderDeprecatedNotRoutable(t *testing.T) {
-	reg := New(testLogger())
-	msg := testRegisterMessage()
-	msg.Backend = "inprocess-mlx" // intentionally legacy backend
-
-	p := reg.Register("p-python-deprecated", nil, msg)
+	p := reg.Register("p-non-swift", nil, msg)
 	testMakeTextRoutable(p)
 
 	reg.mu.RLock()
 	routable := reg.providerSupportsPrivateTextLocked(p)
 	reg.mu.RUnlock()
 	if routable {
-		t.Fatal("Python (inprocess-mlx) provider should NOT support private text — backend is deprecated")
+		t.Fatal("non-Swift provider must not support private text")
 	}
 
 	found := findRoutableProvider(reg, "mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found != nil {
-		t.Fatal("deprecated Python provider should not be routable")
+		t.Fatal("non-Swift provider must not be routable")
 	}
 }
 
@@ -318,8 +297,6 @@ func TestSwiftProviderMissingBaseCapsExcluded(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
 	msg.Backend = BackendMLXSwift
-	msg.PrivacyCapabilities.PythonRuntimeLocked = false
-	msg.PrivacyCapabilities.DangerousModulesBlocked = false
 	msg.PrivacyCapabilities.AntiDebugEnabled = false
 
 	p := reg.Register("p-swift-no-antidebug", nil, msg)

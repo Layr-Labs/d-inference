@@ -55,7 +55,7 @@ func (b AppAttestBuildIdentity) Validate() error {
 		!validBuildDigest(r.BinaryHash, 64) || !validBuildDigest(r.BundleHash, 64) || !validBuildDigest(r.MetallibHash, 64) ||
 		!validBuildDigest(b.CodeDirectoryHash, 64) || !validBuildDigest(b.SourceCommit, 40) ||
 		b.CIRunID == "" || len(b.CIRunID) > 32 || strings.Trim(b.CIRunID, "0123456789") != "" ||
-		r.URL == "" || len(r.URL) > 2048 || r.PythonHash != "" || r.RuntimeHash != "" || r.TemplateHashes != "" {
+		r.URL == "" || len(r.URL) > 2048 || r.TemplateHashes != "" {
 		return errors.New("qualification requires a complete signed macos-arm64 mlx-swift release, full SHA-256 CodeDirectory measurement, source commit and CI run ID")
 	}
 	return nil

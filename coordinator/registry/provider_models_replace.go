@@ -42,7 +42,7 @@ func (r *Registry) ReplaceProviderModels(p *Provider, msg *protocol.ModelsReplac
 		// owner routing, while public routing still requires catalog membership.
 		entry := r.modelCatalog[model.ID]
 		if !r.providerMeetsModelRequirementsLocked(p, model.ID) ||
-			(entry.WeightHash != "" && !strings.EqualFold(model.WeightHash, entry.WeightHash)) {
+			(entry.WeightHash != "" && !entry.acceptsWeightHash(model.WeightHash)) {
 			return nil, nil, 0, errors.New("invalid_models")
 		}
 		selected[model.ID] = model
@@ -116,6 +116,13 @@ func (r *Registry) ReplaceProviderModels(p *Provider, msg *protocol.ModelsReplac
 		}
 	}
 	p.Models = append([]protocol.ModelInfo(nil), msg.Models...)
+	// The owner load equation must never join a new weight estimate to the
+	// previous inventory's memory sample, even when the model ID is retained.
+	// Routing remains fenced until a fresh capacity heartbeat; that heartbeat
+	// restores both owner fields alongside the accepted capacity snapshot.
+	p.CapacityModelIDs = nil
+	p.CapacityAcceptedAt = time.Time{}
+	p.firstContentMeasurements = nil
 	p.ToolConstraintProtocol = msg.ToolConstraintProtocol
 	p.ToolConstraintModels = tools
 	if len(invalidated) > 0 {

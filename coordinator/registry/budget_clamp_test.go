@@ -278,16 +278,16 @@ func TestBudgetClampKillSwitch(t *testing.T) {
 	}
 }
 
-// SCOPE: the clamp only overrides token-budget admission. A legacy provider
-// whose slot reports no budget keeps the existing protections (pair cooldown
-// at threshold 5) — one 503 must not gate it.
-func TestBudgetClampLegacyBudgetlessProviderNotClamped(t *testing.T) {
+// SCOPE: the clamp only overrides token-budget admission. A slot that reports
+// no budget (e.g. a model whose slot has not reported one yet) keeps the
+// existing protections (pair cooldown at threshold 5) — one 503 must not gate it.
+func TestBudgetClampBudgetlessSlotNotClamped(t *testing.T) {
 	r := New(testLogger())
-	const model = "legacy-model"
-	p := makeSchedulerProvider(t, r, "legacy-box", model, 100) // no ActiveTokenBudgetMax
+	const model = "budgetless-model"
+	p := makeSchedulerProvider(t, r, "budgetless-box", model, 100) // no ActiveTokenBudgetMax
 
 	r.RecordCapacityReject(p.ID, model)
-	if sel, _ := reserveOnce(r, model, "legacy"); sel == nil {
+	if sel, _ := reserveOnce(r, model, "budgetless"); sel == nil {
 		t.Fatal("a budget-less provider must not be admission-gated by a single capacity reject")
 	}
 }
@@ -748,6 +748,11 @@ func TestGrayBoxSelectionShareDropsWithFix(t *testing.T) {
 			sel.RemovePending(rid)
 			r.SetProviderIdle(sel.ID)
 
+			// Once the rate penalty excludes the gray box from the fast band,
+			// it need not win another request for the penalty to be observable.
+			penalty, rate := r.capacityRatePenalty(gray.ID, model, time.Now())
+			sawPenalty = sawPenalty || penalty > 0
+			maxRate = max(maxRate, rate)
 			if sel.ID == gray.ID {
 				if i >= iterations-measureTail {
 					grayTailSelections++
@@ -790,7 +795,7 @@ func TestGrayBoxSelectionShareDropsWithFix(t *testing.T) {
 	t.Run("with fix the gray box loses its monopoly", func(t *testing.T) {
 		share, sawPenalty, maxRate := runScenario(t)
 		if !sawPenalty {
-			t.Fatal("the capacity-503 rate penalty never appeared in a winning decision")
+			t.Fatal("the capacity-503 rate penalty never activated")
 		}
 		if maxRate <= capacityRateThreshold {
 			t.Fatalf("measured reject rate %.2f never exceeded the threshold %.2f", maxRate, capacityRateThreshold)

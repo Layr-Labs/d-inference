@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-27 · commit `aab8f5aec`
+> Last updated: 2026-09-28 · commit `1902940eb`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -72,7 +72,7 @@ causes a reported conflict instead of being overwritten (`stageReplacement`,
 | Coordinator, local | Whatever shell exports `go run ./coordinator/cmd/coordinator` inherits. `EIGENINFERENCE_ALLOW_MEMORY_STORE=true` is the only way to start without a database. |
 | Provider CLI, `darkbloom start --foreground` | The invoking shell's environment, minus the 13 variables scrubbed by `provider-swift/Sources/ProviderCore/Security/EnvironmentScrubber.swift`. Every `DARKBLOOM_*` row below applies. |
 | Provider CLI, installed LaunchAgent | `darkbloom start` writes a launchd plist whose `EnvironmentVariables` come from `LaunchAgent.passthroughEnvironment` in `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`. The allow-list includes `DARKBLOOM_DRAIN_TIMEOUT_SECONDS`, `DARKBLOOM_PREFIX_CACHE`, `DARKBLOOM_PREFIX_CACHE_MEMORY`, `DARKBLOOM_MLX_RESOURCE_DEBUG`, `DARKBLOOM_CBV2_PAGED_KV`, `DARKBLOOM_CBV2_MTP`, `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS`, `DARKBLOOM_KV_BACKEND_GUARD`, `DARKBLOOM_MLX_CACHE_LIMIT_GB`, `DARKBLOOM_MLX_MEMORY_RESERVE_GB`, `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS`, and `DARKBLOOM_PREFILL_DEADLINE_MODE`; `MLX_GATHER_QMM_EXPERT_SLICES` is forwarded only when exactly `1`. `PATH` and the Hugging Face/XDG cache variables are not forwarded. Model-cache selection is config-backed. The watchdog (`provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift`) additionally forwards `DARKBLOOM_NO_UPDATE_CHECK`. |
-| Provider CLI, `provider.toml` | `~/.config/darkbloom/provider.toml` (`ConfigManager` in `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`) is the durable configuration (under `sudo darkbloom report`, the invoking user's copy, found by `ConfigManager.defaultConfigPath(home:)` with the same lookup order, unless `--config` is given); a variable that overrides a config key says so in its Effect cell (`DARKBLOOM_CBV2_PAGED_KV`, `DARKBLOOM_CBV2_MTP`, `DARKBLOOM_MLX_MEMORY_RESERVE_GB`, `DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL`). |
+| Provider CLI, `provider.toml` | `~/.config/darkbloom/provider.toml` (`ConfigManager` in `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`) is the durable configuration and the only path read unless `--config` is given; there is no legacy-location fallback or copy (under `sudo darkbloom report`, the invoking user's `~/.config/darkbloom/provider.toml`, from `ConfigManager.defaultConfigPath(home:)`); a variable that overrides a config key says so in its Effect cell (`DARKBLOOM_CBV2_PAGED_KV`, `DARKBLOOM_CBV2_MTP`, `DARKBLOOM_MLX_MEMORY_RESERVE_GB`, `DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL`). |
 | console-ui | Next.js `.env*` files or the hosting build environment (Vercel-style). Every console-ui variable is `NEXT_PUBLIC_*` or build-tooling: inlined at **build** time, so changing one requires a rebuild. There is no server-only secret; a gitignored `.env.local` in `console-ui/` is the only local file and no `.env.example` exists. |
 | admin-ui | Server-only **runtime** variables read by React Server Components on each request; set them in `.env*` or the host environment. `NODE_ENV` is set by Next. |
 
@@ -145,7 +145,7 @@ causes a reported conflict instead of being overwritten (`stageReplacement`,
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `EIGENINFERENCE_MIN_PROVIDER_VERSION` | semver | unset (no floor) | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/provider.go` | Providers below this version are refused at registration and excluded from routing; surfaced to operators in `/v1/me`. |
+| `EIGENINFERENCE_MIN_PROVIDER_VERSION` | semver | unset (no floor) | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/server.go` (`belowMinProviderVersion`) | Providers below this version stay connected but are excluded from routing at registration, challenge revalidation and manifest sync; while a floor is set, a provider that reports no version counts as below it. Never derived from releases. Surfaced to operators in `/v1/me`. |
 | `EIGENINFERENCE_RELEASE_POLICY_MODE` | `shadow`, `enforce` | `shadow` | `coordinator/cmd/coordinator/main.go` | Whether missing application evidence blocks routing; see [`../operations/release-policy-rollout.md`](../operations/release-policy-rollout.md). |
 | `EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE` | Go duration ≥ 20m (raise-only) | `20m` | `coordinator/cmd/coordinator/main.go` | Boot grace before enforcement bites; shorter values clamp up to 20m. |
 | `EIGENINFERENCE_BINARYHASH_ENFORCE` | `true` | `false` | `coordinator/cmd/coordinator/main.go` (`SetBinaryHashEnforcement`) | Re-enables legacy derouting on a self-reported `binaryHash` mismatch (rollback only). |
@@ -153,6 +153,12 @@ causes a reported conflict instead of being overwritten (`stageReplacement`,
 | `EIGENINFERENCE_KNOWN_TEMPLATE_HASHES` | `name=hash,…`; a repeated name accepts every listed hash | unset | `coordinator/cmd/coordinator/main.go` (`SetRuntimeManifest`) | Replaces the store-built [runtime manifest](../architecture/security/attestation.md#runtime-manifest) at boot; discarded by the next release registration or deactivation, which rebuilds the union from active releases. |
 
 ### Routing, admission and TTFT
+
+First-content ranking is active by default with no mode or percentage setting.
+The 100-ms band, confidence/freshness rules and bounded retry policy are defined
+in [first-content routing](../architecture/first-content-routing.md). Existing
+TTFT shadow metrics remain observational and do not control this selection.
+
 
 Trust floor, model routing and per-request quality:
 
@@ -164,10 +170,10 @@ Trust floor, model routing and per-request quality:
 | `EIGENINFERENCE_MIN_DECODE_TPS` | float ≥ 0 (`0` disables) | `15` | `coordinator/cmd/coordinator/main.go` (`SetMinDecodeTPS`) | Per-request decode floor (tokens/s) used by admission; see [`../architecture/scheduling.md`](../architecture/scheduling.md). |
 | `EIGENINFERENCE_DECODE_FLOOR_USE_FLEET_MEDIAN` | bool | `true` (*live*) | `coordinator/registry/scheduler.go` (`decodeFloorUseFleetMedian`) | Lets the per-request decode projection fall back to the fleet-median solo rate before the static benchmark. |
 | `EIGENINFERENCE_SERVABILITY_GATE` | bool | `true` (*live*) | `coordinator/cmd/coordinator/main.go`; `coordinator/api/servability_gate.go` (`servabilityGateEnabled`) | Early 429 for requests whose prompt + `max_tokens` fit no provider; only an explicit `false` disables it. |
-| `EIGENINFERENCE_LONG_PROMPT_TOKENS` | integer > 0 | unset (preference off) | `coordinator/cmd/coordinator/main.go` (`SetLongPromptThreshold`) | Prompts above this size prefer the fastest provider tier. |
-| `EIGENINFERENCE_LONG_PROMPT_PREFILL_WEIGHT` | float (values below 1 clamp to neutral) | `2.0` | `coordinator/cmd/coordinator/main.go` (`SetLongPromptPrefillWeight`) | Prefill weight applied to long prompts; read only when the threshold is set. |
+| `EIGENINFERENCE_LONG_PROMPT_TOKENS` | integer > 0 | unset (preference off) | `coordinator/cmd/coordinator/main.go` (`SetLongPromptThreshold`) | Threshold for the retained historical cost diagnostic; active first-content selection uses measured forecast work for every prompt size. |
+| `EIGENINFERENCE_LONG_PROMPT_PREFILL_WEIGHT` | float (values below 1 clamp to neutral) | `2.0` | `coordinator/cmd/coordinator/main.go` (`SetLongPromptPrefillWeight`) | Long-prompt weight in the historical cost diagnostic; read only when the threshold is set. Does not widen the first-content band. |
 | `EIGENINFERENCE_PREFILL_DECODE_RATIO` | float > 0 | `12.0` | `coordinator/cmd/coordinator/main.go`; `coordinator/registry/scheduler.go` (`SetPrefillToDecodeRatio`) | Prefill-to-decode speed ratio in the TTFT estimate. |
-| `EIGENINFERENCE_PROMPT_CALIBRATION` | `family:factor,…` (factors ≥ 1.0) | built-in table (`gpt-oss:1.3`) | `coordinator/api/prompt_calibration.go` (`SetPromptContextCalibrationFromEnv`) | Replaces the per-family prompt-token calibration used by the context gate. |
+| `EIGENINFERENCE_PROMPT_CALIBRATION` | `family:factor,…` (factors ≥ 1.0) | built-in table (`gpt-oss:1.3`) | `coordinator/api/prompt_calibration.go` (`SetPromptContextCalibrationFromEnv`) | Replaces per-family prompt-token calibration for the context gate and conservative first-content work; physical and billing estimates remain separate. |
 | `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS` | comma-separated exact account IDs or stored emails | empty (no accounts); provision selected identities in the deployment environment | `coordinator/api/first_content_accounts.go` (`accountHasFirstContentSLA`); `coordinator/api/server_config.go` (`ReadServerConfig`) | Enables the request-absolute SLA only for selected authenticated accounts. Email matching is case-insensitive and uses the stored user, never headers or the service role. Verify the production selector before rollout; a verified account ID avoids dependence on email changes. |
 | `EIGENINFERENCE_MODEL_FIRST_CONTENT_SLAS` | `model=upstream_base_ms:per_input_token_ms,…`; `model=off` removes | Bonsai exact IDs: `10000:5` | `coordinator/modelpolicy/first_content_sla.go` (`SetFirstContentSLAsFromEnv`) | For selected accounts, overrides both SLA terms for exact model IDs; an explicit public alias policy takes precedence over the resolved build. Retains one second of coordinator headroom. Base 1001–600000 ms, slope 0–100 ms/token; invalid/duplicate entries fail startup atomically. Applied after the legacy base table. |
 | `EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES` | `model=upstream_ms,…` (`0`/`off` removes) | built-in table | `coordinator/modelpolicy/first_content_deadline.go` (`SetFirstContentBasesFromEnv`) | Overrides exact-model first-content deadline bases. |
@@ -178,13 +184,13 @@ TTFT admission and dispatch termination:
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `EIGENINFERENCE_TTFT_HARD_REJECT` | `true` | `false` (soft preference) | `coordinator/cmd/coordinator/main.go` (`SetTTFTHardReject`) | Restores the legacy 429 when the best estimated TTFT exceeds the model deadline. |
+| `EIGENINFERENCE_TTFT_HARD_REJECT` | `true` | `false` (soft preference) | `coordinator/cmd/coordinator/main.go` (`SetTTFTHardReject`) | Enables 429 when all eligible candidates have credible conservative first-content forecasts beyond the original remaining deadline; Unknown evidence is not hard rejected. |
 | `EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS` | 1000–120000 | `5000` (production pins `9000`) | `coordinator/cmd/coordinator/main.go` (`validateTTFTDeadlineBaseMs`) | Live first-content deadline base for selected accounts (`FirstContentDeadlineBase`, plus 1 ms per prompt token); legacy base-only policy may tighten it; an explicit model SLA overrides both terms. |
 | `EIGENINFERENCE_TTFT_DEADLINE_BASE_MS` | 1000–120000 | `10000` | `coordinator/cmd/coordinator/main.go`; `coordinator/registry/ttft_shadow.go` | Deadline base for shadow TTFT evaluation. |
 | `EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA` | float 0–1e6 | `0` (term off) | `coordinator/cmd/coordinator/main.go` (`validateTTFTOccupancyAlpha`) | Weight of the occupancy term in the TTFT estimate. |
 | `EIGENINFERENCE_TTFT_ADMISSION_MODE` | `off`, `shadow`, `enforce` | `off` | `coordinator/cmd/coordinator/main.go`; `coordinator/registry/ttft_shadow.go` (`ParseTTFTAdmissionMode`) | Shadow evaluation of TTFT admission that emits `routing.ttft_admission` metrics without changing decisions; `enforce` currently behaves like `shadow`. |
-| `EIGENINFERENCE_TTFT_CALIBRATION` | `off`/`false`/`0` disables | `on` (*live*) | `coordinator/registry/ttft_calibration.go` (`ttftCalibrationEnabled`) | Per-model TTFT calibration from observed samples; off makes the apply path return ratio 1.0. |
-| `EIGENINFERENCE_TTFT_TERMINAL_REJECT` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/api/dispatch.go` (`ttftTerminalRejectEnabled`) | A TTFT-too-slow rejection ends the dispatch ladder on any attempt. |
+| `EIGENINFERENCE_TTFT_CALIBRATION` | `off`/`false`/`0` disables | `on` (*live*) | `coordinator/registry/ttft_calibration.go` (`ttftCalibrationEnabled`) | Historical TTFT diagnostic calibration; off returns ratio 1.0. It does not certify first-content feasibility. |
+| `EIGENINFERENCE_TTFT_TERMINAL_REJECT` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/api/dispatch.go` (`ttftTerminalRejectEnabled`) | Legacy text TTFT refusal handling; typed predictive refusals use the bounded fresh-evidence ladder in `coordinator/api/first_content_retry.go`. |
 | `EIGENINFERENCE_JINJA_TERMINAL_REJECT` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/api/dispatch.go` (`jinjaTerminalRejectEnabled`) | A chat-template render failure ends the ladder with one 422 instead of failing over. |
 
 Queue and cold dispatch:
@@ -192,9 +198,9 @@ Queue and cold dispatch:
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
 | `EIGENINFERENCE_QUEUE_MAX_DEPTH` | integer ≥ 1 | `32` | `coordinator/registry/queue.go` (`NewRequestQueueFromEnv`) | Per-model queue depth before 429. |
-| `EIGENINFERENCE_QUEUE_MAX_WAIT` | Go duration > 0 | `120s` | `coordinator/registry/queue.go` (`NewRequestQueueFromEnv`) | Maximum time a request waits in the queue. |
-| `EIGENINFERENCE_QUEUE_BEFORE_SHED` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/api/cold_dispatch.go` (`queueBeforeShedEnabled`) | Queue `machine_busy` preflight rejections instead of returning 429 immediately. |
-| `EIGENINFERENCE_COLD_DISPATCH` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/api/cold_dispatch.go` (`coldDispatchEnabled`) | Spill `no_provider` requests into the queue when an idle on-disk provider can be warmed, and kick the load. |
+| `EIGENINFERENCE_QUEUE_MAX_WAIT` | Go duration > 0 | `120s` | `coordinator/registry/queue.go` (`NewRequestQueueFromEnv`) | Upper bound on eligible queue waits; a public deadline-bound request also needs credible useful release evidence. |
+| `EIGENINFERENCE_QUEUE_BEFORE_SHED` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/api/cold_dispatch.go` (`queueBeforeShedEnabled`) | Permit `machine_busy` preflight requests to reach dispatch queue policy. Public deadlines still require credible capacity-release evidence; owner/exempt requests retain queue behavior. |
+| `EIGENINFERENCE_COLD_DISPATCH` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/api/cold_dispatch.go` (`coldDispatchEnabled`) | Trigger warming for eligible idle on-disk providers and allow eligible owner/exempt waits; public deadlines still require credible release evidence before waiting. |
 
 Capacity breakers:
 
@@ -264,7 +270,7 @@ Cache-aware routing (semantics in [`../architecture/cache-aware-routing.md`](../
 | `EIGENINFERENCE_CACHE_ROUTING_ALLOWED_ARTIFACTS` | JSON array of exact identity triples; at most 64 KiB / 128 entries | unset (unrestricted eligibility) | `coordinator/registry/cache_artifact_allowlist.go` (`readCacheRoutingArtifacts`, `newCacheArtifactAllowlist`) | Restricts network cache participation before cohort/QPS/sidecar work; `[]` denies all. Invalid configuration refuses startup, including while mode is `off`. |
 | `EIGENINFERENCE_CACHE_ROUTING_PERCENT` | float (0, 100] | `100` | `coordinator/registry/config.go` (`envStrictFloat`) | Share of eligible requests that use cache routing; malformed values refuse startup. |
 | `EIGENINFERENCE_CACHE_ROUTING_MAX_PLAN_QPS` | float 0–1,000,000 | `0` (unlimited) | `coordinator/registry/config.go` (`envStrictFloat`) | Rate limit on cache-plan computation. |
-| `EIGENINFERENCE_CACHE_ROUTING_TTL` | Go duration ≥ 0 | `10m` | `coordinator/registry/config.go` | SSD holder lifetime; resident holders use the smaller of this value and `cacheRoutingMemoryTTL = 30 * time.Second` (`coordinator/registry/cache_tiers.go`, `receiptTTL`). |
+| `EIGENINFERENCE_CACHE_ROUTING_TTL` | Go duration ≥ 0 | `10m` | `coordinator/registry/config.go` | SSD holder lifetime; resident holders use the smaller of this value and `cacheRoutingMemoryTTL = 30 * time.Second` (`coordinator/registry/cache_tiers.go`, `receiptTTL`). The in-memory holder and demand indexes are sized for at most `30m`; a longer value is accepted and logged as a warning at startup (`warnCacheRoutingTTL`). |
 | `EIGENINFERENCE_CACHE_ROUTING_MAX_HOLDERS` | integer 1–32 | `4` | `coordinator/registry/config.go` | Maximum machines per exact content prefix and tier, across provider epochs. |
 | `EIGENINFERENCE_CACHE_ROUTING_MAX_DISCOUNT_MS` | optional float 0–10000 | unset/blank | `coordinator/registry/cache_score_config.go` (`optionalCacheScoreLimit`) | Optional millisecond cap on avoidable-prefill score credit; explicit `0` grants no credit. |
 | `EIGENINFERENCE_CACHE_ROUTING_MAX_COST_FRACTION` | optional float 0–1 | unset/blank | `coordinator/registry/cache_score_config.go` (`optionalCacheScoreLimit`) | Optional cap as a fraction of baseline total cost, alongside the prefill-work bound; explicit `0` grants no credit. |
@@ -463,12 +469,20 @@ The command never moves weights or restarts a provider. Apply a saved change wit
 `darkbloom restart` (or `darkbloom start` if stopped). The CLI reports its selected
 config, not proof that an already-running daemon has adopted a new setting.
 
+The selected cache root also holds `.artifact-writer-locks`, whose persistent
+per-model lock files coordinate downloads, revision activation and
+[`models remove`](../provider/cli-reference.md#darkbloom-models-remove-id).
+They remain outside removed model directories; do not delete them while a
+provider or model command is running. Code:
+`provider-swift/Sources/ProviderCore/Models/ModelArtifactWriteLease.swift`
+(`openDescriptor`).
+
 ### Operator-facing: daemon, paths, updates
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
 | `DARKBLOOM_NO_UPDATE_CHECK` | any value | unset | `provider-swift/Sources/darkbloom/Darkbloom.swift`; `provider-swift/Sources/darkbloom/StartCommand+Modes.swift`; `provider-swift/Sources/darkbloom/WatchdogCommand.swift`; `provider-swift/Sources/ProviderCore/ProviderLoop+AutoUpdate.swift`; forwarded by `provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift` | Skips the startup version banner, the in-daemon auto-update loop, the start-mode check and the watchdog's update check; `scripts/install.sh` sets it for the runtime smoke test. |
-| `DARKBLOOM_AUTH_TOKEN_PATH` | file path | `~/.darkbloom/auth_token` | `provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift` | A nonempty explicit path overrides token lookup and suppresses legacy fallback. Without it, `sudo darkbloom report` reads the invoking user's canonical then legacy credentials without migrating files as root. |
+| `DARKBLOOM_AUTH_TOKEN_PATH` | file path | `~/.darkbloom/auth_token` | `provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift` | A nonempty explicit path replaces the token path. Without it, the token is read only from `~/.darkbloom/auth_token` (for `sudo darkbloom report`, the invoking user's, read-only through `AuthTokenStore.loadReadOnly`); there is no legacy-path fallback. |
 | `DARKBLOOM_LOCAL_DIR` | directory | `~/.darkbloom` | `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift` | Directory for `local_token` and `local.json` (direct mode). |
 | `DARKBLOOM_STATE_FILE` | file path | `~/.darkbloom/daemon-state.json` | `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift` | Daemon state snapshot read by `status`, `doctor` and the watchdog. |
 | `DARKBLOOM_LOADED_MODELS_FILE` | file path | `~/.darkbloom/loaded-models.json` | `provider-swift/Sources/ProviderCore/Service/LoadedModelsStore.swift` | Warm-model journal. |
@@ -601,7 +615,7 @@ Internals and file format: [`ssd-kv-cache.md`](ssd-kv-cache.md).
 | `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL` | affirmative | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` | Allows an in-memory KEK fallback and the isolated test root. Ephemeral ciphertext cannot be reused after process exit. |
 | `DARKBLOOM_PREFIX_CACHE_TEST_ROOT` | directory | unset | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` | Isolated payload root, accepted only with `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL`; normally forces an ephemeral key. |
 | `DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY` | exactly `1` | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` (`forceEphemeralKey`) | Benchmark-only: use the normal persistent KEK path within an accepted test root. Fallback is still possible; the benchmark SPI defaults to requiring actual persistent mode. Not forwarded to LaunchAgents. |
-| `DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS` | seconds ≤ 900 | `900` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Entry time-to-live. |
+| `DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS` | seconds ≤ 1800 | `1800` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Entry time-to-live. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY` | GB/day (`0` unlimited) | `150` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Write-endurance budget. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_MIN_EFFECTIVE_TOKENS` | tokens | `1024` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Smallest prefix worth persisting. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_WINDOW_SIDECAR` | affirmative | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Persists the sliding-window sidecar. |
@@ -655,7 +669,7 @@ variable; its required input and backend are documented in the
 | `MLX_GEMMA4_FUSED_WEIGHTED_UNSORT` | flag | set by the provider | `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift`; `provider-swift/Sources/darkbloom/ServeRuntimePreparer.swift` | Provider-set MLX fused-unsort switch for Gemma 4. |
 | `MLX_GATHER_QMM_EXPERT_SLICES` | `1` (drain) or config-backed `0`/`trust` | `trust` | `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift`; `provider-swift/Sources/ProviderCore/Inference/Engine/PackagedRuntimeSmoke.swift` | Expert-slice route mode; only an exact `1` is persisted into the LaunchAgent plist. |
 | `SUDO_UID` | uid | set by `sudo` | `provider-swift/Sources/darkbloom/Fan/FanServiceManager.swift` | Resolves the invoking user when `darkbloom fan` runs under `sudo`. |
-| `SUDO_USER` | user name | set by `sudo` | `provider-swift/Sources/darkbloom/Diagnostics/ReportAppAttestEvidence.swift` | Under `sudo darkbloom report`, selects the invoking user's state, config and read-only canonical/legacy token lookup instead of root's; explicit config/token overrides retain precedence. |
+| `SUDO_USER` | user name | set by `sudo` | `provider-swift/Sources/darkbloom/Diagnostics/ReportAppAttestEvidence.swift` | Under `sudo darkbloom report`, selects the invoking user's state, config and read-only canonical token lookup instead of root's; explicit config/token overrides retain precedence. |
 | `GITHUB_SHA` | commit | unset | `provider-swift/Sources/ProviderBenchmark/SchedulerPrefillDecisionCLI.swift` | Fallback source SHA in benchmark reports. |
 | `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`, `DYLD_FRAMEWORK_PATH`, `LD_PRELOAD`, `MallocStackLogging`, `MallocStackLoggingNoCompact`, `MallocScribble`, `MallocGuardEdges`, `MallocLogFile`, `MallocErrorAbort`, `NSZombieEnabled`, `OBJC_DEBUG_POOL_ALLOCATION`, `CFNETWORK_DIAGNOSTICS` | — | — | `provider-swift/Sources/ProviderCore/Security/EnvironmentScrubber.swift` | Removed from the daemon's environment at start; reported as the `env_scrubbed` capability. |
 

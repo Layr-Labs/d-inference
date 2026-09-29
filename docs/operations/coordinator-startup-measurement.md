@@ -1,6 +1,6 @@
 # Measure coordinator startup after the old process stops
 
-> Last updated: 2026-09-08 · commit `501320342`
+> Last updated: 2026-09-27 · commit `219df8d38`
 
 Use `scripts/measure-coordinator-startup.py` to observe the interval after the
 old coordinator stops. The preceding drain is outside this measurement. The
@@ -28,7 +28,7 @@ post-stop recovery. It records evidence; it does not authorize or execute a swap
 
 Migrations and new index creation must be prepared separately under the
 [deployment procedure](coordinator-deploy.md#optional-prepare-compatible-migrations-before-draining).
-First-install backfills/indexes can still delay startup; the observer does not
+First-install index builds can still delay startup; the observer does not
 skip them or establish a five-second target in advance.
 
 ## Steps

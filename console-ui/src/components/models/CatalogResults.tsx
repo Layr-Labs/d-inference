@@ -1,7 +1,7 @@
 import type { Model } from "@/lib/api";
 import { CatalogEmpty, CatalogLoading } from "./CatalogState";
 import { ModelRow } from "./ModelRow";
-import type { CatalogPrices } from "./catalog";
+import { catalogPrice, type CatalogPrices } from "./catalog";
 
 interface Props {
   models: Model[];
@@ -29,7 +29,7 @@ export function CatalogResults({ models, hasCatalog, loading, failed, prices, on
         <span>Model</span><span>Context</span><span>Input / 1M</span><span>Output / 1M</span><span />
       </div>
       <ul aria-label="Models" aria-busy={loading}>
-        {models.map((model) => <ModelRow key={model.id} model={model} price={prices.get(model.id)} onChat={onChat} />)}
+        {models.map((model) => <ModelRow key={model.id} model={model} price={catalogPrice(model, prices)} onChat={onChat} />)}
       </ul>
       <p className="mt-5 text-xs leading-relaxed text-text-secondary">Prices in USD per 1 million tokens. A dash means the value is not listed. Select a model name for details.</p>
     </div>

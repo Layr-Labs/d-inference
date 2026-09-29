@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-09-26 · commit `10fb4b7c1`
+> Last updated: 2026-09-28 · commit `2496ac833`
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models and the
@@ -38,7 +38,9 @@ has started, leaves the previous install untouched.
 | `Bundle hash mismatch — refusing to install possibly-tampered binary.` | Tarball SHA-256 ≠ `bundle_hash` | Re-run; a proxy or partial download is the usual cause |
 | `Release bundle is missing required flat verifier files.` | No `bin/darkbloom`, `bin/darkbloom-enclave` or `bin/mlx.metallib` in the tarball | Bad release artifact; report it |
 | `Binary hash mismatch …` / `Metallib hash mismatch …` / `App binary hash mismatch …` / `App releases require binary_hash and metallib_hash.` | Staged file ≠ published hash, or an app release without both hashes | Re-run; if it persists the release record and artifact disagree |
-| `Staged Darkbloom.app does not satisfy the pinned signature requirement.` / `Legacy flat artifact does not satisfy …` | `codesign --verify --deep --strict -R=…` failed against `identifier "io.darkbloom.provider"`, Team `SLDQ2GJ6TL` | Do not install; the artifact is not the signed release |
+| `Release bundle has no Darkbloom.app; flat-only bundles are no longer installable.` | The tarball carries only the flat `bin/` files, as releases before the app bundle did | Install a current release; if `/v1/releases/latest` serves this artifact, report it |
+| `Staged app predates the paged runtime; pre-paged releases are no longer installable.` | The staged `Darkbloom.app` has neither paged runtime code nor its capability marker: a pre-0.8 release artifact | Install the current release; if `/v1/releases/latest` serves this artifact, report it |
+| `Staged Darkbloom.app does not satisfy the pinned signature requirement.` | `codesign --verify --deep --strict -R=…` failed against `identifier "io.darkbloom.provider"`, Team `SLDQ2GJ6TL` | Do not install; the artifact is not the signed release |
 | `Fan-helper CLI capability, marker, and nested helper must be present together.` / `… marker is invalid.` / `Bundled fan helper must be a regular executable …` / `… must have mode 0755.` / `… does not satisfy the pinned helper signature requirement.` | Fan-helper capability triple inconsistent in the staged app | Bad artifact; report it |
 | `Paged-capable staged app is missing its signed capability marker.` / `Staged app advertises paged capability without paged runtime code.` / `Paged runtime capability marker is invalid.` / `… requires exactly one sealed MLXLMCommon pagedattention.metal.` | Paged-kernel marker ⇔ binary ⇔ resource mismatch | Bad artifact; report it |
 | `Packaged App Attest callback runtime smoke failed.` or missing callback marker | The staged callback runtime failed before Metal validation | Keep the existing installed app; retry with a fixed release and report the provider/macOS versions |
@@ -157,7 +159,8 @@ are tabulated in [`cli-reference.md`](./cli-reference.md#runtime-constants).
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `model fit` ✗ / `recent model load` shows admission refused | `ModelLoadAdmission` (`provider-swift/Sources/ProviderCore/Inference/Memory/ModelLoadAdmission.swift`) found less free-for-load memory than the model's padded weights plus headroom ([load gate](../architecture/hardware-support.md#load-gate-modelloadadmission)) | Close other apps; lower `max_model_slots`; pick a smaller quantisation ([hardware requirements](./hardware-requirements.md)) |
+| `model fits in RAM` FAIL / `Cold load blocked (memory)` in status | The live no-eviction load budget is below the scanner's complete model estimate plus activation and minimum-KV serving reserve, and request-time idle eviction cannot close the gap. The nominal `Inference memory` hardware figure is not live free RAM. Status and doctor show both the preload gap and the smaller eviction-aware cold-load gap ([load gate](../architecture/hardware-support.md#load-gate-modelloadadmission)). A busy machine with an active request gets a temporary verdict instead | Free at least the **cold-load** shortfall with margin, rerun `darkbloom doctor`, then `darkbloom restart` to retry preload when enabled; or select a smaller model ([hardware requirements](./hardware-requirements.md)). A request cannot cold-load at the same memory level. |
+| `Preload skipped (no eviction)` in status | The model does not fit alongside the current resident slots. The request-time allowance can fit it by evicting idle models; startup preload deliberately avoids that churn | Keep the current serving set, or free memory if both models should stay resident. |
 | Model missing from `darkbloom models list` | Not in `~/.cache/huggingface/hub`, or filtered by `enabled_models` | `darkbloom models download <id>`; `darkbloom models list --all` |
 | Load fails after a catalog update | New build published for the alias | `darkbloom models remove <id>` then `darkbloom models download <id>` |
 | `Skipping <id>: model_type … has no engine-v2 adapter` | Family not served by CBv2 | Use a supported family; the model is never advertised |

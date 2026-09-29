@@ -205,32 +205,6 @@ func TestCreditDeposit(t *testing.T) {
 	}
 }
 
-func TestIsExternalIDProcessed(t *testing.T) {
-	svc, st := newTestService(t)
-
-	if svc.IsExternalIDProcessed("tx-abc") {
-		t.Fatal("expected not processed")
-	}
-
-	_ = st.CreateBillingSession(&store.BillingSession{
-		ID:            "session-1",
-		AccountID:     "consumer-1",
-		PaymentMethod: "solana",
-		ExternalID:    "tx-abc",
-		Status:        "pending",
-	})
-
-	if svc.IsExternalIDProcessed("tx-abc") {
-		t.Fatal("pending session should not count as processed")
-	}
-
-	_ = st.CompleteBillingSession("session-1")
-
-	if !svc.IsExternalIDProcessed("tx-abc") {
-		t.Fatal("completed session should be processed")
-	}
-}
-
 // --- Store Integration Tests ---
 
 func TestBillingSessionLifecycle(t *testing.T) {

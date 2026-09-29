@@ -1,12 +1,12 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-27 · commit `4ad3034df`
+> Last updated: 2026-09-28 · commit `1902940eb`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
 defaults, the environment variables it forwards to the daemon, and its runtime
 constants, as declared in `provider-swift/Sources/darkbloom/` (`Darkbloom`,
-version `ProviderCore.version` = `0.9.7` in
+version `ProviderCore.version` = `0.9.11` in
 `provider-swift/Sources/ProviderCore/ProviderCore.swift`). For operators; types
 and defaults are the ArgumentParser declarations; `—` means required.
 
@@ -572,12 +572,33 @@ Output includes:
 
 - Provider version and config path.
 - Coordinator URL and backend settings.
+- Startup preload on/off, whether the explicit list or selected models drive
+  it, and the registration timeout.
 - Detected hardware (chip, RAM, GPU cores).
+- `Inference memory` is the nominal hardware budget, **not** live free RAM.
 - Schedule state (active/inactive).
 - Live daemon PID, uptime, trust verdict, and last model-load error.
 - `Memory when idle`: the idle-memory policy in force (`always ready` or
   `free after N idle`). Advertised models without a resident engine are
-  separated into `Startup preload pending` and `Not loaded (loads on request)`.
+  separated into `Startup preload pending`, `Not loaded (loads on request)`,
+  `Preload skipped (no eviction)`, and `Cold load blocked (memory)`. A fresh daemon snapshot reports the no-eviction
+  usable load memory beside a blocked model's scanner estimate, activation +
+  minimum-KV serving reserve, required total and no-eviction shortfall. When
+  request-time eviction still cannot fit the model, the cold-load shortfall
+  (the amount to free) is shown separately. Older or stale snapshots and
+  snapshots taken during active or queued requests, a model load or a reload withhold a
+  definitive verdict. The daemon writes the load transition during startup
+  preload even before its first backend-capacity snapshot.
+  `always ready`
+  retains loaded models but does not override the memory load gate.
+  An eviction-aware allowance distinguishes a preload that preserves resident
+  models from a cold request that can evict idle slots; only the latter earns
+  the `Cold load blocked` label when it still cannot fit.
+  A memory skip also writes a fixed public category to `darkbloom logs`; model
+  loads refused at final admission, allocation recheck, or measured post-load
+  KV headroom, or fleet KV re-slice serviceability use the same warning.
+  Model names and exact load figures remain private there and appear in the owner's
+  live `status` and `doctor` output instead.
 - Per-slot posture: the KV backend each loaded model actually resolved to
   (`paged` / `contiguous`), the selection the config asked for, and whether
   MTP is enabled, active, or enabled-but-inert.
@@ -627,6 +648,23 @@ darkbloom doctor [--strict] [--coordinator <url>] [--support] [--clear-backend-g
 `darkbloom doctor` is read-only except for the subprocess calls used by public
 ProviderCore checks and the explicit `--clear-backend-guard` action
 (`provider-swift/Sources/darkbloom/DoctorCommand.swift`, `runClearBackendGuard`).
+The operator report begins with a readiness summary and the first concrete
+action. A failed model-fit check names the live usable memory, the required
+load budget and their shortfall; it tells the operator to free memory, rerun
+`doctor` and restart to retry preload when enabled. Interactive terminals color section
+headings and PASS/WARN/FAIL markers. Every advertised cold model is checked,
+largest first, so a small fit cannot hide a larger model's failure.
+Pipes, `NO_COLOR`, `CLICOLOR=0`, and
+`TERM=dumb` retain plain text.
+When the daemon's capacity snapshot is fresh, `doctor` uses its paired
+no-eviction usable memory and serving headroom sample; otherwise it falls back to a local read-only memory
+sample and does not claim to know the earlier startup decision.
+An already resident target is reported as resident without pretending it needs another cold
+load. When the fresh daemon reports that idle eviction could fit a cold model,
+`doctor` warns about no-eviction preload instead of claiming request-time
+loading is impossible. On a multi-model Mac, a selected cold model with a
+recent load failure is diagnosed before an unrelated recently used resident
+model, so the model-fit line explains the failure the operator came to check.
 
 Two of the detailed checks cover the KV-backend rollout:
 
@@ -692,9 +730,24 @@ Download a model from the coordinator catalog.
 darkbloom models download <id> [--coordinator <url>] [--r2-cdn <url>]
 ```
 
+If the model's `models--<id>` cache entry is a dangling symlink (for example,
+to an unavailable external drive), downloading preserves it as a hidden sibling
+`.models--<id>.unavailable-link-<UUID>` and creates a real model directory in the
+selected cache. This also applies to downloads from `darkbloom start` and
+background prefetch. Reconnect the drive before downloading if you want to keep
+using its existing model directory. Valid directory symlinks are followed;
+regular files and symlinks to files cause an error and are left intact.
+Code: `provider-swift/Sources/ProviderCore/Models/ModelDownloader+Cache.swift`
+(`prepareModelCacheDirectory`).
+
 ### `darkbloom models remove <id>`
 
-Delete a downloaded model.
+Delete a downloaded model. The command returns a busy error if a download or
+revision update currently owns that model's writer lease; retry after it finishes.
+`--force` skips confirmation and does not bypass the lease. Code:
+`provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift` (`remove`),
+`provider-swift/Sources/ProviderCore/Models/ModelArtifactWriteLease.swift`
+(`acquireIfAvailable`).
 
 ```bash
 darkbloom models remove <id> [--force]
@@ -964,7 +1017,7 @@ darkbloom enroll [--coordinator <url>] [--no-open]
 
 Without a flag, ask whether to fully exit Darkbloom or remove only MDM and keep serving with App Attest. Enter or closed input cancels without changing anything. The App Attest option requires macOS 27 or later and fresh coordinator removal approval; an unsupported/unqualified choice never falls back to cleanup.
 
-Full exit stops the launchd provider and disables its automatic restart before profile-removal guidance and a separate local cleanup confirmation. If a foreground provider is still running, cleanup is refused. The cleanup list includes the current and legacy Secure Enclave signing keys. Model downloads and server-side account history remain intact.
+Full exit stops the launchd provider and disables its automatic restart before profile-removal guidance and a separate local cleanup confirmation. If a foreground provider is still running, cleanup is refused. The cleanup removes the current (v2) Secure Enclave signing key; a leftover v1 keychain item is neither read nor removed. Model downloads and server-side account history remain intact.
 
 If profile inventory needs administrator access, run this command in the foreground of an interactive terminal. `sudo` prompts there with terminal echo disabled; only the fixed, read-only profile inventory command is elevated. A denied prompt, noninteractive session, or background terminal job withholds profile-removal guidance. The command does not remove a profile itself; confirm the exact Darkbloom profile in System Settings. See [`attestation.md`](./attestation.md#app-attest-without-darkbloom-mdm).
 
@@ -1053,10 +1106,10 @@ account, macOS answers `Operation not permitted`. The command reports this and
 still uploads the App Attest snapshot. To include the logs, run it from an
 administrator account, or run `sudo darkbloom report` if this account is allowed
 to use sudo. Under `sudo` it reads the invoking user's daemon state and provider
-config (unless `--config` is given), plus canonical then legacy credentials
-through `AuthTokenStore.loadReadOnly`. It does not migrate config or token files
-as root. An explicit nonempty `DARKBLOOM_AUTH_TOKEN_PATH` overrides that lookup
-and suppresses legacy fallback. See `ReportAppAttestEvidence` in
+config (unless `--config` is given), plus that user's `~/.darkbloom/auth_token`
+through `AuthTokenStore.loadReadOnly`. It writes no config or token file as
+root. An explicit nonempty `DARKBLOOM_AUTH_TOKEN_PATH` replaces that token
+path. See `ReportAppAttestEvidence` in
 `provider-swift/Sources/darkbloom/Diagnostics/`. `--dry-run` prints every appended
 line before anything is uploaded.
 
@@ -1079,9 +1132,9 @@ manual use.
 |---|---|---|
 | Install root | `~/.darkbloom/` | `scripts/install.sh` (`INSTALL_DIR`) |
 | App bundle | `~/.darkbloom/Darkbloom.app`; swapped atomically, backup in `.install-backup-*` during the swap | `scripts/install.sh` (`commit_staged_app`) |
-| CLI symlinks | `~/.darkbloom/bin/darkbloom`, `darkbloom-enclave`, `mlx.metallib` → `../Darkbloom.app/Contents/MacOS/*`; `eigeninference-enclave → darkbloom-enclave`; best-effort `/usr/local/bin/darkbloom` | `scripts/install.sh` |
+| CLI symlinks | `~/.darkbloom/bin/darkbloom`, `darkbloom-enclave`, `mlx.metallib` → `../Darkbloom.app/Contents/MacOS/*`; best-effort `/usr/local/bin/darkbloom` | `scripts/install.sh` |
 | Capability markers | `Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/{paged-kernel-v1,fan-helper-v1}` | `scripts/install.sh` (`verify_staged_app`, `verify_fan_helper_capability`) |
-| Config | `~/.config/darkbloom/provider.toml`; a config at a legacy path is copied here on the next run | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`defaultConfigPath`); `provider-swift/Sources/darkbloom/Darkbloom.swift` (`migrateConfigIfNeeded`) |
+| Config | `~/.config/darkbloom/provider.toml` (or `--config`); retired legacy locations are not read | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`defaultConfigPath`) |
 | Device token | `~/.darkbloom/auth_token` (`DARKBLOOM_AUTH_TOKEN_PATH`) | `provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift` |
 | Local-mode token / discovery | `~/.darkbloom/local_token`, `~/.darkbloom/local.json` (`DARKBLOOM_LOCAL_DIR`), both `0600` | `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift` |
 | Daemon state | `~/.darkbloom/daemon-state.json` (`DARKBLOOM_STATE_FILE`) | `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift` |
@@ -1097,7 +1150,7 @@ manual use.
 | Unified-log subsystem | `dev.darkbloom.provider` | `provider-swift/Sources/darkbloom/LogsCommand.swift` (`Logs.subsystem`) |
 | Model cache | Hugging Face hub layout under the [resolved model cache](../reference/configuration.md#model-cache-location) | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner+CacheDirectory.swift` (`ModelScanner.resolveCache`) |
 | Keychain KEK item | service `io.darkbloom.kv.kek.v1`; access group `SLDQ2GJ6TL.io.darkbloom.provider` (`DARKBLOOM_KEYCHAIN_ACCESS_GROUP`) | `provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift` (`defaultService`); `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift` (`defaultAccessGroup`) |
-| Secure Enclave key labels | `io.darkbloom.provider.attestation-signing.v2`; legacy `…v1` migrated on first use | `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift` (`defaultLabel`, `legacyLabelV1`) |
+| Secure Enclave key label | `io.darkbloom.provider.attestation-signing.v2`; a leftover retired `…v1` item is never read | `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift` (`defaultLabel`) |
 | Apple Team ID | `SLDQ2GJ6TL` (pinned in installer requirements and fan IPC) | `scripts/install.sh`; `provider-swift/Sources/DarkbloomFanProtocol/FanIPC.swift` (`teamID`) |
 | Fan helper files | `/Library/PrivilegedHelperTools/io.darkbloom.fan-helper`, `/Library/LaunchDaemons/io.darkbloom.fan.plist`, `/Library/Application Support/Darkbloom/fan-policy.json`, `…/fan-session.json` | `provider-swift/Sources/DarkbloomFanService/FanServiceConfiguration.swift` |
 
@@ -1128,8 +1181,8 @@ override `provider.toml` for one process, are in
 | `[coordinator] heartbeat_interval_secs` | `5` | Heartbeat; state file refresh is half of it |
 | `[coordinator] private_only` | `false` | Serve only the owner's [self-route](./self-route.md) traffic |
 | `[gemma_optimizations] prefill_layer18`, `weighted_r1` | `true` | See [beta features](./beta-features.md) |
-| `config_version` | written by the CLI | Schema stamp for one-time migrations |
-| `[backend] continuous_batching`, `adaptive_prefill`, `engine_v2`, `legacy_compiled_decode`, `kv_quant` | retired | Parsed for presence only; one startup WARN each (`RetiredCodingKeys`) |
+| `config_version` | retired | Ignored top-level key left by releases up to v0.9.9; no longer written |
+| `[backend] continuous_batching`, `adaptive_prefill`, `engine_v2`, `legacy_compiled_decode`, `kv_quant`, `mtp` | retired | Parsed for presence only; one startup WARN each (`RetiredCodingKeys`). The boolean `mtp` is superseded by `mtp_mode` |
 
 ## LaunchAgent environment passthrough
 

@@ -296,10 +296,11 @@ func runDeferredCommitProvider(ctx context.Context, t *testing.T, conn *websocke
 			writeEncryptedTestChunk(t, ctx, conn, inferReq, pubKey, roleChunk)
 			if fail {
 				errMsg := protocol.InferenceErrorMessage{
-					Type:       protocol.TypeInferenceError,
-					RequestID:  inferReq.RequestID,
-					Error:      "provider crashed after preamble",
-					StatusCode: 500,
+					Type:        protocol.TypeInferenceError,
+					RequestID:   inferReq.RequestID,
+					Error:       "provider crashed after preamble",
+					StatusCode:  500,
+					FailureCode: protocol.FailureCodeGenerationFailure,
 				}
 				errData, _ := json.Marshal(errMsg)
 				if wErr := conn.Write(ctx, websocket.MessageText, errData); wErr != nil {

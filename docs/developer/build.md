@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-26 · commit `002317b97`
+> Last updated: 2026-09-28 · commit `1902940eb`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -46,6 +46,10 @@ Go/Swift fixture and focused checks are described in [test.md](test.md) and
 The `ProviderAppAttest` Swift target uses public DeviceCheck/Security APIs. Its [shadow packaging and live-validation requirements](../reference/app-attest-shadow.md#packaging-and-live-acceptance) are separate from a successful local compile.
 
 Provider signing, R2 staging and publication run in separate jobs in `.github/workflows/release-swift.yml`. `scripts/provider-release-publication.py` stages the final signed bundle under an immutable digest path, retains metadata, and gates publication on coordinator qualification. A staging or publication retry downloads and reuses the original signed artifact and does not rerun compilation or notarization. `scripts/provider_release_github.py` resumes draft/upload state, verifies asset hashes before publishing and never replaces completed mismatched bytes. See [build qualification](../operations/app-attest-build-qualification.md).
+
+The revision publisher accepts optional per-version HF repo, commit and path-prefix flags. It runs the SwiftPM `darkbloom-publish` executable to hash
+artifacts. It also needs Python 3 and the AWS CLI; use the existing pinned tools.
+The [revision runbook](../operations/model-revisions.md) describes its invocation.
 
 ## SDK 27 release builds and caches
 
@@ -247,8 +251,6 @@ lease used after launch. See the [test procedure](test.md#connected-coordinatorp
 
 CI checks formatting of tracked Go source while preserving frozen report
 evidence bytes; see the [coordinator checks](test.md#2-coordinator-go).
-The [provider config cleanup tests](test.md#provider-config-cleanup) run with
-temporary home directories and need no provider build or model.
 
 ```bash
 make coordinator-build            # cd coordinator && go build ./cmd/coordinator
@@ -685,7 +687,9 @@ The private admin queries have PostgreSQL coverage in
 `admin-ui/src/lib/queries/app-attest-diagnostics.test.ts`.
 
 After the optimized provider is packaged with its resources, run
-`Darkbloom.app/Contents/MacOS/darkbloom runtime-smoke`. Require all four markers:
+`DARKBLOOM_NO_UPDATE_CHECK=1 DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18 MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 MLX_GATHER_QMM_EXPERT_SLICES=1 Darkbloom.app/Contents/MacOS/darkbloom runtime-smoke`
+(the child validates retained latches that MLX reads at its first Metal touch,
+so the caller seeds them, exactly as `SelfUpdater` and `install.sh` do). Require all four markers:
 `app-attest-callback-runtime-smoke: ok`, `gemma-optimizations-runtime-smoke: ok`,
 `paged-kernel-runtime-smoke: ok`, and `qwen4-metal-resources-runtime-smoke: ok`. Callback completion and expiry are exercised
 without Apple service calls or a Keychain item. This linked-binary check catches

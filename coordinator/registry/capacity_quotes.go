@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"math"
 	"sync"
 	"time"
 
@@ -38,6 +39,11 @@ type CapacityProbeShape struct {
 	RequiresVision    bool
 	VisionImageCount  int
 	DeadlineRemaining time.Duration
+	// FirstContentDeadline pins the original request clock across writer delay.
+	FirstContentDeadline time.Time
+	// RefreshEvidence permits one new quote for an already quoted entry.
+	RefreshEvidence     bool
+	ExcludedProviderIDs []string
 }
 
 // QuoteOutcome is one probe's settled result, delivered on the channel
@@ -61,6 +67,7 @@ type quoteDelivery struct {
 	quoteID    string
 	providerID string
 	quote      *protocol.CapacityQuoteMessage
+	observedAt time.Time
 }
 
 // pendingQuote is one outstanding probe: the provider binding the quote must
@@ -100,10 +107,10 @@ type quoteTracker struct {
 	sweeps    int
 }
 
-// add registers an outstanding probe. The opportunistic sweep (same idiom as
-// the sibling cooldown maps) drops expired entries whose collector died
-// before its window sweep — a leak only a panicked collector can create,
-// since a live one takes back every silent entry at expiry. The >1024 size
+// add registers an outstanding probe. The opportunistic sweep settles expired
+// entries, including those whose live collector has not run its timer yet.
+// Every map claim includes a delivery, so no collector can wait forever for an
+// entry reclaimed by another owner. The >1024 size
 // trigger merely makes a sweep WORTH considering; the time gate
 // (quoteTrackerSweepInterval) decides whether one actually runs.
 func (t *quoteTracker) add(quoteID string, pq *pendingQuote) {
@@ -120,6 +127,12 @@ func (t *quoteTracker) add(quoteID string, pq *pendingQuote) {
 			for id, e := range t.pending {
 				if now.After(e.expiresAt) {
 					delete(t.pending, id)
+					// A live collector may simply be delayed past expiry.
+					// Claiming its entry must also settle it; otherwise the
+					// collector sees take()==nil and waits for a lost delivery.
+					if e.deliver != nil {
+						e.deliver <- quoteDelivery{quoteID: id, providerID: e.providerID}
+					}
 				}
 			}
 		}
@@ -220,16 +233,16 @@ func (r *Registry) HandleCapacityQuote(providerID string, msg *protocol.Capacity
 		return
 	}
 	delete(t.pending, msg.QuoteID)
-	pq.deliver <- quoteDelivery{quoteID: msg.QuoteID, providerID: providerID, quote: msg}
+	pq.deliver <- quoteDelivery{quoteID: msg.QuoteID, providerID: providerID, quote: msg, observedAt: time.Now()}
 	t.mu.Unlock()
 }
 
-// ProbePlanCandidates fans capacity probes out to every unconsumed, unquoted,
+// ProbePlanCandidates fans capacity probes out to at most two unconsumed, unquoted,
 // quote-capable entry of plan and returns a channel of settled outcomes; the
 // channel closes once every probe has resolved (quote, transport failure, or
 // window expiry). Legacy entries are skipped silently — they stay in the
 // unconfirmed mid tier. Bounded by construction: a plan retains at most
-// dispatchPlanMaxAlternates entries, so the fanout is ≤ 8 sender goroutines
+// dispatchPlanMaxAlternates entries, but fanout is capped at two sender goroutines
 // plus one collector, all panic-guarded via saferun.
 //
 // The collector applies each outcome to the plan itself (affirmative →
@@ -243,8 +256,14 @@ func (r *Registry) HandleCapacityQuote(providerID string, msg *protocol.Capacity
 // The strict control lane is reserved for cancel/attestation/trust — a probe
 // storm there would starve exactly the frames that must never queue.
 func (r *Registry) ProbePlanCandidates(plan *DispatchPlan, shape CapacityProbeShape, window time.Duration) <-chan QuoteOutcome {
-	out := make(chan QuoteOutcome, dispatchPlanMaxAlternates)
+	out := make(chan QuoteOutcome, capacityProbeMaxFanout)
 	targets := plan.probeTargets()
+	if shape.RefreshEvidence {
+		targets = plan.refreshProbeTargets()
+	}
+	if !shape.FirstContentDeadline.IsZero() {
+		window = min(window, time.Until(shape.FirstContentDeadline))
+	}
 	if len(targets) == 0 || window <= 0 {
 		close(out)
 		return out
@@ -255,7 +274,20 @@ func (r *Registry) ProbePlanCandidates(plan *DispatchPlan, shape CapacityProbeSh
 	// attribution. Owned by the collector after fanout; senders never touch it.
 	outstanding := make(map[string]string, len(targets))
 	expiresAt := time.Now().Add(window)
+	if !shape.FirstContentDeadline.IsZero() && shape.FirstContentDeadline.Before(expiresAt) {
+		expiresAt = shape.FirstContentDeadline
+	}
+	excluded := make(map[string]struct{}, len(shape.ExcludedProviderIDs))
+	for _, id := range shape.ExcludedProviderIDs {
+		excluded[id] = struct{}{}
+	}
 	for _, target := range targets {
+		if len(outstanding) == capacityProbeMaxFanout {
+			break
+		}
+		if _, skip := excluded[target.view.ProviderID]; skip {
+			continue
+		}
 		provider := target.provider
 		providerID := target.view.ProviderID
 		if !provider.capacityQuoteReady() {
@@ -267,19 +299,28 @@ func (r *Registry) ProbePlanCandidates(plan *DispatchPlan, shape CapacityProbeSh
 			r.logger.Error("capacity probe id generation failed", "provider_id", providerID, "error", err)
 			continue
 		}
-		payload, err := json.Marshal(&protocol.CapacityProbeMessage{
-			Type:                protocol.TypeCapacityProbe,
-			QuoteID:             quoteID,
-			Model:               shape.Model,
-			PromptTokensBucket:  bucketPromptTokens(shape.PromptTokens),
-			MaxOutputTokens:     shape.MaxOutputTokens,
-			RequiresVision:      shape.RequiresVision,
-			VisionImageCount:    shape.VisionImageCount,
-			DeadlineRemainingMS: max(shape.DeadlineRemaining.Milliseconds(), 0),
-		})
-		if err != nil {
-			r.logger.Error("capacity probe marshal failed", "provider_id", providerID, "error", err)
-			continue
+		buildProbe := func(now time.Time) ([]byte, error) {
+			remaining := shape.DeadlineRemaining
+			if !shape.FirstContentDeadline.IsZero() {
+				remaining = shape.FirstContentDeadline.Sub(now)
+				if remaining <= 0 {
+					return nil, context.DeadlineExceeded
+				}
+			}
+			budgetMS := max(remaining.Milliseconds(), 0)
+			if !shape.FirstContentDeadline.IsZero() {
+				budgetMS = max(budgetMS, 1)
+			}
+			return json.Marshal(&protocol.CapacityProbeMessage{
+				Type:                protocol.TypeCapacityProbe,
+				QuoteID:             quoteID,
+				Model:               shape.Model,
+				PromptTokensBucket:  bucketPromptTokens(shape.PromptTokens),
+				MaxOutputTokens:     shape.MaxOutputTokens,
+				RequiresVision:      shape.RequiresVision,
+				VisionImageCount:    shape.VisionImageCount,
+				DeadlineRemainingMS: budgetMS,
+			})
 		}
 		// Register BEFORE sending so a quote racing the sender's return can
 		// never miss its entry.
@@ -292,9 +333,9 @@ func (r *Registry) ProbePlanCandidates(plan *DispatchPlan, shape CapacityProbeSh
 		saferun.Go(r.logger, "registry.capacityProbeSend", func() {
 			// The write is useless past the quote window — bound it there
 			// rather than letting a wedged data lane hold the goroutine.
-			ctx, cancel := context.WithTimeout(context.Background(), window)
+			ctx, cancel := context.WithDeadline(context.Background(), expiresAt)
 			defer cancel()
-			if writeErr := provider.WriteText(ctx, payload); writeErr != nil {
+			if _, writeErr := provider.WriteTextDeferred(ctx, buildProbe, nil); writeErr != nil {
 				// Queue full / writer stopped / timeout: settle as SendFailed
 				// now IF this probe is still ours to settle (a disconnect may
 				// have claimed it first — take() decides exactly once).
@@ -311,7 +352,7 @@ func (r *Registry) ProbePlanCandidates(plan *DispatchPlan, shape CapacityProbeSh
 
 	saferun.Go(r.logger, "registry.capacityQuoteCollector", func() {
 		defer close(out)
-		timer := time.NewTimer(window)
+		timer := time.NewTimer(max(time.Until(expiresAt), 0))
 		defer timer.Stop()
 		for len(outstanding) > 0 {
 			select {
@@ -347,12 +388,34 @@ func applyQuoteDelivery(plan *DispatchPlan, d quoteDelivery) QuoteOutcome {
 		plan.DemoteEntry(d.providerID)
 		return QuoteOutcome{ProviderID: d.providerID, SendFailed: true}
 	}
-	if d.quote.AdmissibleNow {
-		plan.ConfirmEntry(d.providerID, d.quote)
+	if d.quote.AdmissibleNow && validCapacityQuotePrediction(d.quote) {
+		plan.confirmEntryAt(d.providerID, d.quote, d.observedAt)
 	} else {
 		plan.DemoteEntry(d.providerID)
 	}
 	return QuoteOutcome{ProviderID: d.providerID, Quote: d.quote}
+}
+
+// Quotes describe evidence only. Their predictions must be finite and ordered
+// before they can influence a subsequent reservation or hedge schedule.
+const capacityProbeMaxFanout = 2
+
+func validCapacityQuotePrediction(q *protocol.CapacityQuoteMessage) bool {
+	return q != nil && !math.IsNaN(q.TTFTP50MS) && !math.IsInf(q.TTFTP50MS, 0) &&
+		!math.IsNaN(q.TTFTP90MS) && !math.IsInf(q.TTFTP90MS, 0) &&
+		q.TTFTP50MS >= 0 && q.TTFTP90MS > 0 && q.TTFTP90MS >= q.TTFTP50MS &&
+		q.TTFTP90MS <= float64(time.Hour.Milliseconds())
+}
+
+// refreshProbeTargets retains the current first-content order while allowing a
+// bounded new evidence round. It never consumes a plan entry or reserves work.
+func (dp *DispatchPlan) refreshProbeTargets() []planEntry {
+	if dp == nil {
+		return nil
+	}
+	dp.mu.Lock()
+	defer dp.mu.Unlock()
+	return append([]planEntry(nil), dp.entries[dp.cursor:]...)
 }
 
 // HedgeGovernorSnapshot gathers the registry-side inputs the hedge governor
@@ -378,13 +441,10 @@ func applyQuoteDelivery(plan *DispatchPlan, d quoteDelivery) QuoteOutcome {
 //     public hedge budget;
 //   - capacitySignalsAvailable: at least one live provider serving the model
 //     reports a BackendCapacity snapshot (or has proven quote capability).
-//     The dual-path switch: on a capacity-SILENT fleet (all-legacy, plan
-//     decision 3) the three signals above are structurally zero — the same
-//     shape as genuine saturation — so the governor must be BYPASSED there
-//     (today's unconditional 50% hedge), never consulted. Deliberately looser
-//     than the full gate chain: this is an advisory "are the inputs
-//     meaningful?" bit, not an eligibility decision — reserve-time
-//     revalidation still applies every gate.
+//     Missing signals cannot establish spare feasible capacity, so the API
+//     suppresses insurance work for a capacity-silent fleet. This advisory
+//     bit is deliberately looser than eligibility; reservation revalidates
+//     every gate, current forecast and coordinator-owned pending debit.
 //
 // This is a POINT-IN-TIME advisory snapshot, not a reservation: the governor
 // only ever uses it to SUPPRESS a hedge, and a hedge launched on state that

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-21 · commit `b581bfd21`
+> Last updated: 2026-09-28 · commit `1902940eb`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -210,7 +210,7 @@ replacement and insufficient staging memory also preserve the current owner;
 no model is evicted for this optional upgrade. The readiness loop polls with
 10–15 second jitter and retries unsuccessful staging after five minutes. Failed
 artifact fetches independently back off exponentially with jitter, capped at
-five minutes (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPIdleUpgrade.swift`,
+five minutes (`provider-swift/Sources/ProviderCore/Models/ModelIdleUpgrade.swift`,
 `MTPIdleUpgrade.run`; `provider-swift/Sources/ProviderCore/ProviderLoop+MTPDrain.swift`,
 `waitBeforeMTPUpgradeDrain`, `beginMTPUpgradeDrain`;
 `provider-swift/Sources/ProviderCore/ProviderLoop+MTPUpgrade.swift`, `commitMTPUpgradeIfIdle`;

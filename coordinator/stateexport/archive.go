@@ -38,8 +38,7 @@ type Archiver struct {
 	Snapshotter Snapshotter
 	// TmpDir is where db snapshots are staged. Empty => os.MkdirTemp default.
 	TmpDir string
-	// Logger receives WARN logs (empty archive, step-ca Badger db present). May
-	// be nil.
+	// Logger receives WARN logs. May be nil.
 	Logger *slog.Logger
 }
 
@@ -159,18 +158,6 @@ func (a *Archiver) Stage(ctx context.Context, root string) (*StagedExport, error
 		if d.IsDir() {
 			if d.Name() == "micromdm" {
 				micromdmDir = path
-			}
-			// step-ca's default standalone DB is a Badger DIRECTORY at
-			// step-ca/db/, NOT a *.db file. We deliberately do NOT snapshot it:
-			// step-ca writes are rare (cert issuance) and the CA private keys live
-			// in secrets/+certs/ as copy-safe PEM, so a torn db/ index is
-			// recoverable. Warn the operator so they can quiesce enrollments
-			// during the one-time export.
-			if d.Name() == "db" && filepath.Base(filepath.Dir(path)) == "step-ca" {
-				if staged.logger != nil {
-					staged.logger.Warn("state-export: step-ca Badger db present and is copied file-by-file (no snapshot); quiesce certificate enrollments during the export to avoid a torn index",
-						"path", path)
-				}
 			}
 			return nil
 		}

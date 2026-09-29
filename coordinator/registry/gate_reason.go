@@ -115,6 +115,9 @@ const (
 	SelectionRandom
 	// Stable prefix affinity among otherwise equivalent ordinary candidates.
 	SelectionPrefixAffinity
+	// SelectionCacheCredit: several near-ties, at least one carrying a
+	// positive cache credit; the cheapest credited holder won.
+	SelectionCacheCredit
 	selectionPathCount
 )
 
@@ -125,6 +128,7 @@ var selectionPathNames = [selectionPathCount]string{
 	SelectionTiePending:     "tie_pending",
 	SelectionRandom:         "random",
 	SelectionPrefixAffinity: "prefix_affinity",
+	SelectionCacheCredit:    "cache_credit",
 }
 
 // String returns the snake_case name of the path.
@@ -217,6 +221,9 @@ func ProviderVersionFold(raw string) string {
 // string-header copy of the immutable Provider.ID.
 type CandidateSummary struct {
 	ProviderID string
+	// FirstContent carries the advisory delivery forecast separately from the
+	// historical cost/TTFT diagnostics. It contains no prompt or cache identity.
+	FirstContent FirstContentEstimate
 
 	CostMs, StateMs, QueueMs, PendingMs, BacklogMs, ThisReqMs, HealthMs, CapacityRateMs, CacheDiscountMs float64
 	TTFTMs, EffectiveTPS                                                                                 float64
@@ -245,6 +252,7 @@ func candidateSummaryOf(c *routingCandidate) CandidateSummary {
 	snap := &c.snapshot
 	return CandidateSummary{
 		ProviderID:            c.provider.ID,
+		FirstContent:          c.firstContent,
 		CostMs:                c.costMs,
 		StateMs:               bd.StateMs,
 		QueueMs:               bd.QueueMs,

@@ -1,6 +1,6 @@
 # Deploy the coordinator (production)
 
-> Last updated: 2026-09-26 · commit `002317b97`
+> Last updated: 2026-09-27 · commit `12b6b7901`
 
 Runbook for swapping the production coordinator container on the GCE VM
 `darkbloom-coordinator` to a Cloud-Build image of a reviewed `master` commit,
@@ -15,6 +15,11 @@ App Attest cohort, and mixed-version checks in the
 [0.9.10 rollout order](provider-release.md#0910-rollout-order) before and after
 the container swap. The production operation still requires the approval and
 image/digest preflight below.
+
+The first swap to a coordinator built after v0.9.10 also needs the
+[retired-backfill marker check](#2-pre-swap-checks-vm-and-db) and the
+[provider version floor raise](#raise-the-provider-version-floor-first-deploy-after-v0910)
+before the container swap.
 
 For the remaining coordinator performance upgrade, also follow
 [the Tiers 2 and 3 rollout checks](coordinator-perf-tier23-rollout.md).
@@ -120,6 +125,17 @@ psql "$PROD_DB_URL" -c "select pid, now()-query_start as runtime, state, left(qu
 psql "$PROD_DB_URL" -c "select count(*) as blocked from pg_locks where granted = false;"
 ```
 
+A coordinator built after v0.9.10 refuses to start on a database that holds
+billing, usage or earnings rows but never ran the retired one-shot backfills
+(`checkRetiredBackfills`, see
+[storage](../architecture/storage.md#migrations-run-inside-the-process-at-every-boot)).
+Production ran them; confirm all three markers before the swap (three rows):
+
+```bash
+psql "$PROD_DB_URL" -c "select id, applied_at from schema_migrations where id in
+  ('backfill_withdrawable_balance_v1', 'backfill_usage_totals_v1', 'backfill_earnings_summary_v1');"
+```
+
 On the VM, pull the candidate and prove it is the reviewed commit:
 
 ```bash
@@ -168,51 +184,10 @@ second ordinary coordinator container. Rerun the blocked-query/lock checks and
 verify current serving health after preparation; success is not approval to
 swap.
 
-The earnings-summary migration captures missing-key history once, commits a
-resumable plan, then adds each pending delta and removes it in a short transaction.
-Its repeatable-read snapshot is pinned before the attempted-plan marker commits,
-so settlement during marker creation cannot hide missing historical totals.
-Initial planning uses one additional short-lived database connection for that
-marker, even with a single-connection pool; budget for it before preparation.
-A failed or uncertain marker write aborts preparation.
-Existing `CreditProviderAccount` and `SettleProviderFloorDraw` writers can continue:
-their atomic earning/summary updates coexist with the captured deltas without a
-new writer-lock protocol. Quiesce any old record-only/import writer that lacks
-atomic summary updates. Already inconsistent counters at plan time need explicit
-reconciliation; this migration preserves existing totals rather than guessing.
-The final marker makes subsequent startup avoid the historical scan. If the attempt marker committed but the
-initial planning transaction fails, that marker makes subsequent
-startup fail closed rather than silently replan against newly created partial
-counters. Follow the recovery procedure below; a committed plan's per-key
-progress instead resumes automatically. New
-provider-recovery indexes are built concurrently and checked for validity. An
+New provider-recovery indexes are built concurrently and checked for validity. An
 interrupted build that leaves an invalid index fails closed with its index name;
 repair it under a separate approved operation. Ordinary startup still applies
 schema checks, and this preparation does not prove a five-second handoff.
-
-#### Recover an incomplete initial earnings-summary plan
-
-This recovery is an explicit production database/traffic operation and needs
-operator approval. A failed initial plan intentionally blocks readiness.
-
-1. Quiesce all earnings/summary writers and preserve the failure evidence,
-   `schema_migrations`, `earnings_summary`, `provider_earnings`, and
-   `earnings_summary_backfill_pending` in the team's normal backup process.
-2. Determine whether `prepare_earnings_summary_backfill_v1` committed. If it did,
-   retain the plan and pending rows and rerun the candidate migration command;
-   committed per-key updates are already protected from double application.
-3. If only `attempt_earnings_summary_backfill_v1` exists, diagnose the failed
-   snapshot and reconcile affected account/provider totals against authoritative
-   earning/ledger history and retained pre-migration evidence. Preserve money
-   while excluding base rewards from inference counts/tokens. History retention
-   can make a blind recomputation incorrect; insufficient evidence requires a
-   vetted backup or a separately reviewed accounting repair.
-4. Only after that reconciliation, with writers still quiesced, verify that no
-   final/ready-plan marker or pending plan rows exist. An approved operator may
-   reset the attempted-plan marker and rerun preparation. Do not merely delete
-   that marker while serving, and never discard committed pending deltas.
-5. Verify the final marker, empty pending queue and reconciled totals before
-   resuming writers or proceeding with the separately approved swap.
 
 ### 3. Refresh the env file and capture rollback inputs
 
@@ -262,6 +237,33 @@ sudo cmp /tmp/darkbloom-cache-env.before.sha256 /tmp/darkbloom-cache-env.pre-swa
 sudo grep -Fx 'EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS=9000' /etc/d-inference/env   # production first-content base
 sudo grep '^EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS=' /etc/d-inference/env  # exact account selector; verify against the stored user
 ```
+
+#### Raise the provider version floor (first deploy after v0.9.10)
+
+**Human-only.** Coordinators built after v0.9.10 dropped the routing
+compatibility paths for providers older than 0.9.5 (see `CHANGELOG.md`,
+"coordinator legacy-compat cleanup") and assume nothing below 0.9.5 is
+routable. `EIGENINFERENCE_MIN_PROVIDER_VERSION` is what enforces that, and
+`refresh-env.sh` never changes an existing key, so the live value must be
+raised by hand. `deploy/environments/prod.env` already says `0.9.5`, but it is
+only a reference copy.
+
+1. Take a fleet-version census: in Datadog, graph
+   `d_inference.providers.per_version` by `version` over the last 24 hours.
+   Record in the deploy record how many providers run a version below 0.9.5.
+   They stay connected after the swap but get no traffic.
+2. Once that loss is approved, set the floor to at least `0.9.5`. Do this after
+   `--apply`, so the rollback backup keeps the previous value. If the current
+   floor is already 0.9.5 or higher, skip the edit.
+
+```bash
+sudo grep '^EIGENINFERENCE_MIN_PROVIDER_VERSION=' /etc/d-inference/env        # current floor; skip the edit if >= 0.9.5
+sudo sed -i 's/^EIGENINFERENCE_MIN_PROVIDER_VERSION=.*/EIGENINFERENCE_MIN_PROVIDER_VERSION=0.9.5/' /etc/d-inference/env
+sudo grep -Fx 'EIGENINFERENCE_MIN_PROVIDER_VERSION=0.9.5' /etc/d-inference/env
+```
+
+After the swap, `d_inference.coordinator.min_provider_version_set{min_version:0.9.5}`
+confirms the running floor.
 
 Record the current container's immutable image and persist the rollback state
 root-only, then confirm the running image is the approved rollback target
@@ -348,10 +350,10 @@ psql "$PROD_DB_URL" -c "select date_trunc('minute', created_at) m,
 ## Rollback
 
 Roll back only to the image and env captured in step 3. Never start a
-coordinator older than the `backfill_withdrawable_balance_v1` migration
-(`coordinator/store/postgres_withdrawable_migration.go`): pre-marker binaries
-re-run the historical balance backfill on every start, which is not
-financially safe — for those cases roll **forward** with a patched image.
+coordinator built before the `backfill_withdrawable_balance_v1` marker existed
+(`ac3d934a9`, #557): those binaries re-run the historical balance backfill on
+every start, which is not financially safe — for those cases roll **forward**
+with a patched image.
 
 ```bash
 ROLLBACK_STATE=/var/lib/darkbloom-deploy/rollback-state
@@ -456,6 +458,7 @@ reference copy; editing it changes nothing on the host.
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | No `/health` after 60 s | migration behind an RDS relation lock | `pg_stat_activity` → `pg_terminate_backend(<pid>)`; do not restart the container |
+| Exit at boot with `database holds data that retired backfills never processed` or `balances.withdrawable_micro_usd is missing` | the database never ran a one-shot backfill retired after v0.9.10 (not production, which has all three markers) | roll back to the captured image, which runs the backfills at start, then redeploy the candidate |
 | Fleet drops to `self_signed`; "device not found in MDM" storm | container started without `-v /mnt/disks/userdata:/mnt/disks/userdata` (blank MicroMDM) | Rollback, then redo the swap with the mount |
 | `/v1/models` empty; providers `self_signed` | MicroMDM not running or `MICROMDM_API_KEY` ≠ `EIGENINFERENCE_MDM_API_KEY` | fix the env file, recreate the container |
 | Port conflict / crash loop | a second host-network container is running | `docker ps`; stop the old one first |

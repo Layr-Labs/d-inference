@@ -38,6 +38,18 @@ func (s *PostgresStore) UpsertModelRegistryEntry(entry *ModelRegistryEntry) erro
 }
 
 func (s *PostgresStore) SetModelVersion(entry *ModelRegistryEntry, version *ModelVersion, files []ModelVersionFile) error {
+	return s.setModelVersion(entry, version, files)
+}
+
+func (s *PostgresStore) SetExistingModelVersion(version *ModelVersion, files []ModelVersionFile) error {
+	return s.setModelVersion(nil, version, files)
+}
+
+func (s *PostgresStore) setModelVersion(entry *ModelRegistryEntry, version *ModelVersion, files []ModelVersionFile) error {
+	// Revision publication may be replayed after a committed write returns 503.
+	// Keep the currently stored mirror on that path; full registration retains
+	// its explicit add/change/clear mirror contract.
+	preserveExistingSource := entry == nil
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
@@ -47,6 +59,19 @@ func (s *PostgresStore) SetModelVersion(entry *ModelRegistryEntry, version *Mode
 	}
 	defer tx.Rollback(ctx)
 
+	if entry == nil {
+		// Read metadata under the same row lock used by registration and
+		// promotion. A concurrent metadata edit cannot be overwritten by the
+		// pre-upload HTTP snapshot from the revision publisher.
+		rec, err := scanModelRegistryRecord(tx.QueryRow(ctx, activeModelRegistryQuery+` AND mr.id=$1 FOR UPDATE OF mr`, version.ModelID))
+		if err == pgx.ErrNoRows {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		entry = &rec.ModelRegistryEntry
+	}
 	entryRuntimeParameters, err := marshalMetadata(entry.RuntimeParameters)
 	if err != nil {
 		return err
@@ -69,21 +94,34 @@ func (s *PostgresStore) SetModelVersion(entry *ModelRegistryEntry, version *Mode
 		return fmt.Errorf("store: upsert model in version tx: %w", err)
 	}
 
+	if err := checkImmutableModelFiles(ctx, tx, version.ModelID, version.Version, files); err != nil {
+		return err
+	}
 	versionMetadata, err := marshalMetadata(version.Metadata)
 	if err != nil {
 		return err
 	}
+	// Both paths preserve the publisher and upload time of the immutable bytes.
 	err = tx.QueryRow(ctx, `
 		INSERT INTO model_versions (model_id, version, r2_prefix, aggregate_sha256, total_size_bytes, file_count, status, uploaded_by, uploaded_at, metadata, hugging_face_artifact)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), $9, $10)
 		ON CONFLICT (model_id, version) DO UPDATE SET
 		  r2_prefix = $3, aggregate_sha256 = $4, total_size_bytes = $5, file_count = $6,
-		  status = $7, uploaded_by = $8, metadata = $9, hugging_face_artifact = $10
-		RETURNING id, uploaded_at, promoted_at`,
+		  status = CASE WHEN model_versions.status = 'retired' THEN 'retired' ELSE $7 END,
+		  metadata = $9,
+		  hugging_face_artifact = CASE WHEN $11 THEN model_versions.hugging_face_artifact ELSE EXCLUDED.hugging_face_artifact END
+		WHERE model_versions.aggregate_sha256 = EXCLUDED.aggregate_sha256
+		  AND model_versions.r2_prefix = EXCLUDED.r2_prefix
+		  AND model_versions.total_size_bytes = EXCLUDED.total_size_bytes
+		  AND model_versions.file_count = EXCLUDED.file_count
+		RETURNING id, uploaded_by, uploaded_at, promoted_at, status, hugging_face_artifact`,
 		version.ModelID, version.Version, version.R2Prefix, version.AggregateSHA256,
 		version.TotalSizeBytes, version.FileCount, version.Status, version.UploadedBy,
-		versionMetadata, version.HuggingFaceArtifact).Scan(&version.ID, &version.UploadedAt, &version.PromotedAt)
+		versionMetadata, version.HuggingFaceArtifact, preserveExistingSource).Scan(&version.ID, &version.UploadedBy, &version.UploadedAt, &version.PromotedAt, &version.Status, &version.HuggingFaceArtifact)
 	if err != nil {
+		if err == pgx.ErrNoRows {
+			return ErrModelVersionImmutable
+		}
 		return fmt.Errorf("store: upsert model version: %w", err)
 	}
 
@@ -115,12 +153,27 @@ func (s *PostgresStore) PromoteModelVersion(modelID, version string) error {
 	}
 	defer tx.Rollback(ctx)
 
+	// Promotion and retirement serialize on the same parent row.
+	var lockedModel string
+	if err := tx.QueryRow(ctx, `SELECT id FROM model_registry WHERE id=$1 FOR UPDATE`, modelID).Scan(&lockedModel); err != nil {
+		if err == pgx.ErrNoRows {
+			return fmt.Errorf("model %q: %w", modelID, ErrNotFound)
+		}
+		return err
+	}
 	var versionID int64
-	if err := tx.QueryRow(ctx, `SELECT id FROM model_versions WHERE model_id = $1 AND version = $2`, modelID, version).Scan(&versionID); err != nil {
+	var status string
+	if err := tx.QueryRow(ctx, `SELECT id, status FROM model_versions WHERE model_id = $1 AND version = $2`, modelID, version).Scan(&versionID, &status); err != nil {
 		if err == pgx.ErrNoRows {
 			return fmt.Errorf("model version %q %q not found", modelID, version)
 		}
 		return fmt.Errorf("store: find model version: %w", err)
+	}
+	if status == "retired" {
+		return ErrModelVersionRetired
+	}
+	if status != "ready" {
+		return fmt.Errorf("model version %q %q not found", modelID, version)
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO model_active_versions (model_id, model_version_id, activated_at)
@@ -146,14 +199,6 @@ func (s *PostgresStore) SetModelStatus(modelID, status string) error {
 		return fmt.Errorf("model %q not found", modelID)
 	}
 	return nil
-}
-
-func (s *PostgresStore) ListActiveModelRegistry() []ModelRegistryRecord {
-	records, err := s.ListActiveModelRegistryWithError()
-	if err != nil {
-		return nil
-	}
-	return records
 }
 
 func (s *PostgresStore) ListActiveModelRegistryWithError() ([]ModelRegistryRecord, error) {
@@ -229,29 +274,6 @@ func (s *PostgresStore) GetModelManifest(modelID string) (*ModelManifest, error)
 	return manifestFromRecord(rec), nil
 }
 
-func (s *PostgresStore) UpsertPublishingAPIKey(key *PublishingAPIKey) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO publishing_api_keys (id, name, key_hash, active, created_at, last_used_at)
-		VALUES ($1, $2, $3, $4, COALESCE(NULLIF($5::timestamptz, '0001-01-01 00:00:00+00'::timestamptz), NOW()), $6)
-		ON CONFLICT (id) DO UPDATE SET name = $2, key_hash = $3, active = $4, last_used_at = $6`,
-		key.ID, key.Name, key.KeyHash, key.Active, key.CreatedAt, key.LastUsedAt)
-	if err != nil {
-		return fmt.Errorf("store: upsert publishing API key: %w", err)
-	}
-	return nil
-}
-
-func (s *PostgresStore) FindPublishingAPIKeys() []PublishingAPIKey {
-	keys, err := s.FindPublishingAPIKeysWithError()
-	if err != nil {
-		return nil
-	}
-	return keys
-}
-
 func (s *PostgresStore) FindPublishingAPIKeysWithError() ([]PublishingAPIKey, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -293,7 +315,9 @@ const activeModelRegistryQuery = `
 	       mr.status, mr.description, mr.runtime_parameters, mr.metadata, mr.created_at, mr.updated_at,
 	       mv.id, mv.model_id, mv.version, mv.r2_prefix, mv.aggregate_sha256,
 	       mv.total_size_bytes, mv.file_count, mv.status, mv.uploaded_by,
-	       mv.uploaded_at, mv.promoted_at, mv.metadata, mv.hugging_face_artifact
+	       mv.uploaded_at, mv.promoted_at, mv.metadata, mv.hugging_face_artifact,
+	       COALESCE((SELECT jsonb_agg(to_jsonb(sv) ORDER BY sv.version) FROM model_versions sv
+	                 WHERE sv.model_id = mr.id AND sv.promoted_at IS NOT NULL AND sv.status = 'ready'), '[]'::jsonb)
 	FROM model_registry mr
 	JOIN model_active_versions mav ON mav.model_id = mr.id
 	JOIN model_versions mv ON mv.id = mav.model_version_id
@@ -302,17 +326,20 @@ const activeModelRegistryQuery = `
 func scanModelRegistryRecord(row rowScanner) (*ModelRegistryRecord, error) {
 	var rec ModelRegistryRecord
 	var version ModelVersion
-	var entryRuntimeParameters, entryMetadata, versionMetadata []byte
+	var entryRuntimeParameters, entryMetadata, versionMetadata, servingVersions []byte
 	err := row.Scan(
 		&rec.ID, &rec.DisplayName, &rec.Family, &rec.Architecture, &rec.Quantization, &rec.MaxContextLength,
 		&rec.MaxOutputLength, &rec.MinRAMGB, &rec.Capabilities, &rec.RequiredProviderCapabilities,
 		&rec.Status, &rec.Description, &entryRuntimeParameters, &entryMetadata, &rec.CreatedAt, &rec.UpdatedAt,
 		&version.ID, &version.ModelID, &version.Version, &version.R2Prefix, &version.AggregateSHA256,
 		&version.TotalSizeBytes, &version.FileCount, &version.Status, &version.UploadedBy,
-		&version.UploadedAt, &version.PromotedAt, &versionMetadata, &version.HuggingFaceArtifact,
+		&version.UploadedAt, &version.PromotedAt, &versionMetadata, &version.HuggingFaceArtifact, &servingVersions,
 	)
 	if err != nil {
 		return nil, err
+	}
+	if err := json.Unmarshal(servingVersions, &rec.ServingVersions); err != nil {
+		return nil, fmt.Errorf("store: decode serving model revisions: %w", err)
 	}
 	rec.RuntimeParameters = unmarshalMetadata(entryRuntimeParameters)
 	rec.Metadata = unmarshalMetadata(entryMetadata)

@@ -45,7 +45,11 @@ type Provider struct {
 	ID       string
 	Hardware protocol.Hardware
 	Models   []protocol.ModelInfo
-	Backend  string
+	// CapacityModelIDs is the catalog/capability-accepted inventory used by
+	// the last applied heartbeat to canonicalize warm models and slots.
+	// Guarded by mu; nil until the first applied heartbeat.
+	CapacityModelIDs []string
+	Backend          string
 	// ReportedRuntimeCapabilities is normalized but untrusted Register input.
 	// RuntimeCapabilities remains empty until ReconcileAttestedRuntimeCapabilities
 	// binds that report to signed claims and approved runtime evidence.
@@ -198,11 +202,16 @@ type Provider struct {
 
 	// Live backend capacity from heartbeats (nil for providers without capacity reporting)
 	BackendCapacity *protocol.BackendCapacity
+	// CapacityAcceptedAt advances only when the backend-capacity frame is
+	// applied. Rejected sequence frames advance LastHeartbeat but leave this
+	// owner-diagnostic clock unchanged. Guarded by p.mu.
+	CapacityAcceptedAt time.Time
 
 	// capacitySamplesAt is the coordinator time of the last accepted slot
 	// sample reconciliation. Separate from LastHeartbeat: rejected capacity
 	// frames prove liveness but must not erase elapsed sample age. Guarded by p.mu.
-	capacitySamplesAt time.Time
+	capacitySamplesAt        time.Time
+	firstContentMeasurements map[string]firstContentMeasurement
 
 	// capacitySeq is the highest BackendCapacity.CapacitySeq applied on THIS
 	// connection; capacityQuoteCapable latches true the first time a heartbeat
@@ -236,8 +245,6 @@ type Provider struct {
 	RuntimeManifestChecked  bool   `json:"runtime_manifest_checked"`            // true only when a manifest was present and hashes were verified (fail-closed for text)
 	MetallibVerified        bool   `json:"metallib_verified"`                   // explicit mlx_metallib entry matched the approved runtime manifest
 	EncryptedResponseChunks bool   `json:"encrypted_response_chunks,omitempty"` // true when text response chunks are encrypted to the coordinator
-	PythonHash              string `json:"python_hash,omitempty"`
-	RuntimeHash             string `json:"runtime_hash,omitempty"`
 	TemplateHashes          map[string]string
 
 	// Phase 7: Privacy invariant attestation.
@@ -339,6 +346,7 @@ func (p *Provider) AddPending(pr *PendingRequest) {
 // addPendingLocked registers a pending request. Caller must hold p.mu.
 func (p *Provider) addPendingLocked(pr *PendingRequest) {
 	pr.providerAuthorizationBinding = providerRequestAuthorizationBindingLocked(p)
+	pr.reservedAt = time.Now()
 	p.pendingReqs[pr.RequestID] = pr
 	if p.drainCommitted && p.drainPendingDone == nil {
 		p.drainPendingDone = make(chan struct{})

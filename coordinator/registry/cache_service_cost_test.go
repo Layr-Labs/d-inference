@@ -14,14 +14,14 @@ func serviceCostFixture(prefillTPS float64, queue, pending int) (*Registry, *rou
 	p := &Provider{ID: "warm", PrefixCacheProtocol: 2,
 		PrefixCacheV2Models: map[string]protocol.PrefixCacheV2Capability{"model": capability}}
 	prefill := 10000 / prefillTPS * 1000
-	c := &routingCandidate{provider: p, snapshot: routingSnapshot{prefillTPS: prefillTPS, totalPending: pending},
+	c := &routingCandidate{provider: p, snapshot: routingSnapshot{prefillTPS: prefillTPS, totalPending: pending, backendWaiting: queue},
 		pricedPromptTokens: 10000, prefillCostMs: prefill, effectiveQueue: queue,
 		breakdown: costBreakdown{ThisReqMs: prefill + 2000, QueueMs: float64(queue) * queueDepthPenaltyMs,
 			PendingMs: float64(pending) * totalPendingPenaltyMs}}
 	c.costMs = c.breakdown.ThisReqMs + c.breakdown.QueueMs + c.breakdown.PendingMs
 	c.breakdown.Total = c.costMs
 	hint := cacheRoutingHint{generation: r.cacheRouting.generation, Provider: p, Capability: capability, Tier: "ssd",
-		PrefillTokensSaved: 4096, CachedTokens: 4096, StageMs: 120, EvidenceWeight: 1}
+		PrefillTokensSaved: 4096, CachedTokens: 4096, StageMs: 120, EvidenceWeight: 1, ExpiresAt: time.Now().Add(time.Minute)}
 	return r, c, hint
 }
 
@@ -31,6 +31,7 @@ func applyServiceHint(r *Registry, c *routingCandidate, hint cacheRoutingHint) {
 	r.applyCacheHintLocked(hint, "model", c)
 	c.provider.mu.Unlock()
 	r.mu.RUnlock()
+	r.estimateFirstContent(c, &PendingRequest{EstimatedPromptTokens: c.pricedPromptTokens, RequestedMaxTokens: 128}, time.Now())
 }
 
 func TestCacheServiceCostBalancesQueueAndHardware(t *testing.T) {
@@ -40,13 +41,17 @@ func TestCacheServiceCostBalancesQueueAndHardware(t *testing.T) {
 		queue, pending int
 		wantWarm       bool
 	}{
-		{"modest_queue", 1000, 1, 1, true},
+		{"idle_cache", 1000, 0, 0, true},
+		// Queued prefill outweighs reuse; output reservations are irrelevant.
 		{"large_queue", 1000, 2, 2, false},
-		{"slower_cached_hardware", 500, 0, 0, false},
+		// Cache-adjusted delivery is within the 100 ms fast group.
+		{"slower_cached_hardware_near_tie", 600, 0, 0, true},
+		// Slower prefill remains outside the fast group despite valid reuse.
+		{"slower_cached_hardware", 400, 0, 0, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, warm, hint := serviceCostFixture(tc.rate, tc.queue, tc.pending)
-			cold := mkCandidate("cold", 12000, 0, 0, 0)
+			cold := mkCandidate("cold", 11100, 0, 0, 0)
 			applyServiceHint(r, warm, hint)
 			if warm.breakdown.CacheDiscountMs <= 1000 {
 				t.Fatal("unconfigured fixed cap still clips multi-second savings")

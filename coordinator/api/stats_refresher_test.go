@@ -129,7 +129,7 @@ func newStatsRefresherFixture(t *testing.T) (*Server, *registry.Registry, *count
 	}
 	addProviderForStats(t, reg, "provider-sf", "hardware", sf)
 	for i := 0; i < minRequestsPerCityBucket+2; i++ {
-		mem.RecordUsageWithCostAndLocation("provider-sf", "consumer", "model", "req", 10, 20, 0, nyc)
+		mem.RecordUsage(store.UsageRecord{ProviderID: "provider-sf", ConsumerKey: "consumer", Model: "model", RequestID: "req", PromptTokens: 10, CompletionTokens: 20, RequestLocation: nyc})
 	}
 	srv.refreshStatsGeography()
 	return srv, reg, st

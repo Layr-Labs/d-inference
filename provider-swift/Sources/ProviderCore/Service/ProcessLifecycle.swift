@@ -44,11 +44,9 @@ public enum ProcessLifecycle {
     @discardableResult
     public static func acquireSingleInstanceLock(
         at pidFile: URL = ProcessLifecycle.defaultPIDFile(),
-        terminationGracePeriod: TimeInterval = 2.0,
         stateFile: URL = DaemonStateFile.path()
     ) throws -> URL {
-        _ = terminationGracePeriod // retained for source compatibility, never a kill deadline
-        return try instanceLocks.mutex.withLock {
+        try instanceLocks.mutex.withLock {
             if instanceLocks.held[pidFile] != nil { return pidFile }
             let lock = try UpdateProcessLock.acquire(at: pidFile.appendingPathExtension("lock"), operation: "provider-instance")
             // A live PID alone is not ownership: after a crash the kernel can
@@ -86,14 +84,11 @@ public enum ProcessLifecycle {
     /// later client configuration.
     @discardableResult
     public static func acquireMediaServingLock(
-        at pidFile: URL = ProcessLifecycle.defaultPIDFile(),
-        terminationGracePeriod: TimeInterval = 2.0
+        at pidFile: URL = ProcessLifecycle.defaultPIDFile()
     ) throws -> URL {
         try acquireMediaServingLock(
             acquireLock: {
-                try acquireSingleInstanceLock(
-                    at: pidFile,
-                    terminationGracePeriod: terminationGracePeriod)
+                try acquireSingleInstanceLock(at: pidFile)
             },
             purgeLegacyTelemetryQueue: {
                 TelemetryOverflowQueue.shared.purge()
@@ -204,7 +199,7 @@ public enum ProcessLifecycle {
     public static func restartAfterUpdate(cause: ProviderRunMarker.ExitCause = .update) throws -> Never {
         ProviderProcessRun.finish(cause: cause)
         do {
-            if LaunchAgent.isAnySupportedLabelLoaded() {
+            if LaunchAgent.isLoaded() {
                 // Launchd-managed: kickstart -k kills us and relaunches the
                 // service in place. Issue it, then exit so launchd is free to
                 // bring the new binary up cleanly (it may already have signalled

@@ -30,7 +30,7 @@ struct PrefixCachePolicyTests {
     }
 
     @Test(arguments: [
-        "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+        "Qwen3.5-9B", "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8",
         "EigenLabs/Qwen3.8-27B-4bit-mtp", "gemma-4-26b-qat-4bit", "gpt-oss-20b",
         "nvidia-nemotron-3.5-lightning",
         "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
@@ -57,6 +57,7 @@ struct PrefixCachePolicyTests {
         "gemma-4-26b-qat", "GEMMA-4-26B-QAT-4BIT", "gemma-4-26b-qat-4bit-other",
         "qwen3.5-35b-a3b-other", "QWEN3.5-35B-A3B", " qwen3.5-35b-a3b",
         "qwen3.6-35b-a3b", "EigenLabs/Qwen3.8-27B-4bit",
+        "qwen3.5-9b", "QWEN3.5-9B", "Qwen/Qwen3.5-9B", "Qwen3.5-9B-mtp", " Qwen3.5-9B",
         "nvidia-nemotron-3.5-lightning-other", "NVIDIA-NEMOTRON-3.5-LIGHTNING",
         "nvidia-nemotron-3.5-lightning ", "arbitrary/Nemotron-MTP",
         "prism-ml/Ternary-Bonsai-2-27B-gguf", "prism-ml/Ternary-Bonsai-2-27B",

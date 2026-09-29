@@ -75,8 +75,7 @@ def main():
     }
     env.update(selected_env)
     config = root / "provider.toml"
-    config.write_text(f'''config_version = 3
-[backend]
+    config.write_text(f'''[backend]
 enabled_models = [{json.dumps(args.model)}]
 engine_v2_kv_backend = "{args.kv_backend}"
 engine_v2_max_concurrent = 1

@@ -329,8 +329,7 @@ extension EngineV2Bridge {
 
     /// NON-PRIVATE wedge/engine-health field set — the same shape the
     /// legacy `BatchScheduler.engineHealthFields` emitted (operational
-    /// counters + timestamps only; keys mirrored in the Go/Swift/TS
-    /// telemetry allowlists), tagged `backend=engine_v2`. Shared by the
+    /// counters + timestamps only), tagged `backend=engine_v2`. Shared by the
     /// step-wedge transition events above and the self-restart events
     /// (`EngineV2Bridge+Liveness`).
     func wedgeHealthFields(

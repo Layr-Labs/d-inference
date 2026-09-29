@@ -117,8 +117,14 @@ func (s *Service) startAppAttestShadow(ctx context.Context, provider *registry.P
 	_ = json.Unmarshal(registration.Attestation, &platform)
 	x.osVersion = platform.Attestation.OSVersion
 
-	if registration.AppAttestProtocol != 1 && registration.AppAttestProtocol != 2 && registration.AppAttestProtocol != 3 {
-
+	// Only protocol 3 is served. It shipped in v0.9.4 together with the
+	// callback-timer fix; protocol 2 shipped only in the unsafe v0.9.3,
+	// protocol 1 was never released, and older providers send none. A
+	// provider that announces an older protocol is a straggler to upgrade.
+	if registration.AppAttestProtocol != 3 {
+		if registration.AppAttestProtocol != 0 {
+			x.observe("rollout", "provider_upgrade_required", nil)
+		}
 		return nil
 	}
 	if s.config.Environment != "production" && s.config.Environment != "development" || s.config.AppID == "" {
@@ -153,14 +159,12 @@ func (s *Service) startAppAttestShadow(ctx context.Context, provider *registry.P
 			return
 		}
 		x.observe("registration", "observed", nil)
-		if decision := appAttestRolloutDecision(x.version, x.account, inventory.snapshot().ID, s.config.RolloutPercent); decision != "enabled" {
+		if decision := appAttestRolloutDecision(x.account, inventory.snapshot().ID, s.config.RolloutPercent); decision != "enabled" {
 			x.observe("rollout", decision, nil)
 			return
 		}
-		if x.protocolVersion >= 2 {
-			owner := sha256.Sum256([]byte("machine-owner-v1:" + x.account + ":" + inventory.snapshot().ID))
-			x.owner = hex.EncodeToString(owner[:])
-		}
+		owner := sha256.Sum256([]byte("machine-owner-v1:" + x.account + ":" + inventory.snapshot().ID))
+		x.owner = hex.EncodeToString(owner[:])
 		x.run(ctx)
 	})
 	s.sendAppAttestAuthorizationStatus(provider)

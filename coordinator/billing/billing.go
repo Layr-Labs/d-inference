@@ -128,12 +128,6 @@ func (s *Service) SupportedMethods() []PaymentMethodInfo {
 	return methods
 }
 
-// IsExternalIDProcessed checks the database for whether a tx signature has
-// already been credited. Survives coordinator restarts.
-func (s *Service) IsExternalIDProcessed(externalID string) bool {
-	return s.store.IsExternalIDProcessed(externalID)
-}
-
 // CreditDeposit credits a consumer's balance after a verified deposit.
 func (s *Service) CreditDeposit(accountID string, amountMicroUSD int64, entryType store.LedgerEntryType, reference string) error {
 	return s.store.Credit(accountID, amountMicroUSD, entryType, reference)

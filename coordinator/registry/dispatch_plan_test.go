@@ -6,16 +6,25 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
-// planTestProvider registers a token-budget provider whose routing cost is
-// dominated by its ActiveTokenBudgetUsed backlog (observed 80 tok/s →
-// 12.5 ms/token), so `used` steps of 400 tokens produce 5,000 ms cost gaps —
-// wider than nearTieCostWindowMs (3,000 ms) — making winner and plan order
-// fully deterministic under map iteration randomness.
+// planTestProvider varies first-decode work independently from physical output
+// commitments. Each 400-token fixture step adds 400 ms to first content, beyond
+// the 100-ms selection band, so retained identities are deterministic.
 func planTestProvider(t *testing.T, reg *Registry, id, model string, usedTokens int64) *Provider {
 	t.Helper()
-	return makeTokenBudgetProvider(t, reg, id, model, 100, usedTokens, 1_000_000, 80)
+	decode := 1000 / (12.5 + float64(usedTokens))
+	p := makeTokenBudgetProvider(t, reg, id, model, 100, usedTokens, 1_000_000, decode)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := time.Now()
+	p.CapacityAcceptedAt = now
+	p.firstContentMeasurements = map[string]firstContentMeasurement{model: {rate: 1200, observedAfter: now, decodeObservedAfter: now}}
+	zero, initialized, rate := int64(0), true, 1200.0
+	p.BackendCapacity.Slots[0].Telemetry = &protocol.SlotTelemetry{QueuedPrefillTokens: &zero, PartialPrefillRows: &zero, IsolatedPrefillTPS: &rate, EWMAInitialized: &initialized}
+	return p
 }
 
 func planTestRequest(id string, prompt, maxTok int) *PendingRequest {
@@ -90,10 +99,15 @@ func TestDispatchPlanAggregateCountsDescribeFullPool(t *testing.T) {
 	makeTokenBudgetProvider(t, reg, "full", model, 100, 100_000, 100_000, 80)
 	// TTFT-rejected: decode 1 tok/s → prefill fallback 12 tok/s → ~42 s
 	// estimated TTFT, far over the 5 s ceiling (admissible, not feasible).
-	makeTokenBudgetProvider(t, reg, "slow", model, 1, 0, 100_000, 1)
+	slow := planTestProvider(t, reg, "slow", model, 0)
+	slow.mu.Lock()
+	slow.PrefillTPS = 12
+	slow.BackendCapacity.Slots[0].ObservedDecodeTPS = 1
+	slow.mu.Unlock()
 
 	pr := planTestRequest("plan-counts", 500, 256)
-	pr.MaxTTFTMs = 5_000
+	pr.MaxTTFTMs = 60_000
+	pr.FirstContentDeadline = time.Now().Add(time.Minute)
 	p, decision, plan := reg.ReserveProviderWithPlan(model, pr)
 	if p == nil || plan == nil {
 		t.Fatalf("reservation failed: decision=%+v", decision)
@@ -305,7 +319,8 @@ func TestConcurrentPlanReservationsCannotExceedAdmission(t *testing.T) {
 	// deterministic primary even with one pending (3,750 ms, outside the
 	// 3,000 ms near-tie window).
 	pA := planTestProvider(t, reg, "pA", model, 0)
-	makeTokenBudgetProvider(t, reg, "pB", model, 100, 560, 4_000, 80)
+	pB := makeTokenBudgetProvider(t, reg, "pB", model, 100, 560, 4_000, 80)
+	pB.PrefillTPS = 200 // Keep pA preferred on delivered-content work even after its first reservation.
 
 	pr1 := planTestRequest("c1", 1_000, 1_500)
 	p1, _, plan1 := reg.ReserveProviderWithPlan(model, pr1)

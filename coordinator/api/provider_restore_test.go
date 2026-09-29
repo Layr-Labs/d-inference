@@ -19,9 +19,6 @@ type restoreTrackingStore struct {
 	lookups int
 }
 
-func (s *restoreTrackingStore) ListProviderRecords(context.Context) ([]store.ProviderRecord, error) {
-	panic("startup must not scan all historical providers")
-}
 func (s *restoreTrackingStore) GetProviderForRestore(ctx context.Context, serial, key string, exclude []string) (*store.ProviderRecord, error) {
 	s.lookups++
 	return s.Store.GetProviderForRestore(ctx, serial, key, exclude)

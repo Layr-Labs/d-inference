@@ -48,8 +48,6 @@ type registerReleaseRequest struct {
 	BinaryHash                    string `json:"binary_hash"`
 	BundleHash                    string `json:"bundle_hash"`
 	MetallibHash                  string `json:"metallib_hash,omitempty"`
-	PythonHash                    string `json:"python_hash,omitempty"`
-	RuntimeHash                   string `json:"runtime_hash,omitempty"`
 	TemplateHashes                string `json:"template_hashes,omitempty"`
 	URL                           string `json:"url"`
 	Changelog                     string `json:"changelog"`
@@ -63,8 +61,6 @@ func (req registerReleaseRequest) toRelease() store.Release {
 		BinaryHash:     req.BinaryHash,
 		BundleHash:     req.BundleHash,
 		MetallibHash:   req.MetallibHash,
-		PythonHash:     req.PythonHash,
-		RuntimeHash:    req.RuntimeHash,
 		TemplateHashes: req.TemplateHashes,
 		URL:            req.URL,
 		Changelog:      req.Changelog,
@@ -187,8 +183,6 @@ func (s *Server) validateReleaseMetadata(release *store.Release) error {
 	release.BinaryHash = strings.TrimSpace(release.BinaryHash)
 	release.BundleHash = strings.TrimSpace(release.BundleHash)
 	release.MetallibHash = strings.TrimSpace(release.MetallibHash)
-	release.PythonHash = strings.TrimSpace(release.PythonHash)
-	release.RuntimeHash = strings.TrimSpace(release.RuntimeHash)
 	release.TemplateHashes = strings.TrimSpace(release.TemplateHashes)
 	release.URL = strings.TrimSpace(release.URL)
 
@@ -219,16 +213,6 @@ func (s *Server) validateReleaseMetadata(release *store.Release) error {
 	}
 	if release.Backend == "mlx-swift" && release.MetallibHash == "" {
 		return fmt.Errorf("metallib_hash is required for mlx-swift releases")
-	}
-	if release.PythonHash != "" {
-		if release.PythonHash, err = normalizeSHA256Hex(release.PythonHash, "python_hash"); err != nil {
-			return err
-		}
-	}
-	if release.RuntimeHash != "" {
-		if release.RuntimeHash, err = normalizeSHA256Hex(release.RuntimeHash, "runtime_hash"); err != nil {
-			return err
-		}
 	}
 	if release.TemplateHashes != "" {
 		if release.TemplateHashes, err = normalizeTemplateHashes(release.TemplateHashes); err != nil {

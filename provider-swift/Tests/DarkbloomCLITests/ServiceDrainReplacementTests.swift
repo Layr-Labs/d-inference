@@ -182,7 +182,7 @@ struct LifecycleRecoveryRollbackTests {
         #expect(try ConfigManager.load(from: fixture.configPath).backend.enabledModels == ["replacement"])
         // The config lease is gone before waiting: unrelated operator writes
         // remain possible even while the published provider drain is fenced.
-        try setIdleUnloadMinutes(45, configPath: fixture.configPath.path, migrateOnDisk: false)
+        try setIdleUnloadMinutes(45, configPath: fixture.configPath.path)
         try fixture.mailbox.writeStatus(.init(requestID: fixture.request.id, outcome: .timedOut, remaining: 1))
         await #expect(throws: (any Error).self) {
             try await ServiceDrain.wait(request: fixture.request, mailbox: fixture.mailbox)
@@ -210,8 +210,8 @@ struct LifecycleRecoveryRollbackTests {
                 let lockError = errno
                 if result == 0 { _ = flock(fd, LOCK_UN) }
                 attemptedLock.signal()
-                try setIdleUnloadMinutes(45, configPath: fixture.configPath.path, migrateOnDisk: false)
-                try setBetaFeature("mtp", enabled: false, configPath: fixture.configPath.path, migrateOnDisk: false)
+                try setIdleUnloadMinutes(45, configPath: fixture.configPath.path)
+                try setBetaFeature("mtp", enabled: false, configPath: fixture.configPath.path)
                 completion.yield((result, lockError))
                 completion.finish()
             } catch {
@@ -257,8 +257,8 @@ struct LifecycleRecoveryRollbackTests {
         defer { close(fd) }
         try #require(flock(fd, LOCK_EX | LOCK_NB) == 0, "No lease may span the coordinator wait")
         _ = flock(fd, LOCK_UN)
-        try setIdleUnloadMinutes(45, configPath: fixture.configPath.path, migrateOnDisk: false)
-        try setBetaFeature("mtp", enabled: false, configPath: fixture.configPath.path, migrateOnDisk: false)
+        try setIdleUnloadMinutes(45, configPath: fixture.configPath.path)
+        try setBetaFeature("mtp", enabled: false, configPath: fixture.configPath.path)
         try withExclusiveConfigLock(at: fixture.configPath) {
             let content = try String(contentsOf: fixture.configPath, encoding: .utf8)
             try (content + "\n[operator_metadata]\nnote = '''enabled_models = [\"not-a-selection\"]'''\n")

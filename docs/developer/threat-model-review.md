@@ -89,7 +89,11 @@ targets are never followed. PR source is never checked out or executed.
 trusted-base `docs/threat-model.yaml` in every request. Each response must acknowledge
 all submitted units. A separate integration pass examines the batch analyses and
 findings for interactions across files; large analysis sets are reduced through
-additional integration passes without dropping batches. Candidate findings pass through integration review for validation and consolidation;
+additional integration passes without dropping batches. An unchanged summary count
+still advances when its serialized size shrinks, allowing
+the next pass to combine summaries. Equal-sized or growing same-count results stop
+as incomplete; the shared scan deadline also bounds repeated reductions.
+Candidate findings pass through integration review for validation and consolidation;
 unsupported candidates and duplicates are removed. Finding references may cite any
 ID defined by a canonical block-list `id` field, including assets (`A-*`), adversaries
 (`ADV-*`), boundaries (`TB-*`), threats (`T-*`) and security findings (`SEC-*`).

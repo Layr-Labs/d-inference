@@ -150,6 +150,38 @@ class ScanTests(unittest.TestCase):
         findings, _, _ = review(fixtures.THREAT, fixtures.FILES, "key", transport=transport)
         self.assertFalse(findings)
 
+    def test_same_count_smaller_summaries_get_another_integration_pass(self):
+        file = dict(fixtures.FILES[0], source_complete=True, patch="", base_text="",
+                    head_text="safe\n" * 16000)
+        verbose = [dict(fixtures.FINDING, title=f"Candidate {i}", detail="x" * 1600) for i in range(24)]
+        calls = []
+        def transport(url, key, body):
+            request = json.loads(body["messages"][1]["content"])
+            calls.append((request["stage"], len(request["units"])))
+            findings = verbose if request["stage"] == "source" else [fixtures.FINDING]
+            return fixtures.completion(findings, body=body)
+        findings, _, limits = review(fixtures.THREAT, [file], "key", transport=transport)
+        self.assertEqual(findings, [fixtures.FINDING])
+        self.assertFalse(limits)
+        self.assertEqual(len([stage for stage, _ in calls if stage == "source"]), 2)
+        self.assertEqual([count for stage, count in calls if stage == "integration"], [1, 1, 2])
+
+    def test_same_count_nonshrinking_summaries_stop_as_incomplete(self):
+        file = dict(fixtures.FILES[0], source_complete=True, patch="", base_text="",
+                    head_text="safe\n" * 16000)
+        for grows in (False, True):
+            with self.subTest(grows=grows):
+                calls = []
+                def transport(url, key, body):
+                    request = json.loads(body["messages"][1]["content"])
+                    calls.append(request["stage"])
+                    detail = "x" * (1600 if grows and request["stage"] == "integration" else 1599)
+                    findings = [dict(fixtures.FINDING, title=f"Candidate {i}", detail=detail) for i in range(24)]
+                    return fixtures.completion(findings, body=body)
+                with self.assertRaisesRegex(ReviewUnavailable, "cannot be reduced"):
+                    review(fixtures.THREAT, [file], "key", transport=transport)
+                self.assertEqual(calls, ["source", "source", "integration", "integration"])
+
     def test_skipped_unit_or_late_batch_failure_never_returns_clean(self):
         for mode in ("missing", "late-failure"):
             calls = []

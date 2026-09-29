@@ -85,7 +85,13 @@ def scan(records, evidence, threat_model, key, model, transport):
         # Even one source batch gets a dedicated cross-file pass. All analyses
         # and findings are carried forward; none are silently truncated.
         if stage == "integration" and len(summaries) >= len(pending):
-            raise ReviewUnavailable("Integration context cannot be reduced; scan incomplete")
+            # Separate large summaries may shrink without reducing unit count.
+            # Use the same encoded-size measure as batches so the next pass can
+            # combine them; equal-sized rewrites or growth are not progress.
+            before = sum(len(json.dumps(item)) for item in pending)
+            after = sum(len(json.dumps(item)) for item in summaries)
+            if after >= before:
+                raise ReviewUnavailable("Integration context cannot be reduced; scan incomplete")
         pending, stage = summaries, "integration"
     unique = {}
     for finding in summaries[0]["findings"]:

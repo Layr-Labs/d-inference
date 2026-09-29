@@ -7,10 +7,10 @@ import ProviderCore
 /// Start picker demand ranking: signal, tiers, labels, ordering, the nil-demand
 /// fallback, and a replay of recorded 2026-09-28T14:00Z `/v1/models/capacity`
 /// and `/v1/pricing` responses.
-@Suite("Start picker demand ranking (StartCommand+PickerDemand)")
+@Suite("Start picker demand ranking (StartCommand+PickerDemand)", .serialized)
 struct PickerDemandTests {
 
-    // MARK: - T9 fixtures: recorded 2026-09-28T14:00Z /v1/models/capacity + /v1/pricing (trimmed)
+    // MARK: - Fixtures: recorded 2026-09-28T14:00Z /v1/models/capacity + /v1/pricing (trimmed)
 
     private static let fixtureCapacityJSON: Data = """
         {
@@ -188,17 +188,17 @@ struct PickerDemandTests {
             coldProviders: cold)
     }
 
-    // MARK: - T1: signal = active / max(1, warm+cold) * output_price
+    // MARK: - Signal formula: active / max(1, warm+cold) * output_price
 
-    @Test("T1: signal equals active / max(1, warm+cold) * output_price")
-    func t1SignalFormula() {
+    @Test("signal equals active / max(1, warm+cold) * output_price")
+    func signalFormula() {
         // 10 active / (3 warm + 2 cold) * 2.0 price == 4.0
         let d = demand(active: 10, running: 4, warm: 3, cold: 2)
         #expect(Start.pickerDemandSignal(d, outputPrice: 2.0) == 4.0)
     }
 
-    @Test("T1: zero holders (warm+cold == 0) does not divide by zero")
-    func t1ZeroHoldersNoDivideByZero() {
+    @Test("zero holders (warm+cold == 0) does not divide by zero")
+    func zeroHoldersNoDivideByZero() {
         // max(1, 0) == 1, so signal is active * price, not a crash/NaN/inf.
         let d = demand(active: 7, running: 1, warm: 0, cold: 0)
         let signal = Start.pickerDemandSignal(d, outputPrice: 3.0)
@@ -206,10 +206,10 @@ struct PickerDemandTests {
         #expect(signal.isFinite)
     }
 
-    // MARK: - T2: tier cutoffs at 50% / 10% of the top signal
+    // MARK: - Tier cutoffs at 50% / 10% of the top signal
 
-    @Test("T2: 50% of top is high, 10% of top is medium, above 0 is low (exact boundaries)")
-    func t2TierCutoffBoundaries() {
+    @Test("50% of top is high, 10% of top is medium, above 0 is low (exact boundaries)")
+    func tierCutoffBoundaries() {
         // warm=1, cold=0, price=1.0 for every model, so signal == activeRequests exactly.
         let snapshot = Start.PickerDemandSnapshot(
             demandByModelID: [
@@ -228,10 +228,10 @@ struct PickerDemandTests {
         #expect(tiers["low"] == .low, "above 0 but below the medium cutoff is low")
     }
 
-    // MARK: - T3: zero traffic overrides price
+    // MARK: - Zero traffic overrides price
 
-    @Test("T3: active == 0 && running == 0 is 'no traffic right now' regardless of price")
-    func t3ZeroTrafficRegardlessOfPrice() {
+    @Test("active == 0 && running == 0 is 'no traffic right now' regardless of price")
+    func zeroTrafficRegardlessOfPrice() {
         let snapshot = Start.PickerDemandSnapshot(
             demandByModelID: [
                 "top": demand(active: 10, running: 5, warm: 1, cold: 0),
@@ -246,10 +246,10 @@ struct PickerDemandTests {
         #expect(tiers["top"] == .high)
     }
 
-    // MARK: - T4: missing from capacity is "unknown", and sorts after known models
+    // MARK: - Missing from capacity is "unknown", and sorts after known models
 
-    @Test("T4: a model absent from the snapshot's demandByModelID is demand: unknown")
-    func t4UnknownTierForMissingModel() {
+    @Test("a model absent from the snapshot's demandByModelID is demand: unknown")
+    func unknownTierForMissingModel() {
         let snapshot = Start.PickerDemandSnapshot(
             demandByModelID: ["known": demand(active: 5, running: 2, warm: 1, cold: 0)],
             outputPriceByModelID: ["known": 1.0]
@@ -260,8 +260,8 @@ struct PickerDemandTests {
         #expect(tiers["missing"] == .unknown)
     }
 
-    @Test("T4: an unknown-tier entry sorts after known entries in its section, even when much bigger")
-    func t4UnknownSortsAfterKnownRegardlessOfSize() {
+    @Test("an unknown-tier entry sorts after known entries in its section, even when much bigger")
+    func unknownSortsAfterKnownRegardlessOfSize() {
         let knownModel = model("org/known-small", sizeGb: 5)
         let unknownModel = model("org/unknown-big", sizeGb: 100)
         let snapshot = Start.PickerDemandSnapshot(
@@ -284,10 +284,10 @@ struct PickerDemandTests {
         #expect(entries[1].demandTier == .unknown)
     }
 
-    // MARK: - T5: sort — downloaded before not-downloaded, then signal desc, then size desc
+    // MARK: - Sort: downloaded before not-downloaded, then signal desc, then size desc
 
-    @Test("T5: downloaded before not-downloaded; within each section, signal desc then size desc")
-    func t5SortBySignalThenSize() {
+    @Test("downloaded before not-downloaded; within each section, signal desc then size desc")
+    func sortBySignalThenSize() {
         let dlHigh = model("org/dl-high", sizeGb: 8)
         let dlTieBig = model("org/dl-tie-big", sizeGb: 30)
         let dlTieSmall = model("org/dl-tie-small", sizeGb: 10)
@@ -329,10 +329,10 @@ struct PickerDemandTests {
         ])
     }
 
-    // MARK: - T6: pre-select lands on the higher-signal downloaded+fitting entry, even when smaller
+    // MARK: - Pre-select lands on the higher-signal downloaded+fitting entry, even when smaller
 
-    @Test("T6: the higher-signal downloaded+fitting entry sorts first even when it's the smaller model")
-    func t6HigherSignalDownloadedEntryFirstEvenWhenSmaller() {
+    @Test("the higher-signal downloaded+fitting entry sorts first even when it's the smaller model")
+    func higherSignalDownloadedEntryFirstEvenWhenSmaller() {
         let bigLowSignal = model("org/big-low-signal", sizeGb: 30)
         let smallHighSignal = model("org/small-high-signal", sizeGb: 5)
 
@@ -368,10 +368,10 @@ struct PickerDemandTests {
             "the pre-selected model must be smaller than the lower-signal alternative")
     }
 
-    // MARK: - T7: capacity/pricing fetch failure falls back to today's behavior exactly
+    // MARK: - Capacity/pricing fetch failure falls back to the size-only order with no labels exactly
 
-    @Test("T7: demand: nil is byte-identical to omitting the demand parameter (today's order, no labels)")
-    func t7NilDemandMatchesTodaysBehavior() {
+    @Test("demand: nil is byte-identical to omitting the demand parameter (the size-only order with no labels)")
+    func nilDemandMatchesSizeOnlyOrder() {
         let a = model("org/a-small-dl", sizeGb: 4, minRamGb: 8)
         let b = model("org/b-big-dl", sizeGb: 40, minRamGb: 8)
         let c = model("org/c-avail", sizeGb: 20, minRamGb: 8)
@@ -398,15 +398,15 @@ struct PickerDemandTests {
         #expect(withoutDemandParam.allSatisfy { $0.demandTier == nil }, "no demand data means no label")
     }
 
-    @Test("T7: parsePickerDemandSnapshot returns nil when the capacity JSON fails to decode")
-    func t7MalformedCapacityJSONReturnsNil() {
+    @Test("parsePickerDemandSnapshot returns nil when the capacity JSON fails to decode")
+    func malformedCapacityJSONReturnsNil() {
         let badCapacity = "not json".data(using: .utf8)!
         let goodPricing = #"{"prices":[{"model":"m","input_price":1,"output_price":2}]}"#.data(using: .utf8)!
         #expect(Start.parsePickerDemandSnapshot(capacityJSON: badCapacity, pricingJSON: goodPricing) == nil)
     }
 
-    @Test("T7: parsePickerDemandSnapshot returns nil when the pricing JSON fails to decode")
-    func t7MalformedPricingJSONReturnsNil() {
+    @Test("parsePickerDemandSnapshot returns nil when the pricing JSON fails to decode")
+    func malformedPricingJSONReturnsNil() {
         let goodCapacity = """
             {"models":[{"id":"m","active_requests":1,"running_providers":1,"warm_providers":1,"cold_providers":0,"queued_requests":0}]}
             """.data(using: .utf8)!
@@ -414,7 +414,7 @@ struct PickerDemandTests {
         #expect(Start.parsePickerDemandSnapshot(capacityJSON: goodCapacity, pricingJSON: badPricing) == nil)
     }
 
-    // MARK: - T8: row labels
+    // MARK: - Row labels
     //
     // The fallback (non-TTY) picker's row rendering (`fallbackPicker` in
     // StartCommand+Picker.swift) prints directly to stdout via `print(...)` inside an
@@ -424,8 +424,8 @@ struct PickerDemandTests {
     // STDOUT_FILENO from inside `runModelPicker`). This test covers `pickerDemandLabel`,
     // the pure function both call sites use for row text; both pickers render the same
     // `entries` ordering.
-    @Test("T8: pickerDemandLabel renders the five row labels")
-    func t8DemandLabels() {
+    @Test("pickerDemandLabel renders the five row labels")
+    func demandLabels() {
         #expect(Start.pickerDemandLabel(.high) == "demand: high")
         #expect(Start.pickerDemandLabel(.medium) == "demand: medium")
         #expect(Start.pickerDemandLabel(.low) == "demand: low")
@@ -433,9 +433,9 @@ struct PickerDemandTests {
         #expect(Start.pickerDemandLabel(.unknown) == "demand: unknown")
     }
 
-    // MARK: - T9: replay of recorded 2026-09-28T14:00Z capacity + pricing fixtures
+    // MARK: - Replay of recorded 2026-09-28T14:00Z capacity + pricing fixtures
 
-    private static let t9RowsWithoutQwen38 = [
+    private static let fixtureRowsWithoutQwen38 = [
         ("Qwen3.5-9B", 5.5),
         ("gpt-oss-20b", 12.0),
         ("nvidia-nemotron-3.5-lightning", 20.0),
@@ -446,13 +446,13 @@ struct PickerDemandTests {
         ("qwen3.5-35b-a3b", 20.0),
     ]
 
-    @Test("T9: fixture replay without Qwen3.8 (non-M5 Mac) -- exact order and tiers")
-    func t9FixtureWithoutQwen38() throws {
+    @Test("fixture replay without Qwen3.8 (non-M5 Mac) -- exact order and tiers")
+    func fixtureReplayWithoutQwen38() throws {
         let snapshot = try #require(
             Start.parsePickerDemandSnapshot(
                 capacityJSON: Self.fixtureCapacityJSON, pricingJSON: Self.fixturePricingJSON))
 
-        let rows = Self.t9RowsWithoutQwen38.map { row(model($0.0, sizeGb: $0.1)) }
+        let rows = Self.fixtureRowsWithoutQwen38.map { row(model($0.0, sizeGb: $0.1)) }
 
         let entries = Start.buildPickerEntries(
             rows: rows,
@@ -487,13 +487,13 @@ struct PickerDemandTests {
         #expect(tierByID["gemma-4-26b-8bit"] == .noTrafficNow)
     }
 
-    @Test("T9: fixture replay with Qwen3.8 listed (M5 Mac) -- Qwen3.8 high, gemma-4-26b-8bit no traffic, all others low")
-    func t9FixtureWithQwen38() throws {
+    @Test("fixture replay with Qwen3.8 listed (M5 Mac) -- Qwen3.8 high, gemma-4-26b-8bit no traffic, all others low")
+    func fixtureReplayWithQwen38() throws {
         let snapshot = try #require(
             Start.parsePickerDemandSnapshot(
                 capacityJSON: Self.fixtureCapacityJSON, pricingJSON: Self.fixturePricingJSON))
 
-        let rows = Self.t9RowsWithoutQwen38.map { row(model($0.0, sizeGb: $0.1)) }
+        let rows = Self.fixtureRowsWithoutQwen38.map { row(model($0.0, sizeGb: $0.1)) }
             + [row(model("EigenLabs/Qwen3.8-27B-4bit-mtp", sizeGb: 15.0))]
 
         let entries = Start.buildPickerEntries(
@@ -505,9 +505,9 @@ struct PickerDemandTests {
             demand: snapshot
         )
 
-        // Order follows Objective #4 (signal desc, then size desc) even within the "low"
-        // tier; the spec's T9 row states the tiers explicitly and this is their
-        // consequence under that same general sort rule already covered by T5.
+        // The signal-desc-then-size-desc sort rule applies within the "low" tier
+        // too, not just between tiers; the expected tiers below follow directly
+        // from that rule for this fixture.
         #expect(entries.map(\.id) == [
             "EigenLabs/Qwen3.8-27B-4bit-mtp",
             "gemma-4-26b-qat-4bit",
@@ -525,8 +525,130 @@ struct PickerDemandTests {
 
         #expect(tierByID["EigenLabs/Qwen3.8-27B-4bit-mtp"] == .high)
         #expect(tierByID["gemma-4-26b-8bit"] == .noTrafficNow)
-        for id in Self.t9RowsWithoutQwen38.map(\.0) where id != "gemma-4-26b-8bit" {
+        for id in Self.fixtureRowsWithoutQwen38.map(\.0) where id != "gemma-4-26b-8bit" {
             #expect(tierByID[id] == .low, "\(id) must drop to low once Qwen3.8 raises the top signal")
         }
     }
+
+    // MARK: - fetchPickerDemandSnapshot failure paths (stubbed transport, no real network)
+    //
+    // Each test builds its own `URLSessionConfiguration.ephemeral` with
+    // `PickerDemandFetchURLProtocol` registered and passes the resulting
+    // `URLSession` through `fetchPickerDemandSnapshot`'s `urlSession`
+    // parameter, so nothing here touches the network. The suite is marked
+    // `.serialized` (see the `@Suite` attribute above) because the stub's
+    // response fixtures live in `nonisolated(unsafe) static var`s shared by
+    // every test in this file, mirroring the stub pattern in
+    // `ProviderCoreTests/Models/ModelCatalogTests.swift`.
+
+    @Test("fetchPickerDemandSnapshot returns nil when the capacity endpoint responds 500")
+    func fetchReturnsNilOnCapacityServerError() async {
+        PickerDemandFetchURLProtocol.capacityStatusCode = 500
+        PickerDemandFetchURLProtocol.capacityBody = Self.fixtureCapacityJSON
+        PickerDemandFetchURLProtocol.pricingStatusCode = 200
+        PickerDemandFetchURLProtocol.pricingBody = Self.fixturePricingJSON
+        PickerDemandFetchURLProtocol.failWithError = nil
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [PickerDemandFetchURLProtocol.self]
+        let session = URLSession(configuration: config)
+
+        let snapshot = await Start.fetchPickerDemandSnapshot(
+            coordinatorURL: "wss://picker-demand-fixture.example/ws/provider",
+            urlSession: session)
+
+        #expect(snapshot == nil)
+    }
+
+    @Test("fetchPickerDemandSnapshot returns nil when the transport fails with a URLError")
+    func fetchReturnsNilOnTransportError() async {
+        PickerDemandFetchURLProtocol.capacityStatusCode = 200
+        PickerDemandFetchURLProtocol.capacityBody = Self.fixtureCapacityJSON
+        PickerDemandFetchURLProtocol.pricingStatusCode = 200
+        PickerDemandFetchURLProtocol.pricingBody = Self.fixturePricingJSON
+        PickerDemandFetchURLProtocol.failWithError = URLError(.notConnectedToInternet)
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [PickerDemandFetchURLProtocol.self]
+        let session = URLSession(configuration: config)
+
+        let snapshot = await Start.fetchPickerDemandSnapshot(
+            coordinatorURL: "wss://picker-demand-fixture.example/ws/provider",
+            urlSession: session)
+
+        #expect(snapshot == nil)
+    }
+
+    @Test("fetchPickerDemandSnapshot returns the parsed snapshot when both endpoints succeed")
+    func fetchReturnsSnapshotOnSuccess() async throws {
+        PickerDemandFetchURLProtocol.capacityStatusCode = 200
+        PickerDemandFetchURLProtocol.capacityBody = Self.fixtureCapacityJSON
+        PickerDemandFetchURLProtocol.pricingStatusCode = 200
+        PickerDemandFetchURLProtocol.pricingBody = Self.fixturePricingJSON
+        PickerDemandFetchURLProtocol.failWithError = nil
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [PickerDemandFetchURLProtocol.self]
+        let session = URLSession(configuration: config)
+
+        let snapshot = try #require(
+            await Start.fetchPickerDemandSnapshot(
+                coordinatorURL: "wss://picker-demand-fixture.example/ws/provider",
+                urlSession: session))
+
+        let expected = try #require(
+            Start.parsePickerDemandSnapshot(
+                capacityJSON: Self.fixtureCapacityJSON, pricingJSON: Self.fixturePricingJSON))
+        #expect(snapshot == expected)
+    }
+}
+
+/// Stub transport for `fetchPickerDemandSnapshot`'s `urlSession` parameter.
+/// Routes on the request path so the two concurrent GETs
+/// (`/v1/models/capacity`, `/v1/pricing`) can be answered independently;
+/// `failWithError`, when set, fails every request instead (models an
+/// unreachable coordinator). Registered per test via
+/// `URLSessionConfiguration.protocolClasses`, never on `.shared`, so it never
+/// intercepts real network traffic.
+private final class PickerDemandFetchURLProtocol: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var capacityBody = Data()
+    nonisolated(unsafe) static var capacityStatusCode = 200
+    nonisolated(unsafe) static var pricingBody = Data()
+    nonisolated(unsafe) static var pricingStatusCode = 200
+    nonisolated(unsafe) static var failWithError: URLError?
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        if let failure = Self.failWithError {
+            client?.urlProtocol(self, didFailWithError: failure)
+            return
+        }
+        let body: Data
+        let statusCode: Int
+        switch url.path {
+        case "/v1/models/capacity":
+            body = Self.capacityBody
+            statusCode = Self.capacityStatusCode
+        case "/v1/pricing":
+            body = Self.pricingBody
+            statusCode = Self.pricingStatusCode
+        default:
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        let response = HTTPURLResponse(
+            url: url, statusCode: statusCode, httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Length": "\(body.count)"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }

@@ -54,8 +54,9 @@ extension Start {
     /// - `demand` is an optional live capacity/pricing snapshot (see
     ///   `StartCommand+PickerDemand.swift`). When nil (no fetch attempted, or
     ///   the fetch failed/timed out), sort and output are byte-identical to
-    ///   omitting the parameter -- today's downloaded-first/larger-first order,
-    ///   no `demandTier` on any entry. When present, each entry's `demandTier`
+    ///   omitting the parameter -- the size-only order with no labels
+    ///   (downloaded-first/larger-first order, no `demandTier` on any entry).
+    ///   When present, each entry's `demandTier`
     ///   is filled in and the sort becomes downloaded-first, then within each
     ///   section by demand signal descending, then size descending; a model
     ///   missing from the snapshot sorts after every known model in its section.
@@ -319,9 +320,10 @@ extension Start {
             return ModelDownloader.hasResumableStaging(modelID: row.model.id, r2Prefix: prefix) ? row.model.id : nil
         })
 
-        // Rank the picker by what each model earns per Mac right now. A
-        // slow/unreachable coordinator falls back to nil, which reproduces
-        // today's picker exactly (StartCommand+PickerDemand.swift).
+        // Rank the picker by live requests in flight per holding Mac, times
+        // output price. A slow/unreachable coordinator falls back to nil,
+        // which reproduces the size-only order with no labels exactly
+        // (StartCommand+PickerDemand.swift).
         let demand = await Start.fetchPickerDemandSnapshot(coordinatorURL: coordinatorURL)
 
         let entries = Start.buildPickerEntries(

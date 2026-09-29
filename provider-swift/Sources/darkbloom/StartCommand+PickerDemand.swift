@@ -2,8 +2,8 @@
 // per-model demand signal and tier, and label picker rows with it. Pure
 // functions (signal, tiers, label, parsing) live here so the ranking is
 // unit-testable; the network fetch is the only IO and returns nil on any
-// failure so a slow/unreachable coordinator falls back to today's picker
-// exactly.
+// failure so a slow/unreachable coordinator falls back to the size-only
+// order with no labels.
 import Foundation
 import ProviderCore
 
@@ -18,7 +18,7 @@ extension Start {
         let coldProviders: Int
     }
 
-    /// Demand label shown on a picker row (spec Objective #3).
+    /// Demand label shown on a picker row.
     enum PickerDemandTier: Equatable, Sendable {
         case high
         case medium
@@ -36,8 +36,8 @@ extension Start {
     // MARK: - Pure ranking
 
     /// `signal = active_requests / max(1, warm_providers + cold_providers) *
-    /// output_price` (spec Objective #2). Zero holders is clamped to 1 rather
-    /// than dividing by zero.
+    /// output_price`. Zero holders is clamped to 1 rather than dividing by
+    /// zero.
     static func pickerDemandSignal(_ demand: PickerModelDemand, outputPrice: Double) -> Double {
         let holders = demand.warmProviders + demand.coldProviders
         return Double(demand.activeRequests) / Double(max(1, holders)) * outputPrice
@@ -58,8 +58,8 @@ extension Start {
     }
 
     /// Per-model demand tier for `modelIDs`, relative to the highest signal
-    /// among those same IDs (spec Objective #3). A model absent from the
-    /// snapshot is `.unknown`; `active_requests == 0 && running_providers ==
+    /// among those same IDs. A model absent from the snapshot is `.unknown`;
+    /// `active_requests == 0 && running_providers ==
     /// 0` is always `.noTrafficNow` regardless of price. A present model with
     /// signal 0 that is not "no traffic right now" (running providers with no
     /// active requests, or a missing price) still reads `.low`, not
@@ -139,7 +139,7 @@ extension Start {
 
     /// Decode `/v1/models/capacity` + `/v1/pricing` bodies into a snapshot.
     /// Returns nil if either body fails to decode, so callers can fall back
-    /// to today's picker without a demand label (T7).
+    /// to the size-only order with no labels.
     static func parsePickerDemandSnapshot(capacityJSON: Data, pricingJSON: Data) -> PickerDemandSnapshot? {
         let decoder = JSONDecoder()
         guard
@@ -171,7 +171,7 @@ extension Start {
     /// slow or unreachable coordinator adds about 3 s, not 6, before falling
     /// back. Returns nil on any network error, non-2xx status, or decode
     /// failure -- callers pass that straight through as `demand: nil`, which
-    /// reproduces today's picker exactly (T7).
+    /// reproduces the size-only order with no labels exactly.
     static func fetchPickerDemandSnapshot(
         coordinatorURL: String,
         urlSession: URLSession = .shared

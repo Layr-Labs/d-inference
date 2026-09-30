@@ -47,7 +47,8 @@ extension EngineV2Bridge {
     func firstTokenDeadlineAdmission(
         deadline: FirstContentDeadline?,
         multimodal: CBv2MultimodalInput?,
-        requestID: String? = nil, promptTokens: Int = 0, promptWork: PromptWork? = nil
+        requestID: String? = nil, promptTokens: Int = 0, promptWork: PromptWork? = nil,
+        nativeMediaEvidence: NativeMediaRateEvidence? = nil
     ) throws -> CBv2FirstTokenDeadlineAdmission? {
         guard prefillDeadlineMode == .enforce, prefillDeadlineProjectionEnabled,
             deadline != nil else { return nil }
@@ -61,12 +62,14 @@ extension EngineV2Bridge {
         // fallback to ordinary submission after identifying a native seal.
         _ = try nativeMiMoDecodedMediaBinding()
         return targetFirstTokenDeadlineAdmission(deadline: deadline, requestID: requestID,
-            promptTokens: promptTokens, promptWork: promptWork, nativeMedia: true)
+            promptTokens: promptTokens, promptWork: promptWork, nativeMedia: true,
+            nativeMediaEvidence: nativeMediaEvidence)
     }
 
     private func targetFirstTokenDeadlineAdmission(
         deadline: FirstContentDeadline?,
-        requestID: String?, promptTokens: Int, promptWork: PromptWork?, nativeMedia: Bool = false
+        requestID: String?, promptTokens: Int, promptWork: PromptWork?, nativeMedia: Bool = false,
+        nativeMediaEvidence: NativeMediaRateEvidence? = nil
     ) -> CBv2FirstTokenDeadlineAdmission? {
         guard prefillDeadlineMode == .enforce,
             prefillDeadlineProjectionEnabled,
@@ -96,7 +99,8 @@ extension EngineV2Bridge {
             conservativeDecodeTokensPerSecond: decodeRate,
             calibration: calibration,
             nativeTargetPrefill: nativeMedia
-                ? nativeMediaDeadlinePolicy(requestID: requestID, promptTokens: promptTokens) : nil)
+                ? nativeMediaDeadlinePolicy(requestID: requestID, promptTokens: promptTokens,
+                    evidence: nativeMediaEvidence) : nil)
     }
 
     /// Move post-commit cancellation cleanup out of the cancelling task. The

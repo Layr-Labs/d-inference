@@ -306,7 +306,7 @@ public actor EngineV2Bridge {
     var isolatedPrefillEwmaInitialized = false
     var nativeMediaPrefillRates = NativeMediaPrefillRates()
     var nativeMediaBootstrapRequestID: String?
-    var nativeMediaBootstrapLearned = false
+    var nativeMediaLearnedRequestIDs: Set<String> = []
     var nextNativeMediaBootstrapAt: ContinuousClock.Instant?
     /// Cold-start model load time (ms) for this slot, recorded by
     /// `ProviderLoop.ensureModelLoaded` once the load completes (the

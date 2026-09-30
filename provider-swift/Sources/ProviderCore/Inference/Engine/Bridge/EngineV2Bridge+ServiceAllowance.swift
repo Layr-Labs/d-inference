@@ -83,10 +83,11 @@ extension EngineV2Bridge {
     /// Call only at refused pre-submit cleanup or completed engine retirement.
     /// The stream's terminal alone does not prove device resources retired.
     func releaseServiceAllowance(requestID: String) {
+        if nativeMediaLearnedRequestIDs.remove(requestID) != nil {
+            nextNativeMediaBootstrapAt = nil
+        }
         if nativeMediaBootstrapRequestID == requestID {
-            if nativeMediaBootstrapLearned { nextNativeMediaBootstrapAt = nil }
             nativeMediaBootstrapRequestID = nil
-            nativeMediaBootstrapLearned = false
         }
         serviceBudget?.release(ownerID: serviceOwnerPrefix + ":" + requestID)
     }

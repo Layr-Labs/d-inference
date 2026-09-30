@@ -118,7 +118,7 @@ struct EngineDeadlineRetirementBridgeTests {
 extension EngineV2Bridge {
     func markNativeBootstrapOwnerForRetirementTest(_ id: String) {
         nativeMediaBootstrapRequestID = id
-        nativeMediaBootstrapLearned = true
+        nativeMediaLearnedRequestIDs.insert(id)
         nextNativeMediaBootstrapAt = .now + .seconds(120)
     }
 }

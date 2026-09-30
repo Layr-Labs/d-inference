@@ -215,8 +215,10 @@ Only cold, unpacked, non-preempted target-prefill intervals with exclusive
 whole-Mac ownership and an unchanged nominal AC/Automatic posture enter it.
 Media encoder preparation and failed native drains invalidate isolated evidence.
 
-`EngineV2Bridge+MiMoDeadline.swift` captures a fresh whole-Mac guard and passes
-the incoming target's observation to the SDK. The SDK prices any pre-existing
+Submission captures one whole-Mac/posture snapshot shared by the prefill receipt
+and `EngineV2Bridge+MiMoDeadline.swift`; a missing snapshot cannot be upgraded
+between those consumers. The latter passes the incoming target's observation
+to the SDK. The SDK prices any pre-existing
 prefill at its original rate and any decode at its own rate. Missing, expired,
 out-of-range or invalidated media evidence is not replaced by a text prediction.
 These runtime observations do not populate the reviewed calibration catalog.
@@ -227,7 +229,8 @@ physical capacity, exactly one scheduler row, no in-flight step, no decode or
 mixed work, no adopted prefix, and the live whole-Mac guard. The provider allows
 at most one such request until actual retirement. Failed or ineligible attempts
 back off for 120 seconds per engine; an eligible target-prefill sample releases
-that backoff only at retirement, so new shapes can build a fresh observed range.
+that backoff only at its owner's retirement, including an eligible ordinary
+request with no first-content deadline, so new shapes can build a fresh range.
 Busy, unowned, stale-posture or cooldown cases keep a capacity refusal;
 no deadline, memory, cancellation or trust check is disabled. The explicit SDK
 `unmeasuredNativeMedia` result records bounded work with unknown service time,

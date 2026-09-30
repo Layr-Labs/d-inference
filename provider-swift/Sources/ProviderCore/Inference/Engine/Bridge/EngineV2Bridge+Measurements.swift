@@ -44,9 +44,10 @@ extension EngineV2Bridge {
                 usage.timing.packedPrefillChunks == 0,
                 let epoch = sample.nativeMediaRateEpoch,
                 serviceBudget?.currentDeadlineRateEpoch() == epoch {
-                if nativeMediaPrefillRates.observe(tokens: work, rate: tps, epoch: epoch, at: sample.at),
-                    nativeMediaBootstrapRequestID == id {
-                    nativeMediaBootstrapLearned = true
+                if nativeMediaPrefillRates.observe(tokens: work, rate: tps, epoch: epoch, at: sample.at) {
+                    // An ordinary/exempt request can supply eligible evidence
+                    // after a failed bootstrap. Its own retirement owns the reset.
+                    nativeMediaLearnedRequestIDs.insert(id)
                 }
             }
             return

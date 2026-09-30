@@ -66,7 +66,7 @@ enum MiMoV26EncodedMediaIngress {
         if let failure = error as? MiMoV26EncodedAudioDecoder.Failure {
             switch failure {
             case .limit,.arithmeticOverflow: return MediaIngest.MediaError.mediaTooLarge("native audio input bound")
-            default: return MultiModelBatchSchedulerEngineError.multimodalRejected("unsupported or malformed mono24k WAV input")
+            default: return MultiModelBatchSchedulerEngineError.multimodalRejected("unsupported or malformed PCM WAV input")
             }
         }
         if let failure = error as? MiMoV26EncodedAudiovisualDecoder.Failure {
@@ -171,7 +171,7 @@ enum MiMoV26EncodedMediaIngress {
                               let payload = audio["data"] as? String,
                               let spelling = audio["format"] as? String,
                               let format = OpenAIInputAudio.Format(rawValue:spelling), format == .wav else {
-                            throw MultiModelBatchSchedulerEngineError.multimodalRejected("only mono24k WAV input is enabled")
+                            throw MultiModelBatchSchedulerEngineError.multimodalRejected("only PCM WAV input is enabled")
                         }
                         mediaCount += 1
                         guard mediaCount <= policy.limits.maximumMedia else { throw refusal() }
@@ -210,7 +210,7 @@ enum MiMoV26EncodedMediaIngress {
         let audiovisualLimits = MiMoV26EncodedAudiovisualDecoder.Limits(
             maximumFrames:native.audio.maximumInputSamples, maximumWorkingBytes:working,
             maximumBuffers:min(4096,native.maximumMetadataNodes))
-        var imageCount = 0, videoCount = 0, audioCount = 0, totalAudioFrames = 0
+        var imageCount = 0, videoCount = 0, audioCount = 0, totalAudioSamples = 0
         var totalImagePixels = 0, totalVideoPixels = 0, totalRGBPixels = 0
         var decodeMemory = MiMoV26MediaDecodeMemory(hostBytes: plan.hostBytes)
         var messages: [ReadyMessage] = []
@@ -262,9 +262,9 @@ enum MiMoV26EncodedMediaIngress {
                         guard audioCount <= native.audio.maximumClips else { throw refusal() }
                         let audiovisual = try await MiMoV26EncodedAudiovisualDecoder.inspect(
                             video,limits:audiovisualLimits)
-                        let (sum,overflow) = totalAudioFrames.addingReportingOverflow(audiovisual.frameCount)
+                        let (sum,overflow) = totalAudioSamples.addingReportingOverflow(audiovisual.frameCount)
                         guard !overflow, sum <= native.audio.maximumInputSamples else { throw refusal() }
-                        totalAudioFrames = sum
+                        totalAudioSamples = sum
                         try decodeMemory.includeRetained(UInt64(audiovisual.audioWorkingByteBound))
                         parts.append(.audiovisual(audiovisual))
                     } else {
@@ -282,10 +282,12 @@ enum MiMoV26EncodedMediaIngress {
                     let audio = try MiMoV26EncodedAudioDecoder.inspect(data,
                         limits:.init(maximumEncodedBytes:MediaIngest.maxMediaDecodedBytes,
                             maximumFrames:native.audio.maximumInputSamples,maximumWorkingBytes:working,
-                            maximumChunks:min(4096,native.maximumMetadataNodes)))
-                    let (sum,overflow) = totalAudioFrames.addingReportingOverflow(audio.frameCount)
+                            maximumChunks:min(4096,native.maximumMetadataNodes),
+                            maximumChannels:native.audio.maximumChannels,
+                            maximumSampleRate:native.audio.maximumSampleRate))
+                    let (sum,overflow) = totalAudioSamples.addingReportingOverflow(audio.sampleCount)
                     guard !overflow, sum <= native.audio.maximumInputSamples else { throw refusal() }
-                    totalAudioFrames = sum
+                    totalAudioSamples = sum
                     try decodeMemory.includeRetained(UInt64(audio.decodedByteBound))
                     parts.append(.audio(audio))
                 }

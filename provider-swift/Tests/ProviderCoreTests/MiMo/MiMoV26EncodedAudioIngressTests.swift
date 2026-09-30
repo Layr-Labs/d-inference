@@ -49,7 +49,7 @@ final class MiMoV26EncodedAudioIngressTests: XCTestCase {
             maximumMetadataBytes:65536,maximumMetadataNodes:10000,maximumMetadataDepth:32,
             pixels:.init(maximumInputElements:100000,maximumOutputElements:100000,maximumWorkingBytes:1 << 20),
             vision:.init(maximumPatches:256,maximumAttentionScoreElements:131072),
-            audio:.init(maximumClips:2,maximumChannels:1,maximumSampleRate:24000,
+            audio:.init(maximumClips:2,maximumChannels:2,maximumSampleRate:192000,
                 maximumInputSamples:maximumSamples,maximumResampledSamples:maximumSamples,
                 maximumResampleCoefficients:100000,maximumMelFrames:256,maximumSegments:4,
                 maximumPaddedMelFrames:256,maximumWorkingElements:64_000_000,frontendFrameBlockSize:8,rvqTileFrames:8),
@@ -98,6 +98,30 @@ final class MiMoV26EncodedAudioIngressTests: XCTestCase {
             XCTAssertNil(input.messages[0].templateFields["input_audio"])
         }
     }
+    func testOpenRouterPCM8ShapeTraversesChatAndResponsesIngress() async throws {
+        var sample = wave()
+        // Replace the existing mono PCM16 payload with the same number of
+        // PCM8 samples at the real failing request's 22.05 kHz input rate.
+        var bytes = Array(sample.prefix(44))
+        let frames = 2400
+        func put(_ value: Int, at offset: Int, width: Int) {
+            for i in 0..<width { bytes[offset+i] = UInt8(truncatingIfNeeded:value >> (8*i)) }
+        }
+        put(36 + frames,at:4,width:4); put(22050,at:24,width:4)
+        put(22050,at:28,width:4); put(1,at:32,width:2); put(8,at:34,width:2)
+        put(frames,at:40,width:4)
+        sample = Data(bytes + Array(repeating:UInt8(192),count:frames))
+        for responses in [false,true] {
+            let input = try await decode(parsed(body(data:sample.base64EncodedString(),responses:responses),
+                responses:responses),policy:policy())
+            guard case .audio(let pcm) = input.messages[0].content[1] else { return XCTFail("audio lost") }
+            XCTAssertEqual(pcm.descriptor.sampleRate,22050)
+            XCTAssertEqual(pcm.descriptor.channels,1)
+            XCTAssertEqual(pcm.samples.count,frames)
+            XCTAssertTrue(pcm.samples.allSatisfy { $0 == 0.5 })
+        }
+    }
+
     func testTypedWireRoundtripAndMalformedPayloadTypes() throws {
         let pair = try parsed(body())
         let roundtrip = try JSONDecoder().decode(OpenAIChatCompletionRequest.self,

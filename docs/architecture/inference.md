@@ -692,6 +692,17 @@ lifecycle/API qualification are separate gates; a helper or component result
 does not certify them. `input_audio` remains excluded from text-only cache
 planning and is not treated as vision.
 
+MiMo encoded audio accepts RIFF/WAVE integer PCM8/16/24/32 and IEEE Float32,
+mono or stereo, at 8–192 kHz. The transport decoder converts interleaved samples
+to planar Float channels and preserves the source rate; the existing native
+frontend resamples each channel to 24 kHz before averaging channels. PCM8 is
+unsigned and centered at 128. Float32 signed zero and finite values are preserved.
+Byte, frame, channel, sample-rate and working-memory limits are checked before
+allocation. Provider admission counts every channel's decoded samples and
+bounds the possible 8-to-24-kHz expansion; the native plan charges the actual
+resampling geometry. MP3/compressed audio and WAVE_FORMAT_EXTENSIBLE are not
+accepted by this WAV path. Video-borne audio retains its separate LPCM policy.
+
 Encoded MiMo visual ingress passes the existing transport ceiling
 `MediaIngest.maxMediaDecodedBytes` to the SDK decoder's `maximumEncodedBytes`.
 `MiMoV26EncodedMediaIngress.decode` enforces the same bounded input contract

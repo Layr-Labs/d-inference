@@ -130,6 +130,16 @@ class ReleasePipelineTests(unittest.TestCase):
                          'Register release with coordinator']:
             self.assertIn(expected, RELEASE)
 
+    def test_audio_native_inference_is_required_in_release_qualification(self):
+        fixture = ACTION.split('- name: Prepare selected MiMo audio fixture\n', 1)[1].split('\n    - name:', 1)[0]
+        self.assertIn("if: inputs.lane == 'qualification'", fixture)
+        self.assertIn("prepare-mimo-audio-fixtures.py", fixture)
+        gate = ACTION.split('- name: Qualify authenticated native MiMo PCM8 audio inference\n', 1)[1].split('\n    - name:', 1)[0]
+        self.assertIn("if: inputs.lane == 'qualification'", gate)
+        self.assertIn("run-nested-suite.sh testNativeAudioReleaseAcceptsOpenRouterPCM8WAVThroughAuthenticatedHTTP --no-parallel", gate)
+        self.assertNotIn("cache-hit", gate)
+        self.assertNotIn("continue-on-error:", gate)
+
     def test_qwen_resource_regression_runs_without_a_cache_hit_bypass(self):
         step = ACTION.split('- name: Test Qwen resources in a relocated app\n', 1)[1].split('\n    - name:', 1)[0]
         self.assertIn('python3 scripts/test-qwen4-packaged-resources.py', step)

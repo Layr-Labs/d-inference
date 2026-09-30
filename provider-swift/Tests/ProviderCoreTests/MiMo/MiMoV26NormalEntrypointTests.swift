@@ -162,7 +162,10 @@ final class MiMoV26NormalEntrypointTests: XCTestCase {
             directory: URL(fileURLWithPath: path), budget: budget(), deviceLimits: device))
         let request = try XCTUnwrap(load.audioLoadRequest)
         XCTAssertNotNil(load.decodedMediaPolicy)
-        XCTAssertNotNil(load.decodedAudioPolicy)
+        let audio = try XCTUnwrap(load.decodedAudioPolicy).media.limits.audio
+        XCTAssertEqual(audio.maximumChannels, 2)
+        XCTAssertEqual(audio.maximumSampleRate, 192000)
+        XCTAssertGreaterThanOrEqual(audio.maximumResampledSamples, audio.maximumInputSamples)
         XCTAssertEqual(request.inputTensorCount, 389)
         XCTAssertEqual(request.payloadSHA256, MiMoV26AudioTokenizerWeights.selectedPayloadSHA256)
         XCTAssertEqual(request.mainConfigurationSHA256, load.request.binding.configSHA256)

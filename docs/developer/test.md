@@ -355,6 +355,18 @@ routing only; signed Mac App Attest qualification is separate.
 
 Build qualification regressions run in `coordinator/store/app_attest_builds_test.go`, `coordinator/appattest/service/build_qualifications_test.go`, `coordinator/api/app_attest_builds_test.go`, and `coordinator/api/app_attest_builds_auth_test.go`. The route tests validate real ES256 Privy JWTs through the mux, server-attributed audit actors, and rejection of admin-owned inference keys. The real PostgreSQL contract requires a **disposable** `DATABASE_URL` (the harness truncates test tables). Test memory/decorated/Postgres persistence, conflicting identities, publish/revoke races, cache fencing, lease expiry and reload; run the affected Go packages with `-race`. `python3 scripts/test-provider-release-publication.py` tests blocked publication, immutable artifacts, retained-byte R2 staging retries across workflow attempts, literal tag-note preservation and recovery after draft creation, interrupted upload, completed upload and publication failures without credentials or live writes; CI runs it with `scripts/test-provider-release-pipeline.py`. The annotated-tag fixture supplies its own commit/tag identity with global and system Git configuration disabled, so a developer account cannot mask missing CI setup. These checks do not replace final signed-Mac/Apple qualification.
 
+### MiMo encoded audio release regression
+
+The `testNativeAudioReleaseAcceptsOpenRouterPCM8WAVThroughAuthenticatedHTTP` gate
+loads the real selected audio codec beside a small synthetic native target,
+uses ordinary serving memory policy, sends an authenticated streaming WAV request
+with mono/22050 Hz/PCM8/47048 samples, requires generated tokens and terminal
+usage, and joins real ownership before asserting all charges are released.
+Set `MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS=1`, `MIMO_V26_SERIAL_NATIVE_TESTS=1`, and
+`MIMO_V26_MANAGED_AUDIO_FIXTURE_ROOT` to the generated `tiny-bf16` directory.
+Use `prepare-mimo-audio-fixtures.py --cache <cache> --output <new-directory>`;
+its public codec download is about 1.87 GB and is checked against fixed hashes.
+
 ## Provider lifecycle regression checks
 
 Serving measurements and profile admission have focused suites

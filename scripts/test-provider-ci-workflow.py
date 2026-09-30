@@ -45,8 +45,8 @@ LANES = {
 SDK_COMMANDS = {
     "Verify DiffusionGemma artifact and expert reduction":
         "../../scripts/run-nested-suite.sh 'DiffusionGemma(ArtifactFixture|ExpertReduction)Tests' --no-parallel",
-    "Run nested MiMo visual decode tests":
-        "../../scripts/run-nested-suite.sh 'MiMoV26(VisualDecodeMemory|EncodedVisualDecoder)Tests|MiMoV26PixelsTests.test(RGB|Temporal|Invalid|Explicit)' --no-parallel",
+    "Run nested MiMo media decode tests":
+        "../../scripts/run-nested-suite.sh 'MiMoV26(VisualDecodeMemory|EncodedVisualDecoder|EncodedAudioDecoder)Tests|MiMoV26PixelsTests.test(RGB|Temporal|Invalid|Explicit)' --no-parallel",
     "Run nested paged safety tests":
         "../../scripts/run-nested-suite.sh CBv2PagedSafetyTests",
     "Run nested prompt-hash tests":
@@ -148,7 +148,14 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 self.assertIsNone(field(builds[0], "if"))
                 if lane == "sdk":
                     self.assertEqual(field(builds[0], "timeout-minutes"), "35")
-                self.assertNotIn("actions/cache/restore@", self.jobs[job_id])
+                restores = [step for step in steps if "actions/cache/restore@" in step]
+                if lane == "provider":
+                    self.assertEqual(len(restores), 1)
+                    self.assertEqual(field(restores[0], "id"), "mimo-audio-cache")
+                    self.assertIn("mimo-audio-source-v1-", restores[0])
+                    self.assertGreater(steps.index(restores[0]), steps.index(builds[0]))
+                else:
+                    self.assertEqual(restores, [])
                 self.assertNotIn("spm-v3-", self.jobs[job_id])
 
     def test_provider_entrypoint_and_resource_installer_checks_are_retained(self):
@@ -160,6 +167,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             MIMO_PROVIDER_PREPARE,
             "../scripts/run-provider-tests.sh",
             *MIMO_NATIVE_COMMANDS.values(),
+            'python3 scripts/prepare-mimo-audio-fixtures.py --cache "$RUNNER_TEMP/mimo-audio-source" --output "$RUNNER_TEMP/mimo-audio-fixtures" --github-env "$GITHUB_ENV"',
+            "../scripts/run-nested-suite.sh testNativeAudioReleaseAcceptsOpenRouterPCM8WAVThroughAuthenticatedHTTP --no-parallel",
             "./scripts/test-install-atomic.sh",
         )
         self.assertEqual([run_command(step) for step in steps if field(step, "run")], list(expected))
@@ -278,6 +287,18 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(field(fault, "MIMO_V26_PROVIDER_LIFETIME_NATIVE_TESTS", indent=10), "'1'")
         self.assertEqual(field(fault, "DARKBLOOM_PREFIX_CACHE", indent=10), "'0'")
         self.assertEqual(field(fault, "DARKBLOOM_PREFIX_CACHE_MEMORY", indent=10), "'0'")
+
+    def test_audio_qualification_uses_real_codec_and_no_skip_gate(self):
+        steps = step_blocks(self.jobs["test-provider"])
+        fixture = next(s for s in steps if field(s, "id") == "mimo-audio-fixtures")
+        self.assertIn("prepare-mimo-audio-fixtures.py", run_command(fixture))
+        self.assertEqual(field(fixture, "if"), READY)
+        gate = next(s for s in steps if field(s, "name", indent=6) == "Run isolated native MiMo audio gate")
+        self.assertIn("testNativeAudioReleaseAcceptsOpenRouterPCM8WAVThroughAuthenticatedHTTP", run_command(gate))
+        self.assertIn("run-nested-suite.sh", run_command(gate))
+        self.assertIn("steps.mimo-audio-fixtures.outcome == 'success'", field(gate, "if"))
+        self.assertEqual(field(gate, "MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS", indent=10), "'1'")
+        self.assertNotIn("continue-on-error:", gate)
 
     def test_rust_cache_is_saved_only_after_successful_parity(self):
         steps = step_blocks(self.jobs["test-provider-parity"])

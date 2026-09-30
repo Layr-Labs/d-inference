@@ -58,7 +58,7 @@ func (s *Server) planCacheRouteResult(ctx context.Context, input cachePlanningIn
 	}
 	_, rejected := s.registry.CachePlanRejection(s.promptContract, planInput)
 	if !rejected && cachePreloadDemandWithinDeadline(ctx, input) {
-		// Exactly once after authenticated final-model preflight, before the
+		// Once per memoized authenticated candidate body, before the
 		// readiness gate. No QPS/sample debit, waiting, or request data retention.
 		s.promptPreloader.NoteDemand(identity)
 	}
@@ -66,7 +66,7 @@ func (s *Server) planCacheRouteResult(ctx context.Context, input cachePlanningIn
 	result, decided := s.commitCachePlanning(ctx, input, planInput, identity, rejected, state)
 	if !decided {
 		reason = cachePlanningPreloadNotReady
-		return registry.CachePlan{}
+		return registry.CachePlanResult{}
 	}
 	// Registry still owns eligibility, sampling and outcome precedence. Keep
 	// legacy accounting distinct from the broader API decision population.

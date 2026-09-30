@@ -61,7 +61,7 @@ func TestCacheAffinityQuarantineRoutesToHealthyPeer(t *testing.T) {
 			if original == a {
 				healthy = b
 			}
-			r.disablePrefixCacheV2Model(original.ID, "model", tier, original, r.cacheRouting, capability)
+			r.disablePrefixCacheV2Model(original.ID, "model", tier, original, r.cacheRouting, capability, CachePlan{}, nil)
 			// Heartbeats retain the same advertised capability; they must not
 			// restore affinity for an identity that failed proof validation.
 			publish(original, capability)
@@ -71,7 +71,7 @@ func TestCacheAffinityQuarantineRoutesToHealthyPeer(t *testing.T) {
 					t.Fatalf("quarantined affinity winner retained preference: got %s want %s, %+v", p.ID, healthy.ID, decision)
 				}
 			}
-			r.disablePrefixCacheV2Model(healthy.ID, "model", tier, healthy, r.cacheRouting, capability)
+			r.disablePrefixCacheV2Model(healthy.ID, "model", tier, healthy, r.cacheRouting, capability, CachePlan{}, nil)
 			if _, decision := route(); decision.SelectionPath == SelectionPrefixAffinity {
 				t.Fatal("all-quarantined pool retained affinity instead of ordinary routing")
 			}
@@ -87,7 +87,7 @@ func TestCacheAffinityQuarantineRoutesToHealthyPeer(t *testing.T) {
 
 func TestCacheAffinityQuarantinePreservesOtherModel(t *testing.T) {
 	r, p, capability, other := cacheTwoModelFixture(t)
-	r.disablePrefixCacheV2Model(p.ID, capability.ModelID, "ssd", p, r.cacheRouting, capability)
+	r.disablePrefixCacheV2Model(p.ID, capability.ModelID, "ssd", p, r.cacheRouting, capability, CachePlan{}, nil)
 	plan := boundTestCachePlan(r, exactTestPlan(exactTestAnchor(2, "c")))
 	plan.ModelAggregateHash = other.ModelAggregateHash
 	plan.affinityKey = "other-model-repeat"
@@ -128,7 +128,7 @@ func TestCacheAffinityQuarantineBetweenScanAndCommit(t *testing.T) {
 					t.Fatal("positive control did not scan an affinity-eligible candidate")
 				}
 				fenced := scan.selected.provider
-				r.disablePrefixCacheV2Model(fenced.ID, "model", tier, fenced, r.cacheRouting, capability)
+				r.disablePrefixCacheV2Model(fenced.ID, "model", tier, fenced, r.cacheRouting, capability, CachePlan{}, nil)
 				if p, _, outcome, _ := r.commitProviderReservation("model", pr, scan); p != nil || outcome != reservationNeedsRescan {
 					t.Fatalf("stale affinity committed after quarantine: provider=%v outcome=%v", p != nil, outcome)
 				}

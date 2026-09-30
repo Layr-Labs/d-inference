@@ -1,7 +1,6 @@
 import Foundation
 
-/// One warning per retired knob an operator is still setting, plus one per
-/// one-time config migration this decode applied silently.
+/// One warning per retired knob an operator is still setting.
 ///
 /// WHY THIS IS NOT IN THE SERVE LOOP. These warnings used to live inline at
 /// the top of `ProviderLoop.run()`, which meant only the coordinator-serving
@@ -16,8 +15,7 @@ import Foundation
 /// coordinator, or a config file on disk.
 public enum RetiredKnobWarnings {
     /// Every config warning this config + environment earns, in a stable
-    /// order: environment variables, then `[backend]` retired keys, then
-    /// applied migrations.
+    /// order: environment variables, then `[backend]` retired keys.
     public static func messages(
         config: ProviderConfig,
         environment: [String: String] = ProcessInfo.processInfo.environment
@@ -33,29 +31,24 @@ public enum RetiredKnobWarnings {
                     + "everything; rollback is release-level, not a per-box switch")
         }
         for retired in config.backend.retiredKeysPresent {
-            out.append(
-                "provider.toml sets [backend] \(retired), which is a RETIRED knob and is "
-                    + "IGNORED — remove the key")
-        }
-        // One-time migrations applied during decode. The operator's file on
-        // disk still reads the OLD value until the startup stamp rewrites
-        // it, so a silent migration would leave the file and the running
-        // behaviour disagreeing with nothing to explain the gap.
-        for id in config.appliedMigrations {
-            guard let step = ConcurrencyDefaultMigration.step(id: id) else { continue }
-            out.append(
-                "provider.toml is at config_version \(step.fromVersion) and sets [backend] "
-                    + "engine_v2_max_concurrent = \(step.fromCap), the default that release "
-                    + "generated — changing it to \(step.toCap). B=\(step.toCap) is the knee of "
-                    + "the measured contiguous batch curve: aggregate throughput is flat from "
-                    + "B=\(step.toCap) to B=\(step.fromCap) while per-request decode is "
-                    + "aggregate/B, so the smaller batch is worth ~87% more tok/s per request "
-                    + "at essentially the same aggregate. THIS CANNOT TELL a generated "
-                    + "\(step.fromCap) from one you chose deliberately — if you meant it, set "
-                    + "it again: this migration runs once and an explicit \(step.fromCap) is "
-                    + "honoured from then on.")
+            out.append(retiredBackendKeyMessage(retired))
         }
         return out
+    }
+
+    /// The boolean `mtp` key gets its own wording because ignoring it changes
+    /// behavior: a bare `mtp = false` used to mean off, and without an
+    /// `mtp_mode` the box now resolves the `auto` default. The operator has to
+    /// be told which `mtp_mode` value restores the old intent.
+    static func retiredBackendKeyMessage(_ key: String) -> String {
+        guard key == "mtp" else {
+            return "provider.toml sets [backend] \(key), which is a RETIRED knob and is "
+                + "IGNORED — remove the key"
+        }
+        return "provider.toml sets [backend] mtp, which is a RETIRED knob and is IGNORED — "
+            + "MTP follows [backend] mtp_mode (default \"auto\"), not this key. "
+            + "To keep MTP off, set mtp_mode = \"off\"; to force it on, set "
+            + "mtp_mode = \"on\"; then remove the mtp key"
     }
 
     /// Log the above at WARN and hand them back so a caller with an operator

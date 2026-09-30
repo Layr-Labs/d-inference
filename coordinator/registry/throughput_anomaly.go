@@ -184,13 +184,6 @@ func containsAny(s string, subs ...string) bool {
 	return false
 }
 
-// NormalizeChipClass builds a canonical chip-class string ("M3 Max", "M4 Pro",
-// "M2") from a provider-reported chip family and tier. Returns "" when no Apple
-// generation token can be found.
-func NormalizeChipClass(family, tier string) string {
-	return chipClassFromTokens(family + " " + tier)
-}
-
 // ResolveChipClass derives a canonical chip class from a provider's reported
 // chip family and tier, falling back to the marketing chip name ("Apple M3 Max")
 // when family/tier are empty or unrecognized. Returns "" when nothing resolves.

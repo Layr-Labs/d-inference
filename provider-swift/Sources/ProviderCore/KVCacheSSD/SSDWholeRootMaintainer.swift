@@ -120,7 +120,7 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
                     let completed = SSDCacheEpochStore.performUnloadedDestructiveChange(
                             root: modelRoot, mutation)
                     if !completed {
-                        // The body never runs unless its epoch barrier succeeds.
+                        // The body never runs unless its maintenance barrier succeeds.
                         continue
                     }
                 }

@@ -20,14 +20,14 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-// Payout is the persisted provider wallet payout record.
-type Payout = store.ProviderPayout
-
-// UsageEntry records a single inference charge for usage history.
+// UsageEntry records a single inference charge for usage history. CachedTokens
+// is the subset of PromptTokens billed at the cache-read rate; without it the
+// cost of a cache hit could not be reconciled against the published prices.
 type UsageEntry struct {
 	JobID            string    `json:"job_id"`
 	Model            string    `json:"model"`
 	PromptTokens     int       `json:"prompt_tokens"`
+	CachedTokens     int       `json:"cached_tokens,omitempty"`
 	CompletionTokens int       `json:"completion_tokens"`
 	CostMicroUSD     int64     `json:"cost_micro_usd"`
 	Timestamp        time.Time `json:"timestamp"`
@@ -134,13 +134,4 @@ func (l *Ledger) Usage(consumerID string) []UsageEntry {
 	out := make([]UsageEntry, len(entries))
 	copy(out, entries)
 	return out
-}
-
-// AllPayouts returns a copy of all payouts (settled and unsettled).
-func (l *Ledger) AllPayouts() []Payout {
-	payouts, err := l.store.ListProviderPayouts()
-	if err != nil {
-		return []Payout{}
-	}
-	return payouts
 }

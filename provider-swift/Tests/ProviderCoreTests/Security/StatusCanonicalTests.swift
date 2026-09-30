@@ -59,8 +59,7 @@ private func statusCanonicalVectors() -> [StatusCanonicalVector] {
             name: "empty-fields-and-false",
             input: StatusCanonicalInput(
                 nonce: "n", timestamp: "t", rdmaDisabled: false, sipEnabled: false,
-                secureBootEnabled: true, binaryHash: "", activeModelHash: "",
-                pythonHash: "", runtimeHash: ""
+                secureBootEnabled: true, binaryHash: "", activeModelHash: ""
             ),
             expected: #"{"nonce":"n","rdma_disabled":false,"secure_boot_enabled":true,"sip_enabled":false,"timestamp":"t"}"#
         ),

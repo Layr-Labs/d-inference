@@ -1,6 +1,6 @@
 # Prompt-contract sidecar
 
-> Last updated: 2026-09-26 · commit `3e9dcf6b4`
+> Last updated: 2026-09-30
 
 The Go `LowerResponsesInferenceBody` serving adapter preserves ordered inline
 media; it does not broaden this sidecar's text-only cache-planning contract.
@@ -289,6 +289,85 @@ this instruction itself. Qwen and Harmony system-turn folding then mirrors
 (`coordinator/promptsidecar/src/leading_system.rs`, `normalize_messages`). Invalid or
 unsupported shapes fail cold.
 
+Five provider-side transformations that precede every template are mirrored in
+`coordinator/promptsidecar/src/normalize.rs`:
+
+1. **Member order.** Foundation dictionaries carry no order and
+   `Jinja.Value(any:)` sorts every object it bridges with Swift `String <`, so
+   `normalize` sorts every object in the final messages, tools and template
+   context once, after all other steps (`sorted_object_keys`). The planner
+   never relies on wire order. Today the shared prelude re-serializes every
+   provider body from the decoded map, which sorts keys
+   (`coordinator/api/inference_preprocess.go`, `parseInferencePrelude`,
+   `forwardBody.current`), but that follows from the prelude stamping the
+   request date, not from a contract: `forwardBody` forwards the caller's
+   bytes verbatim whenever nothing is dirty, and JSON carried inside strings,
+   such as tool-call `arguments`, is never re-serialized. The sort is
+   therefore load-bearing.
+2. **Tool-call arguments.** Decoded `arguments` take the value bridge's
+   shape: sorted members and integral JSON doubles as integers, because
+   `Jinja.Value(any:)` matches `Int` before `Double` (`provider_bridged_value`).
+3. **Tool definitions.** A tool's `function` object keeps only `name`,
+   `description` and `parameters`, because `OpenAITool.toolSpec()` renders
+   nothing else (`typed_function_definition`).
+4. **Harmony framing.** Assistant `content` and `reasoning_content` lose raw
+   Harmony channel framing for every model family
+   (`strip_harmony_channel_framing`, the mirror of `sanitizeJinjaMessages`).
+5. **Content parts.** `output_text` parts contribute text exactly like `text`
+   and `input_text` (`message_text`).
+
+The provider's tokenization is the ground truth, so where the two runtimes
+cannot be shown to agree the planner refuses the request and it is served
+cold. Two such refusals belong to the mirrors above. Object keys that are not
+already NFC are refused (`coordinator/promptsidecar/src/render/input.rs`,
+`visit`): Swift orders keys by their composed scalars while the planner orders
+bytes, so a decomposed key can render in a different position even without a
+colliding sibling. Harmony framing is stripped only when every control token is
+a whole extended grapheme cluster (`require_whole_grapheme_tokens`): Foundation
+and Swift `Character` search do not match a token whose last character carries
+a combining mark, joiner, variation selector, emoji modifier or spacing mark,
+or whose first character follows a prepended format character, and
+`replacingOccurrences` does not agree with `contains` on every one of those.
+
+Three provider-side differences have no mirror and no refusal. Requests that
+exercise them still plan, still fail their receipt with
+`prompt_anchor_mismatch`, and still fence the provider and model:
+
+- **Gemma `dictsort` collation.** The Gemma template orders tool `properties`
+  and tool-call arguments with `dictsort`. MiniJinja compares keys with
+  `unicase::UniCase` (its `unicode` feature is enabled), so keys that differ
+  only in case agree on both sides. swift-jinja compares with
+  `localizedCaseInsensitiveCompare`, which collates `_` before digits and
+  accented letters next to their base letter; `_a` against `1a`, or `é`
+  against `z`, renders in the opposite order. Deciding experiment: add a
+  Gemma case whose tool properties are `_a` and `1a`, regenerate the vectors
+  and run `ProductionPromptParityTests`; it fails at the first property name.
+  Then run the same case on a provider under two system locales with keys
+  `aa` and `z` (Danish collates `aa` after `z`): if the token arrays differ,
+  the provider's order is locale-dependent and no planner mirror can be
+  exact, which leaves a locale-independent comparator on the provider with a
+  renderer version change, or a refusal for Gemma requests with more than one
+  key in a sorted map.
+- **Combining-mark scripts on the Qwen pre-tokenizer.** For Devanagari,
+  Bengali, Tamil, Thai and vocalized Arabic, `swift-transformers` keeps marks
+  with their base letter where the `tokenizers` crate splits them, so the
+  provider's prompt is shorter. Deciding experiment: encode one sentence per
+  script with `LocalTokenizerLoader` and with the crate from the same
+  `tokenizer.json`, then apply the file's pre-tokenizer pattern alone with
+  `NSRegularExpression` and with the crate; the first span that differs shows
+  whether the `\p{M}` and `\p{L}` classes or the matching unit differ.
+- **CRLF on the GPT-OSS and Qwen pre-tokenizers.** `":\r\n"`, a code fence
+  followed by `"\r\n"`, and `"\r\n\r\n"` split differently, so the provider's
+  prompt is longer. Deciding experiment: the same two-step comparison with
+  those three strings; if the pattern spans agree and only the merged tokens
+  differ, the difference is in how `"\r\n"` is segmented before the model's
+  merges apply.
+
+Both pre-tokenizer differences are departures of the provider from the
+reference tokenizer, so they also change what the model reads for those
+inputs. Correcting them changes provider token arrays and therefore requires a
+tokenizer version change.
+
 Constrained tool validation and grammar-cost accounting inspect the same borrowed
 `const`/`enum` values from the parsed schema; they do not allocate temporary
 reference vectors. Numeric, nullable, delimiter and grammar-complexity bounds
@@ -544,7 +623,7 @@ gate.
    (`compute`).
 3. **Three implementations, one chain.** Go, Rust and the Swift provider
    produce byte-identical chain hashes and boundaries for the shared vectors —
-   `coordinator/promptcontract/blockhash.go` (`ChainHashes`,
+   `coordinator/promptcontract/blockhash.go` (`BlockHash`,
    `LastCompleteBoundary`), `coordinator/promptsidecar/src/hash.rs`
    (`chain_hashes`), `fixtures/prompt-contract/v1`,
    `scripts/verify-prompt-parity.sh`.

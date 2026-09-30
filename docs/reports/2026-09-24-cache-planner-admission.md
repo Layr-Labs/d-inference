@@ -1,6 +1,6 @@
 # Cache planning admission: reproduced opportunity loss
 
-> Last updated: 2026-09-25 · commit `94a1d6d78`
+> Last updated: 2026-09-25
 
 ## Status and scope
 

@@ -1,0 +1,28 @@
+{
+  "reasons": [
+    "unsupported_scheduler",
+    "target_missing",
+    "invalid_in_flight_assignment",
+    "inconsistent_token_cursor",
+    "unowned_pending_sample",
+    "multimodal_work",
+    "invalid_prefix_reservation",
+    "invalid_projection_assignment",
+    "invalid_projection_transition",
+    "projection_arithmetic",
+    "chained_step_unprojectable",
+    "iteration_limit",
+    "prefix_geometry_blocked",
+    "speculation_bound_missing",
+    "no_scheduling_progress",
+    "target_not_sampled",
+    "invalid_work_totals",
+    "capacity_model_unsupported",
+    "capacity_not_guaranteed",
+    "prefill_rate_unavailable",
+    "decode_rate_unavailable",
+    "service_duration_invalid",
+    "service_duration_underflow",
+    "other"
+  ]
+}

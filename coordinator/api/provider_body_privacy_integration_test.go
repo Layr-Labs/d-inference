@@ -232,6 +232,7 @@ func TestProviderBodyPrivacyQueuedEncrypted(t *testing.T) {
 					}
 					r.Header.Set("Authorization", "Bearer test-key")
 					r.Header.Set("Content-Type", "application/json")
+					r.Header.Set("X-Darkbloom-Route", "prefer")
 					response, err := http.DefaultClient.Do(r)
 					if err != nil {
 						done <- result{err: err}

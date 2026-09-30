@@ -20,6 +20,8 @@ extension EngineV2Bridge {
         nativeRetirement: CBv2RequestRetirement? = nil
     ) {
         let bridge = self
+        let retirementReceipt = nativeRetirement == nil ? nil : active[id]?.prefillReceipt
+        retirementReceipt?.retainUntilRetirement()
         usageSignal?.beginTerminalObservation()
         let task = Task {
             await bridge.pump(
@@ -33,9 +35,11 @@ extension EngineV2Bridge {
                 profile: profile,
                 nativeRetirement: nativeRetirement
             )
+            retirementReceipt?.endAfterRetirement()
             await bridge.clearPumpTask(id: id, releaseNativeIdentity: nativeRetirement != nil)
         }
         pumpTasks[id] = task
+        if nativeShutdownClosed { nativeShutdownTasks.append(task) }
     }
 
     /// Remove a completed pump's task handle (called from the pump task after
@@ -181,6 +185,7 @@ extension EngineV2Bridge {
             continuation.finish()
             await nativeRetirement.wait()
         }
+        releaseServiceAllowance(requestID: id)
         // Every exit releases only the resources owned by this submission.
         // Staging completion is an idempotent backstop for lookup misses.
         if holdsSharedReservation {
@@ -213,7 +218,7 @@ extension EngineV2Bridge {
         lastDeltaAt: SuspendingClock.Instant? = nil
     ) {
         let final = recordFinish(
-            id: id, usage: usage, success: reason == .stop || reason == .length,
+            id: id, usage: usage,
             lastDeltaAt: lastDeltaAt, finishReason: reason)
         switch reason {
         case .stop, .length:
@@ -301,7 +306,7 @@ extension EngineV2Bridge {
 
     /// Media-through-v2 engagement (v0.7.5; media-kind tagged since
     /// v0.7.5): INFO per engine-accepted image/video request. PRIVACY:
-    /// allowlisted operational fields only — the request's media/prompt
+    /// fixed operational keys only — the request's media/prompt
     /// content never rides telemetry; `multimodal` is a bare boolean tag
     /// and `media_kind` is one of image/video/mixed.
     func emitVisionSubmitTelemetry(requestId: String, mediaKind: EngineV2MediaKind?) {
@@ -311,8 +316,6 @@ extension EngineV2Bridge {
             kind: .engineHealth,
             message: "engine_v2: media request served via ContinuousBatchingV2"
         )
-        // Filter-at-source, matching the other engine_health builders —
-        // every key is allowlisted already; the filter enforces it stays so.
         var fields: [String: AnyCodableValue] = [
             "component": .string("engine"),
             "operation": .string("engine_v2_vision"),
@@ -323,13 +326,13 @@ extension EngineV2Bridge {
         if let mediaKind {
             fields["media_kind"] = .string(mediaKind.rawValue)
         }
-        event.fields = TelemetryFieldFilter.filter(fields)
+        event.fields = fields
         event.requestId = requestId
         emit(event)
     }
 
-    /// PRIVACY: engine-error telemetry carries only allowlisted operational
-    /// fields — never the error message (defense in depth against any
+    /// PRIVACY: engine-error telemetry carries only fixed operational
+    /// keys — never the error message (defense in depth against any
     /// engine string that could embed request-adjacent detail).
     func emitInferenceErrorTelemetry(requestId: String) {
         var event = TelemetryEvent(

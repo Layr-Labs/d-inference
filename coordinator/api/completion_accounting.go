@@ -28,6 +28,13 @@ func (s *Server) completionAccounting(pr *registry.PendingRequest, providerID st
 		copy := *feePercent
 		feePercent = &copy
 	}
+	// Cached tokens are recorded only when they were billed at the cache-read
+	// rate: usage is already validated (clearCacheUsage), and a model-token
+	// promotion prices every prompt token at the input rate.
+	cachedTokens := usage.CachedTokens
+	if pr.ModelTokenReservationID != "" {
+		cachedTokens = 0
+	}
 	var once sync.Once
 	return func(totalCost int64) {
 		once.Do(func() {
@@ -36,6 +43,7 @@ func (s *Server) completionAccounting(pr *registry.PendingRequest, providerID st
 				JobID:            requestID,
 				Model:            publicModel,
 				PromptTokens:     usage.PromptTokens,
+				CachedTokens:     cachedTokens,
 				CompletionTokens: usage.CompletionTokens,
 				CostMicroUSD:     totalCost,
 				Timestamp:        completedAt,
@@ -52,8 +60,21 @@ func (s *Server) completionAccounting(pr *registry.PendingRequest, providerID st
 			// traffic out of public stats. The owner still sees it via the in-memory
 			// RecordUsage above (their session/transparency view).
 			if !freeSelfRoute {
+				usageRow := store.UsageRecord{
+					ProviderID:       providerID,
+					ConsumerKey:      consumerKey,
+					KeyID:            keyID,
+					Model:            model,
+					PublicModel:      publicModel,
+					PromptTokens:     usage.PromptTokens,
+					CachedTokens:     cachedTokens,
+					CompletionTokens: usage.CompletionTokens,
+					RequestID:        requestID,
+					CostMicroUSD:     totalCost,
+					RequestLocation:  location,
+				}
 				saferun.Go(s.logger, "recordUsage", func() {
-					s.store.RecordUsageFullWithPublicModel(providerID, consumerKey, keyID, model, publicModel, requestID, usage.PromptTokens, usage.CompletionTokens, totalCost, location)
+					s.store.RecordUsage(usageRow)
 				})
 			}
 

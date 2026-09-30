@@ -66,9 +66,7 @@ func GenerateSessionKeys() (*SessionKeys, error) {
 //
 // The ciphertext format is: 24-byte nonce || NaCl Box encrypted data.
 // This is compatible with the libsodium/NaCl Box (`crypto_box`)
-// construction; an independent Rust `crypto_box` reference implementation
-// in internal/e2e/testdata/decrypt verifies cross-language interop
-// (see cross_compat_test.go).
+// construction the Swift provider opens.
 func Encrypt(plaintext []byte, recipientPublicKey [32]byte, session *SessionKeys) (*EncryptedPayload, error) {
 	// Generate random nonce
 	var nonce [24]byte

@@ -21,19 +21,6 @@ extension ModelDownloader {
         )
     }
 
-    internal func urlExists(_ urlString: String) async throws -> Bool {
-        guard let url = URL(string: urlString) else { return false }
-        var req = URLRequest(url: url)
-        req.httpMethod = "HEAD"
-        req.timeoutInterval = 10
-        do {
-            let (_, response) = try await urlSession.data(for: req)
-            return (response as? HTTPURLResponse).map { (200..<300).contains($0.statusCode) } ?? false
-        } catch {
-            return false
-        }
-    }
-
     @discardableResult
     internal func downloadFile(
         from urlString: String,

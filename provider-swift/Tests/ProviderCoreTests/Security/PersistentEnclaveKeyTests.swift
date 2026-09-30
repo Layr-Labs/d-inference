@@ -215,14 +215,11 @@ private let testLabel = "io.darkbloom.provider.test-key.\(UUID().uuidString)"
     }
 }
 
-// The default attestation label is the v2 label. Its presence in the
-// keychain is the migration marker for the deterministic v1 -> v2 key
-// migration (no test-sign, no attribute probing). This check needs no
-// Secure Enclave hardware or entitlements, so it always runs.
+// The default attestation label is the v2 (AfterFirstUnlock) label; changing
+// it would orphan every provider's attested key. This check needs no Secure
+// Enclave hardware or entitlements, so it always runs.
 @Test func persistentEnclaveKeyDefaultLabelIsV2() {
     #expect(PersistentEnclaveKey.defaultLabel == "io.darkbloom.provider.attestation-signing.v2")
-    #expect(PersistentEnclaveKey.legacyLabelV1 == "io.darkbloom.provider.attestation-signing.v1")
-    #expect(PersistentEnclaveKey.defaultLabel != PersistentEnclaveKey.legacyLabelV1)
 }
 
 // A custom (non-default) label is pure find-or-create with no migration:

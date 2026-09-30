@@ -67,6 +67,10 @@ on:
         description: Output price in micro-USD per 1M tokens (e.g. 70000 = $0.070)
         required: true
         type: number
+      cache_read_price:
+        description: Optional price for prompt tokens served from a provider's prefix cache (OpenRouter input_cache_read), micro-USD per 1M tokens, 0..input_price. Empty = half the input price, and clears any rate previously set for this model.
+        required: false
+        default: ''
       promote:
         description: Promote this version after registration
         required: false
@@ -101,6 +105,7 @@ jobs:
           PROMOTE: ${{ inputs.promote }}
           INPUT_PRICE: ${{ inputs.input_price }}
           OUTPUT_PRICE: ${{ inputs.output_price }}
+          CACHE_READ_PRICE: ${{ inputs.cache_read_price }}
         run: |
           jq -n \
             --arg model_id "$MODEL_ID" \
@@ -121,6 +126,7 @@ jobs:
             --argjson promote "$PROMOTE" \
             --argjson input_price "$INPUT_PRICE" \
             --argjson output_price "$OUTPUT_PRICE" \
+            --arg cache_read_price "$CACHE_READ_PRICE" \
             '
             def required_provider_capabilities:
               gsub("^\\s+|\\s+$"; "") as $trimmed
@@ -155,7 +161,9 @@ jobs:
               promote: $promote,
               input_price: $input_price,
               output_price: $output_price
-            }' > payload.json
+            }
+            + (($cache_read_price | gsub("^\\s+|\\s+$"; "")) as $crp
+               | if $crp == "" then {} else {cache_read_price: ($crp | tonumber)} end)' > payload.json
           jq . payload.json
 
       - name: Register model with coordinator

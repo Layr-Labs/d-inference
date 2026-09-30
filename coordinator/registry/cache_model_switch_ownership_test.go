@@ -3,7 +3,6 @@ package registry
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
@@ -20,7 +19,7 @@ func TestCacheModelSwitchPreservesOrRevokesPublishedOwnership(t *testing.T) {
 			if !r.ApplyPrefixCacheReadyV2(provider.ID, published) {
 				t.Fatal("positive durable publication control failed")
 			}
-			donor.markCacheAttemptTerminal(time.Now())
+			donor.markCacheAttemptTerminal()
 			late := &PendingRequest{RequestID: "completed-before-switch", Model: "model", CachePlan: plan}
 			lateOwner := budgetLifecyclePrepare(t, r, provider, late)
 			anchor := plan.Boundaries[0]
@@ -34,7 +33,7 @@ func TestCacheModelSwitchPreservesOrRevokesPublishedOwnership(t *testing.T) {
 			delayed := testV2Ready(lateOwner.nonce, capability, anchor, 4)
 			delayed.RequestID = late.RequestID
 			t.Cleanup(func() { r.ForgetCacheAttempt(late) })
-			late.markCacheAttemptTerminal(time.Now())
+			late.markCacheAttemptTerminal()
 			beforeCharge := budgetLifecycleWant(t, r.cacheRouting, 2)
 			if beforeCharge == 0 {
 				t.Fatal("positive retained-byte charge control missing")

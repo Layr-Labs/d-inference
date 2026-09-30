@@ -59,42 +59,6 @@ func TestCompareVersions(t *testing.T) {
 	}
 }
 
-func TestProviderMeetsTraitFloors(t *testing.T) {
-	tests := []struct {
-		name    string
-		version string
-		traits  RequestTraits
-		want    bool
-	}{
-		{"no traits, ancient version", "0.4.7", RequestTraits{}, true},
-		{"no traits, empty version", "", RequestTraits{}, true},
-		{"tools exactly at floor", "0.6.3", RequestTraits{HasTools: true}, true},
-		{"tools above floor", "0.6.4", RequestTraits{HasTools: true}, true},
-		{"tools far above floor (numeric compare)", "0.6.10", RequestTraits{HasTools: true}, true},
-		{"tools above floor with v prefix", "v0.6.4", RequestTraits{HasTools: true}, true},
-		{"tools below floor", "0.6.2", RequestTraits{HasTools: true}, false},
-		{"tools old fleet version", "0.5.16", RequestTraits{HasTools: true}, false},
-		{"tools empty version is below any floor", "", RequestTraits{HasTools: true}, false},
-		{"tools garbage version is below floor", "garbage", RequestTraits{HasTools: true}, false},
-		{"avoid-version alone is not a floor", "0.4.7", RequestTraits{AvoidVersion: "0.4.7"}, true},
-	}
-	r := New(testLogger())
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			p := &Provider{ID: "p", Version: tc.version}
-			r.mu.RLock()
-			p.mu.Lock()
-			got := r.providerMeetsTraitFloorsLocked(p, tc.traits)
-			p.mu.Unlock()
-			r.mu.RUnlock()
-			if got != tc.want {
-				t.Fatalf("providerMeetsTraitFloorsLocked(version=%q, traits=%+v) = %v, want %v",
-					tc.version, tc.traits, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestProviderEligibleForTraitsTemplateRenderGate(t *testing.T) {
 	const model = "gemma-4-26b"
 	tests := []struct {
@@ -118,7 +82,7 @@ func TestProviderEligibleForTraitsTemplateRenderGate(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			p := &Provider{
 				ID:      "p",
-				Version: "0.6.5", // above the tools floor, so only the render gate decides
+				Version: "0.6.5",
 				Models:  []protocol.ModelInfo{{ID: model, TemplateRenderOK: tc.renderOK}},
 			}
 			r.mu.RLock()
@@ -216,46 +180,9 @@ func TestTemplateRenderGateScopedToModel(t *testing.T) {
 	}
 }
 
-// Scheduler integration: a tool-bearing request must skip providers below the
-// tools version floor, while a plain request still uses them.
-func TestReserveProviderExEnforcesToolsVersionFloor(t *testing.T) {
-	reg := New(testLogger())
-	model := "tools-floor-model"
-	old := makeSchedulerProvider(t, reg, "old-binary", model, 200)
-	newer := makeSchedulerProvider(t, reg, "new-binary", model, 50)
-	setProviderVersion(old, "0.6.2")
-	setProviderVersion(newer, "0.6.4")
-
-	toolReq := &PendingRequest{
-		RequestID:          "r-tools",
-		Model:              model,
-		RequestedMaxTokens: 128,
-		Traits:             RequestTraits{HasTools: true},
-	}
-	selected, decision := reg.ReserveProviderEx(model, toolReq)
-	if selected == nil || selected.ID != newer.ID {
-		t.Fatalf("tool request selected %v, want %q (the only provider at/above the 0.6.3 floor)", selected, newer.ID)
-	}
-	if decision.CandidateCount != 1 {
-		t.Fatalf("CandidateCount=%d, want 1 (below-floor provider excluded)", decision.CandidateCount)
-	}
-	newer.RemovePending("r-tools")
-
-	// Without tools, the old binary is still a candidate.
-	plain := &PendingRequest{RequestID: "r-plain", Model: model, RequestedMaxTokens: 128}
-	selected, decision = reg.ReserveProviderEx(model, plain)
-	if selected == nil {
-		t.Fatal("plain request should route")
-	}
-	if decision.CandidateCount != 2 {
-		t.Fatalf("CandidateCount=%d, want 2 (floor only applies to tool-bearing requests)", decision.CandidateCount)
-	}
-}
-
 // Scheduler integration: a provider advertising template_render_ok=false for
-// the model must be skipped for tool requests even when its version meets the
-// floor — and a fleet with no render-capable provider yields no selection
-// rather than a guaranteed crash.
+// the model must be skipped for tool requests — and a fleet with no
+// render-capable provider yields no selection rather than a guaranteed crash.
 func TestReserveProviderExSkipsTemplateRenderBrokenForTools(t *testing.T) {
 	reg := New(testLogger())
 	model := "render-gate-model"
@@ -385,22 +312,15 @@ func TestReserveProviderExVersionDiverseRetry(t *testing.T) {
 }
 
 // HasToolCapableProviderForModel backs the consumer's tools fail-fast: it
-// must report false when the model's WHOLE pool is trait-gated (below the
-// tools floor, render-broken, offline, or untrusted) and flip true the moment
-// one eligible provider serves the model.
+// must report false when the model's WHOLE pool is trait-gated (render-broken,
+// offline, or untrusted) and flip true the moment one eligible provider serves
+// the model.
 func TestHasToolCapableProviderForModel(t *testing.T) {
 	reg := New(testLogger())
 	model := "tool-capable-model"
 
-	// Only a below-floor provider serves the model → no tool capability.
-	old := makeSchedulerProvider(t, reg, "old-binary", model, 200)
-	setProviderVersion(old, "0.5.16")
-	if reg.HasToolCapableProviderForModel(model) {
-		t.Fatal("below-floor provider must not count as tool-capable")
-	}
-
-	// A provider past the floor but with an explicit broken template render
-	// for this model still doesn't count.
+	// A provider with an explicit broken template render for this model
+	// doesn't count.
 	broken := makeSchedulerProvider(t, reg, "render-broken", model, 100)
 	setProviderVersion(broken, "0.6.4")
 	broken.mu.Lock()
@@ -410,18 +330,18 @@ func TestHasToolCapableProviderForModel(t *testing.T) {
 		t.Fatal("render-broken provider must not count as tool-capable")
 	}
 
-	// A past-floor provider serving a DIFFERENT model doesn't help this one.
+	// A healthy provider serving a DIFFERENT model doesn't help this one.
 	otherModel := makeSchedulerProvider(t, reg, "other-model", "some-other-model", 100)
 	setProviderVersion(otherModel, "0.6.4")
 	if reg.HasToolCapableProviderForModel(model) {
 		t.Fatal("a tool-capable provider for another model must not count")
 	}
 
-	// One healthy past-floor provider for the model flips the answer.
+	// One healthy provider for the model flips the answer.
 	ok := makeSchedulerProvider(t, reg, "healthy", model, 50)
 	setProviderVersion(ok, "0.6.4")
 	if !reg.HasToolCapableProviderForModel(model) {
-		t.Fatal("past-floor provider with no render verdict must count as tool-capable")
+		t.Fatal("provider with no render verdict must count as tool-capable")
 	}
 
 	// Offline and untrusted providers don't count.

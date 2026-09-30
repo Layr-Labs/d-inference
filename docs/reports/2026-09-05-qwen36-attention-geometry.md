@@ -1,6 +1,6 @@
 # Qwen3.6 attention geometry coverage
 
-> Last updated: 2026-09-05 · commit `b5884778b`
+> Last updated: 2026-09-05
 
 Thirteen new synthetic attention cases pass for Qwen3.6's head geometry and
 long-context boundaries with unchanged numerical limits. The tests exercise

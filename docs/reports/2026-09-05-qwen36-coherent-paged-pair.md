@@ -1,6 +1,6 @@
 # Qwen3.6 paged SSD pair with coherent idle observations
 
-> Last updated: 2026-09-05 · commit `9e49059a1`
+> Last updated: 2026-09-05
 
 Qwen3.6 35B passes a fresh paged B1 cache-off/SSD pair on M5 Max 128GiB.
 The unchanged strict evaluator from `437bea4fe` accepts exact prompt/output tokens,

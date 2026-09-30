@@ -266,9 +266,9 @@ func TestRequestProfilesWriteOnceAndReadNewestFirst(t *testing.T) {
 				t.Fatalf("RecordRequestProfiles(nil): %v", err)
 			}
 
-			got := s.RequestProfilesSince(time.Time{})
+			got := s.RequestProfilesSinceFiltered(time.Time{}, RequestProfileFilter{})
 			if len(got) != 3 {
-				t.Fatalf("RequestProfilesSince(zero) = %d rows, want 3", len(got))
+				t.Fatalf("RequestProfilesSinceFiltered(zero) = %d rows, want 3", len(got))
 			}
 			wantOrder := []*RequestProfileRecord{c, b, a}
 			for i, want := range wantOrder {
@@ -303,8 +303,8 @@ func TestRequestProfilesWriteOnceAndReadNewestFirst(t *testing.T) {
 			}
 
 			// since window: only c is at/after base-1s.
-			if recent := s.RequestProfilesSince(base.Add(-time.Second)); len(recent) != 1 || recent[0].RequestID != c.RequestID {
-				t.Fatalf("RequestProfilesSince(window) = %d rows (%v), want just c", len(recent), recent)
+			if recent := s.RequestProfilesSinceFiltered(base.Add(-time.Second), RequestProfileFilter{}); len(recent) != 1 || recent[0].RequestID != c.RequestID {
+				t.Fatalf("RequestProfilesSinceFiltered(window) = %d rows (%v), want just c", len(recent), recent)
 			}
 		})
 	}
@@ -413,7 +413,7 @@ func TestPruneTelemetryDeletesOnlyOlderRows(t *testing.T) {
 			if deleted != 16 {
 				t.Fatalf("PruneTelemetry deleted %d rows, want 16", deleted)
 			}
-			remaining := s.RequestProfilesSince(time.Time{})
+			remaining := s.RequestProfilesSinceFiltered(time.Time{}, RequestProfileFilter{})
 			if len(remaining) != 3 {
 				t.Fatalf("%d profiles remain, want 3", len(remaining))
 			}
@@ -437,7 +437,7 @@ func TestPruneTelemetryDeletesOnlyOlderRows(t *testing.T) {
 			if err := s.RecordRequestProfiles([]*RequestProfileRecord{profiles[0]}); err != nil {
 				t.Fatalf("re-insert pruned profile: %v", err)
 			}
-			if got := s.RequestProfilesSince(time.Time{}); len(got) != 4 {
+			if got := s.RequestProfilesSinceFiltered(time.Time{}, RequestProfileFilter{}); len(got) != 4 {
 				t.Fatalf("after re-insert %d profiles, want 4", len(got))
 			}
 		})
@@ -485,7 +485,7 @@ func TestPostgresRecordRequestProfilesLargeBatchUsesAllShapes(t *testing.T) {
 	if err := s.RecordRequestProfiles(records); err != nil {
 		t.Fatalf("RecordRequestProfiles(70): %v", err)
 	}
-	got := s.RequestProfilesSince(time.Time{})
+	got := s.RequestProfilesSinceFiltered(time.Time{}, RequestProfileFilter{})
 	if len(got) != 70 {
 		t.Fatalf("read back %d rows, want 70", len(got))
 	}
@@ -523,7 +523,7 @@ func TestPostgresPruneTelemetryRespectsBatch(t *testing.T) {
 	if deleted != 12 || rounds != 3 {
 		t.Fatalf("pruneTelemetryTable = (%d deleted, %d rounds), want (12, 3)", deleted, rounds)
 	}
-	if got := s.RequestProfilesSince(time.Time{}); len(got) != 1 {
+	if got := s.RequestProfilesSinceFiltered(time.Time{}, RequestProfileFilter{}); len(got) != 1 {
 		t.Fatalf("%d rows remain, want 1", len(got))
 	}
 	// Nothing left below the cutoff → no rounds at all.
@@ -539,7 +539,7 @@ func TestPostgresPruneTelemetryRespectsBatch(t *testing.T) {
 	if _, _, err = s.pruneTelemetryTable(cancelled, requestProfilesTable, now.Add(time.Hour), 5); err == nil {
 		t.Fatal("pruneTelemetryTable with cancelled ctx returned nil error")
 	}
-	if got := s.RequestProfilesSince(time.Time{}); len(got) != 1 {
+	if got := s.RequestProfilesSinceFiltered(time.Time{}, RequestProfileFilter{}); len(got) != 1 {
 		t.Fatalf("cancelled prune deleted rows: %d remain, want 1", len(got))
 	}
 }
@@ -679,7 +679,7 @@ func TestRequestProfilesSinceFilteredAppliesPredicatesBeforeTheCap(t *testing.T)
 			t.Fatal(err)
 		}
 	}
-	if got := s.RequestProfilesSince(time.Time{}); len(got) != maxTelemetryReadRows || got[len(got)-1].ProviderID == "prov-old" {
+	if got := s.RequestProfilesSinceFiltered(time.Time{}, RequestProfileFilter{}); len(got) != maxTelemetryReadRows || got[len(got)-1].ProviderID == "prov-old" {
 		t.Fatalf("unfiltered read must be capped to the newest rows (got %d, last=%s)", len(got), got[len(got)-1].ProviderID)
 	}
 	for name, f := range map[string]RequestProfileFilter{

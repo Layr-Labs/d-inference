@@ -96,6 +96,10 @@ public enum PrefixCacheDonationOutcome: String, Codable, Sendable, Equatable, Ca
     case writeIOFailed = "write_io_failed"
     case existingCacheUnreadable = "existing_cache_unreadable"
     case cacheEntryEvicted = "cache_entry_evicted"
+    /// The store declined a complete-checkpoint write because neither the
+    /// coordinator's `cache_repeated_prefix_tokens` nor the local tag history
+    /// showed repeat demand. No bytes and no write budget were spent.
+    case skippedNovel = "skipped_novel"
 }
 
 public struct PrefixCacheDonationOutcomeCount: Codable, Sendable, Equatable {
@@ -176,6 +180,7 @@ public enum ProviderMessage: Sendable, Equatable {
     case register(Register)
     case heartbeat(Heartbeat)
     case inferenceAccepted(InferenceAccepted)
+    case serviceReservationReleased(String)
     case inferenceResponseChunk(InferenceResponseChunk)
     case inferenceComplete(InferenceComplete)
     case inferenceError(InferenceError)
@@ -200,13 +205,10 @@ public enum ProviderMessage: Sendable, Equatable {
         public var version: String?
         public var publicKey: String?
         public var encryptedResponseChunks: Bool
-        public var walletAddress: String?
         public var attestation: RawJSON?
         public var prefillTps: Double?
         public var decodeTps: Double?
         public var authToken: String?
-        public var pythonHash: String?
-        public var runtimeHash: String?
         public var templateHashes: [String: String]
         public var privacyCapabilities: PrivacyCapabilities?
         public var runtimeCapabilities: [ProviderRuntimeCapability]
@@ -238,13 +240,10 @@ public enum ProviderMessage: Sendable, Equatable {
             version: String? = nil,
             publicKey: String? = nil,
             encryptedResponseChunks: Bool = false,
-            walletAddress: String? = nil,
             attestation: RawJSON? = nil,
             prefillTps: Double? = nil,
             decodeTps: Double? = nil,
             authToken: String? = nil,
-            pythonHash: String? = nil,
-            runtimeHash: String? = nil,
             templateHashes: [String: String] = [:],
             privacyCapabilities: PrivacyCapabilities? = nil,
             runtimeCapabilities: [ProviderRuntimeCapability] = [],
@@ -266,13 +265,10 @@ public enum ProviderMessage: Sendable, Equatable {
             self.version = version
             self.publicKey = publicKey
             self.encryptedResponseChunks = encryptedResponseChunks
-            self.walletAddress = walletAddress
             self.attestation = attestation
             self.prefillTps = prefillTps
             self.decodeTps = decodeTps
             self.authToken = authToken
-            self.pythonHash = pythonHash
-            self.runtimeHash = runtimeHash
             self.templateHashes = templateHashes
             self.privacyCapabilities = privacyCapabilities
             self.runtimeCapabilities = runtimeCapabilities.sorted()
@@ -644,7 +640,13 @@ public enum ProviderMessage: Sendable, Equatable {
             self.cacheSeq = cacheSeq
             self.outcome = outcome
             self.tier = tier
-            self.readyAnchors = Array(readyAnchors.prefix(tier == .memory ? 16 : 2))
+            // Explicit checkpoint receipts carry every durable boundary the
+            // donor kept, up to the coordinator's 16-anchor limit. Over that
+            // limit the DEEPEST anchors stay: they are ascending, and the
+            // last one is the final anchor the receipt's savings are stated
+            // against. The sequencer emits at most the prompt and final
+            // anchors for a non-checkpoint SSD receipt.
+            self.readyAnchors = Array(readyAnchors.suffix(16))
             self.requiredRecomputeTokens = requiredRecomputeTokens
             self.expectedPrefillTokensSaved = expectedPrefillTokensSaved
             self.stageMs = stageMs
@@ -742,8 +744,6 @@ public enum ProviderMessage: Sendable, Equatable {
         public var secureBootEnabled: Bool?
         public var binaryHash: String?
         public var activeModelHash: String?
-        public var pythonHash: String?
-        public var runtimeHash: String?
         public var templateHashes: [String: String]
         public var modelHashes: [String: String]
 
@@ -757,8 +757,6 @@ public enum ProviderMessage: Sendable, Equatable {
             secureBootEnabled: Bool? = nil,
             binaryHash: String? = nil,
             activeModelHash: String? = nil,
-            pythonHash: String? = nil,
-            runtimeHash: String? = nil,
             templateHashes: [String: String] = [:],
             modelHashes: [String: String] = [:]
         ) {
@@ -771,8 +769,6 @@ public enum ProviderMessage: Sendable, Equatable {
             self.secureBootEnabled = secureBootEnabled
             self.binaryHash = binaryHash
             self.activeModelHash = activeModelHash
-            self.pythonHash = pythonHash
-            self.runtimeHash = runtimeHash
             self.templateHashes = templateHashes
             self.modelHashes = modelHashes
         }
@@ -855,6 +851,7 @@ extension ProviderMessage: Codable {
         case register
         case heartbeat
         case inferenceAccepted = "inference_accepted"
+        case serviceReservationReleased = "service_reservation_released"
         case inferenceResponseChunk = "inference_response_chunk"
         case inferenceComplete = "inference_complete"
         case inferenceError = "inference_error"
@@ -875,17 +872,15 @@ extension ProviderMessage: Codable {
 
     enum CodingKeys: String, CodingKey {
         case type
+        case serviceReservationID = "service_reservation_id"
         // Register
         case hardware, models, backend, version
         case publicKey = "public_key"
         case encryptedResponseChunks = "encrypted_response_chunks"
-        case walletAddress = "wallet_address"
         case attestation
         case prefillTps = "prefill_tps"
         case decodeTps = "decode_tps"
         case authToken = "auth_token"
-        case pythonHash = "python_hash"
-        case runtimeHash = "runtime_hash"
         case templateHashes = "template_hashes"
         case privacyCapabilities = "privacy_capabilities"
         case runtimeCapabilities = "runtime_capabilities"
@@ -989,13 +984,10 @@ extension ProviderMessage: Codable {
             if r.encryptedResponseChunks {
                 try container.encode(true, forKey: .encryptedResponseChunks)
             }
-            try container.encodeIfPresent(r.walletAddress, forKey: .walletAddress)
             try container.encodeIfPresent(r.attestation, forKey: .attestation)
             try container.encodeIfPresent(r.prefillTps, forKey: .prefillTps)
             try container.encodeIfPresent(r.decodeTps, forKey: .decodeTps)
             try container.encodeIfPresent(r.authToken, forKey: .authToken)
-            try container.encodeIfPresent(r.pythonHash, forKey: .pythonHash)
-            try container.encodeIfPresent(r.runtimeHash, forKey: .runtimeHash)
             if !r.templateHashes.isEmpty {
                 try container.encode(r.templateHashes, forKey: .templateHashes)
             }
@@ -1047,6 +1039,10 @@ extension ProviderMessage: Codable {
             // 0 ("always ready") is a real value and MUST reach the wire; only
             // nil (policy not reported) is omitted — Go decodes into *int.
             try container.encodeIfPresent(h.idleUnloadMins, forKey: .idleUnloadMins)
+
+        case .serviceReservationReleased(let id):
+            try container.encode(TypeValue.serviceReservationReleased, forKey: .type)
+            try container.encode(id, forKey: .serviceReservationID)
 
         case .inferenceAccepted(let a):
             try container.encode(TypeValue.inferenceAccepted, forKey: .type)
@@ -1113,8 +1109,6 @@ extension ProviderMessage: Codable {
             try container.encodeIfPresent(a.secureBootEnabled, forKey: .secureBootEnabled)
             try container.encodeIfPresent(a.binaryHash, forKey: .binaryHash)
             try container.encodeIfPresent(a.activeModelHash, forKey: .activeModelHash)
-            try container.encodeIfPresent(a.pythonHash, forKey: .pythonHash)
-            try container.encodeIfPresent(a.runtimeHash, forKey: .runtimeHash)
             if !a.templateHashes.isEmpty {
                 try container.encode(a.templateHashes, forKey: .templateHashes)
             }
@@ -1256,13 +1250,10 @@ extension ProviderMessage: Codable {
                 version: try container.decodeIfPresent(String.self, forKey: .version),
                 publicKey: try container.decodeIfPresent(String.self, forKey: .publicKey),
                 encryptedResponseChunks: try container.decodeIfPresent(Bool.self, forKey: .encryptedResponseChunks) ?? false,
-                walletAddress: try container.decodeIfPresent(String.self, forKey: .walletAddress),
                 attestation: try container.decodeIfPresent(RawJSON.self, forKey: .attestation),
                 prefillTps: try container.decodeIfPresent(Double.self, forKey: .prefillTps),
                 decodeTps: try container.decodeIfPresent(Double.self, forKey: .decodeTps),
                 authToken: try container.decodeIfPresent(String.self, forKey: .authToken),
-                pythonHash: try container.decodeIfPresent(String.self, forKey: .pythonHash),
-                runtimeHash: try container.decodeIfPresent(String.self, forKey: .runtimeHash),
                 templateHashes: try container.decodeIfPresent([String: String].self, forKey: .templateHashes) ?? [:],
                 privacyCapabilities: try container.decodeIfPresent(PrivacyCapabilities.self, forKey: .privacyCapabilities),
                 runtimeCapabilities: try container.decodeIfPresent(
@@ -1310,6 +1301,9 @@ extension ProviderMessage: Codable {
                     forKey: .prefixCacheDonationOutcomes),
                 idleUnloadMins: try container.decodeIfPresent(UInt64.self, forKey: .idleUnloadMins)
             ))
+
+        case .serviceReservationReleased:
+            self = .serviceReservationReleased(try container.decode(String.self, forKey: .serviceReservationID))
 
         case .inferenceAccepted:
             self = .inferenceAccepted(InferenceAccepted(
@@ -1377,8 +1371,6 @@ extension ProviderMessage: Codable {
                 secureBootEnabled: try container.decodeIfPresent(Bool.self, forKey: .secureBootEnabled),
                 binaryHash: try container.decodeIfPresent(String.self, forKey: .binaryHash),
                 activeModelHash: try container.decodeIfPresent(String.self, forKey: .activeModelHash),
-                pythonHash: try container.decodeIfPresent(String.self, forKey: .pythonHash),
-                runtimeHash: try container.decodeIfPresent(String.self, forKey: .runtimeHash),
                 templateHashes: try container.decodeIfPresent([String: String].self, forKey: .templateHashes) ?? [:],
                 modelHashes: try container.decodeIfPresent([String: String].self, forKey: .modelHashes) ?? [:]
             ))
@@ -1542,37 +1534,51 @@ public enum CoordinatorMessage: Sendable, Equatable {
 
     public struct InferenceRequest: Sendable, Equatable {
         public var requestId: String
-        public var body: JSONValue
         public var encryptedBody: EncryptedPayload?
         /// Positive time remaining for this dispatch attempt to produce its
         /// first content-bearing chunk. Nil preserves the legacy wire shape.
         public var firstContentBudgetMs: Int64?
+        /// Artifact-bound prompt accounting; the provider reconciles it after tokenization.
+        public var promptWork: PromptWork?
         public var cacheReceiptNonce: String?
         public var cacheScope: String?
         public var prefixCacheProtocol: Int?
         public var cacheReceiptBoundaryMode: String?
+        /// Coordinator-observed fleet-wide repeat demand: the deepest boundary
+        /// another plan shared within the routing TTL (multiples of 1,024
+        /// tokens and final boundaries), 0 when none did. An integer count only, never a key, hash or boundary.
+        /// Nil means an older coordinator (or no granted scope); 0 is a real
+        /// value, so it is NOT normalised away like `firstContentBudgetMs`.
+        public var cacheRepeatedPrefixTokens: Int?
         public var toolSchemaMetadataProtocol: Int?
+        /// Opaque coordinator reservation identity, independent of requestId.
+        /// Nil preserves compatibility with coordinators without service leases.
+        public var serviceReservationID: String?
 
         public init(
             requestId: String,
-            body: JSONValue = .null,
             encryptedBody: EncryptedPayload? = nil,
             firstContentBudgetMs: Int64? = nil,
             cacheReceiptNonce: String? = nil,
             cacheScope: String? = nil,
             prefixCacheProtocol: Int? = nil,
             cacheReceiptBoundaryMode: String? = nil,
-            toolSchemaMetadataProtocol: Int? = nil
+            cacheRepeatedPrefixTokens: Int? = nil,
+            toolSchemaMetadataProtocol: Int? = nil,
+            serviceReservationID: String? = nil,
+            promptWork: PromptWork? = nil
         ) {
             self.requestId = requestId
-            self.body = body
             self.encryptedBody = encryptedBody
             self.firstContentBudgetMs = firstContentBudgetMs.flatMap { $0 > 0 ? $0 : nil }
             self.cacheReceiptNonce = cacheReceiptNonce
             self.cacheScope = cacheScope
             self.prefixCacheProtocol = prefixCacheProtocol
             self.cacheReceiptBoundaryMode = cacheReceiptBoundaryMode
+            self.cacheRepeatedPrefixTokens = cacheRepeatedPrefixTokens.map { max(0, $0) }
             self.toolSchemaMetadataProtocol = toolSchemaMetadataProtocol
+            self.serviceReservationID = serviceReservationID
+            self.promptWork = promptWork
         }
     }
 
@@ -1679,16 +1685,22 @@ public enum CoordinatorMessage: Sendable, Equatable {
     public struct DesiredModelEntry: Sendable, Equatable, Codable {
         public var modelName: String
         public var desiredBuild: String
+        public var revision: String?
+        public var aggregateSHA256: String?
         public var previousBuild: String?
-        public init(modelName: String, desiredBuild: String, previousBuild: String? = nil) {
+        public init(modelName: String, desiredBuild: String, previousBuild: String? = nil, revision: String? = nil, aggregateSHA256: String? = nil) {
             self.modelName = modelName
             self.desiredBuild = desiredBuild
             self.previousBuild = previousBuild
+            self.revision = revision
+            self.aggregateSHA256 = aggregateSHA256
         }
         enum CodingKeys: String, CodingKey {
             case modelName = "model_name"
             case desiredBuild = "desired_build"
             case previousBuild = "previous_build"
+            case revision
+            case aggregateSHA256 = "aggregate_sha256"
         }
     }
 
@@ -1741,13 +1753,15 @@ extension CoordinatorMessage: Codable {
     enum CodingKeys: String, CodingKey {
         case type
         case requestId = "request_id"
-        case body
         case encryptedBody = "encrypted_body"
         case firstContentBudgetMs = "first_content_budget_ms"
+        case promptWork = "prompt_work"
+        case serviceReservationID = "service_reservation_id"
         case cacheReceiptNonce = "cache_receipt_nonce"
         case cacheScope = "cache_scope"
         case prefixCacheProtocol = "prefix_cache_protocol"
         case cacheReceiptBoundaryMode = "cache_receipt_boundary_mode"
+        case cacheRepeatedPrefixTokens = "cache_repeated_prefix_tokens"
         case toolSchemaMetadataProtocol = "tool_schema_metadata_protocol"
         case nonce, timestamp
         case codeChallenge = "code_challenge"
@@ -1784,7 +1798,6 @@ extension CoordinatorMessage: Codable {
         case .inferenceRequest(let r):
             try container.encode(TypeValue.inferenceRequest, forKey: .type)
             try container.encode(r.requestId, forKey: .requestId)
-            try container.encode(r.body, forKey: .body)
             try container.encodeIfPresent(r.encryptedBody, forKey: .encryptedBody)
             if let firstContentBudgetMs = r.firstContentBudgetMs, firstContentBudgetMs > 0 {
                 try container.encode(firstContentBudgetMs, forKey: .firstContentBudgetMs)
@@ -1793,9 +1806,12 @@ extension CoordinatorMessage: Codable {
             try container.encodeIfPresent(r.cacheScope, forKey: .cacheScope)
             try container.encodeIfPresent(r.prefixCacheProtocol, forKey: .prefixCacheProtocol)
             try container.encodeIfPresent(r.cacheReceiptBoundaryMode, forKey: .cacheReceiptBoundaryMode)
+            try container.encodeIfPresent(r.cacheRepeatedPrefixTokens, forKey: .cacheRepeatedPrefixTokens)
             try container.encodeIfPresent(
                 r.toolSchemaMetadataProtocol,
                 forKey: .toolSchemaMetadataProtocol)
+            try container.encodeIfPresent(r.serviceReservationID, forKey: .serviceReservationID)
+            try container.encodeIfPresent(r.promptWork, forKey: .promptWork)
 
         case .cancel(let c):
             try container.encode(TypeValue.cancel, forKey: .type)
@@ -1878,7 +1894,6 @@ extension CoordinatorMessage: Codable {
         case .inferenceRequest:
             self = .inferenceRequest(InferenceRequest(
                 requestId: try container.decode(String.self, forKey: .requestId),
-                body: try container.decodeIfPresent(JSONValue.self, forKey: .body) ?? .null,
                 encryptedBody: try container.decodeIfPresent(EncryptedPayload.self, forKey: .encryptedBody),
                 firstContentBudgetMs: try container.decodeIfPresent(
                     Int64.self, forKey: .firstContentBudgetMs),
@@ -1888,8 +1903,16 @@ extension CoordinatorMessage: Codable {
                     Int.self, forKey: .prefixCacheProtocol),
                 cacheReceiptBoundaryMode: try container.decodeIfPresent(
                     String.self, forKey: .cacheReceiptBoundaryMode),
+                cacheRepeatedPrefixTokens: try container.decodeIfPresent(
+                    Int.self, forKey: .cacheRepeatedPrefixTokens),
                 toolSchemaMetadataProtocol: try container.decodeIfPresent(
-                    Int.self, forKey: .toolSchemaMetadataProtocol)
+                    Int.self, forKey: .toolSchemaMetadataProtocol),
+                serviceReservationID: try container.decodeIfPresent(
+                    String.self, forKey: .serviceReservationID),
+                // Advisory evidence must never discard the request itself.
+                // Missing/malformed evidence keeps actual tokenization and
+                // ordinary observed-rate deadline admission authoritative.
+                promptWork: try? container.decodeIfPresent(PromptWork.self, forKey: .promptWork)
             ))
 
         case .cancel:

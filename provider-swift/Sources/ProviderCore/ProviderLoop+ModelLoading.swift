@@ -172,7 +172,7 @@ extension ProviderLoop {
             return nil
         case .changed:
             await newcomer.releaseAfterExternalResources()
-            MLX.Memory.clearCache()
+            clearCacheAfterConfirmedNativeOwnership()
             let message =
                 "Model '\(modelId)' changed while loading reusable SSD cache state — unloaded"
             recordModelLoadError(model: modelId, message: message)
@@ -195,9 +195,11 @@ extension ProviderLoop {
     /// the assistant before admission. The target remains independently
     /// loadable: assistant headroom failure selects target-only decode.
     internal func ensureModelLoaded(
-        modelId: String, allowEviction: Bool = true
+        modelId: String, allowEviction: Bool = true, revisionUpdate: Bool = false, revisionDirectory: URL? = nil
     ) async throws {
-        await waitForMTPUpgrade(modelId)
+        try requireNativeMiMoProcessWorkAllowed()
+        try refuseClosingNativeMiMoOwner(modelId)
+        if !revisionUpdate { await waitForMTPUpgrade(modelId) }
         try ModelRuntimeRequirements.requireEligible(
             modelID: modelId, available: loopConfig.runtimeCapabilities)
         if isShuttingDown {
@@ -236,11 +238,11 @@ extension ProviderLoop {
             try throwIfRetiring(modelId)
             if modelSlots[modelId] != nil { return }
             try await ensureModelLoaded(
-                modelId: modelId, allowEviction: allowEviction)
+                modelId: modelId, allowEviction: allowEviction, revisionUpdate: revisionUpdate, revisionDirectory: revisionDirectory)
             return
         }
 
-        guard let modelPath = ModelScanner.resolveLocalPath(modelID: modelId) else {
+        guard let modelPath = revisionDirectory ?? ModelScanner.resolveLocalPath(modelID: modelId) else {
             throw InferenceError.invalidModelDirectory(
                 "Model '\(modelId)' not found in local HuggingFace cache"
             )
@@ -251,8 +253,21 @@ extension ProviderLoop {
                 "Model '\(modelId)' not in advertised model list"
             )
         }
-        var mtpPreparation = await specDecPreparation(
-            modelId: modelId, modelInfo: modelInfo, modelDirectory: modelPath)
+        let nativeLoad: MiMoV26ServingLoad?
+        if modelInfo.modelType == "mimo_v2" {
+            guard let inspected = try MiMoV26OrdinaryServingPolicy.inspect(directory: modelPath, budget: kvBudget) else {
+                throw MiMoV26ServingLoadError.nativeOwnerMismatch
+            }
+            nativeLoad = inspected
+        } else { nativeLoad = nil }
+        var mtpPreparation: SpecDecPreparation
+        if let nativeLoad {
+            mtpPreparation = try MiMoV26ServingLoad.preparation(mode: loopConfig.config.backend.mtpMode,
+                externalPath: loopConfig.config.backend.mtpDrafterPath,
+                embeddedArtifactDeclared: nativeLoad.hasEmbeddedMTP)
+        } else {
+            mtpPreparation = await specDecPreparation(modelId: modelId, modelInfo: modelInfo, modelDirectory: modelPath)
+        }
 
         // Re-check residency and in-flight loads after the preparation await:
         // a concurrent request for the same cold model can pass the checks
@@ -272,12 +287,12 @@ extension ProviderLoop {
         if modelSlots[modelId] != nil { return }
         if modelsLoading.contains(modelId) {
             try await ensureModelLoaded(
-                modelId: modelId, allowEviction: allowEviction)
+                modelId: modelId, allowEviction: allowEviction, revisionUpdate: revisionUpdate, revisionDirectory: revisionDirectory)
             return
         }
 
         // Serialize loads so concurrent eviction decisions don't interleave
-        while isLoadingAny {
+        while isLoadingAny || (!revisionUpdate && modelRevisionActivationID != nil) {
             await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
                 loadGateWaiters.append(cont)
             }
@@ -293,7 +308,16 @@ extension ProviderLoop {
             try throwIfRetiring(modelId)
             if modelSlots[modelId] != nil { return }
         }
+        // Preparation/load-gate waits may have spanned a complete revision
+        // activation. Re-resolve both bytes and metadata before owning the load
+        // gate, otherwise a cold preload can resurrect the previous revision.
+        if (revisionDirectory == nil && ModelScanner.resolveLocalPath(modelID: modelId) != modelPath) || advertisedModels[modelId] != modelInfo {
+            try await ensureModelLoaded(modelId: modelId, allowEviction: allowEviction, revisionUpdate: revisionUpdate, revisionDirectory: revisionDirectory)
+            return
+        }
         isLoadingAny = true
+        let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity.finish() }
 
         // Re-check slot cap after gate (another load may have consumed a slot)
         if modelSlots.count >= maxModelSlots {
@@ -336,6 +360,10 @@ extension ProviderLoop {
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
 
+            guard nativeMiMoAllowsReclamation() else {
+                throw InferenceError.modelLoadFailed("Native MiMo slot retirement prevents a new load")
+            }
+
             // Load gate: require room for the WEIGHTS plus headroom for ONE
             // request, not a full-concurrency multiple. Concurrency beyond one
             // request is sized dynamically at runtime by the live token budget +
@@ -351,7 +379,7 @@ extension ProviderLoop {
             // eligible native Qwen4 uses its validated incremental-copy envelope;
             // other layouts retain disk×1.2. Activation/minimum KV are additional.
             let targetWeightsGb = Self.loadGateWeightsGb(
-                estimatedWeightsGb: modelInfo.estimatedMemoryGb,
+                estimatedWeightsGb: nativeLoad?.estimatedWeightsGb ?? modelInfo.estimatedMemoryGb,
                 extraWeightBytes: 0)
             do {
                 try await evictUntilAvailable(
@@ -377,26 +405,34 @@ extension ProviderLoop {
 
             // The accepted lease is the allocation permit. Advisory eviction and
             // assistant checks above cannot reserve process memory across awaits.
-            var pendingLoadBytes = Self.pendingLoadReservationBytes(
-                estimatedWeightsGb: modelInfo.estimatedMemoryGb,
-                extraWeightBytes: extraWeightBytes)
-            pendingLoad = await kvBudget.claimPendingLoad(
-                requestID: pendingLoadID, weightBytes: pendingLoadBytes)
-            if pendingLoad == nil, extraWeightBytes > 0 {
-                // A concurrent engine may consume only the assistant's margin.
-                // Retry the independently serveable target once, without eviction.
-                mtpPreparation = mtpPreparation.fallingBack(.assistantMemoryUnavailable)
-                extraWeightBytes = 0
-                pendingLoadBytes = Self.pendingLoadReservationBytes(
-                    estimatedWeightsGb: modelInfo.estimatedMemoryGb, extraWeightBytes: 0)
+            if let nativeLoad {
+                try await loadNativeMiMoSlot(modelID: modelId, directory: modelPath,
+                                             load: nativeLoad, preparation: mtpPreparation)
+                try await finishNativeMiMoSlotPublication(modelID: modelId)
+                return
+            }
+            do {
+                var pendingLoadBytes = Self.pendingLoadReservationBytes(
+                    estimatedWeightsGb: modelInfo.estimatedMemoryGb,
+                    extraWeightBytes: extraWeightBytes)
                 pendingLoad = await kvBudget.claimPendingLoad(
                     requestID: pendingLoadID, weightBytes: pendingLoadBytes)
+                if pendingLoad == nil, extraWeightBytes > 0 {
+                    // A concurrent engine may consume only the assistant's margin.
+                    // Retry the independently serveable target once, without eviction.
+                    mtpPreparation = mtpPreparation.fallingBack(.assistantMemoryUnavailable)
+                    extraWeightBytes = 0
+                    pendingLoadBytes = Self.pendingLoadReservationBytes(
+                        estimatedWeightsGb: modelInfo.estimatedMemoryGb, extraWeightBytes: 0)
+                    pendingLoad = await kvBudget.claimPendingLoad(
+                        requestID: pendingLoadID, weightBytes: pendingLoadBytes)
+                }
+                guard let acceptedLoad = pendingLoad else {
+                    throw InferenceError.modelLoadFailed(
+                        "Insufficient memory for '\(modelId)' at final load admission")
+                }
+                pendingLoadLeases[modelId] = acceptedLoad
             }
-            guard let acceptedLoad = pendingLoad else {
-                throw InferenceError.modelLoadFailed(
-                    "Insufficient memory for '\(modelId)' at final load admission")
-            }
-            pendingLoadLeases[modelId] = acceptedLoad
 
             logger.info("Loading model: \(modelId) from \(modelPath.path)")
             // Cold-start load timing (slot-level `model_load_time_ms`): from
@@ -409,11 +445,14 @@ extension ProviderLoop {
             // hash of the bytes actually loaded — not the disk state at daemon
             // start. (See `captureWeightHash` for the full rationale.)
             let reusableSSDRequested = PrefixCachePolicy.isEnabled(modelId: modelId)
+            let artifactIdentityRequired = reusableSSDRequested
+                || ServingPerformanceProfiles.requiresArtifactHash(modelID: modelId)
+                || DeadlinePerformanceProfiles.requiresArtifactHash(modelID: modelId)
             let preLoadHash = try await captureWeightHash(
                 modelId: modelId,
                 modelPath: modelPath,
-                requireFreshCryptographicHash: reusableSSDRequested)
-            if !reusableSSDRequested {
+                requireFreshCryptographicHash: artifactIdentityRequired)
+            if !artifactIdentityRequired {
                 await publishWeightHash(modelId: modelId, snapshot: preLoadHash)
             }
 
@@ -424,7 +463,7 @@ extension ProviderLoop {
             }
             // Hashing and hooks may suspend; recheck this exact held owner with
             // current policy and coherent usage before shard allocation begins.
-            guard await kvBudget.recheckPendingLoad(acceptedLoad) else {
+            if let acceptedLoad = pendingLoad, !(await kvBudget.recheckPendingLoad(acceptedLoad)) {
                 throw InferenceError.modelLoadFailed(
                     "Insufficient memory for '\(modelId)' at allocation: load headroom changed")
             }
@@ -440,28 +479,34 @@ extension ProviderLoop {
             // weights BEFORE survivor grants are restored/regrown. Never
             // bind `borrow()` to a long-lived local — that would keep the
             // weights alive past `release()`.
-            let newcomer = EngineV2NewcomerBox(try await loadModelContainer(from: modelPath, modelID: modelId))
+            let newcomer = EngineV2NewcomerBox(try await loadModelContainer(
+                from: modelPath, modelID: modelId))
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
 
-            // TOCTOU guard: reusable SSD cache participation requires two fresh
-            // cryptographic reads bracketing the container load. Unlike the old
+            // TOCTOU guard: reusable SSD cache participation or a candidate
+            // serving profile requires fresh cryptographic reads bracketing
+            // the container load. Unlike the old
             // refresh path, neither observation is published until equality is
             // established. A missing observation serves cold; an actual mismatch
             // proves artifact mutation and fails before engine construction or
             // slot installation.
+            let modelArtifactSHA256: String?
             let cacheEligibleWeightHash: String?
-            if reusableSSDRequested {
+            if artifactIdentityRequired {
                 let postLoadHash = try await captureWeightHash(
                     modelId: modelId,
                     modelPath: modelPath,
                     requireFreshCryptographicHash: true)
-                cacheEligibleWeightHash = try await finalizeReusableSSDLoad(
+                let verifiedArtifact = try await finalizeReusableSSDLoad(
                     modelId: modelId,
                     preLoad: preLoadHash,
                     postLoad: postLoadHash,
                     newcomer: newcomer)
+                modelArtifactSHA256 = verifiedArtifact
+                cacheEligibleWeightHash = reusableSSDRequested ? verifiedArtifact : nil
             } else {
+                var loadedArtifactHash = preLoadHash.hash
                 let postLoadFingerprint = await Task.detached(priority: .utility) {
                     WeightHasher.snapshotFingerprint(snapshotDir: modelPath)
                 }.value
@@ -476,7 +521,9 @@ extension ProviderLoop {
                         modelPath: modelPath,
                         fingerprint: postLoadFingerprint)
                     await publishWeightHash(modelId: modelId, snapshot: postLoadHash)
+                    loadedArtifactHash = postLoadHash.hash
                 }
+                modelArtifactSHA256 = loadedArtifactHash
                 cacheEligibleWeightHash = nil
             }
             // Hard-fail without Metal (moved from the legacy scheduler's
@@ -507,15 +554,14 @@ extension ProviderLoop {
             // off from the pending-load reservation to the live mlxUsed view —
             // concurrent KV reservations see the weights from here on. (Also
             // released in catch for the error paths above.)
-            guard await kvBudget.reducePendingLoad(
-                acceptedLoad, remainingWeightBytes: extraWeightBytes)
-            else {
+            if let acceptedLoad = pendingLoad, !(await kvBudget.reducePendingLoad(
+                acceptedLoad, remainingWeightBytes: extraWeightBytes)) {
                 await newcomer.releaseAfterExternalResources()
                 throw InferenceError.modelLoadFailed("Model load ownership changed during setup")
             }
             if isShuttingDown || Task.isCancelled {
                 await newcomer.releaseAfterExternalResources()
-                MLX.Memory.clearCache()
+                clearCacheAfterConfirmedNativeOwnership()
                 throw CancellationError()
             }
 
@@ -534,7 +580,7 @@ extension ProviderLoop {
             // which the measurement counts as "used" and would false-reject a
             // serveable model. Mirrors evictUntilAvailable / fastAdmissionReject's
             // clearCache-then-measure self-heal.
-            MLX.Memory.clearCache()
+            clearCacheAfterConfirmedNativeOwnership()
             if !KVHeadroomProbe.hasServeableKVHeadroom(activationReserveBytes: resolvedActivationReserveBytes) {
                 let headroomGb = String(
                     format: "%.1f",
@@ -544,7 +590,7 @@ extension ProviderLoop {
                 // Pre-shrink failure: no grants were mutated, so ordering is
                 // moot — but drop the weights promptly all the same.
                 await newcomer.releaseAfterExternalResources()
-                MLX.Memory.clearCache()
+                clearCacheAfterConfirmedNativeOwnership()
                 let message = "Model '\(modelId)' loaded but has insufficient KV headroom "
                     + "under the memory cap (\(headroomGb) GB free, need \(minGb) GB to serve) — unloaded"
                 recordModelLoadError(model: modelId, message: message)
@@ -581,6 +627,7 @@ extension ProviderLoop {
                     tokenizer: tokenizer,
                     targetSizing: targetSizing,
                     specDecPreparation: mtpPreparation,
+                    modelArtifactSHA256: modelArtifactSHA256,
                     cacheEligibleWeightHash: cacheEligibleWeightHash
                 )
             } catch let error as InferenceError {
@@ -590,14 +637,14 @@ extension ProviderLoop {
                 // → restore survivor grants) already ran inside
                 // `resliceAndBuildEngineV2Bundle`'s catch, before this one.
                 releaseResliceGate()
-                MLX.Memory.clearCache()
+                clearCacheAfterConfirmedNativeOwnership()
                 if case .modelLoadFailed(let message) = error {
                     recordModelLoadError(model: modelId, message: message)
                 }
                 throw error
             } catch {
                 releaseResliceGate()
-                MLX.Memory.clearCache()
+                clearCacheAfterConfirmedNativeOwnership()
                 let message =
                     "Model '\(modelId)' loaded but its v2 engine construction failed: \(error) — unloaded"
                 recordModelLoadError(model: modelId, message: message)
@@ -607,7 +654,9 @@ extension ProviderLoop {
             // live and reflected in MLX, or fully released on fallback.
             // Weight loading has ended, but keep the minimum-KV allowance
             // through post-build checks and any target-only rebuild.
-            await kvBudget.reducePendingLoad(acceptedLoad, remainingWeightBytes: 0)
+            if let acceptedLoad = pendingLoad {
+                await kvBudget.reducePendingLoad(acceptedLoad, remainingWeightBytes: 0)
+            }
             var engineBundle = slotBuild.bundle
             var sizing = slotBuild.sizing
             var engineV2Bridge = engineBundle.bridge
@@ -633,7 +682,7 @@ extension ProviderLoop {
             // conservative physical-capacity policy (pool ≤ ¼ of live
             // headroom at plan time) is what keeps the deferred commitment
             // from later eating the headroom this measurement approved.
-            MLX.Memory.clearCache()
+            clearCacheAfterConfirmedNativeOwnership()
             var postBridgeServeable = KVHeadroomProbe.postBuildServeable(
                 kvBackendKind: engineV2Bridge.kvBackendKind,
                 pagedPoolBytes: await engineV2Bridge.kvBackendPoolBytes(),
@@ -649,7 +698,7 @@ extension ProviderLoop {
                 await engineV2Runtime.unregister(modelId: modelId)
                 await engineV2Bridge.shutdown()
                 engineBundle.releaseAssistant()
-                MLX.Memory.clearCache()
+                clearCacheAfterConfirmedNativeOwnership()
                 do {
                     slotBuild = try await resliceAndBuildEngineV2Bundle(
                         modelId: modelId,
@@ -660,6 +709,7 @@ extension ProviderLoop {
                         tokenizer: tokenizer,
                         targetSizing: targetSizing,
                         specDecPreparation: mtpPreparation.fallingBack(reason),
+                        modelArtifactSHA256: modelArtifactSHA256,
                         cacheEligibleWeightHash: cacheEligibleWeightHash)
                 } catch {
                     // The retry released the target on failure. Recompute from
@@ -667,7 +717,7 @@ extension ProviderLoop {
                     // assistant-conservative grants.
                     await resliceGrowSurvivorsLocked()
                     releaseResliceGate()
-                    MLX.Memory.clearCache()
+                    clearCacheAfterConfirmedNativeOwnership()
                     let message = "Model '\(modelId)' MTP fallback engine construction failed: \(error) — unloaded"
                     recordModelLoadError(model: modelId, message: message)
                     throw InferenceError.modelLoadFailed(message)
@@ -675,7 +725,7 @@ extension ProviderLoop {
                 engineBundle = slotBuild.bundle
                 sizing = slotBuild.sizing
                 engineV2Bridge = engineBundle.bridge
-                MLX.Memory.clearCache()
+                clearCacheAfterConfirmedNativeOwnership()
                 postBridgeServeable = KVHeadroomProbe.postBuildServeable(
                     kvBackendKind: engineV2Bridge.kvBackendKind,
                     pagedPoolBytes: await engineV2Bridge.kvBackendPoolBytes(),
@@ -730,6 +780,7 @@ extension ProviderLoop {
                 modelContainer: installContainer,
                 tokenizer: tokenizer,
                 sizing: sizing,
+                modelArtifactSHA256: modelArtifactSHA256,
                 cacheEligibleWeightHash: cacheEligibleWeightHash,
                 isVLM: slotIsVLM,
                 modelType: modelInfo.modelType,
@@ -763,6 +814,10 @@ extension ProviderLoop {
             await retryReserveDeferredPrefetches()
         } catch {
             // Keep the load gate through cleanup and survivor-grant restoration.
+            if let nativeLoad {
+                await finishNativeMiMoLoadFailure(modelID: modelId, load: nativeLoad, error: error)
+                throw error
+            }
             // Only this generation's lease can retire its pending allocation.
             if let pendingLoad {
                 await kvBudget.finishPendingLoad(pendingLoad)
@@ -771,7 +826,7 @@ extension ProviderLoop {
                 }
             }
             // Release pool buffers a failed load left behind (same wedge as unload).
-            MLX.Memory.clearCache()
+            clearCacheAfterConfirmedNativeOwnership()
             modelsLoading.remove(modelId)
             // A FAILED load can be the last thing keeping a dropped
             // high-floor id in the basis (advertised entry hard-swapped away
@@ -834,14 +889,18 @@ extension ProviderLoop {
     }
 
     @discardableResult
-    internal func unloadModel(_ modelId: String, forEviction: Bool = false) async -> Bool {
-        await waitForMTPUpgrade(modelId)
+    internal func unloadModel(_ modelId: String, forEviction: Bool = false, revisionUpdate: Bool = false) async -> Bool {
+        if !revisionUpdate { await waitForMTPUpgrade(modelId) }
         // Recheck after the transition wait: staging or new work can begin
         // after the LRU/idle snapshot. Explicit retirement still may unload;
         // its retained target stays charged until preparation/discard ends.
         if forEviction && (isMTPUpgradeTargetRetained(modelId)
             || requestToModel.values.contains(modelId) || hasLocalReservation(modelId)) {
             return false
+        }
+        if nativeMiMoLoads[modelId] != nil
+            || modelSlots[modelId].flatMap({ Self.nativeMiMoLoad(in: $0.modelContainer) }) != nil {
+            return await retireNativeMiMoOwner(modelID: modelId)
         }
         // Bind only the bridge, never the whole slot: remove the slot's
         // container and opaque drafter ownership before the cache purge,
@@ -851,6 +910,8 @@ extension ProviderLoop {
             !modelsUnloading.contains(modelId)
         else { return false }
         let engineV2 = engineBundle.bridge
+        let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity.finish() }
         let isQwen4 = Qwen4SupportPolicy.isQwen4ModelType(advertisedModels[modelId]?.modelType)
             || Qwen4SupportPolicy.isOwnedModelID(modelId)
         modelsUnloading.insert(modelId)
@@ -868,7 +929,7 @@ extension ProviderLoop {
         // Mandatory: freed weights linger in MLX's pool (GPU.cacheMemory), which
         // load-admission counts as used — without this the box 503s every load
         // until restart.
-        MLX.Memory.clearCache()
+        clearCacheAfterConfirmedNativeOwnership()
         if isQwen4 { qwen4MemoryRetirement = NativeMemoryRetirementWindow() }
         // The unloaded model can no longer run a step: the serving-set floor
         // (advertised ∪ resident) may relax now — BEFORE the survivors regrow,
@@ -973,7 +1034,7 @@ extension ProviderLoop {
             // the basis too, so a load admitted during that push already
             // sees the raised floor — see `pendingAdvertise`.
             modelIDs: Array(advertisedModels.keys) + Array(modelSlots.keys)
-                + Array(modelsLoading) + Array(pendingAdvertise))
+                + Array(modelsLoading) + Array(pendingAdvertise) + Array(nativeMiMoLoads.keys))
     }
 
     /// Headroom (GB) reserved above the weights at load time. Must be at least
@@ -1003,8 +1064,10 @@ extension ProviderLoop {
     /// true mutation order and the budget can discard one that arrives
     /// stale (see `activationReserveEpoch`).
     func pushActivationReserve(_ bytes: UInt64) async {
+        let selected = nativeMiMoAllowsReclamation() ? bytes
+            : max(bytes, kvBudget.memoryHeadroomSnapshot().activationReserveBytes)
         activationReserveEpoch += 1
-        await kvBudget.setActivationReserveBytes(bytes, epoch: activationReserveEpoch)
+        await kvBudget.setActivationReserveBytes(selected, epoch: activationReserveEpoch)
     }
 
     /// One actor-local eviction snapshot shared by slot-cap, memory-load and
@@ -1087,7 +1150,7 @@ extension ProviderLoop {
                 // Nothing idle to evict — drop the reclaimable pool and resample
                 // before failing, so a pool-inflated box isn't refused a load
                 // that fits. Same self-heal as fastAdmissionReject.
-                MLX.Memory.clearCache()
+                clearCacheAfterConfirmedNativeOwnership()
                 let retried = await availableMemoryGb()
                 let retriedRequiredGb = ModelLoadAdmission.requiredToLoadGb(
                     weightsGb: weightsGb, headroomGb: loadHeadroomGb)
@@ -1127,6 +1190,8 @@ extension ProviderLoop {
     /// retirement, after which the tombstone is gone but the request still
     /// holds the pre-retirement `modelInfo` for the build that failed.
     internal func throwIfRetiring(_ modelId: String) throws {
+        try refuseClosingNativeMiMoOwner(modelId)
+        try requireResidentNativeMiMoOwner(modelId)
         guard !isRefusedByRetirement(modelId) else {
             throw InferenceError.invalidModelDirectory(
                 "Model '\(modelId)' slot is retiring after a failed self-test")
@@ -1134,6 +1199,7 @@ extension ProviderLoop {
     }
 
     internal func fastAdmissionReject(modelId: String) async -> Bool {
+        if nativeMiMoRefusesRequest(modelId) { return true }
         // Mid-retirement (failed self-test, drain in flight): the resident
         // slot LOOKS serviceable but serving it would hand out a build that
         // failed its serving-path self-test — reject fast so the
@@ -1167,6 +1233,7 @@ extension ProviderLoop {
         // atomically with respect to this actor: nothing can mutate slots
         // between the reads and the verdict, so there is no TOCTOU window.
         let available = await availableMemoryGb()
+        if nativeMiMoRefusesRequest(modelId) { return true }
         // Recompute the requirement after the suspension too: a concurrent
         // verified prefetch can have RAISED the serving-set floor while we
         // awaited memory (measured-only set + unmeasured advertise), and
@@ -1209,7 +1276,7 @@ extension ProviderLoop {
         // Not enough free memory and nothing idle to evict. Drop the reclaimable
         // pool and resample once before rejecting (the wedge self-heal).
         if available < requiredGb && !hasEvictable {
-            MLX.Memory.clearCache()
+            clearCacheAfterConfirmedNativeOwnership()
             let retried = await availableMemoryGb()
             // The retry sample is another suspension: re-resolve the
             // requirement (a concurrent prefetch can have raised the floor)
@@ -1288,13 +1355,14 @@ extension ProviderLoop {
             errorReason: .modelLoad)
     }
 
-    private func loadModelContainer(from directory: URL, modelID: String) async throws -> ProviderModelContainer {
+    private func loadModelContainer(from directory: URL, modelID: String,
+                                    nativeMiMoLoad: MiMoV26ServingLoad? = nil) async throws -> ProviderModelContainer {
         // Vision-language models (config declares `vision_config`) load via
         // VLMModelFactory so image/video requests can run the container's
         // prepare/generate vision path. Their text path still works through the
         // batched engine since VLMModel refines LanguageModel. Shared with the
         // standalone server via `ModelContainerLoading`.
-        try await ModelContainerLoading.loadServingContainer(from: directory, modelID: modelID)
+        try await ModelContainerLoading.loadServingContainer(from: directory, modelID: modelID, nativeMiMoLoad: nativeMiMoLoad)
     }
 
     /// A model is a vision-language model when its `config.json` declares a

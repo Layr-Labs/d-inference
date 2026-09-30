@@ -1,1 +1,0 @@
-../../../../libs/mlx-swift-lm/Tests/MLXLMTests/DiffusionGemmaArtifactFixtureTests.swift

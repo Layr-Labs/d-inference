@@ -1,6 +1,6 @@
 # Bonsai 2 lossless performance and API stability
 
-> Last updated: 2026-09-18 · commit `5fc48d460`
+> Last updated: 2026-09-18
 
 Matched OFF/ON qualification for the performance follow-up to merged
 Bonsai support PR1124. Decode improves in the measured workloads; prefill gains

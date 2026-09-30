@@ -67,9 +67,7 @@ func TestRewardPlanReallocatesLateLossWithoutFreezingPartialOrZeroRows(t *testin
 				rejected = p
 			}
 			if test.prior > 0 {
-				if paid, err := st.inner.SettleProviderFloorDraw(context.Background(), &store.ProviderFloorDraw{ProviderKey: "historical", AccountID: "shared", EpochID: epoch, AmountMicroUSD: test.prior}); err != nil || !paid {
-					t.Fatal("prior setup", err)
-				}
+				settlePriorFloor(t, st.inner, store.ProviderFloorDraw{ProviderKey: "historical", AccountID: "shared", EpochID: epoch, AmountMicroUSD: test.prior})
 			}
 			st.check = func(plan, index, pass int) {
 				if plan == 1 && index == len(test.keys)-1 && pass == 1 {

@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/promptwork"
 	"github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
@@ -772,7 +773,7 @@ const (
 // returned so the caller does not need to recompute it. ttftThreshold is the
 // request-local deadline pinned before admission and is only consulted in
 // aliasFallbackTTFT mode.
-func (s *Server) maybeFallbackAlias(parsed map[string]any, mode aliasFallbackMode, publicModel, currentModel string, estimatedPromptTokens, requestedMaxTokens int, ttftThreshold time.Duration, traits registry.RequestTraits, requiresVision bool, allowedProviderSerials []string) (string, int, int, int, time.Duration, bool, bool) {
+func (s *Server) maybeFallbackAlias(parsed map[string]any, mode aliasFallbackMode, publicModel, currentModel string, estimatedPromptTokens, requestedMaxTokens int, ttftThreshold time.Duration, traits registry.RequestTraits, requiresVision bool, allowedProviderSerials []string, firstContentQuery ...func(string) *registry.PendingRequest) (string, int, int, int, time.Duration, bool, bool) {
 	if publicModel == "" || publicModel == currentModel {
 		return currentModel, 0, 0, 0, 0, false, false
 	}
@@ -786,7 +787,19 @@ func (s *Server) maybeFallbackAlias(parsed map[string]any, mode aliasFallbackMod
 	}
 	// A SINGLE Previous-build probe drives both modes; the mode only decides
 	// whether the probe's TTFT estimate also gates the fallback.
-	candidates, rejections, tooLarge, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(target.Previous, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, allowedProviderSerials...)
+	query := inferenceAdmissionParams{estimatedPromptTokens: estimatedPromptTokens,
+		requestedMaxTokens: requestedMaxTokens, requiresVision: requiresVision,
+		allowedProviderSerials: allowedProviderSerials, deadline: ttftThreshold}.firstContentRequest(target.Previous, traits)
+	query.MinDecodeTPS = s.minDecodeTPS
+	if len(firstContentQuery) > 0 && firstContentQuery[0] != nil {
+		query = firstContentQuery[0](target.Previous)
+		if query == nil {
+			// Preflight may release its CPU scan permit for external prompt
+			// planning. Failed reacquisition aborts before any fallback walk.
+			return currentModel, 0, 0, 0, 0, false, false
+		}
+	}
+	candidates, rejections, tooLarge, bestTTFT, hasTTFT := s.registry.QuickFirstContentCapacityForRequest(target.Previous, query)
 	enforceTTFT := mode == aliasFallbackTTFT
 	if candidates <= 0 || (enforceTTFT && ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold)) {
 		// No fallback. TTFT mode reports the probed Previous build (the caller
@@ -1042,35 +1055,37 @@ func (s *Server) dispatchWithReserver(
 		// inference_complete immediately is correlated to the right route row.
 		// Setting it after the send (on the dispatch goroutine) would race the
 		// provider WS reader goroutine's handleComplete read of pr.Attempt.
-		Attempt:                attempt,
-		Model:                  model,
-		PublicModel:            publicModel,
-		ConsumerKey:            consumerKey,
-		KeyID:                  keyIDFromContext(r.Context()),
-		KeyLimitMicroUSD:       keyLimitMicroFromContext(r.Context()),
-		KeyLimitReset:          keyLimitResetFromContext(r.Context()),
-		ConsumerLocation:       consumerLocation,
-		IsResponsesAPI:         isResponsesAPI,
-		EstimatedPromptTokens:  estimatedPromptTokens,
-		RequiresVision:         requiresVision,
-		Traits:                 traits,
-		RequestedMaxTokens:     requestedMaxTokens,
-		TokenAdmission:         tokenAdmission,
-		CachePlan:              cachePlan,
-		ReservedMicroUSD:       reservedMicroUSD,
-		BaseReservedMicroUSD:   reservedMicroUSD,
-		ServiceReservation:     serviceReservation,
-		AllowedProviderSerials: allowedProviderSerials,
-		SelfRouteOnly:          policy.enabled,
-		PreferOwner:            policy.prefer,
-		OwnerAccountID:         policy.ownerAccountID,
-		FreeSelfRoute:          policy.enabled,
-		MetadataDetails:        metadataDetailsFromRequest(r),
-		AcceptedCh:             make(chan struct{}, 1),
-		ChunkCh:                make(chan registry.ProviderChunk, chunkBufferSize),
-		CompleteCh:             make(chan protocol.UsageInfo, 1),
-		ErrorCh:                make(chan protocol.InferenceErrorMessage, 1),
-		Timing:                 timing,
+		Attempt:                  attempt,
+		Model:                    model,
+		PublicModel:              publicModel,
+		ConsumerKey:              consumerKey,
+		KeyID:                    keyIDFromContext(r.Context()),
+		KeyLimitMicroUSD:         keyLimitMicroFromContext(r.Context()),
+		KeyLimitReset:            keyLimitResetFromContext(r.Context()),
+		ConsumerLocation:         consumerLocation,
+		IsResponsesAPI:           isResponsesAPI,
+		EstimatedPromptTokens:    estimatedPromptTokens,
+		FirstContentPromptTokens: calibratedContextPromptTokens(model, estimatedPromptTokens),
+		PromptWork:               promptwork.ForAttempt(r.Context(), model, rawBody, calibratedContextPromptTokens(model, estimatedPromptTokens)),
+		RequiresVision:           requiresVision,
+		Traits:                   traits,
+		RequestedMaxTokens:       requestedMaxTokens,
+		TokenAdmission:           tokenAdmission,
+		CachePlan:                cachePlan,
+		ReservedMicroUSD:         reservedMicroUSD,
+		BaseReservedMicroUSD:     reservedMicroUSD,
+		ServiceReservation:       serviceReservation,
+		AllowedProviderSerials:   allowedProviderSerials,
+		SelfRouteOnly:            policy.enabled,
+		PreferOwner:              policy.prefer,
+		OwnerAccountID:           policy.ownerAccountID,
+		FreeSelfRoute:            policy.enabled,
+		MetadataDetails:          metadataDetailsFromRequest(r),
+		AcceptedCh:               make(chan struct{}, 1),
+		ChunkCh:                  make(chan registry.ProviderChunk, chunkBufferSize),
+		CompleteCh:               make(chan protocol.UsageInfo, 1),
+		ErrorCh:                  make(chan protocol.InferenceErrorMessage, 1),
+		Timing:                   timing,
 	}
 	stampModelTokenReservation(pr, modelTokenReservation(r))
 	if !receivedAt.IsZero() && requestDeadline > 0 {
@@ -1290,10 +1305,9 @@ func (s *Server) dispatchWithReserver(
 		cleanupPending()
 		return nil, nil, decision, plan, "failed to prepare cache-safe request", http.StatusInternalServerError
 	}
-	// Pre-fix providers crash on a vision request carrying sampling penalties;
-	// strip them for those providers only. Protocol-0 providers additionally get
-	// a coordinator-authored prompt_cache_key only inside this sealed body.
-	sealedBody, err := bodyForCacheAttempt(rawBody, requiresVision, provider, pr)
+	// Protocol-0 providers get a coordinator-authored prompt_cache_key only
+	// inside this sealed body.
+	sealedBody, err := bodyForCacheAttempt(rawBody, pr)
 	if err != nil {
 		s.registry.ForgetCacheAttempt(pr)
 		refundExtra()
@@ -1382,54 +1396,6 @@ func (s *Server) releaseUnsentDispatch(
 	s.registry.SetProviderIdle(provider.ID)
 }
 
-// penaltySafeProviderVersion is the first provider release whose VLM penalty
-// path handles repetition/presence/frequency penalties without crashing (the
-// TokenRing 2D-prompt fix). Providers below it crash on a vision request that
-// carries any of these fields, so the coordinator strips them before sealing
-// for such a provider. Keep in sync with the release that ships the fix.
-const penaltySafeProviderVersion = "0.6.7"
-
-// visionPenaltyFields crash the pre-fix VLM penalty path on image requests.
-var visionPenaltyFields = []string{"repetition_penalty", "presence_penalty", "frequency_penalty"}
-
-// bodyForProvider returns the request body to seal for `provider`. It equals
-// rawBody, except a vision request routed to a pre-fix provider has the
-// crash-inducing penalty fields stripped. Fixed providers receive the penalties
-// unchanged. Per-provider (not pre-routing) so a retry on a fixed provider keeps
-// them. Remove once MIN_PROVIDER_VERSION clears all pre-fix builds.
-func bodyForProvider(rawBody []byte, requiresVision bool, provider *registry.Provider) []byte {
-	if !requiresVision {
-		return rawBody
-	}
-	if provider.Version != "" && !semverLess(provider.Version, penaltySafeProviderVersion) {
-		return rawBody // fixed provider — pass penalties through
-	}
-	// A body carrying none of the penalty fields at its top level is returned
-	// unchanged without decoding it — the same outcome the decode path reaches
-	// through changed=false, minus a full-body parse per sizing probe.
-	if has, ok := topLevelObjectHasAnyKey(rawBody, visionPenaltyFields); ok && !has {
-		return rawBody
-	}
-	parsed, err := decodeInferenceJSONObject(rawBody)
-	if err != nil {
-		return rawBody
-	}
-	changed := false
-	for _, key := range visionPenaltyFields {
-		if _, ok := parsed[key]; ok {
-			delete(parsed, key)
-			changed = true
-		}
-	}
-	if !changed {
-		return rawBody
-	}
-	if stripped, err := marshalForwardBody(parsed); err == nil {
-		return stripped
-	}
-	return rawBody
-}
-
 var errProviderBodyTooLarge = errors.New("provider request body too large")
 
 type providerBodyTooLargeError struct {
@@ -1453,22 +1419,8 @@ func oversizedProviderBodyBytes(err error) int {
 	return 0
 }
 
-func legacyCacheBustBodyBytes(
-	rawBody []byte,
-	requiresVision bool,
-	provider *registry.Provider,
-) (int, error) {
-	if provider == nil {
-		return 0, nil
-	}
-	return cacheAttemptSizeError(
-		bodyForProvider(rawBody, requiresVision, provider),
-		strings.Repeat("x", registry.LegacyCacheBustKeyLength))
-}
-
 func providerBodySizeError(
 	rawBody []byte,
-	requiresVision bool,
 	provider *registry.Provider,
 ) (int, error) {
 	if provider == nil {
@@ -1481,24 +1433,23 @@ func providerBodySizeError(
 	if usesLegacyCacheBust {
 		legacyKey = strings.Repeat("x", registry.LegacyCacheBustKeyLength)
 	}
-	return cacheAttemptSizeError(
-		bodyForProvider(rawBody, requiresVision, provider), legacyKey)
+	return cacheAttemptSizeError(rawBody, legacyKey)
 }
 
-func minimumLegacyCacheBustOverflow(rawBody []byte, requiresVision bool) (int, error) {
-	// An empty-version provider exercises the only provider-specific shrinking
-	// transform: legacy vision penalty removal. Raise a fleet-wide protocol floor
-	// only when even that smallest valid protocol-0 body exceeds the cap.
-	return legacyCacheBustBodyBytes(rawBody, requiresVision, &registry.Provider{})
+// minimumLegacyCacheBustOverflow sizes rawBody as a protocol-0 attempt would
+// seal it (with a cache-bust key). Raise a fleet-wide protocol floor only when
+// that body exceeds the cap.
+func minimumLegacyCacheBustOverflow(rawBody []byte) (int, error) {
+	return cacheAttemptSizeError(
+		rawBody, strings.Repeat("x", registry.LegacyCacheBustKeyLength))
 }
 
 func routingTraitsForProviderBody(
 	hasTools bool,
 	providerBody []byte,
-	requiresVision bool,
 ) (registry.RequestTraits, error) {
 	traits := registry.RequestTraits{HasTools: hasTools}
-	_, err := minimumLegacyCacheBustOverflow(providerBody, requiresVision)
+	_, err := minimumLegacyCacheBustOverflow(providerBody)
 	if errors.Is(err, errProviderBodyTooLarge) {
 		traits.MinPrefixCacheProtocol = 1
 	}
@@ -1506,11 +1457,9 @@ func routingTraitsForProviderBody(
 }
 
 // bodyForCacheAttempt returns the body to seal for one dispatch attempt: the
-// provider-specific body (bodyForProvider) with the protocol-0 cache-bust key
-// added as prompt_cache_key when the attempt carries one, size-checked
-// against the sealed-frame cap.
-func bodyForCacheAttempt(rawBody []byte, requiresVision bool, provider *registry.Provider, pr *registry.PendingRequest) ([]byte, error) {
-	body := bodyForProvider(rawBody, requiresVision, provider)
+// provider body with the protocol-0 cache-bust key added as prompt_cache_key
+// when the attempt carries one, size-checked against the sealed-frame cap.
+func bodyForCacheAttempt(body []byte, pr *registry.PendingRequest) ([]byte, error) {
 	if pr == nil || pr.LegacyCacheBustKey == "" {
 		if len(body) > maxInferenceBodyBytes {
 			return nil, &providerBodyTooLargeError{size: len(body)}
@@ -1561,9 +1510,19 @@ func explicitMaxTokens(parsed map[string]any) int {
 // undercharge. Provider-specific custom prices are not known until dispatch
 // commits to a provider, so a provider that sets a custom price above the
 // platform rate accepts revenue capped at the reservation.
+//
+// Prefix-cache hits are unknown until the provider reports them and only ever
+// lower the bill, so the reservation prices every prompt token at the full
+// input rate; settlement refunds the cache-read discount.
 func (s *Server) reservationCost(model string, promptTokens, maxTokens int) int64 {
-	customIn, customOut, hasCustom := s.store.GetModelPrice("platform", model)
-	return payments.CalculateCostWithOverrides(model, promptTokens, maxTokens, customIn, customOut, hasCustom)
+	return payments.RatesFor(s.store.GetModelPrice("platform", model)).CostWithMinimum(
+		reservationUsage(promptTokens, maxTokens))
+}
+
+// reservationUsage is the worst-case billable usage of a request: the full
+// prompt prefilled (no cache hit) and the whole output bound generated.
+func reservationUsage(promptTokens, maxTokens int) payments.Usage {
+	return payments.Usage{PromptTokens: promptTokens, CompletionTokens: maxTokens}
 }
 
 func (s *Server) refundReservedBalance(pr *registry.PendingRequest, reference string) bool {
@@ -1711,11 +1670,9 @@ func providerPricingKeys(provider *registry.Provider) string {
 }
 
 func (s *Server) providerReservationCost(provider *registry.Provider, model string, promptTokens, maxTokens int) int64 {
-	accountID := providerPricingKeys(provider)
-	if accountID != "" {
-		customIn, customOut, hasCustom := s.store.GetModelPrice(accountID, model)
-		if hasCustom {
-			return payments.CalculateCostWithOverrides(model, promptTokens, maxTokens, customIn, customOut, true)
+	if accountID := providerPricingKeys(provider); accountID != "" {
+		if price, ok := s.store.GetModelPrice(accountID, model); ok {
+			return payments.RatesFor(price, true).CostWithMinimum(reservationUsage(promptTokens, maxTokens))
 		}
 	}
 	return s.reservationCost(model, promptTokens, maxTokens)
@@ -2097,7 +2054,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	bodies := newProviderBodyMemo(func(candidateModel string) ([]byte, error) {
 		return s.candidateProviderBody(parsed, runtimeDefaults, candidateModel,
 			serviceChatConsumer, reasoningProvided, isResponsesAPI)
-	}, hasTools, requiresVision)
+	}, hasTools)
 	if body.serialized {
 		bodies.seed(model, providerBody)
 	}
@@ -2325,6 +2282,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		return refreshForwardBody(forwardBytes, newModel)
 	}
+	cachePlans := newRequestPromptWorkPlans(
+		bodies.body,
+		func(candidateModel string, candidateBody []byte, hasMedia bool) promptwork.Result {
+			ctx, cancel := promptwork.PlanningContext(r.Context(), timingReceivedAt(timing), deadline)
+			defer cancel()
+			return s.planPromptRoute(ctx, consumerKeyFromContext(r.Context()), candidateModel, candidateBody, hasMedia, hasTools, estimatedPromptTokens)
+		},
+		requiresVision, parsed)
+	r = r.WithContext(promptwork.WithMemo(r.Context(), &cachePlans.memo))
 	var preflightHandled bool
 	preflightStart := time.Now()
 	model, preflightHandled = s.runInferenceAdmission(w, r, parsed, inferenceAdmissionParams{
@@ -2341,6 +2307,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		modelMaxContext:           modelMaxContext,
 		allowedProviderSerials:    allowedProviderSerials,
 		deadline:                  deadline,
+		receivedAt:                timingReceivedAt(timing),
+		cachePlanForModel:         cachePlans.forModel,
+		promptWorkForModel:        cachePlans.workForModel,
 		policy:                    policy,
 		refundReservation:         refundReservation,
 		onModelFallback:           onModelFallback,
@@ -2387,10 +2356,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		modelMaxContext = rec.MaxContextLength
 	}
 	profileDBCall(rp, registryReadStart2)
-	cachePlan := s.planCacheRoute(r.Context(), cachePlanningInput{
-		Account: consumerKey, Model: model, Body: providerBody, HasMedia: requiresVision,
-		ReceivedAt: timingReceivedAt(timing), FirstContentBudget: deadline,
-	})
+	cachePlan := cachePlans.forBody(model, providerBody)
 	rp.Mark(registry.StampReqPlanDone)
 	if rp != nil {
 		rp.Model, rp.PublicModel, rp.Stream = model, publicModel, stream
@@ -2585,6 +2551,7 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 				JobID:            jobID,
 				Model:            model,
 				PromptTokens:     u.PromptTokens,
+				CachedTokens:     u.CachedTokens,
 				CompletionTokens: u.CompletionTokens,
 				CostMicroUSD:     u.CostMicroUSD,
 				Timestamp:        u.CreatedAt,
@@ -2594,72 +2561,6 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, types.UsageResponse{
 		Usage: entries,
-	})
-}
-
-// handleProviderEarnings handles GET /v1/provider/earnings?wallet=0x...
-//
-// Returns the provider's balance and payout history.
-// No API key auth required — providers identify by provider address.
-func (s *Server) handleProviderEarnings(w http.ResponseWriter, r *http.Request) {
-	wallet := r.URL.Query().Get("wallet")
-	if wallet == "" {
-		wallet = r.Header.Get("X-Provider-Wallet")
-	}
-	if wallet == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "wallet address required (query param ?wallet=0x... or X-Provider-Wallet header)"))
-		return
-	}
-
-	// Look up balance by provider address
-	balance := s.ledger.Balance(wallet)
-	history := s.ledger.LedgerHistory(wallet)
-	payouts := s.ledger.AllPayouts()
-
-	// Filter payouts to this wallet
-	var walletPayouts []payments.Payout
-	var totalEarned int64
-	var totalJobs int
-	for _, p := range payouts {
-		if p.ProviderAddress == wallet {
-			walletPayouts = append(walletPayouts, p)
-			totalEarned += p.AmountMicroUSD
-			totalJobs++
-		}
-	}
-
-	// If no explicit payout records exist (for example, legacy rows created
-	// before provider_payouts was introduced), reconstruct from persisted
-	// ledger entries with payout type and the wallet as account ID.
-	if len(walletPayouts) == 0 {
-		ledgerEntries := s.store.LedgerHistory(wallet)
-		for _, le := range ledgerEntries {
-			if le.Type == store.LedgerPayout && le.Reference != "" {
-				walletPayouts = append(walletPayouts, payments.Payout{
-					ProviderAddress: wallet,
-					AmountMicroUSD:  le.AmountMicroUSD,
-					JobID:           le.Reference,
-					Timestamp:       le.CreatedAt,
-					Settled:         true,
-				})
-				totalEarned += le.AmountMicroUSD
-				totalJobs++
-			}
-		}
-	}
-
-	if walletPayouts == nil {
-		walletPayouts = []payments.Payout{}
-	}
-
-	writeJSON(w, http.StatusOK, types.ProviderEarningsResponse{
-		BalanceMicroUSD:     balance,
-		BalanceUSD:          fmt.Sprintf("%.6f", float64(balance)/1_000_000),
-		TotalEarnedMicroUSD: totalEarned,
-		TotalEarnedUSD:      fmt.Sprintf("%.6f", float64(totalEarned)/1_000_000),
-		TotalJobs:           totalJobs,
-		Payouts:             walletPayouts,
-		Ledger:              history,
 	})
 }
 
@@ -2904,7 +2805,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	routingTraitsForModel := func(candidateModel string) registry.RequestTraits {
 		_, candidateBody, _ := lowerGenericBodyForModel(candidateModel)
 		traits, _ := routingTraitsForProviderBody(
-			hasTools, candidateBody, requiresVision)
+			hasTools, candidateBody)
 		traits.RequiresToolConstraint = requiresToolConstraint
 		traits.RequiresNativeMediaTools = requiresNativeMediaTools
 		traits.ToolChoiceMode = string(validatedMode)
@@ -2915,7 +2816,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	providerBodyErrorForModel := func(candidateModel string) error {
 		_, candidateBody, _ := lowerGenericBodyForModel(candidateModel)
 		_, sizeErr := routingTraitsForProviderBody(
-			hasTools, candidateBody, requiresVision)
+			hasTools, candidateBody)
 		return sizeErr
 	}
 	var endpointBody, inferenceBody []byte
@@ -2940,7 +2841,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		}
 		endpointBody, inferenceBody, loweringErr = lowerGenericBodyForModel(newModel)
 		routingTraits, _ = routingTraitsForProviderBody(
-			hasTools, inferenceBody, requiresVision)
+			hasTools, inferenceBody)
 		routingTraits.RequiresToolConstraint = requiresToolConstraint
 		routingTraits.RequiresNativeMediaTools = requiresNativeMediaTools
 		routingTraits.ToolChoiceMode = string(validatedMode)
@@ -2954,6 +2855,18 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 
 	// Shared routing/capacity admission preflight (self-route / prefer / public
 	// capacity+TTFT gate — see runInferenceAdmission).
+	cachePlans := newRequestPromptWorkPlans(
+		func(candidateModel string) ([]byte, error) {
+			_, candidateBody, err := lowerGenericBodyForModel(candidateModel)
+			return candidateBody, err
+		},
+		func(candidateModel string, candidateBody []byte, hasMedia bool) promptwork.Result {
+			ctx, cancel := promptwork.PlanningContext(r.Context(), timingReceivedAt(timing), genericDeadline)
+			defer cancel()
+			return s.planPromptRoute(ctx, consumerKey, candidateModel, candidateBody, hasMedia, hasTools, estimatedPromptTokens)
+		},
+		requiresVision, parsed)
+	r = r.WithContext(promptwork.WithMemo(r.Context(), &cachePlans.memo))
 	var preflightHandled bool
 	preflightStart := time.Now()
 	model, preflightHandled = s.runInferenceAdmission(w, r, parsed, inferenceAdmissionParams{
@@ -2970,6 +2883,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		modelMaxContext:           modelMaxContext,
 		allowedProviderSerials:    allowedProviderSerials,
 		deadline:                  genericDeadline,
+		receivedAt:                timingReceivedAt(timing),
+		cachePlanForModel:         cachePlans.forModel,
+		promptWorkForModel:        cachePlans.workForModel,
 		policy:                    policy,
 		refundReservation:         refundReservation,
 		onModelFallback:           refreshGenericBody,
@@ -2989,17 +2905,16 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// Response framing is determined by the caller-facing endpoint, never by
 	// whether its request shape could be lowered for cache participation.
 	consumerEndpoint, requestedStopSequences := genericResponseMetadata(endpoint, parsed)
-	if loweringErr != nil {
+	var cachePlan registry.CachePlan
+	if loweringErr == nil {
+		cachePlan = cachePlans.forBody(model, inferenceBody)
+	} else {
 		// Endpoint lowering is a cache-routing eligibility boundary, not a new
 		// inference rejection. Preserve the existing generic endpoint behavior
 		// for unsupported shapes while declining cache participation.
 		inferenceBody = endpointBody
+		s.emitCachePlanningDecision(s.cacheModelLabel(model), cachePlanningLoweringUnsupported, 0)
 	}
-	cachePlan := s.planCacheRoute(r.Context(), cachePlanningInput{
-		Account: consumerKey, Model: model, Body: inferenceBody, HasMedia: requiresVision,
-		LoweringFailed: loweringErr != nil,
-		ReceivedAt:     timingReceivedAt(timing), FirstContentBudget: genericDeadline,
-	})
 
 	// Generic endpoints use the same dispatch state machine as chat. This keeps
 	// queue deadlines, speculative failover, pre-content boilerplate handling,

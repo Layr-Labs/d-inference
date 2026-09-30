@@ -53,6 +53,12 @@ public struct DaemonState: Codable, Sendable, Equatable {
     public var configPath: String?
     public var runtimeCapabilities: [String]?
     public var inferenceActive: Bool
+    /// Accepted or queued work, including local-endpoint requests that have
+    /// not begun decoding. Nil for older daemon state files.
+    public var requestWorkPending: Bool?
+    /// Written directly from the loop even before backend capacity exists,
+    /// so doctor can defer a verdict during pre-registration preload.
+    public var loadTransitionActive: Bool?
     public var stats: Stats
     public var system: SystemInfo?
     public var capacity: Capacity?
@@ -122,10 +128,24 @@ public struct DaemonState: Codable, Sendable, Equatable {
         /// `ProviderLoop.availableMemoryGb()` even when the OS-available reading
         /// is unavailable.
         public var gpuMemoryCacheGb: Double?
-        public init(totalMemoryGb: Double, gpuMemoryActiveGb: Double, gpuMemoryCacheGb: Double? = nil) {
+        /// Live no-eviction load figures; nil for older daemon snapshots.
+        public var loadUsableGb: Double?
+        public var loadHeadroomGb: Double?
+        /// Eviction-aware model-weight allowance for request-time cold loads.
+        public var freeForLoadGb: Double?
+        /// A backend slot is transitioning, so current load memory is not a
+        /// stable idle verdict. Nil for older daemon snapshots.
+        public var loadTransitionActive: Bool?
+        public init(totalMemoryGb: Double, gpuMemoryActiveGb: Double, gpuMemoryCacheGb: Double? = nil,
+                    loadUsableGb: Double? = nil, loadHeadroomGb: Double? = nil,
+                    freeForLoadGb: Double? = nil, loadTransitionActive: Bool? = nil) {
             self.totalMemoryGb = totalMemoryGb
             self.gpuMemoryActiveGb = gpuMemoryActiveGb
             self.gpuMemoryCacheGb = gpuMemoryCacheGb
+            self.loadUsableGb = loadUsableGb
+            self.loadHeadroomGb = loadHeadroomGb
+            self.freeForLoadGb = freeForLoadGb
+            self.loadTransitionActive = loadTransitionActive
         }
     }
 
@@ -230,6 +250,8 @@ public struct DaemonState: Codable, Sendable, Equatable {
         advertisedModels: [String]? = nil,
         startupPreloadPendingModels: [String]? = nil,
         inferenceActive: Bool = false,
+        requestWorkPending: Bool? = nil,
+        loadTransitionActive: Bool? = nil,
         lifecycle: ProviderDrainStatus? = nil,
         modelSwitch: ProviderModelSwitchStatus? = nil,
         configPath: String? = nil,
@@ -260,6 +282,8 @@ public struct DaemonState: Codable, Sendable, Equatable {
         self.configPath = configPath
         self.runtimeCapabilities = runtimeCapabilities
         self.inferenceActive = inferenceActive
+        self.requestWorkPending = requestWorkPending
+        self.loadTransitionActive = loadTransitionActive
         self.stats = stats
         self.system = system
         self.capacity = capacity

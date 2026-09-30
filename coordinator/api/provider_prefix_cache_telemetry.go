@@ -59,6 +59,10 @@ func (s *Server) recordPrefixCacheTelemetry(provider *registry.Provider, prev, c
 		if cur.TTLExpiredTotal != nil && old.TTLExpiredTotal != nil {
 			s.ddCountDelta("provider.prefix_cache.ttl_expired", *old.TTLExpiredTotal, *cur.TTLExpiredTotal, tags)
 		}
+		if cur.RecurrentCaptureDisarmedPackedTotal != nil && old.RecurrentCaptureDisarmedPackedTotal != nil {
+			s.ddCountDelta("provider.prefix_cache.recurrent_capture_disarmed_packed",
+				*old.RecurrentCaptureDisarmedPackedTotal, *cur.RecurrentCaptureDisarmedPackedTotal, tags)
+		}
 		if cur.IO != nil && old.IO != nil {
 			for _, metric := range []struct {
 				name              string

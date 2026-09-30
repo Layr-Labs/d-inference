@@ -2,10 +2,9 @@
 //
 // Producers for the v0.8.0 MTP + paged-pool telemetry fields.
 //
-// These fields were allowlisted in all three mirrors (Go, Swift, TS) ahead of
-// any producer. An allowlisted field with no producer is dead weight, so what
-// this suite defends is emission: that a real slot actually puts the values on
-// the wire, that the three `backend` axes stay three separate keys, and that
+// These fields were declared in the telemetry mirrors ahead of any producer.
+// A declared field with no producer is dead weight, so what this suite
+// defends is emission: that a real slot actually emits the values, that the three `backend` axes stay three separate keys, and that
 // "enabled but inert" is nameable and named.
 
 import Foundation
@@ -491,38 +490,6 @@ struct MTPPostureTelemetryTests {
 
         try await Task.sleep(for: .milliseconds(120))
         #expect(telemetry.posture == nil)
-
-        await bridge.shutdown()
-    }
-
-    // MARK: Allowlist
-
-    @Test("every posture field survives the client-side allowlist filter")
-    func postureFieldsAreAllowlisted() async {
-        // TelemetryFieldFilter drops unknown keys SILENTLY. A producer whose
-        // keys are not mirrored would emit nothing and look healthy.
-        var metrics = CBv2MTPMetrics()
-        metrics.active = true
-        metrics.rounds = 12
-        metrics.draftedTokens = 100
-        metrics.acceptedTokens = 60
-
-        let telemetry = PostureTelemetrySink()
-        let bridge = makePostureBridge(
-            engine: PagedPoolStubEngine(kvBytesInUse: 1 << 30, poolBytes: 2 << 30),
-            kvBackendKind: .paged,
-            telemetry: telemetry)
-        await bridge.emitSlotPostureTelemetry(
-            ProviderMTPStatusSnapshot(status: activatedStatus(), metrics: metrics))
-
-        let fields = telemetry.posture?.fields ?? [:]
-        for key in [
-            "component", "operation", "backend", "kv_backend", "model",
-            "mtp_enabled", "mtp_active", "mtp_acceptance_rate",
-            "mtp_proposed_tokens", "mtp_accepted_tokens", "pool_utilization",
-        ] {
-            #expect(fields[key] != nil, "\(key) was dropped by the allowlist filter")
-        }
 
         await bridge.shutdown()
     }

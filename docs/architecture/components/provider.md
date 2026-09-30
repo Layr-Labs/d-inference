@@ -1,6 +1,6 @@
 # Provider process
 
-> Last updated: 2026-09-15 · commit `40e1bc5b6`
+> Last updated: 2026-09-27
 
 The provider is the Apple Silicon Mac that decrypts prompts and runs inference.
 It ships as one Swift package (`provider-swift/`) producing the `darkbloom` CLI,
@@ -27,7 +27,7 @@ lives inside this one hardened process. The authoritative provider version is
 | Product | Kind | Role |
 |---|---|---|
 | `darkbloom` | executable | CLI: `start`, `status`, `doctor`, `logs`, `benchmark`, `models`, `fan`, `watchdog`; long-running serve modes host an `NSApplication(.accessory)` run loop for APNs pushes (`provider-swift/Sources/darkbloom/main.swift`, `provider-swift/Sources/darkbloom/Darkbloom.swift`) |
-| `darkbloom-enclave` | executable | Secure Enclave helper used by `coordinator/api/install.sh` before the daemon runs: `attest`, `sign`, `info`, `wallet-address` (`provider-swift/Sources/darkbloom-enclave-cli/`); the installer keeps an `eigeninference-enclave` symlink |
+| `darkbloom-enclave` | executable | Secure Enclave helper used by `coordinator/api/install.sh` before the daemon runs: `attest`, `sign`, `info` (`provider-swift/Sources/darkbloom-enclave-cli/`) |
 | `darkbloom-fan-helper` | executable | Opt-in root LaunchDaemon for fan control; never installed by default (`provider-swift/Sources/DarkbloomFanHelper/`) |
 | `ProviderCore` | library | Everything below; shared by the CLI and helpers |
 | `ProviderCoreFoundation` | library | Pure-Foundation pieces also linked by publish tooling: `WeightHasher`, `PromptContractIdentity`, `TemplateRenderCheck`, `ModelScanner`, `Manifest` (`provider-swift/Sources/ProviderCoreFoundation/`) |

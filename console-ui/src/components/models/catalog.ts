@@ -2,8 +2,14 @@ import type { Model, PricingResponse } from "@/lib/api";
 
 export type ModelFilter = "all" | "images" | "tools" | "reasoning";
 export type ModelSort = "name" | "context" | "input" | "output";
-export interface CatalogPrice { input: number; output: number }
+// Micro-USD per 1M tokens. cacheRead is the rate for prompt tokens served from
+// a provider's prefix cache; absent when the coordinator did not publish one.
+export interface CatalogPrice { input: number; output: number; cacheRead?: number }
 export type CatalogPrices = Map<string, CatalogPrice>;
+
+function validPrice(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
 
 export const MODEL_FILTERS: { value: ModelFilter; label: string }[] = [
   { value: "all", label: "All models" },
@@ -45,11 +51,39 @@ export function modelFeatures(model: Model): ModelFilter[] {
 export function buildCatalogPrices(pricing: PricingResponse | null): CatalogPrices {
   const prices: CatalogPrices = new Map();
   for (const entry of pricing?.prices ?? []) {
-    if (Number.isFinite(entry.input_price) && entry.input_price >= 0 && Number.isFinite(entry.output_price) && entry.output_price >= 0) {
-      prices.set(entry.model, { input: entry.input_price, output: entry.output_price });
+    if (!validPrice(entry.input_price) || !validPrice(entry.output_price)) continue;
+    const price: CatalogPrice = { input: entry.input_price, output: entry.output_price };
+    // A cache-read rate above the input rate is not a discount; treat it as unlisted.
+    if (validPrice(entry.cache_read_price) && entry.cache_read_price <= entry.input_price) {
+      price.cacheRead = entry.cache_read_price;
     }
+    prices.set(entry.model, price);
   }
   return prices;
+}
+
+// /v1/models pricing is USD per single token as a decimal string (the
+// OpenRouter schema); CatalogPrice is micro-USD per 1M tokens, i.e. × 1e12.
+function perTokenToMicroPerMillion(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  const parsed = Number(value);
+  return validPrice(parsed) ? Math.round(parsed * 1e12) : undefined;
+}
+
+// The price shown for a model: its /v1/pricing row when one is keyed by the
+// model id, otherwise the pricing embedded in the /v1/models entry. A public
+// alias is listed under the alias id while /v1/pricing stays keyed by the
+// concrete build, so aliases resolve through the embedded block.
+export function catalogPrice(model: Model, prices: CatalogPrices): CatalogPrice | undefined {
+  const listed = prices.get(model.id);
+  if (listed) return listed;
+  const input = perTokenToMicroPerMillion(model.pricing?.prompt);
+  const output = perTokenToMicroPerMillion(model.pricing?.completion);
+  if (input === undefined || output === undefined) return undefined;
+  const price: CatalogPrice = { input, output };
+  const cacheRead = perTokenToMicroPerMillion(model.pricing?.input_cache_read);
+  if (cacheRead !== undefined && cacheRead <= input) price.cacheRead = cacheRead;
+  return price;
 }
 
 export function filterModels(models: Model[], query: string, filter: ModelFilter, sort: ModelSort, prices: CatalogPrices): Model[] {
@@ -67,8 +101,8 @@ export function filterModels(models: Model[], query: string, filter: ModelFilter
     let difference = 0;
     if (sort === "context") difference = modelContext(right) - modelContext(left);
     if (sort === "input" || sort === "output") {
-      const leftPrice = prices.get(left.id);
-      const rightPrice = prices.get(right.id);
+      const leftPrice = catalogPrice(left, prices);
+      const rightPrice = catalogPrice(right, prices);
       // Unknown rates sort after known rates, including a legitimate zero.
       if (!leftPrice && rightPrice) return 1;
       if (leftPrice && !rightPrice) return -1;

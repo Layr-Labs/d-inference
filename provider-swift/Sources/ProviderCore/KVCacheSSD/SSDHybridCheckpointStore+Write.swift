@@ -151,16 +151,22 @@ extension SSDHybridCheckpointStore {
         let tag = lookupKeys.checkpointTag(chainHash: digest, cacheSalt: cacheSalt ?? "")
         let short = Data(tag.prefix(16))
         let repeated = writeDemand.observe(short, now: config.nowSeconds())
-        // Novel writes use a 90% sub-budget, leaving capacity for known
-        // repeat demand. Durable duplicates consume no write budget. The writer
-        // rechecks after queueing, since this admission is advisory.
-        if !index.contains(tag16: short),
-            let refusal = Self.writeRefusal(rateLimiter.admission(bytes: envelope.plaintextBytes, repeated: repeated)) {
-            return .refused(refusal)
+        if !index.contains(tag16: short) {
+            // Demand gate first: a fleet-novel checkpoint is skipped before any
+            // budget is charged (`SSDHybridCheckpointStore+DemandAdmission`).
+            // The tag was recorded above, so a local second sighting qualifies.
+            if let refusal = demandRefusal(requestID: requestID, localRepeat: repeated) {
+                return .refused(refusal)
+            }
+            // Novel writes use a 90% sub-budget, leaving capacity for known
+            // repeat demand. Durable duplicates consume no write budget. The
+            // writer rechecks after queueing, since this admission is advisory.
+            if let refusal = Self.writeRefusal(rateLimiter.admission(bytes: envelope.plaintextBytes, repeated: repeated)) {
+                return .refused(refusal)
+            }
         }
         let refusal: PrefixCacheDonationOutcome? = lock.withLock {
             guard !closed else { return .cacheClosed }
-            guard !destructiveChange else { return .cacheMaintenanceBusy }
             guard !writing.contains(short) else { return .alreadyQueued }
             guard writing.count < 2 else { return .writeQueueFull }
             writing.insert(short)
@@ -192,6 +198,10 @@ extension SSDHybridCheckpointStore {
     }
 
     func write(_ job: WriteJob) async {
+        // Export readSegment can perform device materialization/readback on
+        // this background worker, independently of the original request.
+        let deviceActivity = kvBudget?.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity?.finish() }
         let started = ContinuousClock.now
         var result = WriteResult()
         let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: Data(job.tag.prefix(16)).hexString)
@@ -258,7 +268,22 @@ extension SSDHybridCheckpointStore {
                 lock.withLock { beforeWriteIndexForTesting }?(url, false)
                 guard !isClosed else { result.outcome = .cacheClosed; return }
                 guard epochMatches(job.epoch) else { result.outcome = .cacheEpochChanged; return }
-                index.insert(tag16: short, fileBytes: written, lastAccess: config.nowSeconds())
+                #if DEBUG
+                afterPublishBeforeIndexForTesting?()
+                #endif
+                // Publish-to-index is atomic with respect to removals: every
+                // unlink (budget eviction, TTL sweep, corrupt drop, whole-root
+                // maintenance) holds `removalLock`, so the file is either still
+                // present here and indexed before any later removal can
+                // reconcile it, or already gone and never advertised.
+                let indexed = removalLock.withLock {
+                    guard SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) == .regular else {
+                        return false
+                    }
+                    index.insert(tag16: short, fileBytes: written, lastAccess: config.nowSeconds())
+                    return true
+                }
+                guard indexed else { result.outcome = .cacheEntryEvicted; return }
                 statsBox.update { $0.filesWritten += 1; $0.bytesWritten += written }
             }
             if alreadyDurable { lock.withLock { beforeWriteIndexForTesting }?(url, true) }
@@ -301,9 +326,9 @@ extension SSDHybridCheckpointStore {
                 result.outcome = Self.freshWriteFailureOutcome(error)
                 // Atomic creation did not publish an index entry or receipt.
                 // Do not call removeCorrupt: there is no advertised file to
-                // revoke, and rotating the epoch would discard unrelated valid
-                // checkpoints and invalidate other queued donations. A later
-                // donation may retry after the transient condition clears.
+                // revoke or index entry to drop, and a transient write
+                // failure is not corruption. A later donation may retry
+                // after the condition clears.
             }
         }
     }

@@ -1,6 +1,6 @@
 # Qwen prompt rendering and shared token parity
 
-> Last updated: 2026-09-05 · commit `d2ea8dfe4`
+> Last updated: 2026-09-05
 
 The coordinator and provider now agree on all 98 common request/token vectors
 for seven pinned artifacts, including all five release models. The separately

@@ -1,6 +1,6 @@
 # Swift provider package
 
-> Last updated: 2026-09-15 · commit `40e1bc5b6`
+> Last updated: 2026-09-15
 
 The Apple Silicon provider runs inference through MLX-Swift and exposes the
 `darkbloom` CLI. Release packaging places the provider and its runtime resources
@@ -15,7 +15,7 @@ test suites. The executable products are:
 | Product | Responsibility |
 |---|---|
 | `darkbloom` | Provider lifecycle, local serving, account setup, diagnostics, model management and benchmarks |
-| `darkbloom-enclave` | Secure Enclave attestation and signing helper; also exposed by the legacy `eigeninference-enclave` installation link |
+| `darkbloom-enclave` | Secure Enclave attestation and signing helper |
 | `darkbloom-fan-helper` | Fan-control helper packaged for opt-in activation |
 | `darkbloom-publish` | Build and hash model manifests for publishing |
 

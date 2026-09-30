@@ -1,6 +1,6 @@
 # Provider allocator accounting and SSD candidate lookup
 
-> Last updated: 2026-09-05 · commit `055a76364`
+> Last updated: 2026-09-05
 
 Provider tests now verify native allocation promises and backing coverage against
 the real coherent MLX allocator. Optional telemetry distinguishes retained

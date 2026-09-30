@@ -122,6 +122,7 @@ enum ProviderLogVisibility: Sendable, Equatable {
 enum ProviderOperationalMessage: String, CaseIterable, Sendable {
     // Startup and shutdown.
     case providerStarting = "Provider starting"
+    case startupPreloadInsufficientMemory = "Startup preload skipped: low free memory. Run darkbloom status or doctor."
     case coordinatorClientStarted = "Coordinator client started"
     case coordinatorEventStreamEnded = "Coordinator event stream ended; shutting down"
 

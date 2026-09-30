@@ -251,7 +251,7 @@ type FleetSnapshotRow struct {
 	Goroutines                int             `json:"goroutines"`
 
 	// Capability gating, so a routing replay (registry/routingsim) can
-	// reconstruct the tools version floor and the vision gate. Provider rows
+	// reconstruct the version-dependent gates and the vision gate. Provider rows
 	// only (zero/NULL on the coordinator row); added after the initial DDL, so
 	// they trail the column list and an upgraded database gains them through
 	// ALTER TABLE ... ADD COLUMN IF NOT EXISTS with the same physical order.

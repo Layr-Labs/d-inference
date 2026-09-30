@@ -67,7 +67,6 @@ func (snapshot *releaseTrustPolicySnapshot) addRelease(release *store.Release, n
 	snapshot.ByBinaryHash[normalizedHash] = append(snapshot.ByBinaryHash[normalizedHash], approvedReleasePolicy{
 		Version: release.Version, Platform: release.Platform, Backend: release.Backend,
 		BinaryHash: normalizedHash, MetallibHash: release.MetallibHash,
-		PythonHash: release.PythonHash, RuntimeHash: release.RuntimeHash,
 		TemplateHashes: templates,
 	})
 }

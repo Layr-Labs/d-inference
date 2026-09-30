@@ -496,10 +496,11 @@ func TestSelfRouteCatalogModelKeepsWeightHashGate(t *testing.T) {
 }
 
 // TestOwnedProviderSummaryAppliesTraitAndVisionGates verifies the owner
-// preflight matches the dispatch-time gates for the REQUEST's shape: a tool
-// call to an owned box below the tools capability floor, or a media request to
-// a text-only build, must report servesModel=0 (fast 503 with the real cause)
-// instead of passing preflight, queueing 120s, and dying as machine_busy.
+// preflight matches the dispatch-time gates for the REQUEST's shape: a
+// constrained tool call to an owned box that does not advertise the tool
+// constraint, or a media request to a text-only build, must report
+// servesModel=0 (fast 503 with the real cause) instead of passing preflight,
+// queueing 120s, and dying as machine_busy.
 func TestOwnedProviderSummaryAppliesTraitAndVisionGates(t *testing.T) {
 	reg := New(testLogger())
 	model := "traits-summary-model"
@@ -507,24 +508,26 @@ func TestOwnedProviderSummaryAppliesTraitAndVisionGates(t *testing.T) {
 	mine := makeSchedulerProvider(t, reg, "mine", model, 100)
 	setProviderAccount(mine, "acct-A")
 
-	// Below the tools version floor (0.6.3): plain requests serve, tool
-	// requests don't.
-	mine.mu.Lock()
-	mine.Version = "0.6.0"
-	mine.mu.Unlock()
+	// No tool-constraint advertisement: plain and auto-tools requests serve,
+	// constrained (required/named) tool requests don't.
+	constrained := RequestTraits{HasTools: true, RequiresToolConstraint: true}
 	if _, serves := reg.OwnedProviderSummary("acct-A", model, RequestTraits{}, false); serves != 1 {
 		t.Fatalf("plain request servesModel=%d, want 1", serves)
 	}
-	if _, serves := reg.OwnedProviderSummary("acct-A", model, RequestTraits{HasTools: true}, false); serves != 0 {
-		t.Fatalf("tools request to below-floor box servesModel=%d, want 0", serves)
+	if _, serves := reg.OwnedProviderSummary("acct-A", model, RequestTraits{HasTools: true}, false); serves != 1 {
+		t.Fatalf("auto tools request servesModel=%d, want 1", serves)
+	}
+	if _, serves := reg.OwnedProviderSummary("acct-A", model, constrained, false); serves != 0 {
+		t.Fatalf("constrained tools request to non-advertising box servesModel=%d, want 0", serves)
 	}
 
-	// At/above the floor, tool requests serve again.
+	// Once the box advertises the constraint for the model, it serves again.
 	mine.mu.Lock()
-	mine.Version = "0.6.3"
+	mine.ToolConstraintProtocol = ToolConstraintProtocolV1
+	mine.ToolConstraintModels = map[string]struct{}{model: {}}
 	mine.mu.Unlock()
-	if _, serves := reg.OwnedProviderSummary("acct-A", model, RequestTraits{HasTools: true}, false); serves != 1 {
-		t.Fatalf("tools request to at-floor box servesModel=%d, want 0 — floor gate stuck", serves)
+	if _, serves := reg.OwnedProviderSummary("acct-A", model, constrained, false); serves != 1 {
+		t.Fatalf("constrained tools request to advertising box servesModel=%d, want 1 — trait gate stuck", serves)
 	}
 
 	// Media requires a vision-capable build; a text-only advertisement fails

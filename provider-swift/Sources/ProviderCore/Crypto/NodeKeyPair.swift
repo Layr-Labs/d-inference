@@ -229,32 +229,6 @@ public struct NodeKeyPair: Sendable {
             ciphertext: ciphertext.base64EncodedString()
         )
     }
-
-    // MARK: - Legacy Cleanup
-
-    private static let legacyDirNames = [".darkbloom", ".dginf", ".eigeninference"]
-
-    /// Paths where legacy `node_key` files may exist.
-    public static var legacyNodeKeyPaths: [URL] {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        return legacyDirNames.map { home.appendingPathComponent($0).appendingPathComponent("node_key") }
-    }
-
-    /// Paths where legacy `enclave_e2e_ka.data` files may exist.
-    public static var legacyEnclaveKeyPaths: [URL] {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        return legacyDirNames.map {
-            home.appendingPathComponent($0).appendingPathComponent("enclave_e2e_ka.data")
-        }
-    }
-
-    /// Remove legacy E2E secret files from all known directories.
-    public static func purgeLegacyFiles() {
-        let paths = legacyNodeKeyPaths + legacyEnclaveKeyPaths
-        for path in paths where FileManager.default.fileExists(atPath: path.path) {
-            try? FileManager.default.removeItem(at: path)
-        }
-    }
 }
 
 // MARK: - CustomDebugStringConvertible

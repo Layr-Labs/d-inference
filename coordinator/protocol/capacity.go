@@ -129,10 +129,9 @@ type CapacityQuoteMessage struct {
 	Type    string `json:"type"`
 	QuoteID string `json:"quote_id"`
 	// CapacitySeq names the capacity snapshot (BackendCapacity.CapacitySeq
-	// stream) this quote was computed from. Carried so ordering against
-	// heartbeats is possible; the coordinator currently trusts the probe
-	// window (quotes expire in 250ms, far under a heartbeat interval) and
-	// does not compare seqs.
+	// stream) this quote was computed from. The coordinator bounds the
+	// response window and rejects quote evidence older than its accepted
+	// capacity sequence or invalidated by newer local reservations.
 	CapacitySeq   uint64 `json:"capacity_seq"`
 	AdmissibleNow bool   `json:"admissible_now"`
 	// RejectionReason is set exactly when !AdmissibleNow; an admissible quote

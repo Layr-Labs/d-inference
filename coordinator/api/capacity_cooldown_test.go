@@ -192,6 +192,7 @@ func TestCapacityCooldownRetryReselectionEscapesSink(t *testing.T) {
 	// prefers the sink until the cooldown gates it out.
 	healthy.Mu().Lock()
 	healthy.DecodeTPS = 20.0
+	healthy.PrefillTPS = 100 // Outside the idle sink's 100ms first-content band.
 	healthy.BackendCapacity.Slots[0].NumRunning = 3
 	healthy.BackendCapacity.Slots[0].NumWaiting = 2
 	healthy.Mu().Unlock()

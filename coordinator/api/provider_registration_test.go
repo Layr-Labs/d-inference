@@ -97,7 +97,7 @@ func TestProviderRegistrationBindsProtectedRuntimeClaims(t *testing.T) {
 	publicKey := testPublicKeyB64()
 	regMsg := &protocol.RegisterMessage{
 		Type:    protocol.TypeRegister,
-		Version: minProviderVersionForReconnectAttestation,
+		Version: "0.9.9",
 		Hardware: protocol.Hardware{
 			ChipName:   "Apple M5 Max",
 			ChipFamily: "M5",
@@ -130,7 +130,7 @@ func TestProviderRegistrationBindsProtectedRuntimeClaims(t *testing.T) {
 	provider := reg.Register("signed-runtime", nil, regMsg)
 	srv.verifyProviderAttestation(context.Background(), provider.ID, provider, regMsg)
 	runtimeOK, mismatches := srv.verifyRuntimeHashesForBackend(
-		regMsg.Backend, "", "", regMsg.TemplateHashes)
+		regMsg.Backend, regMsg.TemplateHashes)
 	if !runtimeOK {
 		t.Fatalf("runtime manifest rejected valid metallib: %v", mismatches)
 	}
@@ -181,7 +181,7 @@ func TestProviderRegistrationBindsProtectedRuntimeClaims(t *testing.T) {
 	}
 }
 
-func TestProviderRegistrationAttestationFreshnessVersionGate(t *testing.T) {
+func TestProviderRegistrationAttestationFreshness(t *testing.T) {
 	cases := []struct {
 		name            string
 		version         string
@@ -189,46 +189,38 @@ func TestProviderRegistrationAttestationFreshnessVersionGate(t *testing.T) {
 		accepted        bool
 	}{
 		{
-			name:            "missing version retains legacy reconnect semantics",
-			timestampOffset: -10 * time.Minute,
-			accepted:        true,
-		},
-		{
-			name:            "last legacy release accepts reconnect replay",
-			version:         "0.8.14",
-			timestampOffset: -10 * time.Minute,
-			accepted:        true,
-		},
-		{
-			name:            "capability release rejects stale replay",
-			version:         minProviderVersionForReconnectAttestation,
+			name:            "missing version rejects stale replay",
 			timestampOffset: -10 * time.Minute,
 		},
 		{
-			name:            "newer release rejects stale replay",
-			version:         "0.8.16",
+			name:            "release rejects stale replay",
+			version:         "0.9.9",
 			timestampOffset: -10 * time.Minute,
 		},
 		{
-			name:            "capability release accepts future skew just under boundary",
-			version:         minProviderVersionForReconnectAttestation,
+			name:            "accepts future skew just under boundary",
+			version:         "0.9.9",
 			timestampOffset: RegistrationAttestationMaxFutureSkew - time.Second,
 			accepted:        true,
 		},
 		{
-			name:            "capability release accepts future skew at boundary",
-			version:         minProviderVersionForReconnectAttestation,
+			name:            "accepts future skew at boundary",
+			version:         "0.9.9",
 			timestampOffset: RegistrationAttestationMaxFutureSkew,
 			accepted:        true,
 		},
 		{
-			name:            "capability release rejects future skew just over boundary",
-			version:         minProviderVersionForReconnectAttestation,
+			name:            "rejects future skew just over boundary",
+			version:         "0.9.9",
 			timestampOffset: RegistrationAttestationMaxFutureSkew + time.Second,
 		},
 		{
-			name:     "capability release accepts fresh reconnect",
-			version:  minProviderVersionForReconnectAttestation,
+			name:     "accepts fresh reconnect",
+			version:  "0.9.9",
+			accepted: true,
+		},
+		{
+			name:     "missing version accepts fresh reconnect",
 			accepted: true,
 		},
 	}
@@ -287,74 +279,6 @@ func TestProviderRegistrationAttestationFreshnessVersionGate(t *testing.T) {
 				}
 			})
 		})
-	}
-}
-
-func TestLegacyRegistrationReplayCannotPromoteProtectedRuntimeCapabilities(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	reg := registry.New(logger)
-	reg.SetModelCatalog([]registry.CatalogEntry{{ID: registry.Qwen38NAXModelID}})
-	srv := NewServer(
-		reg,
-		store.NewMemory(store.Config{AdminKey: "test-key"}),
-		ServerConfig{},
-		logger,
-	)
-	metallibHash := strings.Repeat("a", 64)
-	publicKey := testPublicKeyB64()
-	regMsg := &protocol.RegisterMessage{
-		Type:    protocol.TypeRegister,
-		Version: "0.8.14",
-		Hardware: protocol.Hardware{
-			ChipName:   "Apple M5 Max",
-			ChipFamily: "M5",
-		},
-		Models:    []protocol.ModelInfo{{ID: registry.Qwen38NAXModelID}},
-		Backend:   "mlx-swift",
-		PublicKey: publicKey,
-		Attestation: buildTestAttestationJSONWithFields(
-			t,
-			publicKey,
-			"",
-			"",
-			time.Now().Add(-10*time.Minute),
-			map[string]interface{}{
-				"chipFamily":   "M5",
-				"chipName":     "Apple M5 Max",
-				"metallibHash": metallibHash,
-				"runtimeCapabilities": []string{
-					registry.ProviderCapabilityAppleM5,
-					registry.ProviderCapabilityMLXNAX,
-				},
-			},
-		),
-		RuntimeCapabilities: []string{
-			registry.ProviderCapabilityAppleM5,
-			registry.ProviderCapabilityMLXNAX,
-		},
-		TemplateHashes: map[string]string{"mlx_metallib": metallibHash},
-	}
-	provider := reg.Register("legacy-reconnect", nil, regMsg)
-	srv.verifyProviderAttestation(context.Background(), provider.ID, provider, regMsg)
-	provider.Mu().Lock()
-	provider.RuntimeVerified = true
-	provider.RuntimeManifestChecked = true
-	provider.MetallibVerified = true
-	provider.ChallengeVerifiedSIP = true
-	provider.LastChallengeVerified = time.Now()
-	provider.Mu().Unlock()
-	reg.SetTrustLevel(provider.ID, registry.TrustHardware)
-	provider.SetFreshCodeAttested()
-	if err := reg.ReconcileAttestedRuntimeCapabilities(provider.ID); err != nil {
-		t.Fatalf("legacy capability reconciliation failed: %v", err)
-	}
-
-	if len(provider.RuntimeCapabilities) != 0 {
-		t.Fatalf("legacy reconnect promoted protected capabilities: %v",
-			provider.RuntimeCapabilities)
-	}
-	if got := reg.ModelProviderSnapshot()[registry.Qwen38NAXModelID]; got != 0 {
-		t.Fatalf("legacy reconnect exposed exact Qwen build: %d", got)
 	}
 }
 

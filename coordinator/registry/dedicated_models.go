@@ -42,6 +42,7 @@ func (r *Registry) SetDedicatedModels(patterns []string) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	defer r.pruneWarmPoolWorkBaselinesLocked()
 	if len(normalized) == 0 {
 		r.dedicatedModels = nil
 		return

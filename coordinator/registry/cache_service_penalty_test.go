@@ -14,10 +14,13 @@ func TestCacheServiceCostPenaltyLogIsSigned(t *testing.T) {
 	applyServiceHint(r, c, hint)
 	var output bytes.Buffer
 	r.logger = slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	r.logRoutingDecision("model", &PendingRequest{RequestID: "repeat"}, c, 1)
+	r.logRoutingDecision("model", &PendingRequest{RequestID: "repeat"}, c, 1, SelectionUniqueMin)
 	var record map[string]any
 	if err := json.Unmarshal(output.Bytes(), &record); err != nil {
 		t.Fatal(err)
+	}
+	if record["selection_path"] != SelectionUniqueMin.String() {
+		t.Fatalf("selection_path = %v", record["selection_path"])
 	}
 	if record["cache_tier"] != "ssd" || record["cache_estimated_ttft_saved_ms"] != float64(-904) ||
 		record["cache_discount_ms"] != float64(0) || record["this_req_ms"] != float64(12904) {
@@ -89,7 +92,7 @@ func TestCacheServiceCostIncludesNetStagePenalty(t *testing.T) {
 func TestCacheServiceCostPenaltyPreservesNearTieRanking(t *testing.T) {
 	r, warm, hint := serviceCostFixture(1000, 0, 0)
 	hint.StageMs = 4136 // 40 ms slower than recomputing the matched prefix.
-	cold := mkCandidate("cold", warm.costMs+20, 1, 1, 0)
+	cold := mkCandidate("cold", 10900, 1, 1, 0)
 	applyServiceHint(r, warm, hint)
 	for _, pool := range [][]*routingCandidate{{warm, cold}, {cold, warm}} {
 		winner, runnerUp, near, path := selectRoutingCandidate(pool)

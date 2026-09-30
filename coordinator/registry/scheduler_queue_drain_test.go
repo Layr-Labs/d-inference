@@ -54,13 +54,13 @@ func TestDrainQueuedRequestsPopulatesDecision(t *testing.T) {
 	}
 }
 
-func TestDrainQueuedRequestsForProvider(t *testing.T) {
+func TestDrainQueuedRequestsForProviderWithReason(t *testing.T) {
 	reg := New(testLogger())
 	model := "attest-drain-model"
 	p := makeSchedulerProvider(t, reg, "p1", model, 90)
 
 	// nil provider is a safe no-op (never panics).
-	reg.DrainQueuedRequestsForProvider(nil)
+	reg.DrainQueuedRequestsForProviderWithReason(nil, DrainTriggerUnknown)
 
 	req := &QueuedRequest{
 		RequestID:  "queued-attest",
@@ -79,7 +79,7 @@ func TestDrainQueuedRequestsForProvider(t *testing.T) {
 
 	// Draining by provider (as on a CodeAttested flip) must dispatch the queued
 	// request to that provider's model without waiting for a heartbeat.
-	reg.DrainQueuedRequestsForProvider(p)
+	reg.DrainQueuedRequestsForProviderWithReason(p, DrainTriggerUnknown)
 
 	select {
 	case assigned := <-req.ResponseCh:
@@ -205,7 +205,7 @@ func TestReserveProviderBalancesAcrossHotSlots(t *testing.T) {
 	_ = p2
 }
 
-func TestReserveProviderUsesColdSlotWhenHotBacklogIsHuge(t *testing.T) {
+func TestReserveProviderDoesNotTurnOutputCommitmentIntoSerialWait(t *testing.T) {
 	reg := New(testLogger())
 	model := "cold-start-model"
 	hot := makeSchedulerProvider(t, reg, "hot", model, 40)
@@ -231,8 +231,8 @@ func TestReserveProviderUsesColdSlotWhenHotBacklogIsHuge(t *testing.T) {
 	if selected == nil {
 		t.Fatal("ReserveProvider returned nil")
 	}
-	if selected.ID != cold.ID {
-		t.Fatalf("selected %q, want cold slot %q", selected.ID, cold.ID)
+	if selected.ID != hot.ID {
+		t.Fatalf("selected %q, want resident slot %q: maximum output commitments are not a serial queue", selected.ID, hot.ID)
 	}
 }
 

@@ -4,8 +4,8 @@
 // prefix cache. One file per 256-token KV block; eviction is `unlink(2)`
 // (zero write amplification — the endurance-correct choice, spec §4.1).
 //
-// The crypto core is the reviewed legacy `EncryptedKVStore` scheme,
-// verbatim in structure with a format-version bump to 3:
+// The crypto core is the reviewed v1 `DBKV` scheme (the retired
+// `EncryptedKVStore`), verbatim in structure with a format-version bump to 3:
 //
 // ```
 // 0       4       magic = "DBKV"
@@ -53,7 +53,7 @@
 //   * `windowTokens` equals `blockSize`, which is already in this header.
 //
 // v1 `.darkbloom-kv` files are never read by this tier (different
-// subtree + suffix; they die with the legacy engine's deletion pass).
+// subtree + suffix).
 
 import CryptoKit
 import Foundation

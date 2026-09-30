@@ -75,6 +75,8 @@ extension SSDHybridCheckpointStore {
         reserveReadScratch: @Sendable () throws -> CBv2CompleteCheckpointIOLease,
         makeImportPlan: @Sendable (CBv2CompleteCheckpointManifest) throws -> SSDCheckpointImportPlan
     ) async -> SSDPrefixCacheStageResult {
+        let deviceActivity = kvBudget?.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity?.finish() }
         let budget = SSDCheckpointReadBudget(
             maximumBytes: config.maxReadBytes, maximumMillis: config.maxStageMillis,
             started: config.stageNow(), now: config.stageNow)
@@ -118,7 +120,7 @@ extension SSDHybridCheckpointStore {
         var access = fileCoordinator.makeAccess(to: SSDBlockStore.fileURL(
             root: config.root, tag16Hex: Data(selected.tag.prefix(16)).hexString))
         let accepted = lock.withLock {
-            guard !closed, !destructiveChange, reading[requestID] == nil, stages[requestID] == nil else { return false }
+            guard !closed, reading[requestID] == nil, stages[requestID] == nil else { return false }
             reading[requestID] = access
             activity.begin()
             return true
@@ -182,7 +184,7 @@ extension SSDHybridCheckpointStore {
             let nextAccess = fileCoordinator.makeAccess(to: SSDBlockStore.fileURL(
                 root: config.root, tag16Hex: Data(next.tag.prefix(16)).hexString))
             let advanced = lock.withLock {
-                guard !Task.isCancelled, !closed, !destructiveChange,
+                guard !Task.isCancelled, !closed,
                     reading[requestID] === access, epochMatches(epoch) else { return false }
                 // Atomic handoff, not remove-and-register. Lifecycle cancellation
                 // always finds either the retiring access or the shorter access.
@@ -207,7 +209,7 @@ extension SSDHybridCheckpointStore {
     func readIsCurrent(requestID: CBv2RequestID, access: SSDCheckpointFileCoordinator.Access,
                        epoch: String?) -> Bool {
         !Task.isCancelled && epochMatches(epoch) && lock.withLock {
-            !closed && !destructiveChange && reading[requestID] === access
+            !closed && reading[requestID] === access
         }
     }
 }

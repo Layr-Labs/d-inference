@@ -14,6 +14,7 @@ extension EngineV2Factory {
         let fallbackReason: String?
         /// Shared with final assembly; pool sizing must match the engine's chunks.
         let schedulerConfig: CBv2SchedulerConfig
+        let performanceProfile: ServingPerformanceProfile?
         /// The resolved running-row cap also owns bridge admission accounting
         /// and heartbeat capacity. Never advertise the pre-policy request.
         var effectiveMaxConcurrentRequests: Int { schedulerConfig.maxConcurrentRequests }
@@ -45,6 +46,7 @@ extension EngineV2Factory {
             kind: EngineV2KVBackendKind,
             fallbackReason: String?,
             schedulerConfig: CBv2SchedulerConfig,
+            performanceProfile: ServingPerformanceProfile? = nil,
             pagedPoolDType: String?,
             residentPrefixCacheEnabled: Bool = false,
             hybridPrefixCache: CBv2HybridPrefixCacheConfig? = nil
@@ -60,6 +62,7 @@ extension EngineV2Factory {
             self.kind = kind
             self.fallbackReason = fallbackReason
             self.schedulerConfig = schedulerConfig
+            self.performanceProfile = performanceProfile
             self.pagedPoolDType = pagedPoolDType
             self.pagedLayerDTypes = (backend as? PagedKVBackend)?.pool.layerDTypes
             self.pagedPoolConfig = (backend as? PagedKVBackend)?.pool.config
@@ -101,6 +104,11 @@ extension EngineV2Factory {
     static func prepareProductionBackend(
         model: any LanguageModel,
         modelID: String? = nil,
+        modelArtifactSHA256: String? = nil,
+        constructionPurpose: ConstructionPurpose = .serving,
+        automaticallySelectConcurrency: Bool = false,
+        performanceQualificationAllowed: Bool = true,
+        mtpPerformanceConfiguration: ServingMTPConfiguration? = nil,
         kvBytesCapacity: Int,
         maxConcurrentRequests: Int,
         kvBackend: EngineV2KVBackendSelection = .auto,
@@ -171,12 +179,20 @@ extension EngineV2Factory {
             return reason
         }
 
-        let schedulerConfig = productionSchedulerConfig(
-            maxConcurrentRequests: maxConcurrentRequests,
-            model: model,
-            environment: environment)
+        // Resolve after each backend decision: an automatic paged fallback
+        // cannot retain the paged profile's width or mixed-step geometry.
+        func servingPolicy(for kind: EngineV2KVBackendKind) -> (CBv2SchedulerConfig, ServingPerformanceProfile?) {
+            productionServingPolicy(
+                model: model, modelID: modelID, modelArtifactSHA256: modelArtifactSHA256,
+                constructionPurpose: constructionPurpose,
+                automaticallySelectConcurrency: automaticallySelectConcurrency,
+                performanceQualificationAllowed: performanceQualificationAllowed, backend: kind,
+                maxContextLength: maxContextLength, maxConcurrentRequests: maxConcurrentRequests,
+                environment: environment, mtpPerformanceConfiguration: mtpPerformanceConfiguration)
+        }
 
         func contiguousPreparation() throws -> ProductionBackendPreparation {
+            let (schedulerConfig, performanceProfile) = servingPolicy(for: .contiguous)
             var contiguousCapacity = cappedCapacity
             let configuredHybridCache: CBv2HybridPrefixCacheConfig?
             if modelCapabilities.supportsRecurrentCheckpointReuse,
@@ -207,6 +223,7 @@ extension EngineV2Factory {
                 kind: .contiguous,
                 fallbackReason: fallbackReason,
                 schedulerConfig: schedulerConfig,
+                performanceProfile: performanceProfile,
                 pagedPoolDType: nil,
                 hybridPrefixCache: configuredHybridCache)
         }
@@ -243,6 +260,7 @@ extension EngineV2Factory {
         }
 
         if resolvedKind == .paged, let nativeKVTypes {
+            let (schedulerConfig, performanceProfile) = servingPolicy(for: .paged)
             do {
                 let paged = try makeSegmentedPagedBackend(
                     admittedGrantBytes: cappedCapacity,
@@ -280,6 +298,7 @@ extension EngineV2Factory {
                     kind: .paged,
                     fallbackReason: nil,
                     schedulerConfig: schedulerConfig,
+                    performanceProfile: performanceProfile,
                     pagedPoolDType: Set(nativeKVTypes.layerDTypes).count == 1
                         ? Self.pagedPoolDTypeName(paged.pool.config.dtype) : "mixed",
                     residentPrefixCacheEnabled:

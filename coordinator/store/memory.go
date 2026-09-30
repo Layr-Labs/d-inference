@@ -1396,7 +1396,7 @@ func (s *MemoryStore) GetReferrerByCode(code string) (*Referrer, error) {
 
 	ref, ok := s.referrersByCode[code]
 	if !ok {
-		return nil, fmt.Errorf("referral code %q not found", code)
+		return nil, fmt.Errorf("referral code %q: %w", code, ErrNotFound)
 	}
 	copy := *ref
 	return &copy, nil

@@ -76,9 +76,9 @@ func (s *Server) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 	// without re-crediting the payment.
 	if code := obj.Metadata["referral_code"]; code != "" {
 		if err := s.billing.Referral().Apply(account, code); err != nil {
-			if errors.Is(err, billing.ErrReferralAlreadyAssigned) {
-				// A later purchase cannot replace an existing referral. The payment
-				// is settled; retrying this permanent conflict cannot improve it.
+			if errors.Is(err, billing.ErrReferralAlreadyAssigned) || errors.Is(err, billing.ErrReferralSelf) || errors.Is(err, billing.ErrReferralInvalidCode) {
+				// The payment is settled. A permanent, inapplicable referral
+				// cannot improve on retry and must never change attribution.
 				w.WriteHeader(http.StatusOK)
 				return
 			}

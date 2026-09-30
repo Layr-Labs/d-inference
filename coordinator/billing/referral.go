@@ -103,7 +103,11 @@ func validateReferralCode(code string) (string, error) {
 }
 
 // ErrReferralAlreadyAssigned preserves immutable referral attribution.
-var ErrReferralAlreadyAssigned = errors.New("referral: account already has a referrer")
+var (
+	ErrReferralAlreadyAssigned = errors.New("referral: account already has a referrer")
+	ErrReferralInvalidCode     = errors.New("referral: invalid code")
+	ErrReferralSelf            = errors.New("referral: cannot refer yourself")
+)
 
 // Apply links an account to a referral code. The account must not already
 // have a different referrer, and the account cannot refer itself. Reapplying
@@ -117,12 +121,15 @@ func (r *ReferralService) Apply(accountID, referralCode string) error {
 	// Validate the referral code exists
 	referrer, err := r.store.GetReferrerByCode(referralCode)
 	if err != nil {
-		return fmt.Errorf("referral: invalid code %q", referralCode)
+		if errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("%w %q", ErrReferralInvalidCode, referralCode)
+		}
+		return fmt.Errorf("referral: lookup code: %w", err)
 	}
 
 	// Prevent self-referral
 	if referrer.AccountID == accountID {
-		return errors.New("referral: cannot refer yourself")
+		return ErrReferralSelf
 	}
 
 	// Check if account already has a referrer

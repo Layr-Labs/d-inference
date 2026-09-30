@@ -166,7 +166,7 @@ The platform fee follows the same per-user override as everyone else.
    non-withdrawable funds and completes the session under a row lock. Duplicate
    events from either the current or retained legacy signing secret cannot credit
    twice. A pre-existing matching ledger credit is recognized without adding it
-   again. Referral attribution retries independently; the same normalized code is idempotent, and a different pre-existing attribution is preserved without retrying the settled payment.
+   again. Referral attribution retries independently; the same normalized code is idempotent, and inapplicable codes (different pre-existing attribution, self-referral or a missing code) are acknowledged without retrying the settled payment. Database failures remain retryable.
 4. `GET /v1/billing/stripe/session?id=<session_id>` polls the row;
    `GET /v1/billing/methods` (public) lists configured methods — Stripe only
    (`coordinator/billing/billing.go` `SupportedMethods`).

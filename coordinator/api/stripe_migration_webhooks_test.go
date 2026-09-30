@@ -51,6 +51,52 @@ func TestCheckoutReferralRetriesWithoutRecreditingDeposit(t *testing.T) {
 	}
 }
 
+func TestCheckoutAcknowledgesPermanentReferralErrors(t *testing.T) {
+	for _, kind := range []string{"self", "missing", "already_assigned"} {
+		t.Run(kind, func(t *testing.T) {
+			s, st := stripePayoutsTestServer(t, true, nil)
+			s.SetBilling(billing.NewService(st, s.billing.Ledger(), s.logger, billing.Config{StripeSecretKey: "rk_new", StripeWebhookSecret: "whsec_test"}))
+			if kind == "self" {
+				if err := st.CreateReferrer("buyer", "REFER"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if kind == "already_assigned" {
+				if err := st.CreateReferrer("first", "FIRST"); err != nil {
+					t.Fatal(err)
+				}
+				if err := st.CreateReferrer("later", "REFER"); err != nil {
+					t.Fatal(err)
+				}
+				if err := st.RecordReferral("FIRST", "buyer"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := st.CreateBillingSession(&store.BillingSession{ID: "local", ExternalID: "cs_paid", AccountID: "buyer", PaymentMethod: "stripe", AmountMicroUSD: 5_000_000, Status: "pending", CreatedAt: time.Now()}); err != nil {
+				t.Fatal(err)
+			}
+			payload := []byte(`{"type":"checkout.session.completed","data":{"object":{"id":"cs_paid","amount_total":500,"currency":"usd","payment_status":"paid","metadata":{"billing_session_id":"local","consumer_key":"buyer","referral_code":"REFER","app":"darkbloom"}}}}`)
+			for range 2 {
+				w := httptest.NewRecorder()
+				s.handleStripeWebhook(w, signedConnectRequest(t, payload, "whsec_test"))
+				if w.Code != 200 {
+					t.Fatalf("%d %s", w.Code, w.Body.String())
+				}
+			}
+			if st.GetBalance("buyer") != 5_000_000 {
+				t.Fatal("duplicate deposit")
+			}
+			code, err := st.GetReferrerForAccount("buyer")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if kind == "already_assigned" && code != "FIRST" || kind != "already_assigned" && code != "" {
+				t.Fatalf("changed immutable attribution: %s", code)
+			}
+		})
+	}
+}
+
 func TestCheckoutMigrationAcceptsBothSecretsAndCreditsOnce(t *testing.T) {
 	s, st := stripePayoutsTestServer(t, true, nil)
 	s.SetBilling(billing.NewService(st, s.billing.Ledger(), s.logger, billing.Config{StripeSecretKey: "rk_new", StripeWebhookSecret: "whsec_new", StripeLegacyWebhookSecret: "whsec_old", StripeConnectSecretKey: "rk_old"}))

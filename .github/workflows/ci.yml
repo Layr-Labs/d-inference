@@ -15,6 +15,7 @@ jobs:
         run: |
           ./scripts/check-release-version.sh
           python3 scripts/test-provider-release-resolution.py
+          python3 scripts/test-provider-release-resume.py
           python3 scripts/test-provider-release-toolchain.py
           python3 scripts/test-provider-release-cache.py
           python3 scripts/test-prepare-metal-toolchain.py
@@ -356,7 +357,20 @@ jobs:
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
         working-directory: libs/mlx-swift-lm
         timeout-minutes: 5
-        run: ../../scripts/run-nested-suite.sh 'MiMoV26(VisualDecodeMemory|EncodedVisualDecoder|EncodedAudioDecoder|EncodedAACAudio|EncodedAudiovisualDecoder)Tests|MiMoV26PixelsTests.test(RGB|Temporal|Invalid|Explicit)' --no-parallel
+        run: ../../scripts/run-nested-suite.sh 'MiMoV26(OpenRouterMedia|VisionWorkingSet|AudioWorkingSet|VisualDecodeMemory|EncodedVisualDecoder|EncodedAudioDecoder|EncodedAACAudio|EncodedAudiovisualDecoder)Tests|MiMoV26PixelsTests.test(RGB|Temporal|Invalid|Explicit)' --no-parallel
+      - name: Prepare tiny MiMo fixture for media-to-text isolation
+        id: sdk-mimo-isolation-fixture
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
+        run: python3 scripts/prepare-mimo-provider-fixtures.py --output "$RUNNER_TEMP/mimo-media-isolation"
+      - name: Verify media refusal leaves the native text engine usable
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.sdk-mimo-isolation-fixture.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        timeout-minutes: 5
+        env:
+          MIMO_V26_SERIAL_NATIVE_TESTS: '1'
+          MIMO_V26_NATIVE_MEDIA_DEADLINE_TESTS: '1'
+          MIMO_V26_SERIAL_LOAD_FIXTURES: ${{ runner.temp }}/mimo-media-isolation
+        run: ../../scripts/run-nested-suite.sh MiMoV26NativeMediaDeadlineTests.testMediaReservationRefusalLeavesTextEngineUsable --no-parallel
       - name: Run nested paged safety tests
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
         working-directory: libs/mlx-swift-lm

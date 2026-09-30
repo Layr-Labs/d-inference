@@ -601,6 +601,16 @@ requires both a heartbeat delivered after the clamp showing at least
 [`EIGENINFERENCE_BUDGET_CLAMP`](../reference/configuration.md#routing-admission-and-ttft);
 TTL override `EIGENINFERENCE_BUDGET_CLAMP_TTL_SECONDS`.
 
+The typed `media_memory_unavailable` refusal describes one request's media
+preparation reservation. It is excluded from model-wide budget clamps,
+capacity-rate penalties, health breakers and reputation through
+`isProviderHealthNeutralErrorReason` (`coordinator/api/route_outcome.go`). It
+still receives bounded capacity failover (`classifyRejection`,
+`coordinator/api/inference_failure_class.go`). A genuine native engine terminal
+cannot claim this exemption. Deploy the coordinator's reason handling before
+providers that emit it; older coordinators treat unknown capacity reasons as
+ordinary capacity refusals.
+
 **Capacity-rate penalty** (`coordinator/registry/capacity_rate.go`). A pair
 whose capacity-503 rate over `capacityRateWindow = 5 * time.Minute` exceeds
 `capacityRateThreshold = 0.25` with at least `capacityRateMinSample = 8`

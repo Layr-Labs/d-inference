@@ -6,6 +6,8 @@ The `d-inference` macOS CI lanes pin `blacksmith-12vcpu-macos-27` and select
 Xcode 27 / native SwiftPM before compilation. Unit, SDK, prompt-parity,
 integration and benchmark commands and their existing approval gates are
 preserved. The older-OS signed-artifact smoke alone uses Blacksmith macOS 26.
+The signing validation and benchmark jobs provision GitHub CLI explicitly
+before their first `gh` command; see `scripts/install-macos-github-cli.sh`.
 See [runner setup and cache isolation](build.md#sdk-27-release-builds-and-caches).
 
 How to run the unit tests for each component, the end-to-end suite that boots a
@@ -31,6 +33,20 @@ payload ceilings before real platform decoder entry. Normal provider
 `swift build --build-tests` does not compile a dependency's SDK test targets;
 compile and run the SDK package tests separately as CI does. Small selected
 native runners do not replace these whole-target compile checks.
+
+`MiMoV26OpenRouterMediaTests` uses checked-in JPEG, MP4 and MOV bytes from the
+OpenRouter conformance cases. It verifies full-size decoding, production
+geometry and frame-working-set bounds, plus tiny native vision equivalence.
+`MiMoV26VisionWorkingSetTests` checks the fused-kernel selection and conservative
+CPU/custom-stream/geometry fallback. `MiMoV26AudioWorkingSetTests` checks actual
+tile accounting and lazy/bounded numerical equivalence across mixed clips.
+The SDK CI lane also creates a fresh tiny MiMo fixture and runs
+`MiMoV26NativeMediaDeadlineTests.testMediaReservationRefusalLeavesTextEngineUsable`
+with explicit native-lane flags. Both steps use the nonzero/no-skip wrapper.
+`TestMediaMemoryRefusalPreservesTextOnSameProvider` separately exercises actual
+coordinator HTTP/WebSocket dispatch with scripted provider refusals followed
+by successful text. These gates do not replace full-size signed-provider
+qualification on the target hardware.
 
 The retained-fence case in `ProviderLoopNativeMiMoLifetimeTests` also installs a
 weight-free non-native peer with a counted engine. A real native fixture fault
@@ -2777,3 +2793,13 @@ The integration and benchmark jobs initialize Homebrew before installing
 `postgresql@16` and deriving its binary path with `brew --prefix`. A missing
 Homebrew executable is a runner-setup failure before E2E tests execute. See
 `.github/workflows/integration.yml` and `.github/workflows/benchmarks.yml`.
+
+### Retained unsigned release recovery checks
+
+`python3 scripts/test-provider-release-resume.py` covers signed-tag/source/run
+identity, failed or missing prerequisite jobs, expired/ambiguous artifacts,
+signed-artifact refusal, transport checksums/layout and the signing job's
+normal/recovery success guard. Publication tests bind original build source and
+current signing provenance separately and require a moved tag to fail before
+registration. These offline checks do not grant App Attest qualification or
+prove successful Apple signing/notarization.

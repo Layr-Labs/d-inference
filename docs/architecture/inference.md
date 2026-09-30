@@ -641,6 +641,35 @@ path installs through strict SDK loading. The target-only benchmark does not
 install this sidecar; its success alone cannot validate ordinary multimodal
 startup (`MiMoV26OrdinaryServingPolicy` and `makeNativeMiMoBundle`).
 
+Managed vision prepares each temporal grid separately and synchronously
+evaluates every transformer block through the existing native-work owner
+(`MiMoV26VisionTower.forwardBounded`, `MiMoV26MultimodalProcessor.admitted`).
+The reservation includes the largest frame/block working set plus all retained
+decoded inputs, patches and features (`MiMoV26VisionWorkingSet.frameBytes`,
+`MiMoV26ManagedVisualCommitment`). It does not multiply peak attention memory
+by the full tower depth or video length. Codec weights, target KV and the
+process OS/activation reserves remain separately enforced.
+
+On the default Metal stream, MiMo's validated 64-wide attention heads use a
+fused kernel. The vision quote counts live projection, rotary, MLP and mask
+buffers without inventing a full per-head score matrix. Other head geometries,
+wider local windows and CPU/custom streams retain the conservative full-score
+quote. The synchronous engine scope keeps quoting and execution together.
+Owned audio preparation also completes every encoder block and RVQ codebook
+step; its scratch quote uses the original padded groups, actual tile length,
+retained mels/features and real causal masks. Codec-load accounting and the
+global activation reserve are separate from these request workspaces.
+After each successful checked evaluation, the native owner retires completed
+scratch-array registrations. It retains the preparation owner and loan until
+the request's real retirement; a failed evaluation retains all fault roots.
+This prevents the ownership registry from keeping every old layer output alive.
+
+A refused media reservation maps to the typed `media_memory_unavailable`
+reason (`MiMoV26EncodedMediaIngress.outwardFailure`). It leaves a healthy text
+engine and its routing budget available. Failed required native completion
+still retains and quarantines the actual owner; it is not reclassified as a
+recoverable media refusal.
+
 ```mermaid
 flowchart LR
   A[Validated source and load permit] --> B[Owned native construction]
@@ -658,7 +687,7 @@ flowchart LR
 | Entry point | Dedicated native factory and managed benchmark; generic TokenIterator is refused | `libs/mlx-swift-lm/Libraries/MLXVLM/Models/MiMo/MiMoV26ModelFactory.swift` (`MiMoV26FactoryError.nativeCBv2Required`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BenchmarkLoading.swift` (`loadNativeMiMoBenchmarkSession`) |
 | MTP | Embedded heads requested by default under `auto`, subject to real native inventory/owner/budget validation; explicit `off` or process kill switch disables them. Serial-target verification remains default; rectangular stays a separate unqualified experiment | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`MTPMode.enablesMTP`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift` (`nativeMiMoVerificationMode`) |
 | Media | Explicit decoded visual/audio profiles bind the real processor/codec, load generation and reservation; media requests stay target-only even when a text assistant is installed | `libs/mlx-swift-lm/Libraries/MLXVLM/Models/MiMo/MiMoV26LoadedModel.swift`; `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26ServingLoad.swift` |
-| Prefix | Opt-in text-only COMPLETE checkpoints bind the exact store, observed dtypes, assistant codec, process owner and loaded validator; async store work participates in retirement | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/EngineV2SlotFactory+MiMoPrefix.swift` (`prepareNativeMiMoPrefix`); `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2NativeCompletePrefixWork.swift` |
+| Prefix | [Exact MiMo identities default to SSD reuse](prefix-cache.md#mimo-complete-state); text-only COMPLETE checkpoints bind the exact store, observed dtypes, assistant codec, process owner and loaded validator; async store work participates in retirement | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/EngineV2SlotFactory+MiMoPrefix.swift` (`prepareNativeMiMoPrefix`); `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2NativeCompletePrefixWork.swift` |
 | Native paging / generic fast paths | Separate opt-in target-only or explicit serial-MTP paging binds the actual asymmetric pool, bank and process owner. Authenticated text-prefix composition restores target pages and assistant state before publication; rectangular verification and paged media remain refused. Generic prefix reuse, compiled decode and packed-prefill flags remain disabled | `libs/mlx-swift-lm/Libraries/MLXVLM/Models/MiMo/MiMoV26NativePagedProducer.swift` (`makeNativePagedExecutionResources`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift` (`makeNativeMiMoBundle`) |
 | Fast prefill | Native-rounded NAX attention and admitted query-block grouping default on where eligible. The provider budgets fixed workspace for all configured concurrent requests, target rings, the watermark and minimum KV allowance before choosing a larger solo-text stripe. Unaffordable candidates retain a narrower or ungrouped profile; actual request charges and explicit overrides remain intact. Runtime and matched-speed qualification remain separate | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26PrefillProfile.swift`; `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26PrefillMemoryBudget.swift`; [SDK policy](../../libs/mlx-swift-lm/docs/mimo-v26/FAST-PREFILL-POLICY.md) |
 | Public availability | Exact `mimo_v2` is admitted by the ordinary allowlist; normal callers select bounded visual/audio policies through MiMoV26OrdinaryServingPolicy. This does not create a catalog entry or qualify all endpoints | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2SupportedModels.swift` (`isSupported`); `provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift`; `provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift` |
@@ -739,10 +768,10 @@ Native preparation also uses the actual pixel working-byte calculation shared
 with `MiMoV26Pixels.prepare`, rather than reserving
 `limits.pixels.maximumWorkingBytes` (a ceiling that can approach physical RAM).
 The maximum actual pixel workload remains charged alongside conservative
-retained decoded/patch/feature amounts. Video attention scores are bounded per
-temporal grid (`gridT * (gridH * gridW)^2 * queryHeads * 16`), matching the
-separate frame attention calls. The lazy graph's full depth multiplier and
-allocator node rounding remain charged.
+retained decoded/patch/feature amounts. Vision work uses the largest temporal
+grid/block workspace, with the fused-kernel or conservative full-score path
+described above; completed frames and layers do not multiply that workspace.
+Allocator node rounding and retained outputs remain charged.
 
 This is application-owned decode accounting, not a claimed bound on private
 AVFoundation codec pools. The same process ledger, system headroom, activation

@@ -121,6 +121,26 @@ struct LaunchAgentEnvironmentTests {
         #expect(PrefillDeadlineMode.resolve(environment: out) == .enforce)
     }
 
+    @Test func forwardsMiMoResidencyRollbackToProviderJob() {
+        // Standing MiMo residency is the default; the operator's rollback is
+        // only effective if it reaches the launchd-managed provider process.
+        let out = LaunchAgent.passthroughEnvironment(from: [
+            MiMoV26WiredResidency.environmentFlag: "0",
+            "UNRELATED_SECRET": "excluded",
+        ])
+        #expect(out == [MiMoV26WiredResidency.environmentFlag: "0"])
+        #expect(!MiMoV26WiredResidency.isEnabled(environment: out))
+        #expect(MiMoV26WiredResidency.isEnabled(
+            environment: LaunchAgent.passthroughEnvironment(from: [:])))
+        let plist = LaunchAgent.makeServicePlist(
+            label: "io.darkbloom.provider",
+            programArguments: ["/usr/local/bin/darkbloom", "start", "--foreground"],
+            logPath: "/tmp/p.log",
+            environment: [MiMoV26WiredResidency.environmentFlag: "0"])
+        let vars = plist["EnvironmentVariables"] as? [String: String]
+        #expect(vars?[MiMoV26WiredResidency.environmentFlag] == "0")
+    }
+
     @Test func preservesMalformedNonEmptyControlsForRuntimeSecureDefault() {
         let out = LaunchAgent.passthroughEnvironment(from: [
             EngineV2Factory.maxPartialPrefillsKey: "not-an-integer",

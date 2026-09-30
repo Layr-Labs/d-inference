@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-09-28
+> Last updated: 2026-09-30
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -43,12 +43,24 @@ whole-process peak residency. The configured native context is not replaced by
 a smaller benchmark input bound.
 
 The existing load cap, operator reserve, activation reserve, KV allowance and
-live OS-headroom checks remain decisive. The optional standing-residency policy
+live OS-headroom checks remain decisive. The default standing-residency policy
+(rollback: `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY=0`) keeps the native weight
+payload resident; without it the driver re-wires the expert tensors per command
+buffer under memory pressure and decode collapses on a 256 GiB host. It
 uses the shared MLX manager and computes its group ceiling after allowing the
 larger of 16 GiB or 10% of physical RAM for unwired system use. It does not lower
 a pre-existing manager baseline or cap other policy groups, so this is not a
 process-wide unwired-reserve guarantee. A manager return is neither proof that
 particular pages are wired nor a grant to load a model.
+
+Provider 0.9.14 defaults the [exact MiMo identities](../architecture/prefix-cache.md#mimo-complete-state)
+to encrypted text-prefix SSD caching. Allow disk space for useful checkpoints
+under the [shared cache budget and write limits](../reference/ssd-kv-cache.md#size-and-eviction-rules).
+Restoration stays inside the existing request memory admission; this does not
+reserve idle prefix payloads in RAM or reduce model/OS/activation requirements.
+Image, audio and video requests remain uncached. The MiMo-specific rollback is
+`DARKBLOOM_MIMO_COMPLETE_PREFIX=0`; for launchd, apply it using the replacement
+`darkbloom start` flow described in the [release runbook](../operations/provider-release.md).
 
 NAX kernels additionally require the pinned core's actual device/OS/build
 capability and compatible GPU streams. An M5 label alone is not eligibility;
@@ -229,7 +241,7 @@ See [engine MTP constraints](../architecture/inference.md#multi-token-prediction
 | Location | [`../reference/ssd-kv-cache.md#paths`](../reference/ssd-kv-cache.md#paths) | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` |
 | Box-wide budget (`ssdDiskBudgetBytes`, based on currently available space), the `DARKBLOOM_PREFIX_CACHE_DISK_GB` override, LRU eviction | [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules) | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` (`ssdDiskBudgetBytes`) |
 | Low-disk write stop (`lowDiskFloorBytes`; reads continue) and the daily write cap (`defaultMaxWriteBytesPerDay`) | [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules) | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` |
-| When it is used at all | Exact `gpt-oss-20b` defaults to encrypted complete SSD caching with segmented paged storage; contiguous fallback serves cold. Eligible Qwen and selected Nemotron Lightning use complete SSD on native contiguous or segmented paged target storage; historical GPT-OSS/Gemma complete checkpoints require paged storage. Loaded capability, identity and key gates apply; resident RAM is opt-in | [`../architecture/prefix-cache.md`](../architecture/prefix-cache.md) |
+| When it is used at all | Exact `gpt-oss-20b` defaults to encrypted complete SSD caching with segmented paged storage; contiguous fallback serves cold. Eligible Qwen and selected Nemotron Lightning use complete SSD on native contiguous or segmented paged target storage; historical GPT-OSS/Gemma complete checkpoints require paged storage. Exact MiMo IDs default to native contiguous text-only COMPLETE checkpoints; media stays uncached. Loaded capability, identity and key gates apply; resident RAM is opt-in | [`../architecture/prefix-cache.md`](../architecture/prefix-cache.md) |
 
 ## Storage
 

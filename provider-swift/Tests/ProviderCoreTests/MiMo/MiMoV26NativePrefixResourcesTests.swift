@@ -35,14 +35,14 @@ enum MiMoPrefixStoreTestSupport {
 }
 
 final class MiMoV26NativePrefixResourcesTests: XCTestCase {
-    func testDefaultOffAndMediaCannotSilentlySelectTextPrefixProfile() {
+    func testDefaultOnAndMediaCannotSilentlySelectTextPrefixProfile() {
         let model = "EigenLabs/MiMo-V2.6-Flash-MOPD-MLX-4bit-mtp"
         func refusal(_ env: [String: String]) -> PrefixCacheStatusReason? {
             EngineV2SlotFactory.nativeMiMoPrefixRefusal(modelId: model, environment: env)
         }
-        XCTAssertEqual(refusal([:]), .configDisabled)
-        XCTAssertEqual(refusal(["DARKBLOOM_PREFIX_CACHE": "1"]), .configDisabled)
-        XCTAssertEqual(refusal(["DARKBLOOM_MIMO_COMPLETE_PREFIX": "1"]), .configDisabled)
+        XCTAssertNil(refusal([:]))
+        XCTAssertNil(refusal(["DARKBLOOM_PREFIX_CACHE": "1"]))
+        XCTAssertNil(refusal(["DARKBLOOM_MIMO_COMPLETE_PREFIX": "1"]))
         let on = ["DARKBLOOM_PREFIX_CACHE": "1", "DARKBLOOM_MIMO_COMPLETE_PREFIX": "1"]
         XCTAssertNil(refusal(on))
         XCTAssertEqual(EngineV2SlotFactory.nativeMiMoServingProfile(hasVisual: false, hasAudio: false), .text)

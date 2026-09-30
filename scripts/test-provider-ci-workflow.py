@@ -25,6 +25,9 @@ MIMO_PROVIDER_PREPARE = ('python3 scripts/prepare-mimo-provider-fixtures.py '
                          '--output "$RUNNER_TEMP/mimo-provider-fixtures" --github-env "$GITHUB_ENV"\n'
                          'python3 scripts/prepare-mimo-provider-fixtures.py '
                          '--output "$RUNNER_TEMP/mimo-prefix-fixtures" --asymmetric')
+SDK_MIMO_PREPARE_NAME = "Prepare tiny MiMo fixture for media-to-text isolation"
+SDK_MIMO_GATE_NAME = "Verify media refusal leaves the native text engine usable"
+SDK_MIMO_READY = "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.sdk-mimo-isolation-fixture.outcome == 'success' }}"
 MIMO_NATIVE_COMMANDS = {
     "Run isolated native MiMo startup gates":
         "../scripts/run-nested-suite.sh 'MiMoV26StandaloneLifecycleTests.test(ActualScannerPreloadStartsListenerWithSameNativeOwner|StartRefusesActualUnpublishedPreloadWithoutReplacingOwner)' --no-parallel",
@@ -46,7 +49,11 @@ SDK_COMMANDS = {
     "Verify DiffusionGemma artifact and expert reduction":
         "../../scripts/run-nested-suite.sh 'DiffusionGemma(ArtifactFixture|ExpertReduction)Tests' --no-parallel",
     "Run nested MiMo media decode tests":
-        "../../scripts/run-nested-suite.sh 'MiMoV26(VisualDecodeMemory|EncodedVisualDecoder|EncodedAudioDecoder|EncodedAACAudio|EncodedAudiovisualDecoder)Tests|MiMoV26PixelsTests.test(RGB|Temporal|Invalid|Explicit)' --no-parallel",
+        "../../scripts/run-nested-suite.sh 'MiMoV26(OpenRouterMedia|VisionWorkingSet|AudioWorkingSet|VisualDecodeMemory|EncodedVisualDecoder|EncodedAudioDecoder|EncodedAACAudio|EncodedAudiovisualDecoder)Tests|MiMoV26PixelsTests.test(RGB|Temporal|Invalid|Explicit)' --no-parallel",
+    SDK_MIMO_PREPARE_NAME:
+        'python3 scripts/prepare-mimo-provider-fixtures.py --output "$RUNNER_TEMP/mimo-media-isolation"',
+    SDK_MIMO_GATE_NAME:
+        "../../scripts/run-nested-suite.sh MiMoV26NativeMediaDeadlineTests.testMediaReservationRefusalLeavesTextEngineUsable --no-parallel",
     "Run nested paged safety tests":
         "../../scripts/run-nested-suite.sh CBv2PagedSafetyTests",
     "Run nested prompt-hash tests":
@@ -199,9 +206,22 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         for step in step_blocks(self.jobs["test-provider-sdk"]):
             if field(step, "run"):
                 with self.subTest(gate=field(step, "name", indent=6)):
-                    self.assertEqual(field(step, "if"), READY)
-                    self.assertEqual(field(step, "working-directory"), "libs/mlx-swift-lm")
+                    name = field(step, "name", indent=6)
+                    self.assertEqual(field(step, "if"), SDK_MIMO_READY if name == SDK_MIMO_GATE_NAME else READY)
+                    expected_directory = None if name == SDK_MIMO_PREPARE_NAME else "libs/mlx-swift-lm"
+                    self.assertEqual(field(step, "working-directory"), expected_directory)
                     self.assertNotIn("continue-on-error:", step)
+
+    def test_sdk_media_isolation_requires_its_fixture_and_native_lane(self):
+        steps = step_blocks(self.jobs["test-provider-sdk"])
+        prepare = next(step for step in steps if field(step, "name", indent=6) == SDK_MIMO_PREPARE_NAME)
+        gate = next(step for step in steps if field(step, "name", indent=6) == SDK_MIMO_GATE_NAME)
+        self.assertEqual(field(prepare, "id"), "sdk-mimo-isolation-fixture")
+        self.assertLess(steps.index(prepare), steps.index(gate))
+        self.assertEqual(field(gate, "timeout-minutes"), "5")
+        self.assertEqual(field(gate, "MIMO_V26_SERIAL_NATIVE_TESTS", indent=10), "'1'")
+        self.assertEqual(field(gate, "MIMO_V26_NATIVE_MEDIA_DEADLINE_TESTS", indent=10), "'1'")
+        self.assertEqual(field(gate, "MIMO_V26_SERIAL_LOAD_FIXTURES", indent=10), "${{ runner.temp }}/mimo-media-isolation")
 
     def test_sdk_onboarding_selectors_execute_once_and_continue_after_failure(self):
         step = next(step for step in step_blocks(self.jobs["test-provider-sdk"])

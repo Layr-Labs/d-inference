@@ -1,5 +1,19 @@
 # Changelog
 
+## Release candidate v0.9.14 — MiMo SSD prefix caching by default (not shipped)
+
+- Enable encrypted text-only COMPLETE-prefix SSD checkpoints by default for exact `mimo-v2.6-flash-mopd` and `EigenLabs/MiMo-V2.6-Flash-MOPD-MLX-4bit-mtp` identities. Keep verified artifact/runtime identity, tenant isolation, native ownership, memory admission, SSD limits and cold fallback.
+- Preserve image, audio and video serving through the existing joint contiguous path; media requests remain uncached. RAM retention, native paging and rectangular verification remain separate opt-ins.
+- Forward `DARKBLOOM_MIMO_COMPLETE_PREFIX` to the launchd provider job. Unset or empty uses the model default; exact `1` enables this gate and any other nonempty value disables. Unlisted IDs also require affirmative `DARKBLOOM_PREFIX_CACHE`; `DARKBLOOM_PREFIX_CACHE=0` still disables all prefix caching. Apply shell overrides with replacement `darkbloom start` so its saved plist is refreshed.
+- Align `ProviderCore.version` and the coordinator latest-provider display fallback at `0.9.14`. Publication, full-artifact cache qualification and coordinator rollout remain separate steps.
+
+## Unreleased — MiMo media memory and text isolation
+
+- Complete native MiMo vision work one frame and transformer block at a time, reserving the largest live working set instead of every layer and video frame together. Preserve retained media/features, KV, codec and OS/activation safeguards.
+- Match vision scratch to the selected fused Metal kernel and complete audio encoder/RVQ stages before reusing their workspace. Reserve actual audio tiles rather than charging a maximum tile and every layer simultaneously.
+- Report media-preparation memory refusals as `media_memory_unavailable`. Keep bounded failover while leaving text-capacity clamps, health breakers and reputation unchanged. Genuine native completion faults retain their existing quarantine behavior.
+- Add exact OpenRouter JPEG/MP4/MOV fixture coverage and media-refusal-to-text-serving regressions.
+
 ## Release candidate v0.9.13 — MiMo memory admission (not shipped)
 
 - Accept bounded AAC audio in MP4/MOV and mono/stereo PCM8/16/24/32 and Float32 WAV input from 8–192 kHz for MiMo audio. Preserve sample rate and channels for the native resampler, reserve all decoded/resampled samples, and qualify the authenticated path with the genuine audio codec before release.
@@ -14,6 +28,10 @@
 ## Unreleased — explored provider pricing
 
 - Price a provider that evidence exploration admits at the fleet median rates for its model and chip family. Each rate is replaced on its own: the isolated-prefill median while the provider's own isolated-prefill evidence is missing or older than 5 minutes, and the decode median while its own decode evidence is missing or older than 5 minutes. A provider that sent no rates at registration, or whose last measurement was slow, can now enter the 100 ms band beside an idle peer with fresh evidence. A reviewed profile point still comes first, a missing median keeps the ordinary fallback, and the candidate stays `unknown`, so hedge and fresh-feasible requests still exclude it. Requests without a deadline now also price such a provider at the median, so it can win them. The TTFT calibrator does not learn from a median-based prediction. A provider that is slow on every request needs the exploration backoff of #1270. Selection is still not guaranteed.
+
+## Unreleased — native MiMo standing wired residency by default
+
+- Enable native MiMo standing wired residency by default. Without a standing residency set every command buffer must make the ~161 GiB weight payload resident again; on a 256 GiB M3 Ultra the driver kept unwiring it and single-stream decode measured ~0.4 tok/s (the request failed at 234 s), versus 37.8 tok/s with residency, identical requests and weights. The existing bounded ceiling still leaves max(16 GiB, 10%) of physical memory unwired and never grants load admission. `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY=0` (or `false`/`no`/`off`) restores the previous behavior and is now forwarded to the launchd provider job; the former opt-in value `1` remains valid.
 
 ## Unreleased — first-content evidence exploration
 

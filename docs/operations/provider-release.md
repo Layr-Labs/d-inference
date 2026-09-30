@@ -10,8 +10,34 @@ re-downloads artifacts and requires independent App Attest qualification before
 activating a production release. Staging/publication failures retry the retained
 artifact; GitHub and R2 publication are separate recoverable steps.
 
-The prepared version is **0.9.13**. Its MiMo memory-admission changes are
-collected in [`CHANGELOG.md`](../../CHANGELOG.md). Qualify the signed build
+The macOS signing and older-OS smoke jobs install the checksum-pinned GitHub CLI
+with `scripts/install-macos-github-cli.sh` before downloading retained artifacts.
+A `gh: command not found` error in an older run is runner setup failure before
+artifact verification, not a failed model test or notarization rejection. A
+retry of that old workflow still uses its original source. For an unchanged
+candidate with successful build and SDK qualification, merge the tooling fix
+and use the retained unsigned recovery path below.
+
+The prepared version is **0.9.14**. It enables native MiMo text-prefix SSD
+caching by default; the exact model identities and rollback controls are in
+[prefix-cache policy](../architecture/prefix-cache.md#mimo-complete-state).
+Qualify the exact signed build with an ordinary launchd configuration: record a
+cold text request, a useful repeated-prefix donation and an authenticated SSD
+restore, including target/assistant output correctness and memory headroom.
+Verify image, audio and video requests still complete through the joint native
+path without reporting media-prefix reuse. Set `DARKBLOOM_MIMO_COMPLETE_PREFIX=0`
+and rerun the replacement `darkbloom start` flow, preserving the selected models
+and existing start options, then repeat with `DARKBLOOM_PREFIX_CACHE=0`.
+Replacement start drains the old process, rewrites its plist from the current
+shell environment and starts the provider; `darkbloom restart` reuses the saved
+plist and does not apply newly exported variables. Verify each replacement
+provider serves cold, then unset both overrides and repeat replacement start
+to restore the model default. RAM
+retention and experimental paging/rectangular verification stay off for this
+qualification. The source change does not qualify those runtime results.
+
+The MiMo memory/media fixes carried forward from 0.9.13 are collected in
+[`CHANGELOG.md`](../../CHANGELOG.md). Qualify the signed build
 on a 256 GiB host both with MiMo alone and with another model resident:
 confirm a positive usable token budget, successful inference, bounded memory
 pressure, and correct concurrency reduction or load refusal when grants shrink.
@@ -227,6 +253,38 @@ Implementation: `.github/actions/provider-release-build/action.yml`,
 `scripts/provider-signing-validation.py` (`stage`, `unpack`). See the
 [build cache contract](../developer/build.md#sdk-27-release-builds-and-caches) and
 [SDK qualification checks](../developer/test.md#sdk-27-release-qualification).
+
+## Resume signing from a retained unsigned build
+
+Use this when build and SDK qualification succeeded but signing failed because
+of workflow tooling or runner setup. Keep the release tag on the original
+candidate. After the corrected workflow is merged into current `master`, run:
+
+```bash
+gh workflow run release-swift.yml --ref master \
+  -f environment=prod -f resume_run_id=36750197236 -f resume_run_attempt=1
+```
+
+The example identifies the failed 0.9.13 candidate at `ee46e5f34`. Substitute the
+explicit source run and successful build attempt for another recovery.
+`scripts/provider-release-resume.py` validates repository, workflow, push/tag
+origin, current signed tag, source signature/version, both successful jobs, and
+one unexpired immutable unsigned artifact. It refuses a source run that already
+retained a signed publication artifact. The resolver and download step both
+check identity; download verifies the GitHub artifact ZIP digest before the
+existing archive, file inventory, source/version and entitlement checks.
+
+The recovery skips compilation and SDK qualification and resumes at the normal
+protected signing job. Code signing, notarization, final signed-bundle smoke,
+independent App Attest qualification, R2 staging and publication remain required.
+`release-provenance.json` distinguishes original build source/run from the
+current signing workflow source/run. The tag is rechecked before registration.
+The unsigned artifact expires after three days; missing/expired bytes require a
+new build. Changed candidate source also requires a new build and reviewed tag.
+
+For a failure after a signed artifact was retained, retry only the failed
+staging/publication jobs from that signing run. That existing retry path
+preserves signed bytes and does not need unsigned recovery or re-signing.
 
 ## Environment-free signing validation
 

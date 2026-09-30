@@ -27,6 +27,14 @@ jobs:
           xcodebuild -version
           xcrun swift --version
           test "$(xcrun --sdk macosx --show-sdk-version)" = '27.0'
+      - name: Checkout reviewed workflow tooling
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          path: tooling
+          persist-credentials: false
+      - name: Install pinned GitHub CLI
+        run: bash tooling/scripts/install-macos-github-cli.sh
       - name: Validate explicit source identity
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
@@ -34,12 +42,6 @@ jobs:
         run: |
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$(gh api "repos/$GITHUB_REPOSITORY/commits/$SOURCE_SHA" --jq .commit.verification.verified)" = true
-      - name: Checkout reviewed workflow tooling
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          ref: ${{ github.sha }}
-          path: tooling
-          persist-credentials: false
       - name: Checkout candidate
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -111,6 +113,8 @@ jobs:
           ref: ${{ github.sha }}
           path: tooling
           persist-credentials: false
+      - name: Install pinned GitHub CLI
+        run: bash tooling/scripts/install-macos-github-cli.sh
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12.10'

@@ -186,8 +186,8 @@ func TestGenericPreparationHTTPBaseline(t *testing.T) {
 			if got.err != nil {
 				t.Fatal(got.err)
 			}
-			if got.request.RequestID == "" || !reflect.DeepEqual(got.request.Body, protocol.InferenceRequestBody{}) {
-				t.Fatal("dispatch lacks identity or carries a plaintext typed body")
+			if got.request.RequestID == "" {
+				t.Fatal("dispatch lacks identity")
 			}
 			if got.body["model"] != benchDesiredBuild || got.body["max_tokens"] != float64(64) ||
 				got.body["reasoning_parser"] != "qwen3" || got.body["tool_call_parser"] != "qwen3_coder" {

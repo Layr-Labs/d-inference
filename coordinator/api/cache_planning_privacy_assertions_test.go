@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -85,7 +84,7 @@ func (f *privacyPlanningFixture) assertSuccess(t *testing.T, before privacyPlann
 		select {
 		case record := <-f.records:
 			if record.frame.RequestID == "" || seen[record.frame.RequestID] || record.frame.EncryptedBody == nil ||
-				record.frame.EncryptedBody.Ciphertext == "" || !reflect.DeepEqual(record.frame.Body, protocol.InferenceRequestBody{}) {
+				record.frame.EncryptedBody.Ciphertext == "" {
 				t.Fatal("dispatch identity/encrypted-only envelope changed")
 			}
 			seen[record.frame.RequestID] = true

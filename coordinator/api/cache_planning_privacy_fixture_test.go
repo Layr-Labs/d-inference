@@ -114,7 +114,7 @@ func newPrivacyPlanningFixture(t *testing.T, providers int) *privacyPlanningFixt
 		}
 	}
 	artifact := cachePlanningRealArtifactFor(t, "joint-cache-model", false)
-	if err := memory.SetModelPrice("platform", artifact.manifest.ModelID, 50_000, 200_000); err != nil {
+	if err := memory.SetModelPrice(store.ModelPrice{AccountID: "platform", Model: artifact.manifest.ModelID, InputPrice: 50_000, OutputPrice: 200_000}); err != nil {
 		t.Fatal(err)
 	}
 	var ids []string
@@ -198,7 +198,7 @@ func (f *privacyPlanningFixture) forgetOwned(t *testing.T) {
 	}
 }
 
-func (f *privacyPlanningFixture) start(t *testing.T, account, endpoint, body string) (<-chan privacyPlanningHTTPResult, context.CancelFunc) {
+func (f *privacyPlanningFixture) start(t *testing.T, account, endpoint, body string, route ...string) (<-chan privacyPlanningHTTPResult, context.CancelFunc) {
 	t.Helper()
 	ctx, cancel := privacyPlanRequestContext(f.ctx)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, f.http.URL+endpoint, strings.NewReader(body))
@@ -208,6 +208,9 @@ func (f *privacyPlanningFixture) start(t *testing.T, account, endpoint, body str
 	}
 	request.Header.Set("Authorization", "Bearer "+f.keys[account])
 	request.Header.Set("Content-Type", "application/json")
+	if len(route) > 0 {
+		request.Header.Set("X-Darkbloom-Route", route[0])
+	}
 	done := make(chan privacyPlanningHTTPResult, 1)
 	go func() {
 		response, err := f.client.Do(request)

@@ -240,7 +240,7 @@ func TestCachePlanningComposedBudgetPressureQueueAndCancellation(t *testing.T) {
 			// so it is a conservative lower bound on the original writer deadline.
 			deadlineFloor := time.Now().Add(minimumBudget)
 			done, cancel := f.start(t, privacyPlanningAccountA, "/v1/chat/completions",
-				privacyPlanningBody(t, f.planning.model, "/v1/chat/completions", true, privacyPlanningAccountB))
+				privacyPlanningBody(t, f.planning.model, "/v1/chat/completions", true, privacyPlanningAccountB), "prefer")
 			defer cancel()
 			awaitCondition(t, 2*time.Second, func() bool { return f.reg.Queue().QueueSize(f.planning.model) == 1 }, "request enters actual queue")
 			if f.providers[0].dispatchCount() != before.dispatches {

@@ -102,13 +102,14 @@ final class WholeMacServiceBudget: @unchecked Sendable {
 
     func acquire(ownerID: String, concurrency: Int, serviceReservationID: String? = nil,
         serviceReservation: ServiceReservationLifetime? = nil, work: Work? = nil,
-        deadlineApplicability: DeadlineApplicability? = nil) -> Bool {
+        deadlineApplicability: DeadlineApplicability? = nil, requiresIdle: Bool = false) -> Bool {
         // Correlation is optional. Malformed input gets no overlap credit; it
         // never bypasses the actual provider-side service allowance.
         let reservationID = serviceReservation?.id
             ?? ServiceReservationLifetime.normalizedID(serviceReservationID)
         let (acquired, notification) = lock.withLock { () -> (Bool, AsyncStream<Void>.Continuation?) in
             guard charges[ownerID] == nil, concurrency > 0 else { return (false, nil) }
+            if requiresIdle, !charges.isEmpty || !unboundedActivities.isEmpty { return (false, nil) }
             if let reservationID, charges.values.contains(where: { $0.reservationID == reservationID }) {
                 return (false, nil)
             }
@@ -189,6 +190,14 @@ final class WholeMacServiceBudget: @unchecked Sendable {
 
     var usedFraction: Double { lock.withLock { charges.values.reduce(0, { $0 + $1.fraction }) } }
     var count: Int { lock.withLock { charges.count } }
+
+    func exclusiveEvidenceGuard(ownerID: String) -> CBv2FirstContentEvidenceGuard? {
+        lock.withLock {
+            guard charges.count == 1 && charges[ownerID]?.fraction == 1 && unboundedActivities.isEmpty
+            else { return nil }
+            return evidenceGuard
+        }
+    }
 
     /// Preparation, model loading and cache device transfers cannot borrow a
     /// token-work calibration. Each independent owner invalidates old guards;

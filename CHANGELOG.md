@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased — provider prefill evidence recovery
+
+- Let an idle native text provider renew expired isolated-prefill measurements through one short request under its original first-content deadline. Hold exclusive whole-Mac service ownership through actual engine retirement and back off failed or cache-only recovery; busy, loading, media and large requests retain predictive admission.
+- Reseed measured phase EWMAs after an evidence gap while preserving sample identity/counts. Unchanged heartbeats cannot manufacture current prefill evidence.
+
 ## Unreleased — native media prompt accounting
 
 - Estimate concrete MiMo image/video/WAV prompt work from bounded media metadata and verified processor configuration. Reconcile fetched-media input quota and deadline token terms from the original request arrival; retain heuristic fallbacks and provider admission safeguards.

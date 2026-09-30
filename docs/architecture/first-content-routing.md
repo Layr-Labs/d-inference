@@ -1,6 +1,6 @@
 # First-content routing
 
-> Last updated: 2026-09-29
+> Last updated: 2026-09-30
 
 The coordinator selects providers by expected time to delivered content, with a
 separate conservative forecast for deadline feasibility. The selection policy applies by
@@ -140,6 +140,44 @@ it. Ordinary ranking need not select it, and a served request need not refresh
 both measurements: cache reuse can leave isolated-prefill evidence unchanged, as
 can an unchanged legacy EWMA. Exploration offers an opportunity, not guaranteed
 selection or recovery.
+
+### Provider recovery of expired text prefill evidence
+
+Native engines with generation-bound retirement support can renew an expired
+isolated-prefill estimate through one short text request. The evidence expires
+after `EnginePerformanceMeasurements.freshness` (`.seconds(120)`). A recovery
+request must have a live first-content deadline, no media, no reviewed deadline
+profile, and at most `PrefillEvidenceRecovery.maximumPromptTokens` (`1_024`)
+actual prepared tokens. This is a bounded exploration policy, not a throughput
+guarantee (`canRecoverPrefillEvidence`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+PrefillRecovery.swift`).
+
+The provider atomically acquires the entire `WholeMacServiceBudget` only when
+there are no service owners or unbounded device activities. That exclusive
+lease prevents another model or request from claiming inference service until
+engine retirement. Loading or device work invalidates the evidence guard;
+an interrupted receipt cannot train an isolated rate. Short recovery uses the
+existing unmeasured-prefill submission path, with no invented service rate or
+predicted duration. Original-clock expiry checks run before and after submission;
+the coordinator's first-content timeout still bounds waiting for content.
+Physical KV, memory, cache, trust and cancellation checks remain in force.
+
+Outside this exclusive recovery path, native requests retain ordinary predictive
+admission using their observed rates. Expiration alone does not remove a healthy
+idle provider's ability to serve a larger prompt. Engines without generation-bound
+retirement retain their legacy policy. A failed
+or cache-only recovery waits `PrefillEvidenceRecovery.failureBackoff`
+(`.seconds(120)`) after actual retirement before another recovery can start.
+A successful cold isolated sample releases the recovery permission at retirement;
+receipt publication alone never releases device ownership.
+Refusals before engine submission do not start the recovery backoff.
+
+The first new sample after an evidence gap reseeds its phase EWMA rather than
+blending with the expired rate. Producer epoch and sample counts remain monotonic,
+and heartbeats alone do not renew measurements. A cache hit, incomplete prefill,
+contended sample or invalid timing cannot replace isolated-prefill evidence.
+Coordinator exploration still controls whether an unknown provider gets a request;
+provider recovery supplies a measurement opportunity once it is selected.
 
 Even a feasible forecast is advisory. The ordinary forecast uses resolved
 prefill and decode rates directly: it no longer multiplies either rate by 0.5.
@@ -296,6 +334,7 @@ does not represent a random sample of all outcomes.
 | Quote correlation | `coordinator/registry/capacity_quotes.go` — `ProbePlanCandidates` |
 | Request retry and terminal ownership | `coordinator/api/dispatch.go` — `dispatchState` |
 | Persisted forecast evidence | `coordinator/api/profiler_record.go` — `decisionJSON` |
+| Native text measurement recovery | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+PrefillRecovery.swift` — `canRecoverPrefillEvidence`; `provider-swift/Sources/ProviderCore/Inference/Performance/PrefillEvidenceRecovery.swift` — `PrefillEvidenceRecovery` |
 
 ## Related
 

@@ -75,6 +75,14 @@ extension EngineV2Bridge {
         // Use observed phase rates directly. The engine still prices its
         // actual queue/cache work against the original absolute deadline;
         // optional reviewed calibration supplies only measured error bounds.
+        let expired = supportsPrefillRecoveryRetirement && isolatedPrefillEvidenceExpired()
+        if expired, let requestID, prefillEvidenceRecovery.owner == requestID,
+            prefillEvidenceRecovery.evidenceGuard?.isValid == true {
+            // One bounded idle exploration uses the existing unmeasured-rate
+            // path, retaining absolute expiry, physical capacity and retirement.
+            // Never present a fabricated hardware/fleet rate as local evidence.
+            return nil
+        }
         let prefillRate = isolatedPrefillEwmaInitialized
             && isolatedPrefillTpsEwma.isFinite && isolatedPrefillTpsEwma > 0
             ? isolatedPrefillTpsEwma : nil
@@ -133,6 +141,7 @@ extension EngineV2Bridge {
                 prefixCacheReceiptID: prefixCacheReceiptID,
                 ssdStaged: ssdStaged,
                 readyReceiptRegistered: readyReceiptRegistered,
+                prefillReceipt: prefillReceipt,
                 usageSignal: usageSignal,
                 failure: failure)
             if let nativeTaskID { await bridge.clearNativeTransferredRetirement(nativeTaskID) }
@@ -155,9 +164,11 @@ extension EngineV2Bridge {
         prefixCacheReceiptID: CBv2RequestID?,
         ssdStaged: Bool,
         readyReceiptRegistered: Bool,
+        prefillReceipt: EnginePrefillReceipt,
         usageSignal: EngineV2RequestUsageSignal?,
         failure: PrefixCacheLookupFailureClass
     ) async {
+        consumePrefillReceipt(id: requestID, receipt: prefillReceipt)
         recordGenerationWork(completion: completion)
         await releasePreSubmitResources(
             requestID: requestID,

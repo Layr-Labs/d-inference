@@ -153,7 +153,10 @@ extension EngineV2Bridge {
         guard acquireServiceAllowance(requestID: id, serviceReservationID: serviceReservationID,
             serviceReservation: serviceReservation, promptTokens: promptTokens.count,
             maxOutputTokens: max(0, request.max_tokens ?? defaultMaxTokens),
-            qualifiedTextWork: multimodal == nil && mediaKind == nil) else {
+            qualifiedTextWork: multimodal == nil && mediaKind == nil,
+            recoverPrefillEvidence: canRecoverPrefillEvidence(
+                promptTokens: promptTokens.count, deadline: firstContentDeadline,
+                isMultimodal: multimodal != nil || mediaKind != nil)) else {
             usageSignal?.finalizeLookup(failure: .capacity, fallbackTier: prefixCacheFallbackTier)
             continuation.yield(.error("token_budget_exhausted: whole-Mac service allowance exhausted"))
             continuation.finish()
@@ -520,8 +523,16 @@ extension EngineV2Bridge {
         let cbv2Id = mintEngineRequestId(
             seed: cbv2Request.sampling.seed, promptTokens: promptTokens)
         cbv2Request.id = cbv2Id
+        // Own staging/reclamation can invalidate guards during preparation.
+        // Bind the measurement interval only after every such suspension,
+        // while the original exclusive lease still owns the whole Mac.
+        if prefillEvidenceRecovery.owner == id {
+            prefillEvidenceRecovery.bindEvidenceGuard(
+                serviceBudget?.exclusiveEvidenceGuard(ownerID: serviceOwnerPrefix + ":" + id), ownerID: id)
+        }
         let prefillReceipt = EnginePrefillReceipt(activity: measurementActivity, model: modelId,
-            deadlineRateEvidence: deadlineProfile == nil ? nil : serviceBudget?.captureDeadlineRateEvidence())
+            deadlineRateEvidence: deadlineProfile == nil ? nil : serviceBudget?.captureDeadlineRateEvidence(),
+            isolationGuard: prefillEvidenceRecovery.owner == id ? prefillEvidenceRecovery.evidenceGuard : nil)
         cbv2Request.onPrefillCompleted = { [weak self, prefillReceipt] usage in
             prefillReceipt.complete(usage)
             Task { await self?.consumePrefillReceipt(id: id, receipt: prefillReceipt) }
@@ -621,6 +632,7 @@ extension EngineV2Bridge {
                     deadline: firstContentDeadline, isMultimodal: multimodal != nil)
                 : nil)
         do {
+            prefillEvidenceRecovery.beginSubmission(id)
             if let admission = deadlineAdmission {
                 // The engine's serialized closure compares projection against
                 // this same absolute deadline. A second task-group race would
@@ -740,6 +752,25 @@ extension EngineV2Bridge {
                     events = try engine.submit(engineRequest)
                 }
                 profile?.observeDeadlineDecision(.accepted, deadline: firstContentDeadline)
+                if prefillEvidenceRecovery.owner == id {
+                    do {
+                        try Task.checkCancellation()
+                        if pendingCancellationIDs.contains(id) { throw CancellationError() }
+                        try firstContentDeadline?.check()
+                    } catch {
+                        let continuation: DeadlineContinuation = error is CancellationError ? .cancelled : .expired
+                        profile?.stopDeadlineContinuation(continuation)
+                        engine.cancel(cbv2Id)
+                        transferPreSubmitRetirement(
+                            retirementTransfer, requestID: id, engineID: cbv2Id,
+                            stream: events, retirement: nativeRetirement ?? .acknowledged,
+                            prefillReceipt: prefillReceipt, sharedKVReserved: sharedKVReserved,
+                            prefixCacheReceiptID: prefixCacheReceiptID, ssdStaged: ssdStaged,
+                            readyReceiptRegistered: readyReceiptRegistered,
+                            usageSignal: usageSignal, failure: .policy)
+                        throw error
+                    }
+                }
                 if let profile {
                     // Evaluated AFTER the submit returned: the deadline may
                     // have expired meanwhile, hence the zero clamp.

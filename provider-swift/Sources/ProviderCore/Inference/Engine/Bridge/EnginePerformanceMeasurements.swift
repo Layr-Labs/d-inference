@@ -49,6 +49,7 @@ final class EnginePrefillReceipt: @unchecked Sendable {
     let activity: EngineMeasurementActivity
     let activityID: UUID
     let deadlineRateEvidence: DeadlineRateEvidence?
+    private let isolationGuard: CBv2FirstContentEvidenceGuard?
     private let lock = NSLock()
     private var sample: Sample?
     private var consumed = false
@@ -56,14 +57,17 @@ final class EnginePrefillReceipt: @unchecked Sendable {
     private var retirementOwned = false
 
     init(activity: EngineMeasurementActivity, model: String,
-        deadlineRateEvidence: DeadlineRateEvidence? = nil) {
+        deadlineRateEvidence: DeadlineRateEvidence? = nil,
+        isolationGuard: CBv2FirstContentEvidenceGuard? = nil) {
         self.activity = activity
         self.deadlineRateEvidence = deadlineRateEvidence
+        self.isolationGuard = isolationGuard
         activityID = activity.begin(model: model)
     }
 
     func complete(_ usage: CBv2Usage) {
-        let overlap = activity.snapshot(activityID)
+        var overlap = activity.snapshot(activityID)
+        if isolationGuard?.isValid == false { overlap.contended = true }
         lock.withLock {
             guard sample == nil else { return }
             sample = Sample(usage: usage, at: .now, overlap: overlap,
@@ -118,7 +122,10 @@ struct EnginePerformanceMeasurements {
         var count: Int64 = 1
         var at: ContinuousClock.Instant
         mutating func observe(_ tps: Double, at now: ContinuousClock.Instant) {
-            value = 0.3 * tps + 0.7 * value
+            // A new observation starts a new estimate after an evidence gap;
+            // one slow old sample must not poison the next serving window.
+            value = now - at > EnginePerformanceMeasurements.freshness
+                ? tps : 0.3 * tps + 0.7 * value
             count = count == .max ? .max : count + 1
             at = now
         }
@@ -141,27 +148,28 @@ struct EnginePerformanceMeasurements {
     private var qualifiedRates: [String: QualifiedRate] = [:]
     private var buckets: [Key: Rate] = [:]
     static let maxBuckets = 32
+    static let freshness: Duration = .seconds(120)
 
     func freshRate(_ name: String, now: ContinuousClock.Instant = .now,
-        maximumAge: Duration = .seconds(120)) -> Double? {
+        maximumAge: Duration = Self.freshness) -> Double? {
         guard let rate = rates[name], now >= rate.at, now - rate.at <= maximumAge,
             rate.value.isFinite, rate.value > 0 else { return nil }
         return rate.value
     }
 
-    func rateExpiration(_ name: String, maximumAge: Duration = .seconds(120)) -> ContinuousClock.Instant? {
+    func rateExpiration(_ name: String, maximumAge: Duration = Self.freshness) -> ContinuousClock.Instant? {
         rates[name]?.at.advanced(by: maximumAge)
     }
 
     func freshDeadlineRate(_ name: String, postureEpoch: UUID,
-        now: ContinuousClock.Instant = .now, maximumAge: Duration = .seconds(120)) -> Double? {
+        now: ContinuousClock.Instant = .now, maximumAge: Duration = Self.freshness) -> Double? {
         guard let qualified = qualifiedRates[name], qualified.postureEpoch == postureEpoch,
             now >= qualified.rate.at, now - qualified.rate.at <= maximumAge else { return nil }
         return qualified.rate.value
     }
 
     func deadlineRateExpiration(_ name: String, postureEpoch: UUID,
-        maximumAge: Duration = .seconds(120)) -> ContinuousClock.Instant? {
+        maximumAge: Duration = Self.freshness) -> ContinuousClock.Instant? {
         guard let qualified = qualifiedRates[name], qualified.postureEpoch == postureEpoch else { return nil }
         return qualified.rate.at.advanced(by: maximumAge)
     }

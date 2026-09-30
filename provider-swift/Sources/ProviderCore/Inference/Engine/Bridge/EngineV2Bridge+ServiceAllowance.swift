@@ -38,6 +38,7 @@ extension EngineV2Bridge {
         serviceReservation: ServiceReservationLifetime? = nil,
         promptTokens: Int? = nil, maxOutputTokens: Int? = nil,
         qualifiedTextWork: Bool = true,
+        recoverPrefillEvidence: Bool = false,
         allowExpansion: Bool? = nil) -> Bool {
         let effectiveProfile = currentPerformanceProfile(
             allowExpansion: allowExpansion ?? ServingPerformanceProfiles.postureAllowsExpansion)
@@ -53,13 +54,7 @@ extension EngineV2Bridge {
             active.count + pendingSubmissionIDs.count >= unqualifiedMaxConcurrentRequests {
             return false
         }
-        return serviceBudget?.acquire(
-            ownerID: serviceOwnerPrefix + ":" + requestID,
-            concurrency: effectiveProfile?.wholeMacConcurrency
-                ?? ServingPerformanceProfiles.legacyWholeMacConcurrency,
-            serviceReservationID: serviceReservationID,
-            serviceReservation: serviceReservation,
-            work: promptTokens.flatMap { prompt in maxOutputTokens.map { output in
+        let work: WholeMacServiceBudget.Work? = promptTokens.flatMap { prompt in maxOutputTokens.map { output in
                 // Ownership starts before asynchronous submission validation.
                 // Another model may observe this lease during that interval;
                 // only work within its own profile's full context envelope
@@ -76,12 +71,27 @@ extension EngineV2Bridge {
                 return .init(modelID: modelId, profileID: profileID,
                     promptTokens: prompt, maxOutputTokens: output,
                     calibratedContextTokensMax: effectiveDeadlineProfile?.calibratedContextTokensMax ?? 0)
-            } }, deadlineApplicability: effectiveDeadlineProfile?.applicability) ?? true
+            } }
+        let ownerID = serviceOwnerPrefix + ":" + requestID
+        if recoverPrefillEvidence, let serviceBudget,
+            serviceBudget.acquire(ownerID: ownerID, concurrency: 1,
+                serviceReservationID: serviceReservationID, serviceReservation: serviceReservation,
+                work: work, requiresIdle: true) {
+            prefillEvidenceRecovery.acquire(requestID, evidenceGuard: nil)
+            return true
+        }
+        // Losing the idle race only withdraws exploration. Ordinary serving
+        // keeps its normal allowance and predictive admission on a busy Mac.
+        return serviceBudget?.acquire(ownerID: ownerID,
+            concurrency: effectiveProfile?.wholeMacConcurrency ?? ServingPerformanceProfiles.legacyWholeMacConcurrency,
+            serviceReservationID: serviceReservationID, serviceReservation: serviceReservation,
+            work: work, deadlineApplicability: effectiveDeadlineProfile?.applicability) ?? true
     }
 
     /// Call only at refused pre-submit cleanup or completed engine retirement.
     /// The stream's terminal alone does not prove device resources retired.
     func releaseServiceAllowance(requestID: String) {
+        prefillEvidenceRecovery.retire(requestID)
         serviceBudget?.release(ownerID: serviceOwnerPrefix + ":" + requestID)
     }
 }

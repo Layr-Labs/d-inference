@@ -174,9 +174,7 @@ async fn main() -> Result<()> {
 }
 
 fn encode_corpus(corpus: &GeneratedCorpus) -> serde_json::Result<Vec<u8>> {
-    let mut encoded = serde_json::to_vec_pretty(corpus)?;
-    encoded.push(b'\n');
-    Ok(encoded)
+    serde_json::to_vec_pretty(corpus)
 }
 
 fn is_dynamic_time(error: &anyhow::Error) -> bool {
@@ -335,16 +333,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn generated_corpus_matches_the_line_terminated_fixture_format() {
+    fn generated_corpus_matches_the_checked_in_fixture_eof_format() {
         let encoded = encode_corpus(&GeneratedCorpus {
             schema_version: 1,
             models: vec![],
         })
         .unwrap();
-        assert_eq!(
-            encoded,
-            b"{\n  \"schema_version\": 1,\n  \"models\": []\n}\n"
-        );
+        assert_eq!(encoded, b"{\n  \"schema_version\": 1,\n  \"models\": []\n}");
+        let fixture =
+            include_bytes!("../../../../fixtures/prompt-contract/v1/production_vectors.json");
+        assert!(fixture.ends_with(b"}"));
     }
 
     #[test]

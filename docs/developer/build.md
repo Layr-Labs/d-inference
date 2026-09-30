@@ -46,7 +46,7 @@ same routine fixtures before its watchdog-driven provider tests. Release-only
 builds do not provision test fixtures or enable native qualification.
 
 Production prompt parity compares the generated corpus byte-for-byte with its
-checked-in fixture, including the final newline written by `prompt-fixtures`.
+checked-in fixture, including its EOF format with no extra newline.
 
 Changes to native loading estimates and retirement require a rebuilt provider
 test product, not only a new CLI. Bind both products and the SDK/metallib to the

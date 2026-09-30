@@ -2055,9 +2055,9 @@ binary that already has `mlx.metallib` beside it.
 
 ### 9. Prompt-contract parity fixtures and vectors
 
-The `prompt-fixtures` generator writes pretty JSON with one final newline,
+The `prompt-fixtures` generator writes pretty JSON without an extra final newline,
 matching the checked-in production corpus. `verify-prompt-parity.sh` compares
-bytes before cross-language tests; a missing newline fails even when parsed
+bytes before cross-language tests; different EOF formatting fails even when parsed
 tokens and contracts agree.
 
 Before the MiMo Rust cases, use the [pinned metadata setup](mimo-prompt-fixtures.md).

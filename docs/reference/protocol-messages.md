@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-29
+> Last updated: 2026-09-30
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -901,8 +901,15 @@ Memory holder lifetime is `min(configured TTL, 30s)` (`receiptTTL`,
 staging for resident KV. Sequences increase independently per tier/model/epoch;
 nonce, connection, model/hash/contract, epoch, order, and replay checks still
 apply. Repeated ready anchors cannot refresh expired evidence. Resident LRU
-removal uses bounded TTL and exact-miss invalidation; there is no per-anchor
+removal, and routine owned retirement in active SSD stores, use bounded TTL and
+verified-miss invalidation; there is no per-anchor
 eviction frame. Unload/reconnect replaces the capability snapshot.
+
+An SSD epoch describes reusable-state identity, not guaranteed presence of every
+previously advertised file. An accepted absent/corrupt lookup removes the
+provider's hints for all boundaries in that attempt's plan. Native authentication,
+nonce/sequence/scope/connection checks and generation-wide invalidation on unsafe
+changes remain required; a stale routing hint never grants a cache hit.
 
 ### `capacity_quote`
 

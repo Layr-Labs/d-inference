@@ -82,7 +82,7 @@ enum SSDNoFollowIO {
         defer { Darwin.close(parentFD) }
         beforeOperation?(.read)
         let fd = name.withCString {
-            openat(parentFD, $0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+            openat(parentFD, $0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
         }
         guard fd >= 0 else { throw posixError("openat read", url: url) }
         guard isRegularFile(fd) else {
@@ -252,7 +252,7 @@ enum SSDNoFollowIO {
         defer { Darwin.close(parentFD) }
         beforeOperation?(.touch)
         let fd = name.withCString {
-            openat(parentFD, $0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+            openat(parentFD, $0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
         }
         guard fd >= 0 else { return }
         defer { Darwin.close(fd) }

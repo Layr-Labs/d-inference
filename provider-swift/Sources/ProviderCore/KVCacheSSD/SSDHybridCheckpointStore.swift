@@ -23,6 +23,9 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
         let nowSeconds: @Sendable () -> Int64
         let diskBudgetBytes: @Sendable () -> Int
         let maintainWholeRoot: @Sendable () -> Void
+        // Monotonic, stage-local deadline clock. Default preserves first-attempt
+        // timing; injected clocks keep retry boundary tests deterministic.
+        var stageNow: @Sendable () -> ContinuousClock.Instant = { .now }
     }
 
     public let identity: CBv2CompleteCheckpointIdentity
@@ -64,6 +67,10 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
     var authenticatedReceipts: [CBv2RequestID: (epoch: String?, files: [Data: SSDAuthenticatedFileIdentity])] = [:]
     var pipeline: BoundedSingleConsumerPipeline<WriteJob>!
 
+    // Pauses the real durable writer at the rename/duplicate-validation boundary.
+    // Invoked outside store.lock, while the exact-file commit lease is held.
+    var beforeWriteIndexForTesting: (@Sendable (URL, Bool) -> Void)?
+
     final class ReadyReceipt {
         let callback: @Sendable (PrefixCacheReadyResult) -> Void
         let hashes: [Data]
@@ -97,7 +104,10 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
         self.pipeline = BoundedSingleConsumerPipeline(
             capacity: 1,
             onDropped: { [weak self] job in self?.settle(job, positions: []) ?? job.finish([]) },
-            consume: { [weak self] job in self?.write(job) ?? job.finish([]) })
+            consume: { [weak self] job in
+                guard let self else { job.finish([]); return }
+                await self.write(job)
+            })
         diskBudget.register(self)
     }
 

@@ -27,7 +27,11 @@ func TestIntegrationConnectedCacheHTTP(t *testing.T) {
 	runConnectedCacheHTTP(t, "DARKBLOOM_CONNECTED_CACHE_INPUT", "DARKBLOOM_CONNECTED_CACHE_OUTPUT", false)
 }
 
-func runConnectedCacheHTTP(t *testing.T, inputEnvironment, outputEnvironment string, correctnessOnly bool) {
+func runConnectedCacheHTTP(t *testing.T, inputEnvironment, outputEnvironment string, correctnessOnly bool, options ...connectedCacheRunOptions) {
+	var option connectedCacheRunOptions
+	if len(options) > 0 {
+		option = options[0]
+	}
 	inputPath := os.Getenv(inputEnvironment)
 	if testing.Short() || inputPath == "" {
 		t.Skip("explicit connected real-provider fixture input required")
@@ -66,6 +70,16 @@ func runConnectedCacheHTTP(t *testing.T, inputEnvironment, outputEnvironment str
 	require.NoError(t, err)
 	require.NoError(t, json.Unmarshal(raw, &report.Input))
 	in := report.Input
+	if option.retirementOnly {
+		require.Equal(t, "ssd", in.CacheMode)
+		require.Equal(t, "ternary-bonsai-2-27b", in.Artifact.ModelID)
+		require.Nil(t, in.Providers)
+		t.Setenv("DARKBLOOM_PREFIX_CACHE_DISK_GB", "0.75")
+		report.Scope = "owned_ssd_retirement_publication"
+		report.Cases = report.Cases[:3]
+		report.Cases[2].Name = "stable_after_retirement"
+		report.Limits = append(report.Limits, "Three explicit disk-pressure cases only; the normal ten-case connected suite remains separate. Store telemetry can lag up to its normal refresh interval.")
+	}
 	require.NoError(t, validateConnectedRunScope(in, correctnessOnly))
 	fixture, err := in.validate()
 	require.NoError(t, err)
@@ -251,6 +265,11 @@ func runConnectedCacheHTTP(t *testing.T, inputEnvironment, outputEnvironment str
 			if index == 4 {
 				selected = -1
 			}
+			if option.retirementOnly && index > 0 {
+				// After one controlled donor, both real providers compete normally.
+				// Actual reuse must follow the surviving advertised checkpoint.
+				selected = -1
+			}
 			selectOnly(selected)
 			if selected >= 0 {
 				row.RequiredProviderID = providers[selected].ID
@@ -330,6 +349,13 @@ func runConnectedCacheHTTP(t *testing.T, inputEnvironment, outputEnvironment str
 	}
 	require.Equal(t, report.Cases[0].HTTP.Content, report.Cases[1].HTTP.Content)
 	require.Equal(t, report.Cases[0].HTTP.Reasoning, report.Cases[1].HTTP.Reasoning)
+	if option.retirementOnly {
+		if !run(2, 0, body, false, "hit") {
+			return
+		}
+		verifyConnectedRetirement(t, suite, model, &report)
+		return
+	}
 	if !run(2, 1, body, false, "cold") {
 		return
 	}

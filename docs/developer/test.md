@@ -46,6 +46,141 @@ then run `go test ./promptcontract -run TestPlannerRealSidecarAdmission -count=1
 It checks 720 plans against warm exact references through 64K tokens with the
 unchanged one-second timeout. It does not load model weights or measure SSD hits.
 See [the diagnostic report](../reports/2026-09-24-cache-planner-admission.md) for evidence and limits.
+`TestDiagnosticCacheEpochFanout` exercises coordinator-wide holder withdrawal
+for one model epoch (`go test ./registry -run TestDiagnosticCacheEpochFanout`
+from `coordinator`; repeat with `-race`).
+`SSDCheckpointPublicationCPUTests` binds tiny CPU tensors and checks
+native encrypted-store publication preservation plus successful survivor restoration.
+After the normal Swift test build and MLX resource setup, run
+`swift test --skip-build --disable-xctest --enable-swift-testing --filter SSDCheckpointPublicationCPUTests`
+from `provider-swift`. `SSDOwnedEntryRetirementTests` covers survivor bytes,
+durable epoch/sequence, foreign paths, missing/symlinked files and invalid epoch
+records. The wider SSD suites retain corruption, read coordination, cancellation,
+write recovery and destructive invalidation controls.
+
+`SSDCheckpointCommitRetirementTests` pauses actual encrypted writers after
+rename or duplicate authentication, runs active-owner whole-root eviction with
+newer inactive-root bytes, reconciles, then requires a readable committed file
+and READY publication. It also covers attention write-behind, unrelated
+survivors, post-commit self-eviction without READY and queued-writer cancellation.
+`SSDCheckpointFileCoordinatorTests` checks nonblocking maintenance, FIFO/read
+ownership and cleanup; `SSDOwnedEntryRetirementTests` checks busy-entry skipping
+alongside no-follow and epoch fences. Build the exact source and matched MLX
+resources before selecting these suites. Do not reuse a predecessor binary.
+`SSDCheckpointCPUAcceptanceTests` replays the existing complete lifecycle,
+duplicate/corruption, shared-ownership and telemetry oracles under an explicitly
+checked CPU device. It preserves their assertions, including paged and contiguous
+geometry, actual backing ownership and refusal-before-read controls. Run the
+CPU storage selection from `provider-swift` after building and staging resources:
+
+```bash
+swift test --skip-build --disable-xctest --enable-swift-testing --no-parallel \
+  --filter 'SSDCheckpointCPUAcceptanceTests|SSDCheckpointCommitRetirementTests|SSDOwnedEntryRetirementTests|SSDCheckpointFileCoordinatorTests|SSDCheckpointFileCoordinatorPathTests|SSDCacheEpochStoreTests|SSDCheckpointPublicationCPUTests|SSDNoFollowIOSpecialFileTests|SSDTestDirectoryTests'
+```
+
+Native complete-checkpoint fixtures materialize their synthetic model/scalar parameters before either comparison arm and join donation writers before asserting reservation cleanup. Their bitwise state and continuation checks remain exact.
+
+Owned eviction defers while an authenticated reader holds its exact-file lease and retires after the lease drains. External unlink remains an absent miss; epoch-invalidation fixtures explicitly rotate the durable epoch because ordinary per-file maintenance preserves it.
+
+The complete-checkpoint, epoch, owned-retirement and FIFO fixtures accept
+`DARKBLOOM_SSD_TEST_TMPDIR` as an explicit test-only parent directory. It must
+already exist, be absolute, writable and canonical, without symlink components.
+Invalid or empty values fail rather than falling back; when absent, Foundation's
+normal temporary parent is retained. Each fixture creates and removes only its
+own UUID child. This does not change the production cache root or disk reserve.
+Foundation's Darwin temporary directory may ignore `TMPDIR`, so verify the actual
+selected filesystem and sufficient free space for encrypted donation tests.
+The tiny `/tmp` and `/var/tmp` path-alias cases deliberately retain their real
+system locations. `SSDTestDirectoryTests` covers selector behavior;
+`SSDNoFollowIOSpecialFileTests` uses bounded reaped subprocesses to check FIFO
+rejection, normal-file behavior and descriptor cleanup.
+
+For bounded shorter complete-checkpoint restoration, keep the original
+`SSDShorterCheckpointRestoreTests` oracles: authenticated plan, real shared-paged
+admission and provider destination refusal; one-retry cap; non-capacity and
+corruption controls; retirement, epoch, close, cancellation, waiting-file and
+same-ID replacement fences; exact adopted page/recurrent bits. Add
+`SSDCheckpointReadBudgetTests` for actual encrypted framing/EOF, hard remaining
+byte bounds and cooperative clock checks, `SSDShorterRestoreClockTests` for
+deterministic original-deadline/retirement/file-wait behavior, and `SSDShorterNativeBlockRestoreTests`
+for independent native-block reservation refusal, exact adopted state and suffix
+output. The latter suites explicitly select CPU; their tiny native decoder is
+not a deployed-model performance measurement. They use the same explicit test
+root and unchanged disk floor. After a source-matched build/resource setup:
+
+```bash
+swift test --skip-build --disable-xctest --enable-swift-testing --no-parallel \
+  --filter 'SSDShorterCheckpointRestoreTests|SSDCheckpointReadBudgetTests|SSDShorterRestoreClockTests|SSDShorterNativeBlockRestoreTests'
+```
+
+The held-file clock test explicitly releases its fixture access after advancing
+time; it does not prove a deadline interrupts an awaited file/refund/native
+operation. The new native-block `allocation` negative injects an error before
+native allocation; actual native post-materialization failure remains unproven
+by that test. Then run the wider CPU storage selection above and the existing
+`NativeDiffusionCheckpointStoreTests` controls, particularly
+`scopeCapacityCancellationAndTamperNeverPublishAStage` and
+`missingProcessAuthorityAndIncompatibleRequestCannotConsumeOrDeleteGoodData`,
+for scope, initial capacity, cancellation, tamper, wrong-consumer and ownership
+checks. Those controls are not substitutes for a native post-materialization
+fault injection. Report each original
+baseline cell and new boundary cell separately; a changed compiler/resource
+failure is not the intended old-behavior failure. Native source tests do not
+qualify actual-model latency, authenticated HTTP reuse or persistent-key restart.
+
+For the existing idle-expiry contract, run the nine deterministic boundary cells:
+
+```bash
+swift test --skip-build --disable-xctest --enable-swift-testing --no-parallel \
+  --filter 'SSDPrefixCacheLifecycleTests/ttlStageBeforeSweepCharacterization|SSDHybridCheckpointRecencyTests/ttlReadBoundaryWithoutSweep'
+```
+
+The complete-checkpoint read boundary uses the current default TTL at ages
+1799, 1800 and 1801 seconds; explicit 900-second attention fixtures retain their
+configured-policy characterization. Attention eligibility is
+sweep-enforced; complete-checkpoint reads reject expiry without awaiting a sweep.
+The tests do not extend retention or assert immediate physical erasure. They
+require real donation, exact restored values, unchanged retained ciphertext and
+drained reservations, not just an index lookup.
+
+For real Gemma checkpoint reconstruction, select the exact QAT artifact and an
+existing canonical writable test directory with the normal free-space reserve:
+
+```bash
+DARKBLOOM_LIVE_MLX_TESTS=1 \
+DARKBLOOM_LIVE_MLX_GEMMA_CHECKPOINT_RESTART=1 \
+DARKBLOOM_LIVE_GEMMA_QAT_MODEL_DIRECTORY=/absolute/path/to/exact-gemma-qat-snapshot \
+DARKBLOOM_SSD_TEST_TMPDIR=/absolute/path/to/owned-test-parent \
+swift test --skip-build --disable-xctest --enable-swift-testing --no-parallel \
+  --filter 'GemmaQATCheckpointRestartLiveTests/sameKeyNewEngineRestores'
+```
+
+The directory override is test-only and never changes saved model-cache settings.
+The fixture checks its original full aggregate before and after load, uses the
+owned test parent, verifies adopted checkpoint state and tenant refusal, and
+requires restored output to equal cache-OFF output. It prints first-content and
+terminal timings for all four requests. Its same-key engine reconstruction uses
+an ephemeral fixture key; it is **not** signed Keychain recovery across processes.
+See the [connected cache qualification report](../reports/2026-09-27-cache-connected-qualification.md)
+for measured scope and remaining release-runner requirements.
+
+Carry the same build-system and scratch-path options used for that build.
+Require nonzero execution and report skips/failures separately. Current results
+and remaining scope are in the dated report below; test sources or compilation
+alone do not establish native, model or signed-Keychain qualification.
+
+`TestIntegrationConnectedCacheRetirement` uses the normal explicit connected
+fixture input with the immutable Bonsai model, SSD on and native MTP off. It
+sets a 0.75 GiB budget only for newly owned test provider roots, then requires
+real eviction, unchanged epochs, accepted READY/hit receipts, identical output
+and reuse of a previously advertised 2,048/4,096-token survivor, followed by a
+4,096-token stable repeat. Both providers compete normally after the donor.
+Run the ordinary ten-case
+`TestIntegrationConnectedCacheHTTP` separately with SSD off and on to cover
+tenant separation, routing, tools/media, cancellation and sidecar fallback.
+These are local mock-coordinator gates, not hosted routing certification or
+release-signed persistent-key evidence.
+See [the diagnostic report](../reports/2026-09-24-cache-eviction-publication.md) for evidence and limits.
 
 The Nemotron coordinator-serving path uses typed SDK events. `OpenAIServiceTests`
 and `ToolCallParserIntegrationTests` in `libs/mlx-swift-lm/Tests/MLXLMServerTests`

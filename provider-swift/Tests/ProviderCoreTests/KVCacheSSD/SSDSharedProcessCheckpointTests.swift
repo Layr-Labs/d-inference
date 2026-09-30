@@ -50,7 +50,7 @@ struct SSDSharedProcessCheckpointTests {
             consume: { job in
                 entered.signal()
                 _ = await Self.wait(release)
-                store.write(job)
+                await store.write(job)
             })
         let donation = Task { try await fixture.donate(store) }
         let arrived = await Self.wait(entered, until: .now() + 5)

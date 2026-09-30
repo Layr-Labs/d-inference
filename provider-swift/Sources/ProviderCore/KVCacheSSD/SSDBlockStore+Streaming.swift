@@ -55,6 +55,7 @@ extension SSDBlockStore {
         maximumWrappedDEKBytes: Int = maxHeaderFieldBytes,
         requireEOF: Bool = false,
         checkCancellation: () throws -> Void = {},
+        beforeRead: ((Int) throws -> Void)? = nil,
         onBytesRead: (Int) -> Void = { _ in },
         onAuthenticatedFile: ((SSDAuthenticatedFileIdentity) -> Void)? = nil,
         beforeOperation: (@Sendable (SSDActiveIOOperation) -> Void)? = nil,
@@ -70,13 +71,13 @@ extension SSDBlockStore {
         defer { try? handle.close() }
         let initialIdentity = try onAuthenticatedFile.map { _ in try SSDAuthenticatedFileIdentity(handle: handle) }
         let header = try readHeader(from: handle, maximumMetadataBytes: maximumMetadataBytes,
-                                    maximumWrappedDEKBytes: maximumWrappedDEKBytes)
+                                    maximumWrappedDEKBytes: maximumWrappedDEKBytes, beforeRead: beforeRead)
         onBytesRead(Int(header.bodyOffset))
         let dek = try unwrapDEK(wrapped: header.wrappedDEK, kekKey: kekKey, aad: header.metadataBytes)
         try validateChunkSizes(header.metadata, maximumChunkBytes: maximumChunkBytes,
                                maximumPlaintextBytes: maximumPlaintextBytes)
         try validateMetadata(header.metadata)
-        let count = readUInt32LE(try readExactly(4, from: handle, what: "chunk count"), at: 0)
+        let count = readUInt32LE(try readExactly(4, from: handle, what: "chunk count", beforeRead: beforeRead), at: 0)
         onBytesRead(4)
         guard Int(count) == header.metadata.chunkPlaintextSizes.count else {
             throw SSDBlockStoreError.malformedHeader("streamed chunk count mismatch")
@@ -84,13 +85,13 @@ extension SSDBlockStore {
         for index in 0..<Int(count) {
             try checkCancellation()
             let length = Int(readUInt32LE(
-                try readExactly(4, from: handle, what: "chunk length"), at: 0))
+                try readExactly(4, from: handle, what: "chunk length", beforeRead: beforeRead), at: 0))
             let expected = header.metadata.chunkPlaintextSizes[index]
             guard length == expected + gcmTagLength else {
                 throw SSDBlockStoreError.malformedHeader("streamed ciphertext size mismatch")
             }
-            let ciphertext = try readExactly(expected, from: handle, what: "chunk ciphertext")
-            let tag = try readExactly(gcmTagLength, from: handle, what: "chunk tag")
+            let ciphertext = try readExactly(expected, from: handle, what: "chunk ciphertext", beforeRead: beforeRead)
+            let tag = try readExactly(gcmTagLength, from: handle, what: "chunk tag", beforeRead: beforeRead)
             onBytesRead(length + 4)
             let nonce = try deriveChunkNonce(dek: dek, fileIV: header.fileIV, chunkIndex: UInt32(index))
             let plaintext: Data
@@ -106,8 +107,11 @@ extension SSDBlockStore {
             }
             try consumeChunk(index, plaintext)
         }
-        if requireEOF, !(try handle.read(upToCount: 1) ?? Data()).isEmpty {
-            throw SSDBlockStoreError.malformedHeader("unexpected trailing encrypted data")
+        if requireEOF {
+            try beforeRead?(1)
+            if !(try handle.read(upToCount: 1) ?? Data()).isEmpty {
+                throw SSDBlockStoreError.malformedHeader("unexpected trailing encrypted data")
+            }
         }
         if let initialIdentity, let onAuthenticatedFile {
             guard try SSDAuthenticatedFileIdentity(handle: handle) == initialIdentity else {

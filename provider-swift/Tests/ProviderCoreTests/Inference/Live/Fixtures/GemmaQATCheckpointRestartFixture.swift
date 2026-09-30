@@ -31,7 +31,15 @@ final class GemmaQATCheckpointRestartFixture {
         guard LiveInferenceFixtures.ensureMetallibColocated() != nil else {
             throw LiveFixtureSkip.missingMetallib
         }
-        guard case .found(let directory) = LiveInferenceFixtures.locate(Self.modelID) else {
+        let directory: URL
+        if let explicitPath = ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_GEMMA_QAT_MODEL_DIRECTORY"] {
+            guard explicitPath.hasPrefix("/"), !explicitPath.utf8.contains(0) else {
+                throw FixtureFailure.invalidModelDirectory
+            }
+            directory = URL(fileURLWithPath: explicitPath, isDirectory: true).resolvingSymlinksInPath()
+        } else if case .found(let cached) = LiveInferenceFixtures.locate(Self.modelID) {
+            directory = cached
+        } else {
             throw LiveFixtureSkip.modelNotInCache(Self.modelID)
         }
         let before = WeightHasher.computeHash(snapshotDir: directory, modelID: Self.modelID)
@@ -54,9 +62,9 @@ final class GemmaQATCheckpointRestartFixture {
             tokenToId: { resolvedTokenizer.inner.convertTokenToId($0) })
         extraEOSTokens = snapshot.extraEOSTokens
         tokens = try Self.makePrompt(tokenizer)
-        root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        root = try SSDTestDirectory.parent()
             .appendingPathComponent("gemma-qat-checkpoint-restart-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
     }
 
     private static func makePrompt(_ tokenizer: TokenizerHandle) throws -> [Int] {
@@ -135,5 +143,5 @@ final class GemmaQATCheckpointRestartFixture {
         #expect(!FileManager.default.fileExists(atPath: root.path))
     }
 
-    enum FixtureFailure: Error { case promptTooShort }
+    enum FixtureFailure: Error { case promptTooShort, invalidModelDirectory }
 }

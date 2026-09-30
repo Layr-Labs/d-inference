@@ -197,6 +197,10 @@ protocol SSDEvictableStore: AnyObject, Sendable {
     /// serialization. The epoch is not rotated and the capability stays
     /// advertised throughout.
     func performExternalDestructiveChange(_ body: () -> Void) -> Bool
+    /// Retire only the named owned files, preserving the generation of survivors.
+    /// Return paths actually unlinked; arbitrary external destruction uses the
+    /// separate index-reconciliation method above.
+    func retireOwnedEntries(_ urls: [URL]) -> Set<String>
 }
 
 /// Process-wide disk budget across all models, resolved by `PrefixCachePolicy`.
@@ -249,6 +253,18 @@ final class SSDDiskBudget: @unchecked Sendable {
                 return true
             }
             return nil
+        }
+    }
+
+    /// nil means no active owner; an empty set means the owner removed nothing.
+    func retireActiveEntries(root: URL, urls: [URL]) -> Set<String>? {
+        let key = root.standardizedFileURL.resolvingSymlinksInPath().path
+        return lock.withLock {
+            guard let store = stores.values.first(where: {
+                $0.evictionRoot.standardizedFileURL.resolvingSymlinksInPath().path == key
+                    && $0.ownsEvictionRoot
+            }) else { return nil }
+            return store.retireOwnedEntries(urls)
         }
     }
 

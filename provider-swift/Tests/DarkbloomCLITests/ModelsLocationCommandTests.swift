@@ -52,7 +52,7 @@ struct ModelsLocationCommandTests {
             var input = answers
             return try command(arguments).execute(
                 isInteractive: interactive, environment: environment,
-                homeDirectory: home, currentDirectory: root, migrateOnDisk: false,
+                homeDirectory: home, currentDirectory: root,
                 readInput: { input.isEmpty ? nil : input.removeFirst() }, writeLine: { _ in })
         }
 
@@ -124,7 +124,7 @@ struct ModelsLocationCommandTests {
         try makeModel(in: fixture.selected, id: "acme/Selected-4bit")
         let before = try fixture.contents()
 
-        // Even the normal migration-enabled command path is read-only for check.
+        // Even the normal interactive command path is read-only for check.
         let result = try fixture.command(["--check", fixture.selected.path]).execute(
             isInteractive: true, environment: [:], homeDirectory: fixture.home,
             readInput: { Issue.record("--check must not prompt"); return "yes" }, writeLine: { _ in })
@@ -338,7 +338,6 @@ struct ModelsLocationCommandTests {
         for (index, candidate) in candidates.enumerated() {
             let result = try fixture.command(["--from-env"]).execute(
                 isInteractive: false, environment: environment, homeDirectory: fixture.home,
-                migrateOnDisk: false,
                 readInput: { Issue.record("explicit piped import must not prompt"); return nil },
                 writeLine: { _ in })
             #expect(result?.directory.path == candidate.2.path)

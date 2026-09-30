@@ -87,7 +87,7 @@ struct Watchdog: AsyncParsableCommand {
             dependencies: .init(
                 kickstartIfLoaded: { try LaunchAgent.kickstartIfLoaded() },
                 providerStillLoaded: {
-                    LaunchAgent.isAnySupportedLabelLoaded()
+                    LaunchAgent.isLoaded()
                 },
                 terminateStaleLockOwner: { owner in
                     guard owner.processIdentity == providerIdentity,

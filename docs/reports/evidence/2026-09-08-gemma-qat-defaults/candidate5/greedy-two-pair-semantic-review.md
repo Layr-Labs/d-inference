@@ -1,6 +1,6 @@
 # Candidate 5: two matched speed pairs and semantic review
 
-> Last updated: 2026-09-08 · commit `4ae34f033`
+> Last updated: 2026-09-08
 
 Two pairs use the same candidate5 binary and source tasks, in opposite execution order: adaptive-on1 then off1, followed by off2 then adaptive-on2. All 24 outputs were reviewed either directly or by exact text identity to an already reviewed output. Parent reports zero structural/cache/tenant/cancellation/lifecycle harness errors in all four runs. This records measured behavior and answer defects; it is not a release-readiness declaration.
 

@@ -71,7 +71,9 @@ extension ProviderLoop {
         // 1. Apply security hardening
         try await applySecurityHardening()
         if Task.isCancelled || servingDrain.refusing {
-            await shutdownBeforeRegistration()
+            guard await shutdownBeforeRegistration() else {
+                throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
+            }
             return
         }
 
@@ -81,10 +83,13 @@ extension ProviderLoop {
         // assistant bytes and fails open on timeout.
         await prewarmSpecDecCatalog()
         if Task.isCancelled || servingDrain.refusing {
-            await shutdownBeforeRegistration()
+            guard await shutdownBeforeRegistration() else {
+                throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
+            }
             return
         }
         startMTPUpgradeMonitor()
+        startModelRevisionMonitor()
 
         // Unified mode: also expose a local OpenAI endpoint off the same loaded
         // models. It starts after the bounded metadata prewarm, but still before
@@ -119,7 +124,9 @@ extension ProviderLoop {
         await runStartupPreloadGate()
         preloadLivenessRefresh.cancel()
         if Task.isCancelled || servingDrain.refusing {
-            await shutdownBeforeRegistration()
+            guard await shutdownBeforeRegistration() else {
+                throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
+            }
             return
         }
 
@@ -162,7 +169,6 @@ extension ProviderLoop {
             backendName: "mlx-swift",
             heartbeatInterval: TimeInterval(loopConfig.config.coordinator.heartbeatIntervalSecs),
             publicKey: keyPair.publicKeyBase64,
-            walletAddress: nil,
             attestation: nil,
             registrationAttestation: registrationAttestation,
             authToken: loopConfig.authToken,
@@ -179,7 +185,9 @@ extension ProviderLoop {
         // A termination received during the APNs/startup awaits can already
         // have drained a process that has no coordinator connection yet.
         if Task.isCancelled || servingDrain.refusing {
-            await shutdownBeforeRegistration()
+            guard await shutdownBeforeRegistration() else {
+                throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
+            }
             return
         }
         // 4. Create coordinator client and start connection
@@ -196,12 +204,16 @@ extension ProviderLoop {
 
         if Task.isCancelled || servingDrain.refusing {
             await coordinator.shutdown()
-            await shutdownBeforeRegistration()
+            guard await shutdownBeforeRegistration() else {
+                throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
+            }
             return
         }
         let (events, sendFn) = await coordinator.start()
         if Task.isCancelled || servingDrain.refusing {
-            await shutdownBeforeRegistration()
+            guard await shutdownBeforeRegistration() else {
+                throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
+            }
             return
         }
         // Wire the direct inference-chunk fast path (Optimizations 1-3) alongside
@@ -290,10 +302,10 @@ extension ProviderLoop {
                 case .inferenceRequest(
                     let requestId, let ciphertext, let senderPublicKey,
                     let cacheReceiptNonce, let cacheScope, let prefixCacheProtocol,
-                    let cacheReceiptBoundaryMode,
+                    let cacheReceiptBoundaryMode, let cacheRepeatedPrefixTokens,
                     let toolSchemaMetadataProtocol, let firstContentDeadline,
                     let receivedAt,
-                    let profile
+                    let profile, let serviceReservationID, let promptWork
                 ):
                     await handleInferenceRequest(
                         requestId: requestId,
@@ -303,10 +315,13 @@ extension ProviderLoop {
                         authenticatedCacheScope: cacheScope,
                         prefixCacheProtocol: prefixCacheProtocol,
                         cacheReceiptBoundaryMode: cacheReceiptBoundaryMode,
+                        cacheRepeatedPrefixTokens: cacheRepeatedPrefixTokens,
                         toolSchemaMetadataProtocol: toolSchemaMetadataProtocol,
                         firstContentDeadline: firstContentDeadline,
                         receivedAt: receivedAt,
                         profile: profile,
+                        serviceReservationID: serviceReservationID,
+                        promptWork: promptWork,
                         send: send
                     )
 
@@ -361,6 +376,7 @@ extension ProviderLoop {
         clearConnectionAuthorization()
         logger.info(.coordinatorEventStreamEnded)
         isShuttingDown = true
+        closeNativeMiMoLifecycle() // close native generation before teardown awaits
         await cancelModelSwitchAndWait()
         // Quote path mirror (routing v2): a shutting-down provider quotes
         // `slot_state` rejections for the brief window the socket stays up.
@@ -371,6 +387,8 @@ extension ProviderLoop {
         pendingRetirementReconnect?.cancel()
         idleMonitorTask = nil
         capacityRefreshTask?.cancel()
+        await stopServiceAllowanceRefreshMonitor()
+        await stopPerformanceRefreshMonitor()
         trailingHeartbeatTask?.cancel()
         trailingHeartbeatTask = nil
         capacityRefreshTask = nil
@@ -381,6 +399,10 @@ extension ProviderLoop {
         for task in desiredPrefetchRetryTasks.values { task.cancel() }
         desiredPrefetchRetryTasks.removeAll()
         desiredPrefetchRetryAttempts.removeAll()
+        modelRevisionMonitorTask?.cancel()
+        modelRevisionAttempt?.task.cancel()
+        await modelRevisionMonitorTask?.value
+        modelRevisionMonitorTask = nil
         let mtpUpgradeTask = mtpUpgradeMonitorTask
         mtpUpgradeMonitorTask = nil
         mtpUpgradeTask?.cancel()
@@ -415,6 +437,11 @@ extension ProviderLoop {
             await cancelAllInflight()
         }
         await coordinator.shutdown()
+        guard await drainNativeMiMoOwners() else {
+            // Real registry/slot/consumer owners stay reachable. A pending or
+            // faulted native engine is not an empty successful shutdown.
+            throw InferenceError.modelLoadFailed("Native MiMo slot shutdown remains pending or requires process restart")
+        }
         while !modelSlots.isEmpty {
             if let unloading = modelsUnloading.first {
                 await waitForModelUnload(unloading)
@@ -449,14 +476,9 @@ extension ProviderLoop {
         // textBackendInprocess + textProxyDisabled: always true on the Swift
         //   provider -- inference runs in-process via mlx-swift-lm, no HTTP
         //   proxy is involved.
-        // pythonRuntimeLocked + dangerousModulesBlocked: report false. There
-        //   is no Python runtime to lock anymore. Coordinator's Swift-runtime
-        //   trust path (registry.BackendUsesSwiftRuntime) doesn't read these.
         return PrivacyCapabilities(
             textBackendInprocess: true,
             textProxyDisabled: true,
-            pythonRuntimeLocked: false,
-            dangerousModulesBlocked: false,
             sipEnabled: securityPosture?.sipEnabled ?? SecurityChecks.isSIPEnabled(),
             antiDebugEnabled: securityPosture?.antiDebugEnabled ?? false,
             coreDumpsDisabled: securityPosture?.coreDumpsDisabled ?? false,
@@ -488,8 +510,6 @@ extension ProviderLoop {
         }
 
         return RuntimeHashes(
-            pythonHash: existing?.pythonHash,
-            runtimeHash: existing?.runtimeHash,
             templateHashes: templates
         )
     }

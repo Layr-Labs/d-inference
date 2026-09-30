@@ -209,6 +209,38 @@ struct PrefixCacheEvidenceSequencerTests {
         withExtendedLifetime(sequencer) {}
     }
 
+    @Test("more checkpoint anchors than the wire carries still sends the deepest sixteen")
+    func oversizedCheckpointReceiptKeepsDeepest() async throws {
+        let capability = PrefixCacheV2Capability(
+            modelId: "model", modelAggregateHash: String(repeating: "a", count: 64),
+            promptContractId: String(repeating: "b", count: 64), blockHashVersion: "dbk3",
+            blockSize: 256, cacheEpoch: "11111111-1111-1111-1111-111111111111", enabled: true, ready: true,
+            readyBoundaryMode: PrefixCacheV2Capability.checkpointBoundaryMode)
+        let sequencer = PrefixCacheEvidenceSequencer { capability }
+        let messages = Messages()
+        let callbacks = try #require(sequencer.callbacks(
+            requestID: "r", nonce: "n", send: SendHandle(messages.append),
+            readyBoundaryMode: PrefixCacheV2Capability.checkpointBoundaryMode))
+        let anchors = (1 ... 20).map {
+            PrefixCacheAnchor(chainHash: String(repeating: "c", count: 64), tokenCount: UInt64($0 * 1024))
+        }
+        callbacks.lookup(PrefixCacheLookupResult(outcome: .missAbsent, tier: .ssd,
+            promptAnchor: PrefixCacheAnchor(chainHash: String(repeating: "c", count: 64), tokenCount: 20 * 1024 + 256)))
+        callbacks.ready(PrefixCacheReadyResult(
+            readyTokens: 20 * 1024, requiredRecomputeTokens: 0, expectedPrefillTokensSaved: 20 * 1024,
+            stageMs: 1, finalAnchor: anchors.last, readyAnchors: anchors))
+        await waitForMessages(messages, count: 2)
+        #expect(messageKinds(messages.snapshot) == ["lookup:r", "ready:r"])
+        let ready = messages.snapshot.compactMap { message -> ProviderMessage.PrefixCacheReadyV2? in
+            if case .prefixCacheReadyV2(let value) = message { return value }
+            return nil
+        }.first
+        #expect(ready?.readyAnchors == Array(anchors.suffix(16)))
+        #expect(ready?.readyAnchors.last?.tokenCount == 20 * 1024)
+        #expect(ready?.expectedPrefillTokensSaved == 20 * 1024)
+        withExtendedLifetime(sequencer) {}
+    }
+
     private func makeSequencer() -> PrefixCacheEvidenceSequencer {
         let value = capability()
         return PrefixCacheEvidenceSequencer { value }

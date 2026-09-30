@@ -301,7 +301,7 @@ struct ProviderLoopMTPUpgradeTests {
         let staged = try #require(try await fixture.prepare())
         await fixture.loop.acquireResliceGateForTesting()
         let task = Task {
-            await MTPIdleUpgrade.run(prepare: { staged },
+            await ModelIdleUpgrade.run(prepare: { staged },
                 beginDrain: { try await fixture.loop.beginMTPUpgradeDrain($0) },
                 commitIfIdle: { try await fixture.loop.commitMTPUpgradeIfIdle($0) },
                 discard: { await fixture.loop.discardMTPUpgrade($0) },
@@ -342,6 +342,9 @@ struct ProviderLoopMTPUpgradeTests {
         // A snapshot was republished before entering the blocked catalog call.
         let heldQuote = try #require(await fixture.loop.backendCapacityForTesting())
         #expect(heldQuote.slots.count == 1)
+        #expect(heldQuote.loadTransitionActive == true)
+        #expect(await fixture.loop.currentDaemonState().loadTransitionActive == true)
+        #expect(await fixture.loop.currentDaemonState().capacity?.loadTransitionActive == true)
         #expect(await fixture.loop.fastAdmissionReject(modelId: "upgrade-cold"))
         #expect(await !fixture.loop.unloadModel(upgradeModelID, forEviction: true),
             "the unload mutation itself must recheck a newly retained target")
@@ -352,6 +355,8 @@ struct ProviderLoopMTPUpgradeTests {
         await gate.release()
         #expect(try await preparation.value == nil)
         #expect(await !fixture.loop.isMTPUpgradeTargetRetained(upgradeModelID))
+        #expect(await fixture.loop.backendCapacityForTesting()?.loadTransitionActive == false)
+        #expect(await fixture.loop.currentDaemonState().loadTransitionActive == false)
         // The same idle target becomes legitimate eviction credit afterward.
         #expect(await !fixture.loop.fastAdmissionReject(modelId: "upgrade-cold"))
         await fixture.clean()
@@ -369,6 +374,9 @@ struct ProviderLoopMTPUpgradeTests {
         let reserved = try #require(await fixture.loop.backendCapacityForTesting()?.slots.first)
         #expect(reserved.activeTokenBudgetMax < initial.activeTokenBudgetMax)
         #expect(await fixture.loop.isMTPUpgradeTargetRetained(upgradeModelID))
+        #expect(await fixture.loop.backendCapacityForTesting()?.loadTransitionActive == true)
+        #expect(await fixture.loop.currentDaemonState().loadTransitionActive == true)
+        #expect(await fixture.loop.currentDaemonState().capacity?.loadTransitionActive == true)
         // A concurrent serving-set reslice shrinks survivors while staging.
         await fixture.loop.resliceGrowSurvivors()
         #expect(await fixture.original.engineKVBytesCapacity() < fullGrant)
@@ -377,6 +385,8 @@ struct ProviderLoopMTPUpgradeTests {
         let restored = try #require(await fixture.loop.backendCapacityForTesting()?.slots.first)
         #expect(restored.activeTokenBudgetMax == initial.activeTokenBudgetMax)
         #expect(await !fixture.loop.isMTPUpgradeTargetRetained(upgradeModelID))
+        #expect(await fixture.loop.backendCapacityForTesting()?.loadTransitionActive == false)
+        #expect(await fixture.loop.currentDaemonState().loadTransitionActive == false)
         #expect(await fixture.loop.mtpStagingBytes == 0)
         #expect(staged.original == nil, "discard must drop its strong original reference before regrow")
         await fixture.clean()
@@ -499,7 +509,7 @@ struct ProviderLoopMTPUpgradeTests {
         await fixture.loop.setUpgradeCoordinatorPin(true)
         let pause = UpgradeBarrier()
         let task = Task {
-            await MTPIdleUpgrade.run(maximumIdleChecks: 1, prepare: { staged },
+            await ModelIdleUpgrade.run(maximumIdleChecks: 1, prepare: { staged },
                 beginDrain: { try await fixture.loop.beginMTPUpgradeDrain($0) },
                 commitIfIdle: { try await fixture.loop.commitMTPUpgradeIfIdle($0) },
                 discard: { await fixture.loop.discardMTPUpgrade($0) },

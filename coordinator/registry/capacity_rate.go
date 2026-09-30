@@ -26,7 +26,7 @@ import (
 // penalty PROPORTIONAL to the rate (rate × EIGENINFERENCE_CAPACITY_RATE_PENALTY_MS,
 // default 15000ms) to the pair's candidate in buildCandidateWithReason. A box
 // serving 75% fine keeps serving with a mild handicap; a 40%-error box sinks
-// well below the near-tie window (nearTieCostWindowMs = 3000) and only
+// below the 100-ms first-content fast group and only
 // receives traffic when healthier peers are worse. Nothing is ejected — the
 // candidate stays in the pool, so the fail-open selection machinery
 // (selectBestCandidateLockedFull) is untouched and a degraded-but-only fleet

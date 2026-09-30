@@ -114,7 +114,7 @@ import Testing
         "already_queued", "cache_closed", "disk_unavailable", "write_failed",
         "host_memory_unavailable", "cache_epoch_changed", "cache_maintenance_busy",
         "disk_space_insufficient", "unsafe_cache_root", "write_io_failed",
-        "existing_cache_unreadable", "cache_entry_evicted",
+        "existing_cache_unreadable", "cache_entry_evicted", "skipped_novel",
     ])
 }
 
@@ -170,7 +170,17 @@ import Testing
     else {
         throw TestFailure.unexpectedMessage
     }
-    #expect(decodedReady.readyAnchors == [prompt, continuation])
+    // An SSD checkpoint receipt keeps every retained boundary, deepest included.
+    #expect(decodedReady.readyAnchors == [prompt, continuation, excess])
+    let many = (1 ... 17).map { PrefixCacheAnchor(chainHash: String(repeating: "c", count: 64), tokenCount: UInt64($0 * 1024)) }
+    let capped = ProviderMessage.PrefixCacheReadyV2(
+        requestId: "request", cacheReceiptNonce: "nonce", modelId: "model",
+        modelAggregateHash: String(repeating: "a", count: 64),
+        promptContractId: String(repeating: "b", count: 64),
+        cacheEpoch: "11111111-1111-1111-1111-111111111111", cacheSeq: 3, tier: .ssd,
+        readyAnchors: many, requiredRecomputeTokens: 0, expectedPrefillTokensSaved: 16 * 1024, stageMs: 2)
+    #expect(capped.readyAnchors == Array(many.suffix(16)),
+            "the coordinator accepts at most 16 anchors; the deepest, ending at the final anchor, stay")
 }
 
 @Test func registerEncodingUsesSnakeCaseAndPreservesRawAttestation() throws {
@@ -415,7 +425,6 @@ import Testing
             secureBootEnabled: true,
             binaryHash: "binaryhash",
             activeModelHash: "modelhash",
-            runtimeHash: "runtimehash",
             templateHashes: ["chatml": "templatehash"],
             modelHashes: ["model": "weighthash"]
         )),
@@ -788,7 +797,6 @@ import Testing
         throw TestFailure.unexpectedMessage
     }
     #expect(inferenceRequest.requestId == "go-enc-req-1")
-    #expect(inferenceRequest.body.isNull)
     #expect(inferenceRequest.encryptedBody?.ephemeralPublicKey == "ZXBoZW1lcmFs")
 
     let status = CoordinatorMessage.runtimeStatus(CoordinatorMessage.RuntimeStatus(
@@ -1020,25 +1028,26 @@ import Testing
     #expect(decoded == slot)
 }
 
-@Test func privacyCapabilitiesJSONOmitsHypervisorKeys() throws {
-    // The hypervisor concept was removed from the provider (it never uses
-    // hypervisors; the old field was a hardcoded-false trust signal). Pin
-    // that registration privacy_capabilities JSON carries NO hypervisor key.
+@Test func privacyCapabilitiesJSONCarriesOnlySwiftRuntimeKeys() throws {
+    // Registration privacy_capabilities carries exactly the Swift-runtime
+    // flags under snake_case keys: the retired hypervisor and Python-runtime
+    // flags (`hypervisor_active`, `python_runtime_locked`,
+    // `dangerous_modules_blocked`) are never on the wire.
     let data = try JSONEncoder().encode(samplePrivacyCapabilities())
     let object = try jsonObject(data)
 
-    #expect(object["hypervisor_active"] == nil)
-    #expect(object["hypervisorActive"] == nil)
-    // Sanity: the remaining capabilities still encode under snake_case keys.
+    #expect(Set(object.keys) == [
+        "text_backend_inprocess", "text_proxy_disabled", "sip_enabled",
+        "anti_debug_enabled", "core_dumps_disabled", "env_scrubbed",
+    ])
     #expect(object["text_backend_inprocess"] as? Bool == true)
     #expect(object["env_scrubbed"] as? Bool == true)
-    #expect(object.count == 8)
 }
 
-@Test func attestationResponseJSONOmitsHypervisorKeys() throws {
-    // Challenge-response wire shape: no hypervisor_active key, ever -- the
-    // canonical status bytes (StatusCanonical) omit it too, so the coordinator
-    // and provider sign/verify the same bytes.
+@Test func attestationResponseJSONOmitsRetiredKeys() throws {
+    // Challenge-response wire shape: no retired hypervisor or Python-runtime
+    // hash keys, ever -- the canonical status bytes (StatusCanonical) omit
+    // them too, so the coordinator and provider sign/verify the same bytes.
     let message = ProviderMessage.attestationResponse(ProviderMessage.AttestationResponse(
         nonce: "bm9uY2U=",
         signature: "c2ln",
@@ -1049,15 +1058,15 @@ import Testing
         secureBootEnabled: true,
         binaryHash: "binaryhash",
         activeModelHash: "modelhash",
-        runtimeHash: "runtimehash",
         templateHashes: ["chatml": "templatehash"],
         modelHashes: ["model": "weighthash"]
     ))
     let data = try ProviderProtocolCodec.encodeProviderMessage(message)
     let object = try jsonObject(data)
 
-    #expect(object["hypervisor_active"] == nil)
-    #expect(object["hypervisorActive"] == nil)
+    for retired in ["hypervisor_active", "hypervisorActive", "python_hash", "runtime_hash"] {
+        #expect(object[retired] == nil, "\(retired) must not ride the attestation response")
+    }
     // Sanity: the posture fields that remain still ride the response.
     #expect(object["rdma_disabled"] as? Bool == true)
     #expect(object["sip_enabled"] as? Bool == true)
@@ -1232,6 +1241,7 @@ import Testing
         cacheScope: "account-route-key",
         prefixCacheProtocol: 2,
         cacheReceiptBoundaryMode: PrefixCacheV2Capability.checkpointBoundaryMode,
+        cacheRepeatedPrefixTokens: 0,
         toolSchemaMetadataProtocol: 1))
     let data = try ProviderProtocolCodec.encodeCoordinatorMessage(scoped)
     let object = try jsonObject(data)
@@ -1239,8 +1249,19 @@ import Testing
     #expect(object["cache_scope"] as? String == "account-route-key")
     #expect(object["prefix_cache_protocol"] as? Int == 2)
     #expect(object["cache_receipt_boundary_mode"] as? String == "checkpoint")
+    // 0 is a real value (novel fleet-wide) and must survive the round trip;
+    // only a missing key means the coordinator predates the field.
+    #expect(object["cache_repeated_prefix_tokens"] as? Int == 0)
     #expect(object["tool_schema_metadata_protocol"] as? Int == 1)
     #expect(try ProviderProtocolCodec.decodeCoordinatorMessage(from: data) == scoped)
+
+    let repeated = #"{"type":"inference_request","request_id":"r","body":null,"cache_scope":"s","cache_repeated_prefix_tokens":2048,"future_outer_field":1}"#
+    guard case .inferenceRequest(let repeatedRequest) = try ProviderProtocolCodec.decodeCoordinatorMessage(
+        from: Data(repeated.utf8))
+    else { throw TestFailure.unexpectedMessage }
+    #expect(repeatedRequest.cacheRepeatedPrefixTokens == 2048)
+    #expect(CoordinatorMessage.InferenceRequest(requestId: "neg", cacheRepeatedPrefixTokens: -3)
+        .cacheRepeatedPrefixTokens == 0)
 
     let legacy = #"{"type":"inference_request","request_id":"r","body":null}"#
     guard case .inferenceRequest(let decoded) = try ProviderProtocolCodec.decodeCoordinatorMessage(
@@ -1250,7 +1271,15 @@ import Testing
     #expect(decoded.cacheScope == nil)
     #expect(decoded.prefixCacheProtocol == nil)
     #expect(decoded.cacheReceiptBoundaryMode == nil)
+    #expect(decoded.cacheRepeatedPrefixTokens == nil)
     #expect(decoded.toolSchemaMetadataProtocol == nil)
+}
+
+@Test func donationOutcomeVocabularyIncludesSkippedNovel() {
+    // Mirrors coordinator/registry/cache_eligibility.go (23 known buckets).
+    #expect(PrefixCacheDonationOutcome.allCases.count == 23)
+    #expect(PrefixCacheDonationOutcome.skippedNovel.rawValue == "skipped_novel")
+    #expect(PrefixCacheDonationOutcome(rawValue: "skipped_novel") == .skippedNovel)
 }
 
 @Test func checkpointCapabilityModeIsOptionalAndRoundTrips() throws {
@@ -1438,6 +1467,7 @@ private func fullInferenceProfile() -> InferenceProfile {
     d.continuation = .cancelled
     d.projection = .notAttempted
     d.projectionReason = .unsupportedScheduler
+    d.unboundedReason = .invalidProjectionTransition
     d.observedUs = maxUs
     d.remainingUs = maxUs
     d.submitRemainingUs = maxUs
@@ -1665,7 +1695,9 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
     let telemetry = fullCapacityTelemetry()
     let capacity = BackendCapacity(
         slots: [], gpuMemoryActiveGb: 1, gpuMemoryPeakGb: 2, gpuMemoryCacheGb: 0.5,
-        totalMemoryGb: 64, freeForLoadGb: 10, telemetry: telemetry)
+        totalMemoryGb: 64, freeForLoadGb: 10,
+        loadUsableGb: 14.3, loadHeadroomGb: 6.5,
+        loadTransitionActive: true, telemetry: telemetry)
     let data = try JSONEncoder().encode(capacity)
     let object = try jsonObject(data)
     let telemetryObject = try #require(object["telemetry"] as? [String: Any])
@@ -1675,6 +1707,9 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
             "inflight_tasks",
         ])
     #expect(telemetryObject["memory_pressure_level"] as? String == "critical")
+    #expect(object["load_usable_gb"] as? Double == 14.3)
+    #expect(object["load_headroom_gb"] as? Double == 6.5)
+    #expect(object["load_transition_active"] as? Bool == true)
     let decoded = try JSONDecoder().decode(BackendCapacity.self, from: data)
     #expect(decoded == capacity)
 
@@ -1683,7 +1718,11 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
         totalMemoryGb: 64)
     let legacyData = try JSONEncoder().encode(legacy)
     #expect(try jsonObject(legacyData)["telemetry"] == nil)
+    #expect(try jsonObject(legacyData)["load_usable_gb"] == nil)
+    #expect(try jsonObject(legacyData)["load_headroom_gb"] == nil)
+    #expect(try jsonObject(legacyData)["load_transition_active"] == nil)
     #expect(try JSONDecoder().decode(BackendCapacity.self, from: legacyData).telemetry == nil)
+    #expect(try JSONDecoder().decode(BackendCapacity.self, from: legacyData).loadUsableGb == nil)
     let unknownLevel = #"{"slots":[],"gpu_memory_active_gb":1,"gpu_memory_peak_gb":2,"gpu_memory_cache_gb":0.5,"total_memory_gb":64,"telemetry":{"memory_pressure_level":"apocalyptic"}}"#
     #expect(
         try JSONDecoder().decode(BackendCapacity.self, from: Data(unknownLevel.utf8))
@@ -1904,6 +1943,9 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
     #expect(capacity.telemetry?.inflightTasks == 3)
     #expect(capacity.slots.first?.telemetry?.prefillTokensTotal == 1_237_904)
     #expect(capacity.slots.first?.telemetry?.isolatedPrefillTps == 1655.2)
+    #expect(capacity.slots.first?.telemetry?.prefillRequestsTotal == 512)
+    #expect(capacity.slots.first?.performanceMeasurements?.isolatedPrefill?.sampleCount == 20)
+    #expect(capacity.slots.first?.performanceMeasurements?.workloadBuckets.first?.otherModelActivity == true)
     #expect(capacity.slots.first?.evalInFlightMs == 0)  // top-level field absent in fixture
     #expect(h.stats.cancelStageDecodeTotal == 20)
     #expect(h.stats.cancelAbortNsSum == 1_284_000_000)
@@ -2014,8 +2056,6 @@ private func samplePrivacyCapabilities() -> PrivacyCapabilities {
     PrivacyCapabilities(
         textBackendInprocess: true,
         textProxyDisabled: true,
-        pythonRuntimeLocked: true,
-        dangerousModulesBlocked: true,
         sipEnabled: true,
         antiDebugEnabled: true,
         coreDumpsDisabled: true,

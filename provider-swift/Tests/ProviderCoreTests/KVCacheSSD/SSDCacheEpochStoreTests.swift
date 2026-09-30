@@ -276,7 +276,7 @@ struct SSDCacheEpochStoreTests {
         #expect(recovered.current != originalEpoch)
     }
 
-    @Test("unloaded deletion blocks reopen and publishes only after mutation")
+    @Test("unloaded deletion blocks reopen and keeps the epoch and sequence")
     func unloadedDeletionSerializesReopen() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("cache-epoch-unloaded-\(UUID().uuidString)", isDirectory: true)
@@ -285,6 +285,7 @@ struct SSDCacheEpochStoreTests {
         let binding = binding(contract: String(repeating: "b", count: 64))
         let original = try SSDCacheEpochStore(root: root, binding: binding)
         let originalEpoch = try #require(original.current)
+        #expect(original.takeNextSequence(expectedEpoch: originalEpoch) == 1)
         let (entered, enteredContinuation) = AsyncStream.makeStream(
             of: Void.self, bufferingPolicy: .bufferingNewest(1))
         let release = DispatchSemaphore(value: 0)
@@ -296,7 +297,9 @@ struct SSDCacheEpochStoreTests {
         }
         var enteredIterator = entered.makeAsyncIterator()
         _ = await enteredIterator.next()
-        #expect(original.current == nil)
+        // Per-file deletion on an unloaded root neither suspends nor
+        // replaces the generation; it only holds the initialization lock.
+        #expect(original.current == originalEpoch)
 
         let openState = EpochOpenState()
         let reopen = Task.detached {
@@ -310,8 +313,110 @@ struct SSDCacheEpochStoreTests {
         release.signal()
         #expect(await mutation.value)
         let reopened = try await reopen.value
-        let current = try #require(reopened.current)
-        #expect(current != originalEpoch)
+        #expect(reopened.current == originalEpoch)
+        #expect(original.current == originalEpoch)
+        #expect(reopened.takeNextSequence(expectedEpoch: originalEpoch) == 2)
+    }
+
+    @Test("unloaded deletion refuses an unreadable epoch record and runs without one")
+    func unloadedDeletionRecordGate() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cache-epoch-unloaded-gate-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var ran = 0
+        #expect(SSDCacheEpochStore.performUnloadedDestructiveChange(root: root) { ran += 1 })
+        #expect(ran == 1)
+        let record = root.appendingPathComponent("cache-epoch.json")
+        try Data("not json".utf8).write(to: record)
+        #expect(!SSDCacheEpochStore.performUnloadedDestructiveChange(root: root) { ran += 1 })
+        #expect(ran == 1)
+        #expect(try Data(contentsOf: record) == Data("not json".utf8), "the record is never rewritten")
+    }
+
+    @Test("the rebuild wipe treats an already-missing block as removed and still rejects a replacement")
+    func staleBlockRemovalToleratesMissing() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cache-epoch-stale-\(UUID().uuidString)", isDirectory: true)
+        let outside = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cache-epoch-stale-outside-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: outside)
+        }
+        let block = SSDBlockStore.fileURL(
+            root: root, tag16Hex: String(repeating: "c", count: 32))
+        try FileManager.default.createDirectory(
+            at: block.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+        // Listed by the wipe, then unlinked by a superseded instance's
+        // per-file removal before the wipe reached it.
+        try SSDCacheEpochStore.removeStaleBlock(at: block, under: root)
+
+        try Data("stale".utf8).write(to: block)
+        try SSDCacheEpochStore.removeStaleBlock(at: block, under: root)
+        #expect(!FileManager.default.fileExists(atPath: block.path))
+
+        // Present but not an owned regular file: the rebuild must still fail
+        // rather than advertise a fresh epoch over an entry it could not clear.
+        try Data("outside".utf8).write(to: outside)
+        try FileManager.default.createSymbolicLink(at: block, withDestinationURL: outside)
+        #expect(throws: SSDBlockStoreError.self) {
+            try SSDCacheEpochStore.removeStaleBlock(at: block, under: root)
+        }
+        #expect(try Data(contentsOf: outside) == Data("outside".utf8))
+    }
+
+    @Test("a binding rebuild survives a superseded instance unlinking blocks during the wipe")
+    func rebuildSurvivesConcurrentUnlink() async throws {
+        for _ in 0 ..< 2 {
+            let root = FileManager.default.temporaryDirectory
+                .appendingPathComponent("cache-epoch-race-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let original = try SSDCacheEpochStore(
+                root: root, binding: binding(contract: String(repeating: "b", count: 64)))
+            let originalEpoch = try #require(original.current)
+            let fanout = root.appendingPathComponent("aa", isDirectory: true)
+            try FileManager.default.createDirectory(at: fanout, withIntermediateDirectories: true)
+            for index in 0 ..< 400 {
+                let name = "aa" + String(repeating: "0", count: 22)
+                    + String(format: "%08x", index) + ".dbk3"
+                try Data("stale".utf8).write(to: fanout.appendingPathComponent(name))
+            }
+
+            // The racer stands in for a superseded instance whose removal
+            // already passed its ownership check. It starts when the rebuild
+            // has replaced the record (written immediately before the wipe)
+            // and unlinks from the far end of the listing, so the two passes
+            // meet on blocks the wipe listed but has not reached.
+            let record = root.appendingPathComponent("cache-epoch.json")
+            let racer = Task.detached { () -> Int in
+                let deadline = Date().addingTimeInterval(10)
+                while Date() < deadline {
+                    if let data = try? Data(contentsOf: record),
+                        let text = String(data: data, encoding: .utf8),
+                        !text.contains(originalEpoch)
+                    { break }
+                }
+                let names = (try? FileManager.default.contentsOfDirectory(atPath: fanout.path)) ?? []
+                var unlinked = 0
+                for name in names.reversed() where name.hasSuffix(".dbk3") {
+                    if unlink(fanout.appendingPathComponent(name).path) == 0 { unlinked += 1 }
+                }
+                return unlinked
+            }
+
+            let rebuilt = try SSDCacheEpochStore(
+                root: root, binding: binding(contract: String(repeating: "d", count: 64)))
+            _ = await racer.value
+            let rotated = try #require(rebuilt.current)
+            #expect(rotated != originalEpoch)
+            #expect(original.current == nil)
+            let remaining = try FileManager.default.contentsOfDirectory(atPath: fanout.path)
+            #expect(remaining.filter { $0.hasSuffix(".dbk3") }.isEmpty)
+        }
     }
 
     @Test("epoch record accepts its size limit and rejects one extra byte")

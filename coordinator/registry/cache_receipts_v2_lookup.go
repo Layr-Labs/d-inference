@@ -79,7 +79,7 @@ func (t *cacheRoutingTracker) applyLookupV2Decision(
 		return mismatchCacheReceipt(CacheReceiptIdentityMismatch)
 	}
 	if attempt.ExpectedPrompt != msg.PromptAnchor {
-		result := mismatchCacheReceipt(CacheReceiptPromptMismatch)
+		result := mismatchCacheReceiptForPlan(CacheReceiptPromptMismatch, attempt.Plan)
 		result.PromptMismatch = CachePromptHashMismatch
 		if msg.PromptAnchor.TokenCount < attempt.ExpectedPrompt.TokenCount {
 			result.PromptMismatch = CachePromptShorter
@@ -90,11 +90,12 @@ func (t *cacheRoutingTracker) applyLookupV2Decision(
 	}
 	if msg.MatchedAnchor != nil &&
 		attempt.ExpectedBoundaries[msg.MatchedAnchor.TokenCount] != msg.MatchedAnchor.ChainHash {
-		return mismatchCacheReceipt(CacheReceiptMatchedMismatch)
+		return mismatchCacheReceiptForPlan(CacheReceiptMatchedMismatch, attempt.Plan)
 	}
 	if !t.acceptV2SequenceLocked(providerID, capability, msg.Tier, msg.CacheSeq) {
 		return rejectCacheReceipt(CacheReceiptSequence)
 	}
+	t.resetProofStrikesLocked(providerID, msg.ModelID, msg.Tier, capability, now)
 	if msg.Tier == "memory" {
 		attempt.MemoryLookupSeen = true
 	} else {
@@ -115,6 +116,9 @@ func (t *cacheRoutingTracker) applyLookupV2Decision(
 			ModelAggregateHash:      msg.ModelAggregateHash,
 			PromptContractID:        msg.PromptContractID,
 			CacheEpoch:              msg.CacheEpoch,
+			BlockHashVersion:        capability.BlockHashVersion,
+			ReadyBoundaryMode:       capability.ReadyBoundaryMode,
+			Tier:                    msg.Tier,
 			Anchor:                  anchor,
 			RequiredRecomputeTokens: msg.RequiredRecomputeTokens,
 			StageMs:                 msg.StageMs,
@@ -127,11 +131,12 @@ func (t *cacheRoutingTracker) applyLookupV2Decision(
 			}
 		}
 		t.upsertHolderLocked(key, holder)
+		t.supersedeDeeperHoldersLocked(providerID, attempt.Plan, anchor, msg.Tier, msg.CacheEpoch, routeKey)
 	case "miss_absent", "miss_corrupt":
 		for _, anchor := range attempt.Plan.Boundaries {
-			t.removeHolderLocked(
+			t.invalidateBoundaryLocked(
 				cacheTierBoundaryKey(routeKey, attempt.Plan, anchor, msg.Tier),
-				providerID,
+				providerID, msg.Tier, msg.CacheEpoch,
 				cacheHolderRemovalMissInvalidation,
 			)
 		}
@@ -146,4 +151,41 @@ func (t *cacheRoutingTracker) applyLookupV2Decision(
 		}
 	}
 	return CacheReceiptResult{Accepted: true, Reason: CacheReceiptAccepted, PromptTokens: attempt.Plan.PromptTokenCount}
+}
+
+// A validated miss or shorter hit also invalidates evidence not yet restored
+// into the live index. The attempt supplies its durable identity in that case.
+func (t *cacheRoutingTracker) invalidateBoundaryLocked(key, providerID, tier, epoch string, reason cacheHolderRemovalReason) {
+	if _, live := t.holders[key][providerID]; !live && key != "" && tier == "ssd" && t.persister != nil {
+		t.persistRowAfterLossLocked(key, epoch, providerID, t.now())
+	}
+	t.removeHolderLocked(key, providerID, reason)
+}
+
+// supersedeDeeperHoldersLocked drops this provider's holders, in the receipt's
+// tier only, at every verified plan boundary deeper than the one it just
+// proved. Both provider stores search longest-first, so a shorter hit means
+// the provider will not deliver the deeper boundary for this prefix: the file
+// was evicted or expired, a block failed authentication, or a stage cap
+// trimmed the run. The receipt cannot tell those apart and no miss will ever
+// fire, so without this the stale holder keeps the larger credit until its
+// TTL and can outrank a machine that really holds the deeper boundary.
+//
+// Holders are advisory: a later ready or hit re-teaches a boundary that is
+// still stored. This never fences, never touches sequence watermarks, and
+// leaves every other provider's holder at those boundaries in place. Keys are
+// content-addressed, so a deeper holder that belongs to a different
+// continuation of the same prefix is not in this plan and is not removed.
+func (t *cacheRoutingTracker) supersedeDeeperHoldersLocked(
+	providerID string, plan CachePlan, matched protocol.PrefixCacheAnchor,
+	tier, epoch string, routeKey []byte,
+) {
+	for _, boundary := range plan.Boundaries {
+		if boundary.TokenCount <= matched.TokenCount {
+			continue
+		}
+		if key := cacheTierBoundaryKey(routeKey, plan, boundary, tier); key != "" {
+			t.invalidateBoundaryLocked(key, providerID, tier, epoch, cacheHolderRemovalShorterHit)
+		}
+	}
 }

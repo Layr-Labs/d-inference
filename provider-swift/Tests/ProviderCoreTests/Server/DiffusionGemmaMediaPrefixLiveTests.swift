@@ -52,7 +52,6 @@ struct DiffusionGemmaMediaPrefixLiveTests {
         // actual load aggregate below before qualifying any cache reuse.
         try #require(directory.appendingPathComponent("config.json").resolvingSymlinksInPath()
             == URL(fileURLWithPath: selected).appendingPathComponent("config.json").resolvingSymlinksInPath())
-        try #require(!FileManager.default.fileExists(atPath: LegacyKVCacheSweeper.defaultKVRoot().path))
         let resources = try #require(Bundle(for: DiffusionMediaPrefixBundleAnchor.self).resourceURL)
         let library = resources.appendingPathComponent("mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib")
         let expected = try #require(hashFile(atPath: library.path))

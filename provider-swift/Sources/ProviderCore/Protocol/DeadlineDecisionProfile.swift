@@ -26,8 +26,8 @@ public enum DeadlineProjection: String, ProfilerFoldingEnum {
     case other
 }
 
-/// Why the provider used ordinary submit. An engine `.unbounded` verdict
-/// exposes no cause, so it must never be assigned one of these reasons.
+/// Why the provider used ordinary submit. Engine projection failures are
+/// reported separately in `unboundedReason`.
 public enum DeadlineProjectionReason: String, ProfilerFoldingEnum {
     case noDeadline = "no_deadline"
     case modeOff = "mode_off"
@@ -43,6 +43,8 @@ public struct DeadlineDecisionProfile: Codable, Sendable, Equatable {
     public var continuation: DeadlineContinuation?
     public var projection: DeadlineProjection?
     public var projectionReason: DeadlineProjectionReason?
+    /// The engine's first failed projection guard; absent for older engines.
+    public var unboundedReason: DeadlineUnboundedReason?
     /// Microseconds from the provider profile anchor when the bridge receives
     /// the verdict (or observes pre-submit expiry), NOT the engine's decision
     /// instant. The engine API does not expose its refusal instant.
@@ -54,14 +56,15 @@ public struct DeadlineDecisionProfile: Codable, Sendable, Equatable {
     public var projectedServiceUs: Int64?
     public var projectedPrefillTokens: Int64?
     public var projectedDecodeTokens: Int64?
-    /// Exact conservative rates passed to the engine, after the existing
-    /// policy adjustment. Absent means unavailable, never a measured zero.
+    /// Exact observed phase rates passed to the engine. Absent means
+    /// unavailable, never a measured zero.
     public var prefillTps: Double?
     public var decodeTps: Double?
 
     enum CodingKeys: String, CodingKey {
         case verdict, continuation, projection
         case projectionReason = "projection_reason"
+        case unboundedReason = "unbounded_reason"
         case observedUs = "observed_us"
         case remainingUs = "remaining_us"
         case submitRemainingUs = "submit_remaining_us"

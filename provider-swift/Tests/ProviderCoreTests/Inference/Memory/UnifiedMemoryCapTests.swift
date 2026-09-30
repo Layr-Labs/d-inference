@@ -183,44 +183,6 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(carvedByLoadGate == reserve)
 }
 
-// MARK: - canAdmit (the general N-model load gate)
-
-@Test func canAdmitBothModelsWhenTheyFitUnderCap() {
-    // 128 GiB: Gemma 13.8 resident, admit GPT-OSS 11.25 with 5 GiB min-KV +
-    // 3 GiB activations → 13.8 + 11.25 + 3 + 5 = 33.05 << 115.2 cap. Fits.
-    let ok = UnifiedMemoryCap.canAdmit(
-        physicalBytes: 128 * gib,
-        currentResidentWeightBytes: UInt64(13.8 * Double(gib)),
-        candidateWeightBytes: UInt64(11.25 * Double(gib)),
-        minimumKVBytes: 5 * gib,
-        activationReserveBytes: 3 * gib)
-    #expect(ok)
-}
-
-@Test func cannotAdmitSecondModelWhenItWouldBlowTheCap() {
-    // 36 GiB: cap 32.4. 8-bit Gemma 26 resident; admitting GPT-OSS 11.25 with
-    // 3 GiB activations + 2 GiB min-KV = 42.25 > 32.4 → reject (Case B: one only).
-    let ok = UnifiedMemoryCap.canAdmit(
-        physicalBytes: 36 * gib,
-        currentResidentWeightBytes: 26 * gib,
-        candidateWeightBytes: UInt64(11.25 * Double(gib)),
-        minimumKVBytes: 2 * gib,
-        activationReserveBytes: 3 * gib)
-    #expect(!ok)
-}
-
-@Test func canAdmitFirstModelOnTightBoxWithRoomForKV() {
-    // 36 GiB, nothing resident, load 13.8 GiB Gemma-qat-4bit: 13.8 + 3 + 2 = 18.8
-    // ≤ 32.4 cap → admit, with KV headroom to spare.
-    let ok = UnifiedMemoryCap.canAdmit(
-        physicalBytes: 36 * gib,
-        currentResidentWeightBytes: 0,
-        candidateWeightBytes: UInt64(13.8 * Double(gib)),
-        minimumKVBytes: 2 * gib,
-        activationReserveBytes: 3 * gib)
-    #expect(ok)
-}
-
 // MARK: - cap-fraction env edge cases (mirror MLXMemoryGuard.resolvedReserveBytes)
 
 @Test func capFractionEnvEdgeCasesDegradeToDefault() {
@@ -379,7 +341,7 @@ private let gib: UInt64 = 1024 * 1024 * 1024
 }
 
 @Test func aModelThatPassesTheLoadGateHasServeableKV() {
-    // End-to-end invariant: if canAdmit-style load room exists (weights + load
+    // End-to-end invariant: if load-gate room exists (weights + load
     // headroom ≤ cap), then kvBudget after load is ≥ the minimum KV. 64 GiB box,
     // cap 57.6. A 50 GiB model: load needs 50 + (3+1)=54 ≤ 57.6 → admit. Post-load
     // KV budget = 57.6 − 50 − 3 = 4.6 GiB ≥ 1 GiB min. Good.
@@ -431,14 +393,10 @@ private let gib: UInt64 = 1024 * 1024 * 1024
         measuredLiveKVHeadroomBytes: UnifiedMemoryCap.minimumLoadKVBytes))
 }
 
-@Test func kvBudgetAndAdmitSaturateOnMaxOperands() {
+@Test func kvBudgetSaturatesOnMaxOperands() {
     // .max weights must clamp the KV budget to 0, not underflow/trap.
     #expect(UnifiedMemoryCap.kvBudgetBytes(
         physicalBytes: 128 * gib, residentWeightBytes: .max, activationReserveBytes: .max) == 0)
-    // .max candidate weights cannot be admitted (saturating need > cap), no trap.
-    #expect(!UnifiedMemoryCap.canAdmit(
-        physicalBytes: 128 * gib, currentResidentWeightBytes: .max,
-        candidateWeightBytes: .max, minimumKVBytes: .max, activationReserveBytes: .max))
 }
 
 // MARK: - Per-model activation floors (measured table)

@@ -1,6 +1,6 @@
 # Operator-settable memory limit (`memory_limit_gb`) — design proposal
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-03
 
 Status: **Proposed** — 2026-08-10 — no `memory_limit_gb` key or `darkbloom memory` command exists; the provider budget is still the fixed `UnifiedMemoryCap.defaultCapFraction` cap plus `memory_reserve_gb` (`provider-swift/Sources/ProviderCore/Inference/UnifiedMemoryCap.swift`, `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`); as built: [`../architecture/hardware-support.md`](../architecture/hardware-support.md#cap-and-reserves-unifiedmemorycap).
 

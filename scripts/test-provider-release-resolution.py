@@ -43,13 +43,20 @@ class ReleaseResolutionTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(values, {"environment": "dev", "version": "0.9.0", "publish": publish})
 
-    def test_production_tags_and_legacy_swift_alias_keep_source_version(self):
-        for tag in ("v0.9.0", "v0.9.0-swift", "v0.9.0-swift.1"):
+    def test_production_tag_keeps_source_version(self):
+        result, values = self.resolve(GITHUB_EVENT_NAME="push", GITHUB_REF_TYPE="tag",
+                                       GITHUB_REF_NAME="v0.9.0", RELEASE_ENVIRONMENT="")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(values, {"environment": "prod", "version": "0.9.0", "publish": "true"})
+
+    def test_retired_swift_tag_alias_is_rejected(self):
+        # `v*.*.*` still matches these tags, so resolution must refuse them.
+        for tag in ("v0.9.0-swift", "v0.9.0-swift.1"):
             with self.subTest(tag=tag):
                 result, values = self.resolve(GITHUB_EVENT_NAME="push", GITHUB_REF_TYPE="tag",
                                                GITHUB_REF_NAME=tag, RELEASE_ENVIRONMENT="")
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(values, {"environment": "prod", "version": "0.9.0", "publish": "true"})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(values, {})
 
     def test_invalid_routes_emit_no_authorization_outputs(self):
         cases = [

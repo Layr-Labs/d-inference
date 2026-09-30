@@ -150,7 +150,7 @@ struct IdleCommandTests {
             """)
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
-        let result = try setIdleUnloadMinutes(0, configPath: url.path, migrateOnDisk: false)
+        let result = try setIdleUnloadMinutes(0, configPath: url.path)
         #expect(result.changed)
         #expect(result.path == url)
         let written = try String(contentsOf: url, encoding: .utf8)
@@ -171,11 +171,11 @@ struct IdleCommandTests {
 
         // Decodes to 60 already, but "Free when idle" must be pinned so a
         // future default flip cannot silently move this provider.
-        let first = try setIdleUnloadMinutes(60, configPath: url.path, migrateOnDisk: false)
+        let first = try setIdleUnloadMinutes(60, configPath: url.path)
         #expect(first.changed)
         // Now pinned at the requested value: a true no-op, no rewrite.
         let pinned = try String(contentsOf: url, encoding: .utf8)
-        let second = try setIdleUnloadMinutes(60, configPath: url.path, migrateOnDisk: false)
+        let second = try setIdleUnloadMinutes(60, configPath: url.path)
         #expect(second.changed == false)
         let after = try String(contentsOf: url, encoding: .utf8)
         #expect(after == pinned)
@@ -190,7 +190,7 @@ struct IdleCommandTests {
             """)
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
-        let result = try setIdleUnloadMinutes(45, configPath: url.path, migrateOnDisk: false)
+        let result = try setIdleUnloadMinutes(45, configPath: url.path)
         #expect(result.changed)
         let config = try ConfigManager.load(from: url)
         #expect(config.backend.idleTimeoutMins == 45)
@@ -208,7 +208,7 @@ struct IdleCommandTests {
         let before = try String(contentsOf: url, encoding: .utf8)
 
         #expect(throws: (any Error).self) {
-            try setIdleUnloadMinutes(IdleUnloadPolicy.maxMinutes + 1, configPath: url.path, migrateOnDisk: false)
+            try setIdleUnloadMinutes(IdleUnloadPolicy.maxMinutes + 1, configPath: url.path)
         }
         #expect(try String(contentsOf: url, encoding: .utf8) == before)
     }
@@ -242,5 +242,27 @@ struct IdleCommandTests {
             advertised: ["a", "b"], warmModels: [], currentModel: nil,
             startupPreloadPendingModels: nil)
             == ["Not loaded (loads on request): a, b"])
+
+        let budget = ModelLoadReadiness(estimatedMemoryGb: 18.2, headroomGb: 6.5, usableGb: 14.3)!
+        let blocked = Status.notLoadedLines(
+            advertised: ["qwen"], warmModels: [], currentModel: nil,
+            startupPreloadPendingModels: [], readiness: ["qwen": budget],
+            evictionAwareWeightGb: 7.8)
+        #expect(blocked[0].contains("Cold load blocked (memory): qwen"))
+        #expect(blocked[0].contains("24.7 GB needed"))
+        #expect(blocked[0].contains("10.4 GB short without eviction"))
+        #expect(blocked[0].contains("10.4 GB short after idle eviction"))
+        #expect(!blocked.joined().contains("loads on request"))
+        let eviction = Status.notLoadedLines(
+            advertised: ["qwen"], warmModels: [], currentModel: nil,
+            startupPreloadPendingModels: [], readiness: ["qwen": budget],
+            evictionAwareWeightGb: 19)
+        #expect(eviction[0].contains("Preload skipped (no eviction)"))
+        #expect(eviction[1].contains("may load it after evicting"))
+        let busy = Status.notLoadedLines(
+            advertised: ["qwen"], warmModels: [], currentModel: nil,
+            startupPreloadPendingModels: [], readiness: ["qwen": budget],
+            evictionAwareWeightGb: 7.8, inferenceActive: true)
+        #expect(busy == ["Load readiness temporarily busy: qwen — a request, model load, or reload is active; recheck when idle."])
     }
 }

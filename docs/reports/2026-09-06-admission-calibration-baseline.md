@@ -1,6 +1,6 @@
 # Admission calibration baseline and pending-prompt correction
 
-> Last updated: 2026-09-06 · commit `bbf6f83d4`
+> Last updated: 2026-09-06
 
 This source audit and isolated comparison for [#846](https://github.com/Layr-Labs/d-inference/issues/846) establishes one coordinator input defect: an idle heartbeat caused every pending prompt to be priced at the incoming prompt's length. The correction uses available local prompt estimates and preserves successful alternative delivery in a real coordinator HTTP/WebSocket test. It does not establish production service-time accuracy or close the broader production evaluation in #846.
 

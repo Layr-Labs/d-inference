@@ -47,6 +47,7 @@ type preloadSummary struct {
 }
 
 type coldStartSummary struct {
+	PreloadRotations     int                `json:"preload_rotations"`
 	Contracts            int                `json:"contracts"`
 	Requests             int                `json:"requests"`
 	Succeeded            int                `json:"succeeded"`
@@ -149,10 +150,10 @@ func validateSummary(summary proofSummary) error {
 		summary.ColdStart.ColdOnlyRejections != expectedColdOnlyRejections ||
 		summary.ColdStart.Errors != 0 || summary.ColdStart.Mismatches != 0 ||
 		summary.ColdStart.ColdLoads != uint64(summary.Inventory.UniqueContracts) ||
-		summary.ColdStart.FailedLoads != 0 || summary.ColdStart.WaitedLoads == 0 ||
+		summary.ColdStart.FailedLoads != 0 || summary.ColdStart.PreloadRotations != summary.Inventory.UniqueContracts ||
 		summary.ColdStart.ColdLoads+summary.ColdStart.WarmLoads+summary.ColdStart.WaitedLoads !=
-			uint64(summary.ColdStart.Requests) {
-		failures = append(failures, "real-contract concurrent cold loads did not singleflight cleanly")
+			uint64(summary.ColdStart.Requests+summary.ColdStart.PreloadRotations) {
+		failures = append(failures, "real-contract cold preloads and admitted concurrent plans did not complete cleanly")
 	}
 	if summary.ColdStart.Restarts != 0 || summary.ColdStart.ChildGenerationStart == 0 ||
 		summary.ColdStart.ChildGenerationStart != summary.ColdStart.ChildGenerationEnd ||

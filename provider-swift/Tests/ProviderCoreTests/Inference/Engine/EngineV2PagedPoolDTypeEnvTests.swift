@@ -271,6 +271,12 @@ struct EngineV2PagedPoolDTypeEnvTests {
         await build.engine.shutdown()
     }
 
+    // DEGRADE, deliberately — the one paged-to-contiguous case that survives
+    // OPEN-9, and the only test pinning the distinction. The kill switch is an
+    // operator override ("do NOT do what you asked"), not a failure ("we
+    // CANNOT do what you asked"); refusing here would 503 every slot on a
+    // fleet configured `engine_v2_kv_backend = "paged"` the moment an
+    // operator pulled it. `EngineV2KVBackendGateTests` holds the refusal half.
     @Test("a float32 request that degrades to contiguous reports NO dtype, not float32")
     func degradedPagedReportsNoDType() async throws {
         _ = LiveInferenceFixtures.ensureMetallibColocated()

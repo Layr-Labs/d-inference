@@ -23,7 +23,10 @@ func (s Suite) TestOpenRouterConformanceReadinessFeed(t *testing.T) {
 	f := s.newORFixture(t, true)
 	manifest := s.NewManifest()
 	manifest.ModelID = f.model
-	manifest.R2Prefix = s.ModelR2Prefix(f.model, "v1")
+	// The fixture v1 bytes are immutable. Register a new revision, then replay
+	// the identical v2 bytes while changing only launch metadata.
+	manifest.Version = "v2"
+	manifest.R2Prefix = s.ModelR2Prefix(f.model, manifest.Version)
 	var manifestReads atomic.Int32
 	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -45,7 +48,7 @@ func (s Suite) TestOpenRouterConformanceReadinessFeed(t *testing.T) {
 	t.Setenv("MODEL_REGISTRY_CDN_BASE_URL", cdn.URL)
 	request := func(ready bool) registerModelRequest {
 		return registerModelRequest{
-			ModelID: f.model, Version: "v1", DisplayName: "Synthetic transition", Family: "fixture", Architecture: "dense", Quantization: "4bit", MaxContextLength: 8192, MaxOutputLength: 2048, MinRAMGB: 1, Capabilities: []string{"tools", "reasoning"}, Metadata: map[string]any{"openrouter_is_ready": ready, huggingFaceIDMetadataKey: "fixture/conformance"}, Promote: true, InputPrice: 50_000, OutputPrice: 200_000,
+			ModelID: f.model, Version: manifest.Version, DisplayName: "Synthetic transition", Family: "fixture", Architecture: "dense", Quantization: "4bit", MaxContextLength: 8192, MaxOutputLength: 2048, MinRAMGB: 1, Capabilities: []string{"tools", "reasoning"}, Metadata: map[string]any{"openrouter_is_ready": ready, huggingFaceIDMetadataKey: "fixture/conformance"}, Promote: true, InputPrice: 50_000, OutputPrice: 200_000,
 			HuggingFaceArtifact: &store.HuggingFaceArtifact{RepoID: "fixture/conformance", Revision: strings.Repeat("1", 40)},
 		}
 	}

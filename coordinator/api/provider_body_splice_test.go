@@ -28,30 +28,6 @@ func legacySealCacheBust(t *testing.T, body []byte, key string) []byte {
 	return sealed
 }
 
-// legacyStripPenalties is the pre-fast-path vision penalty strip.
-func legacyStripPenalties(t *testing.T, body []byte) []byte {
-	t.Helper()
-	parsed, err := decodeInferenceJSONObject(body)
-	if err != nil {
-		return body
-	}
-	changed := false
-	for _, key := range visionPenaltyFields {
-		if _, ok := parsed[key]; ok {
-			delete(parsed, key)
-			changed = true
-		}
-	}
-	if !changed {
-		return body
-	}
-	out, err := marshalForwardBody(parsed)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return out
-}
-
 func forwardBytes(t *testing.T, v any) []byte {
 	t.Helper()
 	b, err := marshalForwardBody(v)
@@ -119,7 +95,7 @@ func TestCacheBustSpliceMatchesReencode(t *testing.T) {
 	for name, tc := range spliceCases(t) {
 		t.Run(name, func(t *testing.T) {
 			want := legacySealCacheBust(t, tc.body, key)
-			got, err := bodyForCacheAttempt(tc.body, false, nil, &registry.PendingRequest{LegacyCacheBustKey: key})
+			got, err := bodyForCacheAttempt(tc.body, &registry.PendingRequest{LegacyCacheBustKey: key})
 			if err != nil {
 				t.Fatalf("bodyForCacheAttempt: %v", err)
 			}
@@ -137,7 +113,7 @@ func TestCacheBustSpliceMatchesReencode(t *testing.T) {
 				t.Fatalf("size fast path fired = %v, want %v", fast, tc.fast)
 			}
 			// A second seal of the sealed body (the key already present) also matches.
-			resealed, err := bodyForCacheAttempt(want, false, nil, &registry.PendingRequest{LegacyCacheBustKey: "second-key"})
+			resealed, err := bodyForCacheAttempt(want, &registry.PendingRequest{LegacyCacheBustKey: "second-key"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -186,7 +162,7 @@ func TestCacheBustSplicePropertyMatchesReencode(t *testing.T) {
 	check := func(i int, body []byte, key string, expectFast bool) {
 		t.Helper()
 		want := legacySealCacheBust(t, body, key)
-		got, err := bodyForCacheAttempt(body, false, nil, &registry.PendingRequest{LegacyCacheBustKey: key})
+		got, err := bodyForCacheAttempt(body, &registry.PendingRequest{LegacyCacheBustKey: key})
 		if err != nil {
 			t.Fatalf("tree %d: seal: %v", i, err)
 		}
@@ -233,7 +209,7 @@ func TestCacheAttemptSizeErrorMatchesSeal(t *testing.T) {
 	for _, delta := range []int{-1, 0, 1} {
 		fill := maxInferenceBodyBytes - sealedOverhead - len(`{"payload":""}`) + delta
 		body := []byte(`{"payload":"` + strings.Repeat("x", fill) + `"}`)
-		_, sealErr := bodyForCacheAttempt(body, false, nil, &registry.PendingRequest{LegacyCacheBustKey: key})
+		_, sealErr := bodyForCacheAttempt(body, &registry.PendingRequest{LegacyCacheBustKey: key})
 		size, sizeErr := cacheAttemptSizeError(body, key)
 		if (sealErr == nil) != (sizeErr == nil) {
 			t.Fatalf("delta %d: seal err %v, size err %v", delta, sealErr, sizeErr)
@@ -247,41 +223,6 @@ func TestCacheAttemptSizeErrorMatchesSeal(t *testing.T) {
 	}
 	if _, err := cacheAttemptSizeError([]byte(`not json`), key); err == nil {
 		t.Fatal("unsealable body reported no error")
-	}
-}
-
-func TestBodyForProviderPenaltyFastPath(t *testing.T) {
-	legacy := &registry.Provider{Version: "0.6.6"}
-	cases := map[string][]byte{
-		"no penalties canonical":  forwardBytes(t, map[string]any{"model": "m", "messages": []any{}, "temperature": json.Number("1")}),
-		"no penalties pretty":     []byte("{\n \"model\": \"m\"\n}"),
-		"presence penalty":        forwardBytes(t, map[string]any{"model": "m", "presence_penalty": json.Number("0.5")}),
-		"all penalties unsorted":  []byte(`{"repetition_penalty":1.1,"model":"m","frequency_penalty":0,"presence_penalty":0}`),
-		"escaped penalty key":     []byte(`{"model":"m","presence\u005fpenalty":0.5}`),
-		"penalty nested only":     []byte(`{"model":"m","x":{"presence_penalty":1}}`),
-		"not an object":           []byte(`[1,2]`),
-		"invalid json":            []byte(`{"model":`),
-		"duplicate penalty":       []byte(`{"presence_penalty":1,"presence_penalty":2,"model":"m"}`),
-		"penalty value has quote": []byte(`{"model":"m","presence_penalty":"a\"b"}`),
-	}
-	for name, body := range cases {
-		t.Run(name, func(t *testing.T) {
-			want := legacyStripPenalties(t, body)
-			got := bodyForProvider(body, true, legacy)
-			if !bytes.Equal(got, want) {
-				t.Fatalf("legacy provider body diverged:\n got %s\nwant %s", got, want)
-			}
-			if bytes.Equal(want, body) && len(body) > 0 && &got[0] != &body[0] {
-				t.Fatal("unchanged body was copied")
-			}
-			// Fixed providers and text requests never strip.
-			if out := bodyForProvider(body, true, &registry.Provider{Version: penaltySafeProviderVersion}); !bytes.Equal(out, body) {
-				t.Fatal("fixed provider body changed")
-			}
-			if out := bodyForProvider(body, false, legacy); !bytes.Equal(out, body) {
-				t.Fatal("text request body changed")
-			}
-		})
 	}
 }
 

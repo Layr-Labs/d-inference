@@ -47,6 +47,18 @@ describe("Stripe proxy wire contracts", () => {
     expect(await (await handler(makeRequest(stripePath, { method }))).json()).toEqual({});
   });
 
+  it.each([checkout, onboard, withdraw])("forwards a valid JSON request body verbatim", async (handler) => {
+    upstream.fetch.mockResolvedValueOnce(upstreamOk({}));
+    await handler(makeRequest(stripePath, {
+      method: "POST", body: JSON.stringify({ amount_usd: "10" }),
+      headers: { "Content-Type": "application/json", authorization: "Bearer header" },
+    }));
+    expect(upstream.fetch.mock.calls[0][1]).toEqual({
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer header" },
+      body: JSON.stringify({ amount_usd: "10" }),
+    });
+  });
+
   it.each([checkout, onboard, withdraw])("uses JSON fallback for malformed request bodies", async (handler) => {
     upstream.fetch.mockResolvedValueOnce(upstreamOk({}));
     await handler(makeRequest(stripePath, {

@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -246,7 +245,7 @@ func TestCachePlanningRealSidecarHealthyMemberHTTP(t *testing.T) {
 							t.Fatal("decrypted provider body missing")
 						}
 						if frame.EncryptedBody == nil || frame.EncryptedBody.Ciphertext == "" || frame.EncryptedBody.EphemeralPublicKey == "" ||
-							!reflect.DeepEqual(frame.Body, protocol.InferenceRequestBody{}) || provider.dispatchCount() != beforeDispatches+1 {
+							provider.dispatchCount() != beforeDispatches+1 {
 							t.Fatal("expected exactly one encrypted ordinary dispatch")
 						}
 						afterRust := cachePlanningRealMetrics(t, ctx, fixture)

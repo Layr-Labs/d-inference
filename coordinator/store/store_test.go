@@ -6,25 +6,25 @@ import (
 
 func TestNewWithAdminKey(t *testing.T) {
 	s := NewMemory(Config{AdminKey: "test-admin-key"})
-	if !s.ValidateKey("test-admin-key") {
+	if !keyAuthenticates(s, "test-admin-key") {
 		t.Error("admin key should be valid")
 	}
-	if s.KeyCount() != 1 {
-		t.Errorf("key count = %d, want 1", s.KeyCount())
+	if n := activeKeyCount(t, s, ""); n != 1 {
+		t.Errorf("key count = %d, want 1", n)
 	}
 }
 
 func TestNewWithoutAdminKey(t *testing.T) {
 	s := NewMemory(Config{})
-	if s.KeyCount() != 0 {
-		t.Errorf("key count = %d, want 0", s.KeyCount())
+	if n := activeKeyCount(t, s, ""); n != 0 {
+		t.Errorf("key count = %d, want 0", n)
 	}
 }
 
-func TestRecordUsageFullWithPublicModel(t *testing.T) {
+func TestRecordUsagePublicModel(t *testing.T) {
 	s := NewMemory(Config{})
 
-	s.RecordUsageFullWithPublicModel("provider-1", "consumer-key", "key-1", "build-v1", "public-alias", "req-1", 50, 100, 123, nil)
+	s.RecordUsage(UsageRecord{ProviderID: "provider-1", ConsumerKey: "consumer-key", KeyID: "key-1", Model: "build-v1", PublicModel: "public-alias", RequestID: "req-1", PromptTokens: 50, CompletionTokens: 100, CostMicroUSD: 123})
 
 	records := s.UsageRecords()
 	if len(records) != 1 {
@@ -40,7 +40,7 @@ func TestRecordUsageFullWithPublicModel(t *testing.T) {
 
 func TestUsageRecordsReturnsCopy(t *testing.T) {
 	s := NewMemory(Config{})
-	s.RecordUsage("p1", "k1", "m1", 10, 20)
+	s.RecordUsage(UsageRecord{ProviderID: "p1", ConsumerKey: "k1", Model: "m1", PromptTokens: 10, CompletionTokens: 20})
 
 	records := s.UsageRecords()
 	records[0].PromptTokens = 999

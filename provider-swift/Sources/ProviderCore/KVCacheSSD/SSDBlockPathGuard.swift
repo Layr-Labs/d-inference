@@ -93,6 +93,25 @@ extension SSDBlockStore {
         return SSDNoFollowIO.regularFileStatus(at: file)
     }
 
+    /// True when a read failed because the indexed block is no longer on disk
+    /// (evicted or expired between the index probe and the open), not because
+    /// present bytes were unreadable. `readStreaming` rejects a vanished path
+    /// at its regular-file pre-check with an untyped `ioFailure`, and reports
+    /// the typed `ENOENT` only when the unlink lands between that check and
+    /// `openat`, so both shapes are recognized: the typed code, or a live
+    /// no-follow status of `.missing`. A replaced or unreadable entry is
+    /// `.invalid`/`.regular` and stays on the corruption path.
+    static func isAbsentBlockFailure(
+        _ error: any Error,
+        at url: URL,
+        under root: URL
+    ) -> Bool {
+        if case SSDBlockStoreError.posixFailure(_, let code) = error, code == ENOENT {
+            return true
+        }
+        return indexedBlockFileStatus(at: url, under: root) == .missing
+    }
+
     static func setAttributesIfSafe(
         _ attributes: [FileAttributeKey: Any],
         at url: URL,

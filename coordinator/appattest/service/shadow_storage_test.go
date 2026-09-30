@@ -101,7 +101,7 @@ func TestAppAttestStorageBoundsBusyAndStoppedSessionsThroughCompletion(t *testin
 		x := newSession("")
 		x.inventory = &machineInventorySession{store: st}
 		x.observe("prepare", "observed", nil)
-		x.protocolVersion = 2
+		x.protocolVersion = 3
 		x.key = &store.AppAttestShadowKey{KeyID: "key"}
 		if x.send(ctx, "attest") || st.events.Load() != 0 || st.enrollments.Load() != 0 {
 			t.Error("standalone event/enrollment bypassed saturated archive admission")

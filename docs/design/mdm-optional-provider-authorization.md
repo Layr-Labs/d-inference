@@ -1,6 +1,6 @@
 # MDM-optional provider authorization
 
-> Last updated: 2026-09-15 · commit `605651bb9`
+> Last updated: 2026-09-15
 
 Status: **In progress** — 2026-09-15 — implementation of independent legacy and App Attest serving authorization; deployment and physical security-transition qualification remain separate gates.
 

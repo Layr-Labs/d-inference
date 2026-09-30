@@ -18,9 +18,13 @@ type cachePlanningInput struct {
 	FirstContentBudget time.Duration
 }
 
-// planCacheRoute runs once after inference preflight. Retries and queued
-// dispatch retain its plan and keep their existing independent attempt bindings.
+// planCacheRoute is the cache-only adapter. Production request memoization
+// shares the result, including prompt counts, with preflight and dispatch.
 func (s *Server) planCacheRoute(ctx context.Context, input cachePlanningInput) registry.CachePlan {
+	return s.planCacheRouteResult(ctx, input).Plan
+}
+
+func (s *Server) planCacheRouteResult(ctx context.Context, input cachePlanningInput) registry.CachePlanResult {
 	started := time.Now()
 	modelLabel := s.cacheModelLabel(input.Model)
 	reason := cachePlanningUnknownOutcome
@@ -28,21 +32,21 @@ func (s *Server) planCacheRoute(ctx context.Context, input cachePlanningInput) r
 
 	if input.LoweringFailed {
 		reason = cachePlanningLoweringUnsupported
-		return registry.CachePlan{}
+		return registry.CachePlanResult{}
 	}
 	if s.promptArtifacts == nil || s.promptContract == nil || s.promptPreloader == nil {
 		reason = cachePlanningDependenciesUnavailable
-		return registry.CachePlan{}
+		return registry.CachePlanResult{}
 	}
 	status, ok := s.promptArtifacts.Status(input.Model)
 	if artifactReason := cachePlanningArtifactReason(status, ok); artifactReason != "" {
 		reason = artifactReason
-		return registry.CachePlan{}
+		return registry.CachePlanResult{}
 	}
 	identity, verified := s.cachePreloadIdentity(input.Model, status)
 	if !verified {
 		reason = cachePlanningPreloadNotReady
-		return registry.CachePlan{}
+		return registry.CachePlanResult{}
 	}
 	planInput := registry.CachePlanInput{
 		Account:              input.Account,
@@ -68,7 +72,7 @@ func (s *Server) planCacheRoute(ctx context.Context, input cachePlanningInput) r
 	// legacy accounting distinct from the broader API decision population.
 	s.emitExactCachePlan(result)
 	reason = cachePlanningResultReason(result.Outcome)
-	return result.Plan
+	return result
 }
 
 // An empty reason means the unchanged artifact prerequisites have passed.

@@ -250,7 +250,11 @@ func TestHedgeGovernorCounterConcurrency(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for range pairsPerGoroutine {
-				g.acquireHedgeUngoverned()
+				_, acquired := g.tryAcquireHedge("counter-concurrency", hedgeGovernorInputs{idleAlternativeExists: true, fleetIdleSlots: goroutines * hedgeGlobalBudgetDivisor})
+				if !acquired {
+					t.Error("spare budget unexpectedly rejected hedge")
+					return
+				}
 				g.noteHedgeResolved()
 			}
 		}()

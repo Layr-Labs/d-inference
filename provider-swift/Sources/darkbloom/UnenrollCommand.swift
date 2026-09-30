@@ -73,7 +73,7 @@ struct Unenroll: AsyncParsableCommand {
         print("  • Config dir:    ~/.config/darkbloom/  (and legacy ~/.config/eigeninference/)")
         print("  • Auth token:    ~/.darkbloom/auth_token")
         print("  • Legacy keys:   ~/.darkbloom/{wallet_key,enclave_key.data,…}")
-        print("  • Signing keys:  Current and legacy Secure Enclave attestation keys")
+        print("  • Signing key:   Secure Enclave attestation key")
         print()
 
         let proceed: Bool

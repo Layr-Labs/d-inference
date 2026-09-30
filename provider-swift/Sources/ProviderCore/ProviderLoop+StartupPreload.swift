@@ -216,7 +216,8 @@ extension ProviderLoop {
             log: { line in log.info("\(line)") },
             currentRequiredGb: { modelId in await me.livePreloadRequiredGb(modelId) },
             canLoadMore: { await me.startupPreloadHasFreeSlot() },
-            onCandidateStarted: { modelId in await me.markStartupPreloadReached(modelId) }
+            onCandidateStarted: { modelId in await me.markStartupPreloadReached(modelId) },
+            onInsufficientMemory: { log.warning(.startupPreloadInsufficientMemory) }
         )
 
         let preloader = StartupPreloader(deps: deps)

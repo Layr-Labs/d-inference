@@ -603,16 +603,21 @@ func loadExactCacheArtifacts(
 	}
 }
 
+// exactCacheArtifactRole mirrors the provider's ModelScanner.isIntegrityFile
+// and roleFor (provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift):
+// the aggregate hash the test computes must cover exactly the files the
+// provider hashes, or the sidecar's manifest and the provider's capability
+// disagree on the model. Qwen VL artifacts ship video_preprocessor_config.json.
 func exactCacheArtifactRole(name string) string {
 	switch name {
 	case "model.safetensors.index.json":
 		return "index"
-	case "preprocessor_config.json", "processor_config.json":
+	case "preprocessor_config.json", "processor_config.json", "video_preprocessor_config.json":
 		return "preprocessor"
 	case "tokenizer.json", "tokenizer_config.json", "tokenizer.model",
 		"special_tokens_map.json", "added_tokens.json", "vocab.json", "merges.txt":
 		return "tokenizer"
-	case "config.json", "generation_config.json", "quantize_config.json":
+	case "config.json", "hadamard.json", "generation_config.json", "quantize_config.json":
 		return "config"
 	case "chat_template.jinja", "chat_template.json":
 		return "template"

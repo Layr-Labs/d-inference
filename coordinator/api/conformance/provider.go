@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/eigeninference/d-inference/coordinator/store"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -77,7 +78,7 @@ func (f *orFixture) provider(version string) *orProvider {
 	// Explicit synthetic warm capacity, legacy seq=0 (no probe protocol).
 	rp.BackendCapacity = &protocol.BackendCapacity{TotalMemoryGB: 64, Slots: []protocol.BackendSlotCapacity{{Model: f.model, State: "idle", MaxConcurrency: 1, ActiveTokenBudgetMax: 200_000}}}
 	rp.Mu().Unlock()
-	if err := f.st.SetModelPrice("conformance-provider", f.model, 50_000, 10_000_000); err != nil {
+	if err := f.st.SetModelPrice(store.ModelPrice{AccountID: "conformance-provider", Model: f.model, InputPrice: 50_000, OutputPrice: 10_000_000}); err != nil {
 		f.t.Fatal(err)
 	}
 	return p

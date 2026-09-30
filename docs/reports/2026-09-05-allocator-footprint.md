@@ -1,6 +1,6 @@
 # Allocator footprint and native paged ownership
 
-> Last updated: 2026-09-05 · commit `69a75de82`
+> Last updated: 2026-09-05
 
 Native paged allocation now reserves the allocator's per-buffer upper bound
 before construction and settles to measured backing bytes after evaluation.

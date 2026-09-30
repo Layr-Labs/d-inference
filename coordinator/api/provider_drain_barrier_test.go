@@ -24,7 +24,7 @@ type drainSettlementStore struct {
 	release chan struct{}
 }
 
-func (s *drainSettlementStore) GetModelPrice(account, model string) (int64, int64, bool) {
+func (s *drainSettlementStore) GetModelPrice(account, model string) (store.ModelPrice, bool) {
 	if s.block.Swap(false) {
 		close(s.entered)
 		<-s.release

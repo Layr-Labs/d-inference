@@ -15,7 +15,6 @@ public actor AppAttestShadowClient {
     private var preparedEnvironment: String?
     private var preparedScope: String?
     private var preparedAccountScope: String?
-    private var preparedProtocol: Int?
     private var localStatus: AppAttestLocalStatus?
     /// The generation budget does not change during proofs. Keep the prepare
     /// observation so proof diagnostics need no additional Keychain reads.
@@ -121,7 +120,6 @@ public actor AppAttestShadowClient {
 
     private func keyScope(for request: AppAttestShadowPayload, environment: String) -> String? {
         guard ["production", "development"].contains(environment) else { return nil }
-        guard [2, 3].contains(request.protocolVersion ?? 0) else { return scope + ":" + environment }
         guard let account = request.accountScope, account.utf8.count == 64 else { return nil }
         return scope + ":" + environment + ":account:" + account
     }
@@ -137,7 +135,8 @@ public actor AppAttestShadowClient {
         var calledAttestation = false
         var assertionFailures = 0
         do {
-            guard request.protocolVersion == nil || [1,2,3].contains(request.protocolVersion ?? 0),
+            // Only protocol 3 (the version this provider registers) is served.
+            guard request.protocolVersion == 3,
                   request.session.utf8.count == 44, Data(base64Encoded: request.session)?.count == 32,
                   let environment = request.environment, ["production", "development"].contains(environment),
                   Data(base64Encoded: publicKey)?.count == 32 else { throw ShadowFailure.invalidRequest }
@@ -168,22 +167,20 @@ public actor AppAttestShadowClient {
                         bootTime: runtimeContext().bootTime, appVersion: status?.appVersion
                     ).generate(replacing: key)
                 }
-                record = key; session = request.session; preparedEnvironment = environment; preparedScope = keyScope; preparedAccountScope=request.accountScope; preparedProtocol=request.protocolVersion
+                record = key; session = request.session; preparedEnvironment = environment; preparedScope = keyScope; preparedAccountScope=request.accountScope
                 response.keyID = key?.keyID
             } else {
-                guard session == request.session, preparedEnvironment == environment, preparedProtocol == request.protocolVersion, preparedAccountScope == request.accountScope,
+                guard session == request.session, preparedEnvironment == environment, preparedAccountScope == request.accountScope,
                       var key = record, key.keyID == request.keyID,
                       let challenge = request.challenge, Data(base64Encoded: challenge)?.count == 32
                 else { throw ShadowFailure.invalidRequest }
                 guard let keyScope=preparedScope else { throw ShadowFailure.invalidRequest }
                 var signedRequest=request
-                if [2,3].contains(request.protocolVersion ?? 0) {
-                    guard let status else { throw ShadowFailure.invalidRequest }
-                    signedRequest.status=status; response.status=status
-                }
+                guard let status else { throw ShadowFailure.invalidRequest }
+                signedRequest.status=status; response.status=status
                 let hash = signedRequest.clientHash(publicKey: publicKey)
                 if request.action == "attest" {
-                    if [2,3].contains(request.protocolVersion ?? 0), let proof=key.pendingProof, let enrollment=key.pendingEnrollment {
+                    if let proof=key.pendingProof, let enrollment=key.pendingEnrollment {
                         response.proof=proof; response.enrollmentSession=enrollment; response.status=key.pendingStatus
                         response.result="ok"; return response
                     }
@@ -224,14 +221,12 @@ public actor AppAttestShadowClient {
                     key.attested = true
                     key.attestationStartedAt = nil
                     key.retryEnrollment = nil
-                    if [2,3].contains(request.protocolVersion ?? 0) {
-                        key.pendingProof = proof.base64EncodedString()
-                        key.pendingEnrollment = enrollment.session
-                        key.pendingStatus = enrollment.status
-                        key.pendingCreatedAt = enrollment.createdAt
-                        response.enrollmentSession = enrollment.session
-                        response.status = enrollment.status
-                    }
+                    key.pendingProof = proof.base64EncodedString()
+                    key.pendingEnrollment = enrollment.session
+                    key.pendingStatus = enrollment.status
+                    key.pendingCreatedAt = enrollment.createdAt
+                    response.enrollmentSession = enrollment.session
+                    response.status = enrollment.status
                     key.recordAppleSuccess(at: now())
                     record = key
                     try storage.save(key, scope: keyScope)

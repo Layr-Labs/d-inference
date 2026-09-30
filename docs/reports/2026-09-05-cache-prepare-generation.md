@@ -1,6 +1,6 @@
 # Cache plans and dispatch attempts across configuration changes
 
-> Last updated: 2026-09-05 · commit `a9eee7871`
+> Last updated: 2026-09-05
 
 Cache routing now rejects plans and queued cache metadata from a retired
 configuration. It preserves the ordinary encrypted request and its remaining

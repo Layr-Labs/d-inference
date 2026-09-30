@@ -1,6 +1,6 @@
 # Console UI (`console-ui/`)
 
-> Last updated: 2026-09-21 · commit `ce809b792`
+> Last updated: 2026-09-27
 
 The console at `console.darkbloom.dev` is a Next.js 16 App Router / React 19 application (`console-ui/package.json`) that gives consumers a chat client, model catalog, network stats, billing, API-key management, and provider linking. The browser never calls the coordinator for authenticated work: every page fetches same-origin `/api/*` route handlers, which resolve the coordinator URL server-side and forward the caller's own credential. This page explains how those pieces fit; the coordinator routes they call are specified in [`../../reference/api-contracts.md`](../../reference/api-contracts.md). The internal, read-only operator dashboard is a separate app — see [`admin-ui.md`](admin-ui.md).
 
@@ -17,7 +17,7 @@ The console exists so a person can use Darkbloom without writing code: sign in, 
 
 `console-ui/src/app/layout.tsx` (`RootLayout`) mounts, in order: `<Analytics/>` (`@vercel/analytics/next`), `GoogleAnalytics`, `TelemetryInitializer`, `DatadogRUM`, then `ThemeProvider` → `PrivyClientProvider` → `VerificationModeProvider` → `AppShell` → the page. Route entry points compose client workspaces; there is no `not-found.tsx` or `loading.tsx`, and `console-ui/src/app/global-error.tsx` is the root error boundary. Dependencies of note (`console-ui/package.json`): `@privy-io/react-auth`, `zustand`, `tweetnacl`, `@datadog/browser-rum`, `react-markdown`, Tailwind 4. `console-ui/next.config.ts` sets `typescript.ignoreBuildErrors: true`, so type errors do not fail `next build`.
 
-### Page routes (14)
+### Page routes (13)
 
 Files are under `console-ui/src/app/`. "Auth" is what the page itself requires; nothing is enforced by the request interceptor.
 
@@ -25,7 +25,6 @@ Files are under `console-ui/src/app/`. "Auth" is what the page itself requires; 
 |---|---|---|---|
 | `/` | `page.tsx` | Server redirect to `/providers` | Public |
 | `/chat` | `chat/page.tsx`, `components/chat/*`, `hooks/useChatStream.ts` | Chat: model picker, image upload, think-block rendering, per-message trust badge (`components/TrustBadge.tsx`) | Renders for guests; sending needs `authenticated && apiKeyReady` (`useAuth`) |
-| `/login` | `login/page.tsx` | Legacy Privy login page (redirects to `?next=` once authenticated) | **Unreachable** — `console-ui/src/proxy.ts` redirects `/login` to `/`; its copy ("email, wallet, or social") is stale |
 | `/link` | `link/page.tsx`, `link/DeviceLinkForm.tsx` | RFC 8628 device-code approval for `darkbloom login`: `POST /api/device/approve` with `Authorization: Bearer <Privy token>` | Privy |
 | `/settings` | `settings/page.tsx`, `settings/useConsoleSettings.ts` | Theme, API example URL (`darkbloom_api_example_url`), health check via `/api/health`, and encrypt-to-coordinator toggle | None |
 | `/models` | `models/page.tsx` | Catalog and pricing table from `/api/models` and `/api/pricing` (`console-ui/src/lib/api/models.ts`, `console-ui/src/lib/api/pricing.ts`) | Public; `x-api-key` sent when cached, which switches `/api/models` to the keyed `/v1/models` path |
@@ -38,7 +37,7 @@ Files are under `console-ui/src/app/`. "Auth" is what the page itself requires; 
 | `/earn` | `earn/page.tsx`, `earn/calc.ts`, `earn/useEarningsCalculator.ts`, `earn/providerReadiness.ts` | Earnings calculator — pure client math, no network call; readiness notice below `MIN_PROVIDER_MEMORY_GB` | Public; CTAs call `login()` |
 | `/leaderboard` | `leaderboard/page.tsx` → `components/leaderboard/LeaderboardContent.tsx`, `components/leaderboard/useLeaderboard.ts` | Provider leaderboard from `/api/leaderboard?<metric,window,limit>` | Public |
 
-`components/earn/BaseRewardsPanel.tsx` is not mounted by any page (its only importer is its test), so base rewards are not surfaced anywhere in the console — see [`../../design/base-rewards.md`](../../design/base-rewards.md).
+No console page surfaces base rewards; the only base-rewards code is the Privy-gated admin proxy `console-ui/src/app/api/admin/base-rewards/route.ts` — see [`../../design/base-rewards.md`](../../design/base-rewards.md).
 
 ### Workspace entry and provider journeys
 
@@ -125,7 +124,7 @@ Credential column: **Privy (required)** = `privyAuth()` must be non-empty or the
 | `/api/payments/withdraw/stripe` | POST | `POST /v1/billing/withdraw/stripe` | Privy (if present) | Payout request |
 | `/api/pricing` | GET | `GET /v1/pricing` | none | `cacheControl(300, 600)` |
 | `/api/stats` | GET | `GET /v1/stats` | none | Shared snapshot cache with concurrent request coalescing (`getStatsSnapshot`, `console-ui/src/app/api/stats/snapshot-cache.ts`); source/fetch timestamp headers and bounded edge freshness; `?mock=geo` is isolated and `no-store` |
-| `/api/telemetry` | POST | **none** | — | Always answers `telemetry_ingest_disabled` (the same response as the coordinator's [telemetry route](../../reference/api-contracts.md#telemetry-1)); the body is never read |
+| `/api/telemetry` | POST | **none** | — | Always answers 410 `telemetry_ingest_disabled` for old browser bundles; the body is never read and nothing is forwarded (the coordinator has no telemetry ingestion route) |
 
 ### Network stats snapshots
 
@@ -157,7 +156,7 @@ The console key is provisioned by `provisionConsoleKey` (`console-ui/src/hooks/u
 
 ### Authentication (Privy)
 
-`PrivyClientProvider` (`console-ui/src/components/app-providers/PrivyClientProvider.tsx`) loads `PrivyRealProvider` as an on-demand chunk (`next/dynamic`, `ssr: false`) and exposes `useAuthContext()` → `{ready, authenticated, user, login, logout, getAccessToken}`. `PrivyRealProvider` (`console-ui/src/components/app-providers/PrivyRealProvider.tsx`) configures `loginMethods: ["email"]` — email OTP is the only sign-in method — with `embeddedWallets: { createOnLogin: "off" }`. Login is an in-page modal (`login()`), triggered from the shell and page CTAs; there is no login page (see `/login` above).
+`PrivyClientProvider` (`console-ui/src/components/app-providers/PrivyClientProvider.tsx`) loads `PrivyRealProvider` as an on-demand chunk (`next/dynamic`, `ssr: false`) and exposes `useAuthContext()` → `{ready, authenticated, user, login, logout, getAccessToken}`. `PrivyRealProvider` (`console-ui/src/components/app-providers/PrivyRealProvider.tsx`) configures `loginMethods: ["email"]` — email OTP is the only sign-in method — with `embeddedWallets: { createOnLogin: "off" }`. Login is an in-page modal (`login()`), triggered from the shell and page CTAs; there is no login page — `console-ui/src/proxy.ts` redirects `/login` to `/` so old links still land in the app.
 
 **Mock auth.** When `NEXT_PUBLIC_PRIVY_APP_ID` is unset or equals the literal `"placeholder"` (`IS_PRIVY_CONFIGURED`), the provider is replaced by `MOCK_AUTH`: `ready: true`, `authenticated: true`, `user: null`, `getAccessToken` resolving to `null`, and `login`/`logout` no-ops. Every visitor appears signed in, but no Privy token exists (consequences under [Failure modes](#failure-modes)). This is the local-preview mode; it must not ship.
 
@@ -192,7 +191,7 @@ sequenceDiagram
 | `ThemeProvider` | `console-ui/src/components/app-providers/ThemeProvider.tsx` | Theme | localStorage `darkbloom-theme` |
 | `VerificationModeProvider` | `console-ui/src/components/app-providers/verification-mode.tsx` | `mode` ∈ `normal`, `technical` (verification-panel display mode; changes no request) | localStorage `darkbloom-verification-mode` (`STORAGE_KEYS.verificationMode`) |
 
-Other localStorage keys: `STORAGE_KEYS` (`console-ui/src/lib/storage-keys.ts`) = `darkbloom_api_key`, `eigeninference_api_key` (legacy), `darkbloom_console_key_id`, `darkbloom_coordinator_url`; `darkbloom_encrypt_to_coordinator`; `darkbloom_coord_enc_key_v2`; `darkbloom_invite_dismissed` (`INVITE_DISMISSED_KEY`, `console-ui/src/components/InviteCodeBanner.tsx`); `darkbloom_ga_consent` (`GA_CONSENT_STORAGE_KEY`, also a cookie).
+Other localStorage keys: `STORAGE_KEYS` (`console-ui/src/lib/storage-keys.ts`) = `darkbloom_api_key`, `eigeninference_api_key` (legacy), `darkbloom_console_key_id`, `darkbloom_coordinator_url`; `darkbloom_encrypt_to_coordinator`; `darkbloom_coord_enc_key_v2`; `darkbloom_invite_dismissed` (`INVITE_DISMISSED_KEY`, `console-ui/src/components/InviteCodeBanner.tsx`). The console no longer writes `darkbloom_ga_consent`; a value left by the removed consent prompt is ignored.
 
 ### Request interceptor (`console-ui/src/proxy.ts`)
 
@@ -204,7 +203,7 @@ Next 16 loads the request interceptor from `src/proxy.ts` (default export `proxy
 
 ### Analytics and telemetry
 
-- **Google Analytics** (`console-ui/src/lib/google-analytics.ts`, `components/GoogleAnalytics.tsx`): gtag loads when `getGoogleAnalyticsMeasurementId()` is non-empty and `hasGoogleAnalyticsConsent()` is true. `getGoogleAnalyticsConsentStatus()` returns `"granted"` for every client — **consent defaults to granted, and there is no prompt**; `revokeGoogleAnalyticsConsent()` removes `darkbloom_ga_consent` from localStorage but still writes the cookie as `granted`, so revocation is not effective. Page-view URLs are sanitised (`buildTrackedPageLocation`) before sending.
+- **Google Analytics** (`console-ui/src/lib/google-analytics.ts`, `components/GoogleAnalytics.tsx`): gtag loads when `getGoogleAnalyticsMeasurementId()` is non-empty and `hasGoogleAnalyticsConsent()` is true. `getGoogleAnalyticsConsentStatus()` returns `"granted"` for every client — **consent defaults to granted, and there is no prompt or opt-out function**. Page-view URLs are sanitised (`buildTrackedPageLocation`) before sending.
 - **Vercel Analytics**: `<Analytics/>` in the layout; no configuration.
 - **Datadog RUM** (`console-ui/src/components/DatadogRUM.tsx`): inert unless both `NEXT_PUBLIC_DD_APPLICATION_ID` and `NEXT_PUBLIC_DD_CLIENT_TOKEN` are set; then `datadogRum.init` with `service: "darkbloom-console"`, `sessionSampleRate: 100`, `sessionReplaySampleRate: 20`, `defaultPrivacyLevel: "mask-user-input"`, and `setUser({id, email})` once authenticated.
 - **Client telemetry is disabled.** `emit()` and `installGlobalHandlers()` (`console-ui/src/lib/telemetry.ts`) are empty functions kept for source compatibility; `TelemetryInitializer` and `global-error.tsx` call them to no effect; `POST /api/telemetry` answers `telemetry_ingest_disabled` without reading the body. The wire types in `console-ui/src/lib/telemetry-types.ts` remain for the tests and the schema in [`../telemetry.md`](../telemetry.md).
@@ -234,7 +233,7 @@ There is no server-only variable: the route handlers read `NEXT_PUBLIC_COORDINAT
 5. **Sealed bodies are forwarded byte-for-byte.** `POST` in `console-ui/src/app/api/chat/route.ts` reads `req.arrayBuffer()` when `isSealed` and never JSON-round-trips it; the `X-Darkbloom-Route` header travels outside the sealed body (`streamChat`).
 6. **Encryption never degrades silently.** With the toggle on, a failed `getCoordinatorKey` aborts the send through `callbacks.onError` (`prepareBody` in `console-ui/src/lib/chat/stream.ts`); a sealed response that fails `unsealSseEvent` aborts the stream.
 7. **`/api/*` is outside the interceptor.** The `matcher` in `console-ui/src/proxy.ts` excludes `api/`.
-8. **No client telemetry leaves the page.** `emit` and `installGlobalHandlers` are empty (`console-ui/src/lib/telemetry.ts`); `POST` in `console-ui/src/app/api/telemetry/route.ts` returns `telemetry_ingest_disabled` unconditionally ([api-contracts](../../reference/api-contracts.md#telemetry-1)).
+8. **No client telemetry leaves the page.** `emit` and `installGlobalHandlers` are empty (`console-ui/src/lib/telemetry.ts`); `POST` in `console-ui/src/app/api/telemetry/route.ts` returns `telemetry_ingest_disabled` unconditionally ([telemetry](../telemetry.md)).
 9. **Persisted chat state carries no image bytes or live flags.** `partialize` in `console-ui/src/lib/store.ts` sets `images: undefined` and `streaming: false`.
 10. **Key provisioning is bounded and does not clobber a user-created key.** One in-flight `POST /api/auth/keys` per tab (`provisionInFlight`) and a `PROVISION_FAILURE_COOLDOWN_MS` back-off after failure (`console-ui/src/hooks/useAuth.ts`). A mint that loses a race with a stored secret is revoked (`DELETE /api/auth/keys`) rather than overwriting localStorage. Creating a named key adopts it when the console key is missing or untracked (`adoptCreatedKeyIfUntracked`, `console-ui/src/components/api-keys/adoptConsoleKey.ts`).
 
@@ -253,7 +252,7 @@ There is no server-only variable: the route handlers read `NEXT_PUBLIC_COORDINAT
 | Visiting `/login` lands on `/` and the `?next=` target is lost | `console-ui/src/proxy.ts` redirects before the page renders | `proxy` |
 | Provisioning stalls for 30 s after a 429 | `provisionBlockedUntil` cooldown | `console-ui/src/hooks/useAuth.ts` |
 | Sidebar or chats "flash" empty on load | Persisted store is applied only after `AppShell` calls `useStore.persist.rehydrate()` (`skipHydration`) | `console-ui/src/lib/store.ts`, `console-ui/src/components/AppShell.tsx` |
-| GA cannot be turned off from the UI | `getGoogleAnalyticsConsentStatus()` always returns `"granted"`; `revokeGoogleAnalyticsConsent` writes the cookie as `granted` | `console-ui/src/lib/google-analytics.ts` |
+| GA cannot be turned off from the UI | `getGoogleAnalyticsConsentStatus()` always returns `"granted"` and nothing in the console grants or revokes consent | `console-ui/src/lib/google-analytics.ts` |
 
 ## Code map
 

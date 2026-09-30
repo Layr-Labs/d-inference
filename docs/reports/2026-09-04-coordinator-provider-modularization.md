@@ -1,6 +1,6 @@
 # Coordinator and provider modularization checkpoint
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-04
 
 The second cleanup pass separates coordinator and provider responsibilities,
 removes unused paths and duplicated helpers, and preserves the serving contracts.

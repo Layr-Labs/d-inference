@@ -1,6 +1,6 @@
 # Qwen 3.8 Next: loading and MTP memory review
 
-> Last updated: 2026-09-17 · commit `77d1d1d86`
+> Last updated: 2026-09-17
 
 This is a scoped review checkpoint, not an all-gates production sign-off.
 The implementation is native Qwen4. Trained weights, quantization, tokenizer,

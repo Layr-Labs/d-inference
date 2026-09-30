@@ -153,7 +153,9 @@ func summarizeProviderFrame(data []byte) (ProviderWireEvent, bool) {
 	}
 	switch event.Type {
 	case "inference_request":
-		copyFields("prefix_cache_protocol", "cache_receipt_boundary_mode", "tool_schema_metadata_protocol")
+		// cache_repeated_prefix_tokens is an integer demand count, never a key
+		// or boundary, so it survives redaction like the other counts.
+		copyFields("prefix_cache_protocol", "cache_receipt_boundary_mode", "cache_repeated_prefix_tokens", "tool_schema_metadata_protocol")
 		present("cache_scope")
 		present("cache_receipt_nonce")
 		present("encrypted_body")

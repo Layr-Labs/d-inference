@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-27 · commit `f99e56eb0`
+> Last updated: 2026-09-30
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -10,23 +10,37 @@ re-downloads artifacts and requires independent App Attest qualification before
 activating a production release. Staging/publication failures retry the retained
 artifact; GitHub and R2 publication are separate recoverable steps.
 
-The prepared version is **0.9.10**; its source changes since `v0.9.9` are
-collected in [`CHANGELOG.md`](../../CHANGELOG.md). The version bump prepares
-the source for the provider bundle. Publication and coordinator deployment remain
-separate operations; the bump alone does not change the registered release
-returned by `GET /v1/releases/latest`.
+The prepared version is **0.9.12**; its source changes since `v0.9.9` are
+collected in [`CHANGELOG.md`](../../CHANGELOG.md): the unshipped 0.9.10
+candidate, the prefix-cache hit-rate set, and model-download cache recovery.
+Cache rollout steps are in [`cache-routing-rollout.md`](cache-routing-rollout.md).
+The 0.9.10 rollout order below applies unchanged: the new inference-request
+field is optional in both directions. The version bump prepares the source for
+the provider bundle. Publication and coordinator deployment remain separate
+operations; the bump alone does not change the registered release returned by
+`GET /v1/releases/latest`.
+
+For cache-recovery qualification, exercise foreground downloads and background
+prefetch with a dangling model-directory symlink: the original link is retained
+as a hidden sibling, and verified weights publish into the selected cache.
+Confirm valid external-directory links still receive downloads. See
+[model download behavior](../provider/cli-reference.md#darkbloom-models-download-id).
 
 Keep `ProviderCore.version` in
 `provider-swift/Sources/ProviderCore/ProviderCore.swift` as the concise release
 identity. Record release history in `CHANGELOG.md`;
 `scripts/check-release-version.sh` checks parity with the coordinator display
 fallback before packaging.
+The release Metal cache namespace also binds the prepared downloadable compiler's
+binary SHA, so an exact outer-cache hit cannot prevent publishing a library built
+with a newly installed Metal component.
 
 Production publication requires independent [durable App Attest build qualification](app-attest-build-qualification.md). Signing retains immutable bytes and a qualification template; a separate Linux staging job uploads those retained bytes to R2, and the Linux publication job verifies approval before release registration, R2 latest aliases and GitHub publication. Retry only the failed publication job after approval, preserving the original signed artifact. Deploy the matching coordinator first; the existing release key cannot approve builds.
 
 ### 0.9.10 rollout order
 
 1. Merge the version bump, then verify Release Integrity, Provider Tests,
+   Provider SDK Tests, Provider Prompt Parity,
    Coordinator Tests, E2E Integration Tests, and both SDK 27 release-preparation
    lanes on the final source. Build-cache success and a source version bump are
    neither signed-bundle qualification nor publication.
@@ -306,9 +320,7 @@ The provider and coordinator versions must be identical strings:
 (`check-release-version.sh v0.9.10`) and an optional reported string from a
 built binary (`darkbloom 0.9.10` or `0.9.10`); the workflow calls it in all
 three forms. CI job "Release Integrity" runs the two commands above on every
-push. Do not touch `minProviderVersionForDesiredModels` (`"0.5.17"`, same file)
-for a routine release; it is the floor for desired-model fan-out, not the
-current version.
+push.
 
 ### 2. Write the changelog entry
 
@@ -325,6 +337,7 @@ message** (step 4), so write the tag message from this entry.
 ### 3. Merge to `master` and wait for CI
 
 Open a PR with the bump + changelog; "Release Integrity", "Provider Tests",
+"Provider SDK Tests", "Provider Prompt Parity",
 "Coordinator Tests", and "E2E Integration Tests" must be green. The release
 workflow re-runs `scripts/verify-prompt-parity.sh` itself, so a prompt-contract
 change that is not fixture-synced will fail the release, not just CI.
@@ -339,11 +352,11 @@ git tag -a v0.9.10 -m "v0.9.10 — <one-line theme>
 git push origin v0.9.10
 ```
 
-Accepted tag patterns (`on.push.tags`): `v*.*.*`, `v*-swift`, `v*-swift.*`.
+Accepted tag pattern (`on.push.tags`): `v*.*.*`.
 Tags containing `-dev.` are rejected by `resolve-env` ("`-dev` tags are
 unsupported by the exact-version release contract"); use step 5 for dev.
-The version is derived from the tag (`v` stripped, `-swift*` suffix stripped)
-and must equal the source constants. `scripts/resolve-provider-release.sh` checks
+The version is the tag with `v` stripped and must equal the source constants,
+so a retired `vX.Y.Z-swift` alias fails resolution. `scripts/resolve-provider-release.sh` checks
 this before writing job outputs or requesting environment approval.
 
 ### 5. Dev release (manual dispatch)
@@ -415,7 +428,7 @@ The relevant signing steps run in this order:
 | 1 | Checkout · Validate release version integrity · Select SDK 27 signing toolchain · Ensure matching Metal compiler is available | Verify the source version and exact SDK before signing |
 | 2 | Fetch and verify this run's unsigned build | Download the build job's same-run artifact and validate source SHA, version and SDK |
 | 3 | Import Developer ID certificate · Embed provisioning profile | Prepare the temporary keychain and validate profile-authorized entitlements |
-| 4 | Stage and sign bundle | Build the app and flat compatibility layout, preserve SwiftPM resources, sign with hardened runtime, and verify signatures |
+| 4 | Stage and sign bundle | Build and sign the app with hardened runtime, preserve SwiftPM resources, and copy its `darkbloom`, `darkbloom-enclave` and `mlx.metallib` to regular files under `bin/`. Release hashes are computed from those copies: the coordinator's artifact check reads `bin/darkbloom`, and `install.sh` and self-update verify `bin/darkbloom` and `bin/mlx.metallib` before installing the app. They also keep older updaters working. Current installers never install them as a flat layout |
 | 5 | Notarize bundle | Notarize, staple, rebuild and extract the final archive, run runtime smoke, then calculate final binary/bundle/metallib and full CodeDirectory SHA-256 values |
 | 6 | Prepare signed release qualification evidence | `scripts/provider-release-publication.py prepare` retains the registration payload, annotated-tag changelog and independent operator qualification template |
 | 7 | Retain exact signed publication artifact | Retain the final bundle and metadata in `provider-publication-<SOURCE_SHA>-<SIGNING_ATTEMPT>` for 30 days |

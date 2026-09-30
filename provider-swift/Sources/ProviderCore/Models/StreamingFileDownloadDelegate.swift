@@ -119,10 +119,9 @@ final class StreamingFileDownloadDelegate: NSObject, URLSessionDataDelegate, @un
         // 416 Range Not Satisfiable: we asked for bytes past EOF. A 416 carries
         // `Content-Range: bytes */<total>` (RFC 7233; R2/S3 send it), so use the
         // total to verify the `.part` is EXACTLY the full object before promoting
-        // it — regardless of whether a SHA is available. This closes the legacy
-        // path gap: `downloadLegacyModelFromCDN` calls `downloadFile` with
-        // `expectedSHA256 == nil`, so without this check a stale/oversized/
-        // undersized `.part` would be promoted and served with NO verification.
+        // it — regardless of whether a SHA is available: a caller that passes
+        // `expectedSHA256 == nil` would otherwise promote a stale, oversized or
+        // undersized `.part` with NO verification.
         if status == 416, existingBytes > 0 {
             let total = http.value(forHTTPHeaderField: "Content-Range")
                 .flatMap(Self.parseContentRangeTotal)

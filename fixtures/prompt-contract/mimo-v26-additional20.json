@@ -1,0 +1,1252 @@
+{
+  "schema_version": 1,
+  "metadata_sha256": {
+    "config.json": "61bea4a0f7a0dd8969f8cae528761e26b697dd12ff63e98804c3f0945492e621",
+    "chat_template.jinja": "853650bee57bf95020373e4c928bd5a4b41b9915adf964a77711d2b49a291887",
+    "tokenizer_config.json": "413a7845f52943ccf4de0e5c838414507d16c44dbf573da9e20bc8902b384d06",
+    "tokenizer.json": "ff15eb925890d6b71b5160de4b846fbd13178438ab463b38ecc953e8cd1dcb3e"
+  },
+  "original31_sha256": "c11b2d3a9400bbe935c33f86b1ec6dc0ed91ea6e8b85030d355a4b66d35c2e8e",
+  "cases": [
+    {
+      "id": "default-on",
+      "request_json": "{\"model\": \"mimo-private\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello, MiMo.\"}]}",
+      "template_input": {
+        "add_generation_prompt": true,
+        "messages": [
+          {
+            "content": "Hello, MiMo.",
+            "role": "user"
+          }
+        ]
+      },
+      "rendered": "<|im_start|>user\nHello, MiMo.<|im_end|><|im_start|>assistant\n",
+      "rendered_sha256": "795d340703b5a3d12be121ecf2f4064a4941c874702536e3d55ff158e02a9e43",
+      "token_ids": [
+        151644,
+        872,
+        198,
+        9707,
+        11,
+        20740,
+        25612,
+        13,
+        151645,
+        151644,
+        77091,
+        198
+      ],
+      "decoded": "<|im_start|>user\nHello, MiMo.<|im_end|><|im_start|>assistant\n"
+    },
+    {
+      "id": "boolean-False",
+      "request_json": "{\"model\": \"mimo-private\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello, MiMo.\"}], \"enable_thinking\": false}",
+      "template_input": {
+        "add_generation_prompt": true,
+        "enable_thinking": false,
+        "messages": [
+          {
+            "content": "Hello, MiMo.",
+            "role": "user"
+          }
+        ]
+      },
+      "rendered": "<|im_start|>user\nHello, MiMo.<|im_end|><|im_start|>assistant\n<think></think>",
+      "rendered_sha256": "765d21b69f4e97f517895faf2d56b9fae208a50e59672f0e0606d989f29b39c0",
+      "token_ids": [
+        151644,
+        872,
+        198,
+        9707,
+        11,
+        20740,
+        25612,
+        13,
+        151645,
+        151644,
+        77091,
+        198,
+        151667,
+        151668
+      ],
+      "decoded": "<|im_start|>user\nHello, MiMo.<|im_end|><|im_start|>assistant\n<think></think>"
+    },
+    {
+      "id": "boolean-True",
+      "request_json": "{\"model\": \"mimo-private\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello, MiMo.\"}], \"enable_thinking\": true}",
+      "template_input": {
+        "add_generation_prompt": true,
+        "enable_thinking": true,
+        "messages": [
+          {
+            "content": "Hello, MiMo.",
+            "role": "user"
+          }
+        ]
+      },
+      "rendered": "<|im_start|>user\nHello, MiMo.<|im_end|><|im_start|>assistant\n",
+      "rendered_sha256": "795d340703b5a3d12be121ecf2f4064a4941c874702536e3d55ff158e02a9e43",
+      "token_ids": [
+        151644,
+        872,
+        198,
+        9707,
+        11,
+        20740,
+        25612,
+        13,
+        151645,
+        151644,
+        77091,
+        198
+      ],
+      "decoded": "<|im_start|>user\nHello, MiMo.<|im_end|><|im_start|>assistant\n"
+    },
+    {
+      "id": "nested-effort-none",
+      "request_json": "{\"model\": \"mimo-private\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello, MiMo.\"}], \"reasoning\": {\"effort\": \"none\"}}",
+      "template_input": {
+        "add_generation_prompt": true,
+        "enable_thinking": false,
+        "messages": [
+          {
+            "content": "Hello, MiMo.",
+            "role": "user"
+          }
+        ]
+      },
+      "rendered": "<|im_start|>user\nHello, MiMo.<|im_end|><|im_start|>assistant\n<think></think>",
+      "rendered_sha256": "765d21b69f4e97f517895faf2d56b9fae208a50e59672f0e0606d989f29b39c0",
+      "token_ids": [
+        151644,
+        872,
+        198,
+        9707,
+        11,
+        20740,
+        25612,
+        13,
+        151645,
+        151644,
+        77091,
+        198,
+        151667,
+        151668
+      ],
+      "decoded": "<|im_start|>user\nHello, MiMo.<|im_end|><|im_start|>assistant\n<think></think>"
+    },
+    {
+      "id": "top-effort-off",
+      "request_json": "{\"model\": \"mimo-private\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello, MiMo.\"}], \"reasoning_effort\": \" OFF \"}",
+      "template_input": {
+        "add_generation_prompt": true,
+        "enable_thinking": false,
+        "messages": [
+          {
+            "content": "Hello, MiMo.",
+            "role": "user"
+          }
+        ]
+      },
+      "rendered": "<|im_start|>user\nHello, MiMo.<|im_end|><|im_start|>assistant\n<think></think>",
+      "rendered_sha256": "765d21b69f4e97f517895faf2d56b9fae208a50e59672f0e0606d989f29b39c0",
+      "token_ids": [
+        151644,
+        872,
+        198,
+        9707,
+        11,
+        20740,
+        25612,
+        13,
+        151645,
+        151644,
+        77091,
+        198,
+        151667,
+        151668
+      ],
+      "decoded": "<|im_start|>user\nHello, MiMo.<|im_end|><|im_start|>assistant\n<think></think>"
+    },
+    {
+      "id": "top-effort-string-zero",
+      "request_json": "{\"model\": \"mimo-private\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello, MiMo.\"}], \"reasoning_effort\": \"0\"}",
+      "template_input": {
+        "add_generation_prompt": true,
+        "enable_thinking": false,
+        "messages": [
+          {
+            "content": "Hello, MiMo.",
+            "role": "user"
+          }
+        ]
+      },
+      "rendered": "<|im_start|>user\nHello, MiMo.<|im_end|><|im_start|>assistant\n<think></think>",
+      "rendered_sha256": "765d21b69f4e97f517895faf2d56b9fae208a50e59672f0e0606d989f29b39c0",
+      "token_ids": [
+        151644,
+        872,
+        198,
+        9707,
+        11,
+        20740,
+        25612,
+        13,
+        151645,
+        151644,
+        77091,
+        198,
+        151667,
+        151668
+      ],
+      "decoded": "<|im_start|>user\nHello, MiMo.<|im_end|><|im_start|>assistant\n<think></think>"
+    },
+    {
+      "id": "kwargs-false",
+      "request_json": "{\"model\": \"mimo-private\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello, MiMo.\"}], \"chat_template_kwargs\": {\"enable_thinking\": false}}",
+      "template_input": {
+        "add_generation_prompt": true,
+        "enable_thinking": false,
+        "messages": [
+          {
+            "content": "Hello, MiMo.",
+            "role": "user"
+          }
+        ]
+      },
+      "rendered": "<|im_start|>user\nHello, MiMo.<|im_end|><|im_start|>assistant\n<think></think>",
+      "rendered_sha256": "765d21b69f4e97f517895faf2d56b9fae208a50e59672f0e0606d989f29b39c0",
+      "token_ids": [
+        151644,
+        872,
+        198,
+        9707,
+        11,
+        20740,
+        25612,
+        13,
+        151645,
+        151644,
+        77091,
+        198,
+        151667,
+        151668
+      ],
+      "decoded": "<|im_start|>user\nHello, MiMo.<|im_end|><|im_start|>assistant\n<think></think>"
+    },
+    {
+      "id": "nested-boolean-precedence",
+      "request_json": "{\"model\": \"mimo-private\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello, MiMo.\"}], \"reasoning\": {\"enabled\": true}, \"enable_thinking\": false}",
+      "template_input": {
+        "add_generation_prompt": true,
+        "enable_thinking": true,
+        "messages": [
+          {
+            "content": "Hello, MiMo.",
+            "role": "user"
+          }
+        ]
+      },
+      "rendered": "<|im_start|>user\nHello, MiMo.<|im_end|><|im_start|>assistant\n",
+      "rendered_sha256": "795d340703b5a3d12be121ecf2f4064a4941c874702536e3d55ff158e02a9e43",
+      "token_ids": [
+        151644,
+        872,
+        198,
+        9707,
+        11,
+        20740,
+        25612,
+        13,
+        151645,
+        151644,
+        77091,
+        198
+      ],
+      "decoded": "<|im_start|>user\nHello, MiMo.<|im_end|><|im_start|>assistant\n"
+    },
+    {
+      "id": "top-boolean-precedence",
+      "request_json": "{\"model\": \"mimo-private\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello, MiMo.\"}], \"enable_thinking\": false, \"chat_template_kwargs\": {\"enable_thinking\": true}}",
+      "template_input": {
+        "add_generation_prompt": true,
+        "enable_thinking": false,
+        "messages": [
+          {
+            "content": "Hello, MiMo.",
+            "role": "user"
+          }
+        ]
+      },
+      "rendered": "<|im_start|>user\nHello, MiMo.<|im_end|><|im_start|>assistant\n<think></think>",
+      "rendered_sha256": "765d21b69f4e97f517895faf2d56b9fae208a50e59672f0e0606d989f29b39c0",
+      "token_ids": [
+        151644,
+        872,
+        198,
+        9707,
+        11,
+        20740,
+        25612,
+        13,
+        151645,
+        151644,
+        77091,
+        198,
+        151667,
+        151668
+      ],
+      "decoded": "<|im_start|>user\nHello, MiMo.<|im_end|><|im_start|>assistant\n<think></think>"
+    },
+    {
+      "id": "schema-null-positions-and-json-format",
+      "request_json": "{\"model\": \"mimo-private\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello, MiMo.\"}], \"tools\": [{\"type\": \"function\", \"function\": {\"name\": \"new_tool\", \"description\": \"literal &amp; / null\", \"parameters\": {\"type\": \"object\", \"properties\": {\"x\": {\"type\": \"null\", \"const\": null, \"default\": null, \"enum\": [null, \"null\"]}}}}}]}",
+      "template_input": {
+        "add_generation_prompt": true,
+        "messages": [
+          {
+            "content": "Hello, MiMo.",
+            "role": "user"
+          }
+        ],
+        "tools": [
+          {
+            "function": {
+              "description": "literal &amp; / null",
+              "name": "new_tool",
+              "parameters": {
+                "properties": {
+                  "x": {
+                    "const": null,
+                    "default": null,
+                    "enum": [
+                      null,
+                      "null"
+                    ],
+                    "type": "null"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "type": "function"
+          }
+        ]
+      },
+      "rendered": "<|im_start|>system\nYou are provided with the following tools:\n\n<tools>\n{\"function\":{\"description\":\"literal &amp; \\/ null\",\"name\":\"new_tool\",\"parameters\":{\"properties\":{\"x\":{\"const\":null,\"default\":null,\"enum\":[null,\"null\"],\"type\":\"null\"}},\"type\":\"object\"}},\"type\":\"function\"}\n</tools><|im_end|><|im_start|>user\nHello, MiMo.<|im_end|><|im_start|>assistant\n",
+      "rendered_sha256": "765a3b805e9d73eba81f72e6a22d32544db4e639d0d62e5c330cd8db6e0dce84",
+      "token_ids": [
+        151644,
+        8948,
+        198,
+        2610,
+        525,
+        3897,
+        448,
+        279,
+        2701,
+        7375,
+        1447,
+        27,
+        15918,
+        397,
+        4913,
+        1688,
+        22317,
+        4684,
+        3252,
+        35785,
+        609,
+        1121,
+        26,
+        36815,
+        845,
+        2198,
+        606,
+        3252,
+        931,
+        22785,
+        2198,
+        13786,
+        22317,
+        13193,
+        22317,
+        87,
+        22317,
+        1024,
+        788,
+        2921,
+        1335,
+        2258,
+        788,
+        2921,
+        1335,
+        9018,
+        8899,
+        2921,
+        1335,
+        2921,
+        68882,
+        1313,
+        3252,
+        2921,
+        30975,
+        1335,
+        1313,
+        3252,
+        1700,
+        30975,
+        1335,
+        1313,
+        3252,
+        1688,
+        16707,
+        522,
+        15918,
+        29,
+        151645,
+        151644,
+        872,
+        198,
+        9707,
+        11,
+        20740,
+        25612,
+        13,
+        151645,
+        151644,
+        77091,
+        198
+      ],
+      "decoded": "<|im_start|>system\nYou are provided with the following tools:\n\n<tools>\n{\"function\":{\"description\":\"literal &amp; \\/ null\",\"name\":\"new_tool\",\"parameters\":{\"properties\":{\"x\":{\"const\":null,\"default\":null,\"enum\":[null,\"null\"],\"type\":\"null\"}},\"type\":\"object\"}},\"type\":\"function\"}\n</tools><|im_end|><|im_start|>user\nHello, MiMo.<|im_end|><|im_start|>assistant\n"
+    },
+    {
+      "id": "typed-null-array-object-numeric-string",
+      "request_json": "{\"model\": \"mimo-private\", \"messages\": [{\"role\": \"assistant\", \"content\": null, \"reasoning_content\": \"Keep &amp; é\", \"tool_calls\": [{\"id\": \"a\", \"type\": \"function\", \"function\": {\"name\": \"old_tool\", \"arguments\": \"{\\\"z\\\": null, \\\"a\\\": [null, {\\\"x\\\": null}, false, 0, 1, 1.5], \\\"literal\\\": \\\"null &amp; \\\\r\\\\n é\\\"}\"}}]}, {\"role\": \"tool\", \"tool_call_id\": \"a\", \"content\": \"result\"}]}",
+      "template_input": {
+        "add_generation_prompt": true,
+        "messages": [
+          {
+            "content": "",
+            "reasoning_content": "Keep &amp; é",
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": {
+                    "a": [
+                      null,
+                      {
+                        "x": null
+                      },
+                      false,
+                      0,
+                      1,
+                      1.5
+                    ],
+                    "literal": "null &amp; \r\n é",
+                    "z": null
+                  },
+                  "name": "old_tool"
+                },
+                "id": "a",
+                "type": "function"
+              }
+            ]
+          },
+          {
+            "content": "result",
+            "role": "tool",
+            "tool_call_id": "a"
+          }
+        ]
+      },
+      "rendered": "<|im_start|>assistant\n<think>Keep &amp; é</think><tool_call><function=old_tool><parameter=a>[null,{\"x\":null},false,0,1,1.5]</parameter><parameter=literal>null &amp; \r\n é</parameter><parameter=z>null</parameter></function></tool_call><|im_end|><|im_start|>tool\nresult<|im_end|><|im_start|>assistant\n",
+      "rendered_sha256": "9de51af14516bad35ab163a4d4f5b0dc397234631b111ee1fa78a2864ab786d1",
+      "token_ids": [
+        151644,
+        77091,
+        198,
+        151667,
+        19434,
+        609,
+        1121,
+        26,
+        3958,
+        151668,
+        151657,
+        27,
+        1688,
+        28,
+        813,
+        22785,
+        1784,
+        16181,
+        24239,
+        30768,
+        2921,
+        54729,
+        87,
+        788,
+        2921,
+        2137,
+        3849,
+        11,
+        15,
+        11,
+        16,
+        11,
+        16,
+        13,
+        20,
+        30961,
+        16181,
+        1784,
+        16181,
+        28,
+        35785,
+        52872,
+        609,
+        1121,
+        26,
+        2529,
+        3958,
+        522,
+        16181,
+        1784,
+        16181,
+        82570,
+        52872,
+        522,
+        16181,
+        1472,
+        1688,
+        29,
+        151658,
+        151645,
+        151644,
+        14172,
+        198,
+        1382,
+        151645,
+        151644,
+        77091,
+        198
+      ],
+      "decoded": "<|im_start|>assistant\n<think>Keep &amp; é</think><tool_call><function=old_tool><parameter=a>[null,{\"x\":null},false,0,1,1.5]</parameter><parameter=literal>null &amp; \r\n é</parameter><parameter=z>null</parameter></function></tool_call><|im_end|><|im_start|>tool\nresult<|im_end|><|im_start|>assistant\n"
+    },
+    {
+      "id": "historical-tool-declaration-changed",
+      "request_json": "{\"model\": \"mimo-private\", \"messages\": [{\"role\": \"assistant\", \"content\": null, \"reasoning_content\": \"Keep &amp; é\", \"tool_calls\": [{\"id\": \"a\", \"type\": \"function\", \"function\": {\"name\": \"old_tool\", \"arguments\": \"{}\"}}]}, {\"role\": \"tool\", \"tool_call_id\": \"a\", \"content\": \"result\"}], \"tools\": [{\"type\": \"function\", \"function\": {\"name\": \"new_tool\", \"description\": \"literal &amp; / null\", \"parameters\": {\"type\": \"object\", \"properties\": {\"x\": {\"type\": \"null\", \"const\": null, \"default\": null, \"enum\": [null, \"null\"]}}}}}]}",
+      "template_input": {
+        "add_generation_prompt": true,
+        "messages": [
+          {
+            "content": "",
+            "reasoning_content": "Keep &amp; é",
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": {},
+                  "name": "old_tool"
+                },
+                "id": "a",
+                "type": "function"
+              }
+            ]
+          },
+          {
+            "content": "result",
+            "role": "tool",
+            "tool_call_id": "a"
+          }
+        ],
+        "tools": [
+          {
+            "function": {
+              "description": "literal &amp; / null",
+              "name": "new_tool",
+              "parameters": {
+                "properties": {
+                  "x": {
+                    "const": null,
+                    "default": null,
+                    "enum": [
+                      null,
+                      "null"
+                    ],
+                    "type": "null"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "type": "function"
+          }
+        ]
+      },
+      "rendered": "<|im_start|>system\nYou are provided with the following tools:\n\n<tools>\n{\"function\":{\"description\":\"literal &amp; \\/ null\",\"name\":\"new_tool\",\"parameters\":{\"properties\":{\"x\":{\"const\":null,\"default\":null,\"enum\":[null,\"null\"],\"type\":\"null\"}},\"type\":\"object\"}},\"type\":\"function\"}\n</tools><|im_end|><|im_start|>assistant\n<think>Keep &amp; é</think><tool_call><function=old_tool></function></tool_call><|im_end|><|im_start|>tool\nresult<|im_end|><|im_start|>assistant\n",
+      "rendered_sha256": "4210452e0dcc72c1db33293abf9b4b9420a10daf837c1951b11a952958506f61",
+      "token_ids": [
+        151644,
+        8948,
+        198,
+        2610,
+        525,
+        3897,
+        448,
+        279,
+        2701,
+        7375,
+        1447,
+        27,
+        15918,
+        397,
+        4913,
+        1688,
+        22317,
+        4684,
+        3252,
+        35785,
+        609,
+        1121,
+        26,
+        36815,
+        845,
+        2198,
+        606,
+        3252,
+        931,
+        22785,
+        2198,
+        13786,
+        22317,
+        13193,
+        22317,
+        87,
+        22317,
+        1024,
+        788,
+        2921,
+        1335,
+        2258,
+        788,
+        2921,
+        1335,
+        9018,
+        8899,
+        2921,
+        1335,
+        2921,
+        68882,
+        1313,
+        3252,
+        2921,
+        30975,
+        1335,
+        1313,
+        3252,
+        1700,
+        30975,
+        1335,
+        1313,
+        3252,
+        1688,
+        16707,
+        522,
+        15918,
+        29,
+        151645,
+        151644,
+        77091,
+        198,
+        151667,
+        19434,
+        609,
+        1121,
+        26,
+        3958,
+        151668,
+        151657,
+        27,
+        1688,
+        28,
+        813,
+        22785,
+        1472,
+        1688,
+        29,
+        151658,
+        151645,
+        151644,
+        14172,
+        198,
+        1382,
+        151645,
+        151644,
+        77091,
+        198
+      ],
+      "decoded": "<|im_start|>system\nYou are provided with the following tools:\n\n<tools>\n{\"function\":{\"description\":\"literal &amp; \\/ null\",\"name\":\"new_tool\",\"parameters\":{\"properties\":{\"x\":{\"const\":null,\"default\":null,\"enum\":[null,\"null\"],\"type\":\"null\"}},\"type\":\"object\"}},\"type\":\"function\"}\n</tools><|im_end|><|im_start|>assistant\n<think>Keep &amp; é</think><tool_call><function=old_tool></function></tool_call><|im_end|><|im_start|>tool\nresult<|im_end|><|im_start|>assistant\n"
+    },
+    {
+      "id": "raw-entity",
+      "request_json": "{\"model\": \"mimo-private\", \"messages\": [{\"role\": \"assistant\", \"content\": null, \"reasoning_content\": \"Keep &amp; é\", \"tool_calls\": [{\"id\": \"a\", \"type\": \"function\", \"function\": {\"name\": \"old_tool\", \"arguments\": \"&amp;\"}}]}, {\"role\": \"tool\", \"tool_call_id\": \"a\", \"content\": \"result\"}]}",
+      "template_input": {
+        "add_generation_prompt": true,
+        "messages": [
+          {
+            "content": "",
+            "reasoning_content": "Keep &amp; é",
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "&amp;",
+                  "name": "old_tool"
+                },
+                "id": "a",
+                "type": "function"
+              }
+            ]
+          },
+          {
+            "content": "result",
+            "role": "tool",
+            "tool_call_id": "a"
+          }
+        ]
+      },
+      "rendered": "<|im_start|>assistant\n<think>Keep &amp; é</think><tool_call><function=old_tool>&amp;</function></tool_call><|im_end|><|im_start|>tool\nresult<|im_end|><|im_start|>assistant\n",
+      "rendered_sha256": "245b0be0d8a0146674e5761b3fce322c6cabbf68981e67b3a833d4932d303d9b",
+      "token_ids": [
+        151644,
+        77091,
+        198,
+        151667,
+        19434,
+        609,
+        1121,
+        26,
+        3958,
+        151668,
+        151657,
+        27,
+        1688,
+        28,
+        813,
+        22785,
+        5789,
+        1121,
+        11347,
+        1688,
+        29,
+        151658,
+        151645,
+        151644,
+        14172,
+        198,
+        1382,
+        151645,
+        151644,
+        77091,
+        198
+      ],
+      "decoded": "<|im_start|>assistant\n<think>Keep &amp; é</think><tool_call><function=old_tool>&amp;</function></tool_call><|im_end|><|im_start|>tool\nresult<|im_end|><|im_start|>assistant\n"
+    },
+    {
+      "id": "raw-null",
+      "request_json": "{\"model\": \"mimo-private\", \"messages\": [{\"role\": \"assistant\", \"content\": null, \"reasoning_content\": \"Keep &amp; é\", \"tool_calls\": [{\"id\": \"a\", \"type\": \"function\", \"function\": {\"name\": \"old_tool\", \"arguments\": \"null\"}}]}, {\"role\": \"tool\", \"tool_call_id\": \"a\", \"content\": \"result\"}]}",
+      "template_input": {
+        "add_generation_prompt": true,
+        "messages": [
+          {
+            "content": "",
+            "reasoning_content": "Keep &amp; é",
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "null",
+                  "name": "old_tool"
+                },
+                "id": "a",
+                "type": "function"
+              }
+            ]
+          },
+          {
+            "content": "result",
+            "role": "tool",
+            "tool_call_id": "a"
+          }
+        ]
+      },
+      "rendered": "<|im_start|>assistant\n<think>Keep &amp; é</think><tool_call><function=old_tool>null</function></tool_call><|im_end|><|im_start|>tool\nresult<|im_end|><|im_start|>assistant\n",
+      "rendered_sha256": "f263717192de6d8e3086aba8a550afbc50fd7be8802f4e522702ee84cea9544e",
+      "token_ids": [
+        151644,
+        77091,
+        198,
+        151667,
+        19434,
+        609,
+        1121,
+        26,
+        3958,
+        151668,
+        151657,
+        27,
+        1688,
+        28,
+        813,
+        22785,
+        52872,
+        522,
+        1688,
+        29,
+        151658,
+        151645,
+        151644,
+        14172,
+        198,
+        1382,
+        151645,
+        151644,
+        77091,
+        198
+      ],
+      "decoded": "<|im_start|>assistant\n<think>Keep &amp; é</think><tool_call><function=old_tool>null</function></tool_call><|im_end|><|im_start|>tool\nresult<|im_end|><|im_start|>assistant\n"
+    },
+    {
+      "id": "raw-array",
+      "request_json": "{\"model\": \"mimo-private\", \"messages\": [{\"role\": \"assistant\", \"content\": null, \"reasoning_content\": \"Keep &amp; é\", \"tool_calls\": [{\"id\": \"a\", \"type\": \"function\", \"function\": {\"name\": \"old_tool\", \"arguments\": \"[1,null]\"}}]}, {\"role\": \"tool\", \"tool_call_id\": \"a\", \"content\": \"result\"}]}",
+      "template_input": {
+        "add_generation_prompt": true,
+        "messages": [
+          {
+            "content": "",
+            "reasoning_content": "Keep &amp; é",
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "[1,null]",
+                  "name": "old_tool"
+                },
+                "id": "a",
+                "type": "function"
+              }
+            ]
+          },
+          {
+            "content": "result",
+            "role": "tool",
+            "tool_call_id": "a"
+          }
+        ]
+      },
+      "rendered": "<|im_start|>assistant\n<think>Keep &amp; é</think><tool_call><function=old_tool>[1,null]</function></tool_call><|im_end|><|im_start|>tool\nresult<|im_end|><|im_start|>assistant\n",
+      "rendered_sha256": "78ea5f3f06c608cf9ee3dde80c306afe08a50e5d39152e74dd9895f572adf87e",
+      "token_ids": [
+        151644,
+        77091,
+        198,
+        151667,
+        19434,
+        609,
+        1121,
+        26,
+        3958,
+        151668,
+        151657,
+        27,
+        1688,
+        28,
+        813,
+        22785,
+        30768,
+        16,
+        23075,
+        30961,
+        1688,
+        29,
+        151658,
+        151645,
+        151644,
+        14172,
+        198,
+        1382,
+        151645,
+        151644,
+        77091,
+        198
+      ],
+      "decoded": "<|im_start|>assistant\n<think>Keep &amp; é</think><tool_call><function=old_tool>[1,null]</function></tool_call><|im_end|><|im_start|>tool\nresult<|im_end|><|im_start|>assistant\n"
+    },
+    {
+      "id": "raw-malformed-object",
+      "request_json": "{\"model\": \"mimo-private\", \"messages\": [{\"role\": \"assistant\", \"content\": null, \"reasoning_content\": \"Keep &amp; é\", \"tool_calls\": [{\"id\": \"a\", \"type\": \"function\", \"function\": {\"name\": \"old_tool\", \"arguments\": \"{bad\"}}]}, {\"role\": \"tool\", \"tool_call_id\": \"a\", \"content\": \"result\"}]}",
+      "template_input": {
+        "add_generation_prompt": true,
+        "messages": [
+          {
+            "content": "",
+            "reasoning_content": "Keep &amp; é",
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "{bad",
+                  "name": "old_tool"
+                },
+                "id": "a",
+                "type": "function"
+              }
+            ]
+          },
+          {
+            "content": "result",
+            "role": "tool",
+            "tool_call_id": "a"
+          }
+        ]
+      },
+      "rendered": "<|im_start|>assistant\n<think>Keep &amp; é</think><tool_call><function=old_tool>{bad</function></tool_call><|im_end|><|im_start|>tool\nresult<|im_end|><|im_start|>assistant\n",
+      "rendered_sha256": "97a67b1ccfef9196e8a131ab034069a6da700d6f1fc5f19360fa51773eed9e21",
+      "token_ids": [
+        151644,
+        77091,
+        198,
+        151667,
+        19434,
+        609,
+        1121,
+        26,
+        3958,
+        151668,
+        151657,
+        27,
+        1688,
+        28,
+        813,
+        22785,
+        7309,
+        13855,
+        522,
+        1688,
+        29,
+        151658,
+        151645,
+        151644,
+        14172,
+        198,
+        1382,
+        151645,
+        151644,
+        77091,
+        198
+      ],
+      "decoded": "<|im_start|>assistant\n<think>Keep &amp; é</think><tool_call><function=old_tool>{bad</function></tool_call><|im_end|><|im_start|>tool\nresult<|im_end|><|im_start|>assistant\n"
+    },
+    {
+      "id": "raw-native-parameter",
+      "request_json": "{\"model\": \"mimo-private\", \"messages\": [{\"role\": \"assistant\", \"content\": null, \"reasoning_content\": \"Keep &amp; é\", \"tool_calls\": [{\"id\": \"a\", \"type\": \"function\", \"function\": {\"name\": \"old_tool\", \"arguments\": \"<parameter=x>raw</parameter>\"}}]}, {\"role\": \"tool\", \"tool_call_id\": \"a\", \"content\": \"result\"}]}",
+      "template_input": {
+        "add_generation_prompt": true,
+        "messages": [
+          {
+            "content": "",
+            "reasoning_content": "Keep &amp; é",
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "<parameter=x>raw</parameter>",
+                  "name": "old_tool"
+                },
+                "id": "a",
+                "type": "function"
+              }
+            ]
+          },
+          {
+            "content": "result",
+            "role": "tool",
+            "tool_call_id": "a"
+          }
+        ]
+      },
+      "rendered": "<|im_start|>assistant\n<think>Keep &amp; é</think><tool_call><function=old_tool><parameter=x>raw</parameter></function></tool_call><|im_end|><|im_start|>tool\nresult<|im_end|><|im_start|>assistant\n",
+      "rendered_sha256": "747f544dc4b3a47654263c1ab97135a04e6bceeb0734478559fdf252715633a0",
+      "token_ids": [
+        151644,
+        77091,
+        198,
+        151667,
+        19434,
+        609,
+        1121,
+        26,
+        3958,
+        151668,
+        151657,
+        27,
+        1688,
+        28,
+        813,
+        22785,
+        1784,
+        16181,
+        25387,
+        29,
+        1041,
+        522,
+        16181,
+        1472,
+        1688,
+        29,
+        151658,
+        151645,
+        151644,
+        14172,
+        198,
+        1382,
+        151645,
+        151644,
+        77091,
+        198
+      ],
+      "decoded": "<|im_start|>assistant\n<think>Keep &amp; é</think><tool_call><function=old_tool><parameter=x>raw</parameter></function></tool_call><|im_end|><|im_start|>tool\nresult<|im_end|><|im_start|>assistant\n"
+    },
+    {
+      "id": "raw-whitespace",
+      "request_json": "{\"model\": \"mimo-private\", \"messages\": [{\"role\": \"assistant\", \"content\": null, \"reasoning_content\": \"Keep &amp; é\", \"tool_calls\": [{\"id\": \"a\", \"type\": \"function\", \"function\": {\"name\": \"old_tool\", \"arguments\": \" \\r\\n  \"}}]}, {\"role\": \"tool\", \"tool_call_id\": \"a\", \"content\": \"result\"}]}",
+      "template_input": {
+        "add_generation_prompt": true,
+        "messages": [
+          {
+            "content": "",
+            "reasoning_content": "Keep &amp; é",
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": " \r\n  ",
+                  "name": "old_tool"
+                },
+                "id": "a",
+                "type": "function"
+              }
+            ]
+          },
+          {
+            "content": "result",
+            "role": "tool",
+            "tool_call_id": "a"
+          }
+        ]
+      },
+      "rendered": "<|im_start|>assistant\n<think>Keep &amp; é</think><tool_call><function=old_tool> \r\n  </function></tool_call><|im_end|><|im_start|>tool\nresult<|im_end|><|im_start|>assistant\n",
+      "rendered_sha256": "fe6fd137a526d4359eaa7ae47d3e0c18a98e2eecf83e5d38c59925f5b27a3816",
+      "token_ids": [
+        151644,
+        77091,
+        198,
+        151667,
+        19434,
+        609,
+        1121,
+        26,
+        3958,
+        151668,
+        151657,
+        27,
+        1688,
+        28,
+        813,
+        22785,
+        29,
+        2529,
+        220,
+        690,
+        1688,
+        29,
+        151658,
+        151645,
+        151644,
+        14172,
+        198,
+        1382,
+        151645,
+        151644,
+        77091,
+        198
+      ],
+      "decoded": "<|im_start|>assistant\n<think>Keep &amp; é</think><tool_call><function=old_tool> \r\n  </function></tool_call><|im_end|><|im_start|>tool\nresult<|im_end|><|im_start|>assistant\n"
+    },
+    {
+      "id": "raw-unicode",
+      "request_json": "{\"model\": \"mimo-private\", \"messages\": [{\"role\": \"assistant\", \"content\": null, \"reasoning_content\": \"Keep &amp; é\", \"tool_calls\": [{\"id\": \"a\", \"type\": \"function\", \"function\": {\"name\": \"old_tool\", \"arguments\": \"é\"}}]}, {\"role\": \"tool\", \"tool_call_id\": \"a\", \"content\": \"result\"}]}",
+      "template_input": {
+        "add_generation_prompt": true,
+        "messages": [
+          {
+            "content": "",
+            "reasoning_content": "Keep &amp; é",
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "é",
+                  "name": "old_tool"
+                },
+                "id": "a",
+                "type": "function"
+              }
+            ]
+          },
+          {
+            "content": "result",
+            "role": "tool",
+            "tool_call_id": "a"
+          }
+        ]
+      },
+      "rendered": "<|im_start|>assistant\n<think>Keep &amp; é</think><tool_call><function=old_tool>é</function></tool_call><|im_end|><|im_start|>tool\nresult<|im_end|><|im_start|>assistant\n",
+      "rendered_sha256": "b5f4cdf56e01c575a67e60852d9cc7f63faa44f88340c38a169352b5f3792522",
+      "token_ids": [
+        151644,
+        77091,
+        198,
+        151667,
+        19434,
+        609,
+        1121,
+        26,
+        3958,
+        151668,
+        151657,
+        27,
+        1688,
+        28,
+        813,
+        22785,
+        29,
+        963,
+        522,
+        1688,
+        29,
+        151658,
+        151645,
+        151644,
+        14172,
+        198,
+        1382,
+        151645,
+        151644,
+        77091,
+        198
+      ],
+      "decoded": "<|im_start|>assistant\n<think>Keep &amp; é</think><tool_call><function=old_tool>é</function></tool_call><|im_end|><|im_start|>tool\nresult<|im_end|><|im_start|>assistant\n"
+    },
+    {
+      "id": "parallel-result-arrival-reordered",
+      "request_json": "{\"model\": \"mimo-private\", \"messages\": [{\"role\": \"assistant\", \"content\": \"\", \"tool_calls\": [{\"id\": \"a\", \"type\": \"function\", \"function\": {\"name\": \"f\", \"arguments\": \"{}\"}}, {\"id\": \"b\", \"type\": \"function\", \"function\": {\"name\": \"g\", \"arguments\": \"{}\"}}]}, {\"role\": \"tool\", \"tool_call_id\": \"b\", \"name\": \"g\", \"content\": \"B\\r\\n\"}, {\"role\": \"tool\", \"tool_call_id\": \"a\", \"name\": \"f\", \"content\": \"A &amp;\"}, {\"role\": \"user\", \"content\": \"continue\"}]}",
+      "template_input": {
+        "add_generation_prompt": true,
+        "messages": [
+          {
+            "content": "",
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": {},
+                  "name": "f"
+                },
+                "id": "a",
+                "type": "function"
+              },
+              {
+                "function": {
+                  "arguments": {},
+                  "name": "g"
+                },
+                "id": "b",
+                "type": "function"
+              }
+            ]
+          },
+          {
+            "content": "A &amp;",
+            "name": "f",
+            "role": "tool",
+            "tool_call_id": "a"
+          },
+          {
+            "content": "B\r\n",
+            "name": "g",
+            "role": "tool",
+            "tool_call_id": "b"
+          },
+          {
+            "content": "continue",
+            "role": "user"
+          }
+        ]
+      },
+      "rendered": "<|im_start|>assistant\n<think></think><tool_call><function=f></function></tool_call><tool_call><function=g></function></tool_call><|im_end|><|im_start|>tool\nA &amp;<|im_end|><|im_start|>tool\nB\r\n<|im_end|><|im_start|>user\ncontinue<|im_end|><|im_start|>assistant\n",
+      "rendered_sha256": "fbb12f73797a7f089f32c667367d2e2e3a932604b4820873a6221e10b19b29a0",
+      "token_ids": [
+        151644,
+        77091,
+        198,
+        151667,
+        151668,
+        151657,
+        27,
+        1688,
+        18111,
+        1472,
+        1688,
+        29,
+        151658,
+        151657,
+        27,
+        1688,
+        37162,
+        1472,
+        1688,
+        29,
+        151658,
+        151645,
+        151644,
+        14172,
+        198,
+        32,
+        609,
+        1121,
+        26,
+        151645,
+        151644,
+        14172,
+        198,
+        33,
+        319,
+        151645,
+        151644,
+        872,
+        198,
+        9534,
+        151645,
+        151644,
+        77091,
+        198
+      ],
+      "decoded": "<|im_start|>assistant\n<think></think><tool_call><function=f></function></tool_call><tool_call><function=g></function></tool_call><|im_end|><|im_start|>tool\nA &amp;<|im_end|><|im_start|>tool\nB\r\n<|im_end|><|im_start|>user\ncontinue<|im_end|><|im_start|>assistant\n"
+    }
+  ],
+  "qualification": "additional matched-input oracle only; Swift execution pending"
+}

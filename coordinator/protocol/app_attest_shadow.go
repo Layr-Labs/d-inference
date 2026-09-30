@@ -1,10 +1,6 @@
 package protocol
 
-import (
-	"crypto/sha256"
-	"encoding/binary"
-	"errors"
-)
+import "errors"
 
 const TypeAppAttestShadow = "app_attest_shadow"
 
@@ -54,19 +50,4 @@ type AppAttestShadowPayload struct {
 	KeyHistory        *AppAttestKeyHistory   `json:"key_history,omitempty"`
 	PushHistory       *AppAttestPushHistory  `json:"push_history,omitempty"`
 	NativeErrorChain  []AppAttestNativeError `json:"native_error_chain,omitempty"`
-}
-
-// AppAttestShadowHash is length-prefixed UTF-8 to avoid JSON canonicalization ambiguity.
-// The public key is supplied from the app's own NodeKeyPair, never from the challenge.
-func AppAttestShadowHash(action, session, environment, keyID, challenge, publicKey string) [32]byte {
-	h := sha256.New()
-	for _, value := range []string{"darkbloom.app-attest.shadow.v1", action, session, environment, keyID, challenge, publicKey} {
-		var length [4]byte
-		binary.BigEndian.PutUint32(length[:], uint32(len(value)))
-		h.Write(length[:])
-		h.Write([]byte(value))
-	}
-	var result [32]byte
-	copy(result[:], h.Sum(nil))
-	return result
 }

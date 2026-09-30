@@ -153,9 +153,7 @@ export function DeviceLinkForm() {
       <div className="text-sm text-text-secondary mb-6 text-center">
         Signed in as{" "}
         <span className="font-semibold text-ink">
-          {(user as { email?: { address?: string }; wallet?: { address?: string } })?.email?.address ||
-            (user as { wallet?: { address?: string } })?.wallet?.address ||
-            "your account"}
+          {(user as { email?: { address?: string } })?.email?.address || "your account"}
         </span>
       </div>
 

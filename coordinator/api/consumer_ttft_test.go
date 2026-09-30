@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
@@ -134,8 +135,9 @@ func TestTTFTAdmission429BelowOldTenSecondFloor(t *testing.T) {
 	p := registerBuildsProvider(srv, "exact-floor-provider", model)
 	p.Mu().Lock()
 	p.DecodeTPS = 100
-	p.PrefillTPS = 0.2 // 1 input token => ~5s prefill + first decode, above exact 5.001s target but below old 10s floor.
+	p.PrefillTPS = 0.2 // Slow measured prefill exceeds the exact first-content target.
 	p.Mu().Unlock()
+	reportMeasuredFirstContentEvidence(t, srv.registry, p.ID, model, 0.2, 100)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(
 		strings.ReplaceAll(`{"model":"MODEL","input":"hello","max_output_tokens":128}`, "MODEL", model)))
@@ -161,8 +163,8 @@ func TestTTFTAdmission429ForInferenceEndpoints(t *testing.T) {
 	p.Mu().Lock()
 	p.DecodeTPS = 100
 	p.PrefillTPS = 400
-	p.BackendCapacity.Slots[0].State = "idle_shutdown"
 	p.Mu().Unlock()
+	reportMeasuredFirstContentEvidence(t, srv.registry, p.ID, model, 0.2, 100)
 
 	cases := []struct {
 		name string
@@ -319,6 +321,7 @@ func TestMaybeFallbackAliasTTFTSwitchesToPrevious(t *testing.T) {
 	previousProvider.DecodeTPS = 100
 	previousProvider.PrefillTPS = 400
 	previousProvider.Mu().Unlock()
+	reportMeasuredFirstContentEvidence(t, srv.registry, previousProvider.ID, previous, 400, 100)
 
 	parsed := map[string]any{"model": desired}
 	fallbackModel, candidates, rejections, tooLarge, bestTTFT, hasTTFT, switched := srv.maybeFallbackAlias(
@@ -413,5 +416,39 @@ func TestMaybeFallbackAliasCapacitySkipsRejectedPrevious(t *testing.T) {
 
 	if switched || fallbackModel != desired || parsed["model"] != desired {
 		t.Fatalf("capacity fallback switched to rejected previous: switched=%v fallback=%q parsed=%v", switched, fallbackModel, parsed)
+	}
+}
+
+// reportMeasuredFirstContentEvidence establishes bounded sample ages using two
+// accepted frames with changed prefill and decode EWMAs. It preserves the
+// provider's existing physical-capacity fixture.
+func reportMeasuredFirstContentEvidence(t *testing.T, reg *registry.Registry, id, model string, prefill, decode float64) {
+	t.Helper()
+	p := reg.GetProvider(id)
+	if p == nil {
+		t.Fatalf("missing provider %s", id)
+	}
+	capacity := p.BackendCapacitySnapshot()
+	if capacity == nil {
+		t.Fatal("measured fixture requires capacity")
+	}
+	seq := capacity.CapacitySeq
+	for i, factor := range []float64{0.99, 1} {
+		capacity = p.BackendCapacitySnapshot()
+		capacity.CapacitySeq = seq + uint64(i+1)
+		for j := range capacity.Slots {
+			slot := &capacity.Slots[j]
+			if slot.Model != model {
+				continue
+			}
+			rate, initialized := prefill*factor, true
+			slot.State = "idle"
+			slot.ObservedDecodeTPS = decode * factor
+			slot.ObservedPrefillTPS = rate
+			slot.Telemetry = &protocol.SlotTelemetry{QueuedPrefillTokens: new(int64), PartialPrefillRows: new(int64), IsolatedPrefillTPS: &rate, EWMAInitialized: &initialized}
+		}
+		if !reg.Heartbeat(id, &protocol.HeartbeatMessage{Status: "idle", BackendCapacity: capacity}) {
+			t.Fatal("fresh sample rejected")
+		}
 	}
 }

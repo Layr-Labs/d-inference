@@ -33,14 +33,10 @@ func (x *Session) prepareClientHash(ctx context.Context, action string, reply pr
 	if x.key != nil {
 		id = x.key.KeyID
 	}
-	if x.protocolVersion < 2 {
-		return protocol.AppAttestShadowHash(action, x.id, x.s.config.Environment, id, x.challenge, x.publicKey), nil, nil
-	}
 	if reply.Status == nil || reply.ProtocolVersion != x.protocolVersion {
 		return [32]byte{}, nil, errors.New("missing_signed_status")
 	}
 	session, challenge, publicKey := x.id, x.challenge, x.publicKey
-	version := x.protocolVersion
 	var enrollment *store.AppAttestEnrollment
 	if action == "attest" && reply.EnrollmentSession != "" && reply.EnrollmentSession != x.id {
 		st, ok := store.As[store.AppAttestEnrollmentStore](x.s.store)
@@ -63,20 +59,17 @@ func (x *Session) prepareClientHash(ctx context.Context, action string, reply pr
 		}
 		// This recovers enrollment only. A fresh assertion, encrypted to the
 		// new connection's actual endpoint, must still follow every reconnect.
-		session, challenge, publicKey = e.ID, e.Challenge, e.PublicKey
-		enrollment = e
-		version = e.ProtocolVersion
-		if version == 0 {
-			version = 2
-		}
-		if version != 2 && version != 3 {
+		// Only protocol-3 enrollments resume. A stored enrollment without a
+		// version (created before versions were recorded) or from protocol 2
+		// is refused as a binding violation; the expiry check above already
+		// retires every such row, which is older than a day.
+		if e.ProtocolVersion != 3 {
 			return [32]byte{}, nil, errors.New("enrollment_protocol")
 		}
+		session, challenge, publicKey = e.ID, e.Challenge, e.PublicKey
+		enrollment = e
 	}
-	if version == 3 {
-		return protocol.AppAttestShadowHashV3(action, session, x.s.config.Environment, id, challenge, publicKey, x.accountScope(), reply.Status), enrollment, nil
-	}
-	return protocol.AppAttestShadowHashV2(action, session, x.s.config.Environment, id, challenge, publicKey, x.accountScope(), reply.Status), enrollment, nil
+	return protocol.AppAttestShadowHashV3(action, session, x.s.config.Environment, id, challenge, publicKey, x.accountScope(), reply.Status), enrollment, nil
 }
 
 func (x *machineInventorySession) recordStatus(status *protocol.AppAttestStatus) {
@@ -103,7 +96,7 @@ func (x *Session) keyOwnerMatches(ctx context.Context, key *store.AppAttestShado
 	// A claimed key ID never assigns identity. Same-account reuse must first
 	// prove custody through a fresh encrypted assertion. Only after its durable
 	// acceptance does inventory attach the credential alias to this session.
-	if x.protocolVersion >= 2 && x.account != "" && key.AccountID == x.account {
+	if x.account != "" && key.AccountID == x.account {
 		return true
 	}
 	if x.account == "" || key.AccountID != x.account || key.MachineID == "" || x.machineID() == "" {

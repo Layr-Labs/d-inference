@@ -40,7 +40,16 @@ fn contains_media(endpoint: Endpoint, body: &Map<String, Value>) -> bool {
     }
 }
 
-const CHAT_MEDIA_TYPES: &[&str] = &["image", "image_url", "video", "video_url"];
+// Audio presence is cache-ineligible even when its payload is malformed.
+// This is not serving support or a vision/routing capability declaration.
+const CHAT_MEDIA_TYPES: &[&str] = &[
+    "image",
+    "image_url",
+    "video",
+    "video_url",
+    "input_audio",
+    "audio_url",
+];
 const RESPONSES_MEDIA_TYPES: &[&str] = &[
     "input_image",
     "input_file",
@@ -49,8 +58,10 @@ const RESPONSES_MEDIA_TYPES: &[&str] = &[
     "image_url",
     "video",
     "video_url",
+    "input_audio",
+    "audio_url",
 ];
-const MESSAGES_MEDIA_TYPES: &[&str] = &["image", "document"];
+const MESSAGES_MEDIA_TYPES: &[&str] = &["image", "document", "input_audio", "audio_url"];
 
 fn content_collection_has_media(value: &Value, media_types: &[&str]) -> bool {
     match value {
@@ -555,6 +566,83 @@ fn explicit_max_tokens(input: &Map<String, Value>) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_audio_presence_before_text_cache_lowering() {
+        for kind in ["input_audio", "audio_url"] {
+            let parts = [
+                json!({"type": kind}),
+                json!({"type": kind, kind: null}),
+                json!({"type": kind, kind: 42}),
+                json!({"type": kind, kind: {"data": "AAAA", "format": "wav"}}),
+                json!({"type": kind, kind: {"data": "AAAA", "format": "mp3"}}),
+                json!({"type": kind, kind: {"url": "https://example.invalid/private"}}),
+            ];
+            for part in parts {
+                for (endpoint, body) in [
+                    (
+                        Endpoint::ChatCompletions,
+                        json!({"messages": [{"role": "user", "content": [part.clone()]}]}),
+                    ),
+                    (
+                        Endpoint::ChatCompletions,
+                        json!({"messages": [{"role": "tool", "tool_call_id": "c", "content": [part.clone()]}]}),
+                    ),
+                    (
+                        Endpoint::Responses,
+                        json!({"input": [{"type": "message", "role": "user", "content": [part.clone()]}]}),
+                    ),
+                    (
+                        Endpoint::Responses,
+                        json!({"input": [{"type": "function_call_output", "call_id": "c", "output": [part.clone()]}]}),
+                    ),
+                    (
+                        Endpoint::Responses,
+                        json!({"input": [{"type": "function_call_output", "call_id": "c", "output": part.clone()}]}),
+                    ),
+                    (
+                        Endpoint::Messages,
+                        json!({"messages": [{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "c", "content": [part.clone()]}]}]}),
+                    ),
+                ] {
+                    assert!(
+                        matches!(lower(endpoint, body), Err(EndpointError::Unsupported)),
+                        "{kind}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn audio_words_and_tool_arguments_preserve_text_body() {
+        let body = json!({
+            "model": "m",
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "input_audio audio_url"}]},
+                {"role": "assistant", "content": null, "tool_calls": [
+                    {"id": "c", "type": "function", "function": {"name": "f", "arguments": "{\"type\":\"input_audio\"}"}}
+                ]}
+            ],
+            "tools": [{"type": "function", "function": {"name": "f", "parameters": {
+                "type": "object", "properties": {"kind": {"type": "audio_url"}}
+            }}}],
+            "metadata": {"content": {"type": "input_audio"}}
+        });
+        assert_eq!(
+            Value::Object(lower(Endpoint::ChatCompletions, body.clone()).unwrap()),
+            body
+        );
+        for body in [
+            json!({"input": "say input_audio and audio_url"}),
+            json!({"input": [
+                {"type": "function_call", "call_id": "c", "name": "f", "arguments": "{\"type\":\"audio_url\"}"},
+                {"type": "function_call_output", "call_id": "c", "output": "input_audio is plain text"}
+            ]}),
+        ] {
+            assert!(lower(Endpoint::Responses, body).is_ok());
+        }
+    }
 
     #[test]
     fn lowers_responses_instructions_shared_vectors() {

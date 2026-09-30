@@ -193,7 +193,7 @@ struct ReserveRaisePreflightTests {
                 coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
             )
         )
-        return try ProviderLoop(config: config, purgeLegacyFiles: false, attestationSigner: nil)
+        return try ProviderLoop(config: config, attestationSigner: nil)
     }
 
     private func makeClient() -> CoordinatorClient {

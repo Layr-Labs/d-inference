@@ -39,8 +39,8 @@ struct SSDCheckpointWriteRecoveryTests {
         await store.closeAndWait()
     }
 
-    @Test("unreadable existing data still revokes its epoch and publishes no receipt")
-    func existingFileFailureRevokesEpoch() async throws {
+    @Test("unreadable existing data is removed without rotating the epoch and publishes no receipt")
+    func existingFileFailureKeepsEpoch() async throws {
         let f = try SSDHybridCheckpointTestFixture()
         defer { f.remove() }
         let telemetry = PrefixCacheDonationTelemetry()
@@ -49,25 +49,62 @@ struct SSDCheckpointWriteRecoveryTests {
         let epoch = store.config.epochStore?.current
         try Data([0, 1, 2]).write(to: f.file(store))
         #expect(try await f.donate(store, receipt: 11).isEmpty)
-        #expect(store.config.epochStore?.current != epoch)
+        #expect(store.config.epochStore?.current == epoch)
         #expect(store.index.count == 0)
         #expect(count(.existingCacheUnreadable, in: telemetry) == 1)
         #expect(store.stats().corruptDropped == 1)
         await store.closeAndWait()
     }
 
-    @Test("maintenance refusal is distinguished and does not poison a later donation")
-    func maintenanceRefusalCanRecover() async throws {
+    @Test("a donation during whole-root maintenance is written, not refused as busy")
+    func donationDuringMaintenanceIsWritten() async throws {
         let f = try SSDHybridCheckpointTestFixture()
         defer { f.remove() }
         let telemetry = PrefixCacheDonationTelemetry()
         let store = try f.makeStore(donationRecorder: telemetry)
-        store.lock.withLock { store.destructiveChange = true }
-        #expect(try await f.donate(store).isEmpty)
-        #expect(count(.cacheMaintenanceBusy, in: telemetry) == 1)
-        store.lock.withLock { store.destructiveChange = false }
-        #expect(try await f.donate(store, receipt: 11) == [256])
+        let barrier = SSDCheckpointCoordinationTestSupport.Barrier()
+        defer { barrier.release() }
+        // Hold the store inside a maintenance removal. Per-file maintenance
+        // keeps the epoch and the capability, so it no longer fences writes.
+        let maintenance = Task.detached {
+            store.performExternalDestructiveChange { try? barrier.block() }
+        }
+        try await SSDCheckpointCoordinationTestSupport.waitUntil { barrier.isEntered }
+        #expect(try await f.donate(store) == [256])
         #expect(count(.donated, in: telemetry) == 1)
+        #expect(count(.cacheMaintenanceBusy, in: telemetry) == 0)
+        barrier.release()
+        #expect(await maintenance.value)
+        #expect(store.index.count == 1, "reconciliation keeps a checkpoint whose file exists")
+        #expect(telemetry.snapshot().reduce(0) { $0 + $1.count } == 1)
+        await store.closeAndWait()
+    }
+
+    @Test("a file removed between publish and indexing is reported evicted, never donated")
+    func removalBetweenPublishAndIndexIsNotAdvertised() async throws {
+        let f = try SSDHybridCheckpointTestFixture()
+        defer { f.remove() }
+        let telemetry = PrefixCacheDonationTelemetry()
+        let store = try f.makeStore(donationRecorder: telemetry)
+        let url = f.file(store)
+        // Whole-root maintenance unlinks the freshly published file before the
+        // writer indexes it. It takes the removal lock, so the writer's
+        // publish-to-index step must observe the removal rather than insert a
+        // phantom entry and advertise READY for an absent checkpoint.
+        store.afterPublishBeforeIndexForTesting = {
+            _ = store.performExternalDestructiveChange {
+                _ = SSDBlockStore.removeItemIfSafe(at: url, under: f.modelRoot)
+            }
+        }
+        #expect(try await f.donate(store) == [], "no ready endpoint for a removed file")
+        #expect(count(.cacheEntryEvicted, in: telemetry) == 1)
+        #expect(count(.donated, in: telemetry) == 0)
+        #expect(store.index.count == 0, "no phantom index entry")
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+        store.afterPublishBeforeIndexForTesting = nil
+        // A later donation of the same prefix recovers normally.
+        #expect(try await f.donate(store, receipt: 11) == [256])
+        #expect(store.index.count == 1)
         await store.closeAndWait()
     }
 
@@ -115,7 +152,7 @@ struct SSDCheckpointWriteRecoveryTests {
         }
     }
 
-    @Test("evicting the written endpoint reports eviction before its epoch change")
+    @Test("evicting the written endpoint reports eviction and keeps the epoch")
     func donationEvictedByBudget() async throws {
         let f = try SSDHybridCheckpointTestFixture()
         defer { f.remove() }
@@ -126,7 +163,7 @@ struct SSDCheckpointWriteRecoveryTests {
         #expect(store.stats().filesWritten == 1)
         #expect(store.stats().evictions == 1)
         #expect(store.index.count == 0)
-        #expect(store.config.epochStore?.current != epoch)
+        #expect(store.config.epochStore?.current == epoch)
         #expect(count(.cacheEntryEvicted, in: telemetry) == 1)
         #expect(count(.cacheEpochChanged, in: telemetry) == 0)
         #expect(telemetry.snapshot().reduce(0) { $0 + $1.count } == 1)

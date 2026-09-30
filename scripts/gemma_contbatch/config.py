@@ -28,6 +28,8 @@ from pathlib import Path
 #       plain 512-token chunks under identical-looking empty environments,
 #       so cross-flip deltas would misattribute the posture change as a code
 #       delta; the exact-match schema pin refuses them.
+# Raw sweep 8 / arrival 6 add verified scheduler-cap metadata; existing metrics
+# and wrapper baseline comparability are unchanged, so the wrapper stays at 6.
 SCHEMA_VERSION = 6
 
 

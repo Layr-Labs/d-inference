@@ -31,57 +31,67 @@ extension EngineV2Bridge {
     /// unchanged; only the engine queue reads "now" for the final verdict.
     func firstTokenDeadlineAdmission(
         deadline: FirstContentDeadline?,
-        isMultimodal: Bool
+        isMultimodal: Bool,
+        requestID: String? = nil, promptTokens: Int = 0, promptWork: PromptWork? = nil
+    ) -> CBv2FirstTokenDeadlineAdmission? {
+        guard !isMultimodal else { return nil }
+        return targetFirstTokenDeadlineAdmission(
+            deadline: deadline, requestID: requestID,
+            promptTokens: promptTokens, promptWork: promptWork)
+    }
+
+    /// Only the opaque SDK seal plus this bridge's real published native
+    /// profile can make already-prepared causal media target-projectable.
+    /// Raw/other media retain the legacy refusal/bypass policy. The SDK still
+    /// revalidates the seal's exact engine, generation, owner and one-shot use.
+    func firstTokenDeadlineAdmission(
+        deadline: FirstContentDeadline?,
+        multimodal: CBv2MultimodalInput?,
+        requestID: String? = nil, promptTokens: Int = 0, promptWork: PromptWork? = nil
+    ) throws -> CBv2FirstTokenDeadlineAdmission? {
+        guard let admission = targetFirstTokenDeadlineAdmission(
+            deadline: deadline, requestID: requestID,
+            promptTokens: promptTokens, promptWork: promptWork) else { return nil }
+        guard let multimodal else { return admission }
+        guard multimodal.nativeMediaToken != nil, multimodal.attention == .causal,
+              multimodal.positionState == nil, multimodal.deepstackEmbeddings == nil else { return nil }
+        // A stale/foreign/missing capability is an actual veto, never a nil
+        // fallback to ordinary submission after identifying a native seal.
+        _ = try nativeMiMoDecodedMediaBinding()
+        return admission
+    }
+
+    private func targetFirstTokenDeadlineAdmission(
+        deadline: FirstContentDeadline?,
+        requestID: String?, promptTokens: Int, promptWork: PromptWork?
     ) -> CBv2FirstTokenDeadlineAdmission? {
         guard prefillDeadlineMode == .enforce,
             prefillDeadlineProjectionEnabled,
-            !isMultimodal,
-            let deadline,
-            isolatedPrefillEwmaInitialized
+            let deadline
         else {
             return nil
         }
 
-        let prefillRate =
-            isolatedPrefillTpsEwma * Self.deadlineProjectionRateHaircut
-        let decodeCandidate =
-            observedDecodeTpsEwma * Self.deadlineProjectionRateHaircut
+        // Use observed phase rates directly. The engine still prices its
+        // actual queue/cache work against the original absolute deadline;
+        // optional reviewed calibration supplies only measured error bounds.
+        let prefillRate = isolatedPrefillEwmaInitialized
+            && isolatedPrefillTpsEwma.isFinite && isolatedPrefillTpsEwma > 0
+            ? isolatedPrefillTpsEwma : nil
         let decodeRate =
-            ewmaInitialized && decodeCandidate.isFinite && decodeCandidate > 0
-            ? decodeCandidate
+            ewmaInitialized && observedDecodeTpsEwma.isFinite && observedDecodeTpsEwma > 0
+            ? observedDecodeTpsEwma
             : nil
-        guard prefillRate.isFinite, prefillRate > 0 else {
-            return nil
+        let calibration = requestID.flatMap {
+            calibratedDeadlinePolicy(requestID: $0, promptTokens: promptTokens, promptWork: promptWork)
         }
+        guard prefillRate != nil || calibration != nil else { return nil }
 
         return CBv2FirstTokenDeadlineAdmission(
             deadline: deadline.instant,
             conservativePrefillTokensPerSecond: prefillRate,
-            conservativeDecodeTokensPerSecond: decodeRate)
-    }
-
-    func isIsolatedPrefillSubmitBoundary(
-        currentProviderRequestID: String
-    ) -> Bool {
-        guard pendingEngineIDs.isEmpty else { return false }
-        guard pendingSubmissionIDs.allSatisfy({ $0 == currentProviderRequestID }) else {
-            return false
-        }
-        return active.isEmpty
-    }
-
-    /// A later arrival can share a step with an already-prefilling row. Mark
-    /// that older sample non-isolated before submitting the newcomer; rows
-    /// that already emitted their first token keep their completed prefill
-    /// observation.
-    func disqualifyOverlappedPrefillSamples() {
-        for id in Array(active.keys) {
-            guard var state = active[id], state.firstTokenAt == nil else {
-                continue
-            }
-            state.isolatedPrefillSampleEligible = false
-            active[id] = state
-        }
+            conservativeDecodeTokensPerSecond: decodeRate,
+            calibration: calibration)
     }
 
     /// Move post-commit cancellation cleanup out of the cancelling task. The
@@ -95,6 +105,7 @@ extension EngineV2Bridge {
         engineID: CBv2RequestID,
         stream: AsyncStream<CBv2Event>,
         retirement: CBv2RequestRetirement,
+        prefillReceipt: EnginePrefillReceipt,
         sharedKVReserved: Bool,
         prefixCacheReceiptID: CBv2RequestID?,
         ssdStaged: Bool,
@@ -103,25 +114,43 @@ extension EngineV2Bridge {
         failure: PrefixCacheLookupFailureClass
     ) {
         guard transfer.claim() else { return }
+        prefillReceipt.retainUntilRetirement()
         let bridge = self
-        Task {
+        let nativeTaskID = tracksNativeShutdown ? UUID() : nil
+        let task = Task {
+            // Admission can commit and generate tokens before submit resumes.
+            // No active row or client pump exists on this path, so this owner
+            // reconciles work without publishing output or billable usage.
+            let completion = await Self.transferredGenerationWork(in: stream)
             await retirement.wait()
+            prefillReceipt.endAfterRetirement()
             withExtendedLifetime(stream) {}
             await bridge.completeTransferredPreSubmitRetirement(
                 requestID: requestID,
                 engineID: engineID,
+                completion: completion,
                 sharedKVReserved: sharedKVReserved,
                 prefixCacheReceiptID: prefixCacheReceiptID,
                 ssdStaged: ssdStaged,
                 readyReceiptRegistered: readyReceiptRegistered,
                 usageSignal: usageSignal,
                 failure: failure)
+            if let nativeTaskID { await bridge.clearNativeTransferredRetirement(nativeTaskID) }
         }
+        if let nativeTaskID {
+            nativeTransferredRetirementTasks[nativeTaskID] = task
+            if nativeShutdownClosed { nativeShutdownTasks.append(task) }
+        }
+    }
+
+    private func clearNativeTransferredRetirement(_ id: UUID) {
+        nativeTransferredRetirementTasks.removeValue(forKey: id)
     }
 
     private func completeTransferredPreSubmitRetirement(
         requestID: String,
         engineID: CBv2RequestID,
+        completion: Int,
         sharedKVReserved: Bool,
         prefixCacheReceiptID: CBv2RequestID?,
         ssdStaged: Bool,
@@ -129,6 +158,7 @@ extension EngineV2Bridge {
         usageSignal: EngineV2RequestUsageSignal?,
         failure: PrefixCacheLookupFailureClass
     ) async {
+        recordGenerationWork(completion: completion)
         await releasePreSubmitResources(
             requestID: requestID,
             sharedKVReserved: sharedKVReserved,
@@ -137,6 +167,7 @@ extension EngineV2Bridge {
             readyReceiptRegistered: readyReceiptRegistered,
             usageSignal: usageSignal,
             failure: failure)
+        releaseServiceAllowance(requestID: requestID)
         pendingSubmissionIDs.remove(requestID)
         pendingCancellationIDs.remove(requestID)
         pendingProfiles.removeValue(forKey: requestID)

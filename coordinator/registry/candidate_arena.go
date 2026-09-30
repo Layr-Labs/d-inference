@@ -15,10 +15,10 @@ package registry
 // snapshots" contract is unchanged: nothing writes a slot after it is
 // appended to the pool.
 
-// candidateArenaChunk is the number of candidates per chunk. 32 × ~650 bytes
-// keeps a chunk around 20 KiB (below the large-object threshold) while a
-// fleet-scale scan of ~250 candidates needs ~8 allocations.
-const candidateArenaChunk = 32
+// candidateArenaChunk keeps the richer forecast snapshots below the allocator's
+// 32-KiB large-object threshold. A fleet-scale scan of ~250 candidates needs
+// ~13 allocations while retaining stable pointers into each chunk.
+const candidateArenaChunk = 20
 
 // candidateArena is a bump allocator over chunks of routingCandidate. The
 // zero value is ready to use; it is single-goroutine (one per scan).

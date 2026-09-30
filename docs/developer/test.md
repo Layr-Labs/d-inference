@@ -2779,3 +2779,13 @@ The integration and benchmark jobs initialize Homebrew before installing
 `postgresql@16` and deriving its binary path with `brew --prefix`. A missing
 Homebrew executable is a runner-setup failure before E2E tests execute. See
 `.github/workflows/integration.yml` and `.github/workflows/benchmarks.yml`.
+
+### Retained unsigned release recovery checks
+
+`python3 scripts/test-provider-release-resume.py` covers signed-tag/source/run
+identity, failed or missing prerequisite jobs, expired/ambiguous artifacts,
+signed-artifact refusal, transport checksums/layout and the signing job's
+normal/recovery success guard. Publication tests bind original build source and
+current signing provenance separately and require a moved tag to fail before
+registration. These offline checks do not grant App Attest qualification or
+prove successful Apple signing/notarization.

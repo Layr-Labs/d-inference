@@ -34,10 +34,17 @@ def object_key(payload):
     return f"releases/v{payload['version']}/artifacts/{payload['bundle_hash']}/{BUNDLE}"
 
 
+def release_source(env):
+    source = env.get('RELEASE_SOURCE_SHA') or env['GITHUB_SHA']
+    if not re.fullmatch(r'[0-9a-f]{40}', source):
+        raise ValueError('Invalid release source commit')
+    return source
+
+
 def validate(payload, env):
     if env["ENV_PREFIX"] not in {"dev", "prod"}:
         raise ValueError("Unknown publication environment")
-    expected = {'version': env['VERSION'], 'source_commit': env['GITHUB_SHA'],
+    expected = {'version': env['VERSION'], 'source_commit': release_source(env),
                 'ci_run_id': env['GITHUB_RUN_ID'], 'platform': 'macos-arm64', 'backend': 'mlx-swift',
                 'require_app_attest_qualification': env['ENV_PREFIX'] == 'prod'}
     for key, value in expected.items():
@@ -53,11 +60,11 @@ def validate(payload, env):
 
 
 def release_changelog(env):
-    if env.get('GITHUB_REF_TYPE') == 'tag':
+    if env.get('RELEASE_TAG') or env.get('GITHUB_REF_TYPE') == 'tag':
         # Read annotation text as data: never interpolate it into Python or a
         # shell program. Preserve multiline notes in the retained JSON payload.
         result = subprocess.run(['git', 'tag', '--list', '--format=%(contents)',
-                                 '--', env['GITHUB_REF_NAME']], capture_output=True, text=True, check=True)
+                                 '--', env.get('RELEASE_TAG') or env['GITHUB_REF_NAME']], capture_output=True, text=True, check=True)
         if result.stdout.strip():
             return result.stdout.strip()
     return f"Release v{env['VERSION']}"
@@ -69,7 +76,7 @@ def prepare(root, bundle, env):
         'version': env['VERSION'], 'platform': 'macos-arm64', 'backend': 'mlx-swift',
         'binary_hash': env['BINARY_HASH'], 'bundle_hash': env['BUNDLE_HASH'],
         'metallib_hash': env['METALLIB_HASH'], 'code_directory_hash': env['CODE_DIRECTORY_HASH'],
-        'source_commit': env['GITHUB_SHA'], 'ci_run_id': env['GITHUB_RUN_ID'],
+        'source_commit': release_source(env), 'ci_run_id': env['GITHUB_RUN_ID'],
         'require_app_attest_qualification': env['ENV_PREFIX'] == 'prod',
         'changelog': release_changelog(env),
     }
@@ -78,6 +85,13 @@ def prepare(root, bundle, env):
     if sha256(bundle) != payload['bundle_hash']:
         raise ValueError('Signed bundle changed after final verification')
     shutil.copyfile(bundle, root / BUNDLE)
+    provenance = {'source_commit': release_source(env), 'signing_workflow_commit': env['GITHUB_SHA'],
+                  'signing_run_id': env['GITHUB_RUN_ID'],
+                  'build_run_id': env.get('RELEASE_BUILD_RUN_ID') or env['GITHUB_RUN_ID'],
+                  'build_run_attempt': env.get('RELEASE_BUILD_RUN_ATTEMPT') or env.get('GITHUB_RUN_ATTEMPT', '1'),
+                  'unsigned_artifact_id': env.get('RELEASE_UNSIGNED_ARTIFACT_ID', ''),
+                  'unsigned_artifact_digest': env.get('RELEASE_UNSIGNED_ARTIFACT_DIGEST', '')}
+    (root / 'release-provenance.json').write_text(json.dumps(provenance, indent=2) + '\n')
     (root / 'release-payload.json').write_text(json.dumps(payload, indent=2) + '\n')
     qualification = {k: payload[k] for k in ['code_directory_hash', 'source_commit', 'ci_run_id']}
     qualification['release'] = {k: v for k, v in payload.items() if k not in qualification and k != 'require_app_attest_qualification'}
@@ -175,6 +189,11 @@ def await_latest(env, payload):
 
 def publish(root, env):
     payload = checked_payload(root, env)
+    if env.get('RELEASE_RESUME_RUN_ID'):
+        from provider_release_resume.api import GitHub, verify_tag
+        if env.get('RELEASE_TAG') != 'v' + payload['version']:
+            raise ValueError('Resumed publication tag and version differ')
+        verify_tag(GitHub(env['GITHUB_REPOSITORY']), env['RELEASE_TAG'], payload['source_commit'])
     coordinator(env, '/v1/releases', payload)
     # Confirm serving policy is active before public aliases/GitHub publication.
     # An older concurrently staged release must never roll latest aliases back.

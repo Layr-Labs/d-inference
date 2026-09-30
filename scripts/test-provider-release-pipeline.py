@@ -65,7 +65,7 @@ class ReleasePipelineTests(unittest.TestCase):
             self.assertNotIn('notarytool', content)
             self.assertNotIn('APPLE_', content)
             self.assertNotIn('provider-release-build', content)
-            self.assertIn("if: needs.resolve-env.outputs.publish == 'true'", content)
+            self.assertIn("needs.resolve-env.outputs.publish == 'true'", content)
             self.assertNotRegex(content, r'(?m)^    if:.*always')
         self.assertIn('cancel-in-progress: false', publish)
 
@@ -74,7 +74,7 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn('provider-signing-validation.py stage', build)
         self.assertIn('unsigned-provider-${GITHUB_SHA}-${GITHUB_RUN_ATTEMPT}', build)
         self.assertIn('gh run download "$GITHUB_RUN_ID"', sign)
-        self.assertIn('EXPECTED_SOURCE: ${{ github.sha }}', sign)
+        self.assertIn('EXPECTED_SOURCE: ${{ needs.resolve-env.outputs.source_sha }}', sign)
         self.assertIn('--source-sha "$EXPECTED_SOURCE" --version "$VERSION"', sign)
         self.assertLess(sign.index('provider-signing-validation.py unpack'),
                         sign.index('Import Developer ID certificate'))

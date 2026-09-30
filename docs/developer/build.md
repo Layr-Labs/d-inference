@@ -18,6 +18,10 @@ GitHub API, or post benchmark results run `scripts/install-macos-github-cli.sh`
 first. It installs the pinned official Apple Silicon CLI archive into a fresh
 runner-temporary directory, verifies its SHA-256 before extraction, and exports
 its binary path. It does not depend on Homebrew or the runner's preinstalled CLI.
+The signing job also checks the system signing/archive tools and Xcode's
+`notarytool`/`stapler` before handling the artifact. A tooling-only recovery can
+reuse an already qualified unsigned build through the
+[retained unsigned recovery procedure](../operations/provider-release.md#resume-signing-from-a-retained-unsigned-build).
 
 Coordinator CI builds the adversarial-number test once without instrumentation
 for its enforced performance budget, then builds the full suite with race

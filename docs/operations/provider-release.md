@@ -14,8 +14,9 @@ The macOS signing and older-OS smoke jobs install the checksum-pinned GitHub CLI
 with `scripts/install-macos-github-cli.sh` before downloading retained artifacts.
 A `gh: command not found` error in an older run is runner setup failure before
 artifact verification, not a failed model test or notarization rejection. A
-retry of that old workflow still uses its original source; merge the bootstrap
-fix and follow the release tag policy for a new run.
+retry of that old workflow still uses its original source. For an unchanged
+candidate with successful build and SDK qualification, merge the tooling fix
+and use the retained unsigned recovery path below.
 
 The prepared version is **0.9.13**. Its MiMo memory-admission changes are
 collected in [`CHANGELOG.md`](../../CHANGELOG.md). Qualify the signed build
@@ -234,6 +235,38 @@ Implementation: `.github/actions/provider-release-build/action.yml`,
 `scripts/provider-signing-validation.py` (`stage`, `unpack`). See the
 [build cache contract](../developer/build.md#sdk-27-release-builds-and-caches) and
 [SDK qualification checks](../developer/test.md#sdk-27-release-qualification).
+
+## Resume signing from a retained unsigned build
+
+Use this when build and SDK qualification succeeded but signing failed because
+of workflow tooling or runner setup. Keep the release tag on the original
+candidate. After the corrected workflow is merged into current `master`, run:
+
+```bash
+gh workflow run release-swift.yml --ref master \
+  -f environment=prod -f resume_run_id=36750197236 -f resume_run_attempt=1
+```
+
+The example identifies the failed 0.9.13 candidate at `ee46e5f34`. Substitute the
+explicit source run and successful build attempt for another recovery.
+`scripts/provider-release-resume.py` validates repository, workflow, push/tag
+origin, current signed tag, source signature/version, both successful jobs, and
+one unexpired immutable unsigned artifact. It refuses a source run that already
+retained a signed publication artifact. The resolver and download step both
+check identity; download verifies the GitHub artifact ZIP digest before the
+existing archive, file inventory, source/version and entitlement checks.
+
+The recovery skips compilation and SDK qualification and resumes at the normal
+protected signing job. Code signing, notarization, final signed-bundle smoke,
+independent App Attest qualification, R2 staging and publication remain required.
+`release-provenance.json` distinguishes original build source/run from the
+current signing workflow source/run. The tag is rechecked before registration.
+The unsigned artifact expires after three days; missing/expired bytes require a
+new build. Changed candidate source also requires a new build and reviewed tag.
+
+For a failure after a signed artifact was retained, retry only the failed
+staging/publication jobs from that signing run. That existing retry path
+preserves signed bytes and does not need unsigned recovery or re-signing.
 
 ## Environment-free signing validation
 

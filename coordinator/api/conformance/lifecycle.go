@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
 func orNextEither(t *testing.T, f *orFixture, a, b *orProvider) (*orProvider, orDispatch) {
@@ -133,6 +134,17 @@ func (s Suite) TestOpenRouterConformanceCancellation(t *testing.T) {
 				ch, cancel := f.startChat(f.keys[orAccount], true, nil)
 				defer cancel()
 				r := p.next()
+				// Receiving bytes can precede the writer's completion transition.
+				// This case asserts cancellation of a fully dispatched attempt;
+				// an in-flight write may instead correctly abort its connection.
+				orEventually(t, func() bool {
+					provider := f.srv.Registry.GetProvider(p.id)
+					if provider == nil {
+						return false
+					}
+					pending := provider.GetPending(r.request.RequestID)
+					return pending != nil && pending.Profile.Get(registry.StampWriteDone) > 0
+				}, "provider request write completed before caller cancellation")
 				if content {
 					p.chunk(r, orFrame(`{"content":"delivered prefix"}`, "null"))
 					result := f.response(ch)

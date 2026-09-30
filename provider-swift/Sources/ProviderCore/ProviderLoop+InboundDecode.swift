@@ -131,6 +131,11 @@ extension ProviderLoop {
         templateControls: ChatTemplateControls
     ) -> Int {
         guard let prepared = try? ToolChoicePromptPolicy.prepare(request, modelType: modelType) else { return 0 }
+        if modelType == "mimo_v2" {
+            return (try? ProviderPromptContractPipeline.tokenize(
+                prepared: prepared, request: request, tokenizer: tokenizer.inner,
+                modelType: modelType, templateControls: templateControls).count) ?? 0
+        }
         let messages = prepared.messages.map { $0.templateMessageDict() }
         let toolSpecs = prepared.tools?.map { $0.toolSpec() }
         let additionalContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(

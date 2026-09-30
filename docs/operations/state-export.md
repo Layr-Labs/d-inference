@@ -1,6 +1,6 @@
 # State export
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-27
 
 How to pull the coordinator's sealed on-disk state — the MicroMDM enrollment
 database and everything else on the persistent disk that is not in Postgres —
@@ -53,8 +53,7 @@ Code: `coordinator/api/admin_state_export.go` (`handleAdminStateExport`,
    retried into a fresh `0700` staging directory; symlinks and `*.log` files
    are skipped. The stage fails — as a pre-stream 500 — when the walk would
    capture zero files, or when a `micromdm/` directory exists but no BoltDB
-   inside it was snapshotted. A `step-ca/db` Badger directory is copied
-   file-by-file with a warning.
+   inside it was snapshotted.
 5. **Write.** The whole tree under the root is zipped with relative paths and
    modes preserved, `*.db` entries replaced by their validated snapshots, and
    the stream is age-encrypted to the recipient. The response is
@@ -107,8 +106,8 @@ curl -fSL https://api.darkbloom.dev/v1/admin/state-export \
   -o darkbloom-state.zip.age
 ```
 
-If MicroMDM is being written to (enrollments in flight) quiesce it first; the
-BoltDB snapshot is consistent on its own, but a `step-ca/db` directory is not.
+The MicroMDM BoltDB snapshot is consistent on its own, even with enrollments in
+flight.
 
 ### 3. Decrypt and verify (offline)
 

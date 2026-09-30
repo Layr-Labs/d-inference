@@ -203,10 +203,8 @@ public enum LocalDataCleanup: Sendable {
         if secureEnclaveKey {
             // Remove the persistent Secure Enclave attestation signing key so a
             // bad/derouted key is regenerated on the next enroll. Best-effort:
-            // missing entitlements or an absent key are not errors. Clear both
-            // the current (v2 = defaultLabel) and the legacy (v1) labels.
+            // missing entitlements or an absent key are not errors.
             try? PersistentEnclaveKey.delete()
-            try? PersistentEnclaveKey.delete(label: PersistentEnclaveKey.legacyLabelV1)
         }
     }
 }

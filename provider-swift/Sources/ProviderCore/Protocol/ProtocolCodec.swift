@@ -98,7 +98,6 @@ public enum ProviderProtocolCodec {
         if register.encryptedResponseChunks {
             try fields.append(("encrypted_response_chunks", encodeValue(true)))
         }
-        try appendIfPresent(register.walletAddress, key: "wallet_address", to: &fields)
         if let attestation = register.attestation {
             try validateRawJSON(attestation.rawBytes)
             fields.append(("attestation", attestation.rawBytes))
@@ -106,8 +105,6 @@ public enum ProviderProtocolCodec {
         try appendIfPresent(register.prefillTps, key: "prefill_tps", to: &fields)
         try appendIfPresent(register.decodeTps, key: "decode_tps", to: &fields)
         try appendIfPresent(register.authToken, key: "auth_token", to: &fields)
-        try appendIfPresent(register.pythonHash, key: "python_hash", to: &fields)
-        try appendIfPresent(register.runtimeHash, key: "runtime_hash", to: &fields)
         if !register.templateHashes.isEmpty {
             try fields.append(("template_hashes", encodeValue(register.templateHashes)))
         }

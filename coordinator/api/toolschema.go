@@ -20,17 +20,19 @@ import (
 // an enum-only or anyOf property) — or present but not a string (the
 // JSON-Schema nullable idiom `"type": ["string","null"]` that Pydantic emits
 // for every Optional[...] field) makes the Jinja `| upper` filter throw,
-// surfacing to the consumer as a 500. Providers normalize since 0.6.3, but
-// the fleet updates slowly; normalizing centrally protects consumers from
-// lagging providers the moment the coordinator deploys.
+// surfacing to the consumer as a 500. Every routable provider also runs the
+// Swift ToolSchemaNormalization, but it is not a full substitute: it repairs
+// only tools[].function.parameters, measures its 4 MiB gate on the body after
+// remote media has been inlined (this pass measures the caller's body), and
+// treats an explicit "type": null as present. This pass is what covers the
+// other shapes and sizes for every model.
 //
 // Three wire shapes put a JSON-Schema on a tool entry, all of which reach the
 // same templates (the same DAR-130 incident class), so all three are repaired
 // (per-entry detection rules in normalizeToolEntry):
 //
 //  1. OpenAI chat completions: tools[].function.parameters — the original
-//     shape, and the only one the Swift provider-side normalizer covers as
-//     of 0.6.4.
+//     shape, and the only one the Swift provider-side normalizer covers.
 //  2. OpenAI Responses API (flat): tools[].parameters with no "function"
 //     wrapper. The coordinator converts Responses→chat AFTER this
 //     normalization runs and copies parameters verbatim, so repairing the

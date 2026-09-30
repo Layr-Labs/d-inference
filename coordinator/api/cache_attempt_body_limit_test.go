@@ -24,7 +24,7 @@ func TestLegacyCacheIsolationOverflowIsPayloadTooLarge(t *testing.T) {
 		t.Fatalf("fixture body = %d bytes, want %d", len(rawBody), maxInferenceBodyBytes)
 	}
 
-	_, err := bodyForCacheAttempt(rawBody, false, nil, &registry.PendingRequest{
+	_, err := bodyForCacheAttempt(rawBody, &registry.PendingRequest{
 		LegacyCacheBustKey: "legacy-isolation-key",
 	})
 	if !errors.Is(err, errProviderBodyTooLarge) {
@@ -36,7 +36,7 @@ func TestLegacyCacheIsolationOverflowIsPayloadTooLarge(t *testing.T) {
 	if got := dispatchErrorClass(err.Error()); got != errorClassClientError {
 		t.Fatalf("dispatch error class = %q, want %s", got, errorClassClientError)
 	}
-	traits, traitsErr := routingTraitsForProviderBody(false, rawBody, false)
+	traits, traitsErr := routingTraitsForProviderBody(false, rawBody)
 	if !errors.Is(traitsErr, errProviderBodyTooLarge) ||
 		traits.MinPrefixCacheProtocol != 1 {
 		t.Fatalf("admission traits = %+v, err=%v; want protocol floor 1", traits, traitsErr)
@@ -57,7 +57,7 @@ func TestLegacyCacheIsolationOverflowIsPayloadTooLarge(t *testing.T) {
 		state.lastErrCode != 0 {
 		t.Fatalf("hypothetical overflow was incorrectly latched: %+v", state)
 	}
-	bodyBytes, preflightErr := minimumLegacyCacheBustOverflow(rawBody, false)
+	bodyBytes, preflightErr := minimumLegacyCacheBustOverflow(rawBody)
 	state.noteProviderBodyTooLarge(preflightErr.Error(), bodyBytes)
 	state.latchProviderBodyTooLarge(state.providerBodyTooLargeErr)
 	if !state.terminalClientError ||
@@ -83,7 +83,7 @@ func TestBodyAtLimitWithoutLegacyCacheIsolationRemainsAccepted(t *testing.T) {
 		strings.Repeat("x", maxInferenceBodyBytes-len(prefix)-len(suffix)) +
 		suffix)
 
-	sealed, err := bodyForCacheAttempt(rawBody, false, nil, &registry.PendingRequest{})
+	sealed, err := bodyForCacheAttempt(rawBody, &registry.PendingRequest{})
 	if err != nil {
 		t.Fatalf("bodyForCacheAttempt: %v", err)
 	}
@@ -189,60 +189,21 @@ func TestAdmissionReturns413ForActualProtocolZeroIncompatibility(t *testing.T) {
 	}
 }
 
-func TestVisionPreflightKeepsLegacyProviderWhenPenaltyStrippingFits(t *testing.T) {
-	const prefix = `{"payload":"`
-	const penaltyPrefix = `","repetition_penalty":"`
-	const penaltyValueBytes = 256
-	const suffix = `"}`
-	const providerMutationBytes = 100
-	fillerBytes := maxInferenceBodyBytes + providerMutationBytes -
-		len(prefix) - len(penaltyPrefix) - penaltyValueBytes - len(suffix)
-	rawBody := []byte(prefix +
-		strings.Repeat("x", fillerBytes) +
-		penaltyPrefix +
-		strings.Repeat("y", penaltyValueBytes) +
-		suffix)
-	if len(rawBody) != maxInferenceBodyBytes+providerMutationBytes {
-		t.Fatalf("fixture body = %d bytes, want %d",
-			len(rawBody), maxInferenceBodyBytes+providerMutationBytes)
-	}
-
-	if _, err := minimumLegacyCacheBustOverflow(rawBody, false); !errors.Is(err, errProviderBodyTooLarge) {
-		t.Fatalf("unstripped body error = %v, want errProviderBodyTooLarge", err)
-	}
-	if _, err := minimumLegacyCacheBustOverflow(rawBody, true); err != nil {
-		t.Fatalf("vision body should fit after mandatory legacy penalty stripping: %v", err)
-	}
-	legacyBody, err := bodyForCacheAttempt(
-		rawBody, true, &registry.Provider{Version: "0.6.6"}, &registry.PendingRequest{})
-	if err != nil || len(legacyBody) > maxInferenceBodyBytes {
-		t.Fatalf("legacy transformed body size=%d err=%v", len(legacyBody), err)
-	}
-	if _, err := bodyForCacheAttempt(
-		rawBody, true, &registry.Provider{Version: penaltySafeProviderVersion},
-		&registry.PendingRequest{}); !errors.Is(err, errProviderBodyTooLarge) {
-		t.Fatalf("untransformed modern body error=%v, want payload-too-large", err)
-	}
-	if _, err := providerBodySizeError(
-		rawBody, true, &registry.Provider{Version: "0.6.6"}); err != nil {
-		t.Fatalf("legacy pre-pricing size check rejected transformed body: %v", err)
-	}
-	if _, err := providerBodySizeError(
-		rawBody, true, &registry.Provider{
-			Version: penaltySafeProviderVersion, PrefixCacheProtocol: 1,
-		}); !errors.Is(err, errProviderBodyTooLarge) {
-		t.Fatalf("modern pre-pricing size check error=%v, want payload-too-large", err)
-	}
-
-	state := &dispatchState{rawBody: rawBody, requiresVision: true}
+// TestProviderSpecificOverflowKeepsCompatibleFallbacks: one provider's
+// payload-too-large dispatch error excludes only that provider. It must not
+// latch a fleet-wide protocol floor, and it must keep the request queueable
+// for a compatible busy fallback.
+func TestProviderSpecificOverflowKeepsCompatibleFallbacks(t *testing.T) {
+	rawBody := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+	state := &dispatchState{rawBody: rawBody}
 	state.preflightLegacyCacheBust()
 	if state.minPrefixCacheProtocol != 0 || state.providerBodyTooLargeErr != "" {
-		t.Fatalf("vision preflight incorrectly excluded protocol-0 provider: %+v", state)
+		t.Fatalf("preflight excluded protocol-0 providers for a small body: %+v", state)
 	}
 	state.lastErr = "prior provider failure"
 	state.lastErrReason = "jinja_template_error"
 	state.noteProviderBodyTooLargeFor(
-		&registry.Provider{ID: "newer-v0", Version: penaltySafeProviderVersion},
+		&registry.Provider{ID: "newer-v0"},
 		"provider-specific overflow",
 	)
 	if state.minPrefixCacheProtocol != 0 {
@@ -250,6 +211,9 @@ func TestVisionPreflightKeepsLegacyProviderWhenPenaltyStrippingFits(t *testing.T
 	}
 	if !state.shouldQueueCompatibleProvider(registry.RoutingDecision{CapacityRejections: 1}) {
 		t.Fatal("provider-specific overflow did not preserve queueing for a compatible busy fallback")
+	}
+	if state.shouldQueueCompatibleProvider(registry.RoutingDecision{}) {
+		t.Fatal("provider-specific overflow queued with no busy compatible provider")
 	}
 	outcome := state.errorRoutingOutcomeFor(
 		&registry.PendingRequest{}, "error", errorClassClientError, http.StatusRequestEntityTooLarge)

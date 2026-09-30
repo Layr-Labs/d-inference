@@ -25,17 +25,22 @@ extension ModelDownloader {
     /// prefetch. On re-entry, any file already present in staging that matches
     /// its manifest size AND SHA-256 is skipped; only missing/corrupt files are
     /// re-fetched. Per-file SHA is verified as each file lands; the aggregate
-    /// hash is verified before the snapshot is published. The published snapshot
-    /// is the same `snapshots/local` layout `download` produces, so
-    /// `ModelScanner` discovers it immediately.
+    /// hash is verified before the snapshot is published. The completed snapshot
+    /// is immutable. Activation selects it with refs/main; callers can stage
+    /// without changing the active revision by passing activate: false.
     ///
     /// `onByteProgress(done, total)` reports cumulative verified-on-disk bytes
     /// against the manifest total (already-present files count as done up front).
+    @discardableResult
     public func prefetch(
         model: CatalogModel,
         manifest: ModelManifest,
-        onByteProgress: (@Sendable (Int64, Int64) -> Void)? = nil
-    ) async throws {
+        onByteProgress: (@Sendable (Int64, Int64) -> Void)? = nil,
+        activate: Bool = true
+    ) async throws -> URL {
+        let lease = try await ModelArtifactWriteLease.acquire(modelID: model.id)
+        defer { lease.release() }
+        try Self.validateArtifactManifest(manifest, model: model)
         let eligibility = ModelRuntimeRequirements.evaluate(
             modelID: model.id,
             catalogRequirements: model.requiredProviderCapabilities,
@@ -44,10 +49,14 @@ extension ModelDownloader {
             throw ModelCatalogError.ineligible(
                 ModelRuntimeIneligibleError(eligibility: eligibility).localizedDescription)
         }
-        try Self.validate(manifest: manifest, for: model)
-
-        let cacheDir = Self.cacheSnapshotDirectory(for: model.id)
+        let cacheDir = try Self.revisionSnapshotDirectory(manifest: manifest)
+        if try Self.verifyRevisionAndRepairReceipt(at: cacheDir, manifest: manifest) {
+            if activate { try Self.activateRevision(modelID: model.id, directory: cacheDir) }
+            onByteProgress?(manifest.totalSizeBytes, manifest.totalSizeBytes)
+            return cacheDir
+        }
         let snapshotsDir = cacheDir.deletingLastPathComponent()
+        try Self.prepareModelCacheDirectory(at: snapshotsDir.deletingLastPathComponent())
         try FileManager.default.createDirectory(at: snapshotsDir, withIntermediateDirectories: true)
 
         // STABLE staging dir keyed by the manifest prefix so an interrupted
@@ -60,6 +69,8 @@ extension ModelDownloader {
         try FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true)
 
         let jobs = try manifestJobs(manifest, stagingDir: stagingDir)
+
+        try Self.reuseVerifiedFiles(modelID: model.id, manifest: manifest, stagingDir: stagingDir)
 
         // Classify each file once (hashing is expensive) into already-valid vs
         // still-needed. Reused for both progress seeding and the capacity check.
@@ -107,8 +118,10 @@ extension ModelDownloader {
         try Task.checkCancellation()
 
         try finalizeStagedManifest(
-            model: model, manifest: manifest, jobs: jobs, stagingDir: stagingDir, cacheDir: cacheDir)
+            model: model, manifest: manifest, jobs: jobs, stagingDir: stagingDir,
+            cacheDir: cacheDir, activate: activate)
         onByteProgress?(total, total)
+        return cacheDir
     }
 
     /// Whether an interrupted foreground download left resumable content staged on
@@ -126,20 +139,6 @@ extension ModelDownloader {
         // Any non-hidden staged entry (a finished file, a `.part`, or a nested
         // subdir like `adapters/`) is resumable content worth finishing.
         return entries.contains { !$0.hasPrefix(".") }
-    }
-
-    static func parseShardNames(indexPath: URL) throws -> [String] {
-        let data = try Data(contentsOf: indexPath)
-        let any = try JSONSerialization.jsonObject(with: data, options: [])
-        guard let dict = any as? [String: Any],
-              let weightMap = dict["weight_map"] as? [String: String]
-        else {
-            throw ModelCatalogError.downloadFailed(
-                "model.safetensors.index.json missing weight_map"
-            )
-        }
-        let unique = Set(weightMap.values)
-        return unique.sorted()
     }
 
     /// Bytes still to fetch on a (possibly resumed) prefetch/download. For each

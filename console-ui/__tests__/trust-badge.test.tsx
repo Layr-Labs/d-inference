@@ -1,94 +1,47 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { TrustBadge } from "@/components/TrustBadge";
-import { VerificationModeProvider } from "@/components/app-providers/verification-mode";
 import type { TrustMetadata } from "@/lib/api";
+import type { Verification, VerificationState } from "@/lib/verification";
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+// TrustBadge renders only the coordinator's dispatch-time verification
+// snapshot (`trust.verification`). The legacy per-response trust fields are
+// maxed out on purpose: none of them may turn into an authorization claim.
+const legacyAllTrue: TrustMetadata = {
+  attested: true,
+  trustLevel: "hardware",
+  secureEnclave: true,
+  mdaVerified: true,
+  providerChip: "Apple M4 Max",
+  providerModel: "Mac16,5",
+};
 
-function makeTrust(overrides: Partial<TrustMetadata> = {}): TrustMetadata {
-  return {
-    attested: false,
-    trustLevel: "none",
-    secureEnclave: false,
-    mdaVerified: false,
-    providerChip: "",
-    providerModel: "",
-    ...overrides,
-  };
-}
+const observedAt = 1_790_000_000;
+const snapshot = (state: VerificationState): Verification => ({
+  observed_at: observedAt,
+  app_attest: { state, verified_at: observedAt - 10, expires_at: observedAt + 30 },
+  legacy: { state: "pending" },
+});
 
-/** Render wrapped in VerificationModeProvider (default: normal mode). */
-function renderWithMode(ui: React.ReactElement) {
-  return render(<VerificationModeProvider>{ui}</VerificationModeProvider>);
-}
-
-// ---------------------------------------------------------------------------
-// TrustBadge — Normal Mode (default)
-// ---------------------------------------------------------------------------
-
-describe("TrustBadge (normal mode)", () => {
-  it("shows unavailable when no authorization snapshot exists", () => {
-    renderWithMode(<TrustBadge trust={makeTrust({ trustLevel: "none" })} />);
+describe("TrustBadge", () => {
+  it("does not infer authorization from legacy trust fields without a verification snapshot", () => {
+    render(<TrustBadge trust={legacyAllTrue} />);
     expect(screen.getByText("Verification unavailable")).toBeInTheDocument();
   });
 
-  it("does not infer authorization from hardware without MDA", () => {
-    renderWithMode(
-      <TrustBadge
-        trust={makeTrust({ trustLevel: "hardware", mdaVerified: false })}
-      />
-    );
-    expect(screen.getByText("Verification unavailable")).toBeInTheDocument();
+  it("shows the snapshot's non-verified state even when legacy fields claim hardware trust", () => {
+    render(<TrustBadge trust={{ ...legacyAllTrue, verification: snapshot("revoked") }} />);
+    expect(screen.getByText("Verification revoked")).toBeInTheDocument();
+    expect(screen.queryByText(/^Verified via/)).not.toBeInTheDocument();
   });
 
-  it("does not infer authorization from hardware with MDA", () => {
-    renderWithMode(
-      <TrustBadge
-        trust={makeTrust({ trustLevel: "hardware", mdaVerified: true })}
-      />
+  it("in compact mode carries the verdict only in the title", () => {
+    const { container } = render(
+      <TrustBadge trust={{ ...legacyAllTrue, verification: snapshot("verified") }} compact />,
     );
-    expect(screen.getByText("Verification unavailable")).toBeInTheDocument();
-  });
-
-  it("does NOT show SE/MDA indicators in normal mode", () => {
-    renderWithMode(
-      <TrustBadge
-        trust={makeTrust({
-          trustLevel: "hardware",
-          secureEnclave: true,
-          mdaVerified: true,
-        })}
-      />
+    expect(container.querySelector("span[title]")?.getAttribute("title")).toBe(
+      "Verified via App Attest at dispatch",
     );
-    expect(screen.queryByText((t) => t.includes("SE"))).not.toBeInTheDocument();
-    expect(screen.queryByText((t) => t.includes("MDA"))).not.toBeInTheDocument();
-  });
-
-  // Compact mode -----------------------------------------------------------
-
-  it("in compact mode, does NOT render the label text", () => {
-    renderWithMode(
-      <TrustBadge trust={makeTrust({ trustLevel: "hardware" })} compact />
-    );
-    expect(screen.queryByText("Hardware Verified")).not.toBeInTheDocument();
-  });
-
-  it("in compact mode, renders a title attribute", () => {
-    const { container } = renderWithMode(
-      <TrustBadge
-        trust={makeTrust({
-          trustLevel: "hardware",
-          secureEnclave: true,
-          mdaVerified: true,
-        })}
-        compact
-      />
-    );
-    const span = container.querySelector("span[title]");
-    expect(span).toBeTruthy();
-    expect(span!.getAttribute("title")).toBe("Verification unavailable at dispatch");
+    expect(screen.queryByText("Verified via App Attest")).not.toBeInTheDocument();
   });
 });

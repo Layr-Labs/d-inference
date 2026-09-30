@@ -16,7 +16,7 @@ struct ScheduledWindowSelectionTests {
             coordinatorURL: "wss://startup.invalid/ws/provider", hardware: hardware,
             models: [ModelInfo(id: model, modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1)],
             config: config, authToken: "startup-auth",
-            runtimeHashes: RuntimeHashes(pythonHash: "python", runtimeHash: "metallib", templateHashes: ["a": "template"]),
+            runtimeHashes: RuntimeHashes(templateHashes: ["a": "template"]),
             runtimeCapabilities: [.appleM5, .mlxNAX],
             modelHashes: [model: "stale-startup-hash"], modelHashFingerprints: [model: "stale-startup-fingerprint"],
             localEndpoint: LocalInferenceHTTPConfig(host: "127.0.0.2", port: 8123, authToken: "local-auth"),
@@ -83,8 +83,6 @@ struct ScheduledWindowSelectionTests {
         #expect(next.hardware == loopConfig.hardware)
         #expect(next.authToken == "startup-auth")
         #expect(next.runtimeCapabilities == [.appleM5, .mlxNAX])
-        #expect(next.runtimeHashes?.pythonHash == "python")
-        #expect(next.runtimeHashes?.runtimeHash == "metallib")
         #expect(next.runtimeHashes?.templateHashes == ["a": "template"])
         #expect(next.localEndpoint?.host == "127.0.0.2")
         #expect(next.localEndpoint?.port == 8123)

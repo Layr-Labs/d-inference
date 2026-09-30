@@ -70,7 +70,7 @@ func TestStatsCachePreservesSourceTimeUntilSuccessfulRefresh(t *testing.T) {
 				if !capturedAt.Equal(startedAt) {
 					t.Fatalf("snapshot_at = %v, want observation start %v", capturedAt, startedAt)
 				}
-				memory.RecordUsageWithCostAndLocation("provider", "consumer", "model", "request", 10, 20, 0, nil)
+				memory.RecordUsage(store.UsageRecord{ProviderID: "provider", ConsumerKey: "consumer", Model: "model", RequestID: "request", PromptTokens: 10, CompletionTokens: 20})
 				time.Sleep(startedAt.Add(30*time.Second - time.Nanosecond).Sub(time.Now()))
 				cachedBody, _, _ := readStatsSnapshot(t, srv)
 				if !bytes.Equal(cachedBody, initialBody) {
@@ -111,7 +111,7 @@ func TestStatsRefreshCadenceLeavesNetworkTotalsAtOneMinute(t *testing.T) {
 		if !capturedAt.Equal(startedAt) || st.locationCalls.Load() != 1 || st.totalsCalls.Load() != 4 {
 			t.Fatal("refreshers did not prime stats and all four totals windows")
 		}
-		memory.RecordUsageWithCostAndLocation("provider", "consumer", "model", "request", 10, 20, 0, nil)
+		memory.RecordUsage(store.UsageRecord{ProviderID: "provider", ConsumerKey: "consumer", Model: "model", RequestID: "request", PromptTokens: 10, CompletionTokens: 20})
 
 		time.Sleep(30*time.Second - time.Nanosecond)
 		synctest.Wait()

@@ -1,12 +1,12 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-27 · commit `4ad3034df`
+> Last updated: 2026-09-29
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
 defaults, the environment variables it forwards to the daemon, and its runtime
 constants, as declared in `provider-swift/Sources/darkbloom/` (`Darkbloom`,
-version `ProviderCore.version` = `0.9.7` in
+version `ProviderCore.version` in
 `provider-swift/Sources/ProviderCore/ProviderCore.swift`). For operators; types
 and defaults are the ArgumentParser declarations; `—` means required.
 
@@ -322,7 +322,7 @@ shutdown (`provider-swift/Sources/ProviderBenchmark/ThroughputSweep.swift`,
 | Scheduler prefill decision | `--scheduler-prefill-decision`, `--expected-model-aggregate-sha256`, `--expected-registered-binary-sha256`, `--expected-version`, `--source-sha`, `--decision-iterations` (`SchedulerPrefillDecisionReport.minimumLiveIterations`), `--output <path>` (`BenchmarkCommand+SchedulerPrefillDecision.swift`) |
 | Sweep | `--sweep`, `--prefill-lengths` (`"128,512,2048"`), `--max-batch` (`6`), `--batch-sizes` (`String?`), `--decode-tokens`, `--decode-prompt-tokens`, `--decode-iterations` (`ThroughputSweep` defaults), `--kv-backend` (`"auto"`) (`BenchmarkCommand+Sweep.swift`) |
 | Scheduler prefill | `--scheduler-prefill`, `--prefill-iterations` (`2`) |
-| Arrival invariance | `--arrival-invariance`, `--arrival-prompt-tokens` (`512`), `--arrival-prompt-lengths` (`String?`; exactly four comma-separated positive lengths, overrides the uniform prompt length), `--arrival-decode-tokens` (`64`), `--arrival-iterations` (`3`) (`BenchmarkCommand.swift`, `Benchmark.arrivalPromptLengths`) |
+| Arrival invariance | `--arrival-invariance`, `--arrival-width` (`4`, range `1...16`), `--arrival-prompt-tokens` (`512`), `--arrival-prompt-lengths` (`String?`; exactly one integer ≥2 per row, overrides uniform length), `--arrival-decode-tokens` (`64`), `--arrival-iterations` (`3`) (`BenchmarkCommand.swift`, `Benchmark.arrivalPromptLengths`); requested width alone is not measured forward-width evidence |
 | Backend parity | `--parity`, `--assistant-model <id>` (`String?`), `--parity-max-tokens` (`48`), `--parity-prefix-tokens` (`28672`) (`BenchmarkCommand+Parity.swift`) |
 
 `--kv-backend auto` uses the candidate's
@@ -572,12 +572,33 @@ Output includes:
 
 - Provider version and config path.
 - Coordinator URL and backend settings.
+- Startup preload on/off, whether the explicit list or selected models drive
+  it, and the registration timeout.
 - Detected hardware (chip, RAM, GPU cores).
+- `Inference memory` is the nominal hardware budget, **not** live free RAM.
 - Schedule state (active/inactive).
 - Live daemon PID, uptime, trust verdict, and last model-load error.
 - `Memory when idle`: the idle-memory policy in force (`always ready` or
   `free after N idle`). Advertised models without a resident engine are
-  separated into `Startup preload pending` and `Not loaded (loads on request)`.
+  separated into `Startup preload pending`, `Not loaded (loads on request)`,
+  `Preload skipped (no eviction)`, and `Cold load blocked (memory)`. A fresh daemon snapshot reports the no-eviction
+  usable load memory beside a blocked model's scanner estimate, activation +
+  minimum-KV serving reserve, required total and no-eviction shortfall. When
+  request-time eviction still cannot fit the model, the cold-load shortfall
+  (the amount to free) is shown separately. Older or stale snapshots and
+  snapshots taken during active or queued requests, a model load or a reload withhold a
+  definitive verdict. The daemon writes the load transition during startup
+  preload even before its first backend-capacity snapshot.
+  `always ready`
+  retains loaded models but does not override the memory load gate.
+  An eviction-aware allowance distinguishes a preload that preserves resident
+  models from a cold request that can evict idle slots; only the latter earns
+  the `Cold load blocked` label when it still cannot fit.
+  A memory skip also writes a fixed public category to `darkbloom logs`; model
+  loads refused at final admission, allocation recheck, or measured post-load
+  KV headroom, or fleet KV re-slice serviceability use the same warning.
+  Model names and exact load figures remain private there and appear in the owner's
+  live `status` and `doctor` output instead.
 - Per-slot posture: the KV backend each loaded model actually resolved to
   (`paged` / `contiguous`), the selection the config asked for, and whether
   MTP is enabled, active, or enabled-but-inert.
@@ -627,6 +648,23 @@ darkbloom doctor [--strict] [--coordinator <url>] [--support] [--clear-backend-g
 `darkbloom doctor` is read-only except for the subprocess calls used by public
 ProviderCore checks and the explicit `--clear-backend-guard` action
 (`provider-swift/Sources/darkbloom/DoctorCommand.swift`, `runClearBackendGuard`).
+The operator report begins with a readiness summary and the first concrete
+action. A failed model-fit check names the live usable memory, the required
+load budget and their shortfall; it tells the operator to free memory, rerun
+`doctor` and restart to retry preload when enabled. Interactive terminals color section
+headings and PASS/WARN/FAIL markers. Every advertised cold model is checked,
+largest first, so a small fit cannot hide a larger model's failure.
+Pipes, `NO_COLOR`, `CLICOLOR=0`, and
+`TERM=dumb` retain plain text.
+When the daemon's capacity snapshot is fresh, `doctor` uses its paired
+no-eviction usable memory and serving headroom sample; otherwise it falls back to a local read-only memory
+sample and does not claim to know the earlier startup decision.
+An already resident target is reported as resident without pretending it needs another cold
+load. When the fresh daemon reports that idle eviction could fit a cold model,
+`doctor` warns about no-eviction preload instead of claiming request-time
+loading is impossible. On a multi-model Mac, a selected cold model with a
+recent load failure is diagnosed before an unrelated recently used resident
+model, so the model-fit line explains the failure the operator came to check.
 
 Two of the detailed checks cover the KV-backend rollout:
 
@@ -692,9 +730,24 @@ Download a model from the coordinator catalog.
 darkbloom models download <id> [--coordinator <url>] [--r2-cdn <url>]
 ```
 
+If the model's `models--<id>` cache entry is a dangling symlink (for example,
+to an unavailable external drive), downloading preserves it as a hidden sibling
+`.models--<id>.unavailable-link-<UUID>` and creates a real model directory in the
+selected cache. This also applies to downloads from `darkbloom start` and
+background prefetch. Reconnect the drive before downloading if you want to keep
+using its existing model directory. Valid directory symlinks are followed;
+regular files and symlinks to files cause an error and are left intact.
+Code: `provider-swift/Sources/ProviderCore/Models/ModelDownloader+Cache.swift`
+(`prepareModelCacheDirectory`).
+
 ### `darkbloom models remove <id>`
 
-Delete a downloaded model.
+Delete a downloaded model. The command returns a busy error if a download or
+revision update currently owns that model's writer lease; retry after it finishes.
+`--force` skips confirmation and does not bypass the lease. Code:
+`provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift` (`remove`),
+`provider-swift/Sources/ProviderCore/Models/ModelArtifactWriteLease.swift`
+(`acquireIfAvailable`).
 
 ```bash
 darkbloom models remove <id> [--force]
@@ -889,7 +942,7 @@ darkbloom beta disable <feature>    # turn off
 |---------|--------|
 | `gemma-prefill-layer18` | Default-on layer-18 prefill submission; disable and restart for legacy submission behavior |
 | `gemma-weighted-r1` | Default-on atomic weighted-unsort + safe-R1 pair; disable and restart to roll back both |
-| `mtp` | MTP policy. Default `auto` drafts automatically for Qwen 3.5-family checkpoints that embed their head (`mtplx_mtp` in `config.json`); auto also enables the catalog `spec_dec` assistant for exact `gemma-4-26b-qat-4bit`; explicit on enables other supported targets; explicit off is the rollback |
+| `mtp` | MTP policy. Default `auto` requests validated embedded Qwen-family, native Qwen4, Nemotron Lightning and native MiMo heads, and the catalog `spec_dec` assistant for exact `gemma-4-26b-qat-4bit`. Actual artifact/owner/budget checks remain required; explicit `off` is the rollback |
 
 `enable`/`disable` read-modify-write the TOML config and report whether a restart
 is required. Restart is the activation boundary for process-wide optimization
@@ -964,7 +1017,7 @@ darkbloom enroll [--coordinator <url>] [--no-open]
 
 Without a flag, ask whether to fully exit Darkbloom or remove only MDM and keep serving with App Attest. Enter or closed input cancels without changing anything. The App Attest option requires macOS 27 or later and fresh coordinator removal approval; an unsupported/unqualified choice never falls back to cleanup.
 
-Full exit stops the launchd provider and disables its automatic restart before profile-removal guidance and a separate local cleanup confirmation. If a foreground provider is still running, cleanup is refused. The cleanup list includes the current and legacy Secure Enclave signing keys. Model downloads and server-side account history remain intact.
+Full exit stops the launchd provider and disables its automatic restart before profile-removal guidance and a separate local cleanup confirmation. If a foreground provider is still running, cleanup is refused. The cleanup removes the current (v2) Secure Enclave signing key; a leftover v1 keychain item is neither read nor removed. Model downloads and server-side account history remain intact.
 
 If profile inventory needs administrator access, run this command in the foreground of an interactive terminal. `sudo` prompts there with terminal echo disabled; only the fixed, read-only profile inventory command is elevated. A denied prompt, noninteractive session, or background terminal job withholds profile-removal guidance. The command does not remove a profile itself; confirm the exact Darkbloom profile in System Settings. See [`attestation.md`](./attestation.md#app-attest-without-darkbloom-mdm).
 
@@ -1053,10 +1106,10 @@ account, macOS answers `Operation not permitted`. The command reports this and
 still uploads the App Attest snapshot. To include the logs, run it from an
 administrator account, or run `sudo darkbloom report` if this account is allowed
 to use sudo. Under `sudo` it reads the invoking user's daemon state and provider
-config (unless `--config` is given), plus canonical then legacy credentials
-through `AuthTokenStore.loadReadOnly`. It does not migrate config or token files
-as root. An explicit nonempty `DARKBLOOM_AUTH_TOKEN_PATH` overrides that lookup
-and suppresses legacy fallback. See `ReportAppAttestEvidence` in
+config (unless `--config` is given), plus that user's `~/.darkbloom/auth_token`
+through `AuthTokenStore.loadReadOnly`. It writes no config or token file as
+root. An explicit nonempty `DARKBLOOM_AUTH_TOKEN_PATH` replaces that token
+path. See `ReportAppAttestEvidence` in
 `provider-swift/Sources/darkbloom/Diagnostics/`. `--dry-run` prints every appended
 line before anything is uploaded.
 
@@ -1079,9 +1132,9 @@ manual use.
 |---|---|---|
 | Install root | `~/.darkbloom/` | `scripts/install.sh` (`INSTALL_DIR`) |
 | App bundle | `~/.darkbloom/Darkbloom.app`; swapped atomically, backup in `.install-backup-*` during the swap | `scripts/install.sh` (`commit_staged_app`) |
-| CLI symlinks | `~/.darkbloom/bin/darkbloom`, `darkbloom-enclave`, `mlx.metallib` → `../Darkbloom.app/Contents/MacOS/*`; `eigeninference-enclave → darkbloom-enclave`; best-effort `/usr/local/bin/darkbloom` | `scripts/install.sh` |
+| CLI symlinks | `~/.darkbloom/bin/darkbloom`, `darkbloom-enclave`, `mlx.metallib` → `../Darkbloom.app/Contents/MacOS/*`; best-effort `/usr/local/bin/darkbloom` | `scripts/install.sh` |
 | Capability markers | `Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/{paged-kernel-v1,fan-helper-v1}` | `scripts/install.sh` (`verify_staged_app`, `verify_fan_helper_capability`) |
-| Config | `~/.config/darkbloom/provider.toml`; a config at a legacy path is copied here on the next run | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`defaultConfigPath`); `provider-swift/Sources/darkbloom/Darkbloom.swift` (`migrateConfigIfNeeded`) |
+| Config | `~/.config/darkbloom/provider.toml` (or `--config`); retired legacy locations are not read | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`defaultConfigPath`) |
 | Device token | `~/.darkbloom/auth_token` (`DARKBLOOM_AUTH_TOKEN_PATH`) | `provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift` |
 | Local-mode token / discovery | `~/.darkbloom/local_token`, `~/.darkbloom/local.json` (`DARKBLOOM_LOCAL_DIR`), both `0600` | `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift` |
 | Daemon state | `~/.darkbloom/daemon-state.json` (`DARKBLOOM_STATE_FILE`) | `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift` |
@@ -1097,7 +1150,7 @@ manual use.
 | Unified-log subsystem | `dev.darkbloom.provider` | `provider-swift/Sources/darkbloom/LogsCommand.swift` (`Logs.subsystem`) |
 | Model cache | Hugging Face hub layout under the [resolved model cache](../reference/configuration.md#model-cache-location) | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner+CacheDirectory.swift` (`ModelScanner.resolveCache`) |
 | Keychain KEK item | service `io.darkbloom.kv.kek.v1`; access group `SLDQ2GJ6TL.io.darkbloom.provider` (`DARKBLOOM_KEYCHAIN_ACCESS_GROUP`) | `provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift` (`defaultService`); `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift` (`defaultAccessGroup`) |
-| Secure Enclave key labels | `io.darkbloom.provider.attestation-signing.v2`; legacy `…v1` migrated on first use | `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift` (`defaultLabel`, `legacyLabelV1`) |
+| Secure Enclave key label | `io.darkbloom.provider.attestation-signing.v2`; a leftover retired `…v1` item is never read | `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift` (`defaultLabel`) |
 | Apple Team ID | `SLDQ2GJ6TL` (pinned in installer requirements and fan IPC) | `scripts/install.sh`; `provider-swift/Sources/DarkbloomFanProtocol/FanIPC.swift` (`teamID`) |
 | Fan helper files | `/Library/PrivilegedHelperTools/io.darkbloom.fan-helper`, `/Library/LaunchDaemons/io.darkbloom.fan.plist`, `/Library/Application Support/Darkbloom/fan-policy.json`, `…/fan-session.json` | `provider-swift/Sources/DarkbloomFanService/FanServiceConfiguration.swift` |
 
@@ -1120,7 +1173,8 @@ override `provider.toml` for one process, are in
 | `[backend] model_cache_directory` | unset | Explicit saved hub directory; set or import once with `models location`, clear with `--reset`. Ambient cache variables never override it; hand-written relative paths are anchored to the config file (`provider-swift/Sources/ProviderCore/Config/ModelCacheConfiguration.swift`, `ConfigManager.modelCacheDirectory`) |
 | `[backend] idle_timeout_mins` | `60` | Unload a model idle this long; `0` disables |
 | `[backend] max_model_slots` | `3` | Resident models |
-| `[backend] engine_v2_max_concurrent` | `4` (clamped to `[1, 8]`) | Concurrent requests per engine |
+| `[backend] engine_v2_max_concurrent` | Absent: automatic, legacy `4`; explicit values preserved | Concurrent requests per engine, bounded by exact reviewed profile or legacy `[1, 8]`, architecture and memory. Only an automatic setting may inherit a reviewed higher default. `ServingPerformanceProfiles`, `BackendSettings` |
+| `[backend] engine_v2_max_concurrent_by_model` | `{}` | Exact model ID → operator cap; overrides the default for that model under the same qualification, architecture and memory bounds. `status` and `doctor` show the default policy and all configured model overrides, with unknown-profile bounds when different from the requested cap (`provider-swift/Sources/ProviderCore/Inference/Performance/ServingPerformanceProfile.swift`, `ServingPerformanceProfiles.summary`) |
 | `[backend] engine_v2_kv_backend` | `"auto"` | `auto` / `paged` / `contiguous`; per-model table `engine_v2_kv_backend_by_model` takes precedence. Candidate `auto` tries paged only for the [exact qualified-artifact allowlist](../architecture/prefix-cache.md#kv-layouts), with contiguous fallback; all other IDs remain contiguous (`EngineV2KVBackendPolicy.parseSelection`, `preferredBackend`) |
 | `[backend] mtp_mode` | `auto` | Written by `darkbloom beta enable|disable mtp` |
 | `[backend] startup_preload` | `true` | Preload `preload_models` when set, otherwise selected models (previously loaded first on coordinator starts), within slot and memory limits |
@@ -1128,10 +1182,33 @@ override `provider.toml` for one process, are in
 | `[coordinator] heartbeat_interval_secs` | `5` | Heartbeat; state file refresh is half of it |
 | `[coordinator] private_only` | `false` | Serve only the owner's [self-route](./self-route.md) traffic |
 | `[gemma_optimizations] prefill_layer18`, `weighted_r1` | `true` | See [beta features](./beta-features.md) |
-| `config_version` | written by the CLI | Schema stamp for one-time migrations |
-| `[backend] continuous_batching`, `adaptive_prefill`, `engine_v2`, `legacy_compiled_decode`, `kv_quant` | retired | Parsed for presence only; one startup WARN each (`RetiredCodingKeys`) |
+| `config_version` | retired | Ignored top-level key left by releases up to v0.9.9; no longer written |
+| `[backend] continuous_batching`, `adaptive_prefill`, `engine_v2`, `legacy_compiled_decode`, `kv_quant`, `mtp` | retired | Parsed for presence only; one startup WARN each (`RetiredCodingKeys`). The boolean `mtp` is superseded by `mtp_mode` |
+
+For foreground/local mixed-prefill tuning, `DARKBLOOM_CBV2_MIXED_PREFILL_CAP`
+sets a process-wide token cap and `DARKBLOOM_CBV2_MIXED_PREFILL_CAP_BY_MODEL`
+accepts comma-separated exact overrides such as `gemma-4-26b-qat-4bit=128,gpt-oss-20b=256`.
+Per-model values precede the global value, then a reviewed performance profile.
+Positive Gemma caps retain the 128-token floor; `0` defers prefill while decoding.
+Pure-prefill stripes are unchanged. These variables are not forwarded to a LaunchAgent;
+see the [scheduler environment reference](../reference/configuration.md#engine-and-scheduler).
 
 ## LaunchAgent environment passthrough
+
+The [MiMo candidate controls](../reference/configuration.md#native-mimo-v26-candidate)
+are process-scoped settings, not new CLI subcommands or release switches. Native
+attention and admitted grouping default on; other experimental kernels remain
+opt-in. The native factory requests larger eligible solo-text chunks without
+changing explicit stripe overrides or memory safeguards. These controls
+are not included in `LaunchAgent.inferencePassthroughEnvKeys`; do not assume a
+shell flag reaches an installed daemon. The native benchmark uses the managed
+load/retirement route. Exact native MiMo ordinary dispatch is implemented;
+benchmark success alone does not qualify API or catalog availability. `mtp_mode = "auto"` requests genuine inspected MiMo embedded heads by default;
+`mtp_mode = "off"` or `DARKBLOOM_CBV2_MTP=0` disables speculation. Actual native
+assembly and proposal/acceptance metrics—not the setting—prove activation.
+Serial-target verification remains default; the rectangular flag does not
+itself enable MTP. No documented flag enables missing paging,
+media-prefix or coordinator audio capabilities.
 
 Model-cache locations are read from `provider.toml`; Hugging Face/XDG cache
 variables are neither forwarded nor runtime overrides. The optional
@@ -1175,6 +1252,9 @@ cache setting enables it (`coordinator/registry/config.go`, `ReadConfig`). Resid
 routing also requires the separate live capability described in
 [`cache-aware-routing.md`](../architecture/cache-aware-routing.md). Effects and defaults are specified
 once in [`reference/configuration.md`](../reference/configuration.md).
+
+`DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY` overrides the compiled SSD
+write budget in foreground/local processes; see the [SSD cache limits](../reference/ssd-kv-cache.md#size-and-eviction-rules).
 
 `DARKBLOOM_CBV2_HYBRID_PREFIX_CACHE` and `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES`
 control the explicitly opted-in recurrent checkpoint bank in foreground/local processes; they are

@@ -148,15 +148,6 @@ import Testing
     }
 }
 
-@Test func standaloneServerClassifiesSchedulerAdmissionErrors() {
-    #expect(StandaloneServer.schedulerErrorStatus(for: "token_budget_exhausted: request exceeds active token budget") == .serviceUnavailable)
-    #expect(StandaloneServer.schedulerErrorStatus(for: "token_budget_exhausted: request queue full") == .tooManyRequests)
-    #expect(StandaloneServer.schedulerErrorStatus(for: "token_budget_exhausted: invalid token count") == .badRequest)
-    #expect(StandaloneServer.schedulerErrorStatus(for: "token_budget_exhausted: duplicate request ID") == .badRequest)
-    #expect(StandaloneServer.schedulerErrorStatus(for: "token_budget_exhausted: request exceeds batch token budget") == .badRequest)
-    #expect(StandaloneServer.schedulerErrorStatus(for: "unexpected backend failure") == .internalServerError)
-}
-
 @Test func standaloneServerStopAndWaitReleaseResidentBridgeAndSSDResources() async {
     // Give the real listener and shutdown tasks their own executor. Concurrent
     // MLX tests can occupy the parent process until the bind deadline expires.
@@ -804,6 +795,33 @@ private func makeStandaloneFakeHFSnapshot(modelId: String) throws -> URL {
 
     #expect(hashes.snapshot == ["verified-standalone-hash"])
     #expect(SSDPrefixCacheFactory.verifiedWeightHash(hashes.snapshot[0]) != nil)
+}
+
+@Test func standaloneFactoryRetainsArtifactIdentityWithoutEnablingCacheReuse() async throws {
+    let server = standaloneTestServer()
+    let artifacts = StandaloneHashRecorder()
+    let cacheHashes = StandaloneHashRecorder()
+    let verifiedArtifact = String(repeating: "a", count: 64)
+    await server.setV2TestHooksForTesting(
+        StandaloneServer.V2TestHooks(
+            physicalMemoryBytes: standalonePhysicalBytes,
+            onModelArtifactSHA256: artifacts.record,
+            onCacheEligibleWeightHash: cacheHashes.record,
+            makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
+
+    let bridge = try await server.buildSlotForTesting(
+        modelId: "outside-ssd-cohort", modelType: "test",
+        container: makeStandaloneStubContainer(),
+        tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+        sizing: standaloneSizing(weightsGiB: 15),
+        modelArtifactSHA256: verifiedArtifact,
+        cacheEligibleWeightHash: nil)
+
+    #expect(artifacts.snapshot == [verifiedArtifact])
+    #expect(cacheHashes.snapshot == [nil])
+    #expect(await server.slots["outside-ssd-cohort"]?.modelArtifactSHA256 == verifiedArtifact)
+    #expect(await server.slots["outside-ssd-cohort"]?.cacheEligibleWeightHash == nil)
+    await bridge.shutdown()
 }
 
 @Test func standaloneSecondLoadReslicesAndEvictionRegrows() async throws {

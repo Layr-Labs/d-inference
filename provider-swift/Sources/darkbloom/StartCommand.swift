@@ -143,7 +143,6 @@ struct Start: AsyncParsableCommand {
             try await runLocalStandalone(
                 snapshot: snapshot,
                 config: effectiveConfig,
-                hardware: hardware,
                 runtimeCapabilities: runtimeCapabilities
             )
         } else if foreground {

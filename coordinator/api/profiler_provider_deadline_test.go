@@ -55,14 +55,15 @@ func TestDeadlineDecisionRetainsRefusalAndAcceptanceBeforeExpiry(t *testing.T) {
 }
 
 func TestDeadlineDecisionUnknownEnumsAndFieldsNeverPersistFreeText(t *testing.T) {
-	raw := []byte(`{"schema":1,"deadline_decision":{"verdict":"VERDICT_LEAK","continuation":"CONTINUATION_LEAK","projection":"PROJECTION_LEAK","projection_reason":"REASON_LEAK","observed_us":0,"remaining_us":0,"prefill_tps":0,"note":"NOTE_LEAK","prompt":{"text":"PROMPT_LEAK"}}}`)
+	raw := []byte(`{"schema":1,"deadline_decision":{"verdict":"VERDICT_LEAK","continuation":"CONTINUATION_LEAK","projection":"PROJECTION_LEAK","projection_reason":"REASON_LEAK","unbounded_reason":"UNBOUNDED_LEAK","observed_us":0,"remaining_us":0,"prefill_tps":0,"note":"NOTE_LEAK","prompt":{"text":"PROMPT_LEAK"}}}`)
 	p, valid, reason, folded := decodeInferenceProfile(raw, fixtureReceivedAt)
 	if !valid || !folded || p == nil || p.DeadlineDecision == nil {
 		t.Fatalf("future enum invalidated record: valid=%v reason=%q folded=%v", valid, reason, folded)
 	}
 	d := p.DeadlineDecision
 	if d.Verdict != protocol.DeadlineVerdictOther || d.Continuation != protocol.DeadlineContinuationOther ||
-		d.Projection != protocol.DeadlineProjectionOther || d.ProjectionReason != protocol.DeadlineProjectionReasonOther {
+		d.Projection != protocol.DeadlineProjectionOther || d.ProjectionReason != protocol.DeadlineProjectionReasonOther ||
+		d.UnboundedReason != protocol.DeadlineUnboundedOther {
 		t.Fatalf("unknown enum not folded: %+v", d)
 	}
 	encoded, err := json.Marshal(p)
@@ -227,6 +228,7 @@ func TestDeadlineDecisionFullProfileNumericBoundsFitWireCap(t *testing.T) {
 		}
 	}
 	fillMax(reflect.ValueOf(&wire).Elem())
+	wire.DeadlineDecision.UnboundedReason = protocol.DeadlineUnboundedInvalidProjectionAssignment
 	raw, err := json.Marshal(wire)
 	if err != nil || len(raw) > protocol.MaxInferenceProfileBytes {
 		t.Fatalf("full profile exceeds cap: bytes=%d err=%v", len(raw), err)

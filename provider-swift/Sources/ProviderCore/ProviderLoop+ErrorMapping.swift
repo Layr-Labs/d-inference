@@ -71,7 +71,7 @@ extension ProviderLoop {
             return boundedCapacityReason(from: message, fallback: .tokenBudgetExhausted)
         case .requestRejected(let message):
             let lower = message.lowercased()
-            if lower.contains("invalid token count") || lower.contains("duplicate request id") {
+            if lower.contains("duplicate request id") {
                 return .clientError
             }
             return boundedCapacityReason(from: message, fallback: .capacityBusy)
@@ -85,9 +85,6 @@ extension ProviderLoop {
         fallback: InferenceErrorReason
     ) -> InferenceErrorReason {
         let message = engineMessage.lowercased()
-        if message.contains("exceeds batch token budget") {
-            return .requestExceedsBatchTokenBudget
-        }
         if message.contains("context length") || message.contains("context window") {
             return .requestExceedsContext
         }
@@ -96,9 +93,6 @@ extension ProviderLoop {
             || (message.contains("request requires") && message.contains("available"))
         {
             return .requestExceedsNodeBudget
-        }
-        if message.contains("timed out waiting for capacity") {
-            return .capacityTimeout
         }
         if message.contains("queue full") {
             return .queueFull

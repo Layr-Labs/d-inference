@@ -239,7 +239,7 @@ func TestRuntimeManifestUnionsPerFamilyTemplateHashes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ok, mismatches := srv.verifyRuntimeHashesAgainstManifest(manifest, "", "", report(tc.qwen))
+			ok, mismatches := srv.verifyRuntimeHashesAgainstManifest(manifest, report(tc.qwen))
 			if ok != tc.wantOK {
 				t.Fatalf("verify = %v (%+v), want %v", ok, mismatches, tc.wantOK)
 			}
@@ -260,10 +260,10 @@ func TestRuntimeManifestUnionsPerFamilyTemplateHashes(t *testing.T) {
 	if got := manifest.TemplateHashes["qwen3.5"]; len(got) != 1 || !got[qwenNew] {
 		t.Fatalf("qwen3.5 accepted set after deactivation = %v, want only the newer value", sortedTemplateHashes(got))
 	}
-	if ok, _ := srv.verifyRuntimeHashesAgainstManifest(manifest, "", "", report(qwenOld)); ok {
+	if ok, _ := srv.verifyRuntimeHashesAgainstManifest(manifest, report(qwenOld)); ok {
 		t.Fatal("deactivated release's family template must no longer be accepted")
 	}
-	if ok, mismatches := srv.verifyRuntimeHashesAgainstManifest(manifest, "", "", report(qwenNew)); !ok {
+	if ok, mismatches := srv.verifyRuntimeHashesAgainstManifest(manifest, report(qwenNew)); !ok {
 		t.Fatalf("remaining release's family template must still be accepted: %+v", mismatches)
 	}
 }

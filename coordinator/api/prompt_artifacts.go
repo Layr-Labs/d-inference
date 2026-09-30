@@ -1,6 +1,7 @@
 package api
 
 import (
+	"github.com/eigeninference/d-inference/coordinator/api/promptwork"
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -13,6 +14,7 @@ func (s *Server) SetPromptArtifactProvisioner(provisioner *promptcontract.Provis
 
 func (s *Server) SetPromptContractClient(client *promptcontract.Client) {
 	s.promptContract = client
+	s.promptWorkGate = promptwork.NewGate()
 }
 
 func (s *Server) SetPromptPreloadController(controller *promptcontract.PreloadController) {

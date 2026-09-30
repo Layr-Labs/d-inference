@@ -11,7 +11,6 @@ var (
 	zeroParent      [sha256.Size]byte
 
 	ErrIdentityTooLarge = errors.New("block-hash identity exceeds uint32 length")
-	ErrBlockIndex       = errors.New("block-hash block index exceeds uint32")
 )
 
 func BlockHash(contractID, scopeID []byte, parent [sha256.Size]byte, blockIndex uint32, tokens []uint32) ([sha256.Size]byte, error) {
@@ -28,27 +27,6 @@ func BlockHash(contractID, scopeID []byte, parent [sha256.Size]byte, blockIndex 
 		encoded = binary.BigEndian.AppendUint32(encoded, token)
 	}
 	return sha256.Sum256(encoded), nil
-}
-
-func ChainHashes(contractID, scopeID []byte, tokens []uint32, blockSize int) ([][sha256.Size]byte, error) {
-	if blockSize <= 0 {
-		return nil, nil
-	}
-	hashes := make([][sha256.Size]byte, 0, len(tokens)/blockSize)
-	parent := zeroParent
-	for start := 0; start+blockSize <= len(tokens); start += blockSize {
-		index := start / blockSize
-		if uint64(index) > uint64(^uint32(0)) {
-			return nil, ErrBlockIndex
-		}
-		hash, err := BlockHash(contractID, scopeID, parent, uint32(index), tokens[start:start+blockSize])
-		if err != nil {
-			return nil, err
-		}
-		hashes = append(hashes, hash)
-		parent = hash
-	}
-	return hashes, nil
 }
 
 func LastCompleteBoundary(tokenCount, blockSize int) (int, bool) {

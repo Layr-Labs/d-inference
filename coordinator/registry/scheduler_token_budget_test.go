@@ -140,12 +140,13 @@ func TestObservedTPSPreferredOverBenchmark(t *testing.T) {
 		Model:                 model,
 		EstimatedPromptTokens: 100,
 		RequestedMaxTokens:    2048,
+		MinDecodeTPS:          40,
 	}
 	selected, decision := reg.ReserveProviderEx(model, req)
 	if selected == nil {
 		t.Fatal("expected a provider, got nil")
 	}
-	// Provider B has higher observed TPS (70 vs 30), so its thisReqMs is lower.
+	// The existing decode-quality preference uses observed, not benchmark TPS.
 	if selected.ID != "bench-slow" {
 		t.Fatalf("selected %q, want 'bench-slow' (higher observed TPS)", selected.ID)
 	}
@@ -154,13 +155,14 @@ func TestObservedTPSPreferredOverBenchmark(t *testing.T) {
 	}
 }
 
-func TestTokenBudgetBacklogCost(t *testing.T) {
+func TestTokenBudgetBacklogRemainsDiagnostic(t *testing.T) {
 	reg := New(testLogger())
 	model := "backlog-model"
 
-	// Provider A: large backlog (20K tokens used).
+	// Both providers have equal service work but different memory commitments.
+	// Physical admission and cost diagnostics retain those commitments; the
+	// first-content selector does not treat them as serial output to drain.
 	makeTokenBudgetProvider(t, reg, "heavy", model, 100, 20_000, 32_768, 80)
-	// Provider B: light backlog (2K tokens used).
 	makeTokenBudgetProvider(t, reg, "light", model, 100, 2_000, 32_768, 80)
 
 	req := &PendingRequest{
@@ -173,8 +175,8 @@ func TestTokenBudgetBacklogCost(t *testing.T) {
 	if selected == nil {
 		t.Fatal("expected a provider, got nil")
 	}
-	if selected.ID != "light" {
-		t.Fatalf("selected %q, want 'light' (lower backlog)", selected.ID)
+	if (selected.ID != "light" && selected.ID != "heavy") || decision.NearTiePoolSize != 2 || decision.SelectionPath != SelectionRandom {
+		t.Fatalf("selected %q with band=%d path=%s, want either equally committed provider in a random two-provider band", selected.ID, decision.NearTiePoolSize, decision.SelectionPath)
 	}
 	if decision.BacklogMs <= 0 {
 		t.Fatalf("BacklogMs=%f, want > 0 (should reflect token backlog)", decision.BacklogMs)

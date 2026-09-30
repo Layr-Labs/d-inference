@@ -161,29 +161,6 @@ public func sha256Hex(_ data: Data) -> String {
     return digest.hexString
 }
 
-/// Compute a deterministic SHA-256 fingerprint over multiple files.
-///
-/// Each file is hashed independently, then the per-file hashes are combined
-/// in sorted filename order into a final hash. This produces a consistent
-/// result regardless of filesystem ordering.
-public func hashFilesSorted(_ paths: [String]) -> String? {
-    let sorted = paths.sorted()
-    var finalHasher = SHA256()
-
-    for path in sorted {
-        guard let handle = FileHandle(forReadingAtPath: path) else {
-            return nil
-        }
-        defer { try? handle.close() }
-
-        let fileDigest = sha256Digest(of: handle)
-        finalHasher.update(data: Data(fileDigest))
-    }
-
-    let digest = finalHasher.finalize()
-    return digest.hexString
-}
-
 /// Hash an already-open stream. Callers retain their own path/error policy
 /// and handle lifetime; anonymous metallib copying has a separate write loop.
 func sha256Digest(of handle: FileHandle, chunkSize: Int = 65_536) -> SHA256.Digest {

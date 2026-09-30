@@ -52,7 +52,7 @@ struct RuntimeSnapshotConfigTests {
         }
     }
 
-    @Test("benchmark-style loading never rewrites its config")
+    @Test("loading a runtime snapshot never rewrites its config or migrates a stamped cap")
     func readOnlyLoadPreservesFile() throws {
         let url = tempConfigURL()
         let original = """
@@ -71,10 +71,9 @@ struct RuntimeSnapshotConfigTests {
         try original.write(to: url, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: url) }
 
-        let snapshot = try loadRuntimeSnapshot(
-            configPath: url.path,
-            migrateOnDisk: false)
+        let snapshot = try loadRuntimeSnapshot(configPath: url.path)
 
+        #expect(snapshot.config.backend.engineV2MaxConcurrent == 8)
         #expect(!snapshot.config.gemmaOptimizations.prefillLayer18)
         #expect(!snapshot.config.gemmaOptimizations.weightedR1)
         #expect(try String(contentsOf: url, encoding: .utf8) == original)

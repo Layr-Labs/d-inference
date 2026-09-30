@@ -155,7 +155,7 @@ func TestProviderBodyMemoBuildsOncePerModel(t *testing.T) {
 			return nil, errors.New("cannot build")
 		}
 		return []byte(`{"model":"` + model + `"}`), nil
-	}, true, false)
+	}, true)
 
 	memo.seed("seeded", []byte(`{"model":"seeded","seeded":true}`))
 	if body, err := memo.body("seeded"); err != nil || !bytes.Contains(body, []byte(`"seeded":true`)) {

@@ -77,7 +77,13 @@ func (s *Server) ExactCacheStatusSnapshot() ExactCacheStatus {
 	if routingMode != registry.CacheRoutingOn {
 		routingMode = registry.CacheRoutingOff
 	}
+	// Count first: counting settles expiry, and the lifecycle counters read
+	// afterwards then include those removals. The two reads take the tracker
+	// lock separately, so a receipt that lands between them can still leave
+	// holder_added minus the removals one or two off holders in a scrape.
+	holders, attempts := s.registry.CacheRoutingStateCounts()
 	status := ExactCacheStatus{
+		Holders: holders, Attempts: attempts,
 		ArtifactAllowlist: ExactCacheArtifactAllowlistStatus{
 			Configured: config.AllowedArtifacts != nil, Count: len(config.AllowedArtifacts),
 		},
@@ -86,7 +92,6 @@ func (s *Server) ExactCacheStatusSnapshot() ExactCacheStatus {
 		Providers:   s.registry.PrefixCacheProtocolStatus(),
 		Lifecycle:   s.registry.CacheRoutingLifecycleStatus(),
 	}
-	status.Holders, status.Attempts = s.registry.CacheRoutingStateCounts()
 	if s.promptSupervisor != nil {
 		supervisor := s.promptSupervisor.Status()
 		status.Sidecar.Enabled = supervisor.Enabled

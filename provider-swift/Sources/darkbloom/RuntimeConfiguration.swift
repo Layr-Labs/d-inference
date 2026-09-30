@@ -11,10 +11,7 @@ struct RuntimeConfiguration {
 
 /// Configuration edits must not depend on being able to discover models in the
 /// old cache: `models location --reset` also repairs an invalid saved path.
-func loadRuntimeConfiguration(
-    configPath rawPath: String?,
-    migrateOnDisk: Bool = true
-) throws -> RuntimeConfiguration {
+func loadRuntimeConfiguration(configPath rawPath: String?) throws -> RuntimeConfiguration {
     let configPath: URL
     if let rawPath {
         configPath = URL(fileURLWithPath: (rawPath as NSString).expandingTildeInPath)
@@ -31,17 +28,13 @@ func loadRuntimeConfiguration(
         hardware = nil
         hardwareError = error
     }
-    var config: ProviderConfig
+    let config: ProviderConfig
     if configFileExists {
         config = try ConfigManager.load(from: configPath)
     } else if let hardware {
         config = ProviderConfig.defaultForHardware(hardware)
     } else {
         config = ConfigManager.loadDefault()
-    }
-    if migrateOnDisk {
-        config = migrateConfigIfNeeded(
-            configPath: configPath, config: config, copyToCanonical: rawPath == nil)
     }
     return RuntimeConfiguration(
         configPath: configPath, configFileExists: configFileExists,

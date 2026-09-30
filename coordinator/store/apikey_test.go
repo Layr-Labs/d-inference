@@ -149,8 +149,8 @@ func TestKeySpendSinceWindows(t *testing.T) {
 	_, rec, _ := s.CreateAPIKey("acct-1", APIKeyCreate{Name: "a"})
 
 	// Record usage attributed to this key.
-	s.RecordUsageFull("prov", "acct-1", rec.ID, "model", "req-1", 10, 10, 2_000_000, nil)
-	s.RecordUsageFull("prov", "acct-1", rec.ID, "model", "req-2", 5, 5, 500_000, nil)
+	s.RecordUsage(UsageRecord{ProviderID: "prov", ConsumerKey: "acct-1", KeyID: rec.ID, Model: "model", RequestID: "req-1", PromptTokens: 10, CompletionTokens: 10, CostMicroUSD: 2_000_000})
+	s.RecordUsage(UsageRecord{ProviderID: "prov", ConsumerKey: "acct-1", KeyID: rec.ID, Model: "model", RequestID: "req-2", PromptTokens: 5, CompletionTokens: 5, CostMicroUSD: 500_000})
 
 	// Lifetime (zero since) sums everything.
 	if got := s.KeySpendSince(rec.ID, time.Time{}); got != 2_500_000 {
@@ -255,7 +255,7 @@ func TestRevokeKeySoftDisables(t *testing.T) {
 	if !s.RevokeKey(raw) {
 		t.Fatal("first revoke should return true")
 	}
-	if s.ValidateKey(raw) {
+	if keyAuthenticates(s, raw) {
 		t.Error("revoked key should not validate")
 	}
 	if _, err := s.AuthenticateKey(raw); err == nil {
@@ -274,16 +274,16 @@ func TestRevokeKeySoftDisables(t *testing.T) {
 	_ = rec
 }
 
-func TestValidateKeyEnforcesExpiry(t *testing.T) {
+func TestAuthenticateKeyEnforcesExpiry(t *testing.T) {
 	s := NewMemory(Config{})
 	past := time.Now().Add(-time.Hour)
 	raw, _, _ := s.CreateAPIKey("acct-1", APIKeyCreate{Name: "k", ExpiresAt: &past})
-	if s.ValidateKey(raw) {
+	if keyAuthenticates(s, raw) {
 		t.Error("expired key must not validate")
 	}
 	future := time.Now().Add(time.Hour)
 	raw2, _, _ := s.CreateAPIKey("acct-1", APIKeyCreate{Name: "k2", ExpiresAt: &future})
-	if !s.ValidateKey(raw2) {
+	if !keyAuthenticates(s, raw2) {
 		t.Error("non-expired key should validate")
 	}
 }
@@ -364,4 +364,27 @@ func TestKeyLabelMasking(t *testing.T) {
 	if strings.Contains(label, raw[16:40]) {
 		t.Errorf("label %q leaks key body", label)
 	}
+}
+
+// keyAuthenticates reports whether raw resolves to an active, unexpired key
+// through the production auth path.
+func keyAuthenticates(s Store, raw string) bool {
+	_, err := s.AuthenticateKey(raw)
+	return err == nil
+}
+
+// activeKeyCount counts the account's keys that are not disabled.
+func activeKeyCount(t *testing.T, s Store, accountID string) int {
+	t.Helper()
+	keys, err := s.ListAPIKeys(accountID)
+	if err != nil {
+		t.Fatalf("ListAPIKeys(%q): %v", accountID, err)
+	}
+	n := 0
+	for _, k := range keys {
+		if !k.Disabled {
+			n++
+		}
+	}
+	return n
 }

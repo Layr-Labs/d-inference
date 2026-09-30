@@ -23,6 +23,9 @@ func cloneModelRegistryRecord(rec *ModelRegistryRecord) *ModelRegistryRecord {
 		v := cloneModelVersionForCache(rec.ActiveVersion)
 		cp.ActiveVersion = &v
 	}
+	for i := range rec.ServingVersions {
+		cp.ServingVersions = append(cp.ServingVersions, cloneModelVersionForCache(&rec.ServingVersions[i]))
+	}
 	if rec.Files != nil {
 		cp.Files = make([]ModelVersionFile, len(rec.Files))
 		copy(cp.Files, rec.Files)

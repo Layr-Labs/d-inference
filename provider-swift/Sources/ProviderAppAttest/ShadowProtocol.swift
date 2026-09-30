@@ -74,11 +74,15 @@ public struct AppAttestShadowPayload: Codable, Sendable, Equatable {
         case nativeErrorChain = "native_error_chain"
     }
 
+    /// The protocol-3 transcript (the only version this provider registers):
+    /// length-prefixed UTF-8 over the request, the account scope, the measured
+    /// status, the hardware facts and the attestation verification key.
     public func clientHash(publicKey: String) -> Data {
         var data = Data()
-        var values = [protocolVersion == 3 ? "darkbloom.app-attest.shadow.v3" : (protocolVersion == 2 ? "darkbloom.app-attest.shadow.v2" : "darkbloom.app-attest.shadow.v1"), action, session, environment ?? "", keyID ?? "", challenge ?? "", publicKey]
-        if [2,3].contains(protocolVersion ?? 0) { values += [accountScope ?? ""] + (status?.values ?? ["", "", "", "", ""]) }
-        if protocolVersion == 3 { values += (status?.hardwareValues ?? Array(repeating: "", count: 6)) + [status?.attestationPublicKey ?? ""] }
+        let values = ["darkbloom.app-attest.shadow.v3", action, session, environment ?? "", keyID ?? "", challenge ?? "", publicKey, accountScope ?? ""]
+            + (status?.values ?? ["", "", "", "", ""])
+            + (status?.hardwareValues ?? Array(repeating: "", count: 6))
+            + [status?.attestationPublicKey ?? ""]
         for value in values {
             let bytes = Data(value.utf8)
             var length = UInt32(bytes.count).bigEndian

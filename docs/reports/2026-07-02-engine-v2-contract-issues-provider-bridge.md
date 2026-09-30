@@ -1,6 +1,6 @@
 # CONTRACT ISSUES — WS-H (provider bridge)
 
-> Last updated: 2026-07-02 · commit `fab6ea870`
+> Last updated: 2026-07-02
 
 Places where the frozen `CBv2Contracts.swift` was insufficient for the
 provider bridge, and the closest conforming shape chosen. None block

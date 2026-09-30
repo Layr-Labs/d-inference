@@ -1,6 +1,6 @@
 # Optimized probe for the Gemma QAT diagnostic retry
 
-> Last updated: 2026-09-06 · commit `17dbfa8aa`
+> Last updated: 2026-09-06
 
 The optimized `radix-engine` probe builds from the committed generic-diagnostic,
 persistent-namespace, packet-capture and cancellation-settlement source union.

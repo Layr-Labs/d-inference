@@ -1,6 +1,6 @@
 # OpenRouter 504/429 Cascade — Root Cause Analysis
 
-> Last updated: 2026-08-31 · commit `5d400cf75`
+> Last updated: 2026-08-31
 
 **Date:** 2026-08-31 (incident ongoing at time of writing, ~18:10 UTC)
 **Scope:** All public models; OpenRouter-visible uptime collapse

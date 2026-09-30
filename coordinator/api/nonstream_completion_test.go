@@ -34,7 +34,7 @@ func TestNonStreamResponseCompletionContract(t *testing.T) {
 				}
 				close(pr.CompleteCh)
 				if terminal == "provider error" {
-					pr.ErrorCh <- protocol.InferenceErrorMessage{StatusCode: 500, Error: "provider failed"}
+					pr.ErrorCh <- protocol.InferenceErrorMessage{StatusCode: 500, Error: "provider failed", FailureCode: protocol.FailureCodeGenerationFailure}
 				}
 				w := httptest.NewRecorder()
 				srv.handleNonStreamingResponseWithFirstChunkAndError(w, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil), pr, []string{shape.chunk}, nil)

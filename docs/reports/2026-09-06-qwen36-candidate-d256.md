@@ -1,6 +1,6 @@
 # Qwen3.6 candidate passes existing D256 numerical gates
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-06
 
 The combined correctness candidate passes all 13 existing Qwen3.6 D256 precision cases without changing their tolerances. This validates the tested single-query attention geometry and fault detection independently of the separate full-model wording comparison.
 

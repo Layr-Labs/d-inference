@@ -3,6 +3,7 @@ package protocol
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -270,5 +271,24 @@ func TestDesiredModelsMessageMarshal(t *testing.T) {
 	}
 	if decoded.Models[1].PreviousBuild != "" {
 		t.Errorf("entry 1 previous_build should be empty, got %q", decoded.Models[1].PreviousBuild)
+	}
+}
+
+func TestDesiredModelRevisionWire(t *testing.T) {
+	entry := DesiredModelEntry{ModelName: "model", DesiredBuild: "model", Revision: "v2", AggregateSHA256: "approved-hash"}
+	data, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"revision":"v2"`) || !strings.Contains(string(data), `"aggregate_sha256":"approved-hash"`) {
+		t.Fatalf("missing revision identity: %s", data)
+	}
+	var decoded DesiredModelEntry
+	if err := json.Unmarshal(data, &decoded); err != nil || decoded != entry {
+		t.Fatal("revision round trip", err)
+	}
+	legacy, _ := json.Marshal(DesiredModelEntry{ModelName: "model", DesiredBuild: "model"})
+	if strings.Contains(string(legacy), "revision") || strings.Contains(string(legacy), "aggregate_sha256") {
+		t.Fatalf("legacy fields were not omitted: %s", legacy)
 	}
 }

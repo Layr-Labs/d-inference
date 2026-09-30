@@ -60,7 +60,7 @@ func TestOpenRouterModelsEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv.SyncModelCatalog()
-	if err := st.SetModelPrice("platform", modelID, 50_000, 200_000); err != nil {
+	if err := st.SetModelPrice(store.ModelPrice{AccountID: "platform", Model: modelID, InputPrice: 50_000, OutputPrice: 200_000}); err != nil {
 		t.Fatal(err)
 	}
 

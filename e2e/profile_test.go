@@ -121,7 +121,7 @@ func TestProfile_RequestProfilesRecorded(t *testing.T) {
 	var rows []store.RequestProfileRecord
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		rows = s.PgStore.RequestProfilesSince(time.Time{})
+		rows = s.PgStore.RequestProfilesSinceFiltered(time.Time{}, store.RequestProfileFilter{})
 		winning := 0
 		for _, r := range rows {
 			if r.Winning {

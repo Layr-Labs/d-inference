@@ -8,12 +8,15 @@
 // scan at startup — the scan IS the recovery protocol, so index and files
 // can never disagree after a crash (no sidecar persistence, spec §5.1).
 //
-// TTL is SLIDING on hit (15-minute max, `SSDPrefixCachePolicy`): a hit
+// TTL is SLIDING on hit (30-minute max, `SSDPrefixCachePolicy`): a hit
 // bumps `lastAccess` AND touches the file's mtime, so recency survives a
 // process restart (the scan seeds `lastAccess` from mtime).
 //
 // Eviction is `unlink` + index removal, oldest-by-last-hit first (LRU),
 // coordinated across models by `SSDDiskBudget` under one box-wide budget.
+// Eviction never rotates the model's cache epoch: the coordinator learns of
+// a removed file through an ordinary lookup miss, and every other file it
+// recorded for this provider stays valid evidence.
 
 import Foundation
 #if canImport(os)
@@ -176,6 +179,10 @@ final class SSDBlockIndex: @unchecked Sendable {
 /// (unlink + index removal).
 protocol SSDEvictableStore: AnyObject, Sendable {
     var evictionRoot: URL { get }
+    /// False once the store is closed or a different-binding successor has
+    /// taken its root. It then refuses every file removal, so whole-root
+    /// maintenance must not pick it to bracket one.
+    var ownsEvictionRoot: Bool { get }
     var diskBytesOnDisk: Int { get }
     /// lastAccess of the store's LRU entry, or nil when empty.
     func oldestEntryAccess() -> Int64?
@@ -185,8 +192,10 @@ protocol SSDEvictableStore: AnyObject, Sendable {
     /// Drop RAM-index entries whose files were removed by whole-root
     /// maintenance (including unloaded-model accounting).
     func reconcileExternalRemovals()
-    /// Bracket whole-root deletion through an active store so it owns the
-    /// replacement epoch and can resume advertising after the mutation.
+    /// Bracket whole-root deletion through an active store so the unlink and
+    /// the index reconciliation run under the store's own removal
+    /// serialization. The epoch is not rotated and the capability stays
+    /// advertised throughout.
     func performExternalDestructiveChange(_ body: () -> Void) -> Bool
     /// Retire only the named owned files, preserving the generation of survivors.
     /// Return paths actually unlinked; arbitrary external destruction uses the
@@ -225,14 +234,25 @@ final class SSDDiskBudget: @unchecked Sendable {
         }
     }
 
-    /// Returns nil when no active store owns this model root.
+    /// Runs `body` under a registered store that still owns this model root
+    /// and returns true. Returns nil, without running `body`, when none does:
+    /// either no store is registered for the root, or every one that is has
+    /// been disowned or closed and would refuse. The caller then takes the
+    /// unloaded-root path, so a lingering disowned store cannot stop TTL
+    /// expiry and budget eviction under its root.
     func performActiveDestructiveChange(root: URL, _ body: () -> Void) -> Bool? {
         let key = root.standardizedFileURL.resolvingSymlinksInPath().path
         return lock.withLock {
-            guard let store = stores.values.first(where: {
+            let owners = stores.values.filter {
                 $0.evictionRoot.standardizedFileURL.resolvingSymlinksInPath().path == key
-            }) else { return nil }
-            return store.performExternalDestructiveChange(body)
+                    && $0.ownsEvictionRoot
+            }
+            // A store refuses without running the body, so an owner that was
+            // disowned since the filter simply yields to the next one.
+            for store in owners where store.performExternalDestructiveChange(body) {
+                return true
+            }
+            return nil
         }
     }
 

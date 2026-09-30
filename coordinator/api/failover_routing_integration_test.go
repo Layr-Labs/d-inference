@@ -6,8 +6,6 @@ package api
 //
 //   - Test 4: inference-error cooldown — a provider that returns 2x 5xx within
 //     60s enters a 5-minute cooldown and stops receiving dispatches.
-//   - Test 5: tools version floor — requests carrying `tools` only route to
-//     providers at version >= 0.6.3.
 //   - Test 6: template_render_ok gate — tools requests never route to a
 //     provider whose advertised model reports template_render_ok=false.
 //   - Test 7: NormalizeToolSchemas — JSON-Schema union types in consumer tool
@@ -17,8 +15,8 @@ package api
 // INTEGRATION-NOTE(WS-R): the registry primitives these tests assert through
 // (registry/error_cooldown.go RecordInferenceError/RecordInferenceSuccess/
 // InferenceErrorCooldownActive(providerID, modelID, shape), registry/request_traits.go
-// RequestTraits{HasTools, AvoidVersion} with the "tools" → "0.6.3" floor and
-// the template_render_ok gate, protocol.ModelInfo.TemplateRenderOK) have
+// RequestTraits{HasTools, AvoidVersion} and the template_render_ok gate,
+// protocol.ModelInfo.TemplateRenderOK) have
 // LANDED. These tests fail until the consumer-side wiring lands: populating
 // PendingRequest.Traits from the parsed body and calling
 // RecordInferenceError/RecordInferenceSuccess on dispatch terminals (WS-C /
@@ -161,70 +159,6 @@ func TestInferenceErrorCooldown_ExcludesProvider(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test 5: tools version floor
-// ---------------------------------------------------------------------------
-
-// TestToolsVersionFloor: provider A runs version 0.5.16 (below the 0.6.3
-// tools floor) and is scheduler-preferred; provider B runs 0.6.4. A request
-// WITH tools must land on B only — A must not even see the dispatch. A
-// request WITHOUT tools is unconstrained by the floor and may land on either
-// provider (not over-asserted).
-//
-// INTEGRATION-NOTE(WS-C/integration): the floor itself has landed
-// (registry/request_traits.go: capabilityVersionFloors["tools"] = "0.6.3");
-// this test fails until the consumer path populates PendingRequest.Traits
-// (HasTools) from the parsed request body — until then the tools request
-// lands on the preferred 0.5.16 provider.
-func TestToolsVersionFloor(t *testing.T) {
-	reg, _, ts := setupFailoverServer(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-
-	model := "version-floor-model"
-
-	pA := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
-		Name: "provider-a", Version: "0.5.16", DecodeTPS: 200,
-		Models: []failoverModelSpec{{ID: model}}, Script: fullServeScript(model),
-	})
-	pB := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
-		Name: "provider-b", Version: "0.6.4", DecodeTPS: 1,
-		Models: []failoverModelSpec{{ID: model}}, Script: fullServeScript(model),
-	})
-
-	// Request WITH tools → must be served by B; A sees no dispatch.
-	status, body, err := postChat(ctx, ts.URL, "test-key",
-		buildChatBody(t, model, true, weatherTools("string")))
-	if err != nil {
-		t.Fatalf("tools request: %v", err)
-	}
-	if status != http.StatusOK {
-		t.Fatalf("tools request: status = %d, want 200; body = %s", status, body)
-	}
-	if !strings.Contains(body, markerFor("provider-b")) {
-		t.Errorf("tools request was not served by the >=0.6.3 provider; body = %s", body)
-	}
-	if got := pA.dispatchCount(); got != 0 {
-		t.Errorf("provider-a (0.5.16) received %d dispatch(es) for a tools request, want 0 — version floor must filter at selection time", got)
-	}
-	if got := pB.dispatchCount(); got != 1 {
-		t.Errorf("provider-b dispatches = %d, want 1", got)
-	}
-
-	// Request WITHOUT tools → no floor; either provider is acceptable.
-	status, body, err = postChat(ctx, ts.URL, "test-key", buildChatBody(t, model, true, nil))
-	if err != nil {
-		t.Fatalf("tool-less request: %v", err)
-	}
-	if status != http.StatusOK {
-		t.Fatalf("tool-less request: status = %d, want 200; body = %s", status, body)
-	}
-	if !strings.Contains(body, "content-from-") {
-		t.Errorf("tool-less request produced no provider content; body = %s", body)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Test 6: template_render_ok gate
 // ---------------------------------------------------------------------------
 
@@ -236,10 +170,9 @@ func TestToolsVersionFloor(t *testing.T) {
 // INTEGRATION-NOTE(WS-C/integration): the gate has landed registry-side
 // (protocol.ModelInfo.TemplateRenderOK + the HasTools render-broken check in
 // registry/request_traits.go); this test fails until the consumer path
-// populates PendingRequest.Traits. Both providers run 0.6.4 so the version
-// floor cannot mask the gate. An ABSENT flag must remain routable for tools
-// (old fleet compatibility) — B advertising explicit true plus A explicit
-// false isolates the gate's false-branch.
+// populates PendingRequest.Traits. An ABSENT flag must remain routable for
+// tools (no opinion) — B advertising explicit true plus A explicit false
+// isolates the gate's false-branch.
 func TestTemplateRenderOKGate(t *testing.T) {
 	reg, _, ts := setupFailoverServer(t)
 
@@ -306,7 +239,7 @@ func TestTemplateRenderOKGate(t *testing.T) {
 // INTEGRATION-NOTE(WS-T): depends on the orchestrator wiring
 // NormalizeToolSchemas into the consumer dispatch path pre-encryption. Fails
 // against the pre-workstream coordinator (the union type passes through
-// verbatim). The provider runs 0.6.4 with template_render_ok=true so the WS-R
+// verbatim). The provider advertises template_render_ok=true so the WS-R
 // tools gates cannot block the dispatch once they land.
 func TestNormalizedToolsReachProvider(t *testing.T) {
 	reg, _, ts := setupFailoverServer(t)
@@ -393,13 +326,14 @@ func postInference(ctx context.Context, tsURL, endpoint, apiKey, body string) (i
 	return resp.StatusCode, string(respBody), nil
 }
 
-// TestToolsFailFastWhenNoCapableProvider: the model's ONLY provider runs
-// 0.5.16 — below the tools version floor — so a tools request can never
-// route. It must fail fast with a clear error naming tool support, NOT pass
-// the trait-blind capacity preflight and queue for 120s into a misleading
-// capacity 429. A tool-less request to the same provider must still serve.
-// The /v1/messages (Anthropic) surface shares the same gate via
-// handleGenericInference.
+// TestToolsFailFastWhenNoCapableProvider: the model's ONLY provider advertises
+// it with template_render_ok=false — its chat-template self-check crashed — so
+// a tools request can never route. It must fail fast with a clear error naming
+// tool support, NOT pass the trait-blind capacity preflight and queue for 120s
+// into a misleading capacity 429. The /v1/messages (Anthropic) surface shares
+// the same gate via handleGenericInference. (A render-broken build is fenced
+// for every request shape, so no tool-less control is possible on this
+// fixture; TestTemplateRenderOKGate covers routing to a healthy build.)
 func TestToolsFailFastWhenNoCapableProvider(t *testing.T) {
 	reg, _, ts := setupFailoverServer(t)
 
@@ -407,10 +341,12 @@ func TestToolsFailFastWhenNoCapableProvider(t *testing.T) {
 	defer cancel()
 
 	model := "tools-fail-fast-model"
+	renderBroken := false
 
 	pA := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
-		Name: "provider-a", Version: "0.5.16", DecodeTPS: 100,
-		Models: []failoverModelSpec{{ID: model}}, Script: fullServeScript(model),
+		Name: "provider-a", Version: "0.9.9", DecodeTPS: 100,
+		Models: []failoverModelSpec{{ID: model, TemplateRenderOK: &renderBroken}},
+		Script: fullServeScript(model),
 	})
 
 	// Tools request → fast, clean 503 naming the real cause.
@@ -455,20 +391,5 @@ func TestToolsFailFastWhenNoCapableProvider(t *testing.T) {
 	}
 	if got := pA.dispatchCount(); got != 0 {
 		t.Errorf("provider-a received %d dispatch(es) for an unroutable anthropic tools request, want 0", got)
-	}
-
-	// Tool-less request to the same below-floor provider still serves.
-	status, body, err = postChat(ctx, ts.URL, "test-key", buildChatBody(t, model, true, nil))
-	if err != nil {
-		t.Fatalf("tool-less request: %v", err)
-	}
-	if status != http.StatusOK {
-		t.Fatalf("tool-less request: status = %d, want 200; body = %s", status, body)
-	}
-	if !strings.Contains(body, markerFor("provider-a")) {
-		t.Errorf("tool-less request not served by provider-a; body = %s", body)
-	}
-	if got := pA.dispatchCount(); got != 1 {
-		t.Errorf("provider-a dispatches = %d, want 1 (tool-less only)", got)
 	}
 }

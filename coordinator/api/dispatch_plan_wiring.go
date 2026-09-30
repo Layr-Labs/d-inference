@@ -26,20 +26,19 @@ import (
 //	run (failover retries) — next attempts consume the plan before any rescan;
 //	                         one RefreshDispatchPlan per logical request.
 //
-// Everything here degrades to the exact legacy behavior when the plan is
-// empty/nil (legacy fleets, queue path, prefer-owner): no probes, the 50%
-// launch point, full-scan selection.
+// Missing plans use full-scan selection under the same first-content and
+// ownership policy. Probes require a retained plan; every hedge still needs
+// credible feasible evidence and spare service allowance at reservation.
 
 // capacityProbeWindow bounds how long probed alternates get to answer before
-// silence demotes them. 250ms (plan Phase 3): informational, never blocking —
-// the primary is already in flight and the window is well inside the gap to
-// the earliest useful hedge point on the ordinary 9s budget.
+// silence demotes them. The initial round runs beside the primary; the one
+// refresh after repeated predictive refusals may wait within this window and
+// the remaining original request budget.
 const capacityProbeWindow = 250 * time.Millisecond
 
 // dispatchPlanProbeFanout sizes the collector's confidence map: a plan
-// retains at most eight alternates (registry dispatchPlanMaxAlternates), so a
-// probe round settles at most eight outcomes.
-const dispatchPlanProbeFanout = 8
+// may retain eight alternates, but a probe round contacts at most two.
+const dispatchPlanProbeFanout = 2
 
 // noteProviderDispatched counts one inference frame actually handed to a
 // provider. It is invoked only after the writer confirms final authorization
@@ -85,7 +84,11 @@ func (d *dispatchState) dispatchProviderWith(
 		d.reservedMicroUSD, d.estimatedPromptTokens, d.deadline, d.requestedMaxTokens,
 		d.tokenAdmission, d.requiresVision, d.traits(), d.allowedProviderSerials,
 		d.isResponsesAPI, d.policy, timing, d.serviceReservation, d.cachePlan,
-		exclude, d.attempt, d.profile, backupOf, recordRoute, d.noteProviderDispatched, fullScan, reserve,
+		exclude, d.attempt, d.profile, backupOf, recordRoute, d.noteProviderDispatched, fullScan,
+		func(pr *registry.PendingRequest, ids []string) (*registry.Provider, registry.RoutingDecision, *registry.DispatchPlan) {
+			d.configureFirstContentReservation(pr, backupOf != "")
+			return reserve(pr, ids)
+		},
 	)
 }
 
@@ -156,7 +159,7 @@ func (d *dispatchState) dispatchFromPlanMachinery(
 	return provider, pr, decision, lastErr, lastErrCode, true
 }
 
-// maybeProbePlanCandidates launches the request's one capacity-probe round
+// maybeProbePlanCandidates launches the request's initial capacity-probe round
 // for the alternates retained by the primary reservation. Called strictly
 // AFTER the primary frame handoff succeeded: probes run in parallel with the
 // in-flight prompt and can never add primary latency (plan decision #1).
@@ -187,18 +190,22 @@ func (d *dispatchState) maybeProbePlanCandidates() {
 	d.probesLaunched = true
 	d.hedgeAdvanceCh = make(chan time.Time, 1)
 	outcomes := d.s.registry.ProbePlanCandidates(d.plan, registry.CapacityProbeShape{
-		Model:             d.model,
-		PromptTokens:      d.estimatedPromptTokens,
-		MaxOutputTokens:   d.requestedMaxTokens,
-		RequiresVision:    d.requiresVision,
-		VisionImageCount:  d.visionImageCount,
-		DeadlineRemaining: remaining,
+		Model:                d.model,
+		PromptTokens:         d.firstContentPromptWork(),
+		MaxOutputTokens:      d.requestedMaxTokens,
+		RequiresVision:       d.requiresVision,
+		VisionImageCount:     d.visionImageCount,
+		DeadlineRemaining:    remaining,
+		FirstContentDeadline: firstContentDeadlineAt(receivedAt, d.deadline),
 	}, capacityProbeWindow)
 	plan := d.plan
 	advance := d.hedgeAdvanceCh
 	deadline := d.deadline
 	speculativeAt := d.speculativeAt
+	done := make(chan struct{})
+	d.probeDone = done
 	saferun.Go(d.s.logger, "api.collectCapacityQuotes", func() {
+		defer close(done)
 		collectCapacityQuotes(outcomes, plan, receivedAt, deadline, speculativeAt, advance)
 	})
 }
@@ -268,17 +275,10 @@ func quoteHedgeConfidence(confidence string) hedgeQuoteConfidence {
 // claims the global budget slot in one atomic operation. acquired hedges MUST
 // be released exactly once via noteHedgeResolved (runSpeculative owns that).
 //
-// Two deliberate legacy escapes, per the dual-path decision (plan #3):
-//   - A Server without a governor (bare test literals) keeps the legacy
-//     always-hedge behavior rather than failing closed on a fixture gap.
-//     Nothing is acquired: there is no counter to release.
-//   - A capacity-SILENT fleet for the model (no provider reports a
-//     BackendCapacity snapshot and none is quote-capable) makes every
-//     governor input meaningless — (false, 0, 0) there is ignorance, not
-//     saturation — so legacy providers keep today's unconditional 50% hedge
-//     instead of losing insurance to a signal they cannot emit. The hedge is
-//     still really in flight, so it acquires a slot ungoverned: capacity-
-//     aware requests must see it against their budget.
+// A Server without a governor (bare test literals) leaves the budget untouched;
+// the atomic reservation still requires a distinct feasible provider with spare
+// whole-Mac service allowance. A capacity-silent fleet has no credible spare
+// capacity evidence and cannot justify insurance work.
 func (d *dispatchState) tryAcquireBackupHedge(primaryID string) (hedgeVerdict, bool) {
 	g := d.s.hedgeGov
 	if g == nil {
@@ -287,8 +287,7 @@ func (d *dispatchState) tryAcquireBackupHedge(primaryID string) (hedgeVerdict, b
 	exclude := append(d.excludedProviderIDs(), primaryID)
 	idleAlt, queueDepth, fleetIdle, capacitySignals := d.s.registry.HedgeGovernorSnapshot(d.model, d.pr, exclude...)
 	if !capacitySignals {
-		g.acquireHedgeUngoverned()
-		return hedgeAllow, true
+		return hedgeSuppressNoIdleCapacity, false
 	}
 	return g.tryAcquireHedge(d.model, hedgeGovernorInputs{
 		idleAlternativeExists: idleAlt,

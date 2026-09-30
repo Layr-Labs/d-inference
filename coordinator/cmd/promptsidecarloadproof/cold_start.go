@@ -30,7 +30,7 @@ func coldStartSupervisorConfig(
 ) promptcontract.SupervisorConfig {
 	config := proofSupervisorConfig(
 		args, socketPath, maxLoadedContracts, maxConcurrency)
-	// This phase proves cold-load singleflight, byte-exact plans, bounded RSS,
+	// This phase proves cold preload rotation, byte-exact plans, bounded RSS,
 	// and no child restart. Keep the production one-second request timeout for
 	// the later warm 25-QPS proof; cold tokenizer construction is CPU-speed
 	// dependent and has exceeded one second on otherwise healthy 4-vCPU runners.
@@ -75,7 +75,8 @@ func runColdStartProof(
 
 	// Load one real contract solely to open the isolated proof process. The LRU
 	// is one slot smaller than the real active set, so the ordered bursts below
-	// evict and then cold-load every contract, including this first one.
+	// evict and then explicitly preload every contract, including this first one.
+	// Planning admits only the successfully acknowledged preload set.
 	preloadCtx, cancel := context.WithTimeout(ctx, config.PreloadTimeout)
 	initial, err := supervisor.Client().Preload(preloadCtx, inventory.Contracts[:1])
 	cancel()
@@ -103,6 +104,15 @@ func runColdStartProof(
 		if !ok {
 			return summary, fmt.Errorf("no cold probe for contract %s", contractID)
 		}
+		preloadCtx, cancel := context.WithTimeout(ctx, config.PreloadTimeout)
+		preloaded, err := supervisor.Client().Preload(preloadCtx, []string{contractID})
+		cancel()
+		if err != nil {
+			return summary, fmt.Errorf("cold-start preload rotation: %w", err)
+		}
+		if !preloaded.Ready || preloaded.Requested != 1 || preloaded.Cold != 1 || preloaded.Warm != 0 || preloaded.Failed != 0 {
+			return summary, fmt.Errorf("cold-start rotation did not load exactly one cold contract: %+v", preloaded)
+		}
 		burst := runColdBurst(ctx, supervisor.Client(), probe, coldBurstPerContract)
 		report.add(burst)
 	}
@@ -117,6 +127,7 @@ func runColdStartProof(
 	stopped = true
 	summary = coldStartSummary{
 		Contracts:                      len(inventory.Contracts),
+		PreloadRotations:               len(order),
 		Requests:                       report.Requests,
 		Succeeded:                      report.Succeeded,
 		ColdOnlyRejections:             report.ColdOnlyRejections,
@@ -160,7 +171,7 @@ func coldProbes(inventory productionInventory) map[string]coldProbe {
 			PromptContractID: contractID,
 			ScopeID:          "cold-start-load-proof",
 			ProviderBody: json.RawMessage(
-				`{"model":"load-proof","messages":[{"role":"user","content":"cold-start singleflight probe"}]}`),
+				`{"model":"load-proof","messages":[{"role":"user","content":"cold-start preload probe"}]}`),
 		}}
 	}
 	return probes

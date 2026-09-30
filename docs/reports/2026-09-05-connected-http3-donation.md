@@ -1,6 +1,6 @@
 # Connected Qwen3.8 HTTP coverage and missing SSD publication
 
-> Last updated: 2026-09-05 · commit `c56e9b11a`
+> Last updated: 2026-09-05
 
 Qwen3.8 passes all ten connected coordinator/provider cases with caching
 disabled on the rebuilt CLI. Its SSD companion completes the cold donor but

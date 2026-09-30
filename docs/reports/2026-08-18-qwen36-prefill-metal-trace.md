@@ -1,6 +1,6 @@
 # Qwen3.6 35B-A3B Prefill Metal-Trace Investigation — 2026-08-18
 
-> Last updated: 2026-08-18 · commit `5d400cf75`
+> Last updated: 2026-08-18
 
 ## Evidence notation and status
 

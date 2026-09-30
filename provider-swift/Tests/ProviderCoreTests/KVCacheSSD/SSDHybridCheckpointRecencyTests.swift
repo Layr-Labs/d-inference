@@ -117,7 +117,8 @@ struct SSDHybridCheckpointRecencyTests {
         defer { expired.close() }
         #expect(expired.stats().entries == 0)
         #expect(!FileManager.default.fileExists(atPath: file.path))
-        #expect(expired.config.epochStore?.current != epoch)
+        // TTL expiry at scan is a per-file removal: the epoch survives it.
+        #expect(expired.config.epochStore?.current == epoch)
         await expired.closeAndWait()
     }
 }

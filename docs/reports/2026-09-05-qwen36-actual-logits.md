@@ -1,6 +1,6 @@
 # Qwen3.6 logits at the first backend difference
 
-> Last updated: 2026-09-05 · commit `8a268ef19`
+> Last updated: 2026-09-05
 
 Four real-model MTP-off/cache-off runs locate the first contiguous/paged token
 difference in the actual target logits. Each backend's selection agrees with its

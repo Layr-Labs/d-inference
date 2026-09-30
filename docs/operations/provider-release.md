@@ -31,6 +31,9 @@ Keep `ProviderCore.version` in
 identity. Record release history in `CHANGELOG.md`;
 `scripts/check-release-version.sh` checks parity with the coordinator display
 fallback before packaging.
+The release Metal cache namespace also binds the prepared downloadable compiler's
+binary SHA, so an exact outer-cache hit cannot prevent publishing a library built
+with a newly installed Metal component.
 
 Production publication requires independent [durable App Attest build qualification](app-attest-build-qualification.md). Signing retains immutable bytes and a qualification template; a separate Linux staging job uploads those retained bytes to R2, and the Linux publication job verifies approval before release registration, R2 latest aliases and GitHub publication. Retry only the failed publication job after approval, preserving the original signed artifact. Deploy the matching coordinator first; the existing release key cannot approve builds.
 

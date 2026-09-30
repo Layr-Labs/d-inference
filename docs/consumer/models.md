@@ -1,6 +1,6 @@
 # Models reference
 
-> Last updated: 2026-09-28
+> Last updated: 2026-09-30
 
 Reference for `GET /v1/models` and `GET /v1/models/{id}`: every field of a `ModelEntry`, how the `model` you send is resolved, and the capability flags the API exposes and enforces. For SDK users and integrators. The catalog itself is database-driven — builds, capabilities and prices live in the coordinator's registry and price tables, and public names are aliases maintained by operators (`coordinator/api/model_alias_handlers.go`, [`../architecture/model-registry.md`](../architecture/model-registry.md)) — so there is no static list to reproduce here; `GET /v1/models` is the list.
 
@@ -124,9 +124,23 @@ Prefix reuse is a runtime provider capability scoped to the exact model artifact
 prompt contract and request isolation scope. A family name or model-list entry
 alone does not guarantee a cache hit. Complete SSD checkpoints support eligible
 loaded Qwen and selected Nemotron Lightning recurrent targets (including typed
-embedded MTP history), and paged GPT-OSS/Gemma historical attention;
+embedded MTP history), native MiMo text checkpoints (including its native
+assistant state), and paged GPT-OSS/Gemma historical attention;
 the [cache capability reference](../reference/ssd-kv-cache.md#per-family-reuse-capability)
 records backend and identity gates. This does not change API feature flags.
+
+## MiMo text prefix-cache default
+
+Provider 0.9.14 enables encrypted SSD prefix reuse for the
+[exact supported MiMo identities](../architecture/prefix-cache.md#mimo-complete-state).
+A repeated eligible text prefix can produce nonzero
+`usage.prompt_tokens_details.cached_tokens`; it is not guaranteed to hit.
+Image, audio and video requests still run through the existing native media
+path and remain uncached. Providers can disable MiMo reuse with
+`DARKBLOOM_MIMO_COMPLETE_PREFIX=0`, or all prefix reuse with
+`DARKBLOOM_PREFIX_CACHE=0`; see the
+[operator controls](../reference/configuration.md#native-mimo-v26-candidate).
+The default does not change the API request shape, model availability or price.
 
 ## GPT-OSS 20B prefix-cache default
 

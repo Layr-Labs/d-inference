@@ -124,6 +124,10 @@ The normal native MiMo path stays contiguous and uses encrypted text-only
 COMPLETE checkpoints, including native assistant state when MTP is active.
 The factory retains verified artifact/runtime identity, tenant, dtype, store,
 loaded-owner and memory-budget checks. Missing reusable state serves cold.
+The native connected loader and standalone load-hash policy use the same
+MiMo-specific activation decision, so an opt-out does not request fresh hash
+reads solely for cache construction. Independent attestation, artifact and
+fingerprint-change verification still apply.
 
 `DARKBLOOM_MIMO_COMPLETE_PREFIX=0` disables this path;
 `DARKBLOOM_PREFIX_CACHE=0` disables all prefix caching. The MiMo switch's exact

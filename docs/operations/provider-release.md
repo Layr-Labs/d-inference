@@ -25,9 +25,14 @@ Qualify the exact signed build with an ordinary launchd configuration: record a
 cold text request, a useful repeated-prefix donation and an authenticated SSD
 restore, including target/assistant output correctness and memory headroom.
 Verify image, audio and video requests still complete through the joint native
-path without reporting media-prefix reuse. Restart and repeat with
-`DARKBLOOM_MIMO_COMPLETE_PREFIX=0`, then with `DARKBLOOM_PREFIX_CACHE=0`, to verify
-both rollback controls reach the installed provider and serve cold. RAM
+path without reporting media-prefix reuse. Set `DARKBLOOM_MIMO_COMPLETE_PREFIX=0`
+and rerun the replacement `darkbloom start` flow, preserving the selected models
+and existing start options, then repeat with `DARKBLOOM_PREFIX_CACHE=0`.
+Replacement start drains the old process, rewrites its plist from the current
+shell environment and starts the provider; `darkbloom restart` reuses the saved
+plist and does not apply newly exported variables. Verify each replacement
+provider serves cold, then unset both overrides and repeat replacement start
+to restore the model default. RAM
 retention and experimental paging/rectangular verification stay off for this
 qualification. The source change does not qualify those runtime results.
 

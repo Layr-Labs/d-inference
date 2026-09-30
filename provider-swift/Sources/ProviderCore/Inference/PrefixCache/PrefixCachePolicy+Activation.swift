@@ -60,7 +60,10 @@ extension PrefixCachePolicy {
     /// Empty/unset uses the exact-model default, including when launchd omits
     /// an empty override. Nonempty values retain the existing exact-1 opt-in;
     /// every other value disables. The global cache kill switch always wins.
-    static func isMiMoCompletePrefixEnabled(modelId: String, environment: [String: String]) -> Bool {
+    static func isMiMoCompletePrefixEnabled(
+        modelId: String,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
         let requested: Bool
         if let value = environment[mimoCompletePrefixEnvironmentFlag],
            !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

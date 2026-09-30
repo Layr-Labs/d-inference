@@ -1,6 +1,6 @@
 # Resident paged prefix cache milestone
 
-> Last updated: 2026-09-05 · commit `788ce9f06`
+> Last updated: 2026-09-05
 
 This record banks the tested resident-page cache integration and SSD tier
 selection fix. It establishes cache ownership and deadline correctness in

@@ -1,6 +1,6 @@
 # App Attest 0.9.4 recovery qualification
 
-> Last updated: 2026-09-14 · commit `a99ce680a`
+> Last updated: 2026-09-14
 
 The 0.9.4 candidate adds guarded shadow activation, recovery, receipt renewal
 and prospective authorization. Local tests and real Apple exchanges validate

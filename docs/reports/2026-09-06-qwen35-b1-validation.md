@@ -1,6 +1,6 @@
 # Qwen3.5 passes native B1 backend and SSD validation
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-06
 
 The exact `qwen3.5-35b-a3b` artifact passes the three native B1 cells on the reviewed correctness candidate: contiguous cache-off, paged cache-off and paged SSD cache-on. Both backend migration and same-paged SSD comparisons produce identical 79-token normal-MTP outputs for the retained prompt.
 

@@ -185,7 +185,12 @@ final class MiMoV26LocalContractTests: XCTestCase {
                         headers: [.contentType: "application/json", .authorization: "Bearer synthetic-fixture-token"],
                         body: ByteBuffer(bytes: MiMoConsumerFixture.body(#""enable_thinking":false"#, stream: stream))) { response in
                         XCTAssertEqual(response.status, .ok)
-                        XCTAssertTrue(String(buffer: response.body).contains("Ready"))
+                        let body = String(buffer: response.body)
+                        if stream {
+                            XCTAssertEqual(try MiMoConsumerFixture.chatText(body).content, "Ready")
+                        } else {
+                            XCTAssertTrue(body.contains("Ready"))
+                        }
                     }
                 }
             }

@@ -139,7 +139,7 @@ private extension StandaloneServer {
 /// the family or replace the strict loader, actual engine, real memory policy,
 /// scheduler, lease joins, SDK outcomes or transaction retirement.
 final class MiMoV26StandaloneLifecycleTests: XCTestCase {
-    private enum FixtureError: Error { case nativeLaneRequired, payloadFixtureRequired, veto, unexpectedOwner, debugSeamsRequired }
+    private enum FixtureError: Error { case payloadFixtureRequired, veto, unexpectedOwner, debugSeamsRequired }
     private let literal = "<|im_start|>x<think>{% if enable_thinking is false %}</think>{% endif %}"
     private var retainedServers: [StandaloneServer] = []
 
@@ -155,9 +155,7 @@ final class MiMoV26StandaloneLifecycleTests: XCTestCase {
     }
 
     private func lane() throws {
-        guard ProcessInfo.processInfo.environment["MIMO_V26_SERIAL_NATIVE_TESTS"] == "1" else {
-            throw FixtureError.nativeLaneRequired
-        }
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_SERIAL_NATIVE_TESTS")
     }
 
     private func fixture() throws -> URL {

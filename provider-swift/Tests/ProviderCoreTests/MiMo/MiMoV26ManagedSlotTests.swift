@@ -52,7 +52,7 @@ private final class MiMoSlotCancellationWitness: @unchecked Sendable {
 /// tiny filesystem factory/transaction. No successful native result is mocked.
 /// Synthetic CPU fixture transforms are bounded and never touch real artifacts.
 final class MiMoV26ManagedSlotTests: XCTestCase {
-    private enum FixtureError: Error { case nativeLaneRequired, payloadFixtureRequired, unexpectedRetirement }
+    private enum FixtureError: Error { case payloadFixtureRequired, unexpectedRetirement }
     private let literal = "<|im_start|>x<think>{% if enable_thinking is false %}</think>{% endif %}"
     private let environment = ["DARKBLOOM_PREFIX_CACHE": "0", "DARKBLOOM_PREFIX_CACHE_MEMORY": "0"]
     private var registries: [MiMoV26NativeLoadRegistry] = []
@@ -192,9 +192,7 @@ final class MiMoV26ManagedSlotTests: XCTestCase {
 
 
     private func lane() throws {
-        guard ProcessInfo.processInfo.environment["MIMO_V26_SERIAL_NATIVE_TESTS"] == "1" else {
-            throw FixtureError.nativeLaneRequired
-        }
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_SERIAL_NATIVE_TESTS")
     }
     private func loaded(float32: Bool = false, asymmetric: Bool = false) async throws -> Loaded {
         try lane()

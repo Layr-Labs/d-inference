@@ -1,6 +1,6 @@
 # Initial paged SSD pairs for Qwen3.8, GPT-OSS and Gemma
 
-> Last updated: 2026-09-05 · commit `b274e0cd6`
+> Last updated: 2026-09-05
 
 Three exact fleet artifacts pass one strict paged B1 cache-off/SSD pair on
 M5 Max with 128GiB memory. Each restores 4,096 prompt tokens and passes output,

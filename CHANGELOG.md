@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased — first-content evidence exploration
+
+- Let an idle, loaded provider compete beside feasible peers after the 5-minute measurement-age threshold, using connection age when measurements are undated. This breaks the evidence-first exclusion of newly connected and long-idle providers without guaranteeing selection or measurement recovery. Hedge and fresh-feasible requests still require feasible evidence.
+- Treat outstanding service-retirement leases and reported service usage as busy even when slot counters are idle, and recheck exploration eligibility at atomic reservation. Older providers can still qualify using their existing slot telemetry.
+
+## Unreleased — CI and contributor workflow
+
+- Run provider unit, SDK and prompt-parity checks on independent workers with compatible build caches, retaining MiMo fixture preparation and isolated native gates.
+- Separate prerequisite-dependent MiMo qualification from ordinary provider tests, retaining required prepared-fixture checks and explicit qualification gaps. Normalize the rollback test's filesystem identity and synchronize the zombie-stream timing test with the initial cancellation.
+- Pin the production prompt fixture's EOF format during regeneration; parity still compares the complete corpus bytes and unchanged token/contract expectations.
+- Keep documentation freshness stamps date-only, preserving existing dates, immutable source links and historical evidence. Historical source validation reads committed provenance rather than requiring a hash in the stamp.
+- Document topic-local changelog updates and conflict resolution that preserves other PRs' entries, keeping release assignment separate from ordinary contributions.
+
 ## Unreleased — cache routing state persistence
 
 - Preserve a write-behind copy of SSD cache holders and observed demand across coordinator restarts while routing reads stay in memory. Restore is bounded by TTL, index caps, clock-skew checks and the cache-key generation; holders bind only to matching live provider capabilities, retaining measured stage-cost deadlines. Disconnects park holders, and shutdown joins provider sockets and the periodic writer before the final bounded flush. No prompts, raw chain hashes or memory-tier holders are persisted.

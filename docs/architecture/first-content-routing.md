@@ -1,6 +1,6 @@
 # First-content routing
 
-> Last updated: 2026-09-29 · commit `b650124a1`
+> Last updated: 2026-09-29
 
 The coordinator selects providers by expected time to delivered content, with a
 separate conservative forecast for deadline feasibility. The selection policy applies by
@@ -116,8 +116,30 @@ diagnostics and fallback behavior (`coordinator/registry/heartbeat.go`,
 | Forecast class | Interpretation | Selection |
 |---|---|---|
 | `feasible` | Fresh, sufficiently matched conservative evidence fits the original remaining budget | Preferred pool |
-| `unknown` | Missing/stale measurement, unqualified competing or cold work, vision work, or no deadline | Nonzero expected forecast and bounded fallback |
+| `unknown` | Missing/stale measurement, unqualified competing or cold work, vision work, or no deadline | Nonzero expected forecast and bounded fallback; an idle provider whose only gap is performance evidence joins the preferred pool after the exploration bound |
 | `predicted_late` | Credible conservative forecast exceeds the remaining budget | Lower preference; existing explicit hard rejection policy can exclude it |
+
+Performance evidence requires serving work, so feasible-first selection can
+indefinitely exclude a provider with missing or stale measurements. A loaded,
+idle provider with a `performance_missing` or `performance_age_unknown_or_stale`
+forecast can compete beside feasible peers after
+`firstContentEvidenceExplorationAfter` (5 minutes). This threshold uses the older
+paired measurement's age, or connection age when either measurement is undated;
+it is not a continuous-idle timer or time since evidence expired. Unknown
+connection age cannot qualify (`firstContentEvidenceGapAgeMs`,
+`coordinator/registry/first_content_exploration.go`).
+
+Outstanding service-retirement shadows, reported service usage or reservations,
+load transitions, competing slot work and pending requests prevent the idle
+exception (`fillFirstContentSnapshot`,
+`coordinator/registry/first_content_snapshot.go`). Legacy providers may omit the
+service fields and still qualify using their existing slot telemetry. Reservation
+rechecks the exception under the provider lock and rescans if eligibility changed.
+The candidate stays `unknown`, so hedge and fresh-feasible requests still exclude
+it. Ordinary ranking need not select it, and a served request need not refresh
+both measurements: cache reuse can leave isolated-prefill evidence unchanged, as
+can an unchanged legacy EWMA. Exploration offers an opportunity, not guaranteed
+selection or recovery.
 
 Even a feasible forecast is advisory. The ordinary forecast uses resolved
 prefill and decode rates directly: it no longer multiplies either rate by 0.5.

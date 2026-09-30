@@ -1,6 +1,6 @@
 # Prompt-contract sidecar
 
-> Last updated: 2026-09-27 · commit `1e4f506f2`
+> Last updated: 2026-09-27
 
 The Go `LowerResponsesInferenceBody` serving adapter preserves ordered inline
 media; it does not broaden this sidecar's text-only cache-planning contract.

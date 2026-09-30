@@ -7,6 +7,7 @@ import XCTest
 
 final class MiMoV26ConsumerParityTests: XCTestCase {
     func testRecordedTypelessAndBooleanSchemaIngressDivergence() async throws {
+        try MiMoTestPrerequisites.requireOptIn("MIMO_CONSUMER_DIVERGENCE_TESTS")
         struct Vectors: Decodable {
             struct Row: Decodable { let id: String; let request_json: String }
             let cases: [Row]

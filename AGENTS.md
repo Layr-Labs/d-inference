@@ -197,6 +197,14 @@ runs on `vX.Y.Z` tags; dev publication uses
 `workflow_dispatch`, and every requested version must equal the checked-in
 constants.
 
+For ordinary PRs, follow the
+[changelog contribution guidance](CONTRIBUTING.md#changelog-entries-with-less-merge-contention):
+keep user-visible changes in a small topic-specific `Unreleased` section,
+update it in place, and preserve other PRs' entries when resolving conflicts.
+Do not assign a release version, rewrite unrelated sections or claim shipment
+without an explicitly requested release operation. Topic-local edits reduce
+contention but cannot prevent same-location insertion conflicts.
+
 ## Deploying
 
 Canonical runbook: `docs/operations/coordinator-deploy.md`

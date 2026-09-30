@@ -18,8 +18,21 @@ ACTION = ROOT / ".github/actions/provider-ci-build/action.yml"
 BUILD_ACTION = "./.github/actions/provider-ci-build"
 READY = "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}"
 MIMO_READY = "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}"
+PROVIDER_MIMO_READY = "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-prompt-fixtures.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}"
 MIMO_PREPARE = ('python3 scripts/prepare-mimo-prompt-fixtures.py '
                 '--output "$RUNNER_TEMP/mimo-prompt-fixtures" --github-env "$GITHUB_ENV"')
+MIMO_PROVIDER_PREPARE = ('python3 scripts/prepare-mimo-provider-fixtures.py '
+                         '--output "$RUNNER_TEMP/mimo-provider-fixtures" --github-env "$GITHUB_ENV"\n'
+                         'python3 scripts/prepare-mimo-provider-fixtures.py '
+                         '--output "$RUNNER_TEMP/mimo-prefix-fixtures" --asymmetric')
+MIMO_NATIVE_COMMANDS = {
+    "Run isolated native MiMo startup gates":
+        "../scripts/run-nested-suite.sh 'MiMoV26StandaloneLifecycleTests.test(ActualScannerPreloadStartsListenerWithSameNativeOwner|StartRefusesActualUnpublishedPreloadWithoutReplacingOwner)' --no-parallel",
+    "Run isolated native MiMo complete-prefix gates":
+        "../scripts/run-nested-suite.sh 'MiMoV26NativeLoadTransactionTests.testNativeCompletePrefix' --no-parallel",
+    "Run isolated native MiMo retained-fault gate":
+        "../scripts/run-nested-suite.sh testNativeFenceRefusalKeepsActualBundlePermitAndBlocksOtherOwnerReclaim --no-parallel",
+}
 LANES = {
     "test-provider": "provider",
     "test-provider-sdk": "sdk",
@@ -138,13 +151,16 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             "python3 scripts/test-qwen4-packaged-resources.py",
             "python3 scripts/test-profile-inventory-auth.py",
             MIMO_PREPARE,
+            MIMO_PROVIDER_PREPARE,
             "../scripts/run-provider-tests.sh",
+            *MIMO_NATIVE_COMMANDS.values(),
             "./scripts/test-install-atomic.sh",
         )
         self.assertEqual([run_command(step) for step in steps if field(step, "run")], list(expected))
         test_step = next(step for step in steps if run_command(step) == "../scripts/run-provider-tests.sh")
         self.assertEqual(field(test_step, "working-directory"), "provider-swift")
-        self.assertEqual(field(test_step, "if"), MIMO_READY)
+        self.assertEqual(field(test_step, "if"), PROVIDER_MIMO_READY)
+        self.assertEqual(field(test_step, "MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS", indent=10), "'1'")
         installer = next(step for step in steps if run_command(step) == "./scripts/test-install-atomic.sh")
         self.assertEqual(field(installer, "if"), "${{ !cancelled() }}")
         self.assertEqual(field(installer, "timeout-minutes"), "2")
@@ -231,8 +247,31 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             steps = step_blocks(self.jobs[job_id])
             fixtures = [step for step in steps if run_command(step) == MIMO_PREPARE]
             self.assertEqual(len(fixtures), 1)
-            self.assertEqual(field(fixtures[0], "id"), "mimo-fixtures")
+            expected_id = "mimo-prompt-fixtures" if job_id == "test-provider" else "mimo-fixtures"
+            self.assertEqual(field(fixtures[0], "id"), expected_id)
             self.assertEqual(field(fixtures[0], "if"), READY)
+
+    def test_native_mimo_gates_keep_isolated_processes_and_fixture_guards(self):
+        steps = step_blocks(self.jobs["test-provider"])
+        synthetic = next(step for step in steps if run_command(step) == MIMO_PROVIDER_PREPARE)
+        self.assertEqual(field(synthetic, "id"), "mimo-fixtures")
+        self.assertEqual(field(synthetic, "if"), READY)
+        for name, command in MIMO_NATIVE_COMMANDS.items():
+            with self.subTest(gate=name):
+                gate = next(step for step in steps if field(step, "name", indent=6) == name)
+                self.assertEqual(run_command(gate), command)
+                self.assertEqual(field(gate, "if"), MIMO_READY)
+                self.assertEqual(field(gate, "working-directory"), "provider-swift")
+                self.assertEqual(field(gate, "timeout-minutes"), "5")
+                self.assertEqual(field(gate, "MIMO_V26_SERIAL_NATIVE_TESTS", indent=10), "'1'")
+                self.assertNotIn("continue-on-error:", gate)
+                self.assertNotIn("steps.run", field(gate, "if"))
+        prefix = next(step for step in steps if field(step, "name", indent=6) == "Run isolated native MiMo complete-prefix gates")
+        self.assertEqual(field(prefix, "MIMO_V26_SERIAL_LOAD_FIXTURES", indent=10), "${{ runner.temp }}/mimo-prefix-fixtures")
+        fault = next(step for step in steps if field(step, "name", indent=6) == "Run isolated native MiMo retained-fault gate")
+        self.assertEqual(field(fault, "MIMO_V26_PROVIDER_LIFETIME_NATIVE_TESTS", indent=10), "'1'")
+        self.assertEqual(field(fault, "DARKBLOOM_PREFIX_CACHE", indent=10), "'0'")
+        self.assertEqual(field(fault, "DARKBLOOM_PREFIX_CACHE_MEMORY", indent=10), "'0'")
 
     def test_rust_cache_is_saved_only_after_successful_parity(self):
         steps = step_blocks(self.jobs["test-provider-parity"])

@@ -158,9 +158,7 @@ final class MiMoV26WiredResidencyTests: XCTestCase {
     }
 
     func testHostInjectedPostStartFaultRetainsTicketWithoutClaimingMetalFailureCoverage() async throws {
-        guard ProcessInfo.processInfo.environment["MIMO_V26_WIRED_HOST_FAULT_CASE"] == "1" else {
-            throw XCTSkip("Run this retained-host-fault selector alone; no Metal error is injected")
-        }
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_WIRED_HOST_FAULT_CASE")
         try await Device.withDefaultDevice(.cpu) {
             struct HostInjectedFault: Error {}
             let (registry, transaction) = try metadataTransaction()

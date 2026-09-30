@@ -37,6 +37,8 @@ jobs:
           python3 .github/scripts/test-threat-ensemble.py
       - name: Test native GPU CI routing without a GPU
         run: python3 scripts/test-native-gpu-ci.py
+      - name: Test bounded MiMo provider fixture provisioning offline
+        run: python3 scripts/test-prepare-mimo-provider-fixtures.py
       - name: Test serving qualification evidence and catalogs without a GPU
         run: python3 -m unittest discover -s scripts/serving_performance -t scripts -p 'test_*.py'
 
@@ -46,11 +48,13 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          fetch-depth: 0 # Frozen source links are checked at their stamped commits.
+          fetch-depth: 0 # Frozen source links require committed document provenance.
       - name: Initialize pinned SDK documentation
         run: git submodule update --init --depth 1 libs/mlx-swift-lm
       - name: Test historical source-link validation
         run: python3 scripts/test-docs-check-historical-links.py
+      - name: Test date-only freshness stamping
+        run: python3 scripts/test-docs-stamp.py
       - name: Check freshness stamps, links, cited paths, orphans
         run: ./scripts/docs-check.sh
 
@@ -211,15 +215,49 @@ jobs:
       - name: Test profile inventory authentication in a terminal
         run: python3 scripts/test-profile-inventory-auth.py
       - name: Prepare pinned public MiMo metadata and original corpus
-        id: mimo-fixtures
+        id: mimo-prompt-fixtures
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
         run: python3 scripts/prepare-mimo-prompt-fixtures.py --output "$RUNNER_TEMP/mimo-prompt-fixtures" --github-env "$GITHUB_ENV"
+      - name: Prepare bounded synthetic MiMo provider fixtures offline
+        id: mimo-fixtures
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
+        run: |
+          python3 scripts/prepare-mimo-provider-fixtures.py --output "$RUNNER_TEMP/mimo-provider-fixtures" --github-env "$GITHUB_ENV"
+          python3 scripts/prepare-mimo-provider-fixtures.py --output "$RUNNER_TEMP/mimo-prefix-fixtures" --asymmetric
       - name: Run Swift tests
-        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-prompt-fixtures.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
+        env:
+          MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS: '1'
         working-directory: provider-swift
         # Reuse the built bundle and matched metallib. The exact allocator
         # suite runs in its own process even if the general suite fails.
         run: ../scripts/run-provider-tests.sh
+      - name: Run isolated native MiMo startup gates
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
+        working-directory: provider-swift
+        timeout-minutes: 5
+        env:
+          MIMO_V26_SERIAL_NATIVE_TESTS: '1'
+        run: ../scripts/run-nested-suite.sh 'MiMoV26StandaloneLifecycleTests.test(ActualScannerPreloadStartsListenerWithSameNativeOwner|StartRefusesActualUnpublishedPreloadWithoutReplacingOwner)' --no-parallel
+      - name: Run isolated native MiMo complete-prefix gates
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
+        working-directory: provider-swift
+        timeout-minutes: 5
+        env:
+          MIMO_V26_SERIAL_NATIVE_TESTS: '1'
+          MIMO_V26_SERIAL_LOAD_FIXTURES: ${{ runner.temp }}/mimo-prefix-fixtures
+        run: ../scripts/run-nested-suite.sh 'MiMoV26NativeLoadTransactionTests.testNativeCompletePrefix' --no-parallel
+      - name: Run isolated native MiMo retained-fault gate
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
+        working-directory: provider-swift
+        timeout-minutes: 5
+        env:
+          MIMO_V26_SERIAL_NATIVE_TESTS: '1'
+          MIMO_V26_PROVIDER_LIFETIME_NATIVE_TESTS: '1'
+          MIMO_V26_PROVIDER_LIFETIME_FAULT_CASE: testNativeFenceRefusalKeepsActualBundlePermitAndBlocksOtherOwnerReclaim
+          DARKBLOOM_PREFIX_CACHE: '0'
+          DARKBLOOM_PREFIX_CACHE_MEMORY: '0'
+        run: ../scripts/run-nested-suite.sh testNativeFenceRefusalKeepsActualBundlePermitAndBlocksOtherOwnerReclaim --no-parallel
       - name: Run atomic installer artifact tests
         if: ${{ !cancelled() }}
         timeout-minutes: 2

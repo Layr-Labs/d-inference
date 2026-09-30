@@ -156,9 +156,8 @@ final class MiMoV26NormalEntrypointTests: XCTestCase {
     }
 
     func testSelectedSidecarNormalInspectionBindsRealHeaderWithoutClaimingPayloadAuthentication() throws {
-        guard let path = ProcessInfo.processInfo.environment["MIMO_V26_MANAGED_AUDIO_FIXTURE_ROOT"] else {
-            throw XCTSkip("Requires existing target plus unchanged selected audio sidecar")
-        }
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS")
+        let path = try XCTUnwrap(ProcessInfo.processInfo.environment["MIMO_V26_MANAGED_AUDIO_FIXTURE_ROOT"])
         let load = try XCTUnwrap(MiMoV26OrdinaryServingPolicy.inspect(
             directory: URL(fileURLWithPath: path), budget: budget(), deviceLimits: device))
         let request = try XCTUnwrap(load.audioLoadRequest)

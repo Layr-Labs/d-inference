@@ -147,41 +147,24 @@ final class SSDCacheEpochStore: @unchecked Sendable {
         }
     }
 
-    /// Rotate after generation-wide invalidation. A persistence failure
-    /// disables v2 advertisement instead of exposing an unpersisted generation.
+    /// Explicit full clear: mint a new generation so the coordinator discards
+    /// every holder it recorded under the old one. Per-file removals (budget
+    /// eviction, TTL expiry, corrupt-file drops) must NOT rotate: the
+    /// surviving files stay readable and the coordinator reconciles a removed
+    /// one through an ordinary lookup miss (`miss_invalidation`). A
+    /// persistence failure disables v2 advertisement instead of exposing an
+    /// unpersisted generation.
     @discardableResult
     func rotate() -> String? {
         guard performOwnedDestructiveChange({}) != nil else { return nil }
         return current
     }
 
-    /// Known-entry capacity/TTL retirement does not change the identity of
-    /// surviving authenticated state. Serialize with binding replacement and
-    /// destructive maintenance, but keep the epoch and sequence monotonic.
-    /// Holders are advisory: deleted entries fail authenticated lookup and their
-    /// hints are removed by miss invalidation or bounded coordinator TTL.
-    func performOwnedRetirement<T>(_ body: () -> T) -> T? {
-        lock.withLock {
-            guard let ownedEpoch = epoch,
-                Self.epochs.current(root: rootKey) == ownedEpoch else { return nil }
-            return Self.recordLock.withLock {
-                let url = root.appendingPathComponent(Self.fileName)
-                guard let existing = try? Self.readRecord(at: url),
-                    let record = existing.record,
-                    record.schema == Self.schema, record.epoch == ownedEpoch,
-                    record.binding == binding else {
-                    epoch = nil
-                    Self.epochs.publish(root: rootKey, epoch: nil)
-                    return nil
-                }
-                return body()
-            }
-        }
-    }
-
     /// Serializes epoch replacement, destructive I/O, and publication for an
     /// active cache. Constructors and unloaded-root maintenance share the same
-    /// record lock, while the in-process ledger is unavailable during `body`.
+    /// record lock, while the in-process ledger is unavailable during `body`
+    /// so no receipt or sequence can be issued under either generation while
+    /// the whole root is being rebuilt. Only whole-root clears use this.
     func performOwnedDestructiveChange<T>(_ body: () -> T) -> T? {
         lock.withLock {
             guard let ownedEpoch = epoch,
@@ -225,8 +208,14 @@ final class SSDCacheEpochStore: @unchecked Sendable {
         }
     }
 
-    /// Serializes unloaded-root deletion with store initialization. The new
-    /// epoch is persisted before unlink and published only after unlink ends.
+    /// Serializes per-file deletion on an unloaded root with store
+    /// initialization. The epoch record is validated but never rewritten: no
+    /// active store advertises this root, the coordinator already dropped the
+    /// model's holders when its capability disappeared (`capability_change`),
+    /// and the next `scanOnDisk` indexes the survivors under the same epoch,
+    /// keeping `nextSequence` monotonic across the unload/reload. A missing
+    /// record means orphaned files that the body may remove; an unreadable or
+    /// foreign-schema record is left for the next initialization to rebuild.
     static func performUnloadedDestructiveChange(
         root: URL,
         _ body: () -> Void
@@ -242,22 +231,8 @@ final class SSDCacheEpochStore: @unchecked Sendable {
                 record.schema == schema,
                 validEpoch(record.epoch)
             else { return false }
-            let fresh = newEpoch()
-            do {
-                try write(
-                    record: Record(
-                        schema: schema,
-                        epoch: fresh,
-                        binding: record.binding,
-                        nextSequence: 1),
-                    to: url)
-                epochs.publish(root: canonicalRootKey(root), epoch: nil)
-                body()
-                epochs.publish(root: canonicalRootKey(root), epoch: fresh)
-                return true
-            } catch {
-                return false
-            }
+            body()
+            return true
         }
     }
 
@@ -318,11 +293,21 @@ final class SSDCacheEpochStore: @unchecked Sendable {
                 includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
                 options: [.skipsHiddenFiles])
             for file in files where file.pathExtension == SSDBlockStore.fileExtension {
-                guard SSDBlockStore.removeItemIfSafe(at: file, under: root) else {
-                    throw SSDBlockStoreError.ioFailure(
-                        "failed to remove stale block during epoch rotation")
-                }
+                try removeStaleBlock(at: file, under: root)
             }
+        }
+    }
+
+    /// Per-file removals do not hold `recordLock`, so a superseded instance
+    /// that passed its ownership check can unlink a listed block before this
+    /// wipe reaches it. A block that is already gone is what the wipe wants;
+    /// one that is still present but cannot be removed (or was replaced by a
+    /// link, device or directory) still fails the rebuild.
+    static func removeStaleBlock(at file: URL, under root: URL) throws {
+        if SSDBlockStore.removeItemIfSafe(at: file, under: root) { return }
+        guard SSDNoFollowIO.regularFileStatus(at: file) == .missing else {
+            throw SSDBlockStoreError.ioFailure(
+                "failed to remove stale block during epoch rotation")
         }
     }
 

@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-27 · commit `d621f9772`
+> Last updated: 2026-09-29
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -16,9 +16,11 @@ JSON keys are snake_case and identical in the Go tags and the Swift
 
 Terminal `profile` objects can include optional schema-1
 [`deadline_decision`](prediction-decision-telemetry.md#provider-fields).
+Its optional `unbounded_reason` identifies the first engine guard family that
+prevented an admissible projection; older profiles keep the cause absent.
 This does not add a message type or change the public error code.
 
-The additive [App Attest shadow exchange](app-attest-shadow.md#wire-exchange) uses `register.app_attest_protocol = 3` (with protocol 1 and 2 compatibility) and `app_attest_shadow` frames. Version 3 also binds static hardware and the existing verification key; version 2 account/status binding and lost-enrollment recovery remain compatible. Shadow alone does not replace authoritative verification. The separately enabled [provider authorization](provider-authorization.md) path consumes qualified protocol 3 evidence and adds coordinator-derived `trust_status.authorization` diagnostics; legacy message meanings remain unchanged.
+The additive [App Attest shadow exchange](app-attest-shadow.md#wire-exchange) uses `register.app_attest_protocol = 3` and `app_attest_shadow` frames; the coordinator serves protocol 3 only, and a registration announcing protocol 1 or 2 gets no frames. Protocol 3 binds the account, status, static hardware and the existing verification key. Shadow alone does not replace authoritative verification. The separately enabled [provider authorization](provider-authorization.md) path consumes qualified protocol 3 evidence and adds coordinator-derived `trust_status.authorization` diagnostics; legacy message meanings remain unchanged.
 
 App Attest error replies optionally carry `apple_error: {domain, code, underlying_domain?, underlying_code?}`. Domain buckets and signed 32-bit bounds are defined by `coordinator/protocol/app_attest_error.go` (`AppAttestAppleError.Valid`) and mirrored in `provider-swift/Sources/ProviderAppAttest/AppAttestAppleError.swift`. Failed `ready` replies may also carry closed `availability_reason`; synthetic `apple_error` replies may carry closed `apple_error_source`. `coordinator/protocol/app_attest_client_diagnostic.go` (`ValidClientDiagnostics`) bounds both fields. `ready` replies may also carry optional `launch_session`, `boot_time` and `operation_stalled_seconds`; `coordinator/protocol/app_attest_runtime_diagnostic.go` (`SanitizeRuntimeDiagnostics`) strips invalid values without rejecting the frame. These untrusted diagnostics are excluded from the signed transcript and cannot authorize serving; missing fields preserve older peers. See [wire details](app-attest-shadow.md#wire-exchange).
 
@@ -101,6 +103,7 @@ deliver a graceful-drain acknowledgement.
 |---|---|---|---|
 | provider → coordinator | `register` | `RegisterMessage` | `ProviderMessage.register` (`Register`) |
 | provider → coordinator | `heartbeat` | `HeartbeatMessage` | `.heartbeat` (`Heartbeat`) |
+| provider → coordinator | `service_reservation_released` | `ServiceReservationReleasedMessage` | `.serviceReservationReleased` |
 | provider → coordinator | `inference_accepted` | `InferenceAcceptedMessage` | `.inferenceAccepted` |
 | provider → coordinator | `inference_response_chunk` | `InferenceResponseChunkMessage` | `.inferenceResponseChunk` |
 | provider → coordinator | `inference_complete` | `InferenceCompleteMessage` | `.inferenceComplete` |
@@ -162,10 +165,8 @@ connection, first.
 | `tool_constraint_models` | `[]string` | `[String]?` | opt | concrete model IDs the provider enforces |
 | `apns_device_token` | `string` | `String?` | opt | hex APNs token for the `E_K(nonce)` code-identity push |
 | `apns_environment` | `string` | `String?` | opt | `"production"` or `"development"` |
-| `python_hash`, `runtime_hash` | `string` | `String?` | opt | SHA-256 |
-| `template_hashes` | `map[string]string` | `[String: String]` | opt | template name → SHA-256; Swift omits when empty |
-| `privacy_capabilities` | `*PrivacyCapabilities` | `PrivacyCapabilities?` | opt | [`privacy_capabilities`](#privacy_capabilities); providers `< v0.6.31` also send `hypervisor_active` inside it, which Go drops |
-| `wallet_address` | — | `String?` | Swift only | legacy key; Go has no field and drops it |
+| `template_hashes` | `map[string]string` | `[String: String]` | opt | template name → SHA-256 (includes `mlx_metallib`); Swift omits when empty |
+| `privacy_capabilities` | `*PrivacyCapabilities` | `PrivacyCapabilities?` | opt | [`privacy_capabilities`](#privacy_capabilities) |
 
 A verified registration whose durable state cannot be recovered after bounded
 retries closes with WebSocket code **1013** (`StatusTryAgainLater`). It receives
@@ -205,9 +206,9 @@ Go `ModelInfo` · Swift `ModelInfo` (`Types.swift`).
 | `native_media_tools` | `bool` | `Bool?` | opt | Per-model forced-media/tool-result-media support; absent/false is ineligible. Requires `is_vision` and matching `tool_constraint_protocol`/`tool_constraint_models`. Carried by registration and `models_update`; Swift omits nil and preserves explicit false. See `coordinator/registry/native_media_tools.go` (`providerSupportsNativeMediaToolsLocked`) |
 | `template_render_ok` | `*bool` | `Bool?` | ptr | 0.6.5+; **explicit `false` survives the wire** and excludes the model from tool requests; absent = no opinion |
 | `tool_constraint_template_hash` | `string` | `String?` | opt | binds grammar capability to the loaded template bytes |
-| `estimated_memory_gb` | `float64` | `Double` | Go opt; Swift always encodes | Padded native-weight load estimate in GiB; used for reduced offload admission only with a valid family-matched offload declaration |
+| `estimated_memory_gb` | `float64` | `Double` | Go opt; Swift always encodes | Full load estimate in GiB; explicit native Qwen4 offload or MiMo LOAD declarations require the family-matched supplement and source/catalog consistency checks |
 | `ssd_offloaded_weight_bytes` | `int64` | `UInt64?` | opt | Validated immutable payload excluded from native weight allocation; Swift omits nil/zero. It is not a KV cache byte count or a claim that OS-mapped pages use no RAM |
-| `native_load_transient_bytes` | `int64` | `UInt64?` | opt | Checkpoint-derived loading allowance for eligible native Qwen4 SSD offload; omitted by legacy/other layouts. Coordinator requires at least 1 GiB and checked addition; invalid/missing values retain 1.2 padding. This does not reduce OS, activation or request-KV reserves |
+| `native_load_transient_bytes` | `int64` | `UInt64?` | opt | Checkpoint-derived allowance for eligible native Qwen4 SSD offload, or full-LOAD supplement above all stored payload bytes for validated exact `mimo_v2` with no SSD subtraction. Requires at least 1 GiB and checked addition; invalid/missing declarations retain legacy pricing. OS, activation and request-KV reserves are unchanged |
 | `parameters` | — | `UInt64?` | Swift only | encoded by Swift, dropped by Go |
 
 Both memory fields are defined by `coordinator/protocol/messages.go`
@@ -217,13 +218,16 @@ Qwen4 types, an ID matching the requested model, finite positive memory, and a p
 payload smaller than the artifact; it floors the estimate against padded
 remaining weight bytes (`coordinator/registry/offloaded_weights.go`,
 `advertisedOffloadedMemoryGBLocked`). Missing/invalid declarations retain the
-existing catalog/measurement policy. See [offloaded-weight admission](../architecture/routing.md#ssd-offloaded-model-weights).
+existing catalog/measurement policy. Exact `mimo_v2` additionally requires zero
+SSD offload, positive source bytes, a checked supplement and a full estimate no
+smaller than their sum. Its load floor retains the greater raw catalog/source
+size plus the supplement once; callers supply raw decimal catalog GB, not GiB,
+minimum RAM or a padded estimate. See [offloaded-weight admission](../architecture/routing.md#ssd-offloaded-model-weights).
 
 #### `privacy_capabilities`
 
-Go `PrivacyCapabilities` · Swift `PrivacyCapabilities`. Eight required
-booleans: `text_backend_inprocess`, `text_proxy_disabled`,
-`python_runtime_locked`, `dangerous_modules_blocked`, `sip_enabled`,
+Go `PrivacyCapabilities` · Swift `PrivacyCapabilities`. Six required
+booleans: `text_backend_inprocess`, `text_proxy_disabled`, `sip_enabled`,
 `anti_debug_enabled`, `core_dumps_disabled`, `env_scrubbed`.
 
 #### Prefix-cache objects
@@ -232,7 +236,7 @@ booleans: `text_backend_inprocess`, `text_proxy_disabled`,
 |---|---|
 | `PrefixCacheV2Capability` | Required: `model_id`, `model_aggregate_hash`, `prompt_contract_id`, `block_hash_version` (`string`); `block_size` (`uint32`); `cache_epoch` (`string`); `enabled`, `ready` (`bool`). Optional `ready_boundary_mode` (`string`): absent/empty retains legacy SSD coverage; `checkpoint` permits only explicitly committed input endpoints. Unknown values are rejected; the field is invalid on resident capabilities. `coordinator/registry/cache_capabilities_v2.go`, `validatePrefixCacheCapability` / `validateMemoryPrefixCacheCapabilities` |
 | `PrefixCacheModelStatus` | `model_id`; `backend` ∈ {`contiguous`, `paged`, `unknown`}; `replay_strategy` ∈ {`direct`, `frozen_full`, `tail_replay`, `none`, `unknown`}; `state` ∈ {`ready`, `pending`, `disabled`, `error`}; `reason` ∈ {`ready`, `config_disabled`, `weight_hash_unavailable`, `runtime_identity_unavailable`, `unsupported_layout`, `unsupported_backend`, `paged_hybrid_unsupported`, `scan_pending`, `scan_failed`, `disk_unavailable`, `cache_init_failed`}. Enums validated at the coordinator boundary; Swift `PrefixCacheStatusBackend` / `ReplayStrategy` / `State` / `Reason` (`Messages.swift`) |
-| `PrefixCacheDonationOutcomeCount` | `outcome` ∈ {`donated`, `below_effective_token_floor`, `no_complete_block`, `lossy_snapshot` (pre-0.8.0 compat), `incomplete_layer_state`, `stage_size_exceeded`, `write_rate_limited`, `write_priority_limited`, `write_queue_full`, `already_durable`, `already_queued`, `cache_closed`, `disk_unavailable`, `write_failed`, `host_memory_unavailable`, `cache_epoch_changed`, `cache_maintenance_busy`, `disk_space_insufficient`, `unsafe_cache_root`, `write_io_failed`, `existing_cache_unreadable`, `cache_entry_evicted`}; `count` (`uint64`, monotonic per process). Unknown future outcomes are ignored individually by older coordinators. `coordinator/registry/cache_eligibility.go`, `PrefixCacheDonationOutcomes`; Swift `PrefixCacheDonationOutcome` (`Messages.swift`). |
+| `PrefixCacheDonationOutcomeCount` | `outcome` ∈ {`donated`, `below_effective_token_floor`, `no_complete_block`, `lossy_snapshot` (pre-0.8.0 compat), `incomplete_layer_state`, `stage_size_exceeded`, `write_rate_limited`, `write_priority_limited`, `write_queue_full`, `already_durable`, `already_queued`, `cache_closed`, `disk_unavailable`, `write_failed`, `host_memory_unavailable`, `cache_epoch_changed`, `cache_maintenance_busy`, `disk_space_insufficient`, `unsafe_cache_root`, `write_io_failed`, `existing_cache_unreadable`, `cache_entry_evicted`, `skipped_novel`}; `count` (`uint64`, monotonic per process). `cache_maintenance_busy` is emitted only by providers older than the per-file eviction change. Unknown future outcomes are ignored individually by older coordinators. `coordinator/registry/cache_eligibility.go`, `PrefixCacheDonationOutcomes`; Swift `PrefixCacheDonationOutcome` (`Messages.swift`). |
 | `PrefixCacheAnchor` | `chain_hash` (lowercase SHA-256 hex), `token_count` (block-aligned `int`) |
 
 ### `heartbeat`
@@ -281,13 +285,48 @@ and how the scheduler reads them: [`../architecture/scheduling.md`](../architect
 | JSON key | Go | Swift | Presence | Notes |
 |---|---|---|---|---|
 | `slots` | `[]BackendSlotCapacity` | `[BackendSlotCapacity]` | req | [`slots[]`](#slots) |
+| `whole_mac_service_retirement_protocol` | `int` | `Int?` | opt | `1` opts this connection into explicit attempt retirement via [`service_reservation_released`](#service_reservation_released); sticky after an accepted capacity report with a service total. Omission/unknown version on a new connection retains legacy terminal cleanup |
+| `whole_mac_service_used` | `*float64` | `Double?` | opt | Fraction of the shared machine service allowance owned by requests until engine retirement; `[0,1]` |
+| `whole_mac_service_reservations` | `[]WholeMacServiceReservation` | `[WholeMacServiceReservation]` | opt | Exact coordinator attempts included in the aggregate above; omitted when empty, including local-only work. Missing decodes to an empty list; [entry schema and reconciliation](#service-reservation-correlation) |
 | `gpu_memory_active_gb`, `gpu_memory_peak_gb`, `gpu_memory_cache_gb` | `float64` | `Double` | req | Metal active / peak / reclaimable cache, shared across slots |
 | `total_memory_gb` | `float64` | `Double` | req | |
 | `free_for_load_gb` | `*float64` | `Double` (always encoded) | ptr | **The single source of truth for cold-load admission**: max additional model-weight GB loadable now, net of the unified-memory cap (`defaultCapFraction`, [`../architecture/hardware-support.md#constants`](../architecture/hardware-support.md#constants)), the OS/operator reserve and activation + minimum-KV headroom, clamped to real OS-available memory, with idle resident models counted as evictable. Nil (legacy provider) → the coordinator falls back to its total-memory heuristic |
+| `load_usable_gb` | `*float64` | `Double?` | opt | Owner diagnostic: live GB available to the no-eviction load gate before activation/minimum-KV headroom. Zero is an observed zero; omission means an older provider or invalid sample. Not a routing input. |
+| `load_headroom_gb` | `*float64` | `Double?` | opt | Owner diagnostic: current serving-set activation + minimum-KV reserve. A cold model needs `estimated_memory_gb + load_headroom_gb` out of `load_usable_gb`. Not a routing input. |
+| `load_transition_active` | `*bool` | `Bool?` | opt | Owner diagnostic: a model load or load-gate update is in flight, possibly before a slot exists. When true, defer a cold-load memory verdict; omission means older provider. Not a routing input. |
 | `mlx_cache_reclaimer` | `*MLXCacheReclaimerTelemetry` | `MLXCacheReclaimerTelemetry?` | opt | cumulative allocator-reclaim counters (`uint64`, reset on restart): `cache_limit_bytes`, `sweep_signals`, `reclaims`, `reclaimed_bytes`, `last_reclaimed_bytes`, `last_reclaim_duration_ms` |
 | `capacity_seq` | `uint64` | `UInt64` | opt | per-connection monotonic snapshot sequence; the coordinator discards stale or reordered snapshots, and any `seq > 0` marks the connection quote-capable (`capacity_probe`). 0/omitted = legacy last-write-wins |
 | `telemetry` | `*CapacityTelemetry` | `CapacityTelemetry?` | opt | [`backend_capacity.telemetry`](#backend_capacitytelemetry) |
 | `prefix_cache_maintenance` | `*PrefixCacheMaintenanceTelemetry` | `PrefixCacheMaintenanceTelemetry?` | opt | Process-lifetime whole-root removal counters: `ttl_expired_total`, `budget_evicted_total`, `temp_removed_total`; includes unloaded models, separate from active-store evictions |
+
+#### Service reservation correlation
+
+Go `WholeMacServiceReservation` (`coordinator/protocol/whole_mac_service.go`) ·
+Swift `WholeMacServiceReservation`
+(`provider-swift/Sources/ProviderCore/Protocol/WholeMacServiceReservation.swift`).
+Each `whole_mac_service_reservations[]` entry has this shape:
+
+| JSON key | Go | Swift | Presence | Notes |
+|---|---|---|---|---|
+| `id` | `string` | `String` | req | Opaque UUID echoed from the attempt's [`service_reservation_id`](#inference_request); independent of the client request ID |
+| `used_fraction` | `float64` | `Double` | req | Actual service allowance still held by this attempt; finite and in `(0,1]` |
+
+The provider snapshots the aggregate and this list atomically. Entries remain
+until engine retirement; local or legacy work without an attempt ID contributes
+only to the aggregate. Lists are bounded to 64 unique UUIDs, and their fractions
+must sum to no more than `whole_mac_service_used`. With a reported aggregate,
+malformed correlation metadata fails admission closed at full usage.
+
+The coordinator credits overlap only for an exact attempt ID, adding every
+unmatched pending or terminal-shadow charge and any positive difference between
+a matched local reservation and its reported fraction. Omitting the list while reporting the
+total is supported but conservatively counts all pending and shadow reservations
+in addition to that total. Omitting the total retains legacy admission only before
+retirement-protocol opt-in; afterward omission fails service admission closed
+and cannot reset ownership. The list alone cannot establish overlap. Receipt
+time never proves inclusion. Terminal shadows are frozen attempt UUID/fraction
+pairs retained until explicit release; absence from a heartbeat, even at a newer
+`capacity_seq`, does not prove retirement.
 
 #### `slots[]`
 
@@ -302,10 +341,15 @@ routing on them.
 | `state` | `string` | `String` | req | Coordinator accepts `running`, `idle`, `idle_shutdown`, `crashed`, `reloading`; `registry.SlotStateFold` (`coordinator/registry/gate_reason.go`) folds anything else to `other`. The v0.8.16 provider emits `running`, `idle`, `crashed`, `reloading` (`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Capacity.swift`); `idle_shutdown` stays accepted for older providers. `idle` means the model **is loaded** (`slotStateModelLoaded`, `coordinator/registry/scheduler.go`); `reloading`/`crashed` make the slot unroutable |
 | `num_running`, `num_waiting` | `int` | `UInt32` | req | |
 | `max_concurrency` | `int` | `UInt32` | opt | |
+| `performance_profile` | `*ServingPerformanceProfileReference` | `ServingPerformanceProfileReference?` | opt | Reviewed profile identity; omitted when no exact qualified profile applies |
+| `prompt_work_identity` | `*PromptWorkIdentity` | `PromptWorkIdentity?` | opt | Loaded engine artifact and prompt renderer identity, independent of prefix-cache enablement; missing evidence keeps heuristic count admission |
+| `deadline_profile` | `*DeadlinePerformanceProfileReference` | `DeadlinePerformanceProfileReference?` | opt | Exact scheduler identity for measured first-content cells; grants no concurrency or chunk-policy change |
+| `deadline_work` | `*DeadlineWork` | `DeadlineWork?` | opt | Coherent existing-owner work bounds; [schema below](#slotsdeadline_work) |
+| `performance_measurements` | `*PerformanceMeasurements` | `PerformanceMeasurements?` | opt | Transient routing observations; [schema below](#slotsperformance_measurements) |
 | `active_tokens` | `int64` | `Int64` | req | Σ (prompt + completion) tokens over running requests |
 | `max_tokens_potential` | `int64` | `Int64` | req | Σ `max_tokens` over running requests |
 | `observed_decode_tps` | `float64` | `Double` | opt | EWMA of per-request decode TPS |
-| `observed_prefill_tps` | `float64` | `Double` | opt | EWMA (admission → first token); omitted when unmeasured |
+| `observed_prefill_tps` | `float64` | `Double` | opt | Cold-prefill engine-phase EWMA, published at prompt completion; omitted when unmeasured |
 | `active_token_budget_used`, `active_token_budget_max`, `queued_token_budget` | `int64` | `Int64` | opt | `queued_token_budget` is hard-coded `0` by the v0.8.16 provider (`backendSlotCapacity`, `EngineV2Bridge+Capacity.swift`), so it is always omitted |
 | `kv_bytes_per_token` | `int64` | `Int64` | opt | |
 | `model_load_time_ms` | `int64` | `Int64` | opt | measured cold load; omitted when unmeasured |
@@ -335,6 +379,7 @@ These heartbeat-only additions do not change canonical registration signatures.
 | `stages_total`, `files_written_total`, `written_bytes_total` | Store-lifetime successful stages, writes and bytes; attention writes include sidecars |
 | `donation_drops_total`, `corrupt_drops_total`, `evictions_total` | Existing store drop counters and active-store disk-budget removals. For complete checkpoints, `donation_drops_total` is queued-write `writesDropped`; prequeue refusals appear only in the separate donation outcome snapshot, which classifies every exported endpoint attempt |
 | `ttl_expired_total` | Optional attention-store TTL removal counter; whole-root TTL maintenance uses the process counters above |
+| `recurrent_capture_disarmed_packed_total` | Optional complete-store counter: recurrent (GDN/SSM) donors whose checkpoint capture a packed prefill cohort disarmed, once per request (requests, including prompts below the 1,024-token floor that could never have written a file); absent from attention stores and from providers before the chunk-agnostic capture rule |
 | `io` | Optional complete-store `PrefixCacheIOTelemetry`; absent for attention stores whose read/duration counters are not instrumented |
 | `io.staging_peak_bytes` | Peak charged staging reservation over this store's lifetime |
 | `io.files_read_total`, `read_bytes_total`, `stage_read_bytes_total`, `donation_read_bytes_total` | Store-lifetime read attempts/bytes, with stage and donor-authentication byte components |
@@ -409,7 +454,9 @@ Clamped by `registry.clampBackendCapacity`; persisted to `fleet_snapshots`
 |---|---|---|
 | `queued_prefill_tokens` | `int64` | Σ prompt tokens of requests whose engine submit has not returned |
 | `partial_prefill_rows` | `int64` | admitted rows with no first token yet |
-| `prefill_tokens_total` | `int64` | cumulative |
+| `prefill_tokens_total` | `int64` | Actual computed prompt/suffix tokens at prompt completion, including later cancellations |
+| `prefill_requests_total` | `int64` | Prompt-completion count paired with actual work, including fully reused zero-work prompts |
+| `generated_tokens_total`, `generation_requests_total` | `int64` | Actual output and terminal counts, including partial cancelled generations |
 | `isolated_prefill_tps` | `float64` | isolated prefill EWMA |
 | `ewma_initialized` | `bool` | whether `isolated_prefill_tps` has a sample |
 | `pump_tasks` | `int64` | live stream-pump tasks |
@@ -417,6 +464,111 @@ Clamped by `registry.clampBackendCapacity`; persisted to `fleet_snapshots`
 | `kv_bytes_in_use`, `kv_bytes_capacity` | `int64` | raw bytes |
 | `eval_in_flight_ms` | `int64` | same read as the slot-level key |
 | `step_wall_ns_total`, `decode_rows_total` | `int64` | cumulative engine counters (slice 3) |
+
+#### `slots[].performance_measurements`
+
+`slots[].performance_profile` optionally names reviewed release data with `id`,
+`runtime_revision` and `context_tokens`; optional `mtp` binds the actual verified
+assistant artifact and effective decode settings (`enabled`, `artifact_sha256`,
+`max_draft_tokens`, optional `fixed_draft_tokens`, `max_speculative_batch`,
+`verification_mode`, `max_automatic_rectangular_tokens`). Omission means plain
+target execution. The reference carries no self-certified curve or margin.
+The coordinator resolves the reference against its own catalog and registered
+model artifact. Go `coordinator/protocol/performance_profile.go` and Swift
+`provider-swift/Sources/ProviderCore/Protocol/ServingPerformanceProfileReference.swift`
+define the mirror.
+
+`performance_measurements` is defined in
+`coordinator/protocol/performance_measurements.go` and
+`provider-swift/Sources/ProviderCore/Protocol/PerformanceMeasurements.swift`:
+
+| Key | Meaning |
+|---|---|
+| `epoch` | Per-engine measurement lifetime; replacement resets counter baselines |
+| `isolated_prefill`, `contended_prefill`, `decode`, `delivered_decode`, `end_to_end` | Optional `{tokens_per_second, sample_count, sample_age_ms}` observations; age is elapsed time at snapshot |
+| `workload_buckets` | Bounded numeric buckets with `phase`, `prompt_token_bucket`, `context_token_bucket`, `cache_state`, `contention`, `other_model_activity`, `observation` |
+
+Prompt-completion receipts request a capacity refresh. Changed measurement
+epochs, sample counts or cumulative work counters trigger the existing
+rate-limited event heartbeat; sample-age changes alone do not. This uses the
+existing payload and requires no additional wire message
+(`CapacityHeartbeatMateriality`,
+`provider-swift/Sources/ProviderCore/CapacityEventHeartbeats.swift`).
+
+New peers use count/epoch/age to prevent heartbeat replay from refreshing old
+samples. Malformed evidence clears its signal. Older peers may omit the entire
+object and keep legacy changed-EWMA freshness behavior. No prompt text, token IDs
+or cache keys appear in these measurements. Shared profiler fixtures pin the
+Go/Swift shape; these are transient capacity fields, not persisted profiler
+telemetry or telemetry-event fields. Numeric work counters remain in
+`slots[].telemetry`; the epoch and bucket list are excluded from persisted
+numeric-only provider telemetry.
+
+#### `slots[].prompt_work_identity`
+
+`PromptWorkIdentity` in `coordinator/protocol/prompt_work.go` mirrors
+`provider-swift/Sources/ProviderCore/Protocol/PromptWork.swift`. The optional
+object contains lowercase SHA-256 `model_artifact_hash` and `prompt_contract_id`
+strings from the loaded engine's verified factory identity. It contains no
+prompt content and does not enable prefix caching. Identity changes are material
+capacity changes (`CapacityHeartbeatMateriality`).
+
+The coordinator requires both values to match before using request count
+provenance or an exact cache-plan count. A malformed or mismatched explicit
+identity stays unqualified; it cannot borrow an older cache capability. Providers
+without this field can establish the same pair through their existing validated
+SSD or memory cache capability. Otherwise counts remain heuristic. These rules
+do not change physical reservations, consumer usage or billing.
+
+#### `slots[].deadline_profile`
+
+Go `DeadlinePerformanceProfileReference` in
+`coordinator/protocol/deadline_profile.go` mirrors
+`provider-swift/Sources/ProviderCore/Protocol/DeadlinePerformanceProfileReference.swift`.
+The coordinator resolves this reference against a separate reviewed deadline
+catalog. It cannot change serving width, mixed-prefill policy or memory limits.
+
+| Key | Meaning |
+|---|---|
+| `id`, `runtime_revision` | Immutable reviewed deadline profile and serving runtime |
+| `configured_context_tokens` | Exact constructed context limit; individual measured cells may cover a smaller domain |
+| `effective_max_concurrency` | Actual constructed scheduler width, not a requested override |
+| `prefill_chunk_size`, `solo_prefill_stripe_tokens`, `max_concurrent_partial_prefills`, `mixed_prefill_token_cap` | Exact scheduler settings; optional fields preserve absence versus explicit values |
+| `mtp` | Optional verified assistant identity/settings, with the same shape as `performance_profile.mtp` |
+| `minimum_whole_mac_quiescence_ms` | Required explicit measured idle prerequisite; zero is distinct from absence |
+| `minimum_nominal_stability_ms` | Required observed nominal/non-Low-Power stability interval |
+| `power_mode` | Required exact measured power policy, currently `automatic` |
+
+Changing any scheduler identity field withdraws the profile. Neither the
+reference nor a heartbeat supplies calibrated rates or claims measured coverage
+for the full configured context. Unsupported cells retain conservative fallback.
+Missing applicability fields invalidate the reference. The provider withdraws
+it during ineligible posture or activity; the coordinator also requires explicit
+nominal thermal state and `backend_capacity.telemetry.low_power_mode=false`.
+
+#### `slots[].deadline_work`
+
+Optional Go `DeadlineWork` / Swift `DeadlineWork`, defined in
+`coordinator/protocol/deadline_work.go` and
+`provider-swift/Sources/ProviderCore/Protocol/DeadlineWork.swift`.
+
+| Key | Meaning |
+|---|---|
+| `version` | `1`; unknown versions cannot qualify |
+| `epoch` | Must match the slot's performance-measurement lifetime |
+| `known` | False means ownership/work is incomplete; zero work must not be inferred |
+| `prefill_tokens`, `decode_tokens` | Conservative work bounds of existing owners, including pre-submit and retiring leases |
+| `request_count`, `context_tokens_max` | Existing owner count and maximum committed context |
+| `service_fraction` | Held whole-Mac service fraction for these owners |
+
+The provider snapshots these fields with aggregate service use and reservation
+IDs under one lock. The coordinator validates freshness, counts and correlated
+ownership before using a qualified contended cell. This optional object cannot
+certify a profile, reduce memory reservations or change the request clock.
+Providers omit it when no resident engine has a resolved deadline profile.
+When any engine has such a profile, all slots retain work evidence, including
+while the profile is temporarily ineligible, so competing work and recovery
+remain observable.
 
 #### `backend_capacity.telemetry`
 
@@ -460,6 +612,34 @@ New fresh captures emit gauges; repeated or stale captures emit only age and
 freshness (`coordinator/api/provider_process_memory_telemetry.go`,
 `recordProcessMemoryTelemetry`).
 
+### `service_reservation_released`
+
+Go `ServiceReservationReleasedMessage` · Swift
+`ProviderMessage.serviceReservationReleased` (via `OutboundMessage`).
+
+| JSON key | Go | Swift | Presence | Notes |
+|---|---|---|---|---|
+| `type` | `string` | discriminator | req | `"service_reservation_released"` |
+| `service_reservation_id` | `string` | `String` | req | Exact attempt UUID; no client request ID, prompt or output content |
+
+A provider advertising retirement protocol `1` sends this reliable control frame
+exactly once after the request pipeline can no longer acquire service and every
+acquired service lease has retired. It also covers requests rejected before any
+lease was acquired and leases acquired/released entirely between heartbeats.
+A consumer terminal alone is not release evidence. The coordinator accepts proof
+before terminal (preventing a later shadow) or after terminal (removing the
+shadow and waking queued requests). Malformed, duplicate and unknown IDs allocate
+no retained history. Late callbacks from an old connection cannot release a new
+attempt. Definitively unsent writer attempts are retired locally; ambiguous
+socket writes retain ownership until proof or disconnect. Transient untrust and
+missing capacity do not clear ownership; disconnect clears all session state.
+Legacy providers that do not opt in keep their existing terminal cleanup.
+Coordinator tracking is decided at the final authorized handoff after this
+connection opts in, including reservations created before capability arrived.
+Attempts handed off before opt-in retain their original cleanup behavior; later
+heartbeats do not upgrade them because their release proof may already have
+arrived and been ignored under the legacy protocol.
+
 ### `inference_accepted`
 
 Go `InferenceAcceptedMessage` · Swift `InferenceAccepted`. `request_id`
@@ -501,7 +681,7 @@ these fields: [`../architecture/request-outcome-observability.md`](../architectu
 | `error` | `string` | computed `String` (`failureCode.message`) | req | Swift never emits raw error text. The coordinator never reads the provider-authored value: `sanitizeProviderInferenceError` (`coordinator/api/inference_error_sanitize.go`) replaces it with the closed message for `failure_code` before anything downstream sees the frame |
 | `status_code` | `int` | `UInt16` | req | |
 | `error_reason` | `string` | `InferenceErrorReason?` | opt | closed, privacy-safe reason (`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceFailure.swift`): `jinja_channel_tags`, `jinja_null_bridge`, `jinja_template`, `model_load`, `capacity_timeout`, `queue_full`, `token_budget_exhausted`, `request_exceeds_context`, `request_exceeds_node`, `request_exceeds_node_budget`, `request_exceeds_batch_token_budget`, `capacity_busy`, `deadline_unreachable`, `draining`, `cancelled`, `client_error`, `tool_noncompliance`. The typed `draining` reason on a 503 marks a transient update drain: no provider-health or capacity penalty, and no capacity retry charge (`coordinator/api/consumer.go`, `noteInferenceError`; `coordinator/api/dispatch.go`, `dispatchState.noteProviderError`). Swift emits it from `rejectIfDrainingForUpdate` (`provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`). |
-| `failure_code` | `InferenceFailureCode` | `InferenceFailureCode?` | opt | closed enum (`coordinator/protocol/inference_failure.go`): `invalid_request`, `invalid_media`, `media_too_large`, `unsupported_media`, `template_render`, `model_unavailable`, `capacity`, `cancelled`, `encryption_failure`, `generation_failure`, `internal_failure` |
+| `failure_code` | `InferenceFailureCode` | `InferenceFailureCode?` | opt | closed enum (`coordinator/protocol/inference_failure.go`): `invalid_request`, `invalid_media`, `media_too_large`, `unsupported_media`, `template_render`, `model_unavailable`, `capacity`, `cancelled`, `encryption_failure`, `generation_failure`, `internal_failure`. Swift always sets it (`InferenceFailure.code` is non-optional). A missing or unknown value is drift: `sanitizeProviderInferenceError` fails it closed as `generation_failure` and counts `inference.invalid_failure_code`; status, `error_reason` and `terminal_cause` never reclassify it |
 | `terminal_cause` | `string` | `InferenceTerminalCause?` | opt | closed: `admission_timeout`, `prefill_stall`, `decode_stall`, `safety_deadline`, `backpressure_timeout`, `watchdog`, `cancelled`, `engine_error`. Unknown → treated as absent plus a drift metric (`coordinator/api/terminal_cause.go`); platform-policy terminals never strike health breakers |
 | `attempt_usage` | `*UsageInfo` | `UsageInfo?` | opt | engine-reconciled usage of the failed attempt; observability only, never billing |
 | `rejection_reason` | `CapacityRejectionReason` | `CapacityRejectionReason?` | opt | routing-v2 enriched rejection; enum shared with [`capacity_quote`](#capacity_quote) |
@@ -520,11 +700,10 @@ Go `AttestationResponseMessage` · Swift `AttestationResponse`. Reply to
 |---|---|---|---|---|
 | `nonce` | `string` | `String` | req | echoed |
 | `signature` | `string` | `String` | req | base64 SE signature over nonce + timestamp (liveness) |
-| `status_signature` | `string` | `String?` | opt | v0.3.11+; signature over the canonical JSON of nonce + timestamp + all status fields (`attestation.BuildStatusCanonical`, `coordinator/attestation/`); absent ⇒ status fields are advisory only |
+| `status_signature` | `string` | `String?` | opt | signature over the canonical JSON of nonce + timestamp + all status fields (`attestation.BuildStatusCanonical`, `coordinator/attestation/`). Swift always sends it; for a provider with an attested SE key an absent or empty value fails the challenge |
 | `public_key` | `string` | `String` | req | base64 |
-| `hypervisor_active` | `*bool` | — | legacy | `< v0.6.31` providers only; Swift omits it; Go keeps decoding it so their status signature verifies |
-| `rdma_disabled`, `sip_enabled`, `secure_boot_enabled` | `*bool` | `Bool?` | opt | fresh posture at challenge time |
-| `binary_hash`, `active_model_hash`, `python_hash`, `runtime_hash` | `string` | `String?` | opt | SHA-256 |
+| `rdma_disabled`, `sip_enabled`, `secure_boot_enabled` | `*bool` | `Bool?` | opt | fresh posture at challenge time; Swift always sends all three, and an omitted value fails the challenge |
+| `binary_hash`, `active_model_hash` | `string` | `String?` | opt | SHA-256 |
 | `template_hashes`, `model_hashes` | `map[string]string` | `[String: String]` | opt | Swift omits when empty |
 
 ### `code_attestation_response`
@@ -572,7 +751,11 @@ merge semantics.
 `request_id` is nonempty and at most 64 bytes. `drain_request_id` must name the
 latest committed **and settled** `provider_drain` on this exact live connection.
 Every model ID must be unique and nonempty and meet the attested runtime
-capability floor. Catalog-tracked models must carry their catalog-pinned hash.
+capability floor. When the catalog pins a hash, the model must carry the active
+or an explicitly retained revision hash for that same model. Both validation
+and commit check the current approvals, so retirement between those phases
+rejects the replacement (`coordinator/registry/provider_models_replace.go`,
+`ReplaceProviderModels`).
 As with registration, off-catalog local models may be advertised regardless of
 `private_only` or whether the provider has a linked owner; advertising them does
 not grant trust or ownership. With a configured catalog, they are eligible only
@@ -718,15 +901,8 @@ Memory holder lifetime is `min(configured TTL, 30s)` (`receiptTTL`,
 staging for resident KV. Sequences increase independently per tier/model/epoch;
 nonce, connection, model/hash/contract, epoch, order, and replay checks still
 apply. Repeated ready anchors cannot refresh expired evidence. Resident LRU
-removal, and routine owned retirement in active SSD stores, use bounded TTL and
-verified-miss invalidation; there is no per-anchor
+removal uses bounded TTL and exact-miss invalidation; there is no per-anchor
 eviction frame. Unload/reconnect replaces the capability snapshot.
-
-An SSD epoch describes reusable-state identity, not guaranteed presence of every
-previously advertised file. An accepted absent/corrupt lookup removes the
-provider's hints for all boundaries in that attempt's plan. Native authentication,
-nonce/sequence/scope/connection checks and generation-wide invalidation on unsafe
-changes remain required; a stale routing hint never grants a cache hit.
 
 ### `capacity_quote`
 
@@ -737,7 +913,7 @@ drift correction for the coordinator's ledger, not reservations.
 | JSON key | Go | Presence | Notes |
 |---|---|---|---|
 | `quote_id` | `string` | req | echo of the probe's random, request-local id |
-| `capacity_seq` | `uint64` | req | snapshot the quote was computed from; the coordinator trusts the probe window (`capacityProbeWindow`, [`../architecture/routing.md#entry-points`](../architecture/routing.md#entry-points)) and does not compare seqs |
+| `capacity_seq` | `uint64` | req | snapshot the quote was computed from; `applyFirstContentQuote` (`coordinator/registry/first_content_plan.go`) rejects older accepted-capacity sequences and newer local reservations; response correlation remains bounded by `capacityProbeWindow` |
 | `admissible_now` | `bool` | req | advisory — the inference request itself is the reservation |
 | `rejection_reason` | `CapacityRejectionReason` | opt | present **exactly when** `admissible_now` is false: `token_budget`, `kv_headroom`, `memory_cap`, `slot_state`, `template`, `capability`, `deadline` |
 | `ttft_p50_ms`, `ttft_p90_ms` | `float64` | req | end-to-end quantiles from completed comparable requests, never summed per-stage p95s |
@@ -754,14 +930,35 @@ Go `InferenceRequestMessage` · Swift `CoordinatorMessage.InferenceRequest`.
 | JSON key | Go | Swift | Presence | Notes |
 |---|---|---|---|---|
 | `request_id` | `string` | `String` | req | attempt UUID |
-| `body` | `InferenceRequestBody` | `JSONValue` | opt | plain body: `model`, `messages[]{role, content}`, `stream` (`bool`), `max_tokens` (`*int`, opt), `temperature` (`*float64`, opt), `endpoint` (`string`, opt; defaults to `/v1/chat/completions`). Empty when `encrypted_body` is set |
-| `encrypted_body` | `*EncryptedPayload` | `EncryptedPayload?` | opt | NaCl box; set whenever the provider registered a `public_key` |
+| `service_reservation_id` | `string` | `String?` | opt | Fresh opaque UUID for the committed service reservation, including retries of the same request; omitted by older coordinators. The provider echoes it with the actual held charge in [`whole_mac_service_reservations`](#service-reservation-correlation) until retirement. Distinct from `request_id`; missing or invalid IDs receive no overlap credit but still consume provider allowance |
+| `encrypted_body` | `*EncryptedPayload` | `EncryptedPayload?` | opt | NaCl box; the only request body. There is no plaintext `body` key: the coordinator never sends one and Swift rejects a request without `encrypted_body` |
 | `first_content_budget_ms` | `int64` | `Int64?` | opt | positive time left for this attempt to produce its first content chunk; 0 omitted. The coordinator omits this for accounts outside `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS`; missing means no coordinator first-content SLA, preserving existing Swift decoding |
+| `prompt_work` | `*PromptWork` | `PromptWork?` | opt | Numeric artifact/template-bound count provenance; older peers may omit it. Validated after provider tokenization; never changes billing usage or the inherited deadline |
 | `cache_receipt_nonce` | `string` | `String?` | opt | binds the prefix-cache receipts to this attempt |
 | `cache_scope` | `string` | `String?` | opt | |
 | `prefix_cache_protocol` | `int` | `Int?` | opt | |
 | `cache_receipt_boundary_mode` | `string` | `String?` | opt | `checkpoint` echoes support for the selected SSD capability. A provider emits checkpoint-mode receipts only with this echo; an older coordinator omits it and remains cold for this format. Copied from the prepared attempt and cleared on retry/fallback; `coordinator/api/provider_wire.go`, `snapshotProviderInferenceFrame` / `wireMessage`; `coordinator/registry/cache_receipts.go`, `ForgetCacheAttempt` |
+| `cache_repeated_prefix_tokens` | `*int` | `Int?` | ptr | Coordinator-observed fleet-wide repeat demand: the deepest boundary another plan shared within the routing TTL among those a plan observes (multiples of 1,024 tokens, the final boundary, and a power-of-two ladder for very long prompts), 0 when none. Sent only with a granted scope; absent from older coordinators (providers then write every checkpoint) and cleared on retry/fallback (`CacheAttemptSnapshot.ApplyTo`, `coordinator/registry/cache_attempt_ownership.go`). Integer count only, never a key, hash or boundary. Providers gate complete-checkpoint donations on it (`skipped_novel`; `SSDCheckpointDemand.admitsWrite`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointDemand.swift`). Swift clamps a negative value to 0. The e2e wire relay projects it for `inference_request` (`copyFields`, `e2e/testbed/provider_wire_relay.go`) |
 | `tool_schema_metadata_protocol` | `int` | `Int?` | opt | `1` = the coordinator rejected client-forged reserved keys before normalisation |
+
+`prompt_work` is defined in `coordinator/protocol/prompt_work.go` and
+`provider-swift/Sources/ProviderCore/Protocol/PromptWork.swift`:
+
+| Key | Meaning |
+|---|---|
+| `version` | `1`; unknown versions remain decodable but unqualified |
+| `source` | `exact_contract`, `calibrated_template`, or `heuristic` |
+| `prompt_tokens` | Positive central input count, bounded by 1,048,576 tokens |
+| `upper_bound_tokens` | Exact count for exact provenance; measured upper bound for qualified calibration; `0` denotes unknown heuristic uncertainty |
+| `model_artifact_hash`, `prompt_contract_id` | Lowercase SHA-256 identities required for qualified provenance |
+| `calibration_id` | Required printable reviewed-corpus identity for `calibrated_template`; absent for exact counts |
+
+The fields contain no content, token IDs, cache keys or consumer identity.
+An exact count must equal the provider's actual tokenization; a calibrated
+count must bound it. Invalid identity, unknown source or an exceeded bound
+withdraws calibrated admission and preserves the conservative fallback.
+The provider ignores a malformed optional `prompt_work` object and decodes the
+rest of the inference request normally; required request fields remain strict.
 
 ### `cancel`
 
@@ -802,16 +999,23 @@ replies with `prefetch_model_status` and then `models_update`.
 ### `desired_models`
 
 Go `DesiredModelsMessage` · Swift `DesiredModels`. `models` (`[]DesiredModelEntry`):
-`model_name` (public alias), `desired_build` (concrete build id),
-`previous_build` (opt; still acceptable mid-rollout). Sent right after `register`,
-when desired builds or eligible capabilities change, and freshly recomputed after
-matching provider readiness for a committed replacement even when the alias snapshot
-equals the one sent before switching. The same backend/version and attested
-capability guards apply. Entries describe aliases whose desired, previous, or
-retired build is in the provider's advertised inventory; an empty set revokes old
-targets. The provider reconciles by background-prefetching a missing desired
-build, hard-swapping, and emitting `models_update`. Source:
+`model_name` (public alias or concrete model ID), `desired_build` (concrete build ID),
+`previous_build` (optional; still acceptable mid-rollout), `revision` (optional version),
+`aggregate_sha256` (optional artifact hash). `DesiredModelsForProvider` in
+`coordinator/registry/model_commands.go` adds the revision fields and unaliased
+concrete-model entries only for providers reporting `model_revisions_v1` in
+`runtime_capabilities`. This is protocol feature detection, not a new trust grant.
+
+Sent right after `register`, when desired identities or eligible capabilities
+change, and freshly recomputed after matching provider readiness for a committed
+replacement even when the snapshot equals the one sent before switching. The same
+backend and attested capability guards apply. Alias entries describe aliases
+whose desired, previous, or retired build is in the provider's advertised inventory;
+an empty set revokes old targets. Revision-aware providers stage the exact artifact
+and drain before activation; ID-only providers retain the legacy prefetch path.
+Both announce completed updates through `models_update`. Source:
 `coordinator/registry/model_commands.go` (`DesiredModelsForProvider`, `RefreshDesiredModels`).
+See [revision lifecycle](../architecture/model-revisions.md).
 
 ### `trust_status`
 
@@ -841,9 +1045,10 @@ set is pinned by `TestCapacityProbeShapeClosed` (`coordinator/protocol/capacity_
 `register.app_attest_protocol=3` negotiates the account/endpoint-bound shadow
 exchange plus signed static hardware claims. `AppAttestStatus` adds optional
 string fields `machine_model`, `memory_gb`, `cpu_total`, `cpu_performance`,
-`cpu_efficiency`, `gpu_cores` and `attestation_public_key`; version 3 hashes them after the version 2 status
-fields under its own domain. Old transcripts remain unchanged. Original enrollment
-protocol is retained for cached-response recovery across upgrades. These fields
+`cpu_efficiency`, `gpu_cores` and `attestation_public_key`; the version 3
+transcript hashes them after the status fields under its own domain. It is the
+only transcript: cached-response recovery resumes only a protocol-3 enrollment.
+These fields
 are app measurements, not Apple-certified hardware. See
 [the App Attest reference](app-attest-shadow.md) and
 `coordinator/protocol/app_attest_hardware.go` (`AppAttestShadowHashV3`).

@@ -105,11 +105,6 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
                 }
                 for group in groups.values {
                     guard let modelRoot = group.first?.modelRoot else { continue }
-                    if let retired = SSDDiskBudget.shared.retireActiveEntries(
-                        root: modelRoot, urls: group.map(\.url)) {
-                        removed.formUnion(retired)
-                        continue
-                    }
                     let mutation = {
                         for file in group where
                             SSDBlockStore.removeItemIfSafe(at: file.url, under: root)
@@ -117,10 +112,17 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
                             removed.insert(file.url.standardizedFileURL.path)
                         }
                     }
-                    let completed = SSDCacheEpochStore.performUnloadedDestructiveChange(
+                    // Neither path rotates the model's cache epoch: an active
+                    // store serializes the unlink with its own removals and
+                    // reconciles its index; an unloaded root only needs the
+                    // epoch record validated under the initialization lock.
+                    let completed =
+                        SSDDiskBudget.shared.performActiveDestructiveChange(
+                            root: modelRoot, mutation)
+                        ?? SSDCacheEpochStore.performUnloadedDestructiveChange(
                             root: modelRoot, mutation)
                     if !completed {
-                        // The body never runs unless its epoch barrier succeeds.
+                        // The body never runs unless its maintenance barrier succeeds.
                         continue
                     }
                 }

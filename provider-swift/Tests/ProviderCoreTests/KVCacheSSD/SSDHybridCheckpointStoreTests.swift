@@ -183,7 +183,7 @@ struct SSDHybridCheckpointStoreTests {
                 // Block in a synchronous disk-worker seam, never on engine queue.
                 func block() { release.wait() }
                 block()
-                await store.write(job)
+                store.write(job)
             })
         let donation = Task { try await f.donate(store) }
         func enteredWithoutBlocking() -> Bool { entered.wait(timeout: .now()) == .success }
@@ -221,7 +221,7 @@ struct SSDHybridCheckpointStoreTests {
         #expect(store.stats().stagedBytesInUse == 0)
     }
 
-    @Test("complete checkpoint roots share one disk budget and preserve survivor epochs")
+    @Test("complete checkpoint roots share one disk budget and evict without rotating either epoch")
     func sharedDiskBudget() async throws {
         let a = try SSDHybridCheckpointTestFixture()
         let b = try SSDHybridCheckpointTestFixture()
@@ -237,6 +237,8 @@ struct SSDHybridCheckpointStoreTests {
         #expect(first.stats().bytesOnDisk + second.stats().bytesOnDisk <= limit)
         #expect(first.stats().entries + second.stats().entries == 1)
         #expect(first.stats().evictions + second.stats().evictions == 1)
+        // Per-file eviction keeps both epochs: the coordinator's evidence for
+        // every surviving checkpoint stays valid.
         #expect([first.config.epochStore?.current, second.config.epochStore?.current] == before)
         await first.closeAndWait()
         await second.closeAndWait()

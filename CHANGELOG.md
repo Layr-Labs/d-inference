@@ -178,6 +178,8 @@ Production ran exact prefix-cache routing at 100% and measured a 1.4–5.2% hit 
 - Preserve filesystem traversal through symlinks and diagnose empty selected caches without mistaking incomplete download folders for models. See the [location command](docs/provider/cli-reference.md#darkbloom-models-location).
 
 - Bound retained cache-attempt bookkeeping by logical bytes as well as record count. Detach retained metadata, preserve receipt and dispatch ownership checks, and fall back to ordinary inference when the optional cache record cannot be admitted.
+- Select a bounded, demand-driven tokenizer preload set when the verified catalog exceeds the configured loaded-contract capacity. Keep the full verified set within capacity, current Registry eligibility, fair replacement and failure backoff; do not raise the sidecar limit or wait for preloading on inference requests.
+
 - Preserve healthy verified prompt contracts when unrelated artifacts or preload members fail. Bind Go participation to the current catalog, child and exact verified set; keep strict preload reports, fresh partial-readiness confirmation, bounded retries and Rust replacement/cancellation ownership.
 
 - Account for optional cache-planning decisions across post-preflight inference endpoints and cap planning at the original first-content deadline. Preserve legacy metrics, eligibility, inference contexts and independent retry/receipt ownership.

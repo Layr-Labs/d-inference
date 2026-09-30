@@ -39,8 +39,8 @@ func TestPreloadControllerGatesCatalogAndChildGenerations(t *testing.T) {
 	client := NewClient(ClientConfig{SocketPath: socket, MaxPreloadIDs: 8})
 	defer client.Close()
 	provisioner := &Provisioner{generation: 1, statuses: map[string]ProvisionStatus{
-		"model-a": {ArtifactReady: true, PromptContractID: contractA},
-		"model-b": {ArtifactReady: true, PromptContractID: contractA},
+		"model-a": {ArtifactReady: true, PromptContractID: contractA, ModelAggregateSHA256: strings.Repeat("e", 64)},
+		"model-b": {ArtifactReady: true, PromptContractID: contractA, ModelAggregateSHA256: strings.Repeat("e", 64)},
 	}}
 	supervisor := &Supervisor{
 		client: client,
@@ -87,7 +87,7 @@ func TestPreloadControllerGatesCatalogAndChildGenerations(t *testing.T) {
 	}
 
 	provisioner.mu.Lock()
-	provisioner.statuses["model-c"] = ProvisionStatus{ArtifactReady: true, PromptContractID: contractB}
+	provisioner.statuses["model-c"] = ProvisionStatus{ArtifactReady: true, PromptContractID: contractB, ModelAggregateSHA256: strings.Repeat("e", 64)}
 	provisioner.mu.Unlock()
 	controller.reconcile(context.Background())
 	if !controller.ReadyFor(contractB) || controller.ReadyFor(contractA) || preloadCalls.Load() != 3 {
@@ -110,7 +110,7 @@ func TestPreloadControllerBacksOffDeterministicFailures(t *testing.T) {
 	client := NewClient(ClientConfig{SocketPath: socket, MaxPreloadIDs: 8})
 	defer client.Close()
 	provisioner := &Provisioner{generation: 1, statuses: map[string]ProvisionStatus{
-		"model": {ArtifactReady: true, PromptContractID: contractID},
+		"model": {ArtifactReady: true, PromptContractID: contractID, ModelAggregateSHA256: strings.Repeat("e", 64)},
 	}}
 	supervisor := &Supervisor{client: client, status: SupervisorStatus{
 		Enabled: true, Running: true, Ready: true, ChildGeneration: 1,

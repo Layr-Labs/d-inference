@@ -44,7 +44,7 @@ request is inside the operational rollout cohort, its model's artifacts are
 verified, and its exact contract belongs to the acknowledged current preload set.
 An unrelated artifact failure or pending download does not suppress a healthy,
 acknowledged contract (`planCacheRoute`, `coordinator/api/cache_planning.go`;
-`PreloadController.ReadyFor`, `coordinator/promptcontract/preload_controller.go`).
+`PreloadController.PlanningState`, `coordinator/promptcontract/preload_selection.go`).
 Any other state — including every failure listed below — is ordinary cold
 routing.
 
@@ -168,11 +168,12 @@ use the same singleflight implementation and configured LRU capacity; the
 planner semaphore bounds concurrent loads and plans.
 
 At startup the sidecar binds its socket and reports live but not ready; it does
-not discover or load every directory left on disk. `Provisioner.Snapshot` supplies
-the sorted, deduplicated set of currently verified contracts, excluding pending
-or failed artifact work (`coordinator/promptcontract/provisioner.go`). The Go
-controller binds each preload to the catalog generation, child generation and
-exact verified set, including changes to that set within one catalog generation.
+not discover or load every directory left on disk. `Provisioner.VerifiedPreloadArtifacts`
+supplies one coherent catalog generation, snapshot and exact model/aggregate/
+contract tuples, excluding pending or failed artifact work
+(`coordinator/promptcontract/provisioner.go`). The Go controller binds each
+preload to that generation, child generation, configured capacity, exact verified
+and admissible tuples, and selected contracts, including same-generation changes.
 Empty or invalid Go catalogs close participation without sending an empty Rust
 replacement.
 
@@ -193,16 +194,64 @@ keeps those owners until it exits. Planning rechecks membership after acquiring
 its permit. Operation generations prevent dropped or stale completions from
 reopening a newer set (`coordinator/promptsidecar/src/planner/readiness.rs`,
 `PreloadOperation`; `coordinator/promptsidecar/src/planner/preloading.rs`,
-`preload_contracts`; `coordinator/promptsidecar/src/planner.rs`, `plan`). The configured contract capacity is unchanged; an oversized verified
-set is still rejected, not silently truncated or rotated.
+`preload_contracts`; `coordinator/promptsidecar/src/planner.rs`, `plan`). Direct
+Go client and Rust submissions above the configured contract capacity are still
+rejected; the controller submits only the bounded set described below.
 
 Go retains independent failure backoff while acknowledged healthy members
 remain usable. Changed catalog/child/verified-set identities, uncertain control
 responses and controller close fence stale publication. Failed/partial batches
 increment `Failures`, full successful batches increment `Runs`, and acknowledged
 warm/cold members contribute their returned counts; Rust preload counters remain
-batch counters (`PreloadController.finishAttempt`, `beginAttempt`, `ReadyFor`).
+batch counters (`PreloadController.finishAttemptLocked`, `prepareAttempt`,
+`coordinator/promptcontract/preload_controller.go`). A rejected HTTP 409 consumes
+only its matching live lease, without failure backoff or success publication
+(`preloadActiveSet.retireConflict`,
+`coordinator/promptcontract/preload_active_set_conflict.go`).
 A fresh or stale artifact root alone never grants planning eligibility.
+
+### Bounded tokenizer preload selection
+
+The verified catalog is not pruned to fit the sidecar. When its distinct contract
+count is within the configured capacity, the controller preloads the full verified
+set, including contracts not currently eligible for cache routing. When it exceeds
+capacity, only recent authenticated, final-resolved, currently eligible model/
+aggregate/contract demand can enter the selected set. Shared contracts consume one
+slot. Demand retains only detached exact artifact tuples and monotonic times, not
+accounts, request IDs, bodies, prompts or provider identities
+(`PreloadController.NoteDemand`, `coordinator/promptcontract/preload_selection.go`;
+`cachePreloadIdentity`, `coordinator/api/cache_preload_selection.go`).
+
+The pure selector bounds tuples at `preloadActiveSetMaxTuples = 128`, expires
+demand after `preloadDemandExpiry = 5 * time.Minute`, gives admitted members
+`preloadMinimumResidence = 30 * time.Second`, and allows at most one ordinary
+replacement per `preloadReplacementInterval = 30 * time.Second`. Oldest eligible
+waiting demand wins; public model availability only breaks otherwise equal fresh
+waits. Failed members requeue under the existing retry deadline instead of
+monopolizing a slot. Safety revocation is immediate and is not delayed by minimum
+residence or the replacement interval (`preloadActiveSet`,
+`coordinator/promptcontract/preload_active_set.go`).
+
+The controller serializes detached authority capture through policy application,
+samples its monotonic clock inside the policy lock, and releases those locks
+before preload/readiness/metrics I/O. Background reconciliation refreshes bounded
+public-availability advice; request paths recheck exact Registry eligibility but
+do not scan `Registry.ListModels`. Stale advice changes ordering only, never
+authorization (`selectionInput`, `reconcileSelectionLocked`,
+`coordinator/promptcontract/preload_selection.go`; `cachePreloadSelection`,
+`coordinator/api/cache_preload_selection.go`).
+
+Completed native tokenizer acknowledgement is separate from current routing
+participation. An admissibility-only change can preserve a completed acknowledgement
+and a partial batch's original retry deadline when catalog, child, capacity, exact
+verified/selected sets and selection generation still match. It cannot accept an
+old in-flight result, including an away-and-back identity change. `ReadyFor` retains
+its standalone tokenizer meaning; actual API planning requires `PlanningState`
+participation and the authoritative Registry gate. A missing selection callback,
+closed/stale controller or unacknowledged contract never grants participation.
+Requests record eligible demand without waiting for a selection or preload;
+capacity-deferred requests follow ordinary inference. This creates a planning
+opportunity, not evidence of provider KV adoption or a fleet hit-rate increase.
 
 Prompt artifacts live under `EIGENINFERENCE_PROMPT_SIDECAR_ARTIFACT_ROOT` on
 the persistent disk. The verified artifact loader rejects symlinks in every
@@ -578,9 +627,10 @@ gate.
    `LastCompleteBoundary`), `coordinator/promptsidecar/src/hash.rs`
    (`chain_hashes`), `fixtures/prompt-contract/v1`,
    `scripts/verify-prompt-parity.sh`.
-4. **A model routes only after its contract is acknowledged for the current
-   catalog generation, child generation and exact verified set** — `coordinator/promptcontract/preload_controller.go`
-   (`PreloadController.ReadyFor`).
+4. **Cache planning requires current exact eligibility and native acknowledgement
+   for the catalog, child, configured capacity and selected verified set** —
+   `coordinator/promptcontract/preload_selection.go` (`PreloadController.PlanningState`),
+   `coordinator/registry/cache_route_keys.go` (`PlanCacheRouteWithResult`).
 5. **The sidecar never downloads and never follows a symlink**; it loads only
    a coordinator-published, re-verified contract directory —
    `coordinator/promptsidecar/src/artifacts.rs` (`load`),
@@ -605,11 +655,12 @@ gate.
 
 | Symptom | Cause | Where |
 |---|---|---|
-| Every request routes cold although routing mode is `on` | Sidecar disabled, not live or not ready; the model's contract has not preloaded in this child generation; the plan timed out or failed validation | `client.go` (`PlanFailCold`, `validatePlan`), `preload_controller.go` (`ReadyFor`) |
+| Every request routes cold although routing mode is `on` | Sidecar disabled, not live or not ready; the model's contract has not preloaded in this child generation; the plan timed out or failed validation | `client.go` (`PlanFailCold`, `validatePlan`), `preload_selection.go` (`PlanningState`) |
 | Child restarts repeatedly, then stops being restarted | Consecutive health failures reached the threshold; the restart circuit opened and suppresses restarts for the cooldown | `supervisor_status.go` (`restartCircuitDelay`, `setRestartSuppressed`) |
 | Contract provisioned but never planning-eligible | Artifact root reached through a symlink (for example `/data`), or an artifact failed size or hash re-verification | `artifacts.rs` (`load`), `artifact_cache.go` (`verifyPublished`) |
 | Fixed planning failure for one model on every request | Unsupported template clock use or missing request date; body over `EIGENINFERENCE_PROMPT_SIDECAR_MAX_BODY_BYTES`; rendered prompt over `_MAX_TOKENS` | `render.rs` (`RenderError::DynamicTime`), `server/handler.rs` (body limit), `planner.rs` (`PlanError::TooManyTokens`) |
 | Preload rejected | Active set larger than `EIGENINFERENCE_PROMPT_SIDECAR_MAX_LOADED_CONTRACTS` | `preload.rs` (`validate_contracts`) |
+| Controller reports `capacity_deferred` | Verified contracts exceed capacity and some are not selected; current eligible demand, residence and retry order determine replacement | `preload_active_set.go` (`reason`, `reconcile`) |
 | `verify-prompt-parity.sh` fails | Regenerated vectors differ from `production_vectors.json`; a manifest, artifact or corpus case is missing; an unrecognised template incompatibility — no fabricated token IDs are accepted | `scripts/verify-prompt-parity.sh`, `prompt-fixtures.rs` (`require_model_manifests`, `require_case_ids`) |
 
 ## Code map
@@ -621,7 +672,8 @@ gate.
 | Go client: plan, fail-cold, preload, metrics | `coordinator/promptcontract/client.go` (`Plan`, `PlanFailCold`), `coordinator/promptcontract/client_control.go` (`Ready`, `Preload`, `Metrics`) |
 | Artifact provisioning and verified publication | `coordinator/promptcontract/provisioner.go`, `coordinator/promptcontract/artifact_cache.go` |
 | Descriptor-relative artifact paths | `coordinator/promptcontract/secure_files_unix.go` (`walkSecureDirectories`): absolute and root-relative path validation share descriptor traversal, optional directory creation, `O_NOFOLLOW` checks and ownership cleanup |
-| Go per-contract publication and identity fences | `coordinator/promptcontract/preload_controller.go` (`ReadyFor`, `finishAttempt`) |
+| Go per-contract publication and identity fences | `coordinator/promptcontract/preload_controller.go` (`prepareAttempt`, `finishAttemptLocked`), `coordinator/promptcontract/preload_selection.go` (`PlanningState`, `ReadyFor`, `reconcileSelectionLocked`) |
+| Bounded demand and preload selection | `coordinator/promptcontract/preload_active_set.go` (`preloadActiveSet`), `coordinator/registry/cache_preload_identity.go` (`CachePreloadIdentities`), `coordinator/api/cache_preload_selection.go` (`cachePreloadSelection`) |
 | Rust managed membership and preload ownership | `coordinator/promptsidecar/src/planner/readiness.rs` (`PreloadOperation`), `coordinator/promptsidecar/src/planner/preloading.rs` (`preload_contracts`) |
 | Contract identity and block chain (Go) | `coordinator/promptcontract/contract.go`, `coordinator/promptcontract/blockhash.go` |
 | Sidecar process, socket server, routes | `coordinator/promptsidecar/src/main.rs`, `coordinator/promptsidecar/src/server.rs`, `coordinator/promptsidecar/src/server/handler.rs` |

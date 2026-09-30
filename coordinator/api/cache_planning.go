@@ -43,23 +43,31 @@ func (s *Server) planCacheRouteResult(ctx context.Context, input cachePlanningIn
 		reason = artifactReason
 		return registry.CachePlanResult{}
 	}
-	if !s.promptPreloader.ReadyFor(status.PromptContractID) {
+	identity, verified := s.cachePreloadIdentity(input.Model, status)
+	if !verified {
 		reason = cachePlanningPreloadNotReady
 		return registry.CachePlanResult{}
 	}
-
-	// Preserve the original receipt-time budget, including exempt/zero-clock
-	// behavior. Only optional planning receives this child, never dispatch.
-	planningCtx, cancel := firstTokenWriteContext(ctx, input.ReceivedAt, input.FirstContentBudget)
-	defer cancel()
-	result := s.registry.PlanCacheRouteWithResult(planningCtx, s.promptContract, registry.CachePlanInput{
+	planInput := registry.CachePlanInput{
 		Account:              input.Account,
 		Model:                input.Model,
 		PromptContractID:     status.PromptContractID,
 		ModelAggregateSHA256: status.ModelAggregateSHA256,
 		Body:                 input.Body,
 		HasMedia:             input.HasMedia,
-	})
+	}
+	_, rejected := s.registry.CachePlanRejection(s.promptContract, planInput)
+	if !rejected && cachePreloadDemandWithinDeadline(ctx, input) {
+		// Once per memoized authenticated candidate body, before the
+		// readiness gate. No QPS/sample debit, waiting, or request data retention.
+		s.promptPreloader.NoteDemand(identity)
+	}
+	state := s.promptPreloader.PlanningState(identity)
+	result, decided := s.commitCachePlanning(ctx, input, planInput, identity, rejected, state)
+	if !decided {
+		reason = cachePlanningPreloadNotReady
+		return registry.CachePlanResult{}
+	}
 	// Registry still owns eligibility, sampling and outcome precedence. Keep
 	// legacy accounting distinct from the broader API decision population.
 	s.emitExactCachePlan(result)

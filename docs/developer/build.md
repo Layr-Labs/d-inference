@@ -344,6 +344,13 @@ types to prepare canonical catalog entries before a physical run. The helper wai
 five-minute prelaunch bound for GPU ≤42°C and load1 ≤4, under the same control
 lease used after launch. See the [test procedure](test.md#connected-coordinatorprovider-http-cache-gate).
 
+Rebuild the E2E test executable after shared sidecar lifecycle or release-default
+fixture changes. `startExactCacheSidecar` and the restart fixtures install the
+API preload controller before starting it, matching coordinator startup. The
+CPU-only API-readiness regression in the linked procedure uses a verified
+Rust sidecar and immutable prompt artifacts; compiling it does not execute the
+provider/API cache smoke or qualify model restoration.
+
 CI checks formatting of tracked Go source while preserving frozen report
 evidence bytes; see the [coordinator checks](test.md#2-coordinator-go).
 

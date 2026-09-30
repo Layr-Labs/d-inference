@@ -212,6 +212,11 @@ func (p *Provisioner) Snapshot() ProvisionSnapshot {
 		return ProvisionSnapshot{}
 	}
 	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.snapshotLocked()
+}
+
+func (p *Provisioner) snapshotLocked() ProvisionSnapshot {
 	snapshot := ProvisionSnapshot{Generation: p.generation}
 	if p.catalogError != "" {
 		snapshot.Counts.Failed++
@@ -233,13 +238,42 @@ func (p *Provisioner) Snapshot() ProvisionSnapshot {
 			snapshot.Counts.Pending++
 		}
 	}
-	p.mu.RUnlock()
 	snapshot.ContractIDs = make([]string, 0, len(contracts))
 	for contractID := range contracts {
 		snapshot.ContractIDs = append(snapshot.ContractIDs, contractID)
 	}
 	sort.Strings(snapshot.ContractIDs)
 	return snapshot
+}
+
+// VerifiedPreloadArtifacts is an internal-use, coherent handoff. Full verified
+// membership remains authoritative; selection never prunes the catalog. Values
+// are detached and omit paths, URLs, errors and all request/account state.
+func (p *Provisioner) VerifiedPreloadArtifacts() (ProvisionSnapshot, []VerifiedPreloadArtifact) {
+	if p == nil {
+		return ProvisionSnapshot{}, nil
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.closed {
+		return ProvisionSnapshot{}, nil
+	}
+	snapshot := p.snapshotLocked()
+	for i, id := range snapshot.ContractIDs {
+		snapshot.ContractIDs[i] = strings.Clone(id)
+	}
+	artifacts := make([]VerifiedPreloadArtifact, 0, snapshot.Counts.Ready)
+	for modelID, status := range p.statuses {
+		if status.ArtifactReady && validHash(status.PromptContractID) {
+			artifacts = append(artifacts, VerifiedPreloadArtifact{
+				CatalogGeneration: snapshot.Generation, ModelID: strings.Clone(modelID),
+				ModelAggregateSHA256: strings.Clone(status.ModelAggregateSHA256),
+				PromptContractID:     strings.Clone(status.PromptContractID),
+			})
+		}
+	}
+	sort.Slice(artifacts, func(i, j int) bool { return artifacts[i].ModelID < artifacts[j].ModelID })
+	return snapshot, artifacts
 }
 
 func (p *Provisioner) Close() {

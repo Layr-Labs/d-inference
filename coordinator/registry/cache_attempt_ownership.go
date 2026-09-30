@@ -145,6 +145,7 @@ func (t *cacheRoutingTracker) clearRetired() {
 	t.holdersByProvider, t.attemptsByProvider = nil, nil
 	t.v2Sequences, t.rejectedV2 = nil, nil
 	t.holderCount = 0
+	t.attemptBytes = 0
 	if t.demand != nil {
 		t.demand.clear()
 	}

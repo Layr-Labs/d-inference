@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"strings"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -90,13 +91,14 @@ func (t *cacheRoutingTracker) applyReadyV2Decision(
 	if !t.acceptV2SequenceLocked(providerID, capability, msg.Tier, msg.CacheSeq) {
 		return rejectCacheReceipt(CacheReceiptSequence)
 	}
+	final.ChainHash = strings.Clone(final.ChainHash)
 	t.resetProofStrikesLocked(providerID, msg.ModelID, msg.Tier, capability, now)
 	if msg.Tier == "memory" {
 		attempt.MemoryLastReadyAnchor = final
 	} else {
 		attempt.LastReadyAnchor = final
 	}
-	t.storeAttemptLocked(msg.CacheReceiptNonce, attempt)
+	t.attempts[strings.Clone(msg.CacheReceiptNonce)] = attempt
 	for _, anchor := range msg.ReadyAnchors {
 		recompute := min(msg.RequiredRecomputeTokens, anchor.TokenCount)
 		key := cacheTierBoundaryKey(routeKey, attempt.Plan, anchor, msg.Tier)

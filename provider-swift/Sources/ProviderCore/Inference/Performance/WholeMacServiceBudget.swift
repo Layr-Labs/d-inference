@@ -70,6 +70,25 @@ final class WholeMacServiceBudget: @unchecked Sendable {
         posture.captureRateEvidence(at: now)
     }
 
+    /// Observed native rates are usable only while this request is the sole
+    /// owner and no load, encoder preparation or cache transfer is in flight.
+    /// Every ownership change invalidates the token before engine admission.
+    func captureNativeMediaRateEvidence(ownerID: String, modelID: String) -> NativeMediaRateEvidence? {
+        lock.withLock {
+            guard charges.count == 1, charges[ownerID]?.work?.modelID == modelID,
+                unboundedActivities.isEmpty else { return nil }
+            let now = clockNow()
+            let requirement = DeadlineApplicability(minimumWholeMacQuiescenceMs: 20_000,
+                minimumNominalStabilityMs: 5_000, powerMode: "automatic")
+            guard let snapshot = posture.snapshot(requirement: requirement, at: now,
+                registering: evidenceGuard),
+                let rate = posture.captureRateEvidence(at: now), rate.epoch == snapshot.epoch
+            else { return nil }
+            return NativeMediaRateEvidence(rate: rate, guardToken: evidenceGuard,
+                validUntil: snapshot.validUntil)
+        }
+    }
+
     func deadlineEligibleForAdvertisement(_ requirement: DeadlineApplicability) -> Bool {
         lock.withLock {
             let now = clockNow()

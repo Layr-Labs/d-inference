@@ -49,21 +49,24 @@ extension EngineV2Bridge {
         multimodal: CBv2MultimodalInput?,
         requestID: String? = nil, promptTokens: Int = 0, promptWork: PromptWork? = nil
     ) throws -> CBv2FirstTokenDeadlineAdmission? {
-        guard let admission = targetFirstTokenDeadlineAdmission(
-            deadline: deadline, requestID: requestID,
-            promptTokens: promptTokens, promptWork: promptWork) else { return nil }
-        guard let multimodal else { return admission }
+        guard prefillDeadlineMode == .enforce, prefillDeadlineProjectionEnabled,
+            deadline != nil else { return nil }
+        guard let multimodal else {
+            return targetFirstTokenDeadlineAdmission(deadline: deadline, requestID: requestID,
+                promptTokens: promptTokens, promptWork: promptWork)
+        }
         guard multimodal.nativeMediaToken != nil, multimodal.attention == .causal,
               multimodal.positionState == nil, multimodal.deepstackEmbeddings == nil else { return nil }
         // A stale/foreign/missing capability is an actual veto, never a nil
         // fallback to ordinary submission after identifying a native seal.
         _ = try nativeMiMoDecodedMediaBinding()
-        return admission
+        return targetFirstTokenDeadlineAdmission(deadline: deadline, requestID: requestID,
+            promptTokens: promptTokens, promptWork: promptWork, nativeMedia: true)
     }
 
     private func targetFirstTokenDeadlineAdmission(
         deadline: FirstContentDeadline?,
-        requestID: String?, promptTokens: Int, promptWork: PromptWork?
+        requestID: String?, promptTokens: Int, promptWork: PromptWork?, nativeMedia: Bool = false
     ) -> CBv2FirstTokenDeadlineAdmission? {
         guard prefillDeadlineMode == .enforce,
             prefillDeadlineProjectionEnabled,
@@ -85,13 +88,15 @@ extension EngineV2Bridge {
         let calibration = requestID.flatMap {
             calibratedDeadlinePolicy(requestID: $0, promptTokens: promptTokens, promptWork: promptWork)
         }
-        guard prefillRate != nil || calibration != nil else { return nil }
+        guard prefillRate != nil || calibration != nil || nativeMedia else { return nil }
 
         return CBv2FirstTokenDeadlineAdmission(
             deadline: deadline.instant,
             conservativePrefillTokensPerSecond: prefillRate,
             conservativeDecodeTokensPerSecond: decodeRate,
-            calibration: calibration)
+            calibration: calibration,
+            nativeTargetPrefill: nativeMedia
+                ? nativeMediaDeadlinePolicy(requestID: requestID, promptTokens: promptTokens) : nil)
     }
 
     /// Move post-commit cancellation cleanup out of the cancelling task. The

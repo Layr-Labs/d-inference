@@ -206,5 +206,6 @@ final class MiMoV26ManagedMediaReservation: MiMoV26MediaWorkReservation, @unchec
         }
     }
     var isFullyRetired: Bool { lock.withLock { retired } }
+    var hasFailedCompletion: Bool { lock.withLock { !failed.isEmpty } }
     var chargedBytesForTesting: UInt64 { lock.withLock { state.chargedBytes } }
 }

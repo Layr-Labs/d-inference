@@ -39,6 +39,13 @@ extension EngineV2Bridge {
                 prompt: work, context: usage.promptTokens,
                 cache: saved > 0 ? "reused" : "cold",
                 overlap: sample.overlap, at: sample.at)
+            if saved == 0, !sample.overlap.contended,
+                usage.timing.preemptions == 0, usage.timing.readmissions == 0,
+                usage.timing.packedPrefillChunks == 0,
+                let epoch = sample.nativeMediaRateEpoch,
+                serviceBudget?.currentDeadlineRateEpoch() == epoch {
+                nativeMediaPrefillRates.observe(tokens: work, rate: tps, epoch: epoch, at: sample.at)
+            }
             return
         }
         let name = saved > 0 ? "reuse_prefill"

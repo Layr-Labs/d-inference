@@ -45,6 +45,7 @@ final class EnginePrefillReceipt: @unchecked Sendable {
         let at: ContinuousClock.Instant
         let overlap: EngineMeasurementActivity.Overlap
         let deadlineRateEvidence: DeadlineRateEvidence?
+        let nativeMediaRateEpoch: UUID?
     }
     let activity: EngineMeasurementActivity
     let activityID: UUID
@@ -53,6 +54,7 @@ final class EnginePrefillReceipt: @unchecked Sendable {
     /// target-decoder work from text and legacy vision without trusting input
     /// JSON or inferring a model capability from its name.
     let nativeCausalMedia: Bool
+    let nativeRateEvidence: NativeMediaRateEvidence?
     private let lock = NSLock()
     private var sample: Sample?
     private var consumed = false
@@ -60,10 +62,12 @@ final class EnginePrefillReceipt: @unchecked Sendable {
     private var retirementOwned = false
 
     init(activity: EngineMeasurementActivity, model: String,
-        deadlineRateEvidence: DeadlineRateEvidence? = nil, nativeCausalMedia: Bool = false) {
+        deadlineRateEvidence: DeadlineRateEvidence? = nil, nativeCausalMedia: Bool = false,
+        nativeRateEvidence: NativeMediaRateEvidence? = nil) {
         self.activity = activity
         self.deadlineRateEvidence = deadlineRateEvidence
         self.nativeCausalMedia = nativeCausalMedia
+        self.nativeRateEvidence = nativeRateEvidence
         activityID = activity.begin(model: model)
     }
 
@@ -72,7 +76,8 @@ final class EnginePrefillReceipt: @unchecked Sendable {
         lock.withLock {
             guard sample == nil else { return }
             sample = Sample(usage: usage, at: .now, overlap: overlap,
-                deadlineRateEvidence: deadlineRateEvidence?.currentEpoch() == nil ? nil : deadlineRateEvidence)
+                deadlineRateEvidence: deadlineRateEvidence?.currentEpoch() == nil ? nil : deadlineRateEvidence,
+                nativeMediaRateEpoch: nativeRateEvidence?.completedEpoch())
         }
     }
 

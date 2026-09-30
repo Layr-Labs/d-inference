@@ -73,9 +73,11 @@ in the separate `native_media_prefill` workload phase. Its timer starts at the
 first target prefill launch, after image/video/audio preparation, and ends at
 confirmed prompt computation. The buckets retain computed-suffix size, full
 context size, cache state and same/other-model overlap. They do not train text
-rates or supply deadline calibration: a completed media request is evidence
-to evaluate, not a validated prediction envelope. Generic vision submissions
-remain excluded. The native owner and opaque media seal are checked before a
+rates. Cold, unpacked, non-preempted samples with exclusive whole-Mac ownership
+and one continuously observed nominal AC/Automatic posture can inform the
+native target predictor described in [first-content routing](first-content-routing.md#native-media-target-observations).
+These online observations are not a release-certified prediction envelope.
+Generic vision submissions remain excluded. The native owner and opaque media seal are checked before a
 submission can produce a completed receipt
 (`EngineV2Bridge+MiMoMedia.swift`, `nativeMediaMeasurementEligible`).
 

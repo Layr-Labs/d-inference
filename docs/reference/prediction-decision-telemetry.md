@@ -1,6 +1,6 @@
 # Prediction decision telemetry
 
-> Last updated: 2026-09-29
+> Last updated: 2026-09-30
 
 Optional attempt records compare what the coordinator selected with what the
 provider decided. They explain decisions; they do not establish whether a
@@ -39,14 +39,14 @@ terminal messages. Sources: `coordinator/protocol/profile_deadline.go`
 | `verdict` | `accepted`, `deadline_unreachable`, `expired_before_submit`, `cancelled`, `other`. `cancelled` without a returned verdict does not prove the engine never accepted. |
 | `continuation` | `expired`, `cancelled`, `other`, or absent. Annotates a returned verdict when the bridge's immediate continuation is stopped; it does not replace the verdict. |
 | `projection` | `bounded`, `unbounded`, `not_attempted`, `other`, or absent. Unbounded is distinct from a measured large duration. |
-| `projection_reason` | Ordinary-submit bypass only: `no_deadline`, `mode_off`, `unsupported_scheduler`, `multimodal`, `unmeasured_prefill`, `other`, or absent. It does not describe an engine projection failure. |
+| `projection_reason` | No service-time prediction: `no_deadline`, `mode_off`, `unsupported_scheduler`, `multimodal`, `unmeasured_prefill`, `other`, or absent. Includes guarded native-media bootstrap; it does not describe an engine projection failure. |
 | `unbounded_reason` | Optional closed engine cause for `projection=unbounded`, listed below. Missing means the engine supplied no cause; it is never reconstructed from occupancy or remaining time. Unknown future values fold to `other`. |
 | `observed_us` | Offset from the provider profile anchor when the bridge receives a verdict or observes pre-submit expiry. **Not the engine's atomic refusal time.** |
 | `remaining_us` | Remaining deadline at that provider observation, clamped at zero. |
 | `submit_remaining_us` | Remaining deadline immediately before the engine call. |
 | `projected_service_us` | Returned finite service-duration projection. Absent when unavailable/unbounded. |
 | `projected_prefill_tokens`, `projected_decode_tokens` | Engine-projected scheduled work through the target's first-token step, including work ahead of the target; not just the target request's tokens. |
-| `prefill_tps`, `decode_tps` | Effective conservative rates passed to the engine after the existing policy adjustment. Missing/unusable rates remain absent. |
+| `prefill_tps`, `decode_tps` | Effective rates passed to the engine. Native media reports the incoming target's observed prefill rate; existing queued work retains its separate legacy rate. Missing/unusable rates remain absent. |
 
 `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+DeadlineDecision.swift`
 records returned evidence before post-submit expiry/cancellation checks can
@@ -54,6 +54,12 @@ throw. Existing accepted-only stamps and projection fields keep their meaning;
 `accepted` with `continuation=expired` can therefore coexist with a missing
 old `engine_admitted_us` stamp. Ordinary submit uses `not_attempted` and never
 fabricates projected work.
+
+A guarded native-media bootstrap also uses `not_attempted` with
+`unmeasured_prefill`: the SDK validates physical work and an idle ownership
+grant but has no service-time prediction. Its actual projected token work is
+retained, while `projected_service_us` and `prefill_tps` stay absent. The original
+absolute deadline is still enforced; this is not an unbounded request timeout.
 
 ### Unbounded projection causes
 

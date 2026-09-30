@@ -520,9 +520,11 @@ extension EngineV2Bridge {
         let cbv2Id = mintEngineRequestId(
             seed: cbv2Request.sampling.seed, promptTokens: promptTokens)
         cbv2Request.id = cbv2Id
+        let nativeCausalMedia = nativeMediaMeasurementEligible(multimodal)
         let prefillReceipt = EnginePrefillReceipt(activity: measurementActivity, model: modelId,
             deadlineRateEvidence: deadlineProfile == nil ? nil : serviceBudget?.captureDeadlineRateEvidence(),
-            nativeCausalMedia: nativeMediaMeasurementEligible(multimodal))
+            nativeCausalMedia: nativeCausalMedia,
+            nativeRateEvidence: nativeCausalMedia ? captureNativeMediaRateEvidence(requestID: id) : nil)
         cbv2Request.onPrefillCompleted = { [weak self, prefillReceipt] usage in
             prefillReceipt.complete(usage)
             Task { await self?.consumePrefillReceipt(id: id, receipt: prefillReceipt) }

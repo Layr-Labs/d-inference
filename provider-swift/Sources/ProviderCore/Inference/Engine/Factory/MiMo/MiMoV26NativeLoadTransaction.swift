@@ -260,6 +260,9 @@ final class MiMoV26NativeLoadTransaction: @unchecked Sendable {
     let request: MiMoV26SerialLoadRequest
     let lifecycle: MiMoV26NativeLifecycle
     let budget: GlobalKVCacheBudget
+    /// A failed native drain remains device work for calibration purposes.
+    /// Never revive isolated-rate eligibility while the GPU owner is unknown.
+    private var retainedMediaRateActivities: [WholeMacUnboundedActivity] = []
     private weak var registry: MiMoV26NativeLoadRegistry?
     private let work = NativeConstructionWork()
     private let lock = NSLock()
@@ -908,6 +911,18 @@ final class MiMoV26NativeLoadTransaction: @unchecked Sendable {
             }
         }
         defer { endOperation(selected.0) }
+        let rateActivity = budget.serviceBudget.beginUnboundedActivity()
+        defer {
+            let nativeFault = selected.2.nativeCompletionFault != nil
+            let reservations = lock.withLock { Array(mediaReservations.values) }
+            let failedCompletion = reservations.contains { $0.hasFailedCompletion }
+            let retained = lock.withLock { () -> Bool in
+                guard faultCode != nil || nativeFault || failedCompletion else { return false }
+                retainedMediaRateActivities.append(rateActivity)
+                return true
+            }
+            if !retained { rateActivity.finish() }
+        }
         let cancellation = MediaCancellation()
         return try await withTaskCancellationHandler {
             var prepared: CBv2Request?

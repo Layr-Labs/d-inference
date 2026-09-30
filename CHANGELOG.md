@@ -7,6 +7,12 @@
 - Forward `DARKBLOOM_MIMO_COMPLETE_PREFIX` to the launchd provider job. Unset or empty uses the model default; exact `1` enables this gate and any other nonempty value disables. Unlisted IDs also require affirmative `DARKBLOOM_PREFIX_CACHE`; `DARKBLOOM_PREFIX_CACHE=0` still disables all prefix caching. Apply shell overrides with replacement `darkbloom start` so its saved plist is refreshed.
 - Align `ProviderCore.version` and the coordinator latest-provider display fallback at `0.9.14`. Publication, full-artifact cache qualification and coordinator rollout remain separate steps.
 
+## Unreleased — MiMo media memory and text isolation
+
+- Complete native MiMo vision work one frame and transformer block at a time, reserving the largest live working set instead of every layer and video frame together. Preserve retained media/features, KV, codec and OS/activation safeguards.
+- Report media-preparation memory refusals as `media_memory_unavailable`. Keep bounded failover while leaving text-capacity clamps, health breakers and reputation unchanged. Genuine native completion faults retain their existing quarantine behavior.
+- Add exact OpenRouter JPEG/MP4/MOV fixture coverage and media-refusal-to-text-serving regressions.
+
 ## Release candidate v0.9.13 — MiMo memory admission (not shipped)
 
 - Accept bounded AAC audio in MP4/MOV and mono/stereo PCM8/16/24/32 and Float32 WAV input from 8–192 kHz for MiMo audio. Preserve sample rate and channels for the native resampler, reserve all decoded/resampled samples, and qualify the authenticated path with the genuine audio codec before release.

@@ -7,6 +7,11 @@ coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
 source-matched `mlx.metallib`), and the console and marketing Next.js UIs.
 `make build` builds those components; the admin UI is built separately below.
 
+The SDK test product copies its `MiMoOpenRouter` media fixture directory as a
+test-only resource (`libs/mlx-swift-lm/Package.swift`). Those files are not
+provider product resources. Build SDK tests separately from provider tests
+when validating the media working-set change; see [test gates](test.md).
+
 The macOS integration and benchmark workflows explicitly initialize Homebrew
 with the pinned `Homebrew/actions/setup-homebrew` action before installing
 `postgresql@16`. The action exposes an existing installation or installs

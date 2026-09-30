@@ -20,6 +20,7 @@ const (
 	errorReasonCapacityTimeout           = "capacity_timeout"
 	errorReasonQueueFull                 = "queue_full"
 	errorReasonTokenBudgetExhaust        = "token_budget_exhausted"
+	errorReasonMediaMemoryUnavailable    = protocol.InferenceErrorReasonMediaMemoryUnavailable
 	errorReasonRequestExceedsContext     = "request_exceeds_context"
 	errorReasonRequestExceedsNode        = "request_exceeds_node"
 	errorReasonRequestExceedsNodeBudget  = "request_exceeds_node_budget"
@@ -110,9 +111,12 @@ func isDeadlineUnreachableErrorReason(reason string) bool {
 // provider-health/capacity trackers. Request/model faults remain neutral as
 // before; deadline_unreachable joins them because it describes the coordinator
 // supplied remaining SLA, not provider sickness or capacity dishonesty.
+// media_memory_unavailable is likewise specific to one media preparation:
+// it does not disprove the same model's advertised text/KV capacity.
 func isProviderHealthNeutralErrorReason(reason string) bool {
 	return isNonProviderFaultErrorReason(reason) ||
 		isDeadlineUnreachableErrorReason(reason) ||
+		normalizeInferenceErrorReason(reason) == errorReasonMediaMemoryUnavailable ||
 		isProviderRestartErrorReason(reason)
 }
 
@@ -152,6 +156,7 @@ var validInferenceErrorReasons = map[string]struct{}{
 	errorReasonCapacityTimeout:           {},
 	errorReasonQueueFull:                 {},
 	errorReasonTokenBudgetExhaust:        {},
+	errorReasonMediaMemoryUnavailable:    {},
 	errorReasonRequestExceedsContext:     {},
 	errorReasonRequestExceedsNode:        {},
 	errorReasonRequestExceedsNodeBudget:  {},

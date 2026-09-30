@@ -6,6 +6,12 @@ Reference for `GET /v1/models` and `GET /v1/models/{id}`: every field of a `Mode
 
 ## `GET /v1/models`
 
+MiMo image/video requests also require temporary preparation memory beyond the
+loaded weights and text KV budget. A request that cannot reserve that memory
+can fail over or return 429 while text remains serviceable. The provider's
+media-memory refusal does not disable its text capacity; see
+[routing admission](../architecture/routing.md#gray-box-capacity-signals).
+
 The [native MiMo V2.6 candidate](../architecture/inference.md#native-mimo-v26-candidate)
 adds exact `mimo_v2` ordinary dispatch, not a catalog entry or public alias.
 Normal provider/standalone loading installs bounded visual policies and an

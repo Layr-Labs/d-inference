@@ -808,6 +808,7 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consu
 | Forced media tools / media tool results | Requires explicit per-model native media-tool capability. A public model served only by providers lacking it → 400, `param: model`; no currently eligible capable provider → 503. Applies to `required`/named tools with media and media-bearing tool results even with `tool_choice: none`. Other vision/tool checks remain; `response_format` is not validated by the coordinator | `nativeMediaToolsFailFast`, `coordinator/api/native_media_tools.go` |
 | Token rate limits | Per-account input and output tokens per minute → 429 with `Retry-After` | `applyTokenRateLimitWithAdmission`, `writeTokenRateLimited` |
 | Model shedding | A model currently rejecting → 429 with `Retry-After` from `estimateRetryAfter` | `shedIfModelRejected` |
+| Media preparation memory | Provider reason `media_memory_unavailable` permits bounded failover and eventual 429 when no candidate serves it. It does not invalidate a provider's text capacity or mark its engine unhealthy | `isProviderHealthNeutralErrorReason`, `classifyRejection`; `coordinator/api/route_outcome.go`, `coordinator/api/inference_failure_class.go` |
 
 ## Timeouts and constants
 

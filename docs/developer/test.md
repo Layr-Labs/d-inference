@@ -34,6 +34,17 @@ payload ceilings before real platform decoder entry. Normal provider
 compile and run the SDK package tests separately as CI does. Small selected
 native runners do not replace these whole-target compile checks.
 
+`MiMoV26OpenRouterMediaTests` uses checked-in JPEG, MP4 and MOV bytes from the
+OpenRouter conformance cases. It verifies full-size decoding, production
+geometry and frame-working-set bounds, plus tiny native vision equivalence.
+The SDK CI lane also creates a fresh tiny MiMo fixture and runs
+`MiMoV26NativeMediaDeadlineTests.testMediaReservationRefusalLeavesTextEngineUsable`
+with explicit native-lane flags. Both steps use the nonzero/no-skip wrapper.
+`TestMediaMemoryRefusalPreservesTextOnSameProvider` separately exercises actual
+coordinator HTTP/WebSocket dispatch with scripted provider refusals followed
+by successful text. These gates do not replace full-size signed-provider
+qualification on the target hardware.
+
 The retained-fence case in `ProviderLoopNativeMiMoLifetimeTests` also installs a
 weight-free non-native peer with a counted engine. A real native fixture fault
 in the shared registry must leave that peer's capacity/admission intact and

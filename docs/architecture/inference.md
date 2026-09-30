@@ -641,6 +641,21 @@ path installs through strict SDK loading. The target-only benchmark does not
 install this sidecar; its success alone cannot validate ordinary multimodal
 startup (`MiMoV26OrdinaryServingPolicy` and `makeNativeMiMoBundle`).
 
+Managed vision prepares each temporal grid separately and synchronously
+evaluates every transformer block through the existing native-work owner
+(`MiMoV26VisionTower.forwardBounded`, `MiMoV26MultimodalProcessor.admitted`).
+The reservation includes the largest frame/block working set plus all retained
+decoded inputs, patches and features (`MiMoV26VisionWorkingSet.frameBytes`,
+`MiMoV26ManagedVisualCommitment`). It does not multiply peak attention memory
+by the full tower depth or video length. Codec weights, target KV and the
+process OS/activation reserves remain separately enforced.
+
+A refused media reservation maps to the typed `media_memory_unavailable`
+reason (`MiMoV26EncodedMediaIngress.outwardFailure`). It leaves a healthy text
+engine and its routing budget available. Failed required native completion
+still retains and quarantines the actual owner; it is not reclassified as a
+recoverable media refusal.
+
 ```mermaid
 flowchart LR
   A[Validated source and load permit] --> B[Owned native construction]

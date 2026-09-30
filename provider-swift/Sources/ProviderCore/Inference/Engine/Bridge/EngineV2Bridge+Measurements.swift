@@ -33,7 +33,8 @@ extension EngineV2Bridge {
             : sample.overlap.contended ? "contended_prefill" : "isolated_prefill"
         performanceMeasurements.observe(name, tps: tps, prompt: work,
             context: usage.promptTokens, cache: saved > 0 ? "reused" : "cold",
-            overlap: sample.overlap, at: sample.at)
+            overlap: sample.overlap, at: sample.at,
+            deadlinePostureEpoch: sample.deadlineRateEvidence?.currentEpoch())
         guard saved == 0 else { return }
         updatePrefillTpsEwma(tps, isolated: !sample.overlap.contended)
     }
@@ -91,7 +92,8 @@ extension EngineV2Bridge {
             updateDecodeTpsEwma(tps)
             performanceMeasurements.observe("decode", tps: tps, prompt: state.promptTokens,
                 context: state.promptTokens + completion, cache: cached ? "reused" : "cold",
-                overlap: overlap, at: observedAt)
+                overlap: overlap, at: observedAt,
+                deadlinePostureEpoch: state.prefillReceipt?.deadlineRateEvidence?.currentEpoch())
         }
         performanceMeasurements.observe("delivered_decode", tps: deliveredTps,
             prompt: state.promptTokens, context: state.promptTokens + completion,
@@ -109,6 +111,12 @@ extension EngineV2Bridge {
         generatedTokensTotal = Self.saturatingCounter(generatedTokensTotal, adding: completion)
         generationRequestsTotal = Self.saturatingCounter(generationRequestsTotal, adding: 1)
         performanceUpdates?.notify()
+    }
+
+    func performanceMeasurementSnapshot(now: ContinuousClock.Instant) -> PerformanceMeasurements {
+        guard deadlineProfile != nil else { return performanceMeasurements.snapshot(now: now) }
+        return performanceMeasurements.deadlineSnapshot(now: now,
+            postureEpoch: serviceBudget?.currentDeadlineRateEpoch(at: now))
     }
 
     /// A committed admission torn down before active state has no event pump.

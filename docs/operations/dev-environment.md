@@ -1,6 +1,6 @@
 # Dev environment
 
-> Last updated: 2026-09-26 · commit `6dc1835a9`
+> Last updated: 2026-09-26
 
 Runbook for the Darkbloom dev environment on Google Cloud (project
 `darkbloom-dev`): a GCE VM running the same coordinator container as production,

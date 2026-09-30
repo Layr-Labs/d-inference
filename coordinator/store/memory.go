@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	crs "github.com/eigeninference/d-inference/coordinator/store/cacheroutingstate"
 	"sort"
 	"strconv"
 	"strings"
@@ -57,13 +58,16 @@ type MemoryStore struct {
 	ledgerSeq     int64 // auto-increment ID
 
 	// Observation-only keys; independent from provider/rewards identity.
-	appAttestShadowKeys  map[string]AppAttestShadowKey
-	appAttestRevocations map[string]bool
-	machineInventory     *memoryMachineInventory
-	appAttestEvidence    map[string]memoryAppAttestEvidence
-	appAttestEnrollments map[string]AppAttestEnrollment
-	appAttestBuilds      map[string]AppAttestBuildQualification
-	appAttestRotations   map[string]AppAttestKeyRotation
+	appAttestShadowKeys     map[string]AppAttestShadowKey
+	appAttestRevocations    map[string]bool
+	machineInventory        *memoryMachineInventory
+	appAttestEvidence       map[string]memoryAppAttestEvidence
+	appAttestEnrollments    map[string]AppAttestEnrollment
+	appAttestBuilds         map[string]AppAttestBuildQualification
+	cacheHolders            map[crs.HolderKey]crs.HolderRecord
+	cacheDemand             map[string]time.Time
+	cacheRoutingFingerprint string
+	appAttestRotations      map[string]AppAttestKeyRotation
 
 	// Referral system
 	referrersByCode    map[string]*Referrer // code → referrer

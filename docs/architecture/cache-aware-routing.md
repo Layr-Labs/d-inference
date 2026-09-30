@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-28 · commit `1f664f507`
+> Last updated: 2026-09-29
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -126,12 +126,16 @@ coordinator-authored cache-bust key inserted into the sealed body for
 protocol-0 providers (`bodyForCacheAttempt`, `coordinator/api/consumer.go`;
 `LegacyCacheBustKeyLength`, `coordinator/registry/cache_receipts.go`).
 
-Coordinator route keys are separate domain-separated HMACs over the opaque scope,
-aggregate hash, prompt contract, boundary token count, and provider-confirmed
-chain hash. Provider epochs remain mandatory holder metadata, rather than part
+Coordinator boundary keys are domain-separated HMACs under the route key over
+the opaque scope, aggregate hash, prompt contract, boundary token count, and
+provider-confirmed chain hash. Provider epochs remain mandatory holder metadata, rather than part
 of the content key: independent machines holding the same exact prefix share
-one bounded bucket per tier. Route keys, account identifiers, raw boundaries,
-and prompts are not persisted or attached to telemetry.
+one bounded bucket per tier. Route and scope keys (the HMAC key material
+derived from the master key), account identifiers, raw boundaries, and
+prompts are not persisted or attached to telemetry; the durable cache
+routing copy stores the keyed boundary and demand identifiers (HMAC outputs
+under those keys, meaningful only to a coordinator holding the same master
+key) with token counts and costs.
 
 ### Configuration and dispatch ownership
 
@@ -308,7 +312,8 @@ replacement, shutdown, and connection changes invalidate resident evidence.
 There is no targeted resident-eviction wire message in this extension.
 
 Attempts remain briefly after inference terminal state because encrypted SSD
-write-behind can finish later. Attempt and holder maps are memory-only. Each
+write-behind can finish later. Routing uses in-memory attempt and holder maps;
+SSD holders also have a [write-behind copy](#persistence-across-restarts). Each
 exact-content/tier bucket retains at most four machines by default, across all
 provider epochs ([`EIGENINFERENCE_CACHE_ROUTING_MAX_HOLDERS`](../reference/configuration.md#routing-admission-and-ttft),
 `defaultCacheRoutingMaxHolders`). Holder entries also have a bounded lifetime
@@ -331,6 +336,90 @@ minutes is accepted and logged as a warning at startup, because providers keep
 their files for at most 30 minutes and the indexes are sized for that window. V1 receipt
 frames remain decodable for mixed-version safety but cannot mutate routing
 evidence (`coordinator/registry/cache_receipts.go`).
+
+### Persistence across restarts
+
+Routing reads stay in memory. With `EIGENINFERENCE_CACHE_ROUTING_PERSIST`
+enabled and a supporting store, the coordinator keeps a write-behind copy of
+SSD holders and observed demand. Attempts and memory-tier holders are never
+persisted (`coordinator/registry/cache_persistence_registry.go`,
+`StartCacheRoutingPersistence`; `coordinator/registry/cache_persistence.go`,
+`persistable`). The refactor changes no store schema, wire fields or controls.
+
+#### Restore and binding
+
+Boot establishes the cache-key generation before writing mutations. A failed
+restore leaves mutations pending and retries every flush tick. The generation
+fingerprint covers the master key, derivation versions and block contract;
+a mismatch resets the durable copy instead of restoring unreachable keys.
+Loads apply the current TTL before the index caps. Timestamps up to one minute
+ahead of the clock are clamped; later rows are excluded and pruned. A retry
+merges with already parked holders and live demand by evidence time; only
+accepted demand entries seed write deduplication
+(`coordinator/registry/cachepersist/restore.go`, `Restore`, `SeedDemandPersisted`).
+
+Restored and disconnected holders park by cache epoch and model. They bind only
+to a live provider with matching epoch, model, artifact, contract, block-hash
+version and ready-boundary mode. Binding rechecks session ownership and
+capabilities in chunks of 1,000 rows; changed identities or abandoned epochs
+settle their durable rows rather than reload forever. A surviving lookup-stage
+measurement keeps its own deadline. TTL expiry leaves durable rows to pruning
+(`bindPendingLocked`, `bindRowsLocked`, `settleParkedChunk` in
+`coordinator/registry/cache_persistence.go`; `bindChunksWhileOwned`,
+`dropParkedWhileStale` in `coordinator/registry/cache_persistence_registry.go`).
+
+A validated miss or shorter hit uses the attempt's epoch and boundary keys to
+invalidate durable evidence even before any live holder is restored
+(`invalidateBoundaryLocked`, `coordinator/registry/cache_receipts_v2_lookup.go`).
+Overlapping sessions can share one durable row. After losing evidence, only a
+strictly newer live survivor can retain that row. If only older or equal
+evidence survives, the coordinator deletes the durable copy rather than trying
+to replace newer stored evidence with a monotonic upsert of an older record.
+Those older live holders remain usable until expiry or ordinary invalidation
+(`persistRowAfterLossLocked`, `coordinator/registry/cache_persistence.go`).
+
+#### Pending mutations and overflow
+
+One serialized writer serves periodic and shutdown flushes. Holder upserts,
+deletes and demand marks carry revisions and remain pending until database
+acknowledgement. A bounded snapshot copies work without draining it; each
+successful store chunk clears only matching revisions, so an acknowledgement
+cannot erase a newer mutation. Failure simply leaves unwritten changes pending
+(`coordinator/registry/cachepersist/mutations.go`, `snapshot`,
+`acknowledgeHolders`, `acknowledgeDemand`; `coordinator/registry/cachepersist/flush.go`,
+`Flush`). Pending deletes fence older or equal evidence; acknowledged or
+superseded decisions remain fenced for one TTL, subject to the retention cap
+(`coordinator/registry/cachepersist/delete_fences.go`, `Tombstoned`).
+
+Each pending-write kind is capped at four times the holder budget. At the cap,
+new upsert or demand marks may be dropped. Delete overflow instead replaces the
+holder backlog in O(1), requests a durable reset and wakes the writer. It retains
+the latest invalidation timestamp at overflow as a conservative cutoff for the
+rest of the process, including after reset and pruning. Delayed receipt upserts,
+restored rows and parked rows at or before that cutoff cannot repopulate the
+durable copy or bind. A later overflow can only advance the cutoff
+(`coordinator/registry/cachepersist/reset.go`, `requireResetLocked`;
+`coordinator/registry/cachepersist/delete_fences.go`, `tombstonedLocked`).
+
+A pending reset blocks snapshots and interrupts the current batch before its
+next store call; an in-flight call may finish, then the reset removes its rows.
+The store writes an in-progress marker, clears both tables, and records the
+complete generation last. The reset clears demand-write deduplication, not
+new pending observations. The next boot completes an interrupted marked reset
+(`resetDurableCopy`, `coordinator/registry/cachepersist/reset.go`;
+`ResetCacheRoutingState`, `coordinator/store/cacheroutingstate_postgres.go`).
+A crash before the marker lands can still leave invalidated rows restorable.
+Serialization is process-local: concurrent coordinator writers can repopulate
+rows during a reset; no cross-process fencing is provided.
+
+Shutdown closes and joins provider sockets and the periodic persistence loop
+before the final bounded flush. If the socket join times out, a further bounded
+wait and flush retry run; remaining loss is logged. See
+`CloseProviderConnections` in `coordinator/api/provider.go` and
+`FlushCacheRoutingState` in `coordinator/registry/cache_persistence_registry.go`.
+The [status reference](../reference/api-contracts.md#exact-cache-status) defines
+the persistence counters; the [rollout runbook](../operations/cache-routing-rollout.md#persistence-during-restarts)
+covers restart and reset precautions.
 
 ### Prepared assistant replacement
 
@@ -731,7 +820,11 @@ back are operator procedures, kept in the runbook
 1. **Routing `off` runs none of the machinery, and applying `off` clears all
    in-memory evidence** — `ConfigureCacheRouting` installs a fresh, empty
    holder/attempt tracker on every application
-   (`coordinator/registry/cache_routing.go`).
+   (`coordinator/registry/cache_routing.go`). With routing and persistence
+   enabled, restarts can restore SSD holders and demand under the
+   [persistence rules](#persistence-across-restarts); attempts and resident-tier
+   holders are never restored (`StartCacheRoutingPersistence`,
+   `coordinator/registry/cache_persistence_registry.go`).
 2. **Cache routing never rejects, delays or otherwise changes ordinary
    inference.** The activation cohort and the plan-QPS bucket only decline
    participation (`cacheActivationGate`,
@@ -742,8 +835,9 @@ back are operator procedures, kept in the runbook
    selection**; V1 receipt frames stay decodable but cannot mutate routing
    evidence (`coordinator/registry/cache_receipts.go`).
 4. **Cache ownership is never derived from a caller-controlled field.** The
-   provider-visible scope and the route keys are domain-separated HMACs over
-   authenticated account, concrete build, aggregate hash and prompt contract
+   provider-visible scope and the boundary keys are domain-separated HMACs
+   under the route and scope keys over authenticated account, concrete build,
+   aggregate hash and prompt contract
    (`coordinator/registry/cache_route_keys.go`).
 5. **Ordinary gates remain mandatory and credit removes only avoidable prefill**:
    optional numeric limits may reduce that credit, but no credit removes load,
@@ -757,8 +851,14 @@ back are operator procedures, kept in the runbook
    (`rejectCapability`, `capabilityRejected`,
    `coordinator/registry/cache_proof_fence.go`; `acceptV2SequenceLocked`,
    `coordinator/registry/cache_receipts_v2.go`).
-7. **Route keys, account identifiers, raw boundaries and prompts are never
-   persisted or attached to telemetry**; `GET /v1/cache/status` and the
+7. **Route and scope keys (the HMAC key material), account identifiers, raw
+   boundaries and prompts are never persisted or attached to telemetry**;
+   what the durable cache routing copy stores is the keyed boundary and
+   demand identifiers, the HMAC outputs under those keys, which name a
+   boundary only to a coordinator holding the same master key: a holder row
+   carries that identifier and the token count, never the provider-confirmed
+   chain hash (`holderRecordFor`), and a restored holder matches its plan
+   boundary through the identifier (`anchorMatches`); `GET /v1/cache/status` and the
    terminal tags carry bounded categorical values only
    (`handleExactCacheStatus`, `coordinator/api/exact_cache_status.go`;
    `cacheSelectionTerminalTags`, `coordinator/api/provider.go`).
@@ -802,6 +902,12 @@ and `coordinator/api/cache_model_telemetry.go`.
 | Concern | File / symbol |
 |---|---|
 | Mode, TTL, holder cap, discount bounds, removal reasons | `coordinator/registry/cache_routing.go` — `CacheRoutingOff`, `CacheRoutingOn`, `newCacheRoutingTracker`, `CacheRoutingLifecycleStatus`; `coordinator/registry/cache_sweep.go` — bounded expiry; `coordinator/registry/cache_provider_index.go` — per-provider holder and attempt index; `coordinator/registry/cache_routing_sizing.go` — `warnCacheRoutingTTL` |
+| Persistence integration | `coordinator/registry/cache_persistence.go` (`persistRowAfterLossLocked`, `bindRowsLocked`); `coordinator/registry/cache_persistence_registry.go` (`StartCacheRoutingPersistence`, `FlushCacheRoutingState`); `coordinator/registry/cache_receipts_v2_lookup.go` (`invalidateBoundaryLocked`) |
+| Persister state and mutation intake | `coordinator/registry/cachepersist/persister.go` (`Persister`, `New`); `coordinator/registry/cachepersist/marks.go` (`MarkHolderUpsert`, `MarkHolderDelete`, `MarkDemand`) |
+| Snapshot, acknowledgement and serialized writes | `coordinator/registry/cachepersist/mutations.go` (`snapshot`, `acknowledgeHolders`, `acknowledgeDemand`); `coordinator/registry/cachepersist/flush.go` (`Flush`, `FlushAll`) |
+| Overflow reset and restore | `coordinator/registry/cachepersist/reset.go` (`requireResetLocked`, `resetDurableCopy`); `coordinator/registry/cachepersist/restore.go` (`Restore`) |
+| Parked rows, fences and bounded maintenance | `coordinator/registry/cachepersist/pending.go` (`Park`, `Take`); `coordinator/registry/cachepersist/delete_fences.go` (`Tombstoned`); `coordinator/registry/cachepersist/time_heap.go` (`keyedTimeHeap`); `coordinator/registry/cachepersist/maintenance.go` (`Prune`) |
+| Persistence counters | `coordinator/registry/cachepersist/status.go` (`Status`) |
 | Configuration and validation | `coordinator/registry/config.go` — `CacheRoutingConfig`, `Check`; `coordinator/registry/cache_routing.go` — `ConfigureCacheRouting` |
 | Optional artifact membership | `coordinator/registry/cache_artifact_allowlist.go` — exact tuple parsing, validation and immutable membership; unset unrestricted, `[]` denied |
 | Activation cohort and plan QPS | `coordinator/registry/cache_activation.go` — `cacheActivationGate`, `CacheRoutingActivationStatus` |

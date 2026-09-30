@@ -170,3 +170,63 @@ func canonicalJSON(t *testing.T, encoded []byte) []byte {
 	}
 	return canonical
 }
+
+func TestLowerProviderBodyRejectsAudioForCachePlanning(t *testing.T) {
+	for _, kind := range []string{"input_audio", "audio_url"} {
+		payloads := []struct {
+			name string
+			part map[string]any
+		}{
+			{"missing", map[string]any{"type": kind}},
+			{"null", map[string]any{"type": kind, kind: nil}},
+			{"scalar", map[string]any{"type": kind, kind: 42}},
+			{"wav", map[string]any{"type": kind, kind: map[string]any{"data": "AAAA", "format": "wav"}}},
+			{"unsupported-format", map[string]any{"type": kind, kind: map[string]any{"data": "AAAA", "format": "mp3"}}},
+			{"remote-reference", map[string]any{"type": kind, kind: map[string]any{"url": "https://example.invalid/private"}}},
+		}
+		for _, payload := range payloads {
+			for _, test := range []struct {
+				name     string
+				endpoint Endpoint
+				body     map[string]any
+			}{
+				{"chat", EndpointChatCompletions, map[string]any{"messages": []any{map[string]any{"role": "user", "content": []any{payload.part}}}}},
+				{"chat-tool", EndpointChatCompletions, map[string]any{"messages": []any{map[string]any{"role": "tool", "tool_call_id": "c", "content": []any{payload.part}}}}},
+				{"responses-message", EndpointResponses, map[string]any{"input": []any{map[string]any{"type": "message", "role": "user", "content": []any{payload.part}}}}},
+				{"responses-tool-array", EndpointResponses, map[string]any{"input": []any{map[string]any{"type": "function_call_output", "call_id": "c", "output": []any{payload.part}}}}},
+				{"responses-tool-object", EndpointResponses, map[string]any{"input": []any{map[string]any{"type": "function_call_output", "call_id": "c", "output": payload.part}}}},
+				{"messages-tool", EndpointMessages, map[string]any{"messages": []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "tool_result", "tool_use_id": "c", "content": []any{payload.part}}}}}}},
+			} {
+				t.Run(kind+"/"+payload.name+"/"+test.name, func(t *testing.T) {
+					body, err := json.Marshal(test.body)
+					if err != nil {
+						t.Fatal(err)
+					}
+					_, err = LowerProviderBody(test.endpoint, body)
+					if !errors.Is(err, ErrEndpointBodyUnsupported) {
+						t.Fatalf("error = %v, want cache ineligible", err)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestLowerProviderBodyKeepsAudioWordsAndToolArgumentsAsText(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"input_audio audio_url"}]},{"role":"assistant","content":null,"tool_calls":[{"id":"c","type":"function","function":{"name":"f","arguments":"{\"type\":\"input_audio\"}"}}]}],"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"kind":{"type":"audio_url"}}}}}],"metadata":{"content":{"type":"input_audio"}}}`)
+	got, err := LowerProviderBody(EndpointChatCompletions, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, canonicalJSON(t, body)) {
+		t.Fatal("text/arguments changed")
+	}
+	for _, body := range []string{
+		`{"input":"say input_audio and audio_url"}`,
+		`{"input":[{"type":"function_call","call_id":"c","name":"f","arguments":"{\"type\":\"audio_url\"}"},{"type":"function_call_output","call_id":"c","output":"input_audio is plain text"}]}`,
+	} {
+		if _, err := LowerProviderBody(EndpointResponses, []byte(body)); err != nil {
+			t.Fatalf("plain Responses history refused: %v", err)
+		}
+	}
+}

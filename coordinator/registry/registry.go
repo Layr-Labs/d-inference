@@ -13,6 +13,7 @@
 package registry
 
 import (
+	"github.com/eigeninference/d-inference/coordinator/registry/cachepersist"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -220,9 +221,13 @@ type Registry struct {
 	// without New(). See capacity_quotes.go.
 	capacityQuotes quoteTracker
 
-	cacheRouting                 *cacheRoutingTracker
-	cacheActivation              *cacheActivationGate
-	cacheRoutingMode             string
+	cacheRouting     *cacheRoutingTracker
+	cacheActivation  *cacheActivationGate
+	cacheRoutingMode string
+	cachePersister   *cachepersist.Persister
+	// cachePersistDone closes when the persistence loop has exited, so
+	// shutdown can join it before the final flush decides on readiness.
+	cachePersistDone             chan struct{}
 	cacheRoutingAllowedArtifacts cacheArtifactAllowlist
 	cacheRouteKeys               cacheRouteKeys
 	cacheRoutingMaxDiscountMs    *float64

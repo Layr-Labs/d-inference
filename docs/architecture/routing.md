@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-28 · commit `9b2a28f59`
+> Last updated: 2026-09-30
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -186,6 +186,15 @@ estimate and the remaining weight bytes plus a valid explicit
 Missing/invalid allowance declarations retain the 1.2 load-transient padding.
 Missing/invalid offload or other-family declarations keep the existing
 catalog/measured-weight policy.
+
+Exact `mimo_v2` has a separate full-LOAD declaration with **zero** SSD offload.
+The same helper requires matching ID, checked positive source bytes/supplement,
+finite memory at least their sum, and a valid raw decimal-GB catalog size from
+the normal/swap/warm/cold caller. It retains the greater catalog/source-size
+floor and adds the supplement once. Invalid or absent declarations keep legacy
+pricing; no hardware, catalog identity, activation or request-KV gate is waived.
+See `provider-swift/Sources/ProviderCore/Models/MiMo/MiMoV26DiscoveryLoadFootprint.swift`
+(`estimate`) for the metadata-only strict native main/sidecar quote.
 
 `coordinator/registry/scheduler.go` carries this estimate into cold snapshots.
 `reportedFreeForLoadAdmitsWithOffload` in
@@ -546,6 +555,16 @@ requires both a heartbeat delivered after the clamp showing at least
 [`EIGENINFERENCE_BUDGET_CLAMP`](../reference/configuration.md#routing-admission-and-ttft);
 TTL override `EIGENINFERENCE_BUDGET_CLAMP_TTL_SECONDS`.
 
+The typed `media_memory_unavailable` refusal describes one request's media
+preparation reservation. It is excluded from model-wide budget clamps,
+capacity-rate penalties, health breakers and reputation through
+`isProviderHealthNeutralErrorReason` (`coordinator/api/route_outcome.go`). It
+still receives bounded capacity failover (`classifyRejection`,
+`coordinator/api/inference_failure_class.go`). A genuine native engine terminal
+cannot claim this exemption. Deploy the coordinator's reason handling before
+providers that emit it; older coordinators treat unknown capacity reasons as
+ordinary capacity refusals.
+
 **Capacity-rate penalty** (`coordinator/registry/capacity_rate.go`). A pair
 whose capacity-503 rate over `capacityRateWindow = 5 * time.Minute` exceeds
 `capacityRateThreshold = 0.25` with at least `capacityRateMinSample = 8`
@@ -633,7 +652,11 @@ onto the formerly cheapest provider), the admit re-check
 (`tryClaimCapacityProbe`, check-and-claim under `gate.mu`) and the pending
 debit (`addPendingLocked`). `ReserveNextFromPlan`
 (`coordinator/registry/dispatch_plan.go`) commits each plan entry the same
-way. `commitLock` (`coordinator/registry/gate_commit_mode.go`) selects the
+way. The comparison also rechecks the [idle evidence-exploration
+exception](first-content-routing.md#prediction-and-freshness): newly reported
+service or an unretired terminal lease forces a rescan even if pending counts
+and numeric forecasts have not changed.
+`commitLock` (`coordinator/registry/gate_commit_mode.go`) selects the
 mode: `reserveCommitShared` as described, or `reserveCommitGlobal`, which
 takes `r.mu.Lock()` for the commit — the previous fleet-wide serialization,
 kept as the kill switch behind

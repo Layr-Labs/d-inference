@@ -1,6 +1,6 @@
 # Qwen-first paged attention and SSD prefix rollout
 
-> Last updated: 2026-09-06 · commit `615d96328`
+> Last updated: 2026-09-06
 
 Status: **Superseded by [0.9.0 paged attention and Qwen caching](release-090-paged-qwen-cache.md)** — 2026-09-06 — the user clarified that all five target artifacts migrate to paged attention; only Qwen caching is initially enabled.
 

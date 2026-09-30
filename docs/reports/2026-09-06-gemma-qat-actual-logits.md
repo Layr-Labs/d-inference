@@ -1,6 +1,6 @@
 # Gemma QAT captures real MTP logits with backend divergence retained
 
-> Last updated: 2026-09-06 · commit `bd8dee802`
+> Last updated: 2026-09-06
 
 All four real-model cells pass their integrity checks. The generic diagnostic
 captures one confirmed decision in Gemma's normal MTP path on each backend,

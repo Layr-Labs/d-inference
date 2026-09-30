@@ -173,7 +173,7 @@ func classifyRejection(reason, errStr string, providerBudget int64, modelContext
 	switch strings.ToLower(strings.TrimSpace(reason)) {
 	case "request_exceeds_context":
 		return rejectionDeterministicUnservable
-	case "request_exceeds_node", "request_exceeds_node_budget", "capacity_busy":
+	case "request_exceeds_node", "request_exceeds_node_budget", "capacity_busy", errorReasonMediaMemoryUnavailable:
 		return rejectionTransientCapacity
 	case errorReasonDraining:
 		// Typed drain refusal (R2): this node is restarting; another serves.

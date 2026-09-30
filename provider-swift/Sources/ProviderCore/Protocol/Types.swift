@@ -95,8 +95,10 @@ public struct ModelInfo: Codable, Sendable, Equatable {
     /// Omitted for ordinary models; mapped OS pages still consume real memory.
     public var ssdOffloadedWeightBytes: UInt64?
     /// Explicit native load-copy allowance derived from validated checkpoint
-    /// headers. Only eligible Qwen4 SSD-offload loads declare this; nil retains
-    /// the legacy padded estimate. Not an activation/KV reserve or cache credit.
+    /// headers. Eligible Qwen4 declares copies above SSD-reduced resident bytes;
+    /// canonical MiMo declares full root + installed-sidecar LOAD minus ALL
+    /// sizeBytes, with no SSD discount. Both are bytes, while estimatedMemoryGb
+    /// is GiB. nil retains legacy padding. Not activation/KV or cache credit.
     public var nativeLoadTransientBytes: UInt64?
     public var weightHash: String?
     /// True when this build can serve image/video (VLM) input. Encoded only when
@@ -515,8 +517,11 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
     public var maxConcurrency: UInt32
     public var modelLoadTimeMs: Int64
     public var performanceProfile: ServingPerformanceProfileReference?
+    public var deadlineProfile: DeadlinePerformanceProfileReference?
+    public var promptWorkIdentity: PromptWorkIdentity?
     /// Transient routing observations; excluded from persisted numeric telemetry.
     public var performanceMeasurements: PerformanceMeasurements?
+    public var deadlineWork: DeadlineWork?
 
     /// The KV-cache backend this slot's engine was actually built with:
     /// `EngineV2Bridge.kvBackendKind.rawValue` — "paged" | "contiguous",
@@ -626,7 +631,10 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         case maxConcurrency = "max_concurrency"
         case modelLoadTimeMs = "model_load_time_ms"
         case performanceProfile = "performance_profile"
+        case deadlineProfile = "deadline_profile"
+        case promptWorkIdentity = "prompt_work_identity"
         case performanceMeasurements = "performance_measurements"
+        case deadlineWork = "deadline_work"
         case kvBackend = "kv_backend"
         case kvBackendFallbackReason = "kv_backend_fallback_reason"
         case stepsExecuted = "steps_executed"
@@ -658,7 +666,10 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         kvBytesPerToken: Int64 = 0,
         modelLoadTimeMs: Int64 = 0,
         performanceProfile: ServingPerformanceProfileReference? = nil,
+        deadlineProfile: DeadlinePerformanceProfileReference? = nil,
+        promptWorkIdentity: PromptWorkIdentity? = nil,
         performanceMeasurements: PerformanceMeasurements? = nil,
+        deadlineWork: DeadlineWork? = nil,
         kvBackend: String? = nil,
         kvBackendFallbackReason: String? = nil,
         stepsExecuted: Int64 = 0,
@@ -688,7 +699,10 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         self.kvBytesPerToken = kvBytesPerToken
         self.modelLoadTimeMs = modelLoadTimeMs
         self.performanceProfile = performanceProfile
+        self.deadlineProfile = deadlineProfile
+        self.promptWorkIdentity = promptWorkIdentity
         self.performanceMeasurements = performanceMeasurements
+        self.deadlineWork = deadlineWork
         self.kvBackend = kvBackend
         self.kvBackendFallbackReason = kvBackendFallbackReason
         self.stepsExecuted = stepsExecuted
@@ -721,7 +735,10 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         kvBytesPerToken = try container.decodeIfPresent(Int64.self, forKey: .kvBytesPerToken) ?? 0
         modelLoadTimeMs = try container.decodeIfPresent(Int64.self, forKey: .modelLoadTimeMs) ?? 0
         performanceProfile = try container.decodeIfPresent(ServingPerformanceProfileReference.self, forKey: .performanceProfile)
+        deadlineProfile = try container.decodeIfPresent(DeadlinePerformanceProfileReference.self, forKey: .deadlineProfile)
+        promptWorkIdentity = try container.decodeIfPresent(PromptWorkIdentity.self, forKey: .promptWorkIdentity)
         performanceMeasurements = try container.decodeIfPresent(PerformanceMeasurements.self, forKey: .performanceMeasurements)
+        deadlineWork = try container.decodeIfPresent(DeadlineWork.self, forKey: .deadlineWork)
         // No `?? ""` fallback: absent must stay absent, or the coordinator
         // cannot tell a pre-0.8.0 provider from one reporting an empty kind.
         kvBackend = try container.decodeIfPresent(String.self, forKey: .kvBackend)
@@ -749,7 +766,10 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(model, forKey: .model)
         try container.encodeIfPresent(performanceProfile, forKey: .performanceProfile)
+        try container.encodeIfPresent(deadlineProfile, forKey: .deadlineProfile)
+        try container.encodeIfPresent(promptWorkIdentity, forKey: .promptWorkIdentity)
         try container.encodeIfPresent(performanceMeasurements, forKey: .performanceMeasurements)
+        try container.encodeIfPresent(deadlineWork, forKey: .deadlineWork)
         try container.encode(state, forKey: .state)
         try container.encode(numRunning, forKey: .numRunning)
         try container.encode(numWaiting, forKey: .numWaiting)

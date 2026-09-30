@@ -1,5 +1,12 @@
 # Changelog
 
+## Release candidate v0.9.14 — MiMo SSD prefix caching by default (not shipped)
+
+- Enable encrypted text-only COMPLETE-prefix SSD checkpoints by default for exact `mimo-v2.6-flash-mopd` and `EigenLabs/MiMo-V2.6-Flash-MOPD-MLX-4bit-mtp` identities. Keep verified artifact/runtime identity, tenant isolation, native ownership, memory admission, SSD limits and cold fallback.
+- Preserve image, audio and video serving through the existing joint contiguous path; media requests remain uncached. RAM retention, native paging and rectangular verification remain separate opt-ins.
+- Forward `DARKBLOOM_MIMO_COMPLETE_PREFIX` to the launchd provider job. Unset or empty uses the model default; exact `1` enables and any other nonempty value disables. `DARKBLOOM_PREFIX_CACHE=0` still disables all prefix caching.
+- Align `ProviderCore.version` and the coordinator latest-provider display fallback at `0.9.14`. Publication, full-artifact cache qualification and coordinator rollout remain separate steps.
+
 ## Release candidate v0.9.13 — MiMo memory admission (not shipped)
 
 - Accept bounded AAC audio in MP4/MOV and mono/stereo PCM8/16/24/32 and Float32 WAV input from 8–192 kHz for MiMo audio. Preserve sample rate and channels for the native resampler, reserve all decoded/resampled samples, and qualify the authenticated path with the genuine audio codec before release.

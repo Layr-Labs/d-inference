@@ -261,10 +261,14 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY`: native MiMo standing
     /// residency is on by default; exact `0` / `false` / `no` / `off` is the
     /// rollback, which must reach the launchd provider job to take effect.
+    /// `DARKBLOOM_MIMO_COMPLETE_PREFIX`: model-scoped SSD prefix caching is
+    /// on by default for the supported MiMo identities; preserve its opt-out
+    /// in the provider job independently of the global cache kill switch.
     static let inferencePassthroughEnvKeys = [
         EngineV2Factory.maxPartialPrefillsKey,
         PrefillDeadlineMode.environmentKey,
         MiMoV26WiredResidency.environmentFlag,
+        PrefixCachePolicy.mimoCompletePrefixEnvironmentFlag,
     ]
 
     static let passthroughEnvKeys = [

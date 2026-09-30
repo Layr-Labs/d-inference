@@ -45,17 +45,16 @@ struct ServeLoopConnectionTests {
         let fixture = try await ServeLoopFixture.make(heartbeatIntervalSecs: 1)
         let task = fixture.start()
         _ = try await fixture.awaitRegistration()
-        let registeredAt = ContinuousClock.now
 
-        let snapshot = try await fixture.mock.waitForSnapshot(timeout: .seconds(15)) {
-            $0.heartbeats.count >= 3
-        }
-        let elapsed = registeredAt.duration(to: .now)
-        let heartbeats = try #require(snapshot).heartbeats
-        #expect(heartbeats.count >= 3)
-        // The first timed heartbeat waits one interval, so three of them
-        // cannot all arrive at once.
-        #expect(elapsed >= .milliseconds(1_500), "elapsed \(elapsed)")
+        // Skip the first interval: a session can also send event heartbeats
+        // when it starts. After that, a 1 s interval gives about three
+        // heartbeats in a 3 s window.
+        try await Task.sleep(for: .milliseconds(1_200))
+        let before = fixture.mock.snapshot().heartbeats.count
+        try await Task.sleep(for: .seconds(3))
+        let heartbeats = fixture.mock.snapshot().heartbeats
+        let sent = heartbeats.count - before
+        #expect((2...5).contains(sent), "\(sent) heartbeats in 3 s")
         #expect(heartbeats.allSatisfy { $0.status == .idle })
 
         #expect(await fixture.stop(task))

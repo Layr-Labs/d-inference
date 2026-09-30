@@ -137,7 +137,8 @@ struct ServeLoopDispatchTests {
         #expect(response.nonce == "c2VydmUtbG9vcA==")
         #expect(response.publicKey == register.publicKey)
         #expect(!response.signature.isEmpty)
-        #expect(response.modelHashes.isEmpty, "no loaded model has a weight hash")
+        #expect(Set(response.modelHashes.keys) == [ServeLoopFixture.modelId],
+                "the reply reports only the model this loop serves")
 
         #expect(await fixture.stop(task))
     }

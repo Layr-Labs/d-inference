@@ -2,7 +2,6 @@ package registry
 
 import (
 	"sync/atomic"
-	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
@@ -18,13 +17,16 @@ const (
 )
 
 type cacheAttemptOwner struct {
-	tracker       *cacheRoutingTracker
-	generation    *cacheRoutingGeneration
-	nonce         string
-	scope         string
-	boundaryMode  string
-	revoked       atomic.Bool
-	dispatchState atomic.Uint32
+	tracker      *cacheRoutingTracker
+	generation   *cacheRoutingGeneration
+	nonce        string
+	scope        string
+	boundaryMode string
+	// repeatedPrefixTokens is the plan's advisory fleet-wide repeat count,
+	// forwarded to the provider only while the scope is granted.
+	repeatedPrefixTokens int
+	revoked              atomic.Bool
+	dispatchState        atomic.Uint32
 }
 
 // CacheAttemptSnapshot captures immutable receipt metadata for a queued frame.
@@ -45,6 +47,7 @@ func (pr *PendingRequest) CacheAttemptSnapshot() CacheAttemptSnapshot {
 func (snapshot CacheAttemptSnapshot) ApplyTo(message *protocol.InferenceRequestMessage) {
 	message.CacheReceiptNonce, message.CacheScope = "", ""
 	message.PrefixCacheProtocol, message.CacheReceiptBoundaryMode = 0, ""
+	message.CacheRepeatedPrefixTokens = nil
 	owner := snapshot.owner
 	if owner == nil {
 		return
@@ -56,6 +59,10 @@ func (snapshot CacheAttemptSnapshot) ApplyTo(message *protocol.InferenceRequestM
 	owner.dispatchState.Store(cacheDispatchAccepted)
 	message.CacheReceiptNonce, message.CacheScope = owner.nonce, owner.scope
 	message.PrefixCacheProtocol, message.CacheReceiptBoundaryMode = 2, owner.boundaryMode
+	// A fresh copy: the frame must not alias owner memory, and 0 is a real
+	// value (novel fleet-wide), distinct from the absent legacy field.
+	repeated := owner.repeatedPrefixTokens
+	message.CacheRepeatedPrefixTokens = &repeated
 }
 
 // beginCachePreparation also invalidates an earlier preparation ticket. Tracker
@@ -108,7 +115,9 @@ func (r *Registry) publishCacheAttempt(
 	return published
 }
 
-func (pr *PendingRequest) markCacheAttemptTerminal(now time.Time) {
+// The terminal timestamp comes from the owning tracker's clock so the
+// shortened attempt TTL agrees with receipt and sweep time.
+func (pr *PendingRequest) markCacheAttemptTerminal() {
 	pr.cacheAttemptMu.Lock()
 	pr.cachePreparationClosed = true
 	pr.cachePreparationTicket++
@@ -118,7 +127,7 @@ func (pr *PendingRequest) markCacheAttemptTerminal(now time.Time) {
 	}
 	pr.cacheAttemptMu.Unlock()
 	if owner != nil {
-		owner.tracker.markAttemptTerminal(owner.nonce, now)
+		owner.tracker.markAttemptTerminal(owner.nonce, owner.tracker.now())
 	}
 }
 
@@ -133,7 +142,10 @@ func (t *cacheRoutingTracker) clearRetired() {
 	t.holders, t.attempts = nil, nil
 	t.holderOrder, t.attemptOrder = nil, nil
 	t.holderOrderByRef, t.attemptOrderByNonce = nil, nil
+	t.holdersByProvider, t.attemptsByProvider = nil, nil
 	t.v2Sequences, t.rejectedV2 = nil, nil
 	t.holderCount = 0
-	t.attemptBytes = 0
+	if t.demand != nil {
+		t.demand.clear()
+	}
 }

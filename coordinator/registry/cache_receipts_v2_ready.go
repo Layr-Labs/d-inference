@@ -1,7 +1,6 @@
 package registry
 
 import (
-	"strings"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -82,22 +81,22 @@ func (t *cacheRoutingTracker) applyReadyV2Decision(
 		}
 		for _, anchor := range msg.ReadyAnchors {
 			if attempt.ExpectedBoundaries[anchor.TokenCount] != anchor.ChainHash {
-				return mismatchCacheReceipt(CacheReceiptReadyMismatch)
+				return mismatchCacheReceiptForPlan(CacheReceiptReadyMismatch, attempt.Plan)
 			}
 		}
 	} else if msg.ReadyAnchors[0] != attempt.ExpectedPrompt {
-		return mismatchCacheReceipt(CacheReceiptReadyMismatch)
+		return mismatchCacheReceiptForPlan(CacheReceiptReadyMismatch, attempt.Plan)
 	}
 	if !t.acceptV2SequenceLocked(providerID, capability, msg.Tier, msg.CacheSeq) {
 		return rejectCacheReceipt(CacheReceiptSequence)
 	}
-	final.ChainHash = strings.Clone(final.ChainHash)
+	t.resetProofStrikesLocked(providerID, msg.ModelID, msg.Tier, capability, now)
 	if msg.Tier == "memory" {
 		attempt.MemoryLastReadyAnchor = final
 	} else {
 		attempt.LastReadyAnchor = final
 	}
-	t.attempts[strings.Clone(msg.CacheReceiptNonce)] = attempt
+	t.storeAttemptLocked(msg.CacheReceiptNonce, attempt)
 	for _, anchor := range msg.ReadyAnchors {
 		recompute := min(msg.RequiredRecomputeTokens, anchor.TokenCount)
 		key := cacheTierBoundaryKey(routeKey, attempt.Plan, anchor, msg.Tier)
@@ -111,6 +110,9 @@ func (t *cacheRoutingTracker) applyReadyV2Decision(
 			ModelAggregateHash:      msg.ModelAggregateHash,
 			PromptContractID:        msg.PromptContractID,
 			CacheEpoch:              msg.CacheEpoch,
+			BlockHashVersion:        capability.BlockHashVersion,
+			ReadyBoundaryMode:       capability.ReadyBoundaryMode,
+			Tier:                    msg.Tier,
 			Anchor:                  anchor,
 			RequiredRecomputeTokens: recompute,
 			StageMs:                 msg.StageMs,

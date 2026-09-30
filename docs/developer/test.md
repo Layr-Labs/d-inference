@@ -2755,3 +2755,10 @@ reviewer coverage, disagreement, attribution, partial failures and deadline
 retention. Release Integrity runs all three suites in normal CI.
 Model findings and live API failures remain non-blocking in the separate
 [advisory review workflow](threat-model-review.md).
+
+### macOS E2E Postgres setup
+
+The integration and benchmark jobs initialize Homebrew before installing
+`postgresql@16` and deriving its binary path with `brew --prefix`. A missing
+Homebrew executable is a runner-setup failure before E2E tests execute. See
+`.github/workflows/integration.yml` and `.github/workflows/benchmarks.yml`.

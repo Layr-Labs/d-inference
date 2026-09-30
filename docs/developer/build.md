@@ -7,6 +7,12 @@ coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
 source-matched `mlx.metallib`), and the console and marketing Next.js UIs.
 `make build` builds those components; the admin UI is built separately below.
 
+The macOS integration and benchmark workflows explicitly initialize Homebrew
+with the pinned `Homebrew/actions/setup-homebrew` action before installing
+`postgresql@16`. The action exposes an existing installation or installs
+Homebrew when the runner image does not provide it; the job no longer depends
+on GitHub-hosted image defaults.
+
 Coordinator CI builds the adversarial-number test once without instrumentation
 for its enforced performance budget, then builds the full suite with race
 detection and atomic coverage. See [numeric parsing tests](test.md#adversarial-numeric-parsing)

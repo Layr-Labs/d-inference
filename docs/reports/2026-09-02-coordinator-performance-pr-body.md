@@ -1,6 +1,6 @@
 # PR body draft — coordinator performance program (2026-09-02)
 
-> Last updated: 2026-09-02 · commit `fa6abe3da`
+> Last updated: 2026-09-02
 
 _(Draft for the PR description. Numbers in the tables are filled from
 `docs/reports/2026-09-02-coordinator-performance-program.md`.)_

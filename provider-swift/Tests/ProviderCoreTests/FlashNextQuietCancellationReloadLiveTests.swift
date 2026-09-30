@@ -39,7 +39,7 @@ struct FlashNextQuietCancellationReloadLiveTests {
             coordinatorURL: "ws://127.0.0.1:1/unused", hardware: hardware, models: [model],
             config: .init(provider: .init(name: "flash-next-quiet-reload-fixture"),
                           backend: .init(idleTimeoutMins: 0, maxModelSlots: 1, mtpMode: .auto))),
-            purgeLegacyFiles: false, attestationSigner: nil)
+            attestationSigner: nil)
         await loop.setEngineV2RuntimeForTesting(EngineV2Runtime())
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("flash-next-quiet-reload-\(UUID().uuidString)", isDirectory: true)

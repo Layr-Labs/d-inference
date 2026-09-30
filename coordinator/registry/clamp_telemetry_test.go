@@ -44,8 +44,8 @@ func TestClampBackendCapacityTelemetry(t *testing.T) {
 			t.Errorf("%s: got %d, want %d", name, tc.got, tc.want)
 		}
 	}
-	if *st.IsolatedPrefillTPS != maxTelemetryTPS {
-		t.Errorf("tps over cap = %v, want %v", *st.IsolatedPrefillTPS, maxTelemetryTPS)
+	if st.IsolatedPrefillTPS != nil {
+		t.Errorf("implausible isolated rate must be absent, got %v", *st.IsolatedPrefillTPS)
 	}
 	if st.PartialPrefillRows != nil || st.EWMAInitialized != nil {
 		t.Error("absent telemetry fields must stay nil after clamping")

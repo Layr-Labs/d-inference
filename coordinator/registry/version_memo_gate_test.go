@@ -3,13 +3,14 @@ package registry
 import "testing"
 
 // TestVersionMemosOnlySeeGatePassingProviders pins that versions rejected by
-// the public trust gates never reach the routing scan's memos. The memo's
-// bounds do not depend on this: owner self-route may relax those gates.
+// the public trust gates never reach the routing scan's version memo. The
+// memo's bounds do not depend on this: owner self-route may relax those gates.
+// The model is the qwen4 registry id because its catalog policy
+// (providerMeetsQwen4CatalogPolicyLocked) is the scan's version-floor check.
 func TestVersionMemosOnlySeeGatePassingProviders(t *testing.T) {
 	versionSegmentsMemo.reset()
-	slotBudgetLayoutMemo.reset()
 	reg := New(testLogger())
-	const model = "memo-gate-model"
+	const model = qwen4RegistryModelID
 	const trustedVersion = "77.66.56-memo-trusted"
 	const untrustedVersion = "77.66.55-memo-untrusted"
 
@@ -33,17 +34,14 @@ func TestVersionMemosOnlySeeGatePassingProviders(t *testing.T) {
 		t.Fatalf("scan: scanned=%d candidates=%d trust_floor=%d, want 2/1/1",
 			scan.scanned, scan.candidateCount, scan.gateRejections[GateTrustFloor])
 	}
-	// Positive control: the gate-passing provider's version reached both memos
-	// through the budget-layout selection (keyed on the numeric core), so the
-	// negative assertions below are not vacuous.
-	if core := versionNumericCore(trustedVersion); !slotBudgetLayoutMemo.has(core) || !versionSegmentsMemo.has(core) {
-		t.Fatalf("gate-passing provider's version core %q was not memoized (layout=%v segments=%v)",
-			core, slotBudgetLayoutMemo.has(core), versionSegmentsMemo.has(core))
+	// Positive control: the gate-passing provider's version reached the memo
+	// through the catalog-policy floor, so the negative assertion below is not
+	// vacuous.
+	if !versionSegmentsMemo.has(trustedVersion) {
+		t.Fatalf("gate-passing provider's version %q was not memoized", trustedVersion)
 	}
-	// The gated-out provider's version never reached a parser.
-	for _, key := range []string{untrustedVersion, versionNumericCore(untrustedVersion)} {
-		if versionSegmentsMemo.has(key) || slotBudgetLayoutMemo.has(key) {
-			t.Fatalf("gate-failing provider's version %q reached a version memo", key)
-		}
+	// The gated-out provider's version never reached the parser.
+	if versionSegmentsMemo.has(untrustedVersion) {
+		t.Fatalf("gate-failing provider's version %q reached the version memo", untrustedVersion)
 	}
 }

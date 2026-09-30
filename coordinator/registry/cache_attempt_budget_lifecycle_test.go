@@ -60,6 +60,12 @@ func budgetLifecycleInvariant(tracker *cacheRoutingTracker) (int, uint64, error)
 		if entry == nil || entry.nonce != nonce || entry.index < 0 || entry.index >= len(tracker.attemptOrder) || tracker.attemptOrder[entry.index] != entry {
 			return count, tracker.attemptBytes, fmt.Errorf("attempt heap ownership mismatch")
 		}
+		if entry.providerID != attempt.ProviderID || !entry.expiresAt.Equal(attempt.ExpiresAt) {
+			return count, tracker.attemptBytes, fmt.Errorf("attempt expiry/provider index metadata mismatch")
+		}
+		if _, indexed := tracker.attemptsByProvider[attempt.ProviderID][entry]; !indexed {
+			return count, tracker.attemptBytes, fmt.Errorf("attempt missing from provider index")
+		}
 	}
 	if sum != tracker.attemptBytes || sum > tracker.maxAttemptBytes {
 		return count, tracker.attemptBytes, fmt.Errorf("retained charge sum=%d ledger=%d limit=%d", sum, tracker.attemptBytes, tracker.maxAttemptBytes)
@@ -179,7 +185,8 @@ func TestCacheAttemptBudgetTerminalGraceRetainsChargeAndLateReady(t *testing.T) 
 		t.Fatal("positive frame-acceptance control was not established")
 	}
 	terminalAt := original.CreatedAt.Add(time.Second)
-	request.markCacheAttemptTerminal(terminalAt)
+	r.SetCacheRoutingClockForTest(func() time.Time { return terminalAt })
+	request.markCacheAttemptTerminal()
 	assertOrdinaryCacheFrame(t, snapshot)
 	if !request.CacheRoutingParticipates() || dispatched.CacheReceiptNonce != owner.nonce {
 		t.Fatal("terminal rewrote accepted-frame participation; original cutoff must survive")

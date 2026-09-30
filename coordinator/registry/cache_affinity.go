@@ -17,10 +17,11 @@ func (r *Registry) cacheAffinityEligibleLocked(p *Provider, model string, plan C
 		tracker.generation.revoked.Load() {
 		return false
 	}
+	now := tracker.now()
 	for _, tier := range [...]string{"ssd", "memory"} {
 		capability, ok := p.prefixCacheCapabilityLocked(model, tier)
 		if ok && capabilityMatchesPlan(capability, plan) &&
-			!tracker.capabilityRejected(p.ID, model, tier, capability) {
+			!tracker.capabilityRejected(p.ID, model, tier, capability, now) {
 			return true
 		}
 	}

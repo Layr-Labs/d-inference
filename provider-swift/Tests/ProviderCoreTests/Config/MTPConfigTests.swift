@@ -1,7 +1,7 @@
 // Copyright © 2026 Eigen Labs.
 //
-// MTP config + policy surface: the tri-state `[backend].mtp_mode`, legacy
-// boolean decoding, beta toggle normalization, shared target policy, and the
+// MTP config + policy surface: the tri-state `[backend].mtp_mode`, the
+// retired boolean `mtp` key, beta toggle normalization, shared target policy, and the
 // supported-set carve-out that prevents assistant checkpoints from being
 // advertised as servable chat models.
 
@@ -31,7 +31,7 @@ struct MTPConfigKeyTests {
     }
 
 
-    @Test("absent mode enables embedded Qwen heads and exact Gemma QAT")
+    @Test("absent mode enables supported embedded heads and exact Gemma QAT")
     func defaultsWhenAbsent() {
         let config = ConfigManager.parse(
             """
@@ -43,7 +43,6 @@ struct MTPConfigKeyTests {
             """)
 
         #expect(config.backend.mtpMode == .auto)
-        #expect(config.backend.mtp == false)
         #expect(config.backend.mtpMode.enablesMTP(
             forModelType: "qwen3_5", embeddedArtifactDeclared: true))
         #expect(config.backend.mtpMode.enablesMTP(
@@ -57,6 +56,10 @@ struct MTPConfigKeyTests {
             forModelType: "gemma4", embeddedArtifactDeclared: false,
             modelID: "gemma-4-26b-qat-4bit"))
         #expect(config.backend.mtpDrafterPath == nil)
+        #expect(config.backend.mtpMode.enablesMTP(
+            forModelType: "mimo_v2", embeddedArtifactDeclared: true))
+        #expect(!config.backend.mtpMode.enablesMTP(
+            forModelType: "mimo_v2", embeddedArtifactDeclared: false))
     }
 
     @Test("explicit auto, on, and off modes decode")
@@ -78,45 +81,43 @@ struct MTPConfigKeyTests {
         }
     }
 
-    @Test("legacy booleans migrate by config generation and mtp_mode stays authoritative")
-    func legacyPrecedence() {
-        let legacyOn = ConfigManager.parse(
-            """
-            config_version = 2
-            [provider]
-            name = "test-provider"
-            [backend]
-            mtp = true
-            """)
-        let generatedLegacyOff = ConfigManager.parse(
-            """
-            config_version = 2
-            [provider]
-            name = "test-provider"
-            [backend]
-            mtp = false
-            """)
-        let currentLegacyOff = ConfigManager.parse(
-            """
-            config_version = 3
-            [provider]
-            name = "test-provider"
-            [backend]
-            mtp = false
-            """)
+    @Test("the retired boolean mtp key is ignored and warned; mtp_mode stays authoritative")
+    func retiredBooleanKey() {
+        for stamp in ["", "config_version = 2\n", "config_version = 3\n"] {
+            for legacy in ["true", "false"] {
+                let config = ConfigManager.parse(
+                    """
+                    \(stamp)[provider]
+                    name = "test-provider"
+                    [backend]
+                    mtp = \(legacy)
+                    """)
+                #expect(config.backend.mtpMode == .auto)
+                #expect(config.backend.retiredKeysPresent == ["mtp"])
+                let messages = RetiredKnobWarnings.messages(config: config, environment: [:])
+                #expect(messages.count == 1)
+                // A bare `mtp = false` used to mean off and now resolves as
+                // `auto`, so the warning must name the exact mtp_mode values
+                // that keep the old intent.
+                let warning = messages.first ?? ""
+                #expect(warning.contains("[backend] mtp,"))
+                #expect(warning.contains("RETIRED knob and is IGNORED"))
+                #expect(warning.contains(#"default "auto""#))
+                #expect(warning.contains(#"To keep MTP off, set mtp_mode = "off""#))
+                #expect(warning.contains(#"to force it on, set mtp_mode = "on""#))
+                for value in [MTPMode.off, .on, .auto] {
+                    #expect(warning.contains(#""\#(value.rawValue)""#))
+                }
+            }
+        }
         let modeWins = ConfigManager.parse(
             """
-            config_version = 2
             [provider]
             name = "test-provider"
             [backend]
             mtp_mode = "off"
             mtp = true
             """)
-
-        #expect(legacyOn.backend.mtpMode == .on)
-        #expect(generatedLegacyOff.backend.mtpMode == .auto)
-        #expect(currentLegacyOff.backend.mtpMode == .off)
         #expect(modeWins.backend.mtpMode == .off)
     }
 
@@ -125,12 +126,14 @@ struct MTPConfigKeyTests {
         // Declared embedded heads in Qwen 3.5, native Qwen4, and Nemotron Lightning
         // checkpoints self-activate under `auto`. Exact Gemma QAT uses
         // its separately validated external assistant policy below.
-        let familyModelTypes = ["qwen3_5_moe", "qwen3_5", "qwen4_exp", "qwen4_exp_text", "nemotron_h"]
+        let familyModelTypes = ["qwen3_5_moe", "qwen3_5", "qwen4_exp", "qwen4_exp_text", "nemotron_h", "mimo_v2"]
         let nonFamilyModelTypes: [String?] = [
             "gemma4",
             "gemma4_text",
             "gpt_oss",
             "qwen3_vl_moe",
+            "mimo_v2_flash",
+            "mimo_v2_typo",
             nil,
             "  ",
         ]
@@ -217,6 +220,9 @@ struct MTPConfigKeyTests {
         }
         #expect(!MTPMode.off.requiresCatalogPrewarm(
             forModelType: "gemma4", modelID: "gemma-4-26b-qat-4bit"))
+        for mode in [MTPMode.auto, .on, .off] {
+            #expect(!mode.requiresCatalogPrewarm(forModelType: "mimo_v2", modelID: "native-mimo-fixture"))
+        }
     }
 
     @Test("provider and standalone configs use the same target decision")
@@ -280,8 +286,8 @@ struct MTPConfigKeyTests {
         #expect(decoded.backend.mtpDrafterPath == "/tmp/drafter")
     }
 
-    @Test("legacy input normalizes to mtp_mode when saved")
-    func legacySerializationNormalizes() {
+    @Test("a retired boolean mtp key is dropped when the config is saved")
+    func retiredBooleanDroppedOnSave() {
         let decoded = ConfigManager.parse(
             """
             [provider]
@@ -291,29 +297,9 @@ struct MTPConfigKeyTests {
             """)
         let toml = ConfigManager.serialize(decoded)
 
-        #expect(toml.contains("mtp_mode = 'on'"))
+        #expect(toml.contains("mtp_mode = 'auto'"))
         #expect(!toml.contains("\nmtp = "))
-    }
-
-    @Test("generated legacy false normalizes once and re-saves idempotently")
-    func generatedLegacyFalseNormalizesIdempotently() {
-        let decoded = ConfigManager.parse(
-            """
-            config_version = 2
-            [provider]
-            name = "test-provider"
-            [backend]
-            mtp = false
-            """)
-
-        let firstSave = ConfigManager.serialize(decoded)
-        let secondSave = ConfigManager.serialize(ConfigManager.parse(firstSave))
-
-        #expect(decoded.backend.mtpMode == .auto)
-        #expect(firstSave.contains("config_version = 3"))
-        #expect(firstSave.contains("mtp_mode = 'auto'"))
-        #expect(!firstSave.contains("\nmtp = "))
-        #expect(secondSave == firstSave)
+        #expect(ConfigManager.serialize(ConfigManager.parse(toml)) == toml)
     }
 
     @Test("nil drafter path is not emitted")

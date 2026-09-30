@@ -1,6 +1,6 @@
 # Production-grant benchmark and restored-prefix cancellation
 
-> Last updated: 2026-09-05 · commit `aaa710c44`
+> Last updated: 2026-09-05
 
 The direct benchmark can now derive a single loaded model's KV grant from the
 production memory policy. Its cancellation probe completes a donor in the same

@@ -30,7 +30,7 @@ struct APNsPushHistoryTests {
             cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4), gpuCores: 40, memoryBandwidthGbs: 546)
         let loop = try ProviderLoop(config: ProviderLoopConfig(coordinatorURL: "ws://127.0.0.1:0/unused",
             hardware: hardware, models: [], config: ProviderConfig(provider: ProviderSettings(name: "push-history-test"))),
-            purgeLegacyFiles: false, attestationSigner: signer)
+            attestationSigner: signer)
         await loop.setDaemonStateFileForTesting(dir.appendingPathComponent("state.json"))
         let recipient = try #require(Data(base64Encoded: await loop.keyPair.publicKeyBase64))
         let challenge = try NodeKeyPair.generate().encryptPayload(recipientPublicKey: recipient, plaintext: Data("nonce".utf8))

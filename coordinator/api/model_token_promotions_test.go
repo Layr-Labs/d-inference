@@ -63,7 +63,7 @@ func TestModelTokenPromotionAdmissionAndComplete(t *testing.T) {
 	if got := st.GetBalance("promotion-user"); got != 0 {
 		t.Fatal("consumer charged", got)
 	}
-	want := payments.ProviderPayout(payments.CalculateCostWithOverridesNoMinimum(promoTestModel, 200, 300, 0, 0, false))
+	want := payments.ProviderPayout(payments.DefaultRates().Cost(payments.Usage{PromptTokens: 200, CompletionTokens: 300}))
 	if got := st.GetWithdrawableBalance("paid-provider"); got != want {
 		t.Fatalf("provider got %d want %d", got, want)
 	}
@@ -81,7 +81,7 @@ func TestModelTokenPromotionAdmissionAndComplete(t *testing.T) {
 
 func TestModelTokenPromotionPartialPaidAndExhaustedAPIError(t *testing.T) {
 	s, st, r := promotionTestServer(t, 100)
-	if err := st.SetModelPrice("platform", promoTestModel, 1_000_000, 2_000_000); err != nil {
+	if err := st.SetModelPrice(store.ModelPrice{AccountID: "platform", Model: promoTestModel, InputPrice: 1_000_000, OutputPrice: 2_000_000}); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.Credit("promotion-user", 1000, store.LedgerAdminCredit, "seed"); err != nil {
@@ -96,7 +96,7 @@ func TestModelTokenPromotionPartialPaidAndExhaustedAPIError(t *testing.T) {
 	stampModelTokenReservation(pr, modelTokenReservation(r))
 	provider := &registry.Provider{ID: "p", AccountID: "provider"}
 	usage := protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 10}
-	ok, charged, _, err := s.settleModelTokenPromotion(pr, provider, usage, 1_000_000, 2_000_000, true, nil, false, nil)
+	ok, charged, _, err := s.settleModelTokenPromotion(pr, provider, usage, payments.Rates{Input: 1_000_000, Output: 2_000_000}, nil, false, nil)
 	if err != nil || !ok || charged != 100 || st.GetBalance("promotion-user") != 900 || st.GetBalance("provider") != 200 {
 		t.Fatalf("partial settlement ok=%v paid=%d err=%v", ok, charged, err)
 	}
@@ -151,7 +151,7 @@ func TestModelTokenPromotionSelfRouteAndKeyLimit(t *testing.T) {
 	}
 	pr := &registry.PendingRequest{RequestID: "owned", Model: promoTestModel, ConsumerKey: "promotion-user"}
 	stampModelTokenReservation(pr, modelTokenReservation(r))
-	ok, paid, _, err := s.settleModelTokenPromotion(pr, &registry.Provider{AccountID: "promotion-user"}, protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 50}, 0, 0, false, nil, true, nil)
+	ok, paid, _, err := s.settleModelTokenPromotion(pr, &registry.Provider{AccountID: "promotion-user"}, protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 50}, payments.DefaultRates(), nil, true, nil)
 	if err != nil || !ok || paid != 0 {
 		t.Fatalf("owned completion: %v %d %v", ok, paid, err)
 	}
@@ -194,7 +194,7 @@ func TestModelTokenPromotionCannotInflateProviderPriceOrPayOwnAccount(t *testing
 			if owned {
 				account = "promotion-user"
 			}
-			if err := st.SetModelPrice(account, promoTestModel, 1_000_000_000, 1_000_000_000); err != nil {
+			if err := st.SetModelPrice(store.ModelPrice{AccountID: account, Model: promoTestModel, InputPrice: 1_000_000_000, OutputPrice: 1_000_000_000}); err != nil {
 				t.Fatal(err)
 			}
 			w := httptest.NewRecorder()
@@ -213,7 +213,7 @@ func TestModelTokenPromotionCannotInflateProviderPriceOrPayOwnAccount(t *testing
 			}
 			provider.AddPending(pr)
 			s.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{Type: protocol.TypeInferenceComplete, RequestID: pr.RequestID, Usage: protocol.UsageInfo{PromptTokens: 200, CompletionTokens: 300}})
-			want := payments.ProviderPayout(payments.CalculateCostWithOverridesNoMinimum(promoTestModel, 200, 300, 0, 0, false))
+			want := payments.ProviderPayout(payments.DefaultRates().Cost(payments.Usage{PromptTokens: 200, CompletionTokens: 300}))
 			used := int64(500)
 			if owned {
 				want = 0
@@ -257,7 +257,7 @@ func TestModelTokenPromotionAmbiguousCommitReconcilesWithoutRefundOrDoublePayout
 	pr := &registry.PendingRequest{RequestID: "lost-commit", Model: promoTestModel, ConsumerKey: "promotion-user"}
 	stampModelTokenReservation(pr, modelTokenReservation(r))
 	s.store = &promotionLostCommitStore{Store: st, ModelTokenPromotionStore: st}
-	_, _, _, err := s.settleModelTokenPromotion(pr, &registry.Provider{ID: "p", AccountID: "provider"}, protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 50}, 0, 0, false, nil, false, nil)
+	_, _, _, err := s.settleModelTokenPromotion(pr, &registry.Provider{ID: "p", AccountID: "provider"}, protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 50}, payments.DefaultRates(), nil, false, nil)
 	if err == nil {
 		t.Fatal("missing injected failure")
 	}
@@ -287,7 +287,7 @@ func TestModelTokenPromotionInvalidTerminalReleasesHoldInsteadOfRetryingForever(
 	}
 	pr := &registry.PendingRequest{RequestID: "bad-terminal", Model: promoTestModel, ConsumerKey: "promotion-user"}
 	stampModelTokenReservation(pr, modelTokenReservation(r))
-	_, _, _, err := s.settleModelTokenPromotion(pr, &registry.Provider{ID: "p", AccountID: "provider"}, protocol.UsageInfo{PromptTokens: 1_000_000_000, CompletionTokens: 1_000_000_000}, 0, 0, false, nil, false, nil)
+	_, _, _, err := s.settleModelTokenPromotion(pr, &registry.Provider{ID: "p", AccountID: "provider"}, protocol.UsageInfo{PromptTokens: 1_000_000_000, CompletionTokens: 1_000_000_000}, payments.DefaultRates(), nil, false, nil)
 	if !errors.Is(err, store.ErrPromotionInvalidSettlement) {
 		t.Fatal(err)
 	}

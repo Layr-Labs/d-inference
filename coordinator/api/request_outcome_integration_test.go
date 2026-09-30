@@ -108,7 +108,7 @@ func TestRequestOutcomesAllEndpointsWithoutProfiler(t *testing.T) {
 			})
 		}
 	}
-	if n := len(st.RequestProfilesSince(time.Time{})); n != 0 {
+	if n := len(st.RequestProfilesSinceFiltered(time.Time{}, store.RequestProfileFilter{})); n != 0 {
 		t.Fatalf("disabled profiler wrote %d heavy profiles", n)
 	}
 }
@@ -236,7 +236,7 @@ func TestRequestOutcomesRateLimitAllEndpoints(t *testing.T) {
 			t.Run(fmt.Sprintf("%s/%t", endpoint, stream), func(t *testing.T) {
 				_, st, srv, ts := setupTTFTFailoverServer(t)
 				t.Cleanup(srv.Close)
-				key, err := st.CreateKey()
+				key, _, err := st.CreateAPIKey("", store.APIKeyCreate{})
 				if err != nil {
 					t.Fatal(err)
 				}

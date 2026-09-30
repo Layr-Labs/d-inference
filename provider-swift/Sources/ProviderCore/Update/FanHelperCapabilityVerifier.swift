@@ -62,13 +62,6 @@ enum FanHelperCapabilityVerifier {
         }
     }
 
-    static func rejectFanCapableFlatExecutable(_ executable: URL) throws {
-        guard try binaryContainsCapability(executable) else { return }
-        throw UpdateError.replaceFailed(
-            "fan-capable releases require the signed Darkbloom.app layout"
-        )
-    }
-
     private static func requireRegularFile(
         _ url: URL,
         executable: Bool,

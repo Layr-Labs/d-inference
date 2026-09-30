@@ -21,17 +21,23 @@ const (
 const warmPoolArrivalEWMAAlpha = 0.3
 
 type warmPoolPressureBucket struct {
-	capacityRejects     int
-	ttftMisses          int
-	speculativeStarted  int
-	speculativeWon      int
-	coldDispatches      int
-	loadSuccesses       int
-	loadFailures        int
-	loadDurationEWMA    time.Duration
-	lastEventAt         time.Time
-	lastTarget          int
-	lastTargetChangedAt time.Time
+	promptWork                       warmWorkMean
+	outputWork                       warmWorkMean
+	promptWorkAccum, outputWorkAccum float64
+	promptWorkRate, outputWorkRate   float64
+	workRateAt                       time.Time
+	workRateInitialized              bool
+	capacityRejects                  int
+	ttftMisses                       int
+	speculativeStarted               int
+	speculativeWon                   int
+	coldDispatches                   int
+	loadSuccesses                    int
+	loadFailures                     int
+	loadDurationEWMA                 time.Duration
+	lastEventAt                      time.Time
+	lastTarget                       int
+	lastTargetChangedAt              time.Time
 
 	// arrivalAccum counts spill arrivals (capacity_reject + ttft_miss +
 	// cold_dispatch) since the last rate fold. arrivalRateEWMA is the smoothed

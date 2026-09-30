@@ -72,6 +72,7 @@ func makeProviderTTFTSlow(t *testing.T, reg *registry.Registry, registryID, mode
 		}},
 	}
 	p.Mu().Unlock()
+	reportMeasuredFirstContentEvidence(t, reg, registryID, model, 0.2, 100)
 }
 
 func countTTFT429Routes(st *store.MemoryStore) int {
@@ -209,8 +210,9 @@ func TestDispatch_TTFTRejectAttempt0_SingleReservationAnd429(t *testing.T) {
 	p := registerBuildsProvider(srv, "attempt0-slow-provider", model)
 	p.Mu().Lock()
 	p.DecodeTPS = 100
-	p.PrefillTPS = 0.2 // TTFT estimate >> the ~5s deadline => reservation TTFT-rejects
+	p.PrefillTPS = 0.2 // Conservative forecast exceeds the original deadline.
 	p.Mu().Unlock()
+	reportMeasuredFirstContentEvidence(t, srv.registry, p.ID, model, 0.2, 100)
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))

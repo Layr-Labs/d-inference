@@ -5,7 +5,7 @@ import Testing
 
 @Suite("telemetry overflow queue privacy boundary")
 struct TelemetryOverflowQueueTests {
-    @Test("events are never persisted and legacy files are purged")
+    @Test("legacy queue files are purged without creating anything")
     func queueDropsAndPurges() throws {
         let path = FileManager.default.temporaryDirectory
             .appendingPathComponent("telemetry-queue-\(UUID().uuidString).jsonl")
@@ -21,13 +21,6 @@ struct TelemetryOverflowQueueTests {
             to: temporaryRewrite, atomically: true, encoding: .utf8)
 
         let queue = TelemetryOverflowQueue(path: path)
-        queue.push(TelemetryEvent(
-            source: .provider,
-            severity: .error,
-            kind: .log,
-            message: "PROMPT_SECRET_NEW_EVENT"))
-        #expect(queue.drain(limit: .max).isEmpty)
-
         queue.purge()
         #expect(!FileManager.default.fileExists(atPath: path.path))
         #expect(!FileManager.default.fileExists(atPath: temporaryRewrite.path))

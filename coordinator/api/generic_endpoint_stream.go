@@ -214,6 +214,9 @@ func (e *completionsStreamEmitter) finish(usage protocol.UsageInfo) {
 			"logprobs":      nil,
 			"finish_reason": genericFinishReason(e.finishReason, usage, e.pr.RequestedMaxTokens),
 		}},
+		// The same usage object as the non-stream response, so a streamed
+		// caller can reconcile a cache-read discount too.
+		"usage": completionsUsage(usage),
 	}
 	addResponseProof(event, e.pr)
 	e.emit(event)
@@ -363,7 +366,9 @@ func (e *messagesStreamEmitter) finish(usage protocol.UsageInfo) {
 			"stop_reason":   stopReason,
 			"stop_sequence": stopSequence,
 		},
-		"usage": map[string]any{"output_tokens": usage.CompletionTokens},
+		// Anthropic's message_delta usage is cumulative and may carry the input
+		// counts; message_start could not (usage is known only at the end).
+		"usage": messagesUsage(usage),
 	}
 	addResponseProof(delta, e.pr)
 	e.emit("message_delta", delta)

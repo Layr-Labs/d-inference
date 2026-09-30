@@ -1,6 +1,6 @@
 # Segmented paging follows the admitted slot grant
 
-> Last updated: 2026-09-05 · commit `02f6af71a`
+> Last updated: 2026-09-05
 
 Production segmented paging now receives the provider's normal admitted KV
 grant and follows subsequent shrink/grow updates. The obsolete fixed-pool

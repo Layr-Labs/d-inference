@@ -1,6 +1,6 @@
 # Connected HTTP prefix-cache validation harness
 
-> Last updated: 2026-09-05 · commit `06af2f585`
+> Last updated: 2026-09-05
 
 The opt-in connected test now exercises the real coordinator HTTP endpoint,
 two authenticated provider WebSocket connections and the supervised Rust prompt

@@ -42,8 +42,8 @@ struct SSDCacheKeyMaterial {
     }
 
     private static func loadPersistentKey(_ namespace: SSDPersistentTestKeyNamespace?) async throws -> SymmetricKey {
-        // A custom label bypasses default-label migration. Do not use the
-        // verified-load repair path, which may delete/recreate a key.
+        // Plain find-or-create under the test namespace's label. Do not use
+        // the verified-load repair path, which may delete/recreate a key.
         let enclave = try PersistentEnclaveKey.loadOrCreate(
             accessGroup: namespace?.accessGroup, label: namespace?.enclaveLabel)
         let kek = KVCacheKEK(

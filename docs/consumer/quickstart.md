@@ -1,6 +1,6 @@
 # Quickstart: first request in five steps
 
-> Last updated: 2026-09-26 · commit `76b44a972`
+> Last updated: 2026-09-28
 
 Get an API key from the console, list the models your key can use, and make your first chat completion against `https://api.darkbloom.dev` — first with `curl`, then from the OpenAI and Anthropic SDKs. For developers integrating the API; each step is one action. Route details for everything used here are in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -110,6 +110,12 @@ print(msg.content[0].text)
 
 Requests land on `POST /v1/messages` (`handleAnthropicMessages`, `coordinator/api/consumer.go`) and are translated to the same pipeline as chat completions.
 
+## Handling overload
+
+If inference returns HTTP 429, wait for `Retry-After` before retrying, or choose
+another available model. Internal attempts spend the original first-content
+budget; they do not restart it. See the [error and retry contract](../reference/api-contracts.md#first-content-routing-and-retry-behavior).
+
 ## Verify
 
 For a vision-capable model, Responses requests may use ordered inline
@@ -169,3 +175,10 @@ Direct accounts do not have the upstream first-content SLA. Allow enough time fo
 - Verifying which machine answered and checking its signature: [`verification.md`](verification.md).
 - What the coordinator does with your prompt: [`privacy-expectations.md`](privacy-expectations.md).
 - Error codes and `Retry-After` behaviour: [`../reference/api-contracts.md`](../reference/api-contracts.md).
+
+Prompt length includes the model's rendered template, tools and conversation
+history. The service can count this work before dispatch and reconcile it at the
+provider without changing your completion limit or billing usage. A retry uses
+the original remaining first-content budget. Capacity refusals retain the
+existing `429` and `Retry-After` behavior; see the
+[API contract](../reference/api-contracts.md).

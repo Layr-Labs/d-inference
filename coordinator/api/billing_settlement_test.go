@@ -63,7 +63,7 @@ func TestLinkedProviderAccountCustomPriceUsedForSettlement(t *testing.T) {
 	accountID := "linked-provider-account"
 	const customInputPrice int64 = 50_000
 	const customOutputPrice int64 = 10_000_000
-	if err := st.SetModelPrice(accountID, model, customInputPrice, customOutputPrice); err != nil {
+	if err := st.SetModelPrice(store.ModelPrice{AccountID: accountID, Model: model, InputPrice: customInputPrice, OutputPrice: customOutputPrice}); err != nil {
 		t.Fatalf("set account custom price: %v", err)
 	}
 
@@ -75,7 +75,7 @@ func TestLinkedProviderAccountCustomPriceUsedForSettlement(t *testing.T) {
 	provider.Mu().Unlock()
 
 	usage := protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 500}
-	expectedCost := payments.CalculateCostWithOverrides(model, usage.PromptTokens, usage.CompletionTokens, customInputPrice, customOutputPrice, true)
+	expectedCost := payments.Rates{Input: customInputPrice, Output: customOutputPrice}.CostWithMinimum(billableUsage(usage))
 	expectedPayout := payments.ProviderPayout(expectedCost)
 
 	consumerID := testConsumerID
@@ -125,7 +125,7 @@ func TestHandleCompleteRecordsJobSuccessOnly(t *testing.T) {
 
 	consumerID := testConsumerID
 	usage := protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 500}
-	cost := payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens)
+	cost := payments.DefaultRates().CostWithMinimum(billableUsage(usage))
 	if err := ledger.Charge(consumerID, cost, "reserve:"+consumerID); err != nil {
 		t.Fatalf("reserve balance: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestOverageChargeBeforeClamp(t *testing.T) {
 	// the actual cost computed by handleComplete exceeds ReservedMicroUSD.
 	const customInputPrice int64 = 500_000     // 10x platform default
 	const customOutputPrice int64 = 50_000_000 // 10x platform default
-	if err := st.SetModelPrice(accountID, model, customInputPrice, customOutputPrice); err != nil {
+	if err := st.SetModelPrice(store.ModelPrice{AccountID: accountID, Model: model, InputPrice: customInputPrice, OutputPrice: customOutputPrice}); err != nil {
 		t.Fatalf("set provider custom price: %v", err)
 	}
 
@@ -204,7 +204,7 @@ func TestOverageChargeBeforeClamp(t *testing.T) {
 	provider.Mu().Unlock()
 
 	usage := protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 500}
-	actualCost := payments.CalculateCostWithOverrides(model, usage.PromptTokens, usage.CompletionTokens, customInputPrice, customOutputPrice, true)
+	actualCost := payments.Rates{Input: customInputPrice, Output: customOutputPrice}.CostWithMinimum(billableUsage(usage))
 	// Reservation is deliberately lower than actual cost to trigger overage.
 	reservedAmount := actualCost / 2
 
@@ -253,7 +253,7 @@ func TestOverageChargeClampOnInsufficientBalance(t *testing.T) {
 	accountID := "overage-clamp-account"
 	const customInputPrice int64 = 500_000
 	const customOutputPrice int64 = 50_000_000
-	if err := st.SetModelPrice(accountID, model, customInputPrice, customOutputPrice); err != nil {
+	if err := st.SetModelPrice(store.ModelPrice{AccountID: accountID, Model: model, InputPrice: customInputPrice, OutputPrice: customOutputPrice}); err != nil {
 		t.Fatalf("set provider custom price: %v", err)
 	}
 
@@ -265,7 +265,7 @@ func TestOverageChargeClampOnInsufficientBalance(t *testing.T) {
 	provider.Mu().Unlock()
 
 	usage := protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 500}
-	actualCost := payments.CalculateCostWithOverrides(model, usage.PromptTokens, usage.CompletionTokens, customInputPrice, customOutputPrice, true)
+	actualCost := payments.Rates{Input: customInputPrice, Output: customOutputPrice}.CostWithMinimum(billableUsage(usage))
 	reservedAmount := actualCost / 2
 
 	// Use a consumer with exactly the reserved amount so the overage charge

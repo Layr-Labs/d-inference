@@ -533,11 +533,15 @@ func TestIntegration_ProviderDeduplicationPreservesNewest(t *testing.T) {
 type providerCancelLog struct {
 	mu      sync.Mutex
 	cancels []time.Time
+	first   chan struct{}
 }
 
 func (l *providerCancelLog) add(at time.Time) {
 	l.mu.Lock()
 	l.cancels = append(l.cancels, at)
+	if len(l.cancels) == 1 && l.first != nil {
+		close(l.first)
+	}
 	l.mu.Unlock()
 }
 
@@ -792,7 +796,7 @@ func runZombieStreamScenario(t *testing.T, terminal string, zombieFor time.Durat
 	conn := connectRoutableProvider(t, ctx, ts.URL, model, pubKey, reg)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	cancels := &providerCancelLog{}
+	cancels := &providerCancelLog{first: make(chan struct{})}
 	reqCh := make(chan protocol.InferenceRequestMessage, 1)
 	readerDone := runFakeProviderReader(ctx, conn, pubKey, cancels, func(inferReq protocol.InferenceRequestMessage) {
 		writeProviderFrame(ctx, conn, testEncryptedChunk(t, inferReq, pubKey, cancelTestChunkSSE("Hello")))
@@ -816,6 +820,13 @@ func runZombieStreamScenario(t *testing.T, terminal string, zombieFor time.Durat
 	resp.Body.Close()
 
 	inferReq := <-reqCh
+	// Exercise the resend schedule, not the separate stray-first/abandon race.
+	// A chunk before the initial cancel may legitimately trigger two sends.
+	select {
+	case <-cancels.first:
+	case <-ctx.Done():
+		t.Fatal("provider did not receive the initial cancel")
+	}
 	// The provider ignores the cancel and keeps generating.
 	deadline := time.Now().Add(zombieFor)
 	for i := 0; time.Now().Before(deadline); i++ {

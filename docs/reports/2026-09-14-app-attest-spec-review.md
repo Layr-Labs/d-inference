@@ -1,6 +1,6 @@
 # App Attest specification and draft review
 
-> Last updated: 2026-09-14 · commit `2f39698d2`
+> Last updated: 2026-09-14
 
 Review of Apple's current documentation and the App Attest draft in PR #995.
 These are findings observed on this date; the documentation's publication or

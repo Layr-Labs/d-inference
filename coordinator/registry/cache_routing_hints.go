@@ -67,10 +67,10 @@ func (r *Registry) cacheRoutingHintsWithObservation(
 	// routing. Later changes are fenced again by the revision at selection and
 	// reservation; the rejected-capability check must not be skipped here.
 	for providerID, candidate := range capabilities {
-		if tracker.capabilityRejected(providerID, model, "ssd", candidate.Capability) {
+		if tracker.capabilityRejected(providerID, model, "ssd", candidate.Capability, now) {
 			candidate.Capability.Enabled = false
 		}
-		if tracker.capabilityRejected(providerID, model, "memory", candidate.MemoryCapability) {
+		if tracker.capabilityRejected(providerID, model, "memory", candidate.MemoryCapability, now) {
 			candidate.MemoryCapability.Enabled = false
 		}
 		capabilities[providerID] = candidate
@@ -109,7 +109,7 @@ func (t *cacheRoutingTracker) matchingHolders(
 			for providerID := range t.holders[key] {
 				holder, live := t.activeHolderLocked(key, providerID, now)
 				if !live || holder.ModelAggregateHash != plan.ModelAggregateHash ||
-					holder.PromptContractID != plan.PromptContractID || holder.Anchor != anchor ||
+					holder.PromptContractID != plan.PromptContractID || !anchorMatches(holder.Anchor, anchor) ||
 					anchor.TokenCount <= holder.RequiredRecomputeTokens {
 					continue
 				}
@@ -167,6 +167,7 @@ func cacheHintsForMatches(plan CachePlan, matches []cacheRoutingMatch,
 		// the provider does not accept a coordinator-selected endpoint today.
 		out[holder.ProviderID] = cacheRoutingHint{
 			generation:         plan.generation,
+			ExpiresAt:          holder.ExpiresAt,
 			PrefillTokensSaved: holder.Anchor.TokenCount - holder.RequiredRecomputeTokens,
 			CachedTokens:       holder.Anchor.TokenCount,
 			StageMs:            stageMs,

@@ -16,6 +16,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 const drainTTFTCeilingMs = 5000
@@ -26,6 +28,13 @@ const drainTTFTCeilingMs = 5000
 func slowPrefill(p *Provider) {
 	p.mu.Lock()
 	p.PrefillTPS = 0.2
+	now := time.Now()
+	p.CapacityAcceptedAt = now
+	slot := &p.BackendCapacity.Slots[0]
+	slot.ObservedDecodeTPS = 100
+	zero, initialized, rate := int64(0), true, 0.2
+	slot.Telemetry = &protocol.SlotTelemetry{QueuedPrefillTokens: &zero, PartialPrefillRows: &zero, IsolatedPrefillTPS: &rate, EWMAInitialized: &initialized}
+	p.firstContentMeasurements = map[string]firstContentMeasurement{slot.Model: {rate: rate, observedAfter: now, decodeObservedAfter: now}}
 	p.mu.Unlock()
 }
 

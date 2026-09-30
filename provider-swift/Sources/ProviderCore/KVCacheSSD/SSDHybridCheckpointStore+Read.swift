@@ -74,6 +74,8 @@ extension SSDHybridCheckpointStore {
         reserveReadScratch: @Sendable () throws -> CBv2CompleteCheckpointIOLease,
         makeImportPlan: @Sendable (CBv2CompleteCheckpointManifest) throws -> SSDCheckpointImportPlan
     ) async -> SSDPrefixCacheStageResult {
+        let deviceActivity = kvBudget?.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity?.finish() }
         let started = ContinuousClock.now
         let scope = request.checkpointCacheSalt ?? ""
         let chain = hashes(tokens: request.promptTokens, scope: scope)
@@ -117,7 +119,7 @@ extension SSDHybridCheckpointStore {
         let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: Data(candidate.tag.prefix(16)).hexString)
         let access = fileCoordinator.makeAccess(to: url)
         let accepted = lock.withLock {
-            guard !closed, !destructiveChange, reading[requestID] == nil, stages[requestID] == nil else { return false }
+            guard !closed, reading[requestID] == nil, stages[requestID] == nil else { return false }
             reading[requestID] = access
             activity.begin()
             return true
@@ -143,7 +145,7 @@ extension SSDHybridCheckpointStore {
         }
         let check: () throws -> Void = {
             guard !Task.isCancelled, self.epochMatches(epoch), self.lock.withLock({
-                !self.closed && !self.destructiveChange && self.reading[requestID] === access
+                !self.closed && self.reading[requestID] === access
             }) else { throw CancellationError() }
         }
         let countRead: (Int) -> Void = { count in self.statsBox.update { $0.bytesRead += count; $0.stageReadBytes += count } }
@@ -178,7 +180,7 @@ extension SSDHybridCheckpointStore {
                 return result(.skippedCapacity)
             }
             let installed = lock.withLock {
-                guard !Task.isCancelled, !closed, !destructiveChange, reading[requestID] === access,
+                guard !Task.isCancelled, !closed, reading[requestID] === access,
                     epochMatches(epoch) else { return false }
                 stages[requestID] = staged
                 if !loaded.usesProcessMemoryOwner { stageReservations[requestID] = lease }
@@ -203,7 +205,16 @@ extension SSDHybridCheckpointStore {
         } catch CBv2CompleteCheckpointError.allocationFailed {
             return result(.skippedCapacity)
         } catch {
-            removeCorrupt(Data(candidate.tag.prefix(16)))
+            let short = Data(candidate.tag.prefix(16))
+            if SSDBlockStore.isAbsentBlockFailure(error, at: url, under: config.root) {
+                // Evicted or expired between the index probe and the read.
+                // Nothing on disk was unreadable: forget the entry and report
+                // an ordinary miss, not corruption.
+                forgetMissing(short)
+                statsBox.update { $0.misses += 1 }
+                return result(.missAbsent)
+            }
+            removeCorrupt(short)
             return result(.missCorrupt)
         }
     }

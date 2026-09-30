@@ -18,14 +18,15 @@ import (
 func TestPreCommitOutcome_NonProviderFaultReasons(t *testing.T) {
 	pr := &registry.PendingRequest{RequestID: "r1", Model: "m"}
 	for _, tc := range []struct {
-		code   int
-		reason string
+		code    int
+		reason  string
+		failure protocol.InferenceFailureCode
 	}{
-		{422, "tool_noncompliance"},
-		{500, "jinja_template"},
+		{422, "tool_noncompliance", protocol.FailureCodeGenerationFailure},
+		{500, "jinja_template", protocol.FailureCodeTemplateRender},
 	} {
 		out := preCommitProviderErrorOutcome(pr, protocol.InferenceErrorMessage{
-			StatusCode: tc.code, Error: "x", ErrorReason: tc.reason,
+			StatusCode: tc.code, Error: "x", ErrorReason: tc.reason, FailureCode: tc.failure,
 		})
 		if out.ErrorClass != errorClassClientError {
 			t.Fatalf("%s: class = %q, want %q", tc.reason, out.ErrorClass, errorClassClientError)
@@ -43,6 +44,7 @@ func TestPreCommitOutcome_NonProviderFaultReasons(t *testing.T) {
 	// errors.
 	ctrl := preCommitProviderErrorOutcome(pr, protocol.InferenceErrorMessage{
 		StatusCode: 422, Error: "model output was not valid JSON",
+		FailureCode: protocol.FailureCodeGenerationFailure,
 	})
 	if ctrl.ErrorClass != "provider_error" || !ctrl.AdmittedButFailed {
 		t.Fatalf("plain 422: class=%q admitted=%v, want provider_error/admitted",
@@ -125,12 +127,12 @@ func TestWriteGenericProviderError(t *testing.T) {
 		},
 		{
 			name:       "plain 500 is fixed generation failure",
-			msg:        protocol.InferenceErrorMessage{StatusCode: 500, Error: "boom"},
+			msg:        protocol.InferenceErrorMessage{StatusCode: 500, Error: "boom", FailureCode: protocol.FailureCodeGenerationFailure},
 			wantStatus: 500, wantType: "provider_error", wantInBody: "inference generation failed", absentBody: "boom",
 		},
 		{
 			name:       "zero status fails closed to 500",
-			msg:        protocol.InferenceErrorMessage{Error: "gone"},
+			msg:        protocol.InferenceErrorMessage{Error: "gone", FailureCode: protocol.FailureCodeGenerationFailure},
 			wantStatus: 500, wantType: "provider_error", wantInBody: "inference generation failed", absentBody: "gone",
 		},
 	}

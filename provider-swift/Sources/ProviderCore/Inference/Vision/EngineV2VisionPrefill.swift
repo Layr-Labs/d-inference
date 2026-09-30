@@ -86,7 +86,7 @@ import MLXLMServer
 import MLXVLM
 
 /// Coarse media shape of a request, for telemetry tagging only (rides the
-/// allowlisted `media_kind` field). Never carries media content.
+/// `media_kind` field). Never carries media content.
 public enum EngineV2MediaKind: String, Sendable {
     case image
     case video
@@ -317,6 +317,7 @@ public enum EngineV2VisionPrefill {
         request: OpenAIChatCompletionRequest,
         templateControls: ChatTemplateControls = .init()
     ) async throws -> PreparedSubmission {
+        try MediaIngest.rejectUnsupportedAudio(request)
         // Same decode path as the legacy stream (same caps, same MediaError
         // surface). Inline video bytes stay in the UserInput's owned
         // memory-backed asset while processor preparation samples and
@@ -846,7 +847,9 @@ public enum EngineV2VisionPrefill {
                 switch part {
                 case .imageURL: hasImage = true
                 case .videoURL: hasVideo = true
-                case .text, .unsupported: continue
+                // This classifies only supported image/video work. Audio is
+                // rejected before preparation and has no vision media kind.
+                case .text, .inputAudio, .unsupported: continue
                 }
             }
         }
@@ -859,7 +862,7 @@ public enum EngineV2VisionPrefill {
     /// no legacy fallback anymore). Mirrors `EngineV2Config
     /// .emitFallbackTelemetry`'s field shape, plus `multimodal: true` and
     /// the `media_kind` tag (image/video/mixed) so refusal rates are
-    /// observable per media shape in prod. Allowlisted fields only — never
+    /// observable per media shape. Fixed operational keys only — never
     /// prompt/media content.
     ///
     /// PRIVACY: the human-readable `error` field is emitted ONLY for our own
@@ -890,7 +893,7 @@ public enum EngineV2VisionPrefill {
         if let visionError = error as? EngineV2VisionPrefillError {
             fields["error"] = .string(String(describing: visionError))
         }
-        event.fields = TelemetryFieldFilter.filter(fields)
+        event.fields = fields
         return event
     }
 

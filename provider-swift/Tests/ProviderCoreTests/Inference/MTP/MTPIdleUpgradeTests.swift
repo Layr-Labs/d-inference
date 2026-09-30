@@ -41,7 +41,7 @@ struct MTPIdleUpgradeTests {
         let busy = providers.map { _ in UpgradeBarrier() }
         let tasks = providers.enumerated().map { index, provider in
             Task {
-                await MTPIdleUpgrade.run(
+                await ModelIdleUpgrade.run(
                     prepare: { await fetch.wait(); return try await provider.prepare() },
                     beginDrain: { await provider.beginDrain($0) },
                     commitIfIdle: { try await provider.commit($0) },
@@ -72,7 +72,7 @@ struct MTPIdleUpgradeTests {
     @Test func failedFetchNeverDrainsAndBusyTimeoutReopensOriginal() async {
         let provider = UpgradeServingFixture()
         await provider.setFailure()
-        let failed = await MTPIdleUpgrade.run(
+        let failed = await ModelIdleUpgrade.run(
             prepare: { try await provider.prepare() },
             beginDrain: { await provider.beginDrain($0) },
             commitIfIdle: { try await provider.commit($0) },
@@ -83,7 +83,7 @@ struct MTPIdleUpgradeTests {
         #expect(await provider.discarded == 0)
         #expect(await provider.drainStarts == 0)
         let busy = UpgradeServingFixture()
-        let deferred = await MTPIdleUpgrade.run(maximumIdleChecks: 2,
+        let deferred = await ModelIdleUpgrade.run(maximumIdleChecks: 2,
             prepare: { try await busy.prepare() },
             beginDrain: { await busy.beginDrain($0) },
             commitIfIdle: { try await busy.commit($0) },
@@ -101,7 +101,7 @@ struct MTPIdleUpgradeTests {
             let provider = UpgradeServingFixture()
             let gate = UpgradeBarrier()
             let task = Task {
-                await MTPIdleUpgrade.run(
+                await ModelIdleUpgrade.run(
                     prepare: { try await provider.prepare() },
                     beginDrain: { await provider.beginDrain($0) },
                     commitIfIdle: { try await provider.commit($0) },
@@ -124,7 +124,7 @@ struct MTPIdleUpgradeTests {
         let provider = UpgradeServingFixture()
         let gate = UpgradeBarrier()
         let task = Task {
-            await MTPIdleUpgrade.run(
+            await ModelIdleUpgrade.run(
                 prepare: { try await provider.prepare() },
                 waitBeforeDrain: { await gate.wait() },
                 beginDrain: { await provider.beginDrain($0) },
@@ -145,7 +145,7 @@ struct MTPIdleUpgradeTests {
 
     @Test func partiallyFailedBeginReopensAdmission() async {
         let provider = UpgradeServingFixture()
-        let result = await MTPIdleUpgrade.run(
+        let result = await ModelIdleUpgrade.run(
             prepare: { try await provider.prepare() },
             beginDrain: {
                 await provider.beginDrain($0)
@@ -165,7 +165,7 @@ struct MTPIdleUpgradeTests {
         await provider.setBusy(false)
         let published = UpgradeBarrier()
         let task = Task {
-            await MTPIdleUpgrade.run(
+            await ModelIdleUpgrade.run(
                 prepare: { try await provider.prepare() },
                 beginDrain: { await provider.beginDrain($0) },
                 commitIfIdle: {

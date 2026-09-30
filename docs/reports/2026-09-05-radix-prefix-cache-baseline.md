@@ -1,6 +1,6 @@
 # Radix prefix cache baseline on M5 Max
 
-> Last updated: 2026-09-05 · commit `e928d395f`
+> Last updated: 2026-09-05
 
 This report measures the clean provider baseline before resident prefix caching.
 The measurements below use **Qwen3.8-27B with MTP disabled**. They establish a

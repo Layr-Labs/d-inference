@@ -1,6 +1,6 @@
 # Fan control (experimental)
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-03
 
 Hold the fans of an Apple Silicon Mac at a fixed speed while the provider is
 serving and the GPU is hot, so thermal throttling does not cut decode

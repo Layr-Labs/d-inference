@@ -16,13 +16,25 @@ import (
 	"time"
 )
 
-// mkWithdrawal seeds a withdrawal row directly in the store.
+// mkWithdrawal seeds a withdrawal row created two hours ago unless the
+// fixture sets CreatedAt.
 func mkWithdrawal(t *testing.T, st *store.MemoryStore, wd store.StripeWithdrawal) {
 	t.Helper()
 	if wd.CreatedAt.IsZero() {
 		wd.CreatedAt = time.Now().Add(-2 * time.Hour)
 	}
-	if err := st.CreateStripeWithdrawal(&wd); err != nil {
+	seedWithdrawal(t, st, wd)
+}
+
+// seedWithdrawal inserts wd through the production path: it credits the gross
+// amount as withdrawable, then CreateStripeWithdrawalWithDebit debits it and
+// inserts the row, leaving the account's balances where they were.
+func seedWithdrawal(t *testing.T, st *store.MemoryStore, wd store.StripeWithdrawal) {
+	t.Helper()
+	if err := st.CreditWithdrawable(wd.AccountID, wd.AmountMicroUSD, store.LedgerPayout, "seed:"+wd.ID); err != nil {
+		t.Fatalf("seed withdrawable for %s: %v", wd.ID, err)
+	}
+	if err := st.CreateStripeWithdrawalWithDebit(&wd, store.LedgerStripePayout, "stripe_withdraw:"+wd.ID); err != nil {
 		t.Fatalf("create withdrawal %s: %v", wd.ID, err)
 	}
 }

@@ -43,6 +43,8 @@ enum EngineV2SlotFactory {
     struct AssemblyOverrides {
         var gemmaMTPVerification: EngineV2BenchmarkMTPVerification? = nil
         var promptContractID: String? = nil
+        var deadlineProfiles: [DeadlinePerformanceProfile]? = nil
+        var deadlineHardware: HardwareInfo? = nil
         var completeCheckpointIdentity: CBv2CompleteCheckpointIdentity? = nil
         var pagedPreflight: (([CBv2LayerKind]) throws -> Void)? = nil
         var makePrefixCache:
@@ -96,6 +98,8 @@ enum EngineV2SlotFactory {
     ///   - kvBudget: process-wide shared KV reservation ledger (nil ⇒ no
     ///     shared gating — unit tests only; both production callers pass
     ///     their ledger).
+    ///   - modelArtifactSHA256: verified identity of the loaded artifact for
+    ///     serving-profile matching, independent of prefix-cache policy.
     ///   - weightHash: the slot's verified weight hash binding for SSD
     ///     artifacts. Nil or blank disables reusable SSD caching.
     ///   - environment: runtime policy environment (including prefix-cache,
@@ -123,6 +127,7 @@ enum EngineV2SlotFactory {
         kvBackendConfig: String = "auto",
         kvBackendConfigByModel: [String: String] = [:],
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
+        modelArtifactSHA256: String? = nil,
         weightHash: String? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
@@ -144,6 +149,7 @@ enum EngineV2SlotFactory {
             kvBackendConfig: kvBackendConfig,
             kvBackendConfigByModel: kvBackendConfigByModel,
             prefillDeadlineMode: prefillDeadlineMode,
+            modelArtifactSHA256: modelArtifactSHA256,
             weightHash: weightHash,
             specDecPreparation: SpecDecPreparation(
                 artifact: nil,
@@ -168,17 +174,21 @@ enum EngineV2SlotFactory {
         sizing: SlotSizingSnapshot,
         kvBytesCapacity: Int,
         maxConcurrentRequests: Int,
+        automaticallySelectConcurrency: Bool = false,
+        constructionPurpose: EngineV2Factory.ConstructionPurpose = .serving,
         kvBudget: GlobalKVCacheBudget?,
         activationReserveBytes: UInt64? = nil,
         kvBackendConfig: String = "auto",
         kvBackendConfigByModel: [String: String] = [:],
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
+        modelArtifactSHA256: String? = nil,
         weightHash: String? = nil,
         specDecPreparation: SpecDecPreparation,
         preparedModel: EngineV2PreparedModel? = nil,
         assemblyOverrides: AssemblyOverrides = AssemblyOverrides(),
         environment: [String: String] = ProcessInfo.processInfo.environment,
         persistentTestNamespace: SSDPersistentTestKeyNamespace? = nil,
+        deadlineQualificationCacheIsolation: DeadlineQualificationCacheIsolation? = nil,
         startServingTelemetry: Bool = true,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
         makeEngineOverride: (@Sendable (String, Int) throws -> any CBv2Engine)? = nil,
@@ -186,6 +196,10 @@ enum EngineV2SlotFactory {
         logInfo: @escaping @Sendable (String) -> Void = { _ in },
         logWarning: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws -> ProviderEngineBundle {
+        // Check explicit fixture ownership before any cache or model preparation.
+        try deadlineQualificationCacheIsolation?.validate(environment: environment)
+        let deviceActivity = kvBudget?.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity?.finish() }
         try persistentTestNamespace?.validate(environment: environment)
         // Per-model selection wins. Apply multimodal vetoes before allocation;
         // prepareProductionBackend then resolves auto, the fleet kill switch,
@@ -249,6 +263,8 @@ enum EngineV2SlotFactory {
             mtpConfig = try verification.applying(
                 to: mtpConfig, target: servingModel, drafter: assistantHandle?.drafter)
         }
+        let mtpPerformanceConfiguration = ServingMTPConfiguration.resolve(
+            config: mtpConfig, artifact: prepared.mtpArtifact)
         // Same model-specific EOS augmentation as always (GPT-OSS/Harmony
         // adds its generation-config action stops) — from the
         // scheduler-free policy home.
@@ -287,6 +303,14 @@ enum EngineV2SlotFactory {
                 preparedBackend = try EngineV2Factory.prepareProductionBackend(
                     model: servingModel,
                     modelID: modelId,
+                    modelArtifactSHA256: modelArtifactSHA256,
+                    constructionPurpose: constructionPurpose,
+                    automaticallySelectConcurrency: automaticallySelectConcurrency,
+                    // Keep exact static qualification across transient power/
+                    // thermal changes. The bridge gates admission dynamically.
+                    performanceQualificationAllowed: !mtpConfig.effectiveEnabled
+                        || mtpPerformanceConfiguration != nil,
+                    mtpPerformanceConfiguration: mtpPerformanceConfiguration,
                     kvBytesCapacity: engineKVBytesCapacity,
                     maxConcurrentRequests: maxConcurrentRequests,
                     kvBackend: kvBackendSelection,
@@ -313,7 +337,10 @@ enum EngineV2SlotFactory {
         // Scripted engines have no preparation, so apply the same pure policy.
         let effectiveMaxConcurrentRequests = preparedBackend?.effectiveMaxConcurrentRequests
             ?? EngineV2Factory.nativeConcurrentRequestLimit(
-                requested: maxConcurrentRequests, model: servingModel, environment: environment)
+                requested: constructionPurpose == .benchmark ? max(1, maxConcurrentRequests)
+                    : ServingPerformanceProfiles.concurrency(
+                        configured: UInt64(max(1, maxConcurrentRequests))),
+                model: servingModel, environment: environment)
 
         // SSD staging reserves transient RAM through GlobalKVCacheBudget;
         // refused staging falls back to recomputation. Complete recurrent
@@ -362,7 +389,8 @@ enum EngineV2SlotFactory {
                     engine: try makeEngineOverride(modelId, engineKVBytesCapacity),
                     fixedRequestBytes: 0,
                     kvBackendKind: .contiguous,
-                    kvBackendFallbackReason: nil)
+                    kvBackendFallbackReason: nil,
+                    effectiveMaxConcurrentRequests: effectiveMaxConcurrentRequests)
             }
         } else {
             guard let preparedBackend else {
@@ -420,6 +448,30 @@ enum EngineV2SlotFactory {
                     + (resolvedPartialPrefillCap.map(String.init) ?? "unlimited"))
         }
 
+        // Capture the final scheduler after serving/backend policy; deadline
+        // evidence can never feed back into these construction decisions.
+        let deadlineRuntime = preparedBackend.map { backend in
+            DeadlineRuntimeConfiguration(
+                configuredContextTokens: sizing.maxContextLength,
+                effectiveMaxConcurrency: backend.schedulerConfig.maxConcurrentRequests,
+                prefillChunkSize: backend.schedulerConfig.prefillChunkSize,
+                maxConcurrentPartialPrefills: backend.schedulerConfig.maxConcurrentPartialPrefills ?? 0,
+                mixedPrefillTokenCap: backend.schedulerConfig.mixedStepPrefillTokenCap,
+                soloPrefillStripeTokens: backend.schedulerConfig.soloPrefillStripeTokens)
+        }
+        let deadlineProfiles = assemblyOverrides.deadlineProfiles ?? DeadlinePerformanceProfiles.reviewed
+        let deadlineProfile = deadlineRuntime.flatMap { runtime in
+            constructionPurpose == .serving && (!mtpConfig.effectiveEnabled || mtpPerformanceConfiguration != nil)
+                ? DeadlinePerformanceProfiles.resolve(modelID: modelId,
+                    artifactSHA256: modelArtifactSHA256 ?? weightHash,
+                    kvBackend: preparedBackend!.kind.rawValue, runtime: runtime,
+                    hardware: deadlineProfiles.isEmpty ? nil
+                        : (assemblyOverrides.deadlineHardware ?? DeadlinePerformanceProfiles.detectedHardware),
+                    environment: environment, mtp: mtpPerformanceConfiguration,
+                    cacheIsolation: deadlineQualificationCacheIsolation, profiles: deadlineProfiles)
+                : nil
+        }
+
         let residentEvidence = weightHash.flatMap { modelHash in
             promptContractID.flatMap { contract in
                 ResidentPrefixCacheEvidence(
@@ -433,10 +485,19 @@ enum EngineV2SlotFactory {
             extraEOSTokens: snapshot.extraEOSTokens,
             defaultMaxTokens: sizing.defaultMaxTokens,
             maxConcurrentRequests: effectiveMaxConcurrentRequests,
+            performanceProfile: preparedBackend?.performanceProfile,
+            deadlineProfile: deadlineProfile,
+            deadlineRuntimeConfiguration: deadlineRuntime,
+            promptWorkIdentity: (modelArtifactSHA256 ?? weightHash).flatMap { hash in
+                promptContractID.map { PromptWorkIdentity(modelArtifactHash: hash, promptContractID: $0) }
+            },
+            unqualifiedMaxConcurrentRequests: ServingPerformanceProfiles.concurrency(
+                configured: UInt64(max(1, maxConcurrentRequests))),
             prefillDeadlineMode: prefillDeadlineMode,
             advertisedContextTokens: Qwen4SupportPolicy.contextLimit(
                 modelID: modelId, modelType: modelType,
-                nativeContextTokens: sizing.maxContextLength, environment: environment),
+                nativeContextTokens: sizing.maxContextLength, environment: environment)
+                ?? (preparedBackend?.performanceProfile == nil && deadlineProfile == nil ? nil : sizing.maxContextLength),
             pagedPageSize: preparedBackend?.pagedPoolConfig?.pageSize,
             runtimePolicyEnvironment: environment,
             kvBytesPerToken: processKVBytesPerToken,
@@ -457,6 +518,7 @@ enum EngineV2SlotFactory {
             emitTelemetry: emitTelemetry,
             makeEngine: makeEngine)
 
+        if deadlineProfile != nil { await bridge.retainDeadlinePostureMonitoring() }
         if startServingTelemetry { await bridge.startSSDPrefixCacheStatsLogger() }
         await bridge.configureMTPStatus(mtpStatus,
             metricsInterval: startServingTelemetry ? .seconds(60) : .zero)

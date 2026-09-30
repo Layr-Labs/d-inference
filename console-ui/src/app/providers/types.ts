@@ -19,6 +19,8 @@ export interface MyHardware {
 export interface MyModelInfo {
   id: string;
   size_bytes?: number;
+  /** Scanner's complete load estimate, including transient model payloads. */
+  estimated_memory_gb?: number;
   model_type?: string;
   quantization?: string;
   weight_hash?: string;
@@ -80,6 +82,14 @@ export interface MyBackendCapacity {
   gpu_memory_peak_gb: number;
   gpu_memory_cache_gb: number;
   total_memory_gb: number;
+  /** Eviction-aware maximum additional model weight, used for cold routing. */
+  free_for_load_gb?: number;
+  /** Live no-eviction memory available to the model-load gate, before headroom. */
+  load_usable_gb?: number;
+  /** Current serving-set activation and minimum-KV allowance. */
+  load_headroom_gb?: number;
+  /** Pending model load or related gate transition; defer memory verdicts. */
+  load_transition_active?: boolean;
 }
 
 export interface MyReputation {
@@ -100,9 +110,13 @@ export interface MyProvider {
   status: "online" | "serving" | "offline" | "untrusted" | "never_seen" | string;
   online: boolean;
   last_heartbeat?: string;
+  /** Coordinator time of the last accepted capacity snapshot, separate from liveness. */
+  capacity_accepted_at?: string;
 
   hardware: MyHardware;
   models: MyModelInfo[];
+  /** Canonical catalog/capability-accepted inventory behind backend capacity. */
+  capacity_model_ids?: string[];
   backend?: string;
   version?: string;
   /** Current/last app-reported macOS version; this is not a trust credential. */
@@ -130,8 +144,6 @@ export interface MyProvider {
   mda_sepos_version?: string;
 
   runtime_verified: boolean;
-  python_hash?: string;
-  runtime_hash?: string;
 
   last_challenge_verified?: string;
   failed_challenges: number;
@@ -153,8 +165,6 @@ export interface MyProvider {
 
   lifetime_requests_served: number;
   lifetime_tokens_generated: number;
-
-  wallet_address?: string;
 
   registered_at?: string;
   last_seen?: string;
@@ -180,7 +190,6 @@ export interface MyFleetCounts {
 
 export interface MySummaryResponse {
   account_id: string;
-  wallet_address?: string;
   available_balance_micro_usd: number;
   withdrawable_balance_micro_usd?: number;
   payout_ready?: boolean;
@@ -198,6 +207,9 @@ export interface MySummaryResponse {
 export interface PrefixCacheTelemetry {
   kind: "attention_blocks" | "complete_checkpoint";
   ttl_expired_total?: number;
+  // complete_checkpoint only: recurrent donors whose capture stopped because
+  // a prompt range ran in a packed prefill cohort, once per request.
+  recurrent_capture_disarmed_packed_total?: number;
   io?: PrefixCacheIOTelemetry;
   generation: number;
   sample_seq: number;

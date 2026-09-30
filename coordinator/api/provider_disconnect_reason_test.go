@@ -51,8 +51,8 @@ func TestSessionDisconnectReason(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := sessionDisconnectReason(tt.closeStatus, tt.oomSuspected, tt.readReason); got != tt.want {
-				t.Errorf("sessionDisconnectReason(%d, %v, %q) = %q, want %q",
+			if got := sessionDisconnectReason(tt.closeStatus, tt.oomSuspected, tt.readReason, false); got != tt.want {
+				t.Errorf("sessionDisconnectReason(%d, %v, %q, false) = %q, want %q",
 					tt.closeStatus, tt.oomSuspected, tt.readReason, got, tt.want)
 			}
 		})

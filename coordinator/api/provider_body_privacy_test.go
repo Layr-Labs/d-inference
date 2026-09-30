@@ -290,7 +290,7 @@ func TestProviderBodyPrivacyFieldShapes(t *testing.T) {
 }
 
 func TestProviderBodyPrivacyPreparedCacheControls(t *testing.T) {
-	reg, provider, pending := preparedCacheAttemptForTest(t)
+	reg, _, pending := preparedCacheAttemptForTest(t)
 	srv, _, _ := newBenchServer(t)
 	const body = `{"model":"model","messages":[{"role":"user","content":"hello"}],"user":"not-the-authenticated-account","metadata":{"conversation_id":"synthetic"},"cache_control":{"type":"ephemeral"},"max_tokens":16}`
 	prelude, ok := srv.parseInferencePrelude(httptest.NewRecorder(),
@@ -302,7 +302,7 @@ func TestProviderBodyPrivacyPreparedCacheControls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sealedBody, err := bodyForCacheAttempt(prepared, false, provider, pending)
+	sealedBody, err := bodyForCacheAttempt(prepared, pending)
 	if err != nil {
 		t.Fatal(err)
 	}

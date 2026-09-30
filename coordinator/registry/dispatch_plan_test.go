@@ -5,17 +5,27 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
-// planTestProvider registers a token-budget provider whose routing cost is
-// dominated by its ActiveTokenBudgetUsed backlog (observed 80 tok/s →
-// 12.5 ms/token), so `used` steps of 400 tokens produce 5,000 ms cost gaps —
-// wider than nearTieCostWindowMs (3,000 ms) — making winner and plan order
-// fully deterministic under map iteration randomness.
+// planTestProvider varies first-decode work independently from physical output
+// commitments. Each 400-token fixture step adds 400 ms to first content, beyond
+// the 100-ms selection band, so retained identities are deterministic.
 func planTestProvider(t *testing.T, reg *Registry, id, model string, usedTokens int64) *Provider {
 	t.Helper()
-	return makeTokenBudgetProvider(t, reg, id, model, 100, usedTokens, 1_000_000, 80)
+	decode := 1000 / (12.5 + float64(usedTokens))
+	p := makeTokenBudgetProvider(t, reg, id, model, 100, usedTokens, 1_000_000, decode)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := time.Now()
+	p.CapacityAcceptedAt = now
+	p.firstContentMeasurements = map[string]firstContentMeasurement{model: {rate: 1200, observedAfter: now, decodeObservedAfter: now}}
+	zero, initialized, rate := int64(0), true, 1200.0
+	p.BackendCapacity.Slots[0].Telemetry = &protocol.SlotTelemetry{QueuedPrefillTokens: &zero, PartialPrefillRows: &zero, IsolatedPrefillTPS: &rate, EWMAInitialized: &initialized}
+	return p
 }
 
 func planTestRequest(id string, prompt, maxTok int) *PendingRequest {
@@ -90,10 +100,15 @@ func TestDispatchPlanAggregateCountsDescribeFullPool(t *testing.T) {
 	makeTokenBudgetProvider(t, reg, "full", model, 100, 100_000, 100_000, 80)
 	// TTFT-rejected: decode 1 tok/s → prefill fallback 12 tok/s → ~42 s
 	// estimated TTFT, far over the 5 s ceiling (admissible, not feasible).
-	makeTokenBudgetProvider(t, reg, "slow", model, 1, 0, 100_000, 1)
+	slow := planTestProvider(t, reg, "slow", model, 0)
+	slow.mu.Lock()
+	slow.PrefillTPS = 12
+	slow.BackendCapacity.Slots[0].ObservedDecodeTPS = 1
+	slow.mu.Unlock()
 
 	pr := planTestRequest("plan-counts", 500, 256)
-	pr.MaxTTFTMs = 5_000
+	pr.MaxTTFTMs = 60_000
+	pr.FirstContentDeadline = time.Now().Add(time.Minute)
 	p, decision, plan := reg.ReserveProviderWithPlan(model, pr)
 	if p == nil || plan == nil {
 		t.Fatalf("reservation failed: decision=%+v", decision)
@@ -116,34 +131,62 @@ func TestDispatchPlanAggregateCountsDescribeFullPool(t *testing.T) {
 // same winner and an identical RoutingDecision. Plan retention must be a pure
 // byproduct of the existing scan, never a selection fork.
 func TestReserveProviderWithPlanPrimarySelectionUnchanged(t *testing.T) {
+	synctest.Test(t, testReserveProviderWithPlanPrimarySelectionUnchanged)
+}
+
+func testReserveProviderWithPlanPrimarySelectionUnchanged(t *testing.T) {
 	model := "plan-equivalence-model"
-	build := func() *Registry {
+	build := func(evidenceAge time.Duration) *Registry {
 		reg := New(testLogger())
 		for i := range 6 {
-			planTestProvider(t, reg, fmt.Sprintf("e%d", i), model, int64(i)*400)
+			p := planTestProvider(t, reg, fmt.Sprintf("e%d", i), model, int64(i)*400)
+			p.mu.Lock()
+			p.CapacityAcceptedAt = time.Now().Add(-evidenceAge)
+			measurement := p.firstContentMeasurements[model]
+			measurement.observedAfter = p.CapacityAcceptedAt
+			measurement.decodeObservedAfter = p.CapacityAcceptedAt
+			p.firstContentMeasurements[model] = measurement
+			p.mu.Unlock()
 		}
 		return reg
 	}
 
 	prA := planTestRequest("equiv", 500, 256)
-	pA, decA := build().ReserveProviderEx(model, prA)
+	pA, decA := build(time.Second).ReserveProviderEx(model, prA)
 
 	prB := planTestRequest("equiv", 500, 256)
-	pB, decB, plan := build().ReserveProviderWithPlan(model, prB)
+	pB, decB, plan := build(2*time.Second).ReserveProviderWithPlan(model, prB)
 
 	if pA == nil || pB == nil || pA.ID != pB.ID {
 		t.Fatalf("winners differ: ReserveProviderEx=%v ReserveProviderWithPlan=%v", pA, pB)
 	}
-	// The profiler's wall-clock stamps (lock wait, scan, admit, heartbeat age
-	// — on the decision AND inside the candidate summaries) legitimately differ
-	// between two reservations built a few hundred microseconds apart;
-	// everything else must match.
+	// Frozen time and different fresh evidence ages reproduce the old CI failure
+	// deterministically, without sleeps or depending on the runner's speed.
+	if decA.FirstContent.CapacityAgeMs != 1000 || decB.FirstContent.CapacityAgeMs != 2000 ||
+		decA.FirstContent.PerformanceAgeMs != 1000 || decB.FirstContent.PerformanceAgeMs != 2000 {
+		t.Fatalf("fixture evidence ages differ from expected 1s/2s: ex=%+v plan=%+v", decA.FirstContent, decB.FirstContent)
+	}
+	// The profiler's wall-clock stamps (lock wait, scan, admit, heartbeat and
+	// first-content evidence ages, on the decision and candidate summaries) can differ
+	// between equivalent reservations using fresh evidence;
+	// unknown-age sentinels and every forecast/selection value must still match.
+	normalizeEvidenceAges := func(estimate *FirstContentEstimate) {
+		for _, age := range []*int32{&estimate.CapacityAgeMs, &estimate.PerformanceAgeMs, &estimate.TransportAgeMs} {
+			if *age >= 0 {
+				*age = 0
+			}
+		}
+	}
 	for _, d := range []*RoutingDecision{&decA, &decB} {
 		d.LockWaitUS, d.ScanUS, d.AdmitUS, d.SnapshotAgeMs = 0, 0, 0, 0
+		normalizeEvidenceAges(&d.FirstContent)
 		for i := range d.Top {
 			d.Top[i].HBAgeMs = 0
+			normalizeEvidenceAges(&d.Top[i].FirstContent)
 		}
 		d.RunnerUp.HBAgeMs, d.BestIdle.HBAgeMs = 0, 0
+		normalizeEvidenceAges(&d.RunnerUp.FirstContent)
+		normalizeEvidenceAges(&d.BestIdle.FirstContent)
 	}
 	if decA != decB {
 		t.Fatalf("decisions differ:\n ex:   %+v\n plan: %+v", decA, decB)
@@ -305,7 +348,8 @@ func TestConcurrentPlanReservationsCannotExceedAdmission(t *testing.T) {
 	// deterministic primary even with one pending (3,750 ms, outside the
 	// 3,000 ms near-tie window).
 	pA := planTestProvider(t, reg, "pA", model, 0)
-	makeTokenBudgetProvider(t, reg, "pB", model, 100, 560, 4_000, 80)
+	pB := makeTokenBudgetProvider(t, reg, "pB", model, 100, 560, 4_000, 80)
+	pB.PrefillTPS = 200 // Keep pA preferred on delivered-content work even after its first reservation.
 
 	pr1 := planTestRequest("c1", 1_000, 1_500)
 	p1, _, plan1 := reg.ReserveProviderWithPlan(model, pr1)

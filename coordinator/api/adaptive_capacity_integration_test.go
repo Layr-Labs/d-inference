@@ -350,14 +350,15 @@ func TestAdaptiveCapacityIntegrationQueueBeforeShedQueuesInsteadOf429(t *testing
 	}
 }
 
-func TestAdaptiveCapacityIntegrationOmittedMaxConcurrencyUsesLegacyFallback(t *testing.T) {
+// A running slot that reports no max_concurrency uses the default ceiling.
+func TestAdaptiveCapacityIntegrationOmittedMaxConcurrencyUsesDefault(t *testing.T) {
 	ts, reg := setupAdaptiveCapacityIntegration(t)
 	defer ts.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	model := "adaptive-legacy-fallback"
+	model := "adaptive-default-ceiling"
 	conn := connectProvider(t, ctx, ts.URL, []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}, testPublicKeyB64())
 	defer conn.Close(websocket.StatusNormalClosure, "done")
 	p := markOnlyProviderRoutable(t, reg)
@@ -371,10 +372,10 @@ func TestAdaptiveCapacityIntegrationOmittedMaxConcurrencyUsesLegacyFallback(t *t
 	})
 
 	for i := range 4 {
-		p.AddPending(&registry.PendingRequest{RequestID: fmt.Sprintf("legacy-%d", i), ProviderID: p.ID, Model: model, RequestedMaxTokens: 128})
+		p.AddPending(&registry.PendingRequest{RequestID: fmt.Sprintf("default-%d", i), ProviderID: p.ID, Model: model, RequestedMaxTokens: 128})
 	}
 	candidates, rejections, _ := reg.QuickCapacityCheck(model, 10, 128, registry.RequestTraits{})
 	if candidates != 1 || rejections != 0 {
-		t.Fatalf("QuickCapacityCheck candidates=%d rejections=%d, want 1/0 with legacy fallback", candidates, rejections)
+		t.Fatalf("QuickCapacityCheck candidates=%d rejections=%d, want 1/0 under the default ceiling", candidates, rejections)
 	}
 }

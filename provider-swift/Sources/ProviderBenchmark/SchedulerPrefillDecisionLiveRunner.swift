@@ -88,6 +88,7 @@ enum SchedulerPrefillDecisionLiveRunner {
                 tokenizer: context.tokenizer,
                 kvBytesCapacity: kvCapacity,
                 maxConcurrentRequests: configuration.maxConcurrentRequests,
+                constructionPurpose: .benchmark,
                 kvBudget: BenchmarkMemoryBudget.shared,
                 kvBackend: kvBackend,
                 environment: environment)

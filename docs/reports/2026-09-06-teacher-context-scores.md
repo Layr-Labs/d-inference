@@ -1,6 +1,6 @@
 # Fixed-context scoring completes on Qwen3.6 and Gemma QAT4
 
-> Last updated: 2026-09-06 · commit `b7e95f890`
+> Last updated: 2026-09-06
 
 All four real-model scoring cells complete after the recurrent-state and peak
 admission correction. The same forced contexts produce matching argmax choices

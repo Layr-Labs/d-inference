@@ -1970,6 +1970,7 @@ make benchmark-wrapper-test        # python3 -m unittest discover -s gemma_contb
 python3 scripts/test-provider-release-resolution.py # signed-validation and publication routing before credentials
 ./scripts/sync-install-embed.sh check   # coordinator/api/install.sh byte-identical to scripts/install.sh
 ./scripts/test-prod-env-refresh.sh      # deploy/gcp/prod/refresh-env.sh contract
+./scripts/test-setup-macos-homebrew.sh  # scripts/setup-macos-homebrew.sh with brew already installed
 ./scripts/test-publish-model.sh         # scripts/publish-model.sh dry-run contract
 ```
 
@@ -2789,10 +2790,15 @@ Model findings and live API failures remain non-blocking in the separate
 
 ### macOS E2E Postgres setup
 
-The integration and benchmark jobs initialize Homebrew before installing
-`postgresql@16` and deriving its binary path with `brew --prefix`. A missing
-Homebrew executable is a runner-setup failure before E2E tests execute. See
-`.github/workflows/integration.yml` and `.github/workflows/benchmarks.yml`.
+The integration and benchmark jobs run `scripts/setup-macos-homebrew.sh`
+before they install `postgresql@16` and get its binary path with
+`brew --prefix`. The script finds Homebrew or installs it from a pinned,
+checksum-verified installer. If Homebrew is still missing, the step fails
+before E2E tests run. See `.github/workflows/integration.yml` and
+`.github/workflows/benchmarks.yml`.
+`./scripts/test-setup-macos-homebrew.sh` tests the path where `brew` is
+already installed. It uses a fake `brew` in a temporary directory, makes no
+download, and runs in the "Release Integrity" CI job.
 
 ### Retained unsigned release recovery checks
 

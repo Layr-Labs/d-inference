@@ -12,11 +12,16 @@ test-only resource (`libs/mlx-swift-lm/Package.swift`). Those files are not
 provider product resources. Build SDK tests separately from provider tests
 when validating the media working-set change; see [test gates](test.md).
 
-The macOS integration and benchmark workflows explicitly initialize Homebrew
-with the pinned `Homebrew/actions/setup-homebrew` action before installing
-`postgresql@16`. The action exposes an existing installation or installs
-Homebrew when the runner image does not provide it; the job no longer depends
-on GitHub-hosted image defaults.
+The macOS integration and benchmark workflows run
+`scripts/setup-macos-homebrew.sh` before they install `postgresql@16`. The
+script uses `brew` if it is on `PATH`, at `/opt/homebrew/bin/brew` or at
+`/usr/local/bin/brew`. If it finds no `brew`, it downloads the official
+Homebrew installer from a pinned commit, checks its SHA-256, and runs it with
+`NONINTERACTIVE=1`. In both cases it writes the `brew shellenv` values to
+`$GITHUB_ENV` and `$GITHUB_PATH` for later steps. The workflows do not use the
+`Homebrew/actions/setup-homebrew` action, because the organization Actions
+policy does not allow it. To move the installer pin, change the commit and the
+SHA-256 in the script together.
 
 macOS jobs that download artifacts, verify source signatures through the
 GitHub API, or post benchmark results run `scripts/install-macos-github-cli.sh`

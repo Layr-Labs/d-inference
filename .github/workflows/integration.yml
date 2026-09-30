@@ -46,9 +46,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Set up Homebrew
-        uses: Homebrew/actions/setup-homebrew@e99025eb970cfa124b8284a35463d87426917478
-        with:
-          stable: true
+        run: ./scripts/setup-macos-homebrew.sh
       - name: Install Postgres
         run: brew install postgresql@16
 

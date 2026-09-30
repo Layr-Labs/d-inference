@@ -1,6 +1,6 @@
 # Privacy expectations
 
-> Last updated: 2026-09-25 · commit `b6f9574ed`
+> Last updated: 2026-09-03
 
 What you can and cannot rely on when you send an inference request through Darkbloom. For consumers deciding what to send; the mechanism — which key opens which hop, wire formats, error codes, and the code that enforces each guarantee — is stated once in [`../architecture/security/encryption.md`](../architecture/security/encryption.md) and is not restated here.
 
@@ -13,7 +13,7 @@ In one sentence: your request is encrypted between the coordinator and the provi
 3. The coordinator holds your prompt, attached media and the completion in memory only for the life of the request and writes none of it to logs or the store; the only content-derived artifacts are keyed digests used for cache routing — [what the coordinator logs and retains](../architecture/security/encryption.md#what-the-coordinator-logs-and-retains).
 4. Your request is dispatched only to a provider that passes every privacy gate: an X25519 key bound to an attested Secure Enclave identity, in-process inference, coordinator-verified SIP, and code identity once it is enforced — [invariants](../architecture/security/encryption.md#invariants), [routing gate](../architecture/security/attestation.md#routing-gate).
 5. A provider that returns a plaintext or wrong-key response chunk is marked `untrusted` and your request fails rather than being served insecurely — [hop 3](../architecture/security/encryption.md#hop-3--provider--coordinator-mandatory).
-6. Trusted coordinator authentication credentials and billing identity are not copied into provider request bodies. Caller-supplied top-level `user` and generic `metadata` are removed; other caller fields, prompts and nested content can still reveal identity or credentials — [field minimization](../architecture/security/encryption.md#provider-bound-field-minimization), [what each party can observe](../architecture/security/encryption.md#what-each-party-can-observe).
+6. The provider never sees your API key, Privy identity or balance, and never sees another consumer's prompts — [what each party can observe](../architecture/security/encryption.md#what-each-party-can-observe).
 7. Provider error text is reduced to a closed vocabulary before it is logged or returned to you, and client telemetry ingest is disabled so no free-form fields reach the coordinator — [what the coordinator logs and retains](../architecture/security/encryption.md#what-the-coordinator-logs-and-retains).
 
 ## What you cannot rely on

@@ -16,8 +16,9 @@ public enum SystemMemory {
         }
     }
 
+    public static let availabilityEnvironmentKey = "DARKBLOOM_MEMORY_AVAILABILITY"
     public static let availabilityPolicy = AvailabilityPolicy.resolve(
-        ProcessInfo.processInfo.environment["DARKBLOOM_MEMORY_AVAILABILITY"])
+        ProcessInfo.processInfo.environment[availabilityEnvironmentKey])
 
     /// Every live admission consumer uses the same policy. Legacy mode counts
     /// free + inactive pages and returns nil on sampling failure. Free-only mode

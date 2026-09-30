@@ -50,8 +50,14 @@ Free-only mode can reject a load that would fit after file-cache reclamation.
 It is an opt-in tradeoff for co-tenanted machines, not an OS memory reservation:
 another process can allocate after the sample, and already admitted work is not
 cancelled merely because the mode is stricter. Neither mode guarantees prevention
-of jetsam or low-swap kills. Restart the provider with the selected environment
-to apply or roll back the policy.
+of jetsam or low-swap kills. For background serving, stop and start with
+`DARKBLOOM_MEMORY_AVAILABILITY=free-only darkbloom start` to persist the setting
+in the provider's launchd plist (`LaunchAgent.passthroughEnvironment` in
+`provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`). Foreground and
+background starts resolve empty or invalid explicit values identically.
+Watchdog/manual restarts reuse the installed plist. To roll back, stop and start
+with `DARKBLOOM_MEMORY_AVAILABILITY=reclaimable`; a plain restart intentionally
+preserves the installed policy.
 
 ## Draining providers
 

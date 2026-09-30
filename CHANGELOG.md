@@ -2,7 +2,7 @@
 
 ## Unreleased — provider prefill evidence recovery
 
-- Let an idle native text provider renew expired isolated-prefill measurements through one short request under its original first-content deadline. Hold exclusive whole-Mac service ownership through actual engine retirement and back off failed or cache-only recovery; busy, loading, media and large requests retain predictive admission.
+- Let an idle native text provider renew expired isolated-prefill measurements through one short request under its original first-content deadline. Serialize the final idle check and native registration, then restore ordinary concurrency after prompt completion while retaining service and memory ownership until actual engine retirement. Back off failed or cache-only recovery; busy, loading, media and large requests retain predictive admission.
 - Reseed measured phase EWMAs after an evidence gap while preserving sample identity/counts. Unchanged heartbeats cannot manufacture current prefill evidence.
 
 ## Unreleased — native media prompt accounting

@@ -20,10 +20,11 @@ struct PrefillEvidenceRecoveryTests {
     }
 
     private func fixture(gate: RecoveryStepGate? = nil, watchdog: Bool = false,
-        reservationDelay: Double = 0) throws
+        reservationDelay: Double = 0, reservationGate: RecoveryStepGate? = nil,
+        decodeGate: RecoveryStepGate? = nil) throws
         -> (EngineV2Bridge, CBv2NativeBlockEngine, GlobalKVCacheBudget) {
         let tokenizer = PrefillStubTokenizer()
-        let delay = RecoveryReservationDelay(seconds: reservationDelay)
+        let delay = RecoveryReservationDelay(seconds: reservationDelay, gate: reservationGate)
         let engine = try CBv2NativeBlockEngine(tokenizer: tokenizer, kvBytesCapacity: 1 << 20,
             shutdownGraceSeconds: 0,
             loopConfig: .init(stepTimeout: watchdog ? 0.1 : 60, watchdogInterval: 0.01),
@@ -31,7 +32,8 @@ struct PrefillEvidenceRecoveryTests {
                 delay.observe()
                 return 1_024
             }, makeSession: { request, cancellation in
-                RecoverySession(tokens: request.promptTokens.count, cancellation: cancellation, gate: gate)
+                RecoverySession(tokens: request.promptTokens.count, cancellation: cancellation,
+                    gate: gate, decodeGate: decodeGate)
             })
         let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
             .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: 8 << 30)
@@ -84,7 +86,6 @@ struct PrefillEvidenceRecoveryTests {
 
         let stream = try await bridge.submitTokenized(promptTokens: prompt, request: request,
             requestId: "recover", cacheEnabled: false, firstContentDeadline: original, profile: profile)
-        #expect(budget.serviceBudget.usedFraction == 1)
         let errors = await drain(stream)
         #expect(errors.isEmpty)
         try await eventually { budget.serviceBudget.count == 0 }
@@ -197,9 +198,10 @@ struct PrefillEvidenceRecoveryTests {
         await bridge.seedExpiredRecoveryRate()
         let deadline = FirstContentDeadline(relativeBudgetMilliseconds: 100)
         let profile = RequestProfileBuilder()
+        let signal = EngineV2RequestUsageSignal()
         await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
             _ = try await bridge.submitTokenized(promptTokens: prompt, request: request,
-                requestId: "expires-during-submit", cacheEnabled: false,
+                requestId: "expires-during-submit", cacheEnabled: true, usageSignal: signal,
                 firstContentDeadline: deadline, profile: profile)
         }
         #expect(profile.wireObject().deadlineDecision?.continuation == .expired)
@@ -207,6 +209,66 @@ struct PrefillEvidenceRecoveryTests {
         #expect(await bridge.prefillEvidenceRecovery.owner == nil)
         #expect(await budget.outstandingReservedBytes() == 0)
         #expect(await bridge._testPendingSubmissionCount() == 0)
+        #expect(signal.lookupResult?.outcome == .skippedCapacity)
+        await bridge.shutdown()
+    }
+
+    @Test("device activity cannot race the final idle check and native registration")
+    func idleCheckAndNativeRegistrationShareOneLock() async throws {
+        let registration = RecoveryStepGate(), prefill = RecoveryStepGate()
+        defer { registration.release(); prefill.release() }
+        let (bridge, _, budget) = try fixture(gate: prefill, reservationGate: registration)
+        await bridge.seedExpiredRecoveryRate()
+        let submit = Task {
+            try await bridge.submitTokenized(promptTokens: prompt, request: request,
+                requestId: "atomic-idle", cacheEnabled: false,
+                firstContentDeadline: .init(relativeBudgetMilliseconds: 9_326))
+        }
+        try await eventually { registration.entered }
+        let attempt = RecoveryActivityAttempt()
+        DispatchQueue.global().async {
+            attempt.markAttempted()
+            let activity = budget.serviceBudget.beginUnboundedActivity()
+            attempt.markStarted()
+            activity.finish()
+        }
+        try await eventually { attempt.attempted }
+        #expect(!attempt.started, "activity must wait until native registration commits")
+        registration.release()
+        let stream = try await submit.value
+        try await eventually { attempt.started && prefill.entered }
+        prefill.release()
+        _ = await drain(stream)
+        try await eventually { budget.serviceBudget.count == 0 }
+        #expect(await bridge._testIsolatedPrefillTps() == 6.103282279,
+            "activity after commit still invalidates the isolated measurement")
+        await bridge.shutdown()
+    }
+
+    @Test("a long completion restores ordinary concurrency after prefill while retaining retirement ownership")
+    func completedPrefillDoesNotMonopolizeLongDecode() async throws {
+        let decode = RecoveryStepGate()
+        defer { decode.release() }
+        let (bridge, _, budget) = try fixture(decodeGate: decode)
+        await bridge.seedExpiredRecoveryRate()
+        let longRequest = ChatCompletionRequest(model: "recovery-fixture", messages: [], max_tokens: 8_192)
+        let stream = try await bridge.submitTokenized(promptTokens: prompt, request: longRequest,
+            requestId: "long-output", cacheEnabled: false,
+            firstContentDeadline: .init(relativeBudgetMilliseconds: 9_326))
+        let consumer = Task { await drain(stream) }
+        let ordinaryFraction = 1 / Double(ServingPerformanceProfiles.legacyWholeMacConcurrency)
+        try await eventually { decode.entered && budget.serviceBudget.usedFraction == ordinaryFraction }
+        #expect(budget.serviceBudget.count == 1)
+        #expect(await bridge.prefillEvidenceRecovery.owner == "long-output")
+        #expect(await budget.outstandingReservedBytes() > 0)
+        #expect(budget.serviceBudget.acquire(ownerID: "other-model", concurrency: 4))
+        budget.serviceBudget.release(ownerID: "other-model")
+        await bridge.cancel(requestId: "long-output")
+        #expect(budget.serviceBudget.count == 1, "cancellation cannot refund the blocked decode owner's lease")
+        decode.release()
+        _ = await consumer.value
+        try await eventually { budget.serviceBudget.count == 0 }
+        #expect(await budget.outstandingReservedBytes() == 0)
         await bridge.shutdown()
     }
 
@@ -237,6 +299,12 @@ struct PrefillEvidenceRecoveryTests {
         recovery.bindEvidenceGuard(service.exclusiveEvidenceGuard(ownerID: "probe"), ownerID: "probe")
         let guardValue = try #require(recovery.evidenceGuard)
         #expect(!guardValue.isValid)
+        var submitted = false
+        let result = service.withExclusiveEvidence(ownerID: "probe", guardValue: guardValue) {
+            submitted = true
+            return true
+        }
+        #expect(result == nil && !submitted)
         let receipt = EnginePrefillReceipt(activity: EngineMeasurementActivity(), model: "model",
             isolationGuard: guardValue)
         loading.finish()
@@ -281,55 +349,5 @@ private extension EngineV2Bridge {
         updateDecodeTpsEwma(61.59)
         performanceMeasurements.observe("isolated_prefill", tps: rate, prompt: 384, context: 384,
             cache: "cold", overlap: .init(), at: .now - .seconds(1_200))
-    }
-}
-
-private final class RecoveryStepGate: @unchecked Sendable {
-    private let semaphore = DispatchSemaphore(value: 0)
-    private let lock = NSLock()
-    private var didEnter = false
-    var entered: Bool { lock.withLock { didEnter } }
-    func block() { lock.withLock { didEnter = true }; semaphore.wait() }
-    func release() { semaphore.signal() }
-}
-
-private final class RecoveryReservationDelay: @unchecked Sendable {
-    private let lock = NSLock()
-    private var count = 0
-    let seconds: Double
-    init(seconds: Double) { self.seconds = seconds }
-    func observe() {
-        let inSubmit = lock.withLock { count += 1; return count == 2 }
-        // First quote runs before the bridge's expiry check. Delay the actual
-        // engine submit, after that check, to exercise post-commit cleanup.
-        if inSubmit && seconds > 0 { Thread.sleep(forTimeInterval: seconds) }
-    }
-}
-
-private final class RecoverySession: CBv2NativeBlockSession {
-    let tokens: Int
-    let cancellation: CBv2NativeBlockCancellation
-    let gate: RecoveryStepGate?
-    var prefilled = false
-    var generatedTokenCount = 0
-    var closed = false
-    var retainedBytes: Int { closed ? 0 : 64 }
-    var activeTokenCount: Int { tokens + generatedTokenCount }
-    init(tokens: Int, cancellation: CBv2NativeBlockCancellation, gate: RecoveryStepGate?) {
-        self.tokens = tokens; self.cancellation = cancellation; self.gate = gate
-    }
-    func cancel() { closed = true }
-    func advanceNative() throws -> CBv2NativeBlockStep {
-        if !prefilled {
-            gate?.block()
-            if cancellation.isCancelled { throw CancellationError() }
-            // A real engine phase long enough to pass the unchanged sampling
-            // floor/ceiling; this fixture does not claim production throughput.
-            Thread.sleep(forTimeInterval: 0.05)
-            prefilled = true
-            return .prefill(computedTokens: tokens, complete: true)
-        }
-        generatedTokenCount += 1
-        return .committed(tokens: [65], stopToken: nil, finishReason: .length)
     }
 }

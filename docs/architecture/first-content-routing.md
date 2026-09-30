@@ -155,12 +155,22 @@ guarantee (`canRecoverPrefillEvidence`,
 The provider atomically acquires the entire `WholeMacServiceBudget` only when
 there are no service owners or unbounded device activities. That exclusive
 lease prevents another model or request from claiming inference service until
-engine retirement. Loading or device work invalidates the evidence guard;
+prompt completion. The final idle check and synchronous native registration
+share the budget lock, so device activity cannot start between those operations.
+Loading or device work after that admission boundary invalidates the evidence guard;
 an interrupted receipt cannot train an isolated rate. Short recovery uses the
 existing unmeasured-prefill submission path, with no invented service rate or
 predicted duration. Original-clock expiry checks run before and after submission;
 the coordinator's first-content timeout still bounds waiting for content.
 Physical KV, memory, cache, trust and cancellation checks remain in force.
+
+The SDK prompt-completion receipt reduces the full-Mac allowance to the ordinary
+configured serving fraction, including cache-only or contended receipts. The same
+service reservation, its lifetime and all memory/cache ownership remain held until
+actual retirement. Long completions therefore retain ordinary concurrency instead
+of monopolizing the Mac. If prefill never completes, exclusivity remains held
+through retirement (`reduceExclusiveAllowance`,
+`provider-swift/Sources/ProviderCore/Inference/Performance/WholeMacServiceBudget.swift`).
 
 Outside this exclusive recovery path, native requests retain ordinary predictive
 admission using their observed rates. Expiration alone does not remove a healthy

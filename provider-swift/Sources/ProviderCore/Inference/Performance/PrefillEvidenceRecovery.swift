@@ -3,13 +3,14 @@ import MLXLMCommon
 
 /// Actor-owned permission for one small real request to renew expired cold
 /// prefill evidence. This is an exploration policy, never a predicted rate.
-/// The caller must hold an exclusive whole-Mac lease until engine retirement.
+/// Exclusivity ends at prompt completion; service ownership ends at retirement.
 struct PrefillEvidenceRecovery {
     static let maximumPromptTokens = 1_024
     static let failureBackoff: Duration = .seconds(120)
 
     private(set) var owner: String?
     private(set) var evidenceGuard: CBv2FirstContentEvidenceGuard?
+    private(set) var servingConcurrency = 1
     private var measured = false
     private var submitted = false
     private var retryAfter: ContinuousClock.Instant?
@@ -18,10 +19,11 @@ struct PrefillEvidenceRecovery {
         owner == nil && (retryAfter.map { now >= $0 } ?? true)
     }
 
-    mutating func acquire(_ id: String, evidenceGuard: CBv2FirstContentEvidenceGuard?) {
+    mutating func acquire(_ id: String, evidenceGuard: CBv2FirstContentEvidenceGuard?, servingConcurrency: Int = 1) {
         precondition(owner == nil)
         owner = id
         self.evidenceGuard = evidenceGuard
+        self.servingConcurrency = max(1, servingConcurrency)
         measured = false
         submitted = false
     }
@@ -52,6 +54,7 @@ struct PrefillEvidenceRecovery {
         else if submitted { retryAfter = now.advanced(by: Self.failureBackoff) }
         owner = nil
         evidenceGuard = nil
+        servingConcurrency = 1
         measured = false
         submitted = false
     }

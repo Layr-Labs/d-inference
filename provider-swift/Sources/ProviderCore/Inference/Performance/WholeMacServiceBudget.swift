@@ -19,7 +19,7 @@ final class WholeMacServiceBudget: @unchecked Sendable {
         let activityEpoch: UInt64
     }
     private struct Charge {
-        let fraction: Double
+        var fraction: Double
         let reservationID: String?
         let lifetime: ServiceReservationLifetime?
         let work: Work?
@@ -197,6 +197,31 @@ final class WholeMacServiceBudget: @unchecked Sendable {
             else { return nil }
             return evidenceGuard
         }
+    }
+
+    /// Serialize the last idle check and synchronous native registration with
+    /// device-activity starts. The body must not reenter this service budget.
+    func withExclusiveEvidence<T>(ownerID: String, guardValue: CBv2FirstContentEvidenceGuard,
+        submit: () throws -> T) rethrows -> T? {
+        try lock.withLock {
+            guard charges.count == 1 && charges[ownerID]?.fraction == 1,
+                unboundedActivities.isEmpty, evidenceGuard === guardValue, guardValue.isValid
+            else { return nil }
+            return try submit()
+        }
+    }
+
+    /// Prompt completion ends the isolation interval, not device ownership.
+    /// Keep the same reservation/lifetime at the ordinary serving fraction.
+    func reduceExclusiveAllowance(ownerID: String, concurrency: Int) {
+        let notification = lock.withLock { () -> AsyncStream<Void>.Continuation? in
+            guard concurrency > 1, var charge = charges[ownerID], charge.fraction == 1 else { return nil }
+            charge.fraction = 1 / Double(concurrency)
+            charges[ownerID] = charge
+            invalidateEvidenceLocked()
+            return observer
+        }
+        notification?.yield()
     }
 
     /// Preparation, model loading and cache device transfers cannot borrow a

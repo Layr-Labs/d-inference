@@ -632,8 +632,8 @@ extension EngineV2Bridge {
                     deadline: firstContentDeadline, isMultimodal: multimodal != nil)
                 : nil)
         do {
-            prefillEvidenceRecovery.beginSubmission(id)
             if let admission = deadlineAdmission {
+                prefillEvidenceRecovery.beginSubmission(id)
                 // The engine's serialized closure compares projection against
                 // this same absolute deadline. A second task-group race would
                 // cancel after commit and hide the generation-bound retirement
@@ -739,7 +739,12 @@ extension EngineV2Bridge {
                 // Projection fails open when mode is off, no isolated rate has
                 // been measured, or media makes token projection incomplete.
                 // Absolute expiry does not: it was checked immediately above.
-                if let native = engine as? CBv2NativeBlockEngine {
+                if prefillEvidenceRecovery.owner == id {
+                    let submitted = try submitPrefillEvidenceRecovery(
+                        engineRequest, requestID: id, deadline: firstContentDeadline)
+                    events = submitted.events
+                    nativeRetirement = submitted.retirement
+                } else if let native = engine as? CBv2NativeBlockEngine {
                     let submitted = try native.submitWithRetirement(engineRequest)
                     events = submitted.events
                     nativeRetirement = submitted.retirement
@@ -767,7 +772,7 @@ extension EngineV2Bridge {
                             prefillReceipt: prefillReceipt, sharedKVReserved: sharedKVReserved,
                             prefixCacheReceiptID: prefixCacheReceiptID, ssdStaged: ssdStaged,
                             readyReceiptRegistered: readyReceiptRegistered,
-                            usageSignal: usageSignal, failure: .policy)
+                            usageSignal: usageSignal, failure: Self.prefixCacheFailureClass(for: error))
                         throw error
                     }
                 }

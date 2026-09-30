@@ -13,6 +13,13 @@ extension EngineV2Bridge {
     /// publish a second observation.
     func consumePrefillReceipt(id: String, receipt: EnginePrefillReceipt) {
         guard let sample = receipt.take() else { return }
+        if prefillEvidenceRecovery.owner == id {
+            // The SDK callback proves prompt completion even if cache reuse or
+            // contention prevents a new cold rate. Keep the ordinary lease and
+            // all KV/cache resources through generation-bound retirement.
+            serviceBudget?.reduceExclusiveAllowance(ownerID: serviceOwnerPrefix + ":" + id,
+                concurrency: prefillEvidenceRecovery.servingConcurrency)
+        }
         let usage = sample.usage
         let saved = max(usage.prefixCachePrefillTokensSaved, usage.prefixCacheHitTokens)
         guard usage.promptTokens > 0, saved >= 0, saved <= usage.promptTokens,

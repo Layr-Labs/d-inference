@@ -77,7 +77,9 @@ extension EngineV2Bridge {
             serviceBudget.acquire(ownerID: ownerID, concurrency: 1,
                 serviceReservationID: serviceReservationID, serviceReservation: serviceReservation,
                 work: work, requiresIdle: true) {
-            prefillEvidenceRecovery.acquire(requestID, evidenceGuard: nil)
+            prefillEvidenceRecovery.acquire(requestID, evidenceGuard: nil,
+                servingConcurrency: effectiveProfile?.wholeMacConcurrency
+                    ?? ServingPerformanceProfiles.legacyWholeMacConcurrency)
             return true
         }
         // Losing the idle race only withdraws exploration. Ordinary serving

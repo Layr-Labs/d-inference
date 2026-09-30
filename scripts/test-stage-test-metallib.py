@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Exercise staging layouts/failures without compiling or initializing Metal."""
+import os
 import pathlib
 import shutil
 import subprocess
@@ -61,6 +62,35 @@ class StageTestMetallibTests(unittest.TestCase):
         self.assertIn('xcrun --no-cache --sdk macosx metal --version', source)
         self.assertIn('shasum -a 256 "$METAL_COMPILER"', source)
         self.assertIn("METAL_VERSION=\"${METAL_VERSION%%$'\\n'*}\"", source)
+
+    def test_internal_cache_changes_with_cmake_version_or_binary(self):
+        source = pathlib.Path(__file__).with_name("fetch-metallib.sh").read_text()
+        block = source.split('TOOLCHAIN_HASH="$(', 1)[1].split('\n)"', 1)[0]
+        self.assertIn('CMAKE_VERSION="$(cmake --version)"', source)
+        self.assertIn('shasum -a 256 "$CMAKE_COMPILER"', source)
+
+        def key(version, binary):
+            result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", block],
+                                    env={**os.environ, "CMAKE_VERSION": version,
+                                         "CMAKE_COMPILER_HASH": binary},
+                                    capture_output=True, text=True, check=True)
+            return result.stdout.strip()
+
+        baseline = key("cmake version 3.31.12", "first-binary")
+        self.assertEqual(baseline, key("cmake version 3.31.12", "first-binary"))
+        self.assertNotEqual(baseline, key("cmake version 3.31.13", "first-binary"))
+        self.assertNotEqual(baseline, key("cmake version 3.31.12", "other-binary"))
+
+    def test_release_outer_cache_includes_cmake_version_and_binary(self):
+        root = pathlib.Path(__file__).resolve().parent.parent
+        action = (root / ".github/actions/provider-release-build/action.yml").read_text()
+        self.assertLess(action.index("Install pinned CMake for Metal build"),
+                        action.index("Resolve source-matched metallib cache namespace"))
+        namespace = action.split("Resolve source-matched metallib cache namespace", 1)[1].split("Restore source-matched", 1)[0]
+        self.assertIn("CMAKE_VERSION=$(cmake --version)", namespace)
+        self.assertIn('shasum -a 256 "$CMAKE_COMPILER"', namespace)
+        self.assertIn('"$CMAKE_VERSION" "$CMAKE_BINARY_SHA"', namespace)
+        self.assertIn("${CMAKE_SHA}", namespace)
 
     def test_release_outer_cache_matches_downloadable_compiler_identity(self):
         root = pathlib.Path(__file__).resolve().parent.parent

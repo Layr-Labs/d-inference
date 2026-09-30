@@ -127,6 +127,12 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertLess(ACTION.index('run: ./scripts/install-release-cmake.sh'),
                         ACTION.index('Build or validate source-matched metallib'))
 
+    def test_bootstrap_only_changes_trigger_release_preparation(self):
+        paths = WARM.split("  pull_request:\n", 1)[1].split("  workflow_dispatch:", 1)[0]
+        for helper in ("scripts/install-release-rust.sh", "scripts/install-release-cmake.sh"):
+            with self.subTest(helper=helper):
+                self.assertIn("- '" + helper + "'", paths)
+
     def test_warming_cannot_publish_or_seed_default_branch_from_pr(self):
         self.assertIn('branches: [master]', WARM)
         self.assertIn("github.event_name == 'pull_request' || github.ref == 'refs/heads/master'", WARM)

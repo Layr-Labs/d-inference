@@ -179,7 +179,8 @@ For App Attest coexistence, both signing workflows prepare optional profile-auth
    installs checksum-verified Rustup and the pinned Rust 1.88.0 toolchain
    before running prompt parity. Both lanes install the checksum-verified
    CMake 3.31.12 distribution for the Metal library build; no Homebrew is
-   required on Blacksmith.
+   required on Blacksmith. Changes limited to either bootstrap script still
+   trigger both PR preparation lanes.
    Pipeline shutdown changes run these lanes on their PR as well; the
    [shutdown drain regression](../developer/test.md#sdk-27-release-qualification)
    must pass before retrying a release that failed that assertion.

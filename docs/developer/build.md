@@ -122,7 +122,9 @@ Blacksmith's macOS 27 image also lacks `rustup`. Qualification and signing
 validation install a checksum-verified Rustup 1.28.2 bootstrap from the Rust
 project, then the exact Rust 1.88.0 toolchain required by prompt parity.
 It also lacks Homebrew and CMake; release Metal builds use a checksum-verified
-Kitware CMake 3.31.12 archive instead of a Homebrew fallback.
+Kitware CMake 3.31.12 archive instead of a Homebrew fallback. The release
+Actions metallib cache and the shared fetch helper include the CMake version
+and executable digest, so a different generator cannot reuse those bytes.
 
 Release artifacts pass through GitHub Actions, but Tenki does not compile or
 cache their release inputs. Blacksmith is trusted to execute the release and

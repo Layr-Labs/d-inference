@@ -119,7 +119,11 @@ runs:
         XCODE=$(xcodebuild -version | tr -cs '[:alnum:].' '-')
         METAL_COMPILER=$(xcrun --no-cache --sdk macosx --find metal)
         METAL_SHA=$(shasum -a 256 "$METAL_COMPILER" | cut -d' ' -f1)
-        echo "key=metallib-helper-v2-${MLX_SHA}-${HELPER_SHA}-${METAL_SHA}-${XCODE}-sdk${SDK}-dt${MLX_METALLIB_DEPLOYMENT_TARGET}-jitoff" >> "$GITHUB_OUTPUT"
+        CMAKE_COMPILER=$(command -v cmake)
+        CMAKE_VERSION=$(cmake --version)
+        CMAKE_BINARY_SHA=$(shasum -a 256 "$CMAKE_COMPILER" | cut -d' ' -f1)
+        CMAKE_SHA=$(printf '%s\n' "$CMAKE_VERSION" "$CMAKE_BINARY_SHA" | shasum -a 256 | cut -d' ' -f1)
+        echo "key=metallib-helper-v3-${MLX_SHA}-${HELPER_SHA}-${METAL_SHA}-${CMAKE_SHA}-${XCODE}-sdk${SDK}-dt${MLX_METALLIB_DEPLOYMENT_TARGET}-jitoff" >> "$GITHUB_OUTPUT"
         echo "mlx_sha_short=${MLX_SHA:0:12}" >> "$GITHUB_OUTPUT"
     - name: Restore source-matched metallib cache
       id: metallib-cache

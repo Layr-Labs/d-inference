@@ -13,7 +13,12 @@ func explorationPair(t *testing.T, r *Registry, model string, gap func(p *Provid
 	idle = planTestProvider(t, r, "idle", model, 0)
 	now := time.Now()
 	idle.mu.Lock()
-	idle.PrefillTPS = 20_000 // Faster, so it wins whenever it is allowed to compete.
+	// Faster than the qualified peer's measured 1,200 tok/s by more than the
+	// 100 ms fast band on these prompts, so it wins whenever it may compete,
+	// yet within the range real providers measure. A provider priced by the
+	// registration fallback (no rates reported) may not rank at all; that is
+	// a cost question outside exploration eligibility (#1238).
+	idle.PrefillTPS = 2_000
 	gap(idle, now)
 	idle.mu.Unlock()
 	return qualified, idle

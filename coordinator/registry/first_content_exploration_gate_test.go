@@ -43,8 +43,8 @@ func rememberDecode(p *Provider, rates ...float64) {
 	}
 }
 
-// A provider whose engine keeps resetting is explorable again every few
-// minutes, and first-content timeouts reach no breaker. One failed
+// An idle provider's evidence clears routinely, so a slow one is explorable
+// again and again, and first-content timeouts reach no breaker. One failed
 // exploration must keep it from being explored again straight away.
 func TestFirstContentExplorationBackoffSuppressesAfterFailure(t *testing.T) {
 	r, qualified, idle := explorationGatePair(t)

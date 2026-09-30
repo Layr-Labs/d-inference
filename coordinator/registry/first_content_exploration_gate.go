@@ -10,12 +10,13 @@ import (
 // whose explorations fail.
 //
 // Exploration admits an idle provider without current performance evidence
-// and prices it at the fleet median. A provider whose engine keeps resetting
-// clears that evidence every few minutes, so it is explorable again every few
-// minutes. And a first-content timeout is a 429 that the node-health breaker
-// deliberately ignores, because busy healthy providers time out too. One
-// such provider — decoding at a fraction of its hardware's rate — failed most
-// of the explorations it received for hours without any tracker reacting.
+// and prices it at the fleet median. Idle providers lose that evidence
+// routinely (a typical one clears its decode rate a few times an hour), so a
+// genuinely slow provider becomes explorable again and again. And a
+// first-content timeout is a 429 that the node-health breaker deliberately
+// ignores, because busy healthy providers time out too. One such provider —
+// decoding at a tenth of its chip family's median — failed most of the
+// explorations it received for hours without any tracker reacting.
 //
 // Two independent checks, both scoped to exploration only:
 //

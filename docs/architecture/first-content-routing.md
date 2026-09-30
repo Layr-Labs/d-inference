@@ -142,10 +142,11 @@ can an unchanged legacy EWMA. Exploration offers an opportunity, not guaranteed
 selection or recovery.
 
 Two per-identity checks keep exploration away from providers whose explorations
-fail (`coordinator/registry/first_content_exploration_gate.go`). A provider whose
-engine keeps resetting clears its evidence and becomes explorable again every few
-minutes. It is priced at the fleet median while it lacks evidence, and a
-first-content timeout is a 429 that the node-health breaker deliberately ignores.
+fail (`coordinator/registry/first_content_exploration_gate.go`). Idle providers
+lose their measured evidence routinely, so a genuinely slow provider becomes
+explorable again and again. It is priced at the fleet median while it lacks
+evidence, and a first-content timeout is a 429 that the node-health breaker
+deliberately ignores.
 So without these checks a degraded provider can keep winning explorations it
 cannot serve.
 

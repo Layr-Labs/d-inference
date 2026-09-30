@@ -11,18 +11,6 @@ the docs lint locally; CI runs a subset per pull request (see the CI workflow
 map: the Gemma benchmark-wrapper tests run only locally). The e2e suite needs an Apple Silicon
 Mac with the test checkpoints cached.
 
-The registry's `TestCacheAttemptBudget*` tests cover logical byte charging,
-checked arithmetic, exact-edge admission, immutable replacement/refunds and
-detached tracker storage. `TestCacheAttemptTrackedHashBytesStayWithinLogicalBudget`
-uses 137 attempts with 3,906 valid boundaries each to distinguish byte-bounded
-admission from the old count-only tracker; it allocates no model or million-token
-prompt. Run these with `go test -race ./registry -run
-'^TestCacheAttempt(Budget|TrackedHash|Nonce)' -count=1` from
-`coordinator`, together with the existing cache preparation, ownership,
-capability-generation and accepted-write cutoff regressions. Byte refusal must
-remain nil-error cold inference, with no cache metadata or calibration exclusion.
-These are logical state/ownership tests, not physical-memory measurements,
-native SSD hit-rate benchmarks or hosted certification.
 `TestPlanningClientTracksConfiguredWorkers`, `TestPlanAdmission*`,
 `TestPlannerBurstWaitsForWorkersWithoutBlockingHealth` and
 `TestQueuedPlanCancellationNeverReachesSidecar` check configured capacity,
@@ -46,6 +34,20 @@ then run `go test ./promptcontract -run TestPlannerRealSidecarAdmission -count=1
 It checks 720 plans against warm exact references through 64K tokens with the
 unchanged one-second timeout. It does not load model weights or measure SSD hits.
 See [the diagnostic report](../reports/2026-09-24-cache-planner-admission.md) for evidence and limits.
+
+The registry's `TestCacheAttemptBudget*` tests cover logical byte charging,
+checked arithmetic, exact-edge admission, immutable replacement/refunds and
+detached tracker storage. `TestCacheAttemptTrackedHashBytesStayWithinLogicalBudget`
+uses 137 attempts with 3,906 valid boundaries each to distinguish byte-bounded
+admission from the old count-only tracker; it allocates no model or million-token
+prompt. Run these with `go test -race ./registry -run
+'^TestCacheAttempt(Budget|TrackedHash|Nonce)' -count=1` from
+`coordinator`, together with the existing cache preparation, ownership,
+capability-generation and accepted-write cutoff regressions. Byte refusal must
+remain nil-error cold inference, with no cache metadata or calibration exclusion.
+These are logical state/ownership tests, not physical-memory measurements,
+native SSD hit-rate benchmarks or hosted certification.
+
 `TestDiagnosticCacheEpochFanout` exercises coordinator-wide holder withdrawal
 for one model epoch (`go test ./registry -run TestDiagnosticCacheEpochFanout`
 from `coordinator`; repeat with `-race`).
@@ -989,6 +991,10 @@ the slow WebSocket integration tests; run the full set before merging.
 
 #### Offline OpenRouter caller conformance
 
+Composed cache fixtures import the test-only `coordinator/api/conformance/`
+helpers directly for loopback isolation, settlement waits and fixed fixture
+balances. They do not rely on undeclared helpers in another test file.
+
 Scenarios, fixtures and observers live in `coordinator/api/conformance/`.
 The thin `coordinator/api/conformance_test.go` adapter retains the existing
 22 test entry points and binds package-private server/ledger observations
@@ -1287,6 +1293,46 @@ go test -race ./e2e -run '^TestConnectedBatch' -count=1
 They reject missing/duplicate/unencrypted dispatches, missing terminal adoption,
 serial-only execution, malformed counts and changed non-cache usage details.
 Source selectors and compilation alone are not an executed native B2 pass.
+
+#### Coupled cache and native-endpoint regression
+
+`TestCachePlanningComposed*` combines caller-field minimization, actual candidate
+Rust planning, authenticated scope and bounded receipt ownership through the
+real API dispatch path. It checks all four endpoint shapes and both stream modes,
+quota pressure, retry, queueing and cancellation; a cache-plan refusal must not
+silently prevent otherwise admissible ordinary inference. Observer controls
+reject reintroduced top-level identifiers and damaged nested/cache fields.
+
+Use the previously described source-bound optimized sidecar and explicit owned
+fixture/UDS parents. Set `DARKBLOOM_TEST_PROMPT_GO_VERSION=candidate`,
+`DARKBLOOM_TEST_PROMPT_SIDECAR` and its verified SHA-256 binding. Then run:
+
+```bash
+go test ./coordinator/api -run '^TestCachePlanningComposed' -count=1 -timeout=5m
+go test -race ./coordinator/api -run '^TestCachePlanningComposed' -count=1 -timeout=5m
+```
+
+Require all five roots and their declared cases; a missing sidecar opt-in skips
+the integration fixtures and does not reproduce qualification. This uses an
+actual tokenizer sidecar and encrypted synthetic provider, not a native model
+or signed provider. Keep the real-model gates separate.
+
+`TestGenericPreparationHTTPBaseline` checks five nonstreaming Completions/Messages
+shapes: small text, history and Messages history with tools. It independently
+decrypts the provider body and checks lowering, model/defaults and response
+schema/content/usage. Its benchmark includes local HTTP, encryption/transport
+and response validation—not isolated preparation cost or real model inference:
+
+```bash
+go test -race ./coordinator/api -run '^TestGenericPreparationHTTPBaseline$' -count=1
+go test ./coordinator/api -run '^$' -bench '^BenchmarkGenericPreparationHTTP$' \
+  -benchmem -benchtime=20x -count=5 -timeout=3m
+```
+
+Every benchmark sample validates the response and reports `verified_http_ops`.
+Require all five rows in every repetition. Baseline timings alone do not prove
+a memoization gain; preserve per-request ownership, alias/default invalidation,
+lowering fallbacks and attempt-local sealing before proposing an optimization.
 
 #### Rust component checks
 

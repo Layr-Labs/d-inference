@@ -352,11 +352,19 @@ func (e *benchEnv) close() {
 // newBenchEnv starts the coordinator and one trusted, vision-capable fake
 // provider that answers challenges and serves every dispatch with a role
 // chunk, one content chunk, and a completion.
-func newBenchEnv(b *testing.B) *benchEnv {
+func newBenchEnv(b testing.TB) *benchEnv {
+	return newBenchEnvWithObserver(b, nil)
+}
+
+// Correctness tests may observe the actual encrypted dispatch. Benchmarks leave
+// this nil so provider-side request decryption is not added to their samples.
+func newBenchEnvWithObserver(b testing.TB, observe func(protocol.InferenceRequestMessage, testProviderKeyPair)) *benchEnv {
 	b.Helper()
 	srv, reg, _ := newBenchServer(b)
 	ts := httptest.NewServer(srv.Handler())
+	b.Cleanup(ts.Close)
 	ctx, cancel := context.WithCancel(context.Background())
+	b.Cleanup(cancel)
 
 	pubKey := testPublicKeyB64()
 	value, ok := testProviderKeys.Load(pubKey)
@@ -370,6 +378,7 @@ func newBenchEnv(b *testing.B) *benchEnv {
 	if err != nil {
 		b.Fatalf("websocket dial: %v", err)
 	}
+	b.Cleanup(func() { _ = conn.Close(websocket.StatusNormalClosure, "bench cleanup") })
 	conn.SetReadLimit(64 << 20)
 	regMsg := protocol.RegisterMessage{
 		Type: protocol.TypeRegister,
@@ -402,7 +411,7 @@ func newBenchEnv(b *testing.B) *benchEnv {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
 	}
-	go benchProviderLoop(ctx, conn, pubKey, keypair)
+	go benchProviderLoop(ctx, conn, pubKey, keypair, observe)
 	return &benchEnv{ts: ts, conn: conn, cancel: cancel, client: ts.Client()}
 }
 
@@ -430,7 +439,7 @@ func benchEncryptedChunk(req protocol.InferenceRequestMessage, keypair testProvi
 	})
 }
 
-func benchProviderLoop(ctx context.Context, conn *websocket.Conn, pubKey string, keypair testProviderKeyPair) {
+func benchProviderLoop(ctx context.Context, conn *websocket.Conn, pubKey string, keypair testProviderKeyPair, observe func(protocol.InferenceRequestMessage, testProviderKeyPair)) {
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
@@ -452,9 +461,12 @@ func benchProviderLoop(ctx context.Context, conn *websocket.Conn, pubKey string,
 			if json.Unmarshal(data, &req) != nil {
 				continue
 			}
-			// The body is deliberately NOT decrypted: the benchmark measures the
-			// coordinator, and a 3 MB NaCl open on the fake provider would only
-			// add provider-side noise to the process-wide allocation numbers.
+			if observe != nil {
+				observe(req, keypair)
+			}
+			// Without a correctness observer, the body is deliberately NOT
+			// decrypted: a 3 MB NaCl open on the fake provider would only add
+			// provider-side noise to the process-wide allocation numbers.
 			for _, sse := range []string{
 				roleOnlyChunkSSE(benchDesiredBuild),
 				contentChunkSSE(benchDesiredBuild, "bench"),

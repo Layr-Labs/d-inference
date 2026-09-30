@@ -349,11 +349,20 @@ final class MiMoV26EncodedMediaIngressTests: XCTestCase {
                     XCTAssertNil(response["error"])
                     let usage = try XCTUnwrap(response["usage"] as? [String:Any])
                     if request.path == "/v1/responses" {
-                        XCTAssertEqual(response["status"] as? String,"completed")
-                        XCTAssertGreaterThan(try XCTUnwrap(usage["output_tokens"] as? Int),0)
+                        let generated = try XCTUnwrap(usage["output_tokens"] as? Int)
+                        XCTAssertGreaterThan(generated,0)
+                        if response["status"] as? String == "incomplete" {
+                            let details = try XCTUnwrap(response["incomplete_details"] as? [String:Any])
+                            XCTAssertEqual(details["reason"] as? String,"max_output_tokens")
+                            XCTAssertEqual(generated,3)
+                        } else {
+                            XCTAssertEqual(response["status"] as? String,"completed")
+                        }
                     } else {
                         XCTAssertGreaterThan(try XCTUnwrap(usage["completion_tokens"] as? Int),0)
-                        XCTAssertFalse(try XCTUnwrap(response["choices"] as? [Any]).isEmpty)
+                        let choices = try XCTUnwrap(response["choices"] as? [[String:Any]])
+                        let finish = try XCTUnwrap(choices.first?["finish_reason"] as? String)
+                        XCTAssertTrue(["stop","length"].contains(finish))
                     }
                 }
                 for lease in owners.all { await lease.joinFromOutside() }

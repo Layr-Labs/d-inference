@@ -209,7 +209,8 @@ enum MiMoV26EncodedMediaIngress {
             maximumEncodedBytes:MediaIngest.maxMediaDecodedBytes)
         let audiovisualLimits = MiMoV26EncodedAudiovisualDecoder.Limits(
             maximumFrames:native.audio.maximumInputSamples, maximumWorkingBytes:working,
-            maximumBuffers:min(4096,native.maximumMetadataNodes))
+            maximumBuffers:min(4096,native.maximumMetadataNodes),
+            maximumChannels:native.audio.maximumChannels, maximumSampleRate:native.audio.maximumSampleRate)
         var imageCount = 0, videoCount = 0, audioCount = 0, totalAudioSamples = 0
         var totalImagePixels = 0, totalVideoPixels = 0, totalRGBPixels = 0
         var decodeMemory = MiMoV26MediaDecodeMemory(hostBytes: plan.hostBytes)
@@ -262,7 +263,7 @@ enum MiMoV26EncodedMediaIngress {
                         guard audioCount <= native.audio.maximumClips else { throw refusal() }
                         let audiovisual = try await MiMoV26EncodedAudiovisualDecoder.inspect(
                             video,limits:audiovisualLimits)
-                        let (sum,overflow) = totalAudioSamples.addingReportingOverflow(audiovisual.frameCount)
+                        let (sum,overflow) = totalAudioSamples.addingReportingOverflow(audiovisual.sampleCount)
                         guard !overflow, sum <= native.audio.maximumInputSamples else { throw refusal() }
                         totalAudioSamples = sum
                         try decodeMemory.includeRetained(UInt64(audiovisual.audioWorkingByteBound))

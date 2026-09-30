@@ -136,7 +136,7 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn("prepare-mimo-audio-fixtures.py", fixture)
         gate = ACTION.split('- name: Qualify authenticated native MiMo PCM8 audio inference\n', 1)[1].split('\n    - name:', 1)[0]
         self.assertIn("if: inputs.lane == 'qualification'", gate)
-        self.assertIn("run-nested-suite.sh testNativeAudioReleaseAcceptsOpenRouterPCM8WAVThroughAuthenticatedHTTP --no-parallel", gate)
+        self.assertIn("run-nested-suite.sh testNativeAudioRelease --no-parallel", gate)
         self.assertNotIn("cache-hit", gate)
         self.assertNotIn("continue-on-error:", gate)
 

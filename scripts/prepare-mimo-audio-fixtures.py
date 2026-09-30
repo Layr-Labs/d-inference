@@ -8,10 +8,12 @@ from pathlib import Path
 import subprocess
 import sys
 
+VIDEO_URL = "https://model-assets.openrouter.ai/model-examples/bytedance/seedance-2.5-20260807/bd6114c8-ef63-47e2-9399-d89271243fe4/original-0.mp4"
 BASE_URL = "https://models.darkbloom.ai/v2/mimo-v2.6-flash-mopd--3012243b1fbc/2026-09-28-r1"
 # Published immutable metadata and codec. These are test inputs, never executed
 # code. The production loader independently authenticates the selected sidecar.
 FILES = {
+    "openrouter-aac.mp4": (6934922, "dc11648bd3546cd0a37ecc1077ccc426d42c409fe4822ece0354eb250804431e"),
     'audio_tokenizer/chat_template.jinja': (
         5588, 'cf1a0a0e5cbc6a6a1b609f19f6db5483fddf978e6c8c8453ca2549bed02b7425'),
     'audio_tokenizer/config.json': (
@@ -54,7 +56,7 @@ def prepare(cache, output):
             raise ValueError("unexpected download symlink")
         subprocess.run(["curl", "--fail", "--silent", "--show-error", "--location",
                         "--retry", "3", "--max-time", "900",
-                        BASE_URL + "/" + relative, "--output", str(temporary)], check=True)
+                        (VIDEO_URL if relative == "openrouter-aac.mp4" else BASE_URL + "/" + relative), "--output", str(temporary)], check=True)
         if not verify(temporary, size, digest):
             raise ValueError("MiMo audio fixture digest mismatch: " + relative)
         os.replace(temporary, path)
@@ -75,10 +77,14 @@ def main():
     line = "MIMO_V26_MANAGED_AUDIO_FIXTURE_ROOT=" + str(root)
     if "\n" in line or "\r" in line:
         raise ValueError("invalid environment path")
+    video_line = "MIMO_V26_MANAGED_AAC_VIDEO_FIXTURE=" + str(args.cache.resolve() / "openrouter-aac.mp4")
+    if "\n" in video_line or "\r" in video_line:
+        raise ValueError("invalid environment path")
     if args.github_env:
         with args.github_env.open("a") as stream:
-            stream.write(line + "\n")
+            stream.write(line + "\n" + video_line + "\n")
     print(line)
+    print(video_line)
 
 
 if __name__ == "__main__":

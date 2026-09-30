@@ -46,7 +46,7 @@ SDK_COMMANDS = {
     "Verify DiffusionGemma artifact and expert reduction":
         "../../scripts/run-nested-suite.sh 'DiffusionGemma(ArtifactFixture|ExpertReduction)Tests' --no-parallel",
     "Run nested MiMo media decode tests":
-        "../../scripts/run-nested-suite.sh 'MiMoV26(VisualDecodeMemory|EncodedVisualDecoder|EncodedAudioDecoder)Tests|MiMoV26PixelsTests.test(RGB|Temporal|Invalid|Explicit)' --no-parallel",
+        "../../scripts/run-nested-suite.sh 'MiMoV26(VisualDecodeMemory|EncodedVisualDecoder|EncodedAudioDecoder|EncodedAACAudio|EncodedAudiovisualDecoder)Tests|MiMoV26PixelsTests.test(RGB|Temporal|Invalid|Explicit)' --no-parallel",
     "Run nested paged safety tests":
         "../../scripts/run-nested-suite.sh CBv2PagedSafetyTests",
     "Run nested prompt-hash tests":
@@ -152,7 +152,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 if lane == "provider":
                     self.assertEqual(len(restores), 1)
                     self.assertEqual(field(restores[0], "id"), "mimo-audio-cache")
-                    self.assertIn("mimo-audio-source-v1-", restores[0])
+                    self.assertIn("mimo-audio-source-v2-", restores[0])
                     self.assertGreater(steps.index(restores[0]), steps.index(builds[0]))
                 else:
                     self.assertEqual(restores, [])
@@ -168,7 +168,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             "../scripts/run-provider-tests.sh",
             *MIMO_NATIVE_COMMANDS.values(),
             'python3 scripts/prepare-mimo-audio-fixtures.py --cache "$RUNNER_TEMP/mimo-audio-source" --output "$RUNNER_TEMP/mimo-audio-fixtures" --github-env "$GITHUB_ENV"',
-            "../scripts/run-nested-suite.sh testNativeAudioReleaseAcceptsOpenRouterPCM8WAVThroughAuthenticatedHTTP --no-parallel",
+            "../scripts/run-nested-suite.sh testNativeAudioRelease --no-parallel",
             "./scripts/test-install-atomic.sh",
         )
         self.assertEqual([run_command(step) for step in steps if field(step, "run")], list(expected))
@@ -294,7 +294,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("prepare-mimo-audio-fixtures.py", run_command(fixture))
         self.assertEqual(field(fixture, "if"), READY)
         gate = next(s for s in steps if field(s, "name", indent=6) == "Run isolated native MiMo audio gate")
-        self.assertIn("testNativeAudioReleaseAcceptsOpenRouterPCM8WAVThroughAuthenticatedHTTP", run_command(gate))
+        self.assertIn("testNativeAudioRelease", run_command(gate))
         self.assertIn("run-nested-suite.sh", run_command(gate))
         self.assertIn("steps.mimo-audio-fixtures.outcome == 'success'", field(gate, "if"))
         self.assertEqual(field(gate, "MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS", indent=10), "'1'")

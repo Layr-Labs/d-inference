@@ -49,12 +49,12 @@ same routine fixtures before its watchdog-driven provider tests. Release-only
 builds do not provision test fixtures or enable native qualification.
 
 `scripts/prepare-mimo-audio-fixtures.py` separately downloads hash-pinned public
-metadata and the genuine 1.87 GB MiMo input codec. It feeds
+metadata, the genuine 1.87 GB MiMo input codec, and the public OpenRouter AAC video fixture. It feeds
 `prepare-mimo-provider-fixtures.py --audio-source` to build a small synthetic
 target with the selected tokenizer/audio IDs. The codec is never synthesized or
 relabelled, and normal native loading verifies it again. CI and SDK release
 qualification cache those immutable inputs and run an isolated authenticated
-PCM8 audio inference gate. This proves the route with a small target, not the
+PCM8 and AAC-video inference gate. This proves the route with a small target, not the
 full model's output quality or production peak memory.
 
 Production prompt parity compares the generated corpus byte-for-byte with its

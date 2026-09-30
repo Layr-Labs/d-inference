@@ -278,7 +278,7 @@ jobs:
         id: mimo-audio-cache
         with:
           path: ${{ runner.temp }}/mimo-audio-source
-          key: mimo-audio-source-v1-077033345d80eef3a315e8d394e0589667e80e4cdaba9bc5a7488410c6657265
+          key: mimo-audio-source-v2-077033345d80eef3a315e8d394e0589667e80e4cdaba9bc5a7488410c6657265
       - name: Prepare selected MiMo audio fixture
         id: mimo-audio-fixtures
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
@@ -288,7 +288,7 @@ jobs:
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57
         with:
           path: ${{ runner.temp }}/mimo-audio-source
-          key: mimo-audio-source-v1-077033345d80eef3a315e8d394e0589667e80e4cdaba9bc5a7488410c6657265
+          key: mimo-audio-source-v2-077033345d80eef3a315e8d394e0589667e80e4cdaba9bc5a7488410c6657265
       - name: Run isolated native MiMo audio gate
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-audio-fixtures.outcome == 'success' }}
         working-directory: provider-swift
@@ -296,7 +296,7 @@ jobs:
         env:
           MIMO_V26_SERIAL_NATIVE_TESTS: '1'
           MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS: '1'
-        run: ../scripts/run-nested-suite.sh testNativeAudioReleaseAcceptsOpenRouterPCM8WAVThroughAuthenticatedHTTP --no-parallel
+        run: ../scripts/run-nested-suite.sh testNativeAudioRelease --no-parallel
       - name: Run atomic installer artifact tests
         if: ${{ !cancelled() }}
         timeout-minutes: 2
@@ -356,7 +356,7 @@ jobs:
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
         working-directory: libs/mlx-swift-lm
         timeout-minutes: 5
-        run: ../../scripts/run-nested-suite.sh 'MiMoV26(VisualDecodeMemory|EncodedVisualDecoder|EncodedAudioDecoder)Tests|MiMoV26PixelsTests.test(RGB|Temporal|Invalid|Explicit)' --no-parallel
+        run: ../../scripts/run-nested-suite.sh 'MiMoV26(VisualDecodeMemory|EncodedVisualDecoder|EncodedAudioDecoder|EncodedAACAudio|EncodedAudiovisualDecoder)Tests|MiMoV26PixelsTests.test(RGB|Temporal|Invalid|Explicit)' --no-parallel
       - name: Run nested paged safety tests
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
         working-directory: libs/mlx-swift-lm

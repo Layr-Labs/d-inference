@@ -192,6 +192,31 @@ final class MiMoV26ManagedAudioProviderTests: XCTestCase {
 
     #if DEBUG
     func testNativeAudioReleaseAcceptsOpenRouterPCM8WAVThroughAuthenticatedHTTP() async throws {
+        func u16(_ n: UInt16) -> [UInt8] { [UInt8(truncatingIfNeeded:n),UInt8(truncatingIfNeeded:n >> 8)] }
+        func u32(_ n: UInt32) -> [UInt8] { (0..<4).map { UInt8(truncatingIfNeeded:n >> ($0 * 8)) } }
+        // Same 22.05 kHz, unsigned PCM8, mono and 47048 samples as the
+        // OpenRouter failure. Use synthetic samples, never user recordings.
+        let samples = (0..<47048).map { UInt8(128 + Int(40 * sin(Double($0) * 0.025))) }
+        let fmt = u16(1) + u16(1) + u32(22050) + u32(22050) + u16(1) + u16(8)
+        let waveBody = Array("WAVEfmt ".utf8) + u32(16) + fmt + Array("data".utf8) + u32(UInt32(samples.count)) + samples
+        let wave = Data(Array("RIFF".utf8) + u32(UInt32(waveBody.count)) + waveBody)
+        try await assertNativeHTTPMedia([
+            ["type":"text","text":"What do you hear in this audio?"],
+            ["type":"input_audio","input_audio":["format":"wav","data":wave.base64EncodedString()]]])
+    }
+
+    func testNativeAudioReleaseAcceptsOpenRouterAACVideoThroughAuthenticatedHTTP() async throws {
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS")
+        let path = try XCTUnwrap(ProcessInfo.processInfo.environment["MIMO_V26_MANAGED_AAC_VIDEO_FIXTURE"])
+        let video = try Data(contentsOf:URL(fileURLWithPath:path))
+        XCTAssertEqual(video.count,6934922)
+        XCTAssertEqual(MiMoConsumerFixture.sha(video),"dc11648bd3546cd0a37ecc1077ccc426d42c409fe4822ece0354eb250804431e")
+        try await assertNativeHTTPMedia([
+            ["type":"text","text":"What is shown in this video?"],
+            ["type":"video_url","video_url":["url":"data:video/mp4;base64," + video.base64EncodedString()]]])
+    }
+
+    private func assertNativeHTTPMedia(_ content: [[String:Any]]) async throws {
         @Sendable func phase(_ message: String) {
             FileHandle.standardError.write(Data(("MiMo audio qualification: " + message + "\n").utf8))
         }
@@ -201,21 +226,10 @@ final class MiMoV26ManagedAudioProviderTests: XCTestCase {
         let binding = try await bundle.bridge.nativeMiMoDecodedAudioBinding()
         XCTAssertTrue(binding.load === value.load)
         let before = actual.stepCount
-        func u16(_ n: UInt16) -> [UInt8] { [UInt8(truncatingIfNeeded:n),UInt8(truncatingIfNeeded:n >> 8)] }
-        func u32(_ n: UInt32) -> [UInt8] { (0..<4).map { UInt8(truncatingIfNeeded:n >> ($0 * 8)) } }
-        // Same 22.05 kHz, unsigned PCM8, mono and 47048 samples as the
-        // OpenRouter failure. Use synthetic samples, never user recordings.
-        let samples = (0..<47048).map { UInt8(128 + Int(40 * sin(Double($0) * 0.025))) }
-        let fmt = u16(1) + u16(1) + u32(22050) + u32(22050) + u16(1) + u16(8)
-        let waveBody = Array("WAVEfmt ".utf8) + u32(16) + fmt + Array("data".utf8) + u32(UInt32(samples.count)) + samples
-        let wave = Data(Array("RIFF".utf8) + u32(UInt32(waveBody.count)) + waveBody)
         let body = try JSONSerialization.data(withJSONObject:[
             "model":"audio-fixture","stream":true,"stream_options":["include_usage":true],
             "enable_thinking":false,"temperature":0,"max_tokens":3,
-            "messages":[["role":"user","content":[
-                ["type":"text","text":"What do you hear in this audio?"],
-                ["type":"input_audio","input_audio":["format":"wav","data":wave.base64EncodedString()]]
-            ]]]])
+            "messages":[["role":"user","content":content]]])
         let lease = NativeLocalConsumerLease()
         let app = makeLocalInferenceApplication(config:.init(host:"127.0.0.1",port:0,authToken:"audio-test-token"),
             defaultMaxTokens:3,acquire:{ _ in
@@ -225,7 +239,7 @@ final class MiMoV26ManagedAudioProviderTests: XCTestCase {
             },tokenizerProvider:{ _ in .init(tokenizer:value.tokenizer,modelType:"mimo_v2") },
             availableModels:{ ["audio-fixture"] },mtpSlots:{ [] },
             modelTypeProvider:{ _ in "mimo_v2" })
-        phase("sending authenticated PCM8 WAV")
+        phase("sending authenticated media")
         try await app.test(.router) { client in
             try await client.execute(uri:"/v1/chat/completions",method:.post,
                 headers:[.contentType:"application/json",.authorization:"Bearer audio-test-token"],

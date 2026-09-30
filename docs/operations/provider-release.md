@@ -17,7 +17,11 @@ confirm a positive usable token budget, successful inference, bounded memory
 pressure, and correct concurrency reduction or load refusal when grants shrink.
 Include base64 PNG, EXIF JPEG, silent H.264 MP4 and combined image/video
 requests through the authenticated API. Include the standard PCM8/22050 Hz audio
-case and verify native audio tokenization, generation and reservation cleanup.
+case and the OpenRouter MP4 with stereo AAC audio; verify native audio
+tokenization, generation and reservation cleanup. Check both on/off
+`chat_template_kwargs.thinking` aliases and tool-return reasoning history.
+Deploy the matching coordinator prompt normalizer before enabling the new
+request shapes across the provider fleet.
 Compare 30- and 300-source-frame clips
 with the same sampled frame count; record actual peak process memory and usable
 KV headroom, and confirm terminal reservation cleanup. Local tiny-weight

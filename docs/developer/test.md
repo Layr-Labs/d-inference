@@ -357,13 +357,16 @@ Build qualification regressions run in `coordinator/store/app_attest_builds_test
 
 ### MiMo encoded audio release regression
 
-The `testNativeAudioReleaseAcceptsOpenRouterPCM8WAVThroughAuthenticatedHTTP` gate
-loads the real selected audio codec beside a small synthetic native target,
-uses ordinary serving memory policy, sends an authenticated streaming WAV request
-with mono/22050 Hz/PCM8/47048 samples, requires generated tokens and terminal
-usage, and joins real ownership before asserting all charges are released.
+The `testNativeAudioRelease` gates
+load the real selected audio codec beside a small synthetic native target,
+use ordinary serving memory policy, send an authenticated streaming WAV request
+with mono/22050 Hz/PCM8/47048 samples and the exact public OpenRouter H.264/AAC
+video (stereo/32000 Hz), require generated tokens and terminal usage, and join
+real ownership before asserting all charges are released.
 Set `MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS=1`, `MIMO_V26_SERIAL_NATIVE_TESTS=1`, and
 `MIMO_V26_MANAGED_AUDIO_FIXTURE_ROOT` to the generated `tiny-bf16` directory.
+Set `MIMO_V26_MANAGED_AAC_VIDEO_FIXTURE` to the verified video file emitted by
+the fixture preparation script.
 Use `prepare-mimo-audio-fixtures.py --cache <cache> --output <new-directory>`;
 its public codec download is about 1.87 GB and is checked against fixed hashes.
 

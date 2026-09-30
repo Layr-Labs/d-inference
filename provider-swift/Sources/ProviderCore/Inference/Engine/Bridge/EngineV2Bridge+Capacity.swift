@@ -305,8 +305,8 @@ extension EngineV2Bridge {
     /// Number of requests currently active on this bridge (heartbeat
     /// aggregate `inferenceActive` input).
     public func activeRequestCount() -> Int {
-        if let native = ownedEngine as? CBv2NativeBlockEngine {
-            let capacity = native.capacity()
+        if tracksNativeShutdown || ownedEngine is CBv2NativeBlockEngine {
+            let capacity = capacitySnapshot()
             // Early terminal delivery is not an idle/evictable native slot.
             // Include pending retirement and requests still owned by its queue.
             return max(Set(active.keys).union(pendingSubmissionIDs).count,

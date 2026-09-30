@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/eigeninference/d-inference/coordinator/mediawork"
 )
 
 const (
@@ -20,6 +22,7 @@ type ProvisionerConfig struct {
 }
 
 type ProvisionStatus struct {
+	MediaProfile         *mediawork.Profile `json:"-"`
 	ModelID              string
 	PromptContractID     string
 	ModelAggregateSHA256 string
@@ -268,7 +271,11 @@ func (p *Provisioner) run(ctx context.Context, generation uint64, manifests []Ma
 				if errors.Is(err, context.Canceled) && ctx.Err() == nil {
 					contractPath, err = p.cache.Ensure(ctx, manifest)
 				}
-				p.record(generation, manifest.ModelID, contractPath, err)
+				var mediaProfile *mediawork.Profile
+				if err == nil {
+					mediaProfile = p.cache.mediaProfile(manifest)
+				}
+				p.record(generation, manifest.ModelID, contractPath, mediaProfile, err)
 			}
 		}()
 	}
@@ -285,7 +292,7 @@ func (p *Provisioner) run(ctx context.Context, generation uint64, manifests []Ma
 	workers.Wait()
 }
 
-func (p *Provisioner) record(generation uint64, modelID, contractPath string, err error) {
+func (p *Provisioner) record(generation uint64, modelID, contractPath string, mediaProfile *mediawork.Profile, err error) {
 	p.mu.Lock()
 	if generation != p.generation {
 		p.mu.Unlock()
@@ -297,6 +304,7 @@ func (p *Provisioner) record(generation uint64, modelID, contractPath string, er
 		return
 	}
 	status.Path = contractPath
+	status.MediaProfile = mediaProfile
 	status.ArtifactReady = err == nil
 	if err != nil && !errors.Is(err, context.Canceled) {
 		status.LastError = boundedStatusError(err.Error())

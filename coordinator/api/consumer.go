@@ -1994,6 +1994,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	stream, _ := parsed["stream"].(bool)
 	estimatedPromptTokens := shape.routingPromptTokens(parsed)
+	estimatedPromptTokens = s.mediaPromptTokens(r.Context(), publicModel, model, parsed, estimatedPromptTokens)
 	billingPromptTokens := shape.billingPromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
 	deadline, deadlineErr := s.requestFirstContentDeadline(r, publicModel, model, estimatedPromptTokens)
@@ -2140,8 +2141,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// reservation, and the catalog check, so network I/O is gated behind the
 	// cost gates: an authenticated but unfunded/over-quota request (or one for a
 	// nonexistent model) can never drive coordinator-side fetches. The token &
-	// routing estimates above count media parts flatly (300/1500 per part), so
-	// they don't need the inlined bytes. The billing reservation is refunded on
+	// routing estimates above can inspect already-inline metadata; unresolved
+	// URLs keep legacy per-part estimates until the post-fetch recount below.
+	// The billing reservation is refunded on
 	// any failure, and topped up below on success — it was taken while the media
 	// was still a ~100-byte URL. parsed is mutated in place, so every view
 	// derived from the pre-inline body is refreshed via refreshForwardBody.
@@ -2222,6 +2224,23 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if mediaInlined {
 		if !refreshForwardBody(rawBody, model) {
 			return
+		}
+		// URLs were cost-gated before fetching. Recount the now-inline media
+		// from the original flat estimate, never adding the same image twice.
+		// A larger input charge must pass both token limiters before dispatch.
+		updatedTokens := s.mediaPromptTokens(r.Context(), publicModel, model, parsed, shape.routingPromptTokens(parsed))
+		if updatedTokens > estimatedPromptTokens && !s.applyTokenRateLimit(w, r, updatedTokens-estimatedPromptTokens, 0) {
+			refundReservation()
+			return
+		}
+		if updatedTokens != estimatedPromptTokens {
+			estimatedPromptTokens = updatedTokens
+			if deadline > 0 {
+				// Only concrete models reach improved media accounting. Keep the
+				// original receive instant: fetched time is never given back, and
+				// retries keep this reconciled request-absolute deadline.
+				deadline = s.FirstContentDeadline(model, estimatedPromptTokens)
+			}
 		}
 		// The reservation was taken against a body where the image was a short
 		// URL, so estimateBillingPromptTokens — the guaranteed len(bytes) >= tokens
@@ -2730,6 +2749,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 
 	stream, _ := parsed["stream"].(bool)
 	estimatedPromptTokens := estimatePromptTokens(parsed)
+	estimatedPromptTokens = s.mediaPromptTokens(r.Context(), publicModel, model, parsed, estimatedPromptTokens)
 	billingPromptTokens := estimateBillingPromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
 	genericDeadline, deadlineErr := s.requestFirstContentDeadline(r, publicModel, model, estimatedPromptTokens)

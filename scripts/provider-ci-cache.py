@@ -82,7 +82,9 @@ def toolchain_metadata(lane: str) -> dict:
     try:
         os.environ.update(selected)
         metadata = identity.toolchain_metadata("qualification" if lane == "parity" else "release")
-        metadata["swift"]["invocation"] = identity.external_file(invocation)
+        # RUNNER_TEMP changes between machines. The known symlink always
+        # invokes this source file; the outer cache key already binds checkout.
+        metadata["swift"]["invocation"] = identity.external_file(SWIFT_WRAPPER if wrapped else invocation)
         # fetch-metallib.sh uses xcrun's macosx SDK, which can differ from an
         # explicit SDKROOT used by the Swift build.
         metadata["metallib_sdk"] = identity.sdk_metadata(metal_sdk)

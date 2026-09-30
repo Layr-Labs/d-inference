@@ -435,9 +435,24 @@ class ToolchainSelectionTests(unittest.TestCase):
                 for lane in cache.LANE_PURPOSES:
                     metadata = cache.toolchain_metadata(lane)
                     self.assertEqual(metadata["swift"]["binary"]["path"], "/selected/usr/bin/swift")
-                    self.assertEqual(metadata["swift"]["invocation"]["path"], str(invocation))
+                    self.assertEqual(metadata["swift"]["invocation"]["path"], str(cache.SWIFT_WRAPPER))
                     self.assertEqual(metadata["sdk"]["path"], "/selected/SDKs/MacOSX.sdk")
                     self.assertEqual(dict(os.environ), previous)
+
+    def test_repository_wrapper_temporary_paths_do_not_change_identity(self):
+        with tempfile.TemporaryDirectory(prefix="swift-wrapper-paths-") as temporary:
+            os.environ.update({"PROVIDER_SWIFT": "/selected/usr/bin/swift",
+                               "PROVIDER_SDKROOT": "/selected/SDKs/MacOSX.sdk"})
+            results = []
+            for name in ("runner-a", "runner-b"):
+                invocation = Path(temporary) / name / "swift"
+                invocation.parent.mkdir()
+                invocation.symlink_to(cache.SWIFT_WRAPPER)
+                self.which.return_value = str(invocation)
+                with patch.object(identity, "toolchain_metadata", return_value={"swift": {}}):
+                    results.append(cache.toolchain_metadata("provider"))
+            self.assertEqual(results[0], results[1])
+            self.assertEqual(results[0]["swift"]["invocation"]["path"], str(cache.SWIFT_WRAPPER))
 
     def test_repository_wrapper_requires_selection_and_rejects_recursion(self):
         self.which.return_value = str(cache.SWIFT_WRAPPER)

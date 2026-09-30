@@ -431,19 +431,48 @@ jobs:
           xcrun llvm-cov report "${args[@]}" > "$out/provider-coverage.txt"
           tail -n 1 "$out/provider-coverage.txt"
           xcrun llvm-cov export -summary-only "${args[@]}" > "$out/provider-coverage.json"
-          # Read each total by its field name; fail when one is missing.
-          read -r lines regions functions < <(python3 - "$out/provider-coverage.json" <<'PY'
+          # One row for the code that serves requests (the product), one each
+          # for the CLI and the benchmark harness, and the total of all files.
+          # Each value is read by its field name; a missing field or an empty
+          # row fails the step.
+          python3 - "$out/provider-coverage.json" "$PWD/Sources" \
+            > "$out/provider-coverage-summary.md" <<'PY'
           import json, sys
-          totals = json.load(open(sys.argv[1]))["data"][0]["totals"]
-          print(" ".join(f'{totals[k]["percent"]:.2f}%' for k in ("lines", "regions", "functions")))
+          data = json.load(open(sys.argv[1]))["data"][0]
+          root = sys.argv[2].rstrip("/") + "/"
+          rows = [
+              ("Provider (Swift) product", ["ProviderCore", "ProviderCoreFoundation", "ProviderAppAttest", "DarkbloomFanCore"]),
+              ("Provider CLI (`darkbloom`)", ["darkbloom"]),
+              ("Provider benchmark (`ProviderBenchmark`)", ["ProviderBenchmark"]),
+          ]
+          kinds = ("lines", "regions", "functions")
+          sums = {name: {k: [0, 0] for k in kinds} for name, _ in rows}
+          seen = set()
+          for entry in data["files"]:
+              target = entry["filename"].removeprefix(root).split("/")[0]
+              seen.add(target)
+              for name, targets in rows:
+                  if target in targets:
+                      for k in kinds:
+                          sums[name][k][0] += entry["summary"][k]["covered"]
+                          sums[name][k][1] += entry["summary"][k]["count"]
+          sums["Provider (Swift) total"] = {k: [data["totals"][k]["covered"], data["totals"][k]["count"]] for k in kinds}
+          print("| Component | Statements or Lines | Regions or Branches | Functions | Target |")
+          print("|---|---|---|---|---|")
+          for name, s in sums.items():
+              if s["lines"][1] == 0:
+                  sys.exit(f"No lines for {name}")
+              lines, regions, functions = (f"{100 * c / n:.2f}%" for c, n in (s[k] for k in kinds))
+              print(f"| {name} | {lines} of {s['lines'][1]:,} lines | {regions} regions | {functions} | 80% (report-only) |")
+          grouped = {t for _, targets in rows for t in targets}
+          other = ", ".join(f"`{t}`" for t in sorted(seen - grouped, key=str.lower))
+          print()
+          print("The product row counts the code that serves requests: `ProviderCore`, `ProviderCoreFoundation`, `ProviderAppAttest` and `DarkbloomFanCore`. "
+                f"The CLI and the benchmark harness have their own rows. The total counts every file in the report. These targets are only in the total: {other}.")
           PY
-          )
-          test -n "$functions"
-          echo "Provider (Swift) coverage: lines $lines, regions $regions, functions $functions"
+          cat "$out/provider-coverage-summary.md"
           {
-            echo "| Component | Statements or Lines | Regions or Branches | Functions | Target |"
-            echo "|---|---|---|---|---|"
-            echo "| Provider (Swift) | $lines lines | $regions regions | $functions | 80% (report-only) |"
+            cat "$out/provider-coverage-summary.md"
             echo
             echo "Denominator: Swift lines and regions in \`provider-swift/Sources\`, from every provider test process in this job; the nested \`libs/mlx-swift-lm\` suites run in another package and do not count."
             echo
@@ -457,6 +486,7 @@ jobs:
           path: |
             ${{ runner.temp }}/provider-coverage/provider-coverage.txt
             ${{ runner.temp }}/provider-coverage/provider-coverage.json
+            ${{ runner.temp }}/provider-coverage/provider-coverage-summary.md
           if-no-files-found: error
           retention-days: 14
 

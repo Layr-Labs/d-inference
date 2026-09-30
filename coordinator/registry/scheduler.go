@@ -798,6 +798,7 @@ func (r *Registry) commitProviderReservation(
 		candidate.firstContent.ExpectedMs != selected.firstContent.ExpectedMs ||
 		candidate.firstContent.ConservativeMs != selected.firstContent.ConservativeMs ||
 		candidate.firstContent.Status != selected.firstContent.Status ||
+		firstContentEvidenceExplorable(candidate) != firstContentEvidenceExplorable(selected) ||
 		candidate.firstContent.ServiceMs != selected.firstContent.ServiceMs ||
 		candidate.costMs != selected.costMs ||
 		candidate.breakdown.CacheDiscountMs != selected.breakdown.CacheDiscountMs ||

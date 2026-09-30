@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased — first-content evidence exploration
+
+- Let an idle, loaded provider compete beside feasible peers after the 5-minute measurement-age threshold, using connection age when measurements are undated. This breaks the evidence-first exclusion of newly connected and long-idle providers without guaranteeing selection or measurement recovery. Hedge and fresh-feasible requests still require feasible evidence.
+- Treat outstanding service-retirement leases and reported service usage as busy even when slot counters are idle, and recheck exploration eligibility at atomic reservation. Older providers can still qualify using their existing slot telemetry.
+
 ## Unreleased — CI and contributor workflow
 
 - Separate prerequisite-dependent MiMo qualification from ordinary provider tests, retaining required prepared-fixture checks and explicit qualification gaps. Normalize the rollback test's filesystem identity and synchronize the zombie-stream timing test with the initial cancellation.

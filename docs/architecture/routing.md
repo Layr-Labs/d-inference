@@ -642,7 +642,11 @@ onto the formerly cheapest provider), the admit re-check
 (`tryClaimCapacityProbe`, check-and-claim under `gate.mu`) and the pending
 debit (`addPendingLocked`). `ReserveNextFromPlan`
 (`coordinator/registry/dispatch_plan.go`) commits each plan entry the same
-way. `commitLock` (`coordinator/registry/gate_commit_mode.go`) selects the
+way. The comparison also rechecks the [idle evidence-exploration
+exception](first-content-routing.md#prediction-and-freshness): newly reported
+service or an unretired terminal lease forces a rescan even if pending counts
+and numeric forecasts have not changed.
+`commitLock` (`coordinator/registry/gate_commit_mode.go`) selects the
 mode: `reserveCommitShared` as described, or `reserveCommitGlobal`, which
 takes `r.mu.Lock()` for the commit — the previous fleet-wide serialization,
 kept as the kill switch behind

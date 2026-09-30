@@ -31,7 +31,13 @@ func firstContentEvidenceExplorable(c *routingCandidate) bool {
 	default:
 		return false
 	}
-	s := &c.snapshot
+	return firstContentIdleEvidenceGap(&c.snapshot)
+}
+
+// firstContentIdleEvidenceGap is the provider-state half of
+// firstContentEvidenceExplorable. The model is loaded, the Mac is idle, and
+// the evidence gap has reached the exploration bound.
+func firstContentIdleEvidenceGap(s *routingSnapshot) bool {
 	return s.modelLoaded && s.wholeMacWorkKnown && !s.wholeMacBusy && s.partialPrefillRows == 0 &&
 		s.totalPending == 0 && s.evidenceGapAgeMs >= 0 &&
 		time.Duration(s.evidenceGapAgeMs)*time.Millisecond >= firstContentEvidenceExplorationAfter

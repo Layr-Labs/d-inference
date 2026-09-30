@@ -62,6 +62,7 @@ func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider
 	snap.modelLoaded = slotStateModelLoaded(snap.slotState)
 	snap.availableOnDisk = !snap.modelLoaded
 	snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
+	snap.fleetMedianPrefillTPS = r.tpsRegistry.PrefillMedian(model, p.Hardware.ChipFamily)
 
 	// Gray-box budget clamp (budget_clamp.go): when a capacity-503 has proven
 	// the pair's live gate is rejecting, admission must not believe the
@@ -84,4 +85,6 @@ func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider
 		snap.deadlineProfile = nil
 	}
 	r.fillFirstContentSnapshot(snap, p, now)
+	snap.explorationAdmitted = firstContentExplorationAdmitted(snap)
+	snap.decodeEvidenceAgeMs, snap.prefillEvidenceAgeMs = firstContentRateAgesMs(p, model, now)
 }

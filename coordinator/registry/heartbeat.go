@@ -382,6 +382,9 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 					r.tpsRegistry.RecordSolo(slot.Model, chipClass, slot.ObservedDecodeTPS)
 				}
 			}
+			if prefill, ok := slotIsolatedPrefillTPS(&slot); ok {
+				r.tpsRegistry.RecordPrefill(slot.Model, chipFamily, prefill)
+			}
 		}
 	}
 	// Credit wall-clock time since the previous heartbeat as provider uptime.

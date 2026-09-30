@@ -245,7 +245,7 @@ jobs:
         timeout-minutes: 5
         env:
           MIMO_V26_SERIAL_NATIVE_TESTS: '1'
-        run: ../scripts/run-nested-suite.sh 'MiMoV26ManagedSlotTests.testNativeMemoryAdmission|MiMoV26NativeLoadTransactionTests.testNativeShutdownActivitySurvivesPendingHostUntilRealQuiescentDrain' --no-parallel
+        run: ../scripts/run-nested-suite.sh 'testNativeMemoryAdmission|testNativeShutdownActivitySurvivesPendingHostUntilRealQuiescentDrain' --no-parallel
       - name: Run isolated native MiMo complete-prefix gates
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
         working-directory: provider-swift

@@ -68,6 +68,11 @@ shrink/grow, fleet clamping and new-slot refusal, plus
 `MiMoV26NativeLoadTransactionTests.testNativeShutdownActivitySurvivesPendingHostUntilRealQuiescentDrain`
 for pending occupancy and second-request refusal. It reuses the built test
 bundle and generated symmetric fixture; no fake native completion is issued.
+The same step runs
+`MiMoV26StandaloneLifecycleTests.testNativeMemoryAdmissionReserveRaiseUsesWorkspaceFloor`
+against an actual local MiMo owner. It checks that local load/reserve preflights
+retain the engine's fixed workspace floor and leave its live grant unchanged
+when a proposed reserve raise would strand it.
 
 The same native suite holds an actual pre-submit caller while the SDK becomes
 quiescent: whole-Mac forecast invalidation must remain owned until that caller

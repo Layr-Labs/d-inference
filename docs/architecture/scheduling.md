@@ -247,6 +247,10 @@ allowance for existing slots. The new native contiguous engine is checked
 against the same floor before publication. Ordinary engines keep their existing
 floor. These are provider-side changes; the coordinator's existing per-model
 concurrency and token-budget checks consume the corrected heartbeat.
+The standalone/local server applies the same per-engine minimum to native and
+ordinary newcomer loads and serving-set reserve raises through
+`StandaloneServer.resliceKeepsSlotsServiceable`
+(`provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift`).
 
 **Memory fallback** for slots without a token budget: a resident model needs
 no weight memory; a non-resident one needs `modelSizeGB` plus the request's

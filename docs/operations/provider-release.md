@@ -10,6 +10,13 @@ re-downloads artifacts and requires independent App Attest qualification before
 activating a production release. Staging/publication failures retry the retained
 artifact; GitHub and R2 publication are separate recoverable steps.
 
+The macOS signing and older-OS smoke jobs install the checksum-pinned GitHub CLI
+with `scripts/install-macos-github-cli.sh` before downloading retained artifacts.
+A `gh: command not found` error in an older run is runner setup failure before
+artifact verification, not a failed model test or notarization rejection. A
+retry of that old workflow still uses its original source; merge the bootstrap
+fix and follow the release tag policy for a new run.
+
 The prepared version is **0.9.13**. Its MiMo memory-admission changes are
 collected in [`CHANGELOG.md`](../../CHANGELOG.md). Qualify the signed build
 on a 256 GiB host both with MiMo alone and with another model resident:

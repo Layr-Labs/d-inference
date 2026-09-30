@@ -223,6 +223,9 @@ jobs:
         with:
           python-version: '3.12.10'
 
+      - name: Install pinned GitHub CLI
+        run: ./scripts/install-macos-github-cli.sh
+
       - name: Validate release version integrity
         run: ./scripts/check-release-version.sh "$VERSION"
 
@@ -1013,6 +1016,8 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      - name: Install pinned GitHub CLI
+        run: ./scripts/install-macos-github-cli.sh
       - name: Verify and smoke the exact signed validation artifact
         env:
           GH_TOKEN: ${{ github.token }}

@@ -13,6 +13,12 @@ with the pinned `Homebrew/actions/setup-homebrew` action before installing
 Homebrew when the runner image does not provide it; the job no longer depends
 on GitHub-hosted image defaults.
 
+macOS jobs that download artifacts, verify source signatures through the
+GitHub API, or post benchmark results run `scripts/install-macos-github-cli.sh`
+first. It installs the pinned official Apple Silicon CLI archive into a fresh
+runner-temporary directory, verifies its SHA-256 before extraction, and exports
+its binary path. It does not depend on Homebrew or the runner's preinstalled CLI.
+
 Coordinator CI builds the adversarial-number test once without instrumentation
 for its enforced performance budget, then builds the full suite with race
 detection and atomic coverage. See [numeric parsing tests](test.md#adversarial-numeric-parsing)

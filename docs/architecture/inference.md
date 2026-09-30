@@ -699,6 +699,36 @@ before ImageIO parsing or AVFoundation asset reads; SDK callers without a
 separate ceiling default to their declared working-byte limit. Raster/frame
 and owned-reservation checks remain additional gates.
 
+In 0.9.13, native MiMo's decode charge is **retained owners and RGB results +
+the largest sequential decode transient**. `MiMoV26MediaDecodeMemory` sums
+retained bytes and takes the maximum scratch from the SDK's
+`MiMoV26VisualDecodeMemory`. Images retain 12 bytes/pixel (planar Float RGB) and
+allow 20 bytes/pixel + 1 MiB scratch. Video retains only sampled Float RGB,
+encoded ownership and bounded frame/control metadata; its transient is one
+32 bytes/pixel + 1 MiB allowance, not that amount times every source frame.
+ImageIO and each AVAssetReader iteration drain an autorelease pool. Video BGRA
+is read directly under a read-only buffer lock, with actual row-stride checks,
+into the retained Float output. No extra Data/CGImage/CFData raster chain is made.
+A 300-frame 1080p clip sampled to 20 frames consequently needs about 0.53 GiB
+of visual decode allowance, excluding encoded bytes, rather than about 19 GiB.
+
+Native preparation also uses the actual pixel working-byte calculation shared
+with `MiMoV26Pixels.prepare`, rather than reserving
+`limits.pixels.maximumWorkingBytes` (a ceiling that can approach physical RAM).
+The maximum actual pixel workload remains charged alongside conservative
+retained decoded/patch/feature amounts. Video attention scores are bounded per
+temporal grid (`gridT * (gridH * gridW)^2 * queryHeads * 16`), matching the
+separate frame attention calls. The lazy graph's full depth multiplier and
+allocator node rounding remain charged.
+
+This is application-owned decode accounting, not a claimed bound on private
+AVFoundation codec pools. The same process ledger, system headroom, activation
+reserve, native feature/KV charge, limits and ownership-until-retirement gates
+remain mandatory. Pixel preprocessing separately prices every retained RGB
+input and output patch. Base64 transport size is not used as KV tokens; its
+bounded encoded owners/copies remain charged before decoding. Audio and
+unsupported representation policies are unchanged.
+
 The SDK's `MemoryBackedVideoAsset` derives both its resource-loader type and
 in-memory URL suffix from the validated container. QuickTime uses `.mov`, MP4
 uses `.mp4`; neither path writes the payload to disk. AVFoundation also consults

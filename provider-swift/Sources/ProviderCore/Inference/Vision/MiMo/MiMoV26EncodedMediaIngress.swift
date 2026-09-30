@@ -212,7 +212,7 @@ enum MiMoV26EncodedMediaIngress {
             maximumBuffers:min(4096,native.maximumMetadataNodes))
         var imageCount = 0, videoCount = 0, audioCount = 0, totalAudioFrames = 0
         var totalImagePixels = 0, totalVideoPixels = 0, totalRGBPixels = 0
-        var decodeBytes = plan.hostBytes
+        var decodeMemory = MiMoV26MediaDecodeMemory(hostBytes: plan.hostBytes)
         var messages: [ReadyMessage] = []
         for message in plan.messages {
             var parts: [ReadyPart] = []
@@ -233,7 +233,7 @@ enum MiMoV26EncodedMediaIngress {
                     let (rgb,overflowRGB) = totalRGBPixels.addingReportingOverflow(pixels)
                     guard !overflowRGB, rgb <= native.pixels.maximumInputElements / 3 else { throw refusal() }
                     totalRGBPixels = rgb
-                    decodeBytes = try add(decodeBytes,try multiply(UInt64(pixels),32))
+                    try decodeMemory.includeVisual(.image(pixels: pixels))
                     parts.append(.image(data,pixels))
                 case .video(let uri):
                     videoCount += 1
@@ -251,7 +251,7 @@ enum MiMoV26EncodedMediaIngress {
                     let (rgb,overflowRGB) = totalRGBPixels.addingReportingOverflow(pixels)
                     guard !overflowPixels, !overflowRGB, rgb <= native.pixels.maximumInputElements / 3 else { throw refusal() }
                     totalRGBPixels = rgb
-                    decodeBytes = try add(decodeBytes,UInt64(try video.decodeWorkingByteBound()))
+                    try decodeMemory.includeVisual(video.decodeMemory())
                     if video.hasAudioTrack {
                         guard plan.allowAudio else {
                             throw MiMoV26EncodedVisualDecoder.Failure.audioTrackRequiresAudiovisualProfile
@@ -265,7 +265,7 @@ enum MiMoV26EncodedMediaIngress {
                         let (sum,overflow) = totalAudioFrames.addingReportingOverflow(audiovisual.frameCount)
                         guard !overflow, sum <= native.audio.maximumInputSamples else { throw refusal() }
                         totalAudioFrames = sum
-                        decodeBytes = try add(decodeBytes,UInt64(audiovisual.audioWorkingByteBound))
+                        try decodeMemory.includeRetained(UInt64(audiovisual.audioWorkingByteBound))
                         parts.append(.audiovisual(audiovisual))
                     } else {
                         parts.append(.video(video))
@@ -286,7 +286,7 @@ enum MiMoV26EncodedMediaIngress {
                     let (sum,overflow) = totalAudioFrames.addingReportingOverflow(audio.frameCount)
                     guard !overflow, sum <= native.audio.maximumInputSamples else { throw refusal() }
                     totalAudioFrames = sum
-                    decodeBytes = try add(decodeBytes,UInt64(audio.decodedByteBound))
+                    try decodeMemory.includeRetained(UInt64(audio.decodedByteBound))
                     parts.append(.audio(audio))
                 }
             }
@@ -294,7 +294,8 @@ enum MiMoV26EncodedMediaIngress {
         }
         // Actual source geometry/counts are now known; grow the SAME charge
         // before ImageIO raster copies or decoded AV frame buffers are created.
-        try reservation.reserveDecodeWorkingBytes(decodeBytes)
+        // Retain every result, but only one image/frame decoder runs at a time.
+        try reservation.reserveDecodeWorkingBytes(decodeMemory.peakBytes)
         var decodedMessages: [MiMoV26MultimodalMessage] = []
         for message in messages {
             var content: [MiMoV26MultimodalContent] = []

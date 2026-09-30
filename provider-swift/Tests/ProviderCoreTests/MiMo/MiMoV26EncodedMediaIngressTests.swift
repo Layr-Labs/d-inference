@@ -141,10 +141,10 @@ final class MiMoV26EncodedMediaIngressTests: XCTestCase {
         }
     }
 
-    private func loaded(media: Bool = true) async throws -> Loaded {
+    private func loaded(media: Bool = true, mediaPolicy: MiMoV26ServingLoad.DecodedMediaPolicy? = nil) async throws -> Loaded {
         try lane()
         let root = try fixture()
-        let load = try XCTUnwrap(MiMoV26ServingLoad.inspect(directory: root, decodedMediaPolicy: media ? try policy() : nil))
+        let load = try XCTUnwrap(MiMoV26ServingLoad.inspect(directory: root, decodedMediaPolicy: media ? try mediaPolicy ?? policy() : nil))
         let registry = MiMoV26NativeLoadRegistry()
         registries.append(registry)
         // Preserve real allocator/OS observations and normal activation/OS/KV
@@ -197,11 +197,12 @@ final class MiMoV26EncodedMediaIngressTests: XCTestCase {
         return try XCTUnwrap(value as? EngineV2)
     }
 
-    private func policy(maximumBytes: UInt64 = 128 << 20) throws -> MiMoV26ServingLoad.DecodedMediaPolicy {
-        let limits = MiMoV26MultimodalLimits(maximumMedia: 4, maximumVideoFrames: 4,
+    private func policy(maximumBytes: UInt64 = 128 << 20, maximumVideoFrames: Int = 4,
+                        maximumInputElements: Int = 100000, pixelWorkingBytes: Int = 1 << 20) throws -> MiMoV26ServingLoad.DecodedMediaPolicy {
+        let limits = MiMoV26MultimodalLimits(maximumMedia: 4, maximumVideoFrames: maximumVideoFrames,
             maximumPromptTokens: 2000, maximumMetadataBytes: 65536,
             maximumMetadataNodes: 10000, maximumMetadataDepth: 32,
-            pixels: .init(maximumInputElements: 100000, maximumOutputElements: 100000, maximumWorkingBytes: 1 << 20),
+            pixels: .init(maximumInputElements: maximumInputElements, maximumOutputElements: 100000, maximumWorkingBytes: pixelWorkingBytes),
             vision: .init(maximumPatches: 256, maximumAttentionScoreElements: 131072),
             audio: .init(maximumClips: 1, maximumChannels: 2, maximumSampleRate: 48000,
                 maximumInputSamples: 100000, maximumResampledSamples: 100000,
@@ -214,9 +215,10 @@ final class MiMoV26EncodedMediaIngressTests: XCTestCase {
             additionalSystemReserveBytes: 4 << 30)
     }
 
-    private func published(mtp: Bool = false, media: Bool = true) async throws
+    private func published(mtp: Bool = false, media: Bool = true,
+                           mediaPolicy: MiMoV26ServingLoad.DecodedMediaPolicy? = nil) async throws
         -> (Loaded, ProviderEngineBundle, EngineV2) {
-        let value = try await loaded(media: media)
+        let value = try await loaded(media: media, mediaPolicy: mediaPolicy)
         let (intent, prepared) = try await prepare(value, mode: mtp ? .on : .off)
         let bundle = try await build(value, intent: intent, prepared: prepared)
         _ = try await value.load.sealConstructionForPublication()
@@ -306,6 +308,62 @@ final class MiMoV26EncodedMediaIngressTests: XCTestCase {
         XCTAssertEqual(actual.mtpMetricsSnapshot()?.draftedTokens,0,"all four actual media rows are target-only")
         try await drain(value,bundle,actual)
         for lease in owners.all { await lease.joinFromOutside() }
+    }
+
+    func testNativeMediaReleasePNGJPEGAndMP4GenerateThroughAuthenticatedRoutes() async throws {
+        // 900 source frames previously reserved > 84 MiB of raster scratch.
+        // The configured 230 GiB pixel ceiling was also charged as use even
+        // for a tiny image. Keep that ceiling and normal KV/OS floors, while
+        // the actual request's native graph and 20 sampled RGB frames fit 64 MiB.
+        let mediaPolicy = try policy(maximumBytes: 64 << 20, maximumVideoFrames: 32,
+            maximumInputElements: 1_000_000, pixelWorkingBytes: 230 << 30)
+        let (value, bundle, actual) = try await published(mtp: true, mediaPolicy: mediaPolicy)
+        let owners = Owners(), app = application(value, bundle, owners)
+        let png = "data:image/png;base64," + (try MiMoEncodedMediaFixtures.image(jpeg: false)).base64EncodedString()
+        let jpeg = "data:image/jpeg;base64," + (try MiMoEncodedMediaFixtures.image(jpeg: true)).base64EncodedString()
+        let mp4 = "data:video/mp4;base64," + (try await MiMoEncodedMediaFixtures.video(frames: 900, fps: 90)).base64EncodedString()
+        var requests: [(path: String, body: Data)] = []
+        for image in [png, jpeg] {
+            for responses in [false, true] {
+                requests.append((responses ? "/v1/responses" : "/v1/chat/completions",
+                    try body(responses: responses, stream: false, uri: image)))
+            }
+        }
+        // OpenRouter's documented video_url object, plus an image in the same
+        // request, exercises combined reservation and real visual inference.
+        var mixed = try XCTUnwrap(JSONSerialization.jsonObject(with: body(responses:false,stream:false)) as? [String:Any])
+        mixed["messages"] = [["role":"user","content":[
+            ["type":"image_url","image_url":["url":jpeg]],
+            ["type":"video_url","video_url":["url":mp4]],
+            ["type":"text","text":String(repeating:"x ",count:16)],
+        ]]]
+        requests.append(("/v1/chat/completions", try JSONSerialization.data(withJSONObject:mixed)))
+        let immutableRequests = requests
+        try await app.test(.router) { client in
+            for (index, request) in immutableRequests.enumerated() {
+                try await client.execute(uri:request.path, method:.post,
+                    headers:[.contentType:"application/json",.authorization:"Bearer synthetic-media-token"],
+                    body:ByteBuffer(bytes:request.body)) { result in
+                    XCTAssertEqual(result.status,.ok,"media request \(index): \(request.path)")
+                    let response = try XCTUnwrap(JSONSerialization.jsonObject(with:Data(result.body.readableBytesView)) as? [String:Any])
+                    XCTAssertNil(response["error"])
+                    let usage = try XCTUnwrap(response["usage"] as? [String:Any])
+                    if request.path == "/v1/responses" {
+                        XCTAssertEqual(response["status"] as? String,"completed")
+                        XCTAssertGreaterThan(try XCTUnwrap(usage["output_tokens"] as? Int),0)
+                    } else {
+                        XCTAssertGreaterThan(try XCTUnwrap(usage["completion_tokens"] as? Int),0)
+                        XCTAssertFalse(try XCTUnwrap(response["choices"] as? [Any]).isEmpty)
+                    }
+                }
+                for lease in owners.all { await lease.joinFromOutside() }
+            }
+        }
+        XCTAssertEqual(owners.acquisitions,5)
+        XCTAssertEqual(actual.mtpMetricsSnapshot()?.draftedTokens,0,"media remains target-only")
+        for lease in owners.all { await lease.joinFromOutside() }
+        XCTAssertEqual(value.transaction.managedMediaReservationCountForTesting,0)
+        try await drain(value,bundle,actual)
     }
 
     func testRealAuthenticatedIngressRefusesRemoteURIsBoundsAndUnsupportedControlsBeforeDecode() async throws {

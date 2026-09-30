@@ -4,6 +4,8 @@
 
 - Budget native MiMo grouped-prefill candidates across the configured concurrency, including fixed target rings, MTP workspace, the engine watermark and minimum useful KV space. Fall back to a smaller or ungrouped profile when the full reservation does not fit.
 - Reduce native MiMo concurrency after memory-grant shrinkage instead of reserving workspace for unavailable slots. Preserve retained engine reservations, enforce the same cap on provider submission, and refuse new loads or reserve raises that would strand an existing native engine below one serveable request.
+- Price native MiMo pixel preparation from actual request geometry rather than the machine-sized configured ceiling. Count video attention scores independently per temporal frame; preserve full lazy-graph, allocator, and native ownership safeguards.
+- Correct native MiMo image/video admission to charge all retained RGB plus the largest sequential decode workspace. Release temporary image/frame objects each iteration and convert video BGRA directly to RGB; video no longer reserves a decoded raster for every unsampled source frame. Preserve transport, pixel, native-workspace, KV and OS memory gates.
 - Align `ProviderCore.version` and the coordinator's latest-provider display fallback at `0.9.13`. The coordinator keeps enforcing reported token budgets and per-model concurrency; no admission bypass or production configuration change is included. Publication remains a separate operation.
 
 ## Unreleased — first-content evidence exploration

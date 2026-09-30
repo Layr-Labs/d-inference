@@ -246,6 +246,13 @@ jobs:
         env:
           MIMO_V26_SERIAL_NATIVE_TESTS: '1'
         run: ../scripts/run-nested-suite.sh 'testNativeMemoryAdmission|testNativeShutdownActivitySurvivesPendingHostUntilRealQuiescentDrain' --no-parallel
+      - name: Run isolated native MiMo media admission gates
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
+        working-directory: provider-swift
+        timeout-minutes: 5
+        env:
+          MIMO_V26_SERIAL_NATIVE_TESTS: '1'
+        run: ../scripts/run-nested-suite.sh 'testNativeMediaRelease|testAuthenticatedChatResponsesActuallyRouteEncodedImageThroughNativeBridge|testActualMemoryBackedVideoIndicesAndAuthenticatedNativeRoute|MiMoMediaDecodeMemoryTests' --no-parallel
       - name: Run isolated native MiMo complete-prefix gates
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
         working-directory: provider-swift
@@ -320,6 +327,11 @@ jobs:
       # safety and prompt-hash suites below used to run bare for exactly that
       # reason). Inline copies of a check whose failure mode is silence are
       # that many chances to edit one and miss the rest.
+      - name: Run nested MiMo visual decode tests
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        timeout-minutes: 5
+        run: ../../scripts/run-nested-suite.sh 'MiMoV26(VisualDecodeMemory|EncodedVisualDecoder)Tests|MiMoV26PixelsTests.test(RGB|Temporal|Invalid|Explicit)' --no-parallel
       - name: Run nested paged safety tests
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
         working-directory: libs/mlx-swift-lm

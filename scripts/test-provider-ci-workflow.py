@@ -30,6 +30,8 @@ MIMO_NATIVE_COMMANDS = {
         "../scripts/run-nested-suite.sh 'MiMoV26StandaloneLifecycleTests.test(ActualScannerPreloadStartsListenerWithSameNativeOwner|StartRefusesActualUnpublishedPreloadWithoutReplacingOwner)' --no-parallel",
     "Run isolated native MiMo memory admission gates":
         "../scripts/run-nested-suite.sh 'testNativeMemoryAdmission|testNativeShutdownActivitySurvivesPendingHostUntilRealQuiescentDrain' --no-parallel",
+    "Run isolated native MiMo media admission gates":
+        "../scripts/run-nested-suite.sh 'testNativeMediaRelease|testAuthenticatedChatResponsesActuallyRouteEncodedImageThroughNativeBridge|testActualMemoryBackedVideoIndicesAndAuthenticatedNativeRoute|MiMoMediaDecodeMemoryTests' --no-parallel",
     "Run isolated native MiMo complete-prefix gates":
         "../scripts/run-nested-suite.sh 'MiMoV26NativeLoadTransactionTests.testNativeCompletePrefix' --no-parallel",
     "Run isolated native MiMo retained-fault gate":
@@ -43,6 +45,8 @@ LANES = {
 SDK_COMMANDS = {
     "Verify DiffusionGemma artifact and expert reduction":
         "../../scripts/run-nested-suite.sh 'DiffusionGemma(ArtifactFixture|ExpertReduction)Tests' --no-parallel",
+    "Run nested MiMo visual decode tests":
+        "../../scripts/run-nested-suite.sh 'MiMoV26(VisualDecodeMemory|EncodedVisualDecoder)Tests|MiMoV26PixelsTests.test(RGB|Temporal|Invalid|Explicit)' --no-parallel",
     "Run nested paged safety tests":
         "../../scripts/run-nested-suite.sh CBv2PagedSafetyTests",
     "Run nested prompt-hash tests":

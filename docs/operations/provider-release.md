@@ -15,6 +15,11 @@ collected in [`CHANGELOG.md`](../../CHANGELOG.md). Qualify the signed build
 on a 256 GiB host both with MiMo alone and with another model resident:
 confirm a positive usable token budget, successful inference, bounded memory
 pressure, and correct concurrency reduction or load refusal when grants shrink.
+Include base64 PNG, EXIF JPEG, silent H.264 MP4 and combined image/video
+requests through the authenticated API. Compare 30- and 300-source-frame clips
+with the same sampled frame count; record actual peak process memory and usable
+KV headroom, and confirm terminal reservation cleanup. Local tiny-weight
+inference and decoder tests cover the path but do not qualify the full artifact.
 The source change does not itself establish those live-serving results.
 Cache rollout steps are in [`cache-routing-rollout.md`](cache-routing-rollout.md).
 The 0.9.10 rollout order below applies unchanged: the new inference-request

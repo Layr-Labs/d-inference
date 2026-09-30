@@ -117,7 +117,9 @@ runs:
         HELPER_SHA=$(shasum -a 256 scripts/fetch-metallib.sh | cut -d' ' -f1)
         SDK=$(xcrun --sdk macosx --show-sdk-version)
         XCODE=$(xcodebuild -version | tr -cs '[:alnum:].' '-')
-        echo "key=metallib-helper-v1-${MLX_SHA}-${HELPER_SHA}-${XCODE}-sdk${SDK}-dt${MLX_METALLIB_DEPLOYMENT_TARGET}-jitoff" >> "$GITHUB_OUTPUT"
+        METAL_COMPILER=$(xcrun --no-cache --sdk macosx --find metal)
+        METAL_SHA=$(shasum -a 256 "$METAL_COMPILER" | cut -d' ' -f1)
+        echo "key=metallib-helper-v2-${MLX_SHA}-${HELPER_SHA}-${METAL_SHA}-${XCODE}-sdk${SDK}-dt${MLX_METALLIB_DEPLOYMENT_TARGET}-jitoff" >> "$GITHUB_OUTPUT"
         echo "mlx_sha_short=${MLX_SHA:0:12}" >> "$GITHUB_OUTPUT"
     - name: Restore source-matched metallib cache
       id: metallib-cache

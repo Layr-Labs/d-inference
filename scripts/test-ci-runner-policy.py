@@ -31,7 +31,8 @@ class RunnerPolicyTests(unittest.TestCase):
         workflows = {name: policy.load(policy.ROOT / '.github/workflows' / name)
                      for name in ('ci.yml', 'integration.yml', 'benchmarks.yml',
                                   'provider-signing-validation.yml')}
-        for filename, job_name in (('ci.yml', 'test-provider'), ('ci.yml', 'cache-swift'),
+        for filename, job_name in (('ci.yml', 'test-provider'), ('ci.yml', 'test-provider-sdk'),
+                                   ('ci.yml', 'test-provider-parity'), ('ci.yml', 'cache-swift'),
                                    ('integration.yml', 'integration-tests')):
             with self.subTest(job=f'{filename}/{job_name}'):
                 job = workflows[filename]['jobs'][job_name]

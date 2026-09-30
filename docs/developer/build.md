@@ -28,7 +28,7 @@ The job also initializes the exact pinned `libs/mlx-swift-lm` submodule so
 model-support documentation links are checked against real SDK files.
 
 The MiMo Rust parser/planner and provider prompt regressions require public
-metadata, not model weights. Both CI jobs run
+metadata, not model weights. The sidecar, provider-unit and prompt-parity jobs run
 `scripts/prepare-mimo-prompt-fixtures.py`; follow the
 [pinned fixture procedure](mimo-prompt-fixtures.md) for local runs. Missing
 inputs fail rather than silently skipping assertions.
@@ -41,6 +41,9 @@ the symmetric 128-context fixture; the separate complete-prefix process uses
 native evaluation, model download, private corpus or verification receipt is
 needed to provision these files. See [MiMo provider CI tests](test.md#mimo-provider-ci-fixtures)
 for environment bindings and the isolated native selections.
+The provider-unit job retains all three native selections after its general
+suite. Each selection requires the successful shared build/Metal preparation
+and synthetic fixtures, and still runs if an earlier test fails.
 The SDK qualification lane in the shared release-build action provisions the
 same routine fixtures before its watchdog-driven provider tests. Release-only
 builds do not provision test fixtures or enable native qualification.
@@ -86,7 +89,8 @@ The [revision runbook](../operations/model-revisions.md) describes its invocatio
 ## CI runner trust boundary
 
 Routine PR and push checks run on Tenki: Linux jobs use
-`tenki-standard-medium-4c-8g`, and provider and E2E tests use
+`tenki-standard-medium-4c-8g`. The independent Provider Unit Tests, Provider SDK
+Tests, and Provider Prompt Parity lanes, plus E2E tests, use
 `tenki-macos-26-large` with
 `DEVELOPER_DIR=/Applications/Xcode_27.0.app/Contents/Developer`. These jobs
 have read-only GitHub permissions, do not reference GitHub secrets or attach
@@ -187,6 +191,44 @@ keys or notarized bundles.
 
 See the [release cache procedure](../operations/provider-release.md#prepare-and-check-release-caches)
 for first-run costs and rerun behavior.
+
+## Parallel Provider CI Builds
+
+The ordinary CI workflow runs provider tests, nested SDK correctness gates, and
+production prompt parity as three independent macOS jobs. Each job owns a
+separate checkout, build directory, GPU, and unified-memory allocator. No job
+waits for another job's test outcome. The nested SDK job still builds all of its
+test products; a provider test build does not compile a dependency's tests.
+The existing required `Provider Tests` check is a small aggregate gate: it fails
+unless the unit, SDK, and parity lanes all succeed, including skipped/cancelled
+lanes. It does not serialize their work or change branch-protection settings.
+
+`.github/actions/provider-ci-build/action.yml` builds each lane using
+`scripts/provider-ci-cache.py` (`keys`). Provider debug tests, SDK debug tests,
+and Swift/Rust parity have separate cache prefixes bound to the actual compiler,
+SDK, architecture, checkout path, recursive dependency pins, and CI build recipe.
+Each source commit names a generation. Content-verified timestamp restoration
+reuses only unchanged tracked source files; changed files retain fresh timestamps.
+Every cache hit still runs the full build and runtime-resource staging commands.
+
+The source-matched Metal cache is separate and shared only across compatible
+lanes. Its key binds the native MLX pin, Xcode/SDK identity, the independently
+downloaded Metal compiler version and bytes, helper contract, and
+deployment target. Restored runtime bundles and metallibs are discarded before
+building; `scripts/stage-test-metallib.sh` invokes the validating source builder
+and stages the library beside the actual test runner and inside its resource
+bundle. A cache hit is not permission to skip these checks.
+
+Successful build jobs save their debug objects before assertions run, so an
+unrelated test failure does not force a complete rebuild on the next attempt.
+The parity job cleans local Rust products and saves its Cargo cache only after
+the real tokenizer/vector/load-proof script succeeds. The push-only release
+cache job no longer duplicates the SDK debug-test build. These caches contain
+unsigned build products, not release artifacts or signing material.
+
+Parallel speedup requires capacity for three concurrent macOS runners. More
+jobs queued behind a provider quota do not shorten the critical path. See
+[provider CI tests](test.md#parallel-provider-ci) for execution gates and validation.
 
 ## Prerequisites
 

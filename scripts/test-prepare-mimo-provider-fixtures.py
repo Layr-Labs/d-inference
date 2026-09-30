@@ -111,7 +111,7 @@ class ProviderFixtureTests(unittest.TestCase):
 
     def test_provider_job_provisions_prompt_and_tiny_inputs_before_tests(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text().split("  test-provider:", 1)[1]
-        workflow = workflow.split("  cache-swift:", 1)[0]
+        workflow = workflow.split("  test-provider-sdk:", 1)[0]
         run = workflow.index("run: ../scripts/run-provider-tests.sh")
         for command in ("scripts/prepare-mimo-prompt-fixtures.py", "scripts/prepare-mimo-provider-fixtures.py"):
             self.assertLess(workflow.index(command), run)
@@ -121,8 +121,7 @@ class ProviderFixtureTests(unittest.TestCase):
             step = step.split("      - name:", 1)[0]
             self.assertIn("!cancelled()", step)
             self.assertIn("steps.mimo-fixtures.outcome == 'success'", step)
-            self.assertIn("steps.build-provider-tests.outcome == 'success'", step)
-            self.assertIn("steps.place-provider-metallib.outcome == 'success'", step)
+            self.assertIn("steps.provider-ci-build.outcome == 'success'", step)
             self.assertIn("../scripts/run-nested-suite.sh", step)
             self.assertIn("--no-parallel", step)
             self.assertNotIn("continue-on-error", step)

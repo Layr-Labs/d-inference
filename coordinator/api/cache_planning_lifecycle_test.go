@@ -137,7 +137,9 @@ func TestCachePlanningRetryAndHedgeUseOneDecision(t *testing.T) {
 			t.Run(fmt.Sprintf("hedge=%t/%s", hedge, endpoint), func(t *testing.T) {
 				config := ServerConfig{}
 				if hedge {
-					config.FirstContentDeadlineBase = 600 * time.Millisecond
+					// Leave the current speculative gate enough residual budget for a
+					// fresh feasible backup after the primary speculation delay.
+					config.FirstContentDeadlineBase = 3 * time.Second
 				}
 				reg, st, s, transport := setupTTFTFailoverServerWithConfig(t, config)
 				t.Cleanup(s.Close)
@@ -180,6 +182,11 @@ func TestCachePlanningRetryAndHedgeUseOneDecision(t *testing.T) {
 					capability.CacheEpoch = []string{"11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"}[i]
 					if err := reg.UpdatePrefixCacheCapabilities(fp.registryID, 2, []protocol.PrefixCacheV2Capability{capability}); err != nil {
 						t.Fatal(err)
+					}
+				}
+				if hedge {
+					for _, fp := range providers {
+						reportIdleFirstContentEvidence(reg, fp.registryID, model)
 					}
 				}
 				reg.SetModelAliases(map[string]registry.AliasTarget{alias: {Desired: model}})
@@ -280,7 +287,7 @@ func TestCachePlanningQueuedRequestUsesOneDecision(t *testing.T) {
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				status, body, err := postGenericInference(ctx, transport.URL, endpoint, cachePlanningEndpointBody(model, endpoint, true))
+				status, body, err := postGenericInference(ctx, transport.URL, endpoint, cachePlanningEndpointBody(model, endpoint, true), "prefer")
 				results <- response{status, body, err}
 			}()
 			defer func() {

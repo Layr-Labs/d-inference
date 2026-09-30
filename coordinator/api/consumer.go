@@ -2902,10 +2902,10 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	if preflightHandled {
 		return
 	}
-	cachePlan := registry.CachePlan{}
 	// Response framing is determined by the caller-facing endpoint, never by
 	// whether its request shape could be lowered for cache participation.
 	consumerEndpoint, requestedStopSequences := genericResponseMetadata(endpoint, parsed)
+	var cachePlan registry.CachePlan
 	if loweringErr == nil {
 		cachePlan = cachePlans.forBody(model, inferenceBody)
 	} else {
@@ -2913,6 +2913,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		// inference rejection. Preserve the existing generic endpoint behavior
 		// for unsupported shapes while declining cache participation.
 		inferenceBody = endpointBody
+		s.emitCachePlanningDecision(s.cacheModelLabel(model), cachePlanningLoweringUnsupported, 0)
 	}
 
 	// Generic endpoints use the same dispatch state machine as chat. This keeps

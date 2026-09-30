@@ -11,13 +11,16 @@ use serde::Serialize;
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Instant;
 use thiserror::Error;
 use tokenizers::Tokenizer;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
 mod preloading;
+mod readiness;
+#[cfg(test)]
+mod readiness_tests;
+use readiness::ReadinessGate;
 
 #[derive(Clone)]
 pub struct Planner {
@@ -26,7 +29,9 @@ pub struct Planner {
     tokenizers: Arc<SingleflightLru<Tokenizer, artifacts::ArtifactError>>,
     permits: Arc<Semaphore>,
     preload_lock: Arc<Mutex<()>>,
-    readiness: Arc<AtomicU8>,
+    readiness: Arc<ReadinessGate>,
+    #[cfg(test)]
+    test_hooks: Arc<readiness_tests::Hooks>,
     metrics: Arc<Metrics>,
     max_concurrency: u32,
     max_tokens: usize,
@@ -100,7 +105,9 @@ impl Planner {
             tokenizers: Arc::new(SingleflightLru::new_weak(max_loaded_contracts)),
             permits: Arc::new(Semaphore::new(max_concurrency)),
             preload_lock: Arc::new(Mutex::new(())),
-            readiness: Arc::new(AtomicU8::new(Readiness::Ready as u8)),
+            readiness: Arc::new(ReadinessGate::new()),
+            #[cfg(test)]
+            test_hooks: Arc::new(readiness_tests::Hooks::default()),
             metrics: Arc::new(Metrics::default()),
             max_concurrency: max_concurrency_u32,
             max_tokens,
@@ -108,15 +115,11 @@ impl Planner {
     }
 
     pub fn mark_starting(&self) {
-        self.set_readiness(Readiness::Starting);
+        self.readiness.mark_starting();
     }
 
     pub fn readiness(&self) -> Readiness {
-        match self.readiness.load(Ordering::Acquire) {
-            value if value == Readiness::Ready as u8 => Readiness::Ready,
-            value if value == Readiness::Degraded as u8 => Readiness::Degraded,
-            _ => Readiness::Starting,
-        }
+        self.readiness.status()
     }
 
     pub fn status(&self) -> PlannerStatus {
@@ -142,10 +145,6 @@ impl Planner {
         self.metrics.plan_timed_out(elapsed);
     }
 
-    fn set_readiness(&self, readiness: Readiness) {
-        self.readiness.store(readiness as u8, Ordering::Release);
-    }
-
     pub async fn plan(&self, request: PlanRequest) -> Result<PlanResponse, PlanError> {
         Ok(self.plan_with_tokens(request).await?.response)
     }
@@ -166,7 +165,7 @@ impl Planner {
     async fn plan_with_tokens(&self, request: PlanRequest) -> Result<Planned, PlanError> {
         let started = Instant::now();
         self.metrics.plan_started();
-        if self.readiness() != Readiness::Ready {
+        if !self.readiness.allows(&request.prompt_contract_id) {
             self.metrics.plan_not_ready(started.elapsed());
             return Err(PlanError::NotReady);
         }
@@ -174,6 +173,10 @@ impl Planner {
             self.metrics.plan_finished(started.elapsed(), false);
             return Err(PlanError::InvalidScope);
         }
+        #[cfg(test)]
+        self.test_hooks
+            .before_plan_permit(&request.prompt_contract_id)
+            .await;
         let permit = match self.permits.clone().try_acquire_owned() {
             Ok(permit) => permit,
             Err(_) => {
@@ -181,6 +184,13 @@ impl Planner {
                 return Err(PlanError::AtCapacity);
             }
         };
+        // An early check can race replacement before we own a worker permit.
+        // Once this check succeeds, the exclusive preload waits for this plan.
+        if !self.readiness.allows(&request.prompt_contract_id) {
+            drop(permit);
+            self.metrics.plan_not_ready(started.elapsed());
+            return Err(PlanError::NotReady);
+        }
         let planner = self.clone();
         let result =
             match tokio::task::spawn_blocking(move || planner.plan_sync(request, permit)).await {
@@ -209,6 +219,9 @@ impl Planner {
         // before lowering or normalization can discard the input evidence;
         // ordinary provider serving remains available without a cache plan.
         render::validate_request_input_before_contract(&request.body).map_err(PlanError::Render)?;
+        #[cfg(test)]
+        self.test_hooks
+            .before_plan_load(&request.prompt_contract_id);
         let (contract, _) = self.load_contract(&request.prompt_contract_id)?;
         let model_type = contract
             .model_config

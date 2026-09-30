@@ -2421,6 +2421,11 @@ The script, in order:
    (`PROMPT_LOAD_PROOF_DURATION`, `PROMPT_LOAD_PROOF_QPS`,
    `PROMPT_LOAD_PROOF_MAX_RSS_MIB` tune the run), failing on any plan mismatch,
    timeout, overload, restart, child replacement or RSS escape.
+   The cold-start phase rotates explicit one-contract preload sets through an
+   undersized LRU, then runs concurrent plans only after acknowledgement. It
+   checks every cold load and eviction, exact plans, bounded RSS and a stable
+   child. It does not bypass production membership to force lazy planning;
+   concurrent cold singleflight remains a separate Rust planner test above.
    Preserve the reported cold-load, preload and warm-plan timing totals and
    counts alongside memory measurements. Compute means from totals and counts;
    histogram buckets are cumulative bounds, not exact latency quantiles. When

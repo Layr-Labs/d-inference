@@ -122,10 +122,11 @@ struct PrefillEvidenceRecoveryTests {
         let (bridge, engine, budget) = try fixture()
         await bridge.seedExpiredRecoveryRate()
         let deadline = FirstContentDeadline(relativeBudgetMilliseconds: 9_326)
-        #expect(await bridge.canRecoverPrefillEvidence(promptTokens: 384, deadline: deadline, isMultimodal: false))
-        #expect(await !bridge.canRecoverPrefillEvidence(promptTokens: 1_025, deadline: deadline, isMultimodal: false))
-        #expect(await !bridge.canRecoverPrefillEvidence(promptTokens: 384, deadline: deadline, isMultimodal: true))
-        #expect(await !bridge.canRecoverPrefillEvidence(promptTokens: 384, deadline: nil, isMultimodal: false))
+        #expect(await bridge.canRecoverPrefillEvidence(promptTokens: 384, maxOutputTokens: 1, deadline: deadline, isMultimodal: false))
+        #expect(await !bridge.canRecoverPrefillEvidence(promptTokens: 1_025, maxOutputTokens: 1, deadline: deadline, isMultimodal: false))
+        #expect(await !bridge.canRecoverPrefillEvidence(promptTokens: 384, maxOutputTokens: 1, deadline: deadline, isMultimodal: true))
+        #expect(await !bridge.canRecoverPrefillEvidence(promptTokens: 384, maxOutputTokens: 1, deadline: nil, isMultimodal: false))
+        #expect(await !bridge.canRecoverPrefillEvidence(promptTokens: 384, maxOutputTokens: 0, deadline: deadline, isMultimodal: false))
         let ordinary = try #require(await bridge.firstTokenDeadlineAdmission(
             deadline: deadline, isMultimodal: false))
         #expect(ordinary.conservativePrefillTokensPerSecond == 6.103282279)
@@ -188,6 +189,33 @@ struct PrefillEvidenceRecoveryTests {
         #expect(await bridge.prefillEvidenceRecovery.available(at: .now + .seconds(121)))
         #expect(await bridge._testIsolatedPrefillTps() == 6.103282279)
         #expect(engine.capacity().kvBytesReserved == 0)
+        #expect(await budget.outstandingReservedBytes() == 0)
+        await bridge.shutdown()
+    }
+
+    @Test("projected refusal before admission does not consume the recovery opportunity")
+    func invalidatedGuardRefusalCanImmediatelyRecover() async throws {
+        let (bridge, engine, budget) = try fixture()
+        await bridge.seedExpiredRecoveryRate()
+        let deviceWork = RecoveryDeviceActivityOwner()
+        await bridge._testInstallPreSubmitGate {
+            await deviceWork.begin(budget.serviceBudget)
+        }
+        let deadline = FirstContentDeadline(relativeBudgetMilliseconds: 9_326)
+        await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+            _ = try await bridge.submitTokenized(promptTokens: prompt, request: request,
+                requestId: "refused-before-admit", cacheEnabled: false, firstContentDeadline: deadline)
+        }
+        #expect(engine.capacity().activeRequests == 0)
+        #expect(budget.serviceBudget.count == 0)
+        #expect(await bridge.prefillEvidenceRecovery.available())
+        await deviceWork.finish()
+        let stream = try await bridge.submitTokenized(promptTokens: prompt, request: request,
+            requestId: "immediate-recovery", cacheEnabled: false, firstContentDeadline: deadline)
+        let errors = await drain(stream)
+        #expect(errors.isEmpty)
+        try await eventually { budget.serviceBudget.count == 0 }
+        #expect(await bridge._testIsolatedPrefillTps() > 100)
         #expect(await budget.outstandingReservedBytes() == 0)
         await bridge.shutdown()
     }
@@ -319,7 +347,7 @@ struct PrefillEvidenceRecoveryTests {
         let (bridge, _, _) = try fixture()
         await bridge.seedExpiredRecoveryRate()
         #expect(await bridge.acquireServiceAllowance(requestID: "cached", recoverPrefillEvidence: true))
-        await bridge.beginRecoverySubmissionForTest("cached")
+        await bridge.markRecoveryAdmittedForTest("cached")
         let receipt = EnginePrefillReceipt(activity: EngineMeasurementActivity(), model: "recovery-fixture")
         var usage = CBv2Usage(promptTokens: 384, completionTokens: 0, prefixCacheOutcome: .hit,
             prefixCacheMatchedTokens: 256, prefixCachePrefillTokensSaved: 256)
@@ -341,7 +369,7 @@ struct PrefillEvidenceRecoveryTests {
 }
 
 private extension EngineV2Bridge {
-    func beginRecoverySubmissionForTest(_ id: String) { prefillEvidenceRecovery.beginSubmission(id) }
+    func markRecoveryAdmittedForTest(_ id: String) { prefillEvidenceRecovery.admit(id) }
 
     func seedExpiredRecoveryRate() {
         let rate = 6.103282279

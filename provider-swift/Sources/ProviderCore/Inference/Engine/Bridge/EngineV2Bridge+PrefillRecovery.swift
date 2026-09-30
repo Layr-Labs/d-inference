@@ -13,11 +13,11 @@ extension EngineV2Bridge {
 
     /// Recovery is deliberately smaller than ordinary serving. A busy Mac,
     /// media request or large prompt still requires the normal projection.
-    func canRecoverPrefillEvidence(promptTokens: Int, deadline: FirstContentDeadline?,
+    func canRecoverPrefillEvidence(promptTokens: Int, maxOutputTokens: Int, deadline: FirstContentDeadline?,
         isMultimodal: Bool, at now: ContinuousClock.Instant = .now) -> Bool {
         supportsPrefillRecoveryRetirement && prefillDeadlineMode == .enforce && prefillDeadlineProjectionEnabled &&
             (deadline?.remainingDuration(now: now) ?? .zero) > .zero &&
-            deadlineProfile == nil && !isMultimodal && promptTokens > 0 &&
+            deadlineProfile == nil && !isMultimodal && promptTokens > 0 && maxOutputTokens > 0 &&
             promptTokens <= PrefillEvidenceRecovery.maximumPromptTokens &&
             isolatedPrefillEvidenceExpired(at: now) && prefillEvidenceRecovery.available(at: now)
     }
@@ -29,15 +29,15 @@ extension EngineV2Bridge {
             let submitted = try serviceBudget.withExclusiveEvidence(
                 ownerID: serviceOwnerPrefix + ":" + requestID, guardValue: guardValue, submit: {
                     try deadline?.check()
-                    prefillEvidenceRecovery.beginSubmission(requestID)
+                    let submitted: (events: AsyncStream<CBv2Event>, retirement: CBv2RequestRetirement)
                     if let native = ownedEngine as? CBv2NativeBlockEngine {
-                        return try native.submitWithRetirement(request)
-                    }
-                    if let native = ownedEngine as? EngineV2,
+                        submitted = try native.submitWithRetirement(request)
+                    } else if let native = ownedEngine as? EngineV2,
                         native.nativeShutdownExecutionContractID != nil {
-                        return try native.submitWithNativeRetirement(request)
-                    }
-                    throw PreContentDeadlineFailure.deadlineUnreachable
+                        submitted = try native.submitWithNativeRetirement(request)
+                    } else { throw PreContentDeadlineFailure.deadlineUnreachable }
+                    prefillEvidenceRecovery.admit(requestID)
+                    return submitted
                 }) else { throw PreContentDeadlineFailure.deadlineUnreachable }
         return submitted
     }

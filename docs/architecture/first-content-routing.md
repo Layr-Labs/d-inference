@@ -148,7 +148,7 @@ isolated-prefill estimate through one short text request. The evidence expires
 after `EnginePerformanceMeasurements.freshness` (`.seconds(120)`). A recovery
 request must have a live first-content deadline, no media, no reviewed deadline
 profile, and at most `PrefillEvidenceRecovery.maximumPromptTokens` (`1_024`)
-actual prepared tokens. This is a bounded exploration policy, not a throughput
+actual prepared tokens with a positive output limit. This is a bounded exploration policy, not a throughput
 guarantee (`canRecoverPrefillEvidence`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+PrefillRecovery.swift`).
 
@@ -180,7 +180,7 @@ or cache-only recovery waits `PrefillEvidenceRecovery.failureBackoff`
 (`.seconds(120)`) after actual retirement before another recovery can start.
 A successful cold isolated sample releases the recovery permission at retirement;
 receipt publication alone never releases device ownership.
-Refusals before engine submission do not start the recovery backoff.
+Refusals before engine admission commits do not start the recovery backoff.
 
 The first new sample after an evidence gap reseeds its phase EWMA rather than
 blending with the expired rate. Producer epoch and sample counts remain monotonic,

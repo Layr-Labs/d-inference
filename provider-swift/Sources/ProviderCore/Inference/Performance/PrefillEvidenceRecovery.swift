@@ -12,7 +12,7 @@ struct PrefillEvidenceRecovery {
     private(set) var evidenceGuard: CBv2FirstContentEvidenceGuard?
     private(set) var servingConcurrency = 1
     private var measured = false
-    private var submitted = false
+    private var admitted = false
     private var retryAfter: ContinuousClock.Instant?
 
     func available(at now: ContinuousClock.Instant = .now) -> Bool {
@@ -25,15 +25,15 @@ struct PrefillEvidenceRecovery {
         self.evidenceGuard = evidenceGuard
         self.servingConcurrency = max(1, servingConcurrency)
         measured = false
-        submitted = false
+        admitted = false
     }
 
     mutating func observe(_ id: String) {
         if owner == id { measured = true }
     }
 
-    mutating func beginSubmission(_ id: String) {
-        if owner == id { submitted = true }
+    mutating func admit(_ id: String) {
+        if owner == id { admitted = true }
     }
 
     mutating func bindEvidenceGuard(_ guardValue: CBv2FirstContentEvidenceGuard?, ownerID: String) {
@@ -47,15 +47,15 @@ struct PrefillEvidenceRecovery {
     }
 
     /// A prompt receipt may arrive before the answer terminates. Only actual
-    /// retirement (or refusal before submit) releases this permission.
+    /// retirement (or refusal before admission) releases this permission.
     mutating func retire(_ id: String, at now: ContinuousClock.Instant = .now) {
         guard owner == id else { return }
         if measured { retryAfter = nil }
-        else if submitted { retryAfter = now.advanced(by: Self.failureBackoff) }
+        else if admitted { retryAfter = now.advanced(by: Self.failureBackoff) }
         owner = nil
         evidenceGuard = nil
         servingConcurrency = 1
         measured = false
-        submitted = false
+        admitted = false
     }
 }

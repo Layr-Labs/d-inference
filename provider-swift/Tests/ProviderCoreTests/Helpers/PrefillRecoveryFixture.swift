@@ -1,5 +1,6 @@
 import Foundation
 import MLXLMCommon
+@testable import ProviderCore
 
 final class RecoveryStepGate: @unchecked Sendable {
     private let semaphore = DispatchSemaphore(value: 0)
@@ -67,4 +68,10 @@ final class RecoveryActivityAttempt: @unchecked Sendable {
     var started: Bool { lock.withLock { didStart } }
     func markAttempted() { lock.withLock { didAttempt = true } }
     func markStarted() { lock.withLock { didStart = true } }
+}
+
+actor RecoveryDeviceActivityOwner {
+    private var activity: WholeMacUnboundedActivity?
+    func begin(_ budget: WholeMacServiceBudget) { activity = budget.beginUnboundedActivity() }
+    func finish() { activity?.finish(); activity = nil }
 }

@@ -155,7 +155,8 @@ extension EngineV2Bridge {
             maxOutputTokens: max(0, request.max_tokens ?? defaultMaxTokens),
             qualifiedTextWork: multimodal == nil && mediaKind == nil,
             recoverPrefillEvidence: canRecoverPrefillEvidence(
-                promptTokens: promptTokens.count, deadline: firstContentDeadline,
+                promptTokens: promptTokens.count, maxOutputTokens: request.max_tokens ?? defaultMaxTokens,
+                deadline: firstContentDeadline,
                 isMultimodal: multimodal != nil || mediaKind != nil)) else {
             usageSignal?.finalizeLookup(failure: .capacity, fallbackTier: prefixCacheFallbackTier)
             continuation.yield(.error("token_budget_exhausted: whole-Mac service allowance exhausted"))
@@ -633,7 +634,6 @@ extension EngineV2Bridge {
                 : nil)
         do {
             if let admission = deadlineAdmission {
-                prefillEvidenceRecovery.beginSubmission(id)
                 // The engine's serialized closure compares projection against
                 // this same absolute deadline. A second task-group race would
                 // cancel after commit and hide the generation-bound retirement
@@ -643,6 +643,7 @@ extension EngineV2Bridge {
                     firstTokenDeadline: admission)
                 switch result {
                 case .admitted(let stream, let projectedWork, let admittedAt, let retirement):
+                    prefillEvidenceRecovery.admit(id)
                     profile?.observeDeadlineDecision(
                         .accepted, work: projectedWork, deadline: firstContentDeadline)
                     if Task.isCancelled || pendingCancellationIDs.contains(id) {
@@ -789,6 +790,7 @@ extension EngineV2Bridge {
                 }
             }
         } catch let cancellation as CBv2FirstTokenAdmissionCancellation {
+            prefillEvidenceRecovery.admit(id)
             // This exception proves acceptance but carries no projected work.
             profile?.observeDeadlineDecision(
                 .accepted, deadline: firstContentDeadline, continuation: .cancelled)

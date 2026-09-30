@@ -10,7 +10,7 @@ struct PrefillEvidenceRecoveryStateTests {
         let now = ContinuousClock.now
         var recovery = PrefillEvidenceRecovery()
         recovery.acquire("first", evidenceGuard: nil)
-        recovery.beginSubmission("first")
+        recovery.admit("first")
         recovery.observe("wrong-owner")
         recovery.retire("wrong-owner", at: now)
         #expect(recovery.owner == "first" && !recovery.available(at: now + .seconds(1_000)))
@@ -18,7 +18,7 @@ struct PrefillEvidenceRecoveryStateTests {
         #expect(!recovery.available(at: now + .seconds(119)))
         #expect(recovery.available(at: now + .seconds(120)))
         recovery.acquire("second", evidenceGuard: nil)
-        recovery.beginSubmission("second")
+        recovery.admit("second")
         recovery.observe("first")
         recovery.observe("second")
         #expect(!recovery.available(at: now + .seconds(1_000)))

@@ -57,6 +57,16 @@ extension EngineV2SlotFactory {
         wantsMTP && environment["DARKBLOOM_MIMO_RECTANGULAR_VERIFY"] == "1"
             ? .rectangular : .serialTarget
     }
+    /// Serial-target scoring spends one ordinary target forward per draft
+    /// column, so adaptive serial rounds can only slow decode. MTP stays
+    /// constructed and active with live assistant history; adaptive plans stay
+    /// target-only under serial scoring, while an explicit rectangular opt-in
+    /// keeps its adaptive depth.
+    static func nativeMiMoMTPConfig(wantsMTP: Bool,
+        verificationMode: CBv2MTPVerificationMode) -> CBv2MTPConfig {
+        CBv2MTPConfig(enabled: wantsMTP, maxDraftTokens: 3, maxSpeculativeBatch: 1,
+            verificationMode: verificationMode, allowsAdaptiveSerialRounds: false)
+    }
     static func prepareProductionModel(
         modelId: String, isVLM: Bool, modelDirectory: URL? = nil,
         container: ProviderModelContainer, specDecPreparation: SpecDecPreparation,
@@ -272,8 +282,7 @@ extension EngineV2SlotFactory {
                     ? prepared.status.fallingBack(.killSwitchDisabled) : prepared.status
                 let wantsMTP = intent.configured && intent.reason == nil
                 let verificationMode = nativeMiMoVerificationMode(wantsMTP: wantsMTP, environment: environment)
-                let mtpConfig = CBv2MTPConfig(enabled: wantsMTP, maxDraftTokens: 3,
-                    maxSpeculativeBatch: 1, verificationMode: verificationMode)
+                let mtpConfig = nativeMiMoMTPConfig(wantsMTP: wantsMTP, verificationMode: verificationMode)
                 let servingProfile = nativeMiMoServingProfile(
                     hasVisual: prepared.load.decodedMediaPolicy != nil,
                     hasAudio: prepared.load.decodedAudioPolicy != nil)
@@ -513,8 +522,7 @@ extension EngineV2SlotFactory {
         try transaction.validateContainerIdentity(prepared.container)
         try prepared.load.recheck()
         try transaction.claimSlotAssembly(prepared.container) // foreign/warm refusal never disposes live work
-        let mtpConfiguration = CBv2MTPConfig(enabled: wantsMTP, maxDraftTokens: 3,
-            maxSpeculativeBatch: 1, verificationMode: .serialTarget)
+        let mtpConfiguration = nativeMiMoMTPConfig(wantsMTP: wantsMTP, verificationMode: .serialTarget)
         do {
             return try await transaction.performSetup {
                 let paging = MiMoV26NativePagedResources(transactionID: transaction.id,

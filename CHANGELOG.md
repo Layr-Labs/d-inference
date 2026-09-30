@@ -45,6 +45,11 @@
 
 - Enable native MiMo standing wired residency by default. Without a standing residency set every command buffer must make the ~161 GiB weight payload resident again; on a 256 GiB M3 Ultra the driver kept unwiring it and single-stream decode measured ~0.4 tok/s (the request failed at 234 s), versus 37.8 tok/s with residency, identical requests and weights. The existing bounded ceiling still leaves max(16 GiB, 10%) of physical memory unwired and never grants load admission. `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY=0` (or `false`/`no`/`off`) restores the previous behavior and is now forwarded to the launchd provider job; the former opt-in value `1` remains valid.
 
+## Unreleased — native MiMo decode kernels and adaptive MTP
+
+- Enable the native MiMo short-forward decode kernels by default: fused residual/RMS norms, distinct-expert MXFP4 decode and the FP32 router GEMV. Each matches the stock operation it replaces for its supported one-request 1–7-row shapes and falls back everywhere else. They were exact-`1` opt-ins that no LaunchAgent forwarded. On a 256 GiB M3 Ultra with MTP off, single-stream decode rose from 41.5–42.0 to 45.2–45.6 tok/s (short prompts) and from 40.4–40.7 to 42.8–43.4 tok/s (4K prompts), with greedy output identical on 8 short and 5K/9K-token prompts. `DARKBLOOM_MIMO_FUSED_DECODE_NORMS`, `DARKBLOOM_MIMO_DECODE_EXPERTS` and `DARKBLOOM_MIMO_DECODE_ROUTER_GEMV` accept `0`/`false`/`no`/`off` as rollbacks and are forwarded to the launchd provider job.
+- Keep native MiMo's adaptive MTP from launching serial-target draft rounds. Serial scoring evaluates every draft column with one ordinary target forward, so those rounds cannot outpace target-only decode; one process that locked onto depth-3 serial rounds decoded greedy requests at 25–27 tok/s. MTP stays on and active with live assistant history; explicit rectangular verification keeps its adaptive depth.
+
 ## Unreleased — first-content evidence exploration
 
 - Let an idle, loaded provider compete beside feasible peers after the 5-minute measurement-age threshold, using connection age when measurements are undated. This breaks the evidence-first exclusion of newly connected and long-idle providers without guaranteeing selection or measurement recovery. Hedge and fresh-feasible requests still require feasible evidence.

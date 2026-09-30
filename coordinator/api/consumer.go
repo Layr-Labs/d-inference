@@ -2228,19 +2228,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// URLs were cost-gated before fetching. Recount the now-inline media
 		// from the original flat estimate, never adding the same image twice.
 		// A larger input charge must pass both token limiters before dispatch.
-		updatedTokens := s.mediaPromptTokens(r.Context(), publicModel, model, parsed, shape.routingPromptTokens(parsed))
-		if updatedTokens > estimatedPromptTokens && !s.applyTokenRateLimit(w, r, updatedTokens-estimatedPromptTokens, 0) {
+		estimatedPromptTokens, deadline, ok = s.reconcileFetchedMedia(w, r, publicModel, model,
+			parsed, shape.routingPromptTokens(parsed), estimatedPromptTokens, deadline)
+		if !ok {
 			refundReservation()
 			return
-		}
-		if updatedTokens != estimatedPromptTokens {
-			estimatedPromptTokens = updatedTokens
-			if deadline > 0 {
-				// Only concrete models reach improved media accounting. Keep the
-				// original receive instant: fetched time is never given back, and
-				// retries keep this reconciled request-absolute deadline.
-				deadline = s.FirstContentDeadline(model, estimatedPromptTokens)
-			}
 		}
 		// The reservation was taken against a body where the image was a short
 		// URL, so estimateBillingPromptTokens — the guaranteed len(bytes) >= tokens

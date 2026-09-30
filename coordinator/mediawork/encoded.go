@@ -54,11 +54,14 @@ func (s *encodedSource) ReadAt(dst []byte, off int64) (int, error) {
 	if s.ctx.Err() != nil {
 		return 0, s.ctx.Err()
 	}
-	if off < 0 || off >= s.size || len(dst) > 1<<20 || s.readBytes+len(dst) > 1<<20 {
+	if off < 0 || len(dst) > 1<<20 || s.readBytes+len(dst) > 1<<20 {
 		return 0, errMetadata
 	}
 	if len(dst) == 0 {
 		return 0, nil
+	}
+	if off >= s.size {
+		return 0, io.EOF
 	}
 	n := min(int64(len(dst)), s.size-off)
 	start := off / 3 * 4

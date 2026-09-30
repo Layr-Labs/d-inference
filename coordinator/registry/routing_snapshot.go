@@ -85,5 +85,6 @@ func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider
 		snap.deadlineProfile = nil
 	}
 	r.fillFirstContentSnapshot(snap, p, now)
-	snap.explorationPriced = firstContentExplorationPriced(snap)
+	snap.explorationAdmitted = firstContentExplorationAdmitted(snap)
+	snap.decodeEvidenceAgeMs, snap.prefillEvidenceAgeMs = firstContentRateAgesMs(p, model, now)
 }

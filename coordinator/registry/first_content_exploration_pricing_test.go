@@ -9,10 +9,14 @@ import (
 )
 
 // pricingSnapshot has its own rates below both fleet medians, so each resolve
-// result shows which source was used.
-func pricingSnapshot(priced bool) routingSnapshot {
-	return routingSnapshot{
-		explorationPriced:     priced,
+// result shows which source was used. Both own rates are dated and older than
+// the exploration bound.
+func pricingSnapshot(admitted bool) routingSnapshot {
+	old := int32((firstContentEvidenceExplorationAfter + time.Minute) / time.Millisecond)
+	s := routingSnapshot{
+		explorationAdmitted:   admitted,
+		decodeEvidenceAgeMs:   old,
+		prefillEvidenceAgeMs:  old,
 		fleetMedianTPS:        52,
 		fleetMedianPrefillTPS: 2000,
 		observedDecodeTPS:     5,
@@ -20,9 +24,11 @@ func pricingSnapshot(priced bool) routingSnapshot {
 		decodeTPS:             20,
 		prefillTPS:            240,
 	}
+	s.isolatedPrefillInitialized, s.isolatedPrefillTPS = true, 400
+	return s
 }
 
-func TestExplorationPricedSnapshotUsesFleetMedians(t *testing.T) {
+func TestExplorationAdmittedSnapshotUsesFleetMedians(t *testing.T) {
 	s := pricingSnapshot(true)
 	if got := resolvePrefillTPS(&s); got != 2000 {
 		t.Fatalf("prefill %v, want the fleet median 2000", got)
@@ -32,7 +38,7 @@ func TestExplorationPricedSnapshotUsesFleetMedians(t *testing.T) {
 	}
 }
 
-func TestExplorationPricedSnapshotWithoutMediansKeepsFallbacks(t *testing.T) {
+func TestExplorationAdmittedSnapshotWithoutMediansKeepsFallbacks(t *testing.T) {
 	s := pricingSnapshot(true)
 	s.fleetMedianTPS, s.fleetMedianPrefillTPS = 0, 0
 	if got := resolvePrefillTPS(&s); got != 400 {
@@ -50,7 +56,7 @@ func TestExplorationPricedSnapshotWithoutMediansKeepsFallbacks(t *testing.T) {
 	}
 }
 
-func TestSnapshotNotExplorationPricedKeepsOwnRates(t *testing.T) {
+func TestSnapshotNotExplorationAdmittedKeepsOwnRates(t *testing.T) {
 	s := pricingSnapshot(false)
 	if got := resolvePrefillTPS(&s); got != 400 {
 		t.Fatalf("prefill %v, want the observed EWMA 400", got)
@@ -61,6 +67,93 @@ func TestSnapshotNotExplorationPricedKeepsOwnRates(t *testing.T) {
 	s.observedDecodeTPS, s.observedPrefillTPS = 0, 0
 	if got := resolvePrefillTPS(&s); got != 240 {
 		t.Fatalf("prefill %v, want the registration fallback 240, not the prefill median", got)
+	}
+}
+
+// Each rate is replaced on its own. A fresh or undated own rate is kept even
+// when the other rate still uses the fleet median.
+func TestExplorationReplacesEachRateOnItsOwn(t *testing.T) {
+	fresh := int32(time.Second / time.Millisecond)
+	s := pricingSnapshot(true)
+	s.decodeEvidenceAgeMs = fresh
+	if got := resolveEffectiveTPS(&s); got != 5 {
+		t.Fatalf("decode %v, want the fresh own EWMA 5", got)
+	}
+	if got := resolvePrefillTPS(&s); got != 2000 {
+		t.Fatalf("prefill %v, want the fleet median 2000 for the old prefill", got)
+	}
+	s = pricingSnapshot(true)
+	s.decodeEvidenceAgeMs, s.prefillEvidenceAgeMs = -1, -1
+	if got := resolveEffectiveTPS(&s); got != 5 {
+		t.Fatalf("decode %v, want the undated own EWMA 5", got)
+	}
+	if got := resolvePrefillTPS(&s); got != 400 {
+		t.Fatalf("prefill %v, want the undated own EWMA 400", got)
+	}
+}
+
+// After one served request, the provider's own rates must replace the median
+// even though the evidence gap has not closed. The admitted flag stays set in
+// both cases, because one of the two measurements is still undated.
+func TestExploredProviderUsesOwnRatesAfterServedRequest(t *testing.T) {
+	cases := []struct {
+		name        string
+		serve       func(p *Provider, now time.Time)
+		wantDecode  float64
+		wantPrefill float64
+	}{
+		{
+			// Explicit path, cache-hit request: decode is renewed, but no
+			// isolated prefill sample exists. Decode is its own; prefill
+			// stays at the median because its own evidence is missing.
+			name: "explicit_cache_hit",
+			serve: func(p *Provider, now time.Time) {
+				slot := &p.BackendCapacity.Slots[0]
+				slot.ObservedDecodeTPS = 30
+				p.firstContentMeasurements = map[string]firstContentMeasurement{pricingModel: {
+					epoch: "e", decodeRate: 30, decodeCount: 1, decodeObservedAfter: now}}
+			},
+			wantDecode: 30, wantPrefill: 2000,
+		},
+		{
+			// Legacy path: the first EWMA after connect is undated by design
+			// (reconcileFirstContentMeasurementsLocked). Both rates are own.
+			name: "legacy_first_undated_ewma",
+			serve: func(p *Provider, now time.Time) {
+				slot := &p.BackendCapacity.Slots[0]
+				rate, initialized := 700.0, true
+				slot.ObservedDecodeTPS, slot.ObservedPrefillTPS = 30, rate
+				slot.Telemetry.IsolatedPrefillTPS, slot.Telemetry.EWMAInitialized = &rate, &initialized
+				p.firstContentMeasurements = map[string]firstContentMeasurement{pricingModel: {rate: rate, decodeRate: 30}}
+			},
+			wantDecode: 30, wantPrefill: 700,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Now()
+			r := New(testLogger())
+			chip := testRegisterMessage().Hardware.ChipFamily
+			for range 10 {
+				r.tpsRegistry.Record(pricingModel, chip, 52)
+				r.tpsRegistry.RecordPrefill(pricingModel, chip, 2000)
+			}
+			p := pricingFreshProvider(t, r, firstContentEvidenceExplorationAfter+time.Minute, now)
+			c := &routingCandidate{}
+			p.mu.Lock()
+			tc.serve(p, now)
+			r.fillRoutingSnapshotPLocked(&c.snapshot, p, pricingModel, now)
+			p.mu.Unlock()
+			if !c.snapshot.explorationAdmitted {
+				t.Fatal("provider is not admitted; the case does not test pricing")
+			}
+			if got := resolveEffectiveTPS(&c.snapshot); got != tc.wantDecode {
+				t.Fatalf("decode %v, want %v", got, tc.wantDecode)
+			}
+			if got := resolvePrefillTPS(&c.snapshot); got != tc.wantPrefill {
+				t.Fatalf("prefill %v, want %v", got, tc.wantPrefill)
+			}
+		})
 	}
 }
 
@@ -145,14 +238,23 @@ func TestExploredFreshProviderIsSelectedWithinBand(t *testing.T) {
 			fresh := pricingFreshProvider(t, r, tc.connected, now)
 			wins := 0
 			for i := range 64 {
-				pr := &PendingRequest{RequestID: fmt.Sprintf("r%d", i), Model: pricingModel, EstimatedPromptTokens: 1000,
+				pr := &PendingRequest{RequestID: fmt.Sprintf("%s-r%d", t.Name(), i), Model: pricingModel, EstimatedPromptTokens: 1000,
 					RequestedMaxTokens: 256, FirstContentDeadline: time.Now().Add(10 * time.Second)}
 				p, _ := r.ReserveProviderEx(pricingModel, pr)
 				if p == nil {
 					t.Fatal("no provider selected")
 				}
+				ttftCalibration.mu.RLock()
+				_, noted := ttftCalibration.pending[ttftPendingKey(pr.RequestID, pr.Attempt)]
+				ttftCalibration.mu.RUnlock()
+				ttftCalibration.discardPrediction(pr.RequestID, pr.Attempt)
 				if p == fresh {
 					wins++
+					if noted && tc.prefillMedian {
+						t.Fatal("the calibrator noted a prediction built on the fleet median")
+					}
+				} else if !noted {
+					t.Fatal("the calibrator did not note the peer's prediction")
 				}
 				p.RemovePending(pr.RequestID)
 			}
@@ -166,7 +268,7 @@ func TestExploredFreshProviderIsSelectedWithinBand(t *testing.T) {
 // The snapshot flag must agree with firstContentEvidenceExplorable whenever
 // the forecast gap is performance evidence, and must stay false when capacity
 // or work state rules exploration out.
-func TestExplorationPricedFlagMatchesExplorablePredicate(t *testing.T) {
+func TestExplorationAdmittedFlagMatchesExplorablePredicate(t *testing.T) {
 	cases := []struct {
 		name    string
 		prepare func(p *Provider, now time.Time)
@@ -194,15 +296,15 @@ func TestExplorationPricedFlagMatchesExplorablePredicate(t *testing.T) {
 			tc.prepare(p, now)
 			r.fillRoutingSnapshotPLocked(&c.snapshot, p, pricingModel, now)
 			p.mu.Unlock()
-			if c.snapshot.explorationPriced != tc.want {
-				t.Fatalf("explorationPriced=%v, want %v", c.snapshot.explorationPriced, tc.want)
+			if c.snapshot.explorationAdmitted != tc.want {
+				t.Fatalf("explorationAdmitted=%v, want %v", c.snapshot.explorationAdmitted, tc.want)
 			}
 			pr := &PendingRequest{Model: pricingModel, EstimatedPromptTokens: 1000, RequestedMaxTokens: 256,
 				FirstContentDeadline: now.Add(10 * time.Second)}
 			r.estimateFirstContent(c, pr, now)
-			if got := firstContentEvidenceExplorable(c); got != c.snapshot.explorationPriced {
-				t.Fatalf("firstContentEvidenceExplorable=%v but explorationPriced=%v (forecast %+v)",
-					got, c.snapshot.explorationPriced, c.firstContent)
+			if got := firstContentEvidenceExplorable(c); got != c.snapshot.explorationAdmitted {
+				t.Fatalf("firstContentEvidenceExplorable=%v but explorationAdmitted=%v (forecast %+v)",
+					got, c.snapshot.explorationAdmitted, c.firstContent)
 			}
 		})
 	}

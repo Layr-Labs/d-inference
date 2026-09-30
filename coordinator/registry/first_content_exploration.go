@@ -42,18 +42,3 @@ func firstContentIdleEvidenceGap(s *routingSnapshot) bool {
 		s.totalPending == 0 && s.evidenceGapAgeMs >= 0 &&
 		time.Duration(s.evidenceGapAgeMs)*time.Millisecond >= firstContentEvidenceExplorationAfter
 }
-
-// firstContentExplorationPriced is computed once per snapshot, after the
-// snapshot is filled. When it is true, resolvePrefillTPS and
-// resolveEffectiveTPS use the fleet medians before the provider's own rates.
-// An old or missing measurement then cannot keep an admitted provider out of
-// the fast band. It adds the capacity checks that come before the
-// performance reasons in firstContentForecastUnknownReason. The request-level
-// checks cannot be on the snapshot. The status stays unknown. A served request
-// that renews both measurements ends the gap, and the provider's own rates
-// apply again.
-func firstContentExplorationPriced(s *routingSnapshot) bool {
-	return s.hasBackendCapacity && s.capacityAgeMs >= 0 &&
-		time.Duration(s.capacityAgeMs)*time.Millisecond <= firstContentFreshness &&
-		firstContentIdleEvidenceGap(s)
-}

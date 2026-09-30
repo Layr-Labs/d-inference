@@ -13,7 +13,7 @@
 
 ## Unreleased — explored provider pricing
 
-- Price a provider that evidence exploration admits at the fleet median isolated-prefill and decode rates for its model and chip family. A provider that sent no rates at registration, or whose last measurement was slow, can now enter the 100 ms band beside an idle peer with fresh evidence. A reviewed profile point still comes first, a missing median keeps the ordinary fallback, and the candidate stays `unknown`, so hedge and fresh-feasible requests still exclude it. Selection is still not guaranteed.
+- Price a provider that evidence exploration admits at the fleet median rates for its model and chip family. Each rate is replaced on its own: the isolated-prefill median while the provider's own isolated-prefill evidence is missing or older than 5 minutes, and the decode median while its own decode evidence is missing or older than 5 minutes. A provider that sent no rates at registration, or whose last measurement was slow, can now enter the 100 ms band beside an idle peer with fresh evidence. A reviewed profile point still comes first, a missing median keeps the ordinary fallback, and the candidate stays `unknown`, so hedge and fresh-feasible requests still exclude it. Requests without a deadline now also price such a provider at the median, so it can win them. The TTFT calibrator does not learn from a median-based prediction. A provider that is slow on every request needs the exploration backoff of #1270. Selection is still not guaranteed.
 
 ## Unreleased — first-content evidence exploration
 

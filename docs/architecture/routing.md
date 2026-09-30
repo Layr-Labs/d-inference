@@ -351,29 +351,55 @@ floored at 1 tok/s. The prefill fallback prefers `ObservedPrefillTPS`, else
 the static prefill rate (`resolvedPrefillTPS`: the registered `PrefillTPS`,
 or decode × `prefillToDecodeRatio`), capped at `maxPrefillTPS`. Reviewed prefill
 points satisfy the same ceiling during profile validation.
+`SetPrefillToDecodeRatio` changes the ratio process-wide; the coordinator
+binary wires it to `EIGENINFERENCE_PREFILL_DECODE_RATIO`
+(`coordinator/cmd/coordinator/main.go`).
 
 | Step | Decode (`resolveEffectiveTPS`) | Prefill (`resolvePrefillTPS`) |
 |---|---|---|
 | 1 | Reviewed profile point | Reviewed profile point |
-| 2 | Fleet decode median, if the snapshot is exploration-priced | Fleet isolated-prefill median, if the snapshot is exploration-priced |
+| 2 | Fleet decode median, if the provider is exploration-admitted and its own decode evidence is missing or old | Fleet isolated-prefill median, if the provider is exploration-admitted and its own isolated-prefill evidence is missing or old |
 | 3 | `ObservedDecodeTPS` | `ObservedPrefillTPS` |
 | 4 | Fleet decode median | Registration `PrefillTPS`, or decode × `prefillToDecodeRatio` |
 | 5 | Registration decode, derated by load | — |
 
-A snapshot is exploration-priced when [evidence
+A snapshot is exploration-admitted when [evidence
 exploration](first-content-routing.md#prediction-and-freshness) can admit the
 provider: accepted capacity is fresh, the model is loaded, the Mac is idle, and
 the evidence gap is at least `firstContentEvidenceExplorationAfter` (5 minutes).
-The flag is set once per snapshot (`firstContentExplorationPriced`,
-`coordinator/registry/first_content_exploration.go`), so every cost and forecast
-that reads the snapshot uses the same rates. Step 2 applies only when the median
-exists. Both medians are per model and chip family. The heartbeat records every
-reported decode EWMA and every usable isolated prefill rate into 50-sample rings
-(`TPSRegistry`, `coordinator/registry/tps_registry.go` and
-`coordinator/registry/tps_prefill.go`).
-`SetPrefillToDecodeRatio` changes the ratio process-wide; the coordinator
-binary wires it to `EIGENINFERENCE_PREFILL_DECODE_RATIO`
-(`coordinator/cmd/coordinator/main.go`).
+The flag is set once per snapshot (`firstContentExplorationAdmitted`,
+`coordinator/registry/first_content_exploration_pricing.go`). Step 2 checks each
+rate on its own. A rate is old when its measurement is dated and at least 5
+minutes old. A rate that has a value but no date is the first value after the
+provider connected, for example the legacy EWMA from its first served request.
+It counts as the provider's own evidence. So one served request brings back the
+provider's own value for each rate that the request renewed. Step 2 applies only
+when the median exists. Both medians are per model and chip family. The
+heartbeat records every reported decode EWMA and every usable isolated prefill
+rate into 50-sample rings (`TPSRegistry`, `coordinator/registry/tps_registry.go`
+and `coordinator/registry/tps_prefill.go`). The TTFT calibrator does not record
+a prediction whose cost used a median (`notePrediction` in
+`commitProviderReservation`).
+
+The flag is on the snapshot, so it does not see request-level forecast reasons.
+For a request whose reason is `no_deadline` or `capacity_before_refusal`, an
+admitted provider is priced at the medians although
+`firstContentEvidenceExplorable` is false for that request. This is a behavior
+change for requests without a deadline. Every candidate for such a request is
+already `unknown`, so admission does not change. But before this change an idle
+provider with no rates or old rates lost on cost. Now it competes at the median
+and can win.
+
+Known limits:
+
+- The prefill median is of the isolated prefill rate. Peers with fresh evidence
+  are priced on `ObservedPrefillTPS`, which also includes contended and cold
+  prefills. An admitted provider can therefore look faster at prefill than a
+  peer that has the same hardware.
+- A provider that is slow on every request is priced at the median again in
+  each idle window of 5 minutes or more. This change does not stop that. The
+  per-identity exploration backoff and remembered-slow check of PR #1270 stop
+  it, so this change must merge after #1270.
 
 **Historical prefill cost weighting for long prompts.** `longPromptPenalty(promptTokens,
 ttftBlockMs)` returns `(longPromptPrefillWeight − 1) × ttftBlockMs` when a

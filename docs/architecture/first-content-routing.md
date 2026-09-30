@@ -136,14 +136,17 @@ exception (`fillFirstContentSnapshot`,
 service fields and still qualify using their existing slot telemetry. Reservation
 rechecks the exception under the provider lock and rescans if eligibility changed.
 The candidate stays `unknown`, so hedge and fresh-feasible requests still exclude
-it. Its forecast uses the fleet median isolated-prefill and decode rates for the
-model and chip family, not its own old EWMAs or the registration fallback. A
-provider that sent no rates at registration, or whose last measurement was slow,
-is therefore priced like a typical peer and can enter the 100 ms band. A reviewed
-profile point still comes first, and a missing median keeps the ordinary
-fallback ([rate order](routing.md#historical-cost-diagnostics)). The pricing
-ends when a served request renews both measurements and the evidence gap
-closes. Ordinary ranking need not select it, and a served request need not
+it. Its forecast uses the fleet median isolated-prefill rate while its own
+isolated-prefill evidence is missing or older than 5 minutes, and the fleet
+median decode rate while its own decode evidence is missing or older than 5
+minutes. Each rate is checked on its own. A provider that sent no rates at
+registration, or whose last measurement was slow, is therefore priced like a
+typical peer and can enter the 100 ms band. A reviewed profile point still comes
+first, and a missing median keeps the ordinary fallback ([rate
+order](routing.md#historical-cost-diagnostics)). A served request brings back
+the provider's own value for each rate that it renewed. A provider that is slow
+on every request needs the exploration backoff of PR #1270 to stop repeated
+median pricing; see the known limits in the rate order section. Ordinary ranking need not select it, and a served request need not
 refresh both measurements: cache reuse can leave isolated-prefill evidence
 unchanged, as can an unchanged legacy EWMA. Exploration offers an opportunity,
 not guaranteed selection or recovery.
@@ -295,7 +298,7 @@ does not represent a random sample of all outcomes.
 | Prompt accounting and bounded planning | `coordinator/api/promptwork/` — `Memo`, `Plan`, `Calibration` |
 | Qualified prediction arithmetic | `coordinator/registry/firstcontent/` — `Calibration`, `Predict` |
 | Independent deadline profile identity | `coordinator/registry/deadline_profile.go` — `qualifiedDeadlineProfileLocked` |
-| Evidence exploration and its pricing | `coordinator/registry/first_content_exploration.go` — `firstContentEvidenceExplorable`, `firstContentExplorationPriced` |
+| Evidence exploration and its pricing | `coordinator/registry/first_content_exploration.go` — `firstContentEvidenceExplorable`; `first_content_exploration_pricing.go` — `firstContentExplorationAdmitted`, `explorationUsesDecodeMedian`, `explorationUsesPrefillMedian` |
 | Existing work ownership | `coordinator/registry/first_content_calibrated_work.go` — `fillCalibratedWorkSnapshot` |
 | Candidate selection | `coordinator/registry/candidate_selection.go` — `selectRoutingCandidateWithAffinity` |
 | Physical reservation | `coordinator/registry/scheduler.go` — `commitProviderReservation` |

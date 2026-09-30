@@ -182,10 +182,14 @@ type routingSnapshot struct {
 	// fleetMedianPrefillTPS is the fleet median isolated prefill rate for the
 	// model and chip family (tps_prefill.go). 0 means no samples.
 	fleetMedianPrefillTPS float64
-	// explorationPriced is set once per snapshot. It means evidence
-	// exploration can admit this provider, so both resolve functions price it
-	// at the fleet medians (first_content_exploration.go).
-	explorationPriced bool
+	// explorationAdmitted is set once per snapshot. It means evidence
+	// exploration can admit this provider. The resolve functions then check
+	// the age of each rate on its own (first_content_exploration_pricing.go).
+	explorationAdmitted bool
+	// decodeEvidenceAgeMs and prefillEvidenceAgeMs are the ages of the dated
+	// decode and isolated prefill measurements. -1 means not dated.
+	decodeEvidenceAgeMs  int32
+	prefillEvidenceAgeMs int32
 
 	// Engine-health (first-token wedge) signals, decoded from the slot's
 	// BackendSlotCapacity (see docs/reports/2026-06-22-cancel-root-cause-and-fix.md
@@ -839,7 +843,10 @@ func (r *Registry) commitProviderReservation(
 	if !slotStateModelLoaded(candidate.snapshot.slotState) {
 		r.RecordWarmPoolColdDispatch(model)
 	}
-	if !pr.RequiresVision && candidate.breakdown.RawTTFTMs > 0 && candidate.breakdown.StateMs == 0 {
+	// A prediction built on a fleet median says nothing about this provider,
+	// so the calibrator does not learn from it.
+	if !pr.RequiresVision && candidate.breakdown.RawTTFTMs > 0 && candidate.breakdown.StateMs == 0 &&
+		!explorationUsesMedian(&candidate.snapshot) {
 		ttftCalibration.notePrediction(
 			pr.RequestID, pr.Attempt, model, candidate.snapshot.chipFamily,
 			candidate.breakdown.RawTTFTMs)
@@ -2213,13 +2220,13 @@ func healthPenaltyMs(m protocol.SystemMetrics, gpuActiveGB, totalMemGB float64) 
 // resolveEffectiveTPS returns the best available decode TPS estimate.
 // Qualified curves use their measured conservative width point; unmatched
 // configurations fall back through observed EWMA, fleet median and benchmark.
-// A provider that evidence exploration can admit uses the fleet median before
-// its own old EWMA.
+// A provider that evidence exploration admits uses the fleet median before
+// its own decode EWMA while that EWMA is missing or old.
 func resolveEffectiveTPS(snap *routingSnapshot) float64 {
 	if point, ok := snap.performanceProfile.batchAt(max(1, snapshotOccupancy(snap)+1)); ok {
 		return point.DecodeP10TPS
 	}
-	if snap.explorationPriced && snap.fleetMedianTPS > 0 {
+	if explorationUsesDecodeMedian(snap) {
 		return snap.fleetMedianTPS
 	}
 	if snap.observedDecodeTPS > 0 {
@@ -2235,8 +2242,8 @@ func resolveEffectiveTPS(snap *routingSnapshot) float64 {
 // matching resolveEffectiveTPS. A workload-specific live EWMA cannot replace
 // that reviewed rate. Without a fitting point, prefer observed prefill EWMA,
 // then snap.prefillTPS (registration benchmark or decode×prefillToDecodeRatio).
-// A provider that evidence exploration can admit uses the fleet median
-// isolated prefill rate first, when one exists.
+// A provider that evidence exploration admits uses the fleet median isolated
+// prefill rate first while its own isolated prefill evidence is missing or old.
 // The fallback is clamped to maxPrefillTPS; profile validation enforces the same
 // bound for reviewed points.
 func resolvePrefillTPS(snap *routingSnapshot) float64 {
@@ -2245,7 +2252,7 @@ func resolvePrefillTPS(snap *routingSnapshot) float64 {
 	}
 	tps := snap.prefillTPS
 	switch {
-	case snap.explorationPriced && finitePositive(snap.fleetMedianPrefillTPS):
+	case explorationUsesPrefillMedian(snap):
 		tps = snap.fleetMedianPrefillTPS
 	case finitePositive(snap.observedPrefillTPS):
 		tps = snap.observedPrefillTPS

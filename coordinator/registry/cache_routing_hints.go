@@ -109,7 +109,7 @@ func (t *cacheRoutingTracker) matchingHolders(
 			for providerID := range t.holders[key] {
 				holder, live := t.activeHolderLocked(key, providerID, now)
 				if !live || holder.ModelAggregateHash != plan.ModelAggregateHash ||
-					holder.PromptContractID != plan.PromptContractID || holder.Anchor != anchor ||
+					holder.PromptContractID != plan.PromptContractID || !anchorMatches(holder.Anchor, anchor) ||
 					anchor.TokenCount <= holder.RequiredRecomputeTokens {
 					continue
 				}

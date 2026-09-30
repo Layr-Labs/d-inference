@@ -41,3 +41,33 @@ func TestOffloadedWeightsWireIsAdditive(t *testing.T) {
 		t.Fatal("native load allowance did not round trip")
 	}
 }
+
+func TestMiMoFullLoadSupplementWireDoesNotDeclareSSDOffload(t *testing.T) {
+	info := ModelInfo{ID: "test-mimo-native-load", ModelType: "mimo_v2", SizeBytes: 172847269645,
+		EstimatedMemoryGB:        float64(189354468528) / float64(uint64(1)<<30),
+		NativeLoadTransientBytes: 16507198883}
+	data, err := json.Marshal(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "ssd_offloaded_weight_bytes") {
+		t.Fatal("MiMo unexpectedly declares SSD discount")
+	}
+	var decoded ModelInfo
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.SizeBytes != info.SizeBytes || decoded.NativeLoadTransientBytes != info.NativeLoadTransientBytes ||
+		decoded.EstimatedMemoryGB != info.EstimatedMemoryGB || decoded.ModelType != "mimo_v2" {
+		t.Fatal("full native byte/GiB units did not round trip")
+	}
+	for _, raw := range []string{
+		`{"id":"mimo","native_load_transient_bytes":true}`,
+		`{"id":"mimo","native_load_transient_bytes":1.5}`,
+		`{"id":"mimo","native_load_transient_bytes":9223372036854775808}`,
+	} {
+		if err := json.Unmarshal([]byte(raw), &decoded); err == nil {
+			t.Fatalf("malformed native byte count decoded: %s", raw)
+		}
+	}
+}

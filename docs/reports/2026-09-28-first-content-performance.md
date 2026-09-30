@@ -1,6 +1,6 @@
 # First-content performance and M5 capacity investigation
 
-> Last updated: 2026-09-28 · commit `ae4925180`
+> Last updated: 2026-09-28
 
 Read-only production analysis found transient Gemma prefill/queue pressure,
 deadline-refusal amplification across models and a prefill measurement ceiling

@@ -83,7 +83,7 @@ struct FlashNextEncryptedHandlerLiveTests {
                     if case .inferenceRequest(let id, let ciphertext, let sender, let nonce,
                         let scope, let protocolVersion, let boundary, let repeatedPrefixTokens,
                         let toolProtocol, let deadline, let received, let profile,
-                        let serviceReservationID) = event {
+                        let serviceReservationID, let promptWork) = event {
                         await loop.handleInferenceRequest(
                             requestId: id, ciphertext: ciphertext, senderPublicKey: sender,
                             cacheReceiptNonce: nonce, authenticatedCacheScope: scope,
@@ -91,7 +91,7 @@ struct FlashNextEncryptedHandlerLiveTests {
                             cacheRepeatedPrefixTokens: repeatedPrefixTokens,
                             toolSchemaMetadataProtocol: toolProtocol, firstContentDeadline: deadline,
                             receivedAt: received, profile: profile,
-                            serviceReservationID: serviceReservationID, send: send)
+                            serviceReservationID: serviceReservationID, promptWork: promptWork, send: send)
                     }
                 }
             }

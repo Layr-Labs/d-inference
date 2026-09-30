@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/promptwork"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
@@ -34,7 +35,13 @@ func (d *dispatchState) firstContentPromptWork() int {
 	// A quote can outlive planner-generation validity. Cover both the exact
 	// current plan and the calibrated fallback so invalidation cannot turn
 	// an undersized probe into evidence for a larger request at commit.
-	return max(d.cachePlan.PromptTokenCount, calibratedContextPromptTokens(d.model, d.estimatedPromptTokens))
+	tokens := max(d.cachePlan.PromptTokenCount, calibratedContextPromptTokens(d.model, d.estimatedPromptTokens))
+	if d.r != nil {
+		if work := promptwork.FromContext(d.r.Context(), d.model, d.rawBody); work != nil && work.IsQualifiedFor(work.ModelArtifactHash, work.PromptContractID) {
+			tokens = max(tokens, work.UpperBoundTokens)
+		}
+	}
+	return tokens
 }
 
 func (d *dispatchState) notePredictiveRefusal(provider *registry.Provider) {

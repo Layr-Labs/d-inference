@@ -19,9 +19,14 @@ permissions:
 jobs:
   build:
     name: Build unsigned validation input
-    runs-on: blacksmith-12vcpu-macos-latest
+    runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 60
     steps:
+      - name: Verify Xcode 27 toolchain
+        run: |
+          xcodebuild -version
+          xcrun swift --version
+          test "$(xcrun --sdk macosx --show-sdk-version)" = '27.0'
       - name: Validate explicit source identity
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
@@ -42,13 +47,18 @@ jobs:
           path: candidate
           submodules: recursive
           persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
       - name: Validate packaging and workflow isolation guards
         run: python3 tooling/scripts/test-provider-signing-validation.py
       - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34
         with:
           go-version-file: candidate/go.mod
       - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.88.0 --profile minimal
+        run: bash tooling/scripts/install-release-rust.sh
+      - name: Install pinned CMake for Metal build
+        run: bash tooling/scripts/install-release-cmake.sh
       - name: Build exact source and stage unsigned app
         env:
           EXPECTED_VERSION: ${{ inputs.version }}
@@ -59,12 +69,13 @@ jobs:
           set -euo pipefail
           test "$(git -C candidate rev-parse HEAD)" = "$EXPECTED_SOURCE"
           candidate/scripts/check-release-version.sh "$EXPECTED_VERSION"
-          command -v cmake >/dev/null 2>&1 || brew install cmake
+          cmake --version
           cd candidate/provider-swift
-          swift build -c release --scratch-path "$RUNNER_TEMP/provider-build" --product darkbloom
-          swift build -c release --scratch-path "$RUNNER_TEMP/provider-build" --product darkbloom-enclave
-          swift build -c release --scratch-path "$RUNNER_TEMP/provider-build" --product darkbloom-fan-helper
-          bin_dir=$(swift build -c release --scratch-path "$RUNNER_TEMP/provider-build" --show-bin-path)
+          sdk=$(xcrun --sdk macosx --show-sdk-path)
+          swift build --build-system native --sdk "$sdk" -c release --scratch-path "$RUNNER_TEMP/provider-build" --product darkbloom
+          swift build --build-system native --sdk "$sdk" -c release --scratch-path "$RUNNER_TEMP/provider-build" --product darkbloom-enclave
+          swift build --build-system native --sdk "$sdk" -c release --scratch-path "$RUNNER_TEMP/provider-build" --product darkbloom-fan-helper
+          bin_dir=$(swift build --build-system native --sdk "$sdk" -c release --scratch-path "$RUNNER_TEMP/provider-build" --show-bin-path)
           cd "$GITHUB_WORKSPACE"
           METALLIB_CACHE_DIR="$RUNNER_TEMP/metallib-cache" candidate/scripts/fetch-metallib.sh "$RUNNER_TEMP/metallib"
           python3 tooling/scripts/provider-signing-validation.py stage \
@@ -83,18 +94,26 @@ jobs:
   signing:
     name: Validate signing and notarization without publication
     needs: build
-    runs-on: blacksmith-12vcpu-macos-latest
+    runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 35
     env:
       DEVELOPER_ID: 'Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)'
       APPLE_TEAM_ID: SLDQ2GJ6TL
     steps:
+      - name: Verify Xcode 27 signing toolchain
+        run: |
+          xcodebuild -version
+          xcrun swift --version
+          test "$(xcrun --sdk macosx --show-sdk-version)" = '27.0'
       - name: Checkout reviewed signing tooling only
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: ${{ github.sha }}
           path: tooling
           persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
       - name: Read this run's unsigned artifact
         env:
           GH_TOKEN: ${{ github.token }}

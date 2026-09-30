@@ -105,7 +105,8 @@ extension CoordinatorClient {
                 firstContentDeadline: firstContentDeadline,
                 receivedAt: receivedAt,
                 profile: profile,
-                serviceReservationID: request.serviceReservationID
+                serviceReservationID: request.serviceReservationID,
+                promptWork: request.promptWork
             ))
 
         case .cancel(let cancel):

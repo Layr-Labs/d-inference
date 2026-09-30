@@ -3,6 +3,8 @@ package registry
 import (
 	"math"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/registry/firstcontent"
 )
 
 const (
@@ -23,6 +25,7 @@ const (
 // Even a credible conservative forecast is not a completion guarantee: the
 // provider still performs atomic admission against its current GPU schedule.
 type FirstContentEstimate struct {
+	PredictionSource string  `json:"prediction_source,omitempty"`
 	TransportMs      float64 `json:"transport_ms,omitempty"`
 	TransportAgeMs   int32   `json:"transport_age_ms"`
 	Status           string  `json:"status"`
@@ -42,22 +45,32 @@ type FirstContentEstimate struct {
 // admission snapshot. Missing measurement age remains unknown; heartbeat age
 // is never used as a substitute for performance age.
 type firstContentSnapshot struct {
-	transportMs                float64
-	conservativeTransportMs    float64
-	transportAgeMs             int32
-	capacityAgeMs              int32
-	capacityAcceptedAt         time.Time
-	capacitySeq                uint64
-	performanceAgeMs           int32
-	isolatedPrefillTPS         float64
-	isolatedPrefillInitialized bool
-	wholeMacBusy               bool
-	wholeMacWorkKnown          bool
-	otherModelOccupancy        int
-	queuedPrefillKnown         bool
-	partialPrefillRows         int
-	wholeMacServiceMs          float64
-	modelLoadMs                float64
+	transportMs                 float64
+	conservativeTransportMs     float64
+	transportAgeMs              int32
+	capacityAgeMs               int32
+	capacityAcceptedAt          time.Time
+	capacitySeq                 uint64
+	performanceAgeMs            int32
+	evidenceGapAgeMs            int32
+	isolatedPrefillTPS          float64
+	isolatedPrefillInitialized  bool
+	wholeMacBusy                bool
+	wholeMacWorkKnown           bool
+	otherModelOccupancy         int
+	queuedPrefillKnown          bool
+	partialPrefillRows          int
+	wholeMacServiceMs           float64
+	modelLoadMs                 float64
+	calibratedWork              firstcontent.Work
+	calibratedWorkKnown         bool
+	deadlineProfile             *deadlinePerformanceProfile
+	contendedPerformanceAgeMs   int32
+	contendedPrefillTPS         float64
+	calibratedDecodeTPS         float64
+	promptWorkContractID        string
+	promptWorkArtifactHash      string
+	calibratedForecastQualified bool
 }
 
 // estimateFirstContent runs after cache proof validation. It never changes
@@ -68,12 +81,17 @@ func (r *Registry) estimateFirstContent(c *routingCandidate, pr *PendingRequest,
 		PerformanceAgeMs: s.performanceAgeMs, ServiceMs: s.wholeMacServiceMs, TransportMs: s.transportMs, TransportAgeMs: s.transportAgeMs}
 	prompt := max(0, pr.EstimatedPromptTokens)
 	conservativePrompt := max(prompt, pr.FirstContentPromptTokens)
-	if r.cacheRouting != nil && pr.CachePlan.generation != nil &&
+	if pr.PromptWork != nil && pr.PromptWork.IsQualifiedFor(s.promptWorkArtifactHash, s.promptWorkContractID) {
+		prompt, conservativePrompt = pr.PromptWork.PromptTokens, pr.PromptWork.UpperBoundTokens
+	}
+	cacheContractMatches := s.promptWorkContractID != "" &&
+		pr.CachePlan.ModelAggregateHash == s.promptWorkArtifactHash && pr.CachePlan.PromptContractID == s.promptWorkContractID
+	if cacheContractMatches && r.cacheRouting != nil && pr.CachePlan.generation != nil &&
 		pr.CachePlan.generation == r.cacheRouting.generation && !pr.CachePlan.generation.revoked.Load() && pr.CachePlan.present() {
 		prompt, conservativePrompt = pr.CachePlan.PromptTokenCount, pr.CachePlan.PromptTokenCount
 	}
 	e.PromptTokens = prompt
-	if !c.firstContentCacheExpiresAt.IsZero() && now.Before(c.firstContentCacheExpiresAt) {
+	if (!pr.CachePlan.present() || cacheContractMatches) && !c.firstContentCacheExpiresAt.IsZero() && now.Before(c.firstContentCacheExpiresAt) {
 		e.CachedTokens = min(float64(prompt), c.firstContentCachedTokens) * c.firstContentCacheWeight
 		e.RestoreMs = c.firstContentRestoreMs
 	}
@@ -103,10 +121,22 @@ func (r *Registry) estimateFirstContent(c *routingCandidate, pr *PendingRequest,
 	if pr.RequestedMaxTokens > 0 {
 		decodeTokens = min(decodeTokens, pr.RequestedMaxTokens)
 	}
+	// Uncertainty is represented by input/work bounds and explicit delivery
+	// allowances. Apply observed throughput directly; do not halve every rate.
 	e.ConservativeMs = firstContentConservativeHandoffMs + s.conservativeTransportMs + load + e.RestoreMs + s.pendingPrefillRestoreMs +
-		(ahead+max(0, float64(conservativePrompt)-e.CachedTokens))/(conservativeRate*0.5)*1000*competition +
-		float64(decodeTokens)/(decode*0.5)*1000
+		(ahead+max(0, float64(conservativePrompt)-e.CachedTokens))/conservativeRate*1000*competition +
+		float64(decodeTokens)/decode*1000
 	e.ConservativeMs = max(e.ConservativeMs, e.ExpectedMs)
+	s.calibratedForecastQualified = false
+	if prediction, age, ok := calibratedFirstContentPrediction(s, pr, conservativePrompt, e.CachedTokens); ok {
+		// The error envelope covers engine work. Delivery and proof restore
+		// allowances remain explicit, and the request's deadline is unchanged.
+		e.ExpectedMs = firstContentHandoffMs + s.transportMs + e.RestoreMs + s.pendingPrefillRestoreMs + prediction.ExpectedMS
+		e.ConservativeMs = firstContentConservativeHandoffMs + s.conservativeTransportMs + e.RestoreMs + s.pendingPrefillRestoreMs + prediction.ConservativeMS
+		e.ConservativeMs = max(e.ConservativeMs, e.ExpectedMs)
+		e.PredictionSource, e.PerformanceAgeMs = "qualified_calibration", age
+		s.calibratedForecastQualified = true
+	}
 	c.firstContentEvidenceQualified = firstContentForecastUnknownReason(s, pr, prompt, true) == ""
 	e.Reason = firstContentForecastUnknownReason(s, pr, prompt, false)
 	if pr.FirstContentDeadline.IsZero() && pr.MaxTTFTMs <= 0 && (!(pr.Hedge || pr.RequireFreshFeasible) || pr.FirstContentPlanningHorizon <= 0) {
@@ -144,6 +174,8 @@ func firstContentForecastUnknownReason(s *routingSnapshot, pr *PendingRequest, p
 		return "capacity_stale"
 	case !ignoreRefusalCutoff && !pr.RequireFreshFeasibleAfter.IsZero() && !s.capacityAcceptedAt.After(pr.RequireFreshFeasibleAfter):
 		return "capacity_before_refusal"
+	case s.calibratedForecastQualified:
+		return ""
 	case s.performanceAgeMs < 0 || time.Duration(s.performanceAgeMs)*time.Millisecond > firstContentPerformanceFreshness:
 		return "performance_age_unknown_or_stale"
 	case !s.isolatedPrefillInitialized || !finitePositive(s.isolatedPrefillTPS) || !finitePositive(s.observedDecodeTPS):
@@ -173,11 +205,16 @@ func firstContentCandidateAllowed(c *routingCandidate, pr *PendingRequest) bool 
 	return pr.MaxTTFTMs <= 0 || c.firstContent.Status != FirstContentPredictedLate
 }
 
+// preferFirstContentCandidates ranks qualified evidence first. Candidates
+// whose only gap is evidence they have been idle too long to renew stay beside
+// feasible peers (first_content_exploration.go); without feasible candidates
+// the unknown fallback is unchanged.
 func preferFirstContentCandidates(pool []*routingCandidate) []*routingCandidate {
-	pool = preferRoutingCandidates(pool, func(c *routingCandidate) bool { return c.firstContent.Status == FirstContentFeasible })
 	for _, c := range pool {
 		if c.firstContent.Status == FirstContentFeasible {
-			return pool
+			return preferRoutingCandidates(pool, func(c *routingCandidate) bool {
+				return c.firstContent.Status == FirstContentFeasible || firstContentEvidenceExplorable(c)
+			})
 		}
 	}
 	return preferRoutingCandidates(pool, func(c *routingCandidate) bool { return c.firstContent.Status == FirstContentUnknown })

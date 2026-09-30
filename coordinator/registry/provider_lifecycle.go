@@ -174,6 +174,9 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	// Persist provider record to store (async).
 	r.persistProviderNow(p)
 
+	// Registration carries the provider's cache capabilities; bind any rows
+	// restored from the durable copy for its epochs (cache_persistence.go).
+	r.bindRegisteredProvider(p)
 	return p
 }
 
@@ -420,6 +423,8 @@ func (r *Registry) disconnectProvider(id string, expected *Provider, timeout tim
 	p.pendingReqs = make(map[string]*PendingRequest)
 	p.serviceRetirementShadows = nil
 	p.serviceRetirementProtocol = false
+	p.deadlineActivityAt = time.Time{}
+	p.deadlinePostureInvalidAt = time.Time{}
 	p.settleDrainPendingLocked()
 	p.mu.Unlock()
 	for _, pr := range pending {

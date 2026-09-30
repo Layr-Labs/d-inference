@@ -1,6 +1,6 @@
 # Paged runtime dtype protection
 
-> Last updated: 2026-09-05 · commit `da05f883d`
+> Last updated: 2026-09-05
 
 The native runtime now rejects projected KV dtypes that differ from the paged
 pool's observed contract before sampling the failed result. The exact candidate

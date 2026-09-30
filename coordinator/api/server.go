@@ -26,6 +26,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"nhooyr.io/websocket"
 	"os"
 	"runtime"
 	"runtime/debug"
@@ -36,6 +37,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/promptwork"
 	"github.com/eigeninference/d-inference/coordinator/apns"
 	attestservice "github.com/eigeninference/d-inference/coordinator/appattest/service"
 	"github.com/eigeninference/d-inference/coordinator/auth"
@@ -159,7 +161,7 @@ func keyLimitResetFromContext(ctx context.Context) string {
 // assistant support; model-aware MTP defaults remain provider-side policy.
 // Keep this fallback in sync with ProviderCore.version so dev/in-memory
 // coordinators advertise the same floor as the Swift binary they expect.
-var LatestProviderVersion = "0.9.12"
+var LatestProviderVersion = "0.9.13"
 
 // latestReleasedVersion returns the highest active release version from
 // the store, falling back to the hardcoded LatestProviderVersion when
@@ -190,7 +192,20 @@ type releaseTrustPolicySnapshot struct {
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.
 type Server struct {
 	appAttestRuntimeRefreshPending atomic.Bool
-	modelCatalogSyncMu             sync.Mutex // serialize catalog snapshots and desired-state publication
+	// providerHandlers counts running provider socket handlers so shutdown can
+	// join them after closing their sockets. providerAdmit serializes a
+	// handler's registration with the closing flag: once providersClosing is
+	// set under the mutex no handler is admitted and every admitted one is
+	// already counted, so no Add can race the Wait.
+	providerHandlers sync.WaitGroup
+	providerAdmit    sync.Mutex
+	providersClosing bool
+	// providerConns holds every hijacked provider socket from accept to
+	// handler exit, registered or not, so shutdown can close the ones the
+	// registry does not know yet (a peer that never sent its register frame
+	// would otherwise hold the join open until exit).
+	providerConns      map[*websocket.Conn]struct{}
+	modelCatalogSyncMu sync.Mutex // serialize catalog snapshots and desired-state publication
 
 	appAttestShadow               AppAttestShadowConfig
 	appAttest                     *attestservice.Service
@@ -216,6 +231,7 @@ type Server struct {
 	profileSigner                 *profilesign.Signer // CMS signer for the /v1/enroll .mobileconfig (nil = serve unsigned)
 	promptArtifacts               *promptcontract.Provisioner
 	promptContract                *promptcontract.Client
+	promptWorkGate                *promptwork.Gate
 	promptSupervisor              *promptcontract.Supervisor
 	promptPreloader               *promptcontract.PreloadController
 	exactCacheGaugeMu             sync.RWMutex

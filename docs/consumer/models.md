@@ -1,10 +1,21 @@
 # Models reference
 
-> Last updated: 2026-09-28 · commit `1902940eb`
+> Last updated: 2026-09-28
 
 Reference for `GET /v1/models` and `GET /v1/models/{id}`: every field of a `ModelEntry`, how the `model` you send is resolved, and the capability flags the API exposes and enforces. For SDK users and integrators. The catalog itself is database-driven — builds, capabilities and prices live in the coordinator's registry and price tables, and public names are aliases maintained by operators (`coordinator/api/model_alias_handlers.go`, [`../architecture/model-registry.md`](../architecture/model-registry.md)) — so there is no static list to reproduce here; `GET /v1/models` is the list.
 
 ## `GET /v1/models`
+
+The [native MiMo V2.6 candidate](../architecture/inference.md#native-mimo-v26-candidate)
+adds exact `mimo_v2` ordinary dispatch, not a catalog entry or public alias.
+Normal provider/standalone loading installs bounded visual policies and an
+authenticated audio policy when the required sidecar is present. Invalid
+sidecars refuse; they are not silently treated as absent. Read the actual
+per-model capabilities and format refusals. The 0.9.13 candidate adds ordinary
+PCM WAV sample rates/widths and stereo input to that audio path; see the
+[encoded-audio contract](../architecture/inference.md#native-mimo-v26-candidate). Speech output, real native paging,
+media-prefix reuse and complete API/numerical/lifecycle qualification are not
+granted by the model name or by a successful benchmark.
 
 The native DiffusionGemma wrapper reports its supported vision configuration
 through provider discovery and validates multimodal template inputs. Its

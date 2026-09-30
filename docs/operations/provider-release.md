@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-27 · commit `2b714c427`
+> Last updated: 2026-09-30
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -10,9 +10,23 @@ re-downloads artifacts and requires independent App Attest qualification before
 activating a production release. Staging/publication failures retry the retained
 artifact; GitHub and R2 publication are separate recoverable steps.
 
-The prepared version is **0.9.12**; its source changes since `v0.9.9` are
-collected in [`CHANGELOG.md`](../../CHANGELOG.md): the unshipped 0.9.10
-candidate, the prefix-cache hit-rate set, and model-download cache recovery.
+The prepared version is **0.9.13**. Its MiMo memory-admission changes are
+collected in [`CHANGELOG.md`](../../CHANGELOG.md). Qualify the signed build
+on a 256 GiB host both with MiMo alone and with another model resident:
+confirm a positive usable token budget, successful inference, bounded memory
+pressure, and correct concurrency reduction or load refusal when grants shrink.
+Include base64 PNG, EXIF JPEG, silent H.264 MP4 and combined image/video
+requests through the authenticated API. Include the standard PCM8/22050 Hz audio
+case and the OpenRouter MP4 with stereo AAC audio; verify native audio
+tokenization, generation and reservation cleanup. Check both on/off
+`chat_template_kwargs.thinking` aliases and tool-return reasoning history.
+Deploy the matching coordinator prompt normalizer before enabling the new
+request shapes across the provider fleet.
+Compare 30- and 300-source-frame clips
+with the same sampled frame count; record actual peak process memory and usable
+KV headroom, and confirm terminal reservation cleanup. Local tiny-weight
+inference and decoder tests cover the path but do not qualify the full artifact.
+The source change does not itself establish those live-serving results.
 Cache rollout steps are in [`cache-routing-rollout.md`](cache-routing-rollout.md).
 The 0.9.10 rollout order below applies unchanged: the new inference-request
 field is optional in both directions. The version bump prepares the source for
@@ -31,12 +45,16 @@ Keep `ProviderCore.version` in
 identity. Record release history in `CHANGELOG.md`;
 `scripts/check-release-version.sh` checks parity with the coordinator display
 fallback before packaging.
+The release Metal cache namespace also binds the prepared downloadable compiler's
+binary SHA, so an exact outer-cache hit cannot prevent publishing a library built
+with a newly installed Metal component.
 
 Production publication requires independent [durable App Attest build qualification](app-attest-build-qualification.md). Signing retains immutable bytes and a qualification template; a separate Linux staging job uploads those retained bytes to R2, and the Linux publication job verifies approval before release registration, R2 latest aliases and GitHub publication. Retry only the failed publication job after approval, preserving the original signed artifact. Deploy the matching coordinator first; the existing release key cannot approve builds.
 
 ### 0.9.10 rollout order
 
 1. Merge the version bump, then verify Release Integrity, Provider Tests,
+   Provider SDK Tests, Provider Prompt Parity,
    Coordinator Tests, E2E Integration Tests, and both SDK 27 release-preparation
    lanes on the final source. Build-cache success and a source version bump are
    neither signed-bundle qualification nor publication.
@@ -167,7 +185,7 @@ For App Attest coexistence, both signing workflows prepare optional profile-auth
 1. After merging release inputs, let **SDK 27 release preparation** complete on
    `master`, or dispatch `.github/workflows/provider-release-cache.yml` on
    `master`. It runs optimized compilation and SDK qualification on separate
-   `xcode-27-xlarge` runners, with no signing secrets or publication steps. This seeds
+   `blacksmith-12vcpu-macos-27` runners, with no signing secrets or publication steps. This seeds
    caches in the default branch's scope, which release tags can restore. PR
    validation caches stay isolated to their PR and do not seed `master`.
    Pipeline shutdown changes run these lanes on their PR as well; the
@@ -333,6 +351,7 @@ message** (step 4), so write the tag message from this entry.
 ### 3. Merge to `master` and wait for CI
 
 Open a PR with the bump + changelog; "Release Integrity", "Provider Tests",
+"Provider SDK Tests", "Provider Prompt Parity",
 "Coordinator Tests", and "E2E Integration Tests" must be green. The release
 workflow re-runs `scripts/verify-prompt-parity.sh` itself, so a prompt-contract
 change that is not fixture-synced will fail the release, not just CI.
@@ -386,11 +405,15 @@ R2 uploads, release registration and GitHub Release creation. The default remain
 The Actions artifact contains the final signed tarball and
 `darkbloom-validation-identity.json`, with source/submodule revisions and final
 bundle, executable and metallib hashes plus the full SHA-256 CodeDirectory digest and build SDK version.
-The release build uses GitHub’s `xcode-27` runner with Apple Command Line Tools
-27.0 / Swift 6.4 preinstalled. The ordinary Blacksmith runner was observed on
-macOS 26.3, below the SDK 27 installer’s 26.4 minimum; it remains the general
-PR CI environment. The selector refuses an older SDK/compiler instead of
-installing software or falling back.
+The release build, SDK qualification, signing and signing-validation jobs use
+Blacksmith's pinned `blacksmith-12vcpu-macos-27` image (currently public beta)
+with Xcode 27. The selector resolves the image's default Xcode after checkout,
+requires SDK 27.0 / Apple Swift 6.4, and scopes native SwiftPM through the existing
+wrapper. Python 3.12.10 and checksum-verified Rust/CMake bootstraps are explicit;
+the older-OS validation job pins `blacksmith-12vcpu-macos-26` so it cannot drift
+to macOS 27. Blacksmith hosts the protected signing jobs and receives their
+existing signing credentials after environment approval. Publication remains a
+separate protected Linux job. See the [runner and cache contract](../developer/build.md#sdk-27-release-builds-and-caches).
 The workflow obtains Xcode's matching Metal compiler through
 `xcodebuild -downloadComponent MetalToolchain` when the image omits it, and
 checks availability before computing the source-matched metallib cache key.
@@ -414,7 +437,7 @@ durability or authorize rollout.
 
 After `build-provider` and `qualify-sdk` both succeed, approve the pending
 `prod` (or `dev`) deployment for **Sign, notarize and retain exact artifact**
-(`build-and-release`, `xcode-27`). Compilation and SDK tests have already run
+(`build-and-release`, `blacksmith-12vcpu-macos-27`). Compilation and SDK tests have already run
 in the parallel jobs; the signing job consumes their source-bound artifact.
 The relevant signing steps run in this order:
 

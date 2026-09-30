@@ -10,19 +10,26 @@ struct NativeToolStreamRouter {
     private var parser: NativeChannelSplitter?
     private var gemmaParser: DiffusionGemmaChannelSplitter?
     private let nativeGemmaReasoningEnabled: Bool
+    private let nativeMiMoChannels: Bool
+    private let nativeMiMoRequiresConstraint: Bool
+    private let rejectMiMoThought: Bool
     private var rejectedNativeGemmaReasoning = false
 
     init(handler: BatchedToolStreamHandler?, requiresToolCall: Bool, nativePrefix: String?,
          preserveInnerReasoningSpans: Bool = false, nativeGemmaChannels: Bool = false,
-         nativeGemmaReasoningEnabled: Bool = true) {
+         nativeGemmaReasoningEnabled: Bool = true, nativeMiMoChannels: Bool = false,
+         nativeMiMoThinkingEnabled: Bool = true, nativeMiMoRequiresConstraint: Bool = false) {
         self.handler = handler
         self.requiresToolCall = requiresToolCall
         self.nativeGemmaReasoningEnabled = nativeGemmaReasoningEnabled
+        self.nativeMiMoChannels = nativeMiMoChannels
+        self.nativeMiMoRequiresConstraint = nativeMiMoRequiresConstraint
+        self.rejectMiMoThought = nativeMiMoChannels && !nativeMiMoThinkingEnabled
         if nativeGemmaChannels {
             gemmaParser = DiffusionGemmaChannelSplitter()
         } else if let nativePrefix {
             self.parser = NativeChannelSplitter(prefix: nativePrefix, protectToolFrames: handler != nil,
-                qwenStructuredFrames: handler?.format == .qwen35,
+                qwenStructuredFrames: handler?.format == .qwen35 || handler?.format == .mimoV2,
                 preserveInnerReasoningSpans: preserveInnerReasoningSpans)
         }
     }
@@ -34,12 +41,14 @@ struct NativeToolStreamRouter {
         if gemmaParser != nil { pieces = gemmaParser!.parse(text) }
         else { pieces = parser != nil ? parser!.parse(text) : [.init(content: text, reasoningContent: nil)] }
         try checkReasoningState()
+        try checkNativeToolFailure()
         return try route(pieces)
     }
 
     mutating func finishText() throws -> [MLXServerGenerationEvent] {
         let pieces = gemmaParser != nil ? gemmaParser!.finish() : (parser?.finish() ?? [])
         try checkReasoningState()
+        try checkNativeToolFailure()
         return try route(pieces)
     }
 
@@ -61,14 +70,24 @@ struct NativeToolStreamRouter {
         let message = "native reasoning output is disabled for this request"
         // A forced-tool failure stays model noncompliance (422), preserving
         // bounded failover and the existing provider-reputation exemption.
-        return requiresToolCall ? .toolChoiceViolation(message) : .generationFailed(message)
+        return requiresToolCall || nativeMiMoRequiresConstraint
+            ? .toolChoiceViolation(message) : .generationFailed(message)
+    }
+
+    private func checkNativeToolFailure() throws {
+        guard nativeMiMoChannels, (handler?.parseFailureCount ?? 0) > 0 else { return }
+        let message = "native MiMo tool output is invalid"
+        if requiresToolCall || nativeMiMoRequiresConstraint {
+            throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(message)
+        }
+        throw MultiModelBatchSchedulerEngineError.generationFailed(message)
     }
 
     private mutating func route(_ pieces: [ParsedReasoning]) throws -> [MLXServerGenerationEvent] {
         var events: [MLXServerGenerationEvent] = []
         for piece in pieces {
             if let reasoning = piece.reasoningContent, !reasoning.isEmpty {
-                if gemmaParser != nil && !nativeGemmaReasoningEnabled {
+                if (gemmaParser != nil && !nativeGemmaReasoningEnabled) || rejectMiMoThought {
                     // Empty native envelopes may contain framing whitespace.
                     // Never promote a call/example from an unclosed thought,
                     // or expose disabled thought before a later error frame.
@@ -84,6 +103,11 @@ struct NativeToolStreamRouter {
             let visible: String?
             if let handler { visible = handler.processChunk(piece.content) }
             else { visible = piece.content }
+            // Complete malformed frames may be returned as visible fallback
+            // by the shared parser. Refuse BEFORE exposing that return value,
+            // including pieces produced by finishText. Other families retain
+            // their existing fallback contract.
+            try checkNativeToolFailure()
             guard let visible, !visible.isEmpty else { continue }
             if requiresToolCall {
                 if usesNativeChannels && ToolChoiceEnforcementPolicy.isFramingWhitespace(visible) { continue }

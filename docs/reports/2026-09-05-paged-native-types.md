@@ -1,6 +1,6 @@
 # Native KV types and explicit Qwen paging
 
-> Last updated: 2026-09-05 · commit `544cfa5ee`
+> Last updated: 2026-09-05
 
 Explicit paged construction now measures the loaded target's actual K/V types
 before selecting storage. Qwen dense and MoE targets can use segmented paged KV

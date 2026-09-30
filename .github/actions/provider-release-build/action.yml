@@ -57,7 +57,7 @@ runs:
     - name: Install pinned Rust for prompt parity
       if: inputs.lane == 'qualification'
       shell: bash
-      run: rustup toolchain install 1.88.0 --profile minimal
+      run: ./scripts/install-release-rust.sh
     - name: Resolve compatible build cache keys
       id: keys
       shell: bash
@@ -102,6 +102,9 @@ runs:
     - name: Ensure matching Metal compiler is available
       shell: bash
       run: python3 scripts/prepare-metal-toolchain.py
+    - name: Install pinned CMake for Metal build
+      shell: bash
+      run: ./scripts/install-release-cmake.sh
     - name: Resolve source-matched metallib cache namespace
       id: mlxkey
       shell: bash
@@ -114,7 +117,13 @@ runs:
         HELPER_SHA=$(shasum -a 256 scripts/fetch-metallib.sh | cut -d' ' -f1)
         SDK=$(xcrun --sdk macosx --show-sdk-version)
         XCODE=$(xcodebuild -version | tr -cs '[:alnum:].' '-')
-        echo "key=metallib-helper-v1-${MLX_SHA}-${HELPER_SHA}-${XCODE}-sdk${SDK}-dt${MLX_METALLIB_DEPLOYMENT_TARGET}-jitoff" >> "$GITHUB_OUTPUT"
+        METAL_COMPILER=$(xcrun --no-cache --sdk macosx --find metal)
+        METAL_SHA=$(shasum -a 256 "$METAL_COMPILER" | cut -d' ' -f1)
+        CMAKE_COMPILER=$(command -v cmake)
+        CMAKE_VERSION=$(cmake --version)
+        CMAKE_BINARY_SHA=$(shasum -a 256 "$CMAKE_COMPILER" | cut -d' ' -f1)
+        CMAKE_SHA=$(printf '%s\n' "$CMAKE_VERSION" "$CMAKE_BINARY_SHA" | shasum -a 256 | cut -d' ' -f1)
+        echo "key=metallib-helper-v3-${MLX_SHA}-${HELPER_SHA}-${METAL_SHA}-${CMAKE_SHA}-${XCODE}-sdk${SDK}-dt${MLX_METALLIB_DEPLOYMENT_TARGET}-jitoff" >> "$GITHUB_OUTPUT"
         echo "mlx_sha_short=${MLX_SHA:0:12}" >> "$GITHUB_OUTPUT"
     - name: Restore source-matched metallib cache
       id: metallib-cache
@@ -129,7 +138,7 @@ runs:
         METALLIB_CACHE_DIR: ${{ runner.temp }}/metallib-cache
       run: |
         set -euo pipefail
-        command -v cmake >/dev/null 2>&1 || brew install cmake
+        cmake --version
         MLX_SRC="libs/mlx-swift/Source/Cmlx/mlx"
         ./scripts/fetch-metallib.sh "$RUNNER_TEMP/metallib"
         test -z "$(git -C "$MLX_SRC" status --porcelain=v1 --untracked-files=all)"
@@ -165,11 +174,47 @@ runs:
       if: inputs.lane == 'qualification'
       shell: bash
       working-directory: provider-swift
+      env:
+        MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS: '1'
       run: |
+        python3 ../scripts/prepare-mimo-prompt-fixtures.py \
+          --output "$RUNNER_TEMP/mimo-sdk-prompt-fixtures" --github-env "$GITHUB_ENV"
+        python3 ../scripts/prepare-mimo-provider-fixtures.py \
+          --output "$RUNNER_TEMP/mimo-sdk-provider-fixtures" --github-env "$GITHUB_ENV"
+        export MIMO_PROMPT_ARTIFACT_DIRECTORY="$RUNNER_TEMP/mimo-sdk-prompt-fixtures"
+        export MIMO_PROMPT_REFERENCE_VECTORS="$GITHUB_WORKSPACE/fixtures/prompt-contract/mimo-v26-additional20.json"
+        export MIMO_V26_SERIAL_LOAD_FIXTURES="$RUNNER_TEMP/mimo-sdk-provider-fixtures"
+        export MIMO_V26_WIRED_METADATA_FIXTURE="$RUNNER_TEMP/mimo-sdk-provider-fixtures/tiny-bf16"
         python3 ../scripts/run-provider-test-watchdog.py \
           --output-dir "$RUNNER_TEMP/provider-sdk-tests" \
           --diagnostic-after-seconds 480 --timeout-seconds 900 \
           -- ../scripts/run-provider-tests.sh
+    - name: Restore pinned MiMo audio codec
+      if: inputs.lane == 'qualification'
+      uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57
+      id: mimo-audio-cache
+      with:
+        path: ${{ runner.temp }}/mimo-audio-source
+        key: mimo-audio-source-v2-077033345d80eef3a315e8d394e0589667e80e4cdaba9bc5a7488410c6657265
+    - name: Prepare selected MiMo audio fixture
+      if: inputs.lane == 'qualification'
+      id: mimo-audio-fixtures
+      shell: bash
+      run: python3 scripts/prepare-mimo-audio-fixtures.py --cache "$RUNNER_TEMP/mimo-audio-source" --output "$RUNNER_TEMP/mimo-audio-fixtures" --github-env "$GITHUB_ENV"
+    - name: Cache verified MiMo audio codec
+      if: inputs.lane == 'qualification' && steps.mimo-audio-fixtures.outcome == 'success' && steps.mimo-audio-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57
+      with:
+        path: ${{ runner.temp }}/mimo-audio-source
+        key: mimo-audio-source-v2-077033345d80eef3a315e8d394e0589667e80e4cdaba9bc5a7488410c6657265
+    - name: Qualify authenticated native MiMo PCM8 audio inference
+      if: inputs.lane == 'qualification'
+      shell: bash
+      working-directory: provider-swift
+      env:
+        MIMO_V26_SERIAL_NATIVE_TESTS: '1'
+        MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS: '1'
+      run: ../scripts/run-nested-suite.sh testNativeAudioRelease --no-parallel
     - name: Build optimized provider products
       if: inputs.lane == 'release'
       id: products

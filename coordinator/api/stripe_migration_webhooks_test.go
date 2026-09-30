@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,13 +12,55 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
+type checkoutReferralRetryStore struct {
+	*store.MemoryStore
+	failReferral bool
+}
+
+func (s *checkoutReferralRetryStore) RecordReferral(code, account string) error {
+	if s.failReferral {
+		return errors.New("temporary referral persistence failure")
+	}
+	return s.MemoryStore.RecordReferral(code, account)
+}
+
+func TestCheckoutReferralRetriesWithoutRecreditingDeposit(t *testing.T) {
+	s, mem := stripePayoutsTestServer(t, true, nil)
+	st := &checkoutReferralRetryStore{MemoryStore: mem, failReferral: true}
+	s.SetBilling(billing.NewService(st, s.billing.Ledger(), s.logger, billing.Config{StripeSecretKey: "rk_new", StripeWebhookSecret: "whsec_test"}))
+	if err := mem.CreateReferrer("promoter", "REFER"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mem.CreateBillingSession(&store.BillingSession{ID: "referral-session", ExternalID: "cs_referral", AccountID: "buyer", PaymentMethod: "stripe", AmountMicroUSD: 5_000_000, Status: "pending", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte(`{"type":"checkout.session.completed","data":{"object":{"id":"cs_referral","amount_total":500,"currency":"usd","payment_status":"paid","metadata":{"billing_session_id":"referral-session","consumer_key":"buyer","referral_code":"REFER","app":"darkbloom"}}}}`)
+	for i, want := range []int{500, 200, 200} {
+		st.failReferral = i == 0
+		w := httptest.NewRecorder()
+		s.handleStripeWebhook(w, signedConnectRequest(t, payload, "whsec_test"))
+		if w.Code != want {
+			t.Fatalf("attempt %d: %d %s", i, w.Code, w.Body.String())
+		}
+		if mem.GetBalance("buyer") != 5_000_000 {
+			t.Fatal("referral retry duplicated deposit")
+		}
+	}
+	if code, err := mem.GetReferrerForAccount("buyer"); err != nil || code != "REFER" {
+		t.Fatalf("attribution: %s %v", code, err)
+	}
+}
+
 func TestCheckoutMigrationAcceptsBothSecretsAndCreditsOnce(t *testing.T) {
 	s, st := stripePayoutsTestServer(t, true, nil)
 	s.SetBilling(billing.NewService(st, s.billing.Ledger(), s.logger, billing.Config{StripeSecretKey: "rk_new", StripeWebhookSecret: "whsec_new", StripeLegacyWebhookSecret: "whsec_old", StripeConnectSecretKey: "rk_old"}))
 	if err := st.CreateBillingSession(&store.BillingSession{ID: "local-session", ExternalID: "cs_stripe", AccountID: "buyer", PaymentMethod: "stripe", AmountMicroUSD: 5_000_000, Status: "pending", CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	payload := []byte(`{"type":"checkout.session.completed","data":{"object":{"id":"cs_stripe","amount_total":500,"currency":"usd","payment_status":"paid","metadata":{"billing_session_id":"local-session","consumer_key":"buyer","app":"darkbloom"}}}}`)
+	if err := st.CreateReferrer("promoter", "REFER"); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte(`{"type":"checkout.session.completed","data":{"object":{"id":"cs_stripe","amount_total":500,"currency":"usd","payment_status":"paid","metadata":{"billing_session_id":"local-session","consumer_key":"buyer","app":"darkbloom","referral_code":"REFER"}}}}`)
 	for _, secret := range []string{"whsec_old", "whsec_new", "whsec_old"} {
 		w := httptest.NewRecorder()
 		s.handleStripeWebhook(w, signedConnectRequest(t, payload, secret))

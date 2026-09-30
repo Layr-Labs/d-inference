@@ -2537,8 +2537,11 @@ func (s *PostgresStore) GetReferrerForAccount(accountID string) (string, error) 
 	err := s.pool.QueryRow(ctx,
 		`SELECT referrer_code FROM referrals WHERE referred_account = $1`, accountID,
 	).Scan(&code)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
 	if err != nil {
-		return "", nil // no referrer is not an error
+		return "", fmt.Errorf("store: lookup referrer: %w", err)
 	}
 	return code, nil
 }

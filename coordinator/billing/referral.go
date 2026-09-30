@@ -102,8 +102,12 @@ func validateReferralCode(code string) (string, error) {
 	return code, nil
 }
 
+// ErrReferralAlreadyAssigned preserves immutable referral attribution.
+var ErrReferralAlreadyAssigned = errors.New("referral: account already has a referrer")
+
 // Apply links an account to a referral code. The account must not already
-// have a referrer, and the account cannot refer itself.
+// have a different referrer, and the account cannot refer itself. Reapplying
+// the same normalized code succeeds without recording another referral.
 func (r *ReferralService) Apply(accountID, referralCode string) error {
 	referralCode = strings.ToUpper(strings.TrimSpace(referralCode))
 	if referralCode == "" {
@@ -123,12 +127,27 @@ func (r *ReferralService) Apply(accountID, referralCode string) error {
 
 	// Check if account already has a referrer
 	existing, err := r.store.GetReferrerForAccount(accountID)
-	if err == nil && existing != "" {
-		return errors.New("referral: account already has a referrer")
+	if err != nil {
+		return fmt.Errorf("referral: lookup existing attribution: %w", err)
+	}
+	if existing == referralCode {
+		return nil
+	}
+	if existing != "" {
+		return ErrReferralAlreadyAssigned
 	}
 
 	// Record the referral
 	if err := r.store.RecordReferral(referralCode, accountID); err != nil {
+		// A concurrent replay may have installed the same immutable attribution.
+		if recorded, readErr := r.store.GetReferrerForAccount(accountID); readErr == nil {
+			if recorded == referralCode {
+				return nil
+			}
+			if recorded != "" {
+				return ErrReferralAlreadyAssigned
+			}
+		}
 		return fmt.Errorf("referral: record referral: %w", err)
 	}
 

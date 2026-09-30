@@ -76,6 +76,12 @@ func (s *Server) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 	// without re-crediting the payment.
 	if code := obj.Metadata["referral_code"]; code != "" {
 		if err := s.billing.Referral().Apply(account, code); err != nil {
+			if errors.Is(err, billing.ErrReferralAlreadyAssigned) {
+				// A later purchase cannot replace an existing referral. The payment
+				// is settled; retrying this permanent conflict cannot improve it.
+				w.WriteHeader(http.StatusOK)
+				return
+			}
 			s.ddIncr("billing.referral_apply_failed", nil)
 			s.logger.Error("stripe referral attribution failed", "billing_session_id", id, "error", err)
 			http.Error(w, "Referral attribution not confirmed", http.StatusInternalServerError)

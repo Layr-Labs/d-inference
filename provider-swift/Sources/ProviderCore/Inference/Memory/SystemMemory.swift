@@ -1,16 +1,28 @@
 import Foundation
 
-/// Real, OS-reported available physical memory — what's actually free right now
-/// accounting for macOS and every other process, not just what MLX is holding.
-///
-/// The model-load gate needs this: `total − MLX.active − MLX.cache` over-reports
-/// free memory whenever the OS or other processes have consumed RAM, which on a
-/// tight 24–64 GB box can let a load slip in that then drives the machine into
-/// memory pressure / OOM before the per-request KV budget can intervene.
+/// OS memory headroom under the process-start admission policy. Inactive pages
+/// can belong to other processes; reclaimability does not guarantee free RAM.
 public enum SystemMemory {
-    /// Available physical memory in bytes (free + inactive pages), or nil if the
-    /// host statistics call fails. Inactive pages are reclaimable, so they count
-    /// as available — matching how the OS reports "available".
+    public enum AvailabilityPolicy: String, Sendable {
+        case reclaimable
+        case freeOnly = "free-only"
+
+        /// Preserve the legacy default when unset. An invalid explicit value
+        /// fails toward the stricter policy rather than granting reclaim credit.
+        public static func resolve(_ value: String?) -> Self {
+            guard let value else { return .reclaimable }
+            return Self(rawValue: value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+                ?? .freeOnly
+        }
+    }
+
+    public static let availabilityPolicy = AvailabilityPolicy.resolve(
+        ProcessInfo.processInfo.environment["DARKBLOOM_MEMORY_AVAILABILITY"])
+
+    /// Every live admission consumer uses the same policy. Legacy mode counts
+    /// free + inactive pages and returns nil on sampling failure. Free-only mode
+    /// counts no inactive pages and returns zero on failure, so callers' legacy
+    /// `?? .max` fallback cannot bypass the stricter gate.
     ///
     /// NOTE: `speculative_count` is deliberately NOT added: on macOS speculative
     /// pages are already counted inside `free_count` (the `vm_stat` tool prints
@@ -25,13 +37,26 @@ public enum SystemMemory {
                 host_statistics64(mach_host_self(), HOST_VM_INFO64, intPtr, &count)
             }
         }
-        guard result == KERN_SUCCESS else { return nil }
+        return availableBytes(
+            freePages: result == KERN_SUCCESS ? UInt64(stats.free_count) : nil,
+            inactivePages: UInt64(stats.inactive_count),
+            pageSize: UInt64(getpagesize()), policy: availabilityPolicy)
+    }
+
+    /// Pure conversion shared by the live sampler and regression tests.
+    static func availableBytes(
+        freePages: UInt64?, inactivePages: UInt64, pageSize: UInt64,
+        policy: AvailabilityPolicy
+    ) -> UInt64? {
+        guard let freePages, pageSize > 0 else {
+            return policy == .freeOnly ? 0 : nil
+        }
         var pages: UInt64 = 0
-        for v in [UInt64(stats.free_count), UInt64(stats.inactive_count)] {
+        for v in [freePages, policy == .reclaimable ? inactivePages : 0] {
             let (sum, overflow) = pages.addingReportingOverflow(v)
             pages = overflow ? UInt64.max : sum
         }
-        let (bytes, overflow) = pages.multipliedReportingOverflow(by: UInt64(getpagesize()))
-        return overflow ? UInt64.max : bytes
+        let (bytes, overflow) = pages.multipliedReportingOverflow(by: pageSize)
+        return overflow ? (policy == .freeOnly ? 0 : UInt64.max) : bytes
     }
 }

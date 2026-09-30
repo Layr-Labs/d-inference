@@ -55,6 +55,11 @@ class HistoricalSourceLinkTests(unittest.TestCase):
                             "[spaces](../../provider-swift/Source%20Files/Legacy.swift)\n")
             self.report("../../coordinator/legacy/example.go", directory=directory,
                         filename="dated.md")
+        self.report("../../coordinator/legacy/example.go", directory="architecture")
+        for filename, target in (("documentation.md", "../retired.md"),
+                                 ("markdown.md", "../../provider-swift/README.md"),
+                                 ("asset.md", "../../assets/retired.bin")):
+            self.report(target, filename=filename)
         self.commit("Record source references")
         for old, new in (
             ("coordinator/legacy", "coordinator/current"),
@@ -178,10 +183,28 @@ class HistoricalSourceLinkTests(unittest.TestCase):
         # source fallback never rescues a moved docs page or a source README.
         for target in ("../retired.md", "../../provider-swift/README.md"):
             with self.subTest(target=target):
-                self.assert_broken(self.report(target))
+                filename = "documentation.md" if target == "../retired.md" else "markdown.md"
+                self.assert_broken(self.report(target, filename=filename))
 
     def test_paths_outside_source_roots_do_not_use_history(self):
-        self.assert_broken(self.report("../../assets/retired.bin"))
+        self.assert_broken(self.report("../../assets/retired.bin", filename="asset.md"))
+
+    def test_exclusion_fixtures_have_valid_committed_provenance(self):
+        # Without the shell exclusions these must pass, so each exclusion test
+        # fails for its policy rather than an unrelated missing history entry.
+        for name, path, target in (
+            ("docs/architecture/record.md", "coordinator/legacy/example.go",
+             "../../coordinator/legacy/example.go"),
+            ("docs/reports/documentation.md", "docs/retired.md", "../retired.md"),
+            ("docs/reports/markdown.md", "provider-swift/README.md", "../../provider-swift/README.md"),
+            ("docs/reports/asset.md", "assets/retired.bin", "../../assets/retired.bin"),
+        ):
+            with self.subTest(name=name):
+                result = subprocess.run(
+                    ["python3", "scripts/docs-historical-source.py", name, path, target],
+                    cwd=self.root, env=self.env, text=True, capture_output=True, timeout=15,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_missing_and_invalid_stamps_do_not_rescue_a_source_link(self):
         for header in ("", "> Last updated: 2026-09-13 · commit `not-a-sha`",
@@ -392,8 +415,9 @@ class HistoricalSourceLinkTests(unittest.TestCase):
 
     def test_migrated_legacy_link_cannot_borrow_provenance_after_a_continuity_break(self):
         for replacement in ("No source link.\n",
-                            "[replacement](../../coordinator/current/example.go)\n",
-                            "```markdown\n[source](../../coordinator/legacy/example.go)\n```\n"):
+                             "[replacement](../../coordinator/current/example.go)\n",
+                             "```markdown\n[source](../../coordinator/legacy/example.go)\n```\n",
+                             "`[source](../../coordinator/legacy/example.go)`\n"):
             with self.subTest(replacement=replacement):
                 self.git("checkout", "--detach", self.source_commit)
                 self.install_checker(self.root)
@@ -472,6 +496,221 @@ class HistoricalSourceLinkTests(unittest.TestCase):
         shutil.rmtree(self.root / "coordinator/legacy")
         self.commit("Delete original source")
         self.assert_passes(name)
+
+    def test_inline_code_samples_cannot_backdate_an_actual_source_link(self):
+        for sample in (
+            "`[source](../../coordinator/legacy/example.go)`",
+            "``[source](../../coordinator/legacy/example.go) and `nested` code``",
+            "`[source](../../coordinator/legacy/example.go)\ncontinued code`",
+            "`[entry]: ../../coordinator/legacy/example.go`",
+        ):
+            with self.subTest(sample=sample):
+                self.git("checkout", "--detach", self.source_commit)
+                self.install_checker(self.root)
+                name = "docs/reports/inline.md"
+                self.write(name, "# Record\n\n> Last updated: 2026-09-13\n\n" + sample + "\n")
+                self.commit("Show source link only in inline code")
+                shutil.rmtree(self.root / "coordinator/legacy")
+                self.commit("Delete source before adding the real link")
+                path = self.root / name
+                path.write_text(path.read_text() + "\n[source](../../coordinator/legacy/example.go)\n")
+                self.commit("Introduce the real source link after inline sample")
+                self.assert_broken(name)
+
+    def test_link_samples_are_ignored_by_current_and_frozen_checks(self):
+        for directory in ("reports", "architecture"):
+            for sample in (
+                "`[source](../../missing.bin)`",
+                "``[source](../../missing.bin) and `nested` code``",
+                "`[source](../../missing.bin)\ncontinued code`",
+                "```markdown\n[source](../../missing.bin)\n```",
+                "~~~markdown\n[entry]: ../../missing.bin\n~~~",
+                "````markdown\n```\n[source](../../missing.bin)\n```\n````",
+                "    [source](../../missing.bin)",
+            ):
+                with self.subTest(directory=directory, sample=sample):
+                    name = f"docs/{directory}/sample.md"
+                    self.write(name, "# Record\n\n> Last updated: 2026-09-13\n\n" + sample + "\n")
+                    self.assert_passes(name)
+
+    def test_sample_link_does_not_make_a_page_reachable(self):
+        self.git("checkout", "--detach", self.before_source)
+        self.install_checker(self.root)
+        self.write("docs/README.md", "# Index\n\n> Last updated: 2026-09-13\n\n"
+                   "`[sample](orphan.md)`\n\n```markdown\n[sample](orphan.md)\n```\n")
+        self.write("docs/orphan.md", "# Orphan\n\n> Last updated: 2026-09-13\n")
+        self.commit("Add a page mentioned only in code examples")
+        result = self.check("--all")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("docs/orphan.md: orphan", result.stderr)
+        self.write("docs/README.md", "# Index\n\n> Last updated: 2026-09-13\n\n"
+                   "[page][entry]\n\n[entry]: orphan.md\n")
+        self.assert_passes("--all")
+
+    def test_unmatched_and_escaped_code_markers_do_not_hide_real_links(self):
+        for sample in ("\\`[source](../../missing.bin)\\`",
+                       "`unmatched [source](../../missing.bin)",
+                       "`unmatched\n\n[source](../../missing.bin)\n\nseparate paragraph`",
+                       "`unmatched\n\n```text\nexample\n```\n[source](../../missing.bin) `"):
+            with self.subTest(sample=sample):
+                name = "docs/reports/markers.md"
+                self.write(name, "# Record\n\n> Last updated: 2026-09-13\n\n" + sample + "\n")
+                self.assert_broken(name)
+
+    def test_actual_header_stops_before_legacy_examples(self):
+        for stamp in (self.source_commit, "not-a-sha"):
+            for sample in (self.legacy_stamp(stamp),
+                           "```markdown\n" + self.legacy_stamp(stamp) + "\n```"):
+                with self.subTest(sample=sample):
+                    name = self.report("../../coordinator/legacy/example.go", filename="example.md")
+                    path = self.root / name
+                    path.write_text(path.read_text() + "\n" + sample + "\n")
+                    self.commit("Add link after source removal with a legacy header example")
+                    self.assert_broken(name)
+
+    def test_fenced_legacy_header_before_actual_stamp_is_not_metadata(self):
+        name = "docs/reports/header.md"
+        self.write(name, "# Record\n\n```markdown\n" + self.legacy_stamp(self.source_commit) +
+                   "\n```\n\n> Last updated: 2026-09-13\n\n"
+                   "[source](../../coordinator/legacy/example.go)\n")
+        self.commit("Add new source link with an earlier fenced header example")
+        self.assert_broken(name)
+
+    def test_freshness_metadata_cannot_be_supplied_by_a_code_example(self):
+        for sample in ("```markdown\n> Last updated: 2026-09-13\n```",
+                       "`> Last updated: 2026-09-13`",
+                       "    > Last updated: 2026-09-13",
+                       self.legacy_stamp(self.source_commit) + "\n\n> Last updated: 2026-09-13"):
+            with self.subTest(sample=sample):
+                name = "docs/reports/stamp.md"
+                self.write(name, "# Record\n\n" + sample + "\n")
+                result = self.check(name)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("missing date-only freshness stamp", result.stderr)
+
+    def merge_record(self, *, stamp=False, inherited=False, stamp_commit=None):
+        self.git("checkout", "--detach", self.source_commit)
+        name = "docs/reports/merge.md"
+        target = "../../coordinator/legacy/example.go"
+        self.report(target if stamp else "../../l.go", filename="merge.md")
+        base = self.commit("Record before divergent branches")
+        self.git("checkout", "-b", "side")
+        if inherited:
+            self.report(target, filename="merge.md")
+        self.write("side.txt", "side branch\n")
+        self.commit("Change side branch")
+        self.git("checkout", "--detach", base)
+        self.write("main.txt", "main branch\n")
+        self.commit("Change first parent")
+        self.git("merge", "--no-ff", "--no-commit", "side")
+        if not inherited:
+            self.report(target, filename="merge.md",
+                        header=self.legacy_stamp(stamp_commit or self.source_commit) if stamp else None)
+        merge = self.commit("Resolve merge with source provenance")
+        # Default path history has no statuses for this merge; it must still
+        # inspect the merge tree itself, not just patches on the two branches.
+        history = self.git("log", "--follow", "--format=%H", "--name-status", "--", name)
+        self.assertNotIn(merge, history)
+        self.assertEqual(len(self.git("rev-list", "--parents", "-1", merge).split()), 3)
+        return name, merge
+
+    def test_merge_resolution_can_introduce_a_date_only_link(self):
+        name, _ = self.merge_record()
+        shutil.rmtree(self.root / "coordinator/legacy")
+        self.commit("Delete source after merge-added link")
+        self.assert_passes(name)
+
+    def test_merge_resolution_can_introduce_a_legacy_stamp(self):
+        name, _ = self.merge_record(stamp=True)
+        self.report("../../coordinator/legacy/example.go", filename="merge.md")
+        self.commit("Migrate merge-added legacy stamp")
+        shutil.rmtree(self.root / "coordinator/legacy")
+        self.commit("Delete source after merge-added stamp")
+        self.assert_passes(name)
+
+    def test_merge_added_stamp_pins_its_exact_source_revision(self):
+        # An invalid merge-added stamp must beat the otherwise valid link
+        # introduction, even though default --follow omits this merge.
+        name, _ = self.merge_record(stamp=True, stamp_commit=self.before_source)
+        self.report("../../coordinator/legacy/example.go", filename="merge.md")
+        shutil.rmtree(self.root / "coordinator/legacy")
+        self.commit("Migrate stamp and remove source")
+        self.assert_broken(name)
+
+    def test_merge_inherits_continuous_link_from_second_parent(self):
+        name, _ = self.merge_record(inherited=True)
+        shutil.rmtree(self.root / "coordinator/legacy")
+        self.commit("Delete source after inherited merge link")
+        self.assert_passes(name)
+
+    def test_merge_prefers_an_unchanged_document_over_another_continuous_parent(self):
+        self.git("checkout", "--detach", self.source_commit)
+        name = self.report("../../coordinator/legacy/example.go", filename="merge.md")
+        base = self.commit("Record common source link")
+        self.git("checkout", "-b", "side")
+        self.report("../../coordinator/legacy/example.go", filename="merge.md",
+                    header=self.legacy_stamp(self.source_commit))
+        self.commit("Verify side branch source")
+        self.report("../../coordinator/legacy/example.go", filename="merge.md")
+        path = self.root / name
+        path.write_text(path.read_text() + "\nSide branch evidence.\n")
+        side = self.commit("Migrate side branch metadata")
+        self.git("checkout", "--detach", base)
+        self.report("../../coordinator/legacy/example.go", filename="merge.md",
+                    header=self.legacy_stamp(self.before_source))
+        self.commit("Pin invalid source in the first parent")
+        self.git("merge", "--no-ff", "--no-commit", "side")
+        self.write(name, self.git("show", f"{side}:{name}") + "\n")
+        self.commit("Keep the exact second-parent document at merge")
+        shutil.rmtree(self.root / "coordinator/legacy")
+        self.commit("Delete source after document merge")
+        self.assert_passes(name)
+
+    def test_merge_traversal_follows_parent_document_renames(self):
+        self.git("checkout", "--detach", self.source_commit)
+        old = self.report("../../coordinator/legacy/example.go", filename="merge.md")
+        base = self.commit("Record source before a branch rename")
+        self.git("checkout", "-b", "side")
+        name = "docs/releases/renamed.md"
+        (self.root / name).parent.mkdir(parents=True, exist_ok=True)
+        (self.root / old).rename(self.root / name)
+        self.commit("Rename the document on the second parent")
+        self.git("checkout", "--detach", base)
+        self.write("main.txt", "main branch\n")
+        self.commit("Advance the first parent")
+        self.git("merge", "--no-ff", "--no-commit", "side")
+        self.commit("Merge renamed document")
+        shutil.rmtree(self.root / "coordinator/legacy")
+        self.commit("Remove source after merge rename")
+        self.assert_passes(name)
+
+    def test_real_link_with_code_label_and_samples_survives_record_rename(self):
+        self.git("checkout", "--detach", self.source_commit)
+        old = "docs/reports/samples.md"
+        self.write(old, "# Record\n\n> Last updated: 2026-09-13\n\n"
+                   "[`source`](../../coordinator/legacy/example.go)\n\n"
+                   "``[sample](../../missing.bin) with `nested` code``\n\n"
+                   "````markdown\n```\n[sample](../../missing.bin)\n```\n````\n")
+        self.commit("Record a real link beside inline and fenced samples")
+        shutil.rmtree(self.root / "coordinator/legacy")
+        self.commit("Remove source while retaining the record")
+        name = "docs/releases/renamed.md"
+        (self.root / name).parent.mkdir(parents=True, exist_ok=True)
+        (self.root / old).rename(self.root / name)
+        self.commit("Rename the record without changing source destinations")
+        self.assert_passes(name)
+
+    def test_validation_does_not_change_pinned_hashes_or_body_evidence(self):
+        name = "docs/reports/dated.md"
+        evidence = (f"\nEvidence commit `{self.source_commit}`.\n"
+                    f"[pinned](https://example.invalid/blob/{self.before_source}/file.go)\n")
+        path = self.root / name
+        path.write_text(path.read_text() + evidence)
+        self.commit("Keep immutable evidence outside date-only metadata")
+        before = path.read_bytes()
+        self.assert_passes(name)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertIn(evidence, path.read_text())
 
     def test_documented_history_command_shows_patches_and_renames(self):
         name = "docs/reports/dated.md"

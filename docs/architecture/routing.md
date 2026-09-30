@@ -645,7 +645,10 @@ debit (`addPendingLocked`). `ReserveNextFromPlan`
 way. The comparison also rechecks the [idle evidence-exploration
 exception](first-content-routing.md#prediction-and-freshness): newly reported
 service or an unretired terminal lease forces a rescan even if pending counts
-and numeric forecasts have not changed.
+and numeric forecasts have not changed. A committed reservation records whether its
+winner was selected through that exception (`PendingRequest.SetFirstContentExplored`),
+so the attempt's outcome can back exploration off for that identity
+([exploration backoff](first-content-routing.md#prediction-and-freshness)).
 `commitLock` (`coordinator/registry/gate_commit_mode.go`) selects the
 mode: `reserveCommitShared` as described, or `reserveCommitGlobal`, which
 takes `r.mu.Lock()` for the commit — the previous fleet-wide serialization,

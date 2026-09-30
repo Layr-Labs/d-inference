@@ -141,6 +141,34 @@ both measurements: cache reuse can leave isolated-prefill evidence unchanged, as
 can an unchanged legacy EWMA. Exploration offers an opportunity, not guaranteed
 selection or recovery.
 
+Two per-identity checks keep exploration away from providers whose explorations
+fail (`coordinator/registry/first_content_exploration_gate.go`). Idle providers
+lose their measured evidence routinely, so a genuinely slow provider becomes
+explorable again and again. It is priced at the fleet median while it lacks
+evidence, and a first-content timeout is a 429 that the node-health breaker
+deliberately ignores.
+So without these checks a degraded provider can keep winning explorations it
+cannot serve.
+
+- **Outcome backoff.** An attempt selected through exploration reports its result.
+  A first-content timeout, a `deadline_unreachable` refusal or a genuine fault
+  (the breaker's own fault test) doubles a per-model suppression interval, from 5
+  minutes up to 2 hours. A delivered request halves it. Capacity sheds, neutral
+  terminal causes and client-shaped outcomes do not count. Reset-on-success would
+  not suffice: a degraded provider can still complete short requests.
+- **Remembered decode rate.** Newly measured decode rates are kept per model beyond
+  evidence clearing and reconnects. When the median of at least 5 recent
+  observations is below 0.25× the (model, chip family) fleet decode median, the
+  provider is not explorable. One slow observation never decides, because a
+  single slow final decode is the stale-estimate lock-out exploration exists to
+  escape. An observation at ≥ 0.5× the median clears the memory.
+
+Both live on the stable-identity gate, so they survive reconnects, and a provider
+binary version change clears them. Neither is a quarantine: a suppressed provider
+keeps ordinary feasible-first behaviour and is still selected when no candidate is
+feasible. Deadline refusals and first-content timeouts remain neutral for every
+health breaker.
+
 Even a feasible forecast is advisory. The ordinary forecast uses resolved
 prefill and decode rates directly: it no longer multiplies either rate by 0.5.
 The conservative prefill rate is still capped by a valid isolated-prefill

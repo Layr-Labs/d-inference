@@ -15,6 +15,10 @@
 
 - Enable native MiMo standing wired residency by default. Without a standing residency set every command buffer must make the ~161 GiB weight payload resident again; on a 256 GiB M3 Ultra the driver kept unwiring it and single-stream decode measured ~0.4 tok/s (the request failed at 234 s), versus 37.8 tok/s with residency, identical requests and weights. The existing bounded ceiling still leaves max(16 GiB, 10%) of physical memory unwired and never grants load admission. `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY=0` (or `false`/`no`/`off`) restores the previous behavior and is now forwarded to the launchd provider job; the former opt-in value `1` remains valid.
 
+## Unreleased — first-content exploration backoff
+
+- Back evidence exploration off per provider identity after explorations fail: a first-content timeout, deadline refusal or genuine fault doubles a per-model suppression interval (5 minutes to 2 hours) and a delivered request halves it. Also stop exploring a provider whose remembered decode rate, corroborated over at least 5 observations and kept across evidence resets and reconnects, is below 0.25× the fleet median. Health breakers, reputation and the feasible-first fallback are unchanged.
+
 ## Unreleased — first-content evidence exploration
 
 - Let an idle, loaded provider compete beside feasible peers after the 5-minute measurement-age threshold, using connection age when measurements are undated. This breaks the evidence-first exclusion of newly connected and long-idle providers without guaranteeing selection or measurement recovery. Hedge and fresh-feasible requests still require feasible evidence.

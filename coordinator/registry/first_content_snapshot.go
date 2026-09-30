@@ -19,6 +19,7 @@ func (r *Registry) fillFirstContentSnapshot(s *routingSnapshot, p *Provider, now
 		s.performanceAgeMs = max(heartbeatAgeMs(now, sample.observedAfter), heartbeatAgeMs(now, sample.decodeObservedAfter))
 	}
 	s.evidenceGapAgeMs = firstContentEvidenceGapAgeMs(s, p.registeredAt, now)
+	s.exploration = p.gate.Load().explorationView(s.model, now)
 	capacity := p.BackendCapacity
 	if capacity == nil {
 		return

@@ -95,6 +95,12 @@ func (g *gateState) noteIdentityVersionLocked(r *Registry, version string) {
 	if previous == "" || previous == version {
 		return
 	}
+	// A new binary is new evidence: its exploration backoff and remembered
+	// rates describe the old one (first_content_exploration_gate.go).
+	if len(g.exploration) > 0 {
+		g.exploration = nil
+		g.publishLocked()
+	}
 	// Date the reset at its mutation boundary, after gate acquisition. A bind
 	// can wait behind a disconnect on the index; its earlier lookup timestamp
 	// must not make a reset performed afterward predate that disconnect.

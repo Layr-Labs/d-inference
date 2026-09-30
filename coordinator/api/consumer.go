@@ -300,6 +300,12 @@ func (s *Server) cancelDispatchForFirstContentTimeout(
 	pr.Profile.Mark(registry.StampCancelSent)
 	s.sendRecordedCancel(provider, pr.RequestID, pr.Model, cancelCauseFirstChunkTimeout)
 	s.refundProviderExtra(pr)
+	// A timed-out exploration produced no evidence: back exploration off for
+	// this identity (registry/first_content_exploration_gate.go). No breaker
+	// sees first-content timeouts; that stays as it is.
+	if pr.FirstContentExplored() {
+		s.registry.RecordFirstContentExplorationOutcome(provider.ID, pr.Model, false)
+	}
 	return true
 }
 
@@ -383,6 +389,12 @@ func (s *Server) noteInferenceError(providerID string, pr *registry.PendingReque
 	if providerID == "" || pr == nil {
 		return
 	}
+	// A deadline refusal stays health-neutral for every breaker below, but an
+	// exploration that ends in one produced no evidence, so it counts against
+	// exploration eligibility (registry/first_content_exploration_gate.go).
+	if pr.FirstContentExplored() && isDeadlineUnreachableErrorReason(errReason) {
+		s.registry.RecordFirstContentExplorationOutcome(providerID, pr.Model, false)
+	}
 	// Structured health-neutral outcomes (isProviderHealthNeutralErrorReason:
 	// jinja_* template-render failures, tool_noncompliance, and the
 	// request-clock-specific deadline_unreachable refusal) never feed provider
@@ -449,6 +461,10 @@ func (s *Server) noteInferenceError(providerID string, pr *registry.PendingReque
 	// fault-503ing ~all of its requests gets quarantined fleet-wide. errStr lets
 	// the breaker tell a capacity-503 (ignored) from a fault-503 (counted). Both
 	// breakers coexist.
+	// Only genuine faults count against exploration; capacity sheds do not.
+	if pr.FirstContentExplored() && registry.ProviderOutcomeIsFault(statusCode, errStr) {
+		s.registry.RecordFirstContentExplorationOutcome(providerID, pr.Model, false)
+	}
 	if opened, _ := s.registry.RecordProviderOutcome(providerID, false, statusCode, errStr, causes...); opened {
 		s.ddIncr("routing.provider_breaker_open", []string{"model:" + pr.Model})
 	}
@@ -574,6 +590,9 @@ func (s *Server) noteInferenceSuccess(pr *registry.PendingRequest) {
 		return
 	}
 	s.registry.RecordInferenceSuccess(pr.ProviderID, pr.Model, pr.Traits.CooldownShape())
+	if pr.FirstContentExplored() {
+		s.registry.RecordFirstContentExplorationOutcome(pr.ProviderID, pr.Model, true)
+	}
 	// A clean completion is an ACCEPT for the capacity-reject cooldown: clear
 	// the pair's reject streak, any active capacity cooldown, and the re-trip
 	// backoff. Belt-and-braces with the commit-time accept (commitFirstContent)

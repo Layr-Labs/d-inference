@@ -64,6 +64,7 @@ func (g *gateState) mergeLocked(src *gateState) {
 	for key, stamps := range src.inferenceErrorFlushStrikes {
 		g.inferenceErrorFlushStrikes[key] = mergeChronologicalTimestamps(g.inferenceErrorFlushStrikes[key], stamps)
 	}
+	g.mergeExplorationLocked(src)
 	for model, expiry := range src.dispatchLoadCooldowns {
 		if cur, ok := g.dispatchLoadCooldowns[model]; !ok || expiry.After(cur) {
 			g.dispatchLoadCooldowns[model] = expiry
@@ -162,6 +163,7 @@ func (g *gateState) resetLocked() {
 	g.budgetClamps = make(map[string]*budgetClampEntry)
 	g.capacityRateRejects = make(map[string][]time.Time)
 	g.capacityRateAccepts = make(map[string][]time.Time)
+	g.exploration = nil
 }
 
 // bindStableFaultKey binds a live session to its stable identity so every

@@ -313,7 +313,9 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 	// unrelated model's activity. A stale sequence never changes these clocks.
 	p.reconcileDeadlineApplicabilityLocked(msg.BackendCapacity, systemMetrics, now)
 	prevHB := p.LastHeartbeat
+	decodeBefore := p.firstContentDecodeMarksLocked()
 	p.reconcileFirstContentMeasurementsLocked(backendCapacity, now)
+	r.noteFirstContentDecodeObservationsLocked(p, decodeBefore, now)
 	p.reconcileWarmPoolWorkLocked(backendCapacity, now, warmController, workModels)
 	p.reconcileCapacitySamplesLocked(backendCapacity, now)
 	p.LastHeartbeat = now

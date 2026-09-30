@@ -575,6 +575,7 @@ func (r *Registry) reserveProvider(model string, pr *PendingRequest, wantPlan bo
 		case reservationDeadlineExpired:
 			return nil, failedDecision(), nil
 		case reservationCommitted:
+			pr.SetFirstContentExplored(firstContentEvidenceExplorable(candidate))
 			decision := routingDecisionForCandidate(
 				model, provider, candidate, last.candidates)
 			addRoutingRejections(&decision, carried)

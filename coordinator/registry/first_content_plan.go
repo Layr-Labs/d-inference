@@ -199,6 +199,7 @@ func (r *Registry) reserveFirstContentFromPlan(pr *PendingRequest, plan *Dispatc
 				}
 			}
 			scan.candidates.promoteWinnerTop(c)
+			pr.SetFirstContentExplored(firstContentEvidenceExplorable(c))
 			return p, routingDecisionForCandidate(model, p, c, scan.candidates), skips
 		}
 	}

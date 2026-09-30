@@ -53,6 +53,7 @@ type firstContentSnapshot struct {
 	capacitySeq                 uint64
 	performanceAgeMs            int32
 	evidenceGapAgeMs            int32
+	exploration                 firstContentExplorationView
 	isolatedPrefillTPS          float64
 	isolatedPrefillInitialized  bool
 	wholeMacBusy                bool

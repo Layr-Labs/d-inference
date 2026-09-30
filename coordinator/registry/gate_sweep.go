@@ -71,6 +71,9 @@ func (g *gateState) pruneLocked(r *Registry, now time.Time) (idle bool) {
 		}
 	}
 
+	if g.pruneExplorationLocked(now) {
+		idle = false
+	}
 	if len(g.dispatchLoadCooldowns)+len(g.inferenceErrorCooldowns)+len(g.inferenceErrorStrikes)+
 		len(g.capacityRejectStrikes)+len(g.budgetClamps)+len(g.capacityRateRejects)+len(g.capacityRateAccepts) > 0 {
 		idle = false

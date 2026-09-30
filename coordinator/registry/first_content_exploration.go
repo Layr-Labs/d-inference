@@ -34,5 +34,6 @@ func firstContentEvidenceExplorable(c *routingCandidate) bool {
 	s := &c.snapshot
 	return s.modelLoaded && s.wholeMacWorkKnown && !s.wholeMacBusy && s.partialPrefillRows == 0 &&
 		s.totalPending == 0 && s.evidenceGapAgeMs >= 0 &&
-		time.Duration(s.evidenceGapAgeMs)*time.Millisecond >= firstContentEvidenceExplorationAfter
+		time.Duration(s.evidenceGapAgeMs)*time.Millisecond >= firstContentEvidenceExplorationAfter &&
+		!s.exploration.suppressed && !firstContentExplorationRememberedSlow(s)
 }

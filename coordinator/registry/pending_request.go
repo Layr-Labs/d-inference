@@ -136,7 +136,11 @@ type PendingRequest struct {
 	serviceHandoffAuthorized   bool
 	serviceHandoffAborted      bool
 	serviceReservationReleased bool
-	serviceReservationID       atomic.Pointer[serviceReservationIdentity]
+	// firstContentExplored is set at reservation commit when the winner was
+	// selected through evidence exploration; the attempt's outcome paths feed
+	// it back (first_content_exploration_gate.go).
+	firstContentExplored bool
+	serviceReservationID atomic.Pointer[serviceReservationIdentity]
 	// RequiresVision is true when the request carries image/video input. Such a
 	// request must only be routed to a provider advertising a vision-capable
 	// (VLM) build for the resolved model; otherwise the provider would silently

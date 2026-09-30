@@ -726,6 +726,15 @@ class HistoricalSourceLinkTests(unittest.TestCase):
         self.assertIn("diff --git ", history)
         self.assertIn("+[source](../../coordinator/legacy/example.go)", history)
 
+    def test_installation_guide_prose_links_remain_visible_after_config_sample(self):
+        guide = CHECKER.parent.parent / "docs/provider/installation.md"
+        result = subprocess.run(
+            ["python3", str(CHECKER.with_name("docs-historical-source.py")), "--links", str(guide)],
+            text=True, capture_output=True, check=True, timeout=15,
+        )
+        self.assertIn("../reference/provider-authorization.md", result.stdout.splitlines())
+        self.assertIn("./troubleshooting.md#installer-exits", result.stdout.splitlines())
+
 
 if __name__ == "__main__":
     unittest.main()

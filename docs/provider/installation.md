@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-09-27
+> Last updated: 2026-09-30
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -22,6 +22,7 @@ is updated afterwards, and how to remove everything. For operators; at the end
 
 ### 1. Run the installer
 
+```toml
 [backend]
 enabled_models = []
 idle_timeout_mins = 60   # free when idle; 0 = always ready (see `darkbloom idle`)

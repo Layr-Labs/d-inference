@@ -6,8 +6,6 @@ import MLX
 import MLXLMCommon
 
 extension EngineV2Factory {
-    private static let profileHardware = try? HardwareDetector.detect()
-
     /// Resolved resources with a one-time transfer to the same model/concurrency.
     final class ProductionBackendPreparation {
         let layerKinds: [CBv2LayerKind]
@@ -110,6 +108,7 @@ extension EngineV2Factory {
         constructionPurpose: ConstructionPurpose = .serving,
         automaticallySelectConcurrency: Bool = false,
         performanceQualificationAllowed: Bool = true,
+        mtpPerformanceConfiguration: ServingMTPConfiguration? = nil,
         kvBytesCapacity: Int,
         maxConcurrentRequests: Int,
         kvBackend: EngineV2KVBackendSelection = .auto,
@@ -183,19 +182,13 @@ extension EngineV2Factory {
         // Resolve after each backend decision: an automatic paged fallback
         // cannot retain the paged profile's width or mixed-step geometry.
         func servingPolicy(for kind: EngineV2KVBackendKind) -> (CBv2SchedulerConfig, ServingPerformanceProfile?) {
-            let profile = constructionPurpose == .serving && performanceQualificationAllowed ? ServingPerformanceProfiles.resolve(
-                modelID: modelID ?? "", artifactSHA256: modelArtifactSHA256,
-                kvBackend: kind.rawValue, contextTokens: maxContextLength,
-                hardware: ServingPerformanceProfiles.reviewed.isEmpty ? nil : Self.profileHardware,
-                environment: environment) : nil
-            let concurrency = constructionPurpose == .benchmark ? max(1, maxConcurrentRequests)
-                : ServingPerformanceProfiles.concurrency(
-                configured: UInt64(max(1, automaticallySelectConcurrency
-                    ? profile?.maxConcurrency ?? maxConcurrentRequests : maxConcurrentRequests)),
-                profile: profile)
-            return (productionSchedulerConfig(
-                maxConcurrentRequests: concurrency, model: model, modelID: modelID,
-                performanceProfile: profile, environment: environment), profile)
+            productionServingPolicy(
+                model: model, modelID: modelID, modelArtifactSHA256: modelArtifactSHA256,
+                constructionPurpose: constructionPurpose,
+                automaticallySelectConcurrency: automaticallySelectConcurrency,
+                performanceQualificationAllowed: performanceQualificationAllowed, backend: kind,
+                maxContextLength: maxContextLength, maxConcurrentRequests: maxConcurrentRequests,
+                environment: environment, mtpPerformanceConfiguration: mtpPerformanceConfiguration)
         }
 
         func contiguousPreparation() throws -> ProductionBackendPreparation {

@@ -61,8 +61,11 @@ extension RequestProfileBuilder {
                         d.projectedPrefillTokens = Int64(work.prefillTokens)
                         d.projectedDecodeTokens = Int64(work.decodeTokens)
                         d.projectedServiceUs = Self.microseconds(duration)
-                    case .unbounded:
+                    case .unbounded(let reason):
                         d.projection = .unbounded
+                        d.unboundedReason = reason.map {
+                            DeadlineUnboundedReason(rawValue: $0.rawValue) ?? .other
+                        }
                     }
                 }
             }

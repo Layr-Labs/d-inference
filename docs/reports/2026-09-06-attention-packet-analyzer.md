@@ -1,6 +1,6 @@
 # Independent attention reference and packet validation
 
-> Last updated: 2026-09-06 · commit `5ac2b5f3f`
+> Last updated: 2026-09-06
 
 The offline analyzer computes an independent CPU FP32 attention reference from
 one confirmed native packet. Twenty-two tests pass, including deliberately

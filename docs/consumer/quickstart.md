@@ -1,6 +1,6 @@
 # Quickstart: first request in five steps
 
-> Last updated: 2026-09-28 · commit `1f664f507`
+> Last updated: 2026-09-28
 
 Get an API key from the console, list the models your key can use, and make your first chat completion against `https://api.darkbloom.dev` — first with `curl`, then from the OpenAI and Anthropic SDKs. For developers integrating the API; each step is one action. Route details for everything used here are in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -175,3 +175,10 @@ Direct accounts do not have the upstream first-content SLA. Allow enough time fo
 - Verifying which machine answered and checking its signature: [`verification.md`](verification.md).
 - What the coordinator does with your prompt: [`privacy-expectations.md`](privacy-expectations.md).
 - Error codes and `Retry-After` behaviour: [`../reference/api-contracts.md`](../reference/api-contracts.md).
+
+Prompt length includes the model's rendered template, tools and conversation
+history. The service can count this work before dispatch and reconcile it at the
+provider without changing your completion limit or billing usage. A retry uses
+the original remaining first-content budget. Capacity refusals retain the
+existing `429` and `Retry-After` behavior; see the
+[API contract](../reference/api-contracts.md).

@@ -217,6 +217,30 @@ public actor ProviderLoop {
     internal let state: ProviderState
     internal let cancellationRegistry: InferenceCancellationRegistry
     internal let kvBudget: GlobalKVCacheBudget
+    /// One lifecycle belongs to this real loop owner, not to each load. The
+    /// process registry retains native resources independently on failed drain.
+    internal let nativeMiMoRegistry: MiMoV26NativeLoadRegistry
+    internal var nativeMiMoLifecycle: MiMoV26NativeLifecycle?
+    internal var nativeMiMoLifecycleClosed = false
+    internal var nativeMiMoLoads: [String: MiMoV26ServingLoad] = [:]
+    internal var nativeMiMoCandidates: [String: ModelSlot] = [:]
+    internal var nativeMiMoRetiringSizing: [String: SlotSizingSnapshot] = [:]
+    internal var nativeMiMoResliceOwners: Set<UUID> = []
+    internal var nativeMiMoRetiring: Set<String> = []
+    internal var nativeMiMoPendingRetirements: [String: NativeMiMoRetirementProgress] = [:]
+    internal var nativeMiMoRetirementTasks: [String: Task<Void, Never>] = [:]
+    internal var nativeMiMoRetirementReady: Set<String> = []
+    internal var nativeMiMoHostConsumers: [String: [UUID: Task<Void, Never>]] = [:]
+    internal var nativeMiMoHostConsumerWatchers: [UUID: Task<Void, Never>] = [:]
+    internal var nativeMiMoJoinedServingOwners: Set<UUID> = []
+    internal var nativeMiMoJoinedBridgeProgress: [UUID: [Int]] = [:]
+    internal var nativeMiMoShutdownIdentities: [UUID: NativeMiMoShutdownIdentity] = [:]
+    internal var nativeMiMoConsumerLeases: [String: [UUID: NativeLocalConsumerLease]] = [:]
+    internal var nativeMiMoJoinedLeaseRevisions: [UUID: [UUID: UInt64]] = [:]
+    internal var nativeMiMoClosedConsumerLeaseIDs: Set<UUID> = []
+    /// Refusal/hold-only fixture boundary; never supplies a successful native
+    /// result, memory estimate, retirement receipt, or replacement model.
+    internal var nativeMiMoBoundaryForTesting: (@Sendable (String) async throws -> Void)?
     var processMemoryTelemetrySampler = ProcessMemoryTelemetrySampler()
     /// Phase 3: global disk accountant (process-wide, shared across models).
     internal let powerAssertion: InferencePowerAssertion
@@ -549,7 +573,7 @@ public actor ProviderLoop {
     internal var startupPreloadGateWaiter: OneShotBoolContinuation?
     /// Coalesces pre-registration teardown requested by the serve task and a
     /// concurrent signal handler. Detached from a cancelled schedule task.
-    internal var preRegistrationCleanupTask: Task<Void, Never>?
+    internal var preRegistrationCleanupTask: Task<Bool, Never>?
     /// Set once the coordinator event reader owns the normal shutdown path.
     internal var coordinatorEventLoopStarted = false
     /// Suffix of the startup plan not yet completed by the driver. Exposed in
@@ -687,9 +711,11 @@ public actor ProviderLoop {
         preloadTaskStarted: (@Sendable (String) -> Void)? = nil,
         beforeModelLoad: (@Sendable (String) async -> Void)? = nil,
         // Scripted slot fixtures must not inherit the test host's RAM.
-        kvBudgetForTesting: GlobalKVCacheBudget? = nil
+        kvBudgetForTesting: GlobalKVCacheBudget? = nil,
+        nativeMiMoRegistryForTesting: MiMoV26NativeLoadRegistry? = nil
     ) throws {
         self.loopConfig = config
+        self.nativeMiMoRegistry = nativeMiMoRegistryForTesting ?? .shared
         self.specDecFunnel = SpecDecArtifactFunnel(
             resolver: SpecDecResolver(),
             catalog: SpecDecCatalogLookup(coordinatorURL: config.coordinatorURL))

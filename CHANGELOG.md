@@ -1,5 +1,59 @@
 # Changelog
 
+## Unreleased — first-content evidence exploration
+
+- Let an idle, loaded provider compete beside feasible peers after the 5-minute measurement-age threshold, using connection age when measurements are undated. This breaks the evidence-first exclusion of newly connected and long-idle providers without guaranteeing selection or measurement recovery. Hedge and fresh-feasible requests still require feasible evidence.
+- Treat outstanding service-retirement leases and reported service usage as busy even when slot counters are idle, and recheck exploration eligibility at atomic reservation. Older providers can still qualify using their existing slot telemetry.
+
+## Unreleased — CI and contributor workflow
+
+- Run provider unit, SDK and prompt-parity checks on independent workers with compatible build caches, retaining MiMo fixture preparation and isolated native gates.
+- Separate prerequisite-dependent MiMo qualification from ordinary provider tests, retaining required prepared-fixture checks and explicit qualification gaps. Normalize the rollback test's filesystem identity and synchronize the zombie-stream timing test with the initial cancellation.
+- Pin the production prompt fixture's EOF format during regeneration; parity still compares the complete corpus bytes and unchanged token/contract expectations.
+- Keep documentation freshness stamps date-only, preserving existing dates, immutable source links and historical evidence. Historical source validation reads committed provenance rather than requiring a hash in the stamp.
+- Document topic-local changelog updates and conflict resolution that preserves other PRs' entries, keeping release assignment separate from ordinary contributions.
+
+## Unreleased — cache routing state persistence
+
+- Preserve a write-behind copy of SSD cache holders and observed demand across coordinator restarts while routing reads stay in memory. Restore is bounded by TTL, index caps, clock-skew checks and the cache-key generation; holders bind only to matching live provider capabilities, retaining measured stage-cost deadlines. Disconnects park holders, and shutdown joins provider sockets and the periodic writer before the final bounded flush. No prompts, raw chain hashes or memory-tier holders are persisted.
+- Keep revisioned mutations pending until database acknowledgement. One serialized writer snapshots without draining; each successful chunk clears only matching revisions, and failures leave unwritten changes pending. The refactor adds no store schema, wire fields or configuration knobs.
+- Durably invalidate validated misses and shorter-hit boundaries even before a holder is restored. For overlapping sessions sharing a durable row, only strictly newer surviving evidence can retain it; otherwise delete the durable copy conservatively while older live holders remain usable until expiry or ordinary invalidation.
+- Replace an overflowing holder backlog in O(1), wake the writer and interrupt its batch for a durable reset. Retain a process-lifetime cutoff rejecting older or equal delayed receipts, restored rows and parked rows; reset demand-write deduplication too. A durable marker lets the next boot finish an interrupted reset, but crashes before that marker and concurrent coordinator writers remain limitations.
+- `EIGENINFERENCE_CACHE_ROUTING_PERSIST=false` disables persistence. `GET /v1/cache/status` exposes restore and write-behind health under `lifecycle.persistence`; see [counter semantics](docs/reference/api-contracts.md#exact-cache-status) and [restart precautions](docs/operations/cache-routing-rollout.md#persistence-during-restarts).
+
+## Unreleased — native MiMo V2.6 candidate (not qualified or deployed)
+
+- Preserve valid QuickTime PCM tracks in memory-backed audiovisual ingress by pinning the SDK's validated-container URL suffix correction. Input bytes, audio samples, memory ownership and decoder limits are unchanged.
+- Keep unrelated resident model slots available when a MiMo owner is retained after a fault. Preserve the MiMo quarantine and process-wide new-load/reclamation fences, and report no cold-load credit while those fences apply.
+- Add native `mimo_v2` target and embedded three-head MTP integration with strict source-bound loading, actual native/bridge/consumer ownership and typed retirement. Retain required-fence failures; logical memory settlement is not physical release.
+- Add exact native MiMo ordinary dispatch with owned visual/audio policies and bounded encoded ingress. Required sidecars retain separate authenticated ownership. API/media qualification, unsupported formats, speech output and coordinator capability parity remain explicit gates.
+- Prepare opt-in text-only COMPLETE-prefix store/loaded-owner integration and bounded performance/residency candidates, preserving native precision, checkpoint topology, fallback paths and memory safeguards. Paging, media-prefix reuse and composed cache/lifecycle qualification remain separate gates.
+- Admit exact native MiMo through its dedicated ordinary loader and request its inspected embedded MTP heads by default under `mtp_mode = "auto"`. Preserve explicit `off`, the process-wide kill switch, actual owner/budget/head validation and serial-target verification. Preliminary rectangular MTP measurements include a real greedy-output divergence; that mode remains unqualified and off by default. No catalog publication, deployment or model-limit change is enabled.
+- Enable eligible native-rounded MiMo NAX attention and admitted block grouping by default, with process-start rollback controls and memory-budgeted larger solo-text stripes. Preserve explicit overrides, unsupported-device fallback and other model families; candidate runtime qualification remains open.
+- Compose explicit serial-MTP paging with authenticated text-prefix restoration and native retirement; retain rectangular and paged-media refusals. These source additions still require full-artifact cache, state and lifecycle qualification.
+- Integrate current upstream cache ownership and add separately issued target-only native paging, joint contiguous text-prefix/media ownership, and admitted scalar-shape verification candidates. A selected 114-method component cohort passes; full-model/API, complete MTP state, paging composition and production defaults remain unqualified.
+- Resolve linked snapshot directories through the normal scanner without copying weights or changing cache selection order; preserve rejection of invalid and non-directory entries. Explicit revision selections use the same canonical filesystem identity as legacy discovery.
+
+## Unreleased — deadline projection diagnostics
+
+- Report a closed reason for unbounded provider deadline projections in the existing per-attempt profile. Distinguish scheduler state, cache geometry, capacity guarantees, missing phase rates and invalid duration without changing admission or reconstructing causes for older records.
+- Reject SDK-recognized `input_audio` parts for unsupported or unknown architectures with HTTP 400 before model acquisition, prompt rendering or media decoding. Native MiMo dispatch uses provider-owned model metadata and still requires its actual loaded audio profile; generic text/vision paths do not gain audio support.
+
+## Unreleased — prompt accounting and first-content admission
+
+- Share verified model/template prompt counts across preflight, retries and provider reconciliation while preserving the original deadline, completion limits and billing usage. Match count and cache evidence to the candidate provider's advertised template contract; keep unsupported counts explicitly uncertain.
+- Apply qualified prompt-count upper bounds to ordinary deadline forecasts even without a timing profile. These bounds can exceed the previous heuristic, so a tight-budget request previously considered feasible can now be classified as predicted late. Exact tokenizer counts take precedence when available.
+- Keep unmeasured prompt-rendering modes outside calibrated fallback estimates, and independently recheck deadline-profile confidence, qualified scheduler limits and cooled applicability in both runtimes before accepting catalog cells. Treat nonempty work reports without original prompt work as unknown.
+- Respect cache-planning sampling and throttle denials during count-only fallback, and let retries recover cache/count planning after temporary planning-capacity exhaustion. Ignore malformed advisory prompt-work metadata without dropping an otherwise valid inference request.
+- Remove the fixed 50% prefill and decode throughput reduction from coordinator feasibility and provider deadline admission. Use the resolved processing rates directly, preserving original deadline expiry, queued/cache work, count bounds, contention and memory gates. This avoids refusals caused solely by doubling predicted processing time; observed rates remain estimates and do not guarantee on-time delivery.
+- Add optional workload-bounded measured deadline calibration with exact MTP identity and ordinary rate fallback for stale, unmatched or incomplete evidence and unqualified runtime overrides. The timing catalog remains empty; removing the fixed rate reduction is active without it. Preserve measured idle/thermal/power prerequisites and posture-bound rate freshness without delaying requests. Correlate whole-Mac work through pre-submit and retirement before pricing contention.
+- Add production-path qualification receipts with actual MTP and individual mixed-prefill step timings; profile promotion remains tied to reviewed hardware and held-out prediction evidence.
+
+## Unreleased — advisory threat-model review
+
+- Restore PR threat-model review through OpenRouter. Scan every changed file with complete before/after text and a cross-file pass against the full threat model. Findings update one advisory comment; incomplete coverage is explicit, clean first scans stay quiet, and model/service failures do not block merging. The workflow executes only the trusted base revision.
+- Combine independent Opus 5.5 and GPT-6 Astra full scans through the same OpenRouter key. Attribute findings to their reviewers, preserve differing advice, and retain completed feedback if the other model fails.
+
 ## Unreleased — SSD cache write budget
 
 - Raise the default SSD prefix-cache write budget from 150 to 750 GB/day. Explicit environment overrides and unlimited mode remain available.

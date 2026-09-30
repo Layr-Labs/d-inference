@@ -1,8 +1,12 @@
 package registry
 
-import "math"
+import (
+	"math"
 
-const servingPerformanceRuntimeRevision = "cbv2-first-content-v1"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+)
+
+const servingPerformanceRuntimeRevision = "cbv2-first-content-v2"
 
 type servingBatchPoint struct {
 	Width              int     `json:"width"`
@@ -15,21 +19,22 @@ type servingBatchPoint struct {
 // Release-reviewed data mirrors ServingPerformanceProfile in Swift. The
 // content-addressed qualification report owns the complete workload matrix.
 type servingPerformanceProfile struct {
-	ID                        string              `json:"id"`
-	ModelID                   string              `json:"model_id"`
-	ArtifactSHA256            string              `json:"artifact_sha256"`
-	ProviderVersion           string              `json:"provider_version"`
-	RuntimeRevision           string              `json:"runtime_revision"`
-	KVBackend                 string              `json:"kv_backend"`
-	ChipName                  string              `json:"chip_name"`
-	GPUCores                  uint32              `json:"gpu_cores"`
-	MemoryGB                  uint64              `json:"memory_gb"`
-	ContextTokensMax          int                 `json:"context_tokens_max"`
-	MaxConcurrency            int                 `json:"max_concurrency"`
-	WholeMacConcurrency       int                 `json:"whole_mac_concurrency"`
-	MixedPrefillTokenCap      *int                `json:"mixed_prefill_token_cap,omitempty"`
-	QualificationReportSHA256 string              `json:"qualification_report_sha256"`
-	BatchCurve                []servingBatchPoint `json:"batch_curve"`
+	ID                        string                       `json:"id"`
+	ModelID                   string                       `json:"model_id"`
+	ArtifactSHA256            string                       `json:"artifact_sha256"`
+	ProviderVersion           string                       `json:"provider_version"`
+	RuntimeRevision           string                       `json:"runtime_revision"`
+	MTP                       *protocol.ServingMTPIdentity `json:"mtp,omitempty"`
+	KVBackend                 string                       `json:"kv_backend"`
+	ChipName                  string                       `json:"chip_name"`
+	GPUCores                  uint32                       `json:"gpu_cores"`
+	MemoryGB                  uint64                       `json:"memory_gb"`
+	ContextTokensMax          int                          `json:"context_tokens_max"`
+	MaxConcurrency            int                          `json:"max_concurrency"`
+	WholeMacConcurrency       int                          `json:"whole_mac_concurrency"`
+	MixedPrefillTokenCap      *int                         `json:"mixed_prefill_token_cap,omitempty"`
+	QualificationReportSHA256 string                       `json:"qualification_report_sha256"`
+	BatchCurve                []servingBatchPoint          `json:"batch_curve"`
 }
 
 // No hardware/profile expansion is implied by the historical M4 B8 report.
@@ -79,6 +84,9 @@ func (profile *servingPerformanceProfile) valid() bool {
 	if cap := profile.MixedPrefillTokenCap; cap != nil && (*cap < 128 || *cap > 512) {
 		return false
 	}
+	if !validMTPIdentity(profile.MTP) {
+		return false
+	}
 	previousWidth, previousThroughput := 0, 0.0
 	for _, point := range profile.BatchCurve {
 		if point.Width <= previousWidth || point.Width > profile.MaxConcurrency ||
@@ -118,7 +126,7 @@ func qualifiedPerformanceProfileLocked(p *Provider, model string) *servingPerfor
 		ref := slot.PerformanceProfile
 		profile := reviewedServingPerformanceProfiles[ref.ID]
 		if !profile.valid() || profile.ModelID != model || profile.ProviderVersion != p.Version ||
-			profile.RuntimeRevision != ref.RuntimeRevision || profile.KVBackend != *slot.KVBackend ||
+			profile.RuntimeRevision != ref.RuntimeRevision || !profile.MTP.Equal(ref.MTP) || profile.KVBackend != *slot.KVBackend ||
 			profile.ChipName != p.Hardware.ChipName || uint64(profile.GPUCores) != uint64(p.Hardware.GPUCores) ||
 			profile.MemoryGB != uint64(p.Hardware.MemoryGB) || ref.ContextTokens <= 0 || ref.ContextTokens > profile.ContextTokensMax {
 			return nil
@@ -130,4 +138,19 @@ func qualifiedPerformanceProfileLocked(p *Provider, model string) *servingPerfor
 		}
 	}
 	return nil
+}
+
+func validMTPVerificationMode(mode string) bool {
+	switch mode {
+	case "serial_target", "rectangular", "rectangular_exact", "automatic":
+		return true
+	default:
+		return false
+	}
+}
+
+func validMTPIdentity(mtp *protocol.ServingMTPIdentity) bool {
+	return mtp == nil || (mtp.Enabled && validProfileDigest(mtp.ArtifactSHA256) && mtp.MaxDraftTokens >= 0 && mtp.MaxDraftTokens <= 7 &&
+		mtp.MaxSpeculativeBatch >= 1 && mtp.MaxSpeculativeBatch <= 8 && validMTPVerificationMode(mtp.VerificationMode) &&
+		mtp.MaxAutomaticRectangularTokens >= 0 && (mtp.FixedDraftTokens == nil || (*mtp.FixedDraftTokens >= 0 && *mtp.FixedDraftTokens <= mtp.MaxDraftTokens)))
 }

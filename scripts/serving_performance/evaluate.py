@@ -3,12 +3,13 @@ import hashlib
 import json
 
 from .matrix import CHECKS, IDENTITY_FIELDS, MIN_SAMPLES, cell_key, digest, identity_errors, positive, shapes, widths
+from .check_receipts import check_errors
 
 METRICS = ("decode_p10_tps", "aggregate_decode_tps", "prefill_tps",
            "first_content_p95_ms", "token_gap_p95_ms")
 
 
-def measure(cell, identity, mixed_prefill_token_cap=None):
+def measure(cell, identity, mixed_prefill_token_cap=None, *, build=None, evidence_root=None, check_cache=None):
     errors = []
     samples = cell.get("samples", [])
     if not isinstance(samples, list) or len(samples) < MIN_SAMPLES:
@@ -16,11 +17,8 @@ def measure(cell, identity, mixed_prefill_token_cap=None):
     run_ids = [s.get("run_id") if isinstance(s, dict) else None for s in samples]
     if any(not isinstance(r, str) or not r for r in run_ids) or len(set(run_ids)) != len(samples):
         errors.append("independent samples require unique nonempty run_id values")
-    checks = cell.get("checks", {})
-    for check in CHECKS:
-        evidence = checks.get(check, {}) if isinstance(checks, dict) else {}
-        if not isinstance(evidence, dict) or evidence.get("passed") is not True or not digest(evidence.get("receipt_sha256")):
-            errors.append(f"missing passing {check} receipt")
+    errors.extend(check_errors(cell.get("checks"), identity, build,
+                               evidence_root=evidence_root, cache=check_cache))
     if not digest(cell.get("raw_measurements_sha256")):
         errors.append("missing raw measurements receipt")
     if cell.get("failures") != 0 or type(cell.get("failures")) is not int:
@@ -55,8 +53,12 @@ def measure(cell, identity, mixed_prefill_token_cap=None):
         allowed_overrides = [{}]
         if mixed_prefill_token_cap is not None:
             allowed_overrides.append({"DARKBLOOM_CBV2_MIXED_PREFILL_CAP": str(mixed_prefill_token_cap)})
-        if sample.get("mtp_active") is not False or sample.get("runtime_policy_overrides") not in allowed_overrides:
-            errors.append("initial runtime revision permits only the exact candidate mixed-prefill override")
+        mtp = identity.get("mtp")
+        if (sample.get("mtp_active") is not (mtp is not None) or
+                sample.get("mtp") != mtp or sample.get("runtime_policy_overrides") not in allowed_overrides):
+            errors.append("sample runtime/MTP configuration does not match the exact candidate")
+        if mtp is not None and (not positive(sample.get("mtp_rounds")) or not positive(sample.get("mtp_proposed_tokens"))):
+            errors.append("MTP configuration was declared but actual drafting was not observed")
         if sample.get("power_mode") != "automatic" or sample.get("thermal_state") != "nominal":
             errors.append("power/thermal posture missing or throttled")
         fields = ("activation_peak_bytes", "kv_peak_bytes", "resident_bytes",
@@ -82,15 +84,15 @@ def measure(cell, identity, mixed_prefill_token_cap=None):
     return result, errors
 
 
-def evaluate(raw):
+def evaluate(raw, *, evidence_root=None):
     report = json.loads(raw)
     if not isinstance(report, dict) or not isinstance(report.get("identity"), dict):
         raise ValueError("receipt and identity must be JSON objects")
     identity = report.get("identity", {})
     errors = identity_errors(identity)
     cap = report.get("mixed_prefill_token_cap")
-    if cap is not None and (type(cap) is not int or not 128 <= cap <= 512):
-        errors.append("mixed_prefill_token_cap must be an integer in 128...512")
+    if cap is not None and (type(cap) is not int or cap not in (128, 256, 512)):
+        errors.append("mixed_prefill_token_cap must be 128, 256, or 512")
     serving_sets = report.get("serving_sets", [])
     if (not isinstance(serving_sets, list) or [] not in serving_sets or
             not any(isinstance(s, list) and s for s in serving_sets) or
@@ -102,6 +104,8 @@ def evaluate(raw):
         errors.append("serving_sets cannot use the target model as a competing model")
     if report.get("schema_version") != 1:
         errors.append("unsupported receipt schema_version")
+    if report.get("deadline_calibration") is not None:
+        errors.append("deadline calibration requires the separate raw-bound deadline-only qualifier")
     result = {"qualified": False, "receipt_sha256": hashlib.sha256(raw).hexdigest(),
               "errors": errors, "widths": [], "profile": None}
     if errors:
@@ -121,6 +125,7 @@ def evaluate(raw):
             errors.append("malformed qualification cell")
     if errors:
         return result
+    check_cache = {}
     measured = {}
     selected = []
     previous_width = None
@@ -135,7 +140,8 @@ def evaluate(raw):
             if cell is None:
                 failures.append(f"missing {key}")
                 continue
-            metrics, problems = measure(cell, identity, report.get("mixed_prefill_token_cap"))
+            metrics, problems = measure(cell, identity, report.get("mixed_prefill_token_cap"),
+                                        build=report.get("build"), evidence_root=evidence_root, check_cache=check_cache)
             if metrics:
                 measured[key] = metrics
                 baseline = measured.get((1, *shape))
@@ -184,6 +190,8 @@ def evaluate(raw):
         # Identity cannot carry serving policy or qualification results. Copy
         # only the closed identity contract; derive every other field below.
         profile = {field: identity[field] for field in IDENTITY_FIELDS}
+        if identity.get("mtp") is not None:
+            profile["mtp"] = identity["mtp"]
         profile.update(max_concurrency=limit, whole_mac_concurrency=limit,
                        qualification_report_sha256=result["receipt_sha256"], batch_curve=selected)
         # B1 has no mixed steps and therefore cannot certify a chunk policy.

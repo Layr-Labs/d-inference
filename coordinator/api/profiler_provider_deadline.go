@@ -15,6 +15,7 @@ type StoredDeadlineDecision struct {
 	Continuation           protocol.DeadlineContinuation     `json:"continuation,omitempty"`
 	Projection             protocol.DeadlineProjection       `json:"projection,omitempty"`
 	ProjectionReason       protocol.DeadlineProjectionReason `json:"projection_reason,omitempty"`
+	UnboundedReason        protocol.DeadlineUnboundedReason  `json:"unbounded_reason,omitempty"`
 	ObservedUS             *int64                            `json:"observed_us,omitempty"`
 	RemainingUS            *int64                            `json:"remaining_us,omitempty"`
 	SubmitRemainingUS      *int64                            `json:"submit_remaining_us,omitempty"`
@@ -48,6 +49,7 @@ func storeDeadlineDecision(w *protocol.DeadlineDecision, b *profileBounds) (*Sto
 		Continuation:           w.Continuation.Fold(),
 		Projection:             w.Projection.Fold(),
 		ProjectionReason:       w.ProjectionReason.Fold(),
+		UnboundedReason:        w.UnboundedReason.Fold(),
 		ObservedUS:             b.us(w.ObservedUS),
 		RemainingUS:            b.us(w.RemainingUS),
 		SubmitRemainingUS:      b.us(w.SubmitRemainingUS),
@@ -58,7 +60,7 @@ func storeDeadlineDecision(w *protocol.DeadlineDecision, b *profileBounds) (*Sto
 		DecodeTPS:              b.tps(w.DecodeTPS),
 	}
 	folded := s.Verdict != w.Verdict || s.Continuation != w.Continuation ||
-		s.Projection != w.Projection || s.ProjectionReason != w.ProjectionReason
+		s.Projection != w.Projection || s.ProjectionReason != w.ProjectionReason || s.UnboundedReason != w.UnboundedReason
 	return s, folded
 }
 

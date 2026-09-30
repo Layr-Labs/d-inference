@@ -1,6 +1,6 @@
 # Preserve measured SSD restore cost across Ready refreshes
 
-> Last updated: 2026-09-05 · commit `06b02df7a`
+> Last updated: 2026-09-05
 
 The coordinator now retains a measured SSD restore cost when a later cache Ready
 message refreshes the same live checkpoint. A Ready estimate no longer replaces

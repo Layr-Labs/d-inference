@@ -1,6 +1,6 @@
 # Two-host connected cache fixture: source integration
 
-> Last updated: 2026-09-06 · commit `7f07ab618`
+> Last updated: 2026-09-06
 
 The connected HTTP fixture now accepts two explicit provider hosts through the
 existing loopback relay. The source passes 29 Go functions with race detection

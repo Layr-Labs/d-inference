@@ -65,27 +65,26 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
 }
 /// Operator policy for multi-token prediction.
 ///
-/// `auto` enables embedded Qwen 3.5-family and Nemotron Lightning heads, plus the separately published
+/// `auto` enables embedded Qwen-family, Nemotron Lightning and native MiMo heads, plus the separately published
 /// assistant for the exact `gemma-4-26b-qat-4bit` target. Other Gemma artifacts
 /// and Qwen checkpoints without an embedded declaration require explicit `on`.
 /// Model IDs are exact catalog identities; model types retain the funnel's
 /// case/whitespace normalization.
 ///
 /// The declaration alone never activates anything: full artifact inspection
-/// and the process-wide kill switch remain enforced by
-/// `SpecDecArtifactFunnel`, so a declared-but-invalid head falls back to
-/// target-only with a recorded reason.
+/// and the process-wide kill switch remain enforced by the generic funnel
+/// or strict native MiMo loader. Metadata intent alone never proves activation.
 public enum MTPMode: String, Sendable, Equatable, Codable {
     case auto
     case on
     case off
 
     /// `model_type` values whose embedded heads self-activate under `auto`.
-    /// Kept in sync with `SpecDecArtifactFunnel.isInlineTarget` — the
-    /// funnel stays the single authority on which models it will *resolve*;
-    /// this set only decides which ones `auto` is willing to *ask about*.
+    /// The generic funnel and native MiMo loader remain the authorities on
+    /// genuine artifact eligibility. This set only selects automatic intent;
+    /// it cannot create an assistant or bypass native head/owner validation.
     static let automaticEmbeddedModelTypes: Set<String> = [
-        "qwen3_5", "qwen3_5_moe", "qwen4_exp", "qwen4_exp_text", "nemotron_h",
+        "qwen3_5", "qwen3_5_moe", "qwen4_exp", "qwen4_exp_text", "nemotron_h", "mimo_v2",
     ]
 
     private static func isAutomaticGemmaTarget(modelType: String?, modelID: String?) -> Bool {
@@ -117,7 +116,7 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
     }
 
     /// Startup warms metadata only for eligible external assistants. Embedded
-    /// Qwen and Nemotron heads resolve from their checkpoint and need no catalog request.
+    /// Qwen, Nemotron and native MiMo heads resolve from their checkpoint and need no catalog request.
     func requiresCatalogPrewarm(forModelType modelType: String?, modelID: String) -> Bool {
         switch self {
         case .off:
@@ -233,6 +232,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// Automatic mode activates Qwen3.5-family checkpoints (`qwen3_5`,
     /// `qwen3_5_moe`) that declare an embedded head (`mtplx_mtp`), and the
     /// catalog-declared assistant for exact `gemma-4-26b-qat-4bit`.
+    /// Native `mimo_v2` also requests its inspected embedded heads automatically.
     /// The retired boolean `mtp` key is ignored (and warned about, see
     /// ``retiredKeysPresent``); only `mtp_mode` is read or written.
     ///

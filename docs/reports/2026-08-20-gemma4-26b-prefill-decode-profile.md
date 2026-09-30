@@ -1,6 +1,6 @@
 # Gemma 4 26B Prefill, Decode, and Metal Profile — 2026-08-20
 
-> Last updated: 2026-08-20 · commit `5d400cf75`
+> Last updated: 2026-08-20
 
 ## Executive result
 

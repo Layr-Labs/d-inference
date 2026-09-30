@@ -1,6 +1,6 @@
 # Coordinator performance Tiers 2 and 3 rollout
 
-> Last updated: 2026-09-04 · commit `376b4868f`
+> Last updated: 2026-09-04
 
 Prepare and verify the coordinator upgrade that combines indexed routing,
 bounded lifecycle work, and per-identity reservation gates. Use

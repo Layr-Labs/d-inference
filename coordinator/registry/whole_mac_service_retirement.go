@@ -2,6 +2,7 @@ package registry
 
 import (
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -30,12 +31,16 @@ func (p *Provider) abortServiceReservationHandoff(id string) {
 	p.mu.Lock()
 	_, released := p.serviceRetirementShadows[id]
 	delete(p.serviceRetirementShadows, id)
+	if released {
+		p.recordDeadlineActivityLocked(time.Now())
+	}
 	for _, pr := range p.pendingReqs {
 		if pr.ServiceReservationID() == id {
 			pr.serviceHandoffAuthorized = false
 			// The writer may return cancellation while its final authorization
 			// callback is still waiting for this lock. Fence that later callback.
 			pr.serviceHandoffAborted = true
+			p.recordDeadlineActivityLocked(time.Now())
 			break
 		}
 	}
@@ -75,11 +80,13 @@ func (p *Provider) releaseServiceReservationLocked(id string) bool {
 	}
 	if _, ok := p.serviceRetirementShadows[id]; ok {
 		delete(p.serviceRetirementShadows, id)
+		p.recordDeadlineActivityLocked(time.Now())
 		return true
 	}
 	for _, pr := range p.pendingReqs {
 		if pr.serviceRetirementTracked && !pr.serviceReservationReleased && pr.ServiceReservationID() == id {
 			pr.serviceReservationReleased = true
+			p.recordDeadlineActivityLocked(time.Now())
 			return true
 		}
 	}

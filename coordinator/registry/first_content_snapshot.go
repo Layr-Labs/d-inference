@@ -10,16 +10,27 @@ func (r *Registry) fillFirstContentSnapshot(s *routingSnapshot, p *Provider, now
 	s.capacityAcceptedAt, s.capacitySeq = p.CapacityAcceptedAt, p.capacitySeq
 	s.transportMs, s.conservativeTransportMs, s.transportAgeMs = transportForecast(p.transport, now)
 	s.capacityAgeMs, s.performanceAgeMs = -1, -1
+	s.contendedPerformanceAgeMs = -1
+	s.promptWorkArtifactHash, s.promptWorkContractID = providerPromptWorkIdentityLocked(p, s.model)
 	if !p.CapacityAcceptedAt.IsZero() {
 		s.capacityAgeMs = heartbeatAgeMs(now, p.CapacityAcceptedAt)
 	}
 	if sample, ok := p.firstContentMeasurements[s.model]; ok && !sample.observedAfter.IsZero() && !sample.decodeObservedAfter.IsZero() {
 		s.performanceAgeMs = max(heartbeatAgeMs(now, sample.observedAfter), heartbeatAgeMs(now, sample.decodeObservedAfter))
 	}
+	s.evidenceGapAgeMs = firstContentEvidenceGapAgeMs(s, p.registeredAt, now)
 	capacity := p.BackendCapacity
 	if capacity == nil {
 		return
 	}
+	// Idle slot counters do not prove retirement: service leases can outlive
+	// consumer terminals, and model loading can start before a slot appears.
+	// Legacy providers may omit service fields; their slot evidence still applies.
+	s.wholeMacBusy = len(p.serviceRetirementShadows) > 0 ||
+		(capacity.WholeMacServiceUsed != nil && *capacity.WholeMacServiceUsed != 0) ||
+		len(capacity.WholeMacServiceReservations) > 0 ||
+		(capacity.LoadTransitionActive != nil && *capacity.LoadTransitionActive)
+	fillCalibratedWorkSnapshot(s, p, now)
 	s.wholeMacWorkKnown = len(capacity.Slots) > 0
 	for i := range capacity.Slots {
 		slot := &capacity.Slots[i]

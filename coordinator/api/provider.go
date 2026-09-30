@@ -117,6 +117,15 @@ func (ct *challengeTracker) remove(nonce string) *pendingChallenge {
 // handleProviderWS upgrades the connection to WebSocket and manages the
 // provider's lifecycle: registration, heartbeats, and inference responses.
 func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
+	s.providerAdmit.Lock()
+	if s.providersClosing {
+		s.providerAdmit.Unlock()
+		http.Error(w, "coordinator shutting down", http.StatusServiceUnavailable)
+		return
+	}
+	s.providerHandlers.Add(1)
+	s.providerAdmit.Unlock()
+	defer s.providerHandlers.Done()
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		// Allow any origin for provider connections.
 		InsecureSkipVerify: true,
@@ -125,6 +134,9 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 		s.logger.Error("websocket accept failed", "error", err)
 		return
 	}
+
+	s.trackProviderConn(conn, true)
+	defer s.trackProviderConn(conn, false)
 
 	// Raise the read limit to 10 MB. The default 32 KB is too small for
 	// large inference responses.
@@ -137,6 +149,108 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 	s.providerReadLoop(r.Context(), conn, providerID, r)
 }
 
+// CloseProviderConnections stops the provider socket producers for shutdown:
+// no new provider socket is admitted, every hijacked socket the server has
+// tracked since accept is closed (registered or not; the provider reconnects
+// to the next coordinator, and its holders park for that reconnect), and the
+// running handlers are joined so no receipt or heartbeat can arrive behind
+// the caller. Provider sockets are hijacked, so httpServer.Shutdown neither
+// closes nor waits on them. Returns false when the handlers did not all
+// finish before ctx expired.
+func (s *Server) CloseProviderConnections(ctx context.Context) bool {
+	s.providerAdmit.Lock()
+	s.providersClosing = true
+	conns := make([]*websocket.Conn, 0, len(s.providerConns))
+	for c := range s.providerConns {
+		conns = append(conns, c)
+	}
+	s.providerAdmit.Unlock()
+	// Every hijacked socket, whether or not its provider registered; the
+	// read loops return and tear their providers down through the ordinary
+	// disconnect path, which parks their holders. In parallel: CloseNow
+	// waits for the socket's goroutines, and one mid-handshake close must
+	// not hold the others; the join below is what ctx bounds.
+	for _, c := range conns {
+		go func(c *websocket.Conn) { _ = c.CloseNow() }(c)
+	}
+	if s.WaitProviderHandlers(ctx) {
+		s.logger.Info("provider sockets closed for shutdown", "closed", len(conns))
+		return true
+	}
+	s.logger.Warn("provider socket handlers still running at the shutdown deadline", "closed", len(conns))
+	return false
+}
+
+// trackProviderConn records a hijacked provider socket for the shutdown
+// close (add) or forgets it when its handler exits (remove). A socket
+// accepted after the close began is closed here at once.
+func (s *Server) trackProviderConn(conn *websocket.Conn, add bool) {
+	s.providerAdmit.Lock()
+	if s.providerConns == nil {
+		s.providerConns = make(map[*websocket.Conn]struct{})
+	}
+	if !add {
+		delete(s.providerConns, conn)
+		s.providerAdmit.Unlock()
+		return
+	}
+	s.providerConns[conn] = struct{}{}
+	closing := s.providersClosing
+	s.providerAdmit.Unlock()
+	if closing {
+		// Outside the mutex: CloseNow waits for the socket's goroutines.
+		_ = conn.CloseNow()
+	}
+}
+
+// WaitProviderHandlers waits until every admitted provider socket handler
+// has returned or ctx expires. It may be called again after
+// CloseProviderConnections reported a timeout: a handler can spend seconds
+// in its read-error close and its deferred teardown, and evidence it marks
+// meanwhile is only safe once a flush runs after it has returned.
+func (s *Server) WaitProviderHandlers(ctx context.Context) bool {
+	if !s.providerSocketsClosing() {
+		// Before the close, a handler may still be admitted (an Add from
+		// zero would race this Wait); the call is a programming error.
+		s.logger.Error("WaitProviderHandlers called before CloseProviderConnections")
+		return false
+	}
+	done := make(chan struct{})
+	go func() {
+		s.providerHandlers.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// shutdownCloseStatus maps the read error of a socket the coordinator closed
+// for shutdown (CloseNow sends no close frame, so the peer status is -1) to
+// going-away, so the teardown flushes pending requests with the
+// restart-neutral cause and the disconnect metrics count a shutdown close
+// rather than a drop that strikes the provider's health.
+func shutdownCloseStatus(closeStatus websocket.StatusCode, closing bool) websocket.StatusCode {
+	if closeStatus == -1 && closing {
+		return websocket.StatusGoingAway
+	}
+	return closeStatus
+}
+
+// providerSocketsClosing reports whether shutdown has begun closing provider
+// sockets. A read loop checks it right after registering and leaves at once:
+// its socket is being closed, and nothing it could read now may produce a
+// receipt behind the final flush. WaitProviderHandlers refuses to run before
+// it is set.
+func (s *Server) providerSocketsClosing() bool {
+	s.providerAdmit.Lock()
+	defer s.providerAdmit.Unlock()
+	return s.providersClosing
+}
+
 // maxProviderVersionLength bounds the provider-reported binary version accepted
 // at registration. The Swift provider sends the compile-time constant
 // ProviderCore.version ("0.8.15"; release tags must equal it, dev builds are
@@ -147,6 +261,12 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 // paired with the registry's memo bound (maxMemoizedVersionLen), which stops
 // caching above 64 bytes.
 const maxProviderVersionLength = 128
+
+// sessionDisconnectReasonCoordinatorShutdown stamps a session whose socket
+// the coordinator itself closed for shutdown, or whose registration was
+// processed after that close began: distinct from ws_close_<code>, which
+// means the peer sent that close frame.
+const sessionDisconnectReasonCoordinatorShutdown = "coordinator_shutdown"
 
 // sessionDisconnectReason maps a provider read-loop exit to the disconnect
 // reason recorded on its provider_sessions row. Kept to a small, fixed
@@ -166,10 +286,14 @@ const maxProviderVersionLength = 128
 // The registry's own generic "disconnect" remains the reason for closes the
 // read loop did NOT observe first — in practice the stale-eviction sweep —
 // so post-fix, lingering "disconnect" rows ≈ silent drops reaped by eviction.
-func sessionDisconnectReason(closeStatus websocket.StatusCode, oomSuspected bool, readReason string) string {
+// closing marks a socket the coordinator closed for shutdown, stamped
+// coordinator_shutdown whatever status the read reported.
+func sessionDisconnectReason(closeStatus websocket.StatusCode, oomSuspected bool, readReason string, closing bool) string {
 	switch {
 	case oomSuspected:
 		return string(registry.DisconnectReasonOOMSuspected)
+	case closing:
+		return sessionDisconnectReasonCoordinatorShutdown
 	case closeStatus != -1:
 		return "ws_close_" + strconv.Itoa(int(closeStatus))
 	default:
@@ -223,6 +347,40 @@ func (s *Server) closeSessionWithReason(providerID, reason string) {
 	}
 }
 
+// countCloseDisconnect counts a disconnect the read loop classified by a
+// close status: the peer's close frame, or going-away for a socket the
+// coordinator closed for shutdown (and for a registration processed after
+// that close began). Peer-initiated closes were once unmetered — only
+// read_error incremented ws_disconnects_total — so dashboards could not
+// split graceful closes (update, shutdown) from drops.
+func (s *Server) countCloseDisconnect(closeStatus websocket.StatusCode) {
+	if s.metrics != nil {
+		s.metrics.IncCounter("ws_disconnects_total",
+			MetricLabel{"reason", "peer_close"},
+		)
+	}
+	s.ddIncr("ws.disconnects", []string{
+		"reason:peer_close",
+		"code:" + strconv.Itoa(int(closeStatus)),
+	})
+}
+
+// closeSessionOffline flips the provider offline and stamps its session row
+// with reason, ahead of the deferred registry.Disconnect (first close wins
+// requires that order). Offline first — StatusOffline fails every
+// routing-eligibility gate — so a slow store write can never leave a dead
+// provider selectable. Untrusted stays untrusted: it is equally unroutable,
+// and overwriting it would make Disconnect's status-gated online/model
+// decrements run a second time after markUntrusted already decremented.
+func (s *Server) closeSessionOffline(providerID string, provider *registry.Provider, reason string) {
+	provider.Mu().Lock()
+	if provider.Status != registry.StatusUntrusted {
+		provider.Status = registry.StatusOffline
+	}
+	provider.Mu().Unlock()
+	s.closeSessionWithReason(providerID, reason)
+}
+
 // providerReadLoop reads messages from the provider WebSocket and dispatches
 // them. It runs until the connection closes or the context is cancelled.
 func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, r *http.Request) {
@@ -263,25 +421,15 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 	for {
 		_, data, err := conn.Read(loopCtx)
 		if err != nil {
-			closeStatus := websocket.CloseStatus(err)
+			closing := s.providerSocketsClosing()
+			closeStatus := shutdownCloseStatus(websocket.CloseStatus(err), closing)
 			oomSuspected := false
 			readReason := readErrorReasonGeneric
 			if closeStatus != -1 {
 				peerCloseStatus = closeStatus
 				s.logger.Info("provider websocket closed",
 					"provider_id", providerID, "close_code", int(closeStatus))
-				// Peer-initiated closes were previously unmetered — only
-				// read_error incremented ws_disconnects_total — so dashboards
-				// could not split graceful closes (update/shutdown) from drops.
-				if s.metrics != nil {
-					s.metrics.IncCounter("ws_disconnects_total",
-						MetricLabel{"reason", "peer_close"},
-					)
-				}
-				s.ddIncr("ws.disconnects", []string{
-					"reason:peer_close",
-					"code:" + strconv.Itoa(int(closeStatus)),
-				})
+				s.countCloseDisconnect(closeStatus)
 			} else {
 				readReason = readErrorDisconnectReason(err)
 				s.logger.Error("provider websocket read error",
@@ -337,26 +485,16 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// no-op. Skipped when:
 			//   - provider == nil: never registered, so no session row exists
 			//     (writing would fabricate a zero-duration row);
-			//   - ctx.Err() != nil: coordinator shutdown — the next instance's
-			//     startup reconcile labels these "coordinator_restart";
+			//   - ctx.Err() != nil: the loop's context was cancelled (a
+			//     hijacked socket's request context is not cancelled by
+			//     httpServer.Shutdown; a socket the coordinator closed for
+			//     shutdown reads as going-away and is stamped
+			//     coordinator_shutdown above);
 			//   - the registry no longer has the provider: registry.Disconnect
 			//     already ran (stale eviction, duplicate-serial kick) and owns
 			//     the reason for that path.
 			if provider != nil && ctx.Err() == nil && s.registry.GetProvider(providerID) != nil {
-				// The socket is dead, but the deferred registry.Disconnect
-				// only runs after the stamp lands (first close wins requires
-				// that order). Flip the provider offline first — StatusOffline
-				// fails every routing-eligibility gate — so a slow store write
-				// can never leave a dead provider selectable. Untrusted stays
-				// untrusted: it is equally unroutable, and overwriting it would
-				// make Disconnect's status-gated online/model decrements run a
-				// second time after markUntrusted already decremented.
-				provider.Mu().Lock()
-				if provider.Status != registry.StatusUntrusted {
-					provider.Status = registry.StatusOffline
-				}
-				provider.Mu().Unlock()
-				s.closeSessionWithReason(providerID, sessionDisconnectReason(closeStatus, oomSuspected, readReason))
+				s.closeSessionOffline(providerID, provider, sessionDisconnectReason(closeStatus, oomSuspected, readReason, closing))
 			}
 			return
 		}
@@ -425,6 +563,24 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				resolveAccount()
 			}
 			provider = s.registry.Register(providerID, conn, regMsg)
+			if s.providerSocketsClosing() {
+				// Registered after shutdown began closing sockets; the
+				// socket is being closed, so leave before reading anything,
+				// with the same restart-neutral classification a closed
+				// socket gets. The session row this registration opens is
+				// stamped coordinator_shutdown here, as the read-error path
+				// stamps its row: the deferred registry teardown only knows
+				// the generic reason. The open is asynchronous, and a close
+				// that lands first records the closed row itself (first
+				// close wins), so the stamp holds either way.
+				peerCloseStatus = websocket.StatusGoingAway
+				s.logger.Info("provider registered during shutdown; closing", "provider_id", providerID)
+				s.countCloseDisconnect(peerCloseStatus)
+				if ctx.Err() == nil && s.registry.GetProvider(providerID) != nil {
+					s.closeSessionOffline(providerID, provider, sessionDisconnectReasonCoordinatorShutdown)
+				}
+				return
+			}
 			if s.appAttestIdentityCandidate(regMsg, authenticatedAccountID) {
 				provider.RequireVerifiedMachineIdentity()
 			}

@@ -56,18 +56,10 @@ else
   echo "production prompt parity vectors verified"
 fi
 
-# A coverage run (see run-provider-tests.sh) reuses the instrumented test
-# build. A plain `swift test` would rebuild it without instrumentation.
-coverage_args=()
-if [[ -n "${PROVIDER_COVERAGE_DIR:-}" ]]; then
-  coverage_args=(--skip-build)
-  mkdir -p "$PROVIDER_COVERAGE_DIR"
-  export LLVM_PROFILE_FILE="$PROVIDER_COVERAGE_DIR/%p-%m.profraw"
-fi
 PROMPT_PARITY_REQUIRED=1 \
 PROMPT_PARITY_VECTORS="$GENERATED" \
 PROMPT_PARITY_ARTIFACT_ROOT="$ARTIFACT_ROOT" \
-  swift test ${coverage_args[@]+"${coverage_args[@]}"} \
+  swift test \
     --package-path "$ROOT/provider-swift" \
     --filter ProductionPromptParityTests
 

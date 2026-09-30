@@ -10,7 +10,9 @@ extension StandaloneServer {
         }
         guard status.outcome == .drained || status.outcome == .forced else { return false }
         await stop()
-        return true
+        // A native pending/fault outcome is not a completed stop, even when
+        // the HTTP drain itself finished or external force was requested.
+        return lifecycleState == .stopped && nativeMiMoLoads.isEmpty
     }
 
     func drainForLifecycle(_ request: ProviderDrainRequest) async -> ProviderDrainStatus {
@@ -32,15 +34,29 @@ extension StandaloneServer {
     private func performLifecycleDrain(_ request: ProviderDrainRequest) async -> ProviderDrainStatus {
         lifecycleDraining = true
         responseTracker.setAccepting(false)
+        if request.force {
+            do { try closeNativeMiMoLifecycle() }
+            catch {
+                lifecycleStatus = .init(requestID: request.id, outcome: .busy,
+                    remaining: max(1, nativeMiMoLoads.count))
+                return lifecycleStatus
+            }
+            // Force/true stop closes ownership before destructive awaits.
+            startNativeMiMoRetirementsForStop()
+        }
+        // Nonforced graceful drain closes admission ONLY. Already accepted/
+        // bound work retains its live native generation and can still submit.
         let deadline = ContinuousClock.now.advanced(by: .seconds(request.timeoutSeconds))
         lifecycleStatus = .init(requestID: request.id, outcome: .draining,
                                 deadline: Date().timeIntervalSince1970 + Double(request.timeoutSeconds))
         while !request.force && !Task.isCancelled {
-            lifecycleStatus.remaining = max(responseTracker.activeCount, slotReservations.values.reduce(0, +))
+            lifecycleStatus.remaining = max(nativeMiMoGracefulWorkCount,
+                max(responseTracker.activeCount, slotReservations.values.reduce(0, +)))
             if lifecycleStatus.remaining == 0 || ContinuousClock.now >= deadline { break }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
-        lifecycleStatus.remaining = max(responseTracker.activeCount, slotReservations.values.reduce(0, +))
+        lifecycleStatus.remaining = max(request.force ? nativeMiMoLoads.count : nativeMiMoGracefulWorkCount,
+            max(responseTracker.activeCount, slotReservations.values.reduce(0, +)))
         // Explicit force is completed by the CLI's bounded process termination;
         // a stalled HTTP writer cannot block that permission indefinitely.
         lifecycleStatus.outcome = request.force ? .forced : (lifecycleStatus.remaining == 0 ? .drained : .timedOut)

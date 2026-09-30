@@ -1,6 +1,6 @@
 # Run a model token promotion
 
-> Last updated: 2026-09-18 · commit `e64b9df42`
+> Last updated: 2026-09-18
 
 Configure a one-time token grant for eligible individual accounts that explicitly claim before the deadline and campaign cap. Grants never expire, work across the account's API keys, and switch to paid credit after exhaustion. Model registration is a separate step.
 

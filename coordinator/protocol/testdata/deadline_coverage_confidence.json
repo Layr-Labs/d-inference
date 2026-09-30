@@ -1,0 +1,149 @@
+{
+  "source": "Synthetic counts; expected bounds from scripts/serving_performance/calibration_statistics.py coverage_lower_bound(confidence=.95), not hardware evidence.",
+  "cases": [
+    {
+      "name": "empirical_only",
+      "calibration_sample_count": 20,
+      "validation_sample_count": 20,
+      "validation_covered_count": 19,
+      "tail_coverage": 0.95,
+      "python_lower_bound": 0.7838938357931526,
+      "valid": false
+    },
+    {
+      "name": "twenty_perfect",
+      "calibration_sample_count": 20,
+      "validation_sample_count": 20,
+      "validation_covered_count": 20,
+      "tail_coverage": 0.95,
+      "python_lower_bound": 0.8608916593317347,
+      "valid": false
+    },
+    {
+      "name": "fifty_eight_perfect",
+      "calibration_sample_count": 20,
+      "validation_sample_count": 58,
+      "validation_covered_count": 58,
+      "tail_coverage": 0.95,
+      "python_lower_bound": 0.9496606616695799,
+      "valid": false
+    },
+    {
+      "name": "fifty_nine_perfect",
+      "calibration_sample_count": 20,
+      "validation_sample_count": 59,
+      "validation_covered_count": 59,
+      "tail_coverage": 0.95,
+      "python_lower_bound": 0.950492390111773,
+      "valid": true
+    },
+    {
+      "name": "two_misses",
+      "calibration_sample_count": 40,
+      "validation_sample_count": 100,
+      "validation_covered_count": 98,
+      "tail_coverage": 0.95,
+      "python_lower_bound": 0.9383807996039598,
+      "valid": false
+    },
+    {
+      "name": "one_miss",
+      "calibration_sample_count": 40,
+      "validation_sample_count": 100,
+      "validation_covered_count": 99,
+      "tail_coverage": 0.95,
+      "python_lower_bound": 0.9534401885464612,
+      "valid": true
+    },
+    {
+      "name": "perfect_hundred",
+      "calibration_sample_count": 40,
+      "validation_sample_count": 100,
+      "validation_covered_count": 100,
+      "tail_coverage": 0.95,
+      "python_lower_bound": 0.9704869503929601,
+      "valid": true
+    },
+    {
+      "name": "higher_target_below_boundary",
+      "calibration_sample_count": 20,
+      "validation_sample_count": 298,
+      "validation_covered_count": 298,
+      "tail_coverage": 0.99,
+      "python_lower_bound": 0.9899975675623223,
+      "valid": false
+    },
+    {
+      "name": "higher_target_above_boundary",
+      "calibration_sample_count": 20,
+      "validation_sample_count": 299,
+      "validation_covered_count": 299,
+      "tail_coverage": 0.99,
+      "python_lower_bound": 0.9900308532071007,
+      "valid": true
+    },
+    {
+      "name": "large_covered",
+      "calibration_sample_count": 20,
+      "validation_sample_count": 9980,
+      "validation_covered_count": 9980,
+      "tail_coverage": 0.999,
+      "python_lower_bound": 0.9996998714730755,
+      "valid": true
+    },
+    {
+      "name": "over_combined_limit",
+      "calibration_sample_count": 21,
+      "validation_sample_count": 9980,
+      "validation_covered_count": 9980,
+      "tail_coverage": 0.95,
+      "python_lower_bound": 0.9996998714730755,
+      "valid": false
+    },
+    {
+      "name": "under_training_limit",
+      "calibration_sample_count": 19,
+      "validation_sample_count": 100,
+      "validation_covered_count": 100,
+      "tail_coverage": 0.95,
+      "python_lower_bound": 0.9704869503929601,
+      "valid": false
+    },
+    {
+      "name": "certain_target",
+      "calibration_sample_count": 20,
+      "validation_sample_count": 100,
+      "validation_covered_count": 100,
+      "tail_coverage": 1,
+      "python_lower_bound": 0.9704869503929601,
+      "valid": false
+    },
+    {
+      "name": "near_certain_target",
+      "calibration_sample_count": 20,
+      "validation_sample_count": 100,
+      "validation_covered_count": 100,
+      "tail_coverage": 0.9999999999999999,
+      "python_lower_bound": 0.9704869503929601,
+      "valid": false
+    },
+    {
+      "name": "below_exact_lower_bound",
+      "calibration_sample_count": 40,
+      "validation_sample_count": 100,
+      "validation_covered_count": 99,
+      "tail_coverage": 0.9534401884464612,
+      "python_lower_bound": 0.9534401885464612,
+      "valid": true
+    },
+    {
+      "name": "above_exact_lower_bound",
+      "calibration_sample_count": 40,
+      "validation_sample_count": 100,
+      "validation_covered_count": 99,
+      "tail_coverage": 0.9534401886464612,
+      "python_lower_bound": 0.9534401885464612,
+      "valid": false
+    }
+  ]
+}

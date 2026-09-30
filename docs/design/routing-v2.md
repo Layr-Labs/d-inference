@@ -1,6 +1,6 @@
 # Routing v2 — admit by measurement, serve all the compute, never ship bad streams
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-03
 
 Status: **Implemented (PR #383)** — 2026-06-16 — W0–W5, W7 and W8 shipped default-on ([#383](https://github.com/Layr-Labs/d-inference/pull/383) and its follow-up waves) and W6 was investigated only; as built: [`../architecture/routing.md`](../architecture/routing.md) and [`../architecture/scheduling.md`](../architecture/scheduling.md), remaining flags: [`../operations/routing-v2-rollout.md`](../operations/routing-v2-rollout.md).
 

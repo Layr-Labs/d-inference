@@ -1,6 +1,6 @@
 # Coordinator and provider hot-path cleanup
 
-> Last updated: 2026-09-04 · commit `4d9811f7c`
+> Last updated: 2026-09-04
 
 This report records local refactoring and CPU measurements on the
 `optimizations-refactor` worktree, based on master `4d9811f7c`. It measures

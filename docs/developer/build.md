@@ -41,6 +41,9 @@ the symmetric 128-context fixture; the separate complete-prefix process uses
 native evaluation, model download, private corpus or verification receipt is
 needed to provision these files. See [MiMo provider CI tests](test.md#mimo-provider-ci-fixtures)
 for environment bindings and the isolated native selections.
+The SDK qualification lane in the shared release-build action provisions the
+same routine fixtures before its watchdog-driven provider tests. Release-only
+builds do not provision test fixtures or enable native qualification.
 
 Production prompt parity compares the generated corpus byte-for-byte with its
 checked-in fixture, including the final newline written by `prompt-fixtures`.

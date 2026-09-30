@@ -130,6 +130,19 @@ class ProviderFixtureTests(unittest.TestCase):
         self.assertNotIn("MIMO_CONSUMER_DIVERGENCE_TESTS:", workflow)
         self.assertNotIn("MIMO_V26_INGRESS_AUDIO_VIDEO_TESTS:", workflow)
 
+    def test_sdk_qualification_provisions_the_same_routine_inputs(self):
+        action = (ROOT / ".github/actions/provider-release-build/action.yml").read_text()
+        step = action.split("    - name: Test provider with release SDK", 1)[1].split("    - name:", 1)[0]
+        self.assertIn("if: inputs.lane == 'qualification'", step)
+        self.assertIn("MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS: '1'", step)
+        run = step.index("-- ../scripts/run-provider-tests.sh")
+        for command in ("prepare-mimo-prompt-fixtures.py", "prepare-mimo-provider-fixtures.py"):
+            self.assertLess(step.index(command), run)
+        for key in ("MIMO_PROMPT_ARTIFACT_DIRECTORY", "MIMO_PROMPT_REFERENCE_VECTORS",
+                    "MIMO_V26_SERIAL_LOAD_FIXTURES", "MIMO_V26_WIRED_METADATA_FIXTURE"):
+            self.assertIn(f"export {key}=", step)
+        self.assertNotIn("MIMO_V26_SERIAL_NATIVE_TESTS", step)
+
 
 if __name__ == "__main__":
     unittest.main()

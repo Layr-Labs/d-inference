@@ -165,7 +165,17 @@ runs:
       if: inputs.lane == 'qualification'
       shell: bash
       working-directory: provider-swift
+      env:
+        MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS: '1'
       run: |
+        python3 ../scripts/prepare-mimo-prompt-fixtures.py \
+          --output "$RUNNER_TEMP/mimo-sdk-prompt-fixtures" --github-env "$GITHUB_ENV"
+        python3 ../scripts/prepare-mimo-provider-fixtures.py \
+          --output "$RUNNER_TEMP/mimo-sdk-provider-fixtures" --github-env "$GITHUB_ENV"
+        export MIMO_PROMPT_ARTIFACT_DIRECTORY="$RUNNER_TEMP/mimo-sdk-prompt-fixtures"
+        export MIMO_PROMPT_REFERENCE_VECTORS="$GITHUB_WORKSPACE/fixtures/prompt-contract/mimo-v26-additional20.json"
+        export MIMO_V26_SERIAL_LOAD_FIXTURES="$RUNNER_TEMP/mimo-sdk-provider-fixtures"
+        export MIMO_V26_WIRED_METADATA_FIXTURE="$RUNNER_TEMP/mimo-sdk-provider-fixtures/tiny-bf16"
         python3 ../scripts/run-provider-test-watchdog.py \
           --output-dir "$RUNNER_TEMP/provider-sdk-tests" \
           --diagnostic-after-seconds 480 --timeout-seconds 900 \

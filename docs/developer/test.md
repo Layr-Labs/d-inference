@@ -947,6 +947,9 @@ weights in routine CI, or loosen production admission/reserve defaults.
 offsets, bounded deterministic bytes, geometry, provenance and CI prerequisite
 wiring offline; `python3 scripts/test-native-gpu-ci.py` checks runner isolation
 without executing Swift or a GPU.
+SDK 27 qualification uses the same prompt and symmetric metadata fixtures
+before its watchdog-driven general provider pass; the shared action exports
+them for that step without enabling native opt-ins.
 
 `BetaCommandTests` and `IdleCommandTests` drive `setBetaFeature` and
 `setIdleUnloadMinutes` with an explicit `configPath` in a unique temporary

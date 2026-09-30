@@ -415,6 +415,53 @@ class ToolchainSelectionTests(unittest.TestCase):
         self.assertIn(("xcrun", "--sdk", "macosx", "--find", "swift"),
                       [call.args for call in self.probe.call_args_list])
 
+    def test_repository_wrapper_hashes_real_compiler_and_effective_sdk(self):
+        with tempfile.TemporaryDirectory(prefix="swift-wrapper-") as temporary:
+            invocation = Path(temporary) / "swift"
+            invocation.symlink_to(cache.SWIFT_WRAPPER)
+            self.which.return_value = str(invocation)
+            os.environ.update({"PROVIDER_SWIFT": "/selected/usr/bin/swift",
+                               "PROVIDER_SDKROOT": "/selected/SDKs/MacOSX.sdk",
+                               "SDKROOT": "/ignored/sdk"})
+            previous = dict(os.environ)
+
+            def selected(lane):
+                self.assertEqual(os.environ["PROVIDER_SWIFT"], "/selected/usr/bin/swift")
+                self.assertEqual(os.environ["SDKROOT"], "/selected/SDKs/MacOSX.sdk")
+                return {"swift": {"binary": identity.external_file(Path(os.environ["PROVIDER_SWIFT"]))},
+                        "sdk": {"path": os.environ["PROVIDER_SDKROOT"]}}
+
+            with patch.object(identity, "toolchain_metadata", side_effect=selected):
+                for lane in cache.LANE_PURPOSES:
+                    metadata = cache.toolchain_metadata(lane)
+                    self.assertEqual(metadata["swift"]["binary"]["path"], "/selected/usr/bin/swift")
+                    self.assertEqual(metadata["swift"]["invocation"]["path"], str(invocation))
+                    self.assertEqual(metadata["sdk"]["path"], "/selected/SDKs/MacOSX.sdk")
+                    self.assertEqual(dict(os.environ), previous)
+
+    def test_repository_wrapper_requires_selection_and_rejects_recursion(self):
+        self.which.return_value = str(cache.SWIFT_WRAPPER)
+        for values in ({}, {"PROVIDER_SWIFT": "/selected/swift"},
+                       {"PROVIDER_SDKROOT": "/selected/sdk"}):
+            with self.subTest(values=values), patch.dict(os.environ, values, clear=True):
+                with self.assertRaisesRegex(ValueError, "requires selected compiler and SDK"):
+                    cache.toolchain_metadata("provider")
+                self.assertEqual(dict(os.environ), values)
+        with patch.dict(os.environ, {"PROVIDER_SWIFT": str(cache.SWIFT_WRAPPER),
+                                     "PROVIDER_SDKROOT": "/selected/sdk"}, clear=True):
+            with self.assertRaisesRegex(ValueError, "cannot delegate to itself"):
+                cache.toolchain_metadata("provider")
+        self.probe.assert_not_called()
+
+    def test_arbitrary_same_named_wrapper_cannot_override_compiler(self):
+        with tempfile.TemporaryDirectory(prefix="other-wrapper-") as temporary:
+            invocation = Path(temporary) / "provider-release-swift.sh"
+            invocation.write_text(cache.SWIFT_WRAPPER.read_text())
+            self.which.return_value = str(invocation)
+            os.environ["PROVIDER_SWIFT"] = "/selected/usr/bin/swift"
+            with self.assertRaisesRegex(ValueError, "PROVIDER_SWIFT differs"):
+                cache.toolchain_metadata("provider")
+
     def test_missing_path_swift_fails_without_toolchain_probes(self):
         self.which.return_value = None
         with self.assertRaisesRegex(ValueError, "Swift is not executable on PATH"):

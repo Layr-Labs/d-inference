@@ -95,7 +95,9 @@ Tests, and Provider Prompt Parity lanes, plus E2E tests, use
 `DEVELOPER_DIR=/Applications/Xcode_27.0.app/Contents/Developer`. These jobs
 have read-only GitHub permissions, do not reference GitHub secrets or attach
 protected environments, and discard checkout credentials. Public E2E models
-download anonymously. `scripts/check-ci-runner-policy.py` checks this boundary.
+download anonymously. `scripts/check-ci-runner-policy.py` checks this boundary. The provider CI cache fingerprints the selected compiler and SDK behind
+the checked-in Swift wrapper, retains the wrapper bytes as invocation identity,
+and rejects compiler overrides from other PATH wrappers.
 
 Release preparation, unsigned build, SDK qualification, signing, notarization,
 R2 staging, publication and signed-artifact compatibility checks all execute on

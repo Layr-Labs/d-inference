@@ -9,12 +9,20 @@ extension EngineV2Bridge {
     /// tokens even when one or more requests still fit.
     func memoryLimitedConcurrency(configured: Int, capacityBytes: Int? = nil) -> Int {
         guard tracksNativeShutdown else { return configured }
-        guard configured > 0, let overhead = maximumRequestOverheadBytes() else { return 0 }
-        let capacity = capacityBytes ?? nativeAdmissionCapacityBytes()
+        return Self.nativeMemoryConcurrencyLimit(configured: configured,
+            capacityBytes: capacityBytes ?? nativeAdmissionCapacityBytes(),
+            requestOverheadBytes: maximumRequestOverheadBytes())
+    }
+
+    /// Scalar portion shared by live reporting/admission and policy tests.
+    nonisolated static func nativeMemoryConcurrencyLimit(
+        configured: Int, capacityBytes: Int, requestOverheadBytes: Int?
+    ) -> Int {
+        guard configured > 0, let overhead = requestOverheadBytes, overhead >= 0 else { return 0 }
         let minimumKV = Int(UnifiedMemoryCap.minimumLoadKVBytes)
-        guard capacity >= minimumKV else { return 0 }
+        guard capacityBytes >= minimumKV else { return 0 }
         guard overhead > 0 else { return configured }
-        return min(configured, (capacity - minimumKV) / overhead)
+        return min(configured, (capacityBytes - minimumKV) / overhead)
     }
 
     /// The admission ledger's ceiling is smaller than the raw KV grant by its

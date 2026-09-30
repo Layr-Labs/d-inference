@@ -48,12 +48,26 @@ and speculative padding (the qualified fixture declares 1,024). Set
 `MIMO_V26_SERIAL_LOAD_FIXTURES` to its parent, with the fixture at `tiny-bf16`,
 and `MIMO_V26_SERIAL_NATIVE_TESTS=1`; a symmetric or 128-context fixture does not
 exercise this contract. The default MTP case retains a 512-token prefill chunk
-and 2,048-token maximum work envelope. Its positive local arena is 64 MiB;
+and 2,048-token maximum work envelope. Positive bridge-serving fixtures use
+2 GiB logical contiguous grants to preserve the production minimum KV allowance;
+these grants do not eagerly allocate that amount of device memory. Intentional
+underfunded cases retain their smaller grants:
 a separate 16 MiB case must refuse without executing a native step, creating
 a duplicate bridge reservation or changing process ownership, then retire
-cleanly. The OFF and explicit 128-token interior-publication cases retain their
-16 MiB arenas. Tests assert one target KV/ring charge plus exactly one bounded
+cleanly. The bridge's native concurrency gate now rejects that case before
+SDK submission. Tests assert one target KV/ring charge plus exactly one bounded
 assistant work envelope, not a second legacy per-token assistant charge.
+
+`MiMoMemoryAdmissionTests` covers the production-scale loaded-but-zero-budget
+arithmetic, grant shrink/grow, unknown and overflowing costs, the watermark and
+per-model serviceability floor. It also calls the pinned SDK's
+`MiMoV26PrefillMemoryBudget` with one-versus-four-request workspace cases.
+The isolated native memory-admission CI step runs the real tiny-model
+`MiMoV26ManagedSlotTests.testNativeMemoryAdmission` cases for heartbeat
+shrink/grow, fleet clamping and new-slot refusal, plus
+`MiMoV26NativeLoadTransactionTests.testNativeShutdownActivitySurvivesPendingHostUntilRealQuiescentDrain`
+for pending occupancy and second-request refusal. It reuses the built test
+bundle and generated symmetric fixture; no fake native completion is issued.
 
 The same native suite holds an actual pre-submit caller while the SDK becomes
 quiescent: whole-Mac forecast invalidation must remain owned until that caller

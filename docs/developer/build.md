@@ -57,6 +57,12 @@ same checkout before running the [memory and lifecycle gates](test.md).
 See [historical source references](historical-references.md) for local setup.
 
 Native CI test isolation reuses these built test products and their staged
+metallib, including the MiMo memory-admission heartbeat and pending-request gates.
+Those gates use bounded synthetic weights and production memory reserves; their
+2 GiB logical contiguous grants do not preallocate 2 GiB of KV storage. See the
+[memory regression procedure](test.md) for the scope of this evidence.
+
+Other native CI test isolation also reuses the built test products and staged
 metallib; it does not rebuild or download a model. Follow the
 [provider test procedure](test.md) to run GPU-global assertions in separate
 processes with the exclusive opt-in scoped to the named test.

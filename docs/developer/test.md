@@ -2,6 +2,8 @@
 
 > Last updated: 2026-09-30
 
+The OpenRouter cancellation fixture observes the existing completed-write profile stamp before canceling a dispatched request. Receiving provider bytes alone does not prove that the writer has finished; cancellation during an in-flight write may correctly abort that connection. Registry writer tests cover that separate outcome, while this fixture continues to require a matching cancel frame and exact settlement cleanup.
+
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
 lint — and which CI workflow runs what. `make test` runs every unit suite plus
@@ -77,6 +79,8 @@ CPU storage selection from `provider-swift` after building and staging resources
 swift test --skip-build --disable-xctest --enable-swift-testing --no-parallel \
   --filter 'SSDCheckpointCPUAcceptanceTests|SSDCheckpointCommitRetirementTests|SSDOwnedEntryRetirementTests|SSDCheckpointFileCoordinatorTests|SSDCheckpointFileCoordinatorPathTests|SSDCacheEpochStoreTests|SSDCheckpointPublicationCPUTests|SSDNoFollowIOSpecialFileTests|SSDTestDirectoryTests'
 ```
+
+Native complete-checkpoint fixtures materialize their synthetic model/scalar parameters before either comparison arm and join donation writers before asserting reservation cleanup. Their bitwise state and continuation checks remain exact.
 
 Owned eviction defers while an authenticated reader holds its exact-file lease and retires after the lease drains. External unlink remains an absent miss; epoch-invalidation fixtures explicitly rotate the durable epoch because ordinary per-file maintenance preserves it.
 

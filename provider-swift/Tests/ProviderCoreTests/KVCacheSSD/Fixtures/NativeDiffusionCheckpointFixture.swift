@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import MLX
 import MLXLLM
+import MLXNN
 import MLXLMCommon
 import Testing
 @testable import ProviderCore
@@ -45,6 +46,9 @@ final class NativeDiffusionCheckpointFixture: @unchecked Sendable {
         """#.utf8))
         model = DiffusionGemmaTextDecoder(config)
         scalars = DiffusionGemmaEncoderTextParameters(layerCount: config.layerCount)
+        // Freeze synthetic parameter evaluation before either donor or cold
+        // execution. Lazy initialization must not become part of just one arm.
+        eval(model, scalars)
         engine = try .init(tokenizer: NativeCheckpointTokenizer(), kvBytesCapacity: 256 << 20,
             reservationForRequest: { _ in 1 << 20 },
             makeSession: { _, _ in throw CBv2NativeBlockError.unsupportedRequest("transfer fixture") })
@@ -105,9 +109,13 @@ final class NativeDiffusionCheckpointFixture: @unchecked Sendable {
         defer { permit.close() }
         let checkpoint = try model.checkpoint(cache: cache, identity: prefixIdentity(), compact: true)
         let source = try codec.export(checkpoint, chunkSize: 256, engine: engine)
-        return await withCheckedContinuation { continuation in
+        let positions = await withCheckedContinuation { continuation in
             store.donate(source, requestID: .init(10), tokens: tokens, cacheSalt: "tenant-a") { continuation.resume(returning: $0) }
         }
+        // Completion publishes positions before the writer task returns. Join
+        // that task so borrowed export owners retire before capacity assertions.
+        await store.waitForWritesForTesting()
+        return positions
     }
     func file(_ store: SSDHybridCheckpointStore) throws -> URL {
         let hash = try #require(store.hashes(tokens: tokens, scope: "tenant-a").last)

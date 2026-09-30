@@ -88,6 +88,8 @@ See [historical source references](historical-references.md) for local setup.
 
 Native CI test isolation reuses these built test products and their staged
 metallib, including the MiMo memory-admission heartbeat and pending-request gates.
+The provider media gate and nested SDK native-media deadline suite also reuse
+these products to check guarded learning and target-only rate admission.
 Those gates use bounded synthetic weights and production memory reserves; their
 2 GiB logical contiguous grants do not preallocate 2 GiB of KV storage. See the
 [memory regression procedure](test.md) for the scope of this evidence.

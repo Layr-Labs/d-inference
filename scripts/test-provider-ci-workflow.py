@@ -34,7 +34,7 @@ MIMO_NATIVE_COMMANDS = {
     "Run isolated native MiMo memory admission gates":
         "../scripts/run-nested-suite.sh 'testNativeMemoryAdmission|testNativeShutdownActivitySurvivesPendingHostUntilRealQuiescentDrain' --no-parallel",
     "Run isolated native MiMo media admission gates":
-        "../scripts/run-nested-suite.sh 'testNativeMediaRelease|testAuthenticatedChatResponsesActuallyRouteEncodedImageThroughNativeBridge|testActualMemoryBackedVideoIndicesAndAuthenticatedNativeRoute|MiMoMediaDecodeMemoryTests' --no-parallel",
+        "../scripts/run-nested-suite.sh 'testNativeMediaRelease|testAuthenticatedChatResponsesActuallyRouteEncodedImageThroughNativeBridge|testActualMemoryBackedVideoIndicesAndAuthenticatedNativeRoute|testNativeIdleBootstrapLearnsRealTargetRateAndKeepsTextRateIsolated|testNativePreparedSealReachesRealAtomicDeadlineRejectionWithoutLosingCharge|testTypedDeadlineGatePreservesRawTextAndOffPolicyAndRefusesForeignCapability|MiMoMediaDecodeMemoryTests' --no-parallel",
     "Run isolated native MiMo complete-prefix gates":
         "../scripts/run-nested-suite.sh 'MiMoV26NativeLoadTransactionTests.testNativeCompletePrefix' --no-parallel",
     "Run isolated native MiMo retained-fault gate":
@@ -53,7 +53,7 @@ SDK_COMMANDS = {
     SDK_MIMO_PREPARE_NAME:
         'python3 scripts/prepare-mimo-provider-fixtures.py --output "$RUNNER_TEMP/mimo-media-isolation"',
     SDK_MIMO_GATE_NAME:
-        "../../scripts/run-nested-suite.sh MiMoV26NativeMediaDeadlineTests.testMediaReservationRefusalLeavesTextEngineUsable --no-parallel",
+        "../../scripts/run-nested-suite.sh MiMoV26NativeMediaDeadlineTests --no-parallel",
     "Run nested paged safety tests":
         "../../scripts/run-nested-suite.sh CBv2PagedSafetyTests",
     "Run nested prompt-hash tests":

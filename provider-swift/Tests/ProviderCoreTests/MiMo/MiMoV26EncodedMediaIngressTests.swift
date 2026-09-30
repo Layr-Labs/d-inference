@@ -652,9 +652,13 @@ final class MiMoV26EncodedMediaIngressTests: XCTestCase {
         }
         defer { postureUpdates.cancel() }
         await bundle.bridge._testSeedIsolatedPrefillEwma(0.0001)
+        // This two-layer fixture can exceed the production plausibility ceiling
+        // once kernels are warm. Keep its prompt small enough to exercise real
+        // eligible observations without raising that ceiling or changing timing.
+        let promptSizes = [16, 16, 32, 24]
         for attempt in 0..<4 {
             let native = try await deadlineMedia(value, bundle,
-                text: Array(repeating: "x", count: [128, 128, 256, 192][attempt]).joined(separator: " "))
+                text: Array(repeating: "x", count: promptSizes[attempt]).joined(separator: " "))
             let profile = RequestProfileBuilder()
             let stream = try await bundle.bridge.submitTokenized(promptTokens: native.promptTokens,
                 request: .init(model: "managed-mimo-fixture", messages: [], max_tokens: 3),
@@ -682,7 +686,9 @@ final class MiMoV26EncodedMediaIngressTests: XCTestCase {
             let held = await bundle.bridge.nativeMediaBootstrapRequestID
             XCTAssertNil(held)
             let retryAt = await bundle.bridge.nextNativeMediaBootstrapAt
-            XCTAssertNil(retryAt, "successful samples unlock a new unknown shape after retirement")
+            let measurement = String(decoding: try JSONEncoder().encode(profile.wireObject()), as: UTF8.self)
+            XCTAssertNil(retryAt, "successful samples unlock a new unknown shape after retirement; "
+                + "attempt=\(attempt) prompt=\(native.promptTokens.count) profile=\(measurement)")
             let textRate = await bundle.bridge._testIsolatedPrefillTps()
             XCTAssertEqual(textRate, 0.0001)
         }

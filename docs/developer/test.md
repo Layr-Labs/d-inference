@@ -40,9 +40,14 @@ geometry and frame-working-set bounds, plus tiny native vision equivalence.
 `MiMoV26VisionWorkingSetTests` checks the fused-kernel selection and conservative
 CPU/custom-stream/geometry fallback. `MiMoV26AudioWorkingSetTests` checks actual
 tile accounting and lazy/bounded numerical equivalence across mixed clips.
-The SDK CI lane also creates a fresh tiny MiMo fixture and runs
-`MiMoV26NativeMediaDeadlineTests.testMediaReservationRefusalLeavesTextEngineUsable`
-with explicit native-lane flags. Both steps use the nonzero/no-skip wrapper.
+The SDK CI lane also creates a fresh tiny MiMo fixture and runs the complete
+`MiMoV26NativeMediaDeadlineTests` suite with explicit native-lane flags. It
+covers target-only rates, queued text, idle bootstrap, evidence expiry, capacity
+refusal and actual cancellation/retirement. The provider media-admission gate
+also selects its native bootstrap/learning sequence and sealed deadline
+refusal/compatibility cases. Both lanes use the nonzero/no-skip wrapper.
+The tiny learning fixture uses short prompts so warmed kernels stay within the
+unchanged production rate plausibility checks; its speed is not model evidence.
 `TestMediaMemoryRefusalPreservesTextOnSameProvider` separately exercises actual
 coordinator HTTP/WebSocket dispatch with scripted provider refusals followed
 by successful text. These gates do not replace full-size signed-provider

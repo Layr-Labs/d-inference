@@ -100,7 +100,8 @@ def prepare(root, bundle, env):
     notes = f"""## Provider v{payload['version']} (Swift CLI)
 
 **Source:** https://github.com/{env['GITHUB_REPOSITORY']}/commit/{payload['source_commit']}
-**Build:** https://github.com/{env['GITHUB_REPOSITORY']}/actions/runs/{payload['ci_run_id']}
+**Build and SDK qualification:** https://github.com/{env['GITHUB_REPOSITORY']}/actions/runs/{provenance['build_run_id']}
+**Signing:** https://github.com/{env['GITHUB_REPOSITORY']}/actions/runs/{payload['ci_run_id']}
 **Binary SHA-256:** `{payload['binary_hash']}`
 **CodeDirectory SHA-256:** `{payload['code_directory_hash']}`
 **Bundle SHA-256:** `{payload['bundle_hash']}`

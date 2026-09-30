@@ -83,8 +83,9 @@ Production publication requires independent [durable App Attest build qualificat
    accounting on the exact signed artifact. Use an isolated qualification
    coordinator before production registration: registration advances the fleet
    updater, not a canary-only channel. Record the evidence using the
-   [build qualification runbook](app-attest-build-qualification.md); the prod
-   tag workflow does not run the older-macOS validation-only job.
+   [build qualification runbook](app-attest-build-qualification.md); the workflow now validates static identity and runtime smoke on the retained
+   production bytes on macOS 27 and older macOS. Live qualification remains
+   an operator step.
 7. Approve the exact 0.9.10 build and **Publish qualified signed release**.
    Registration, R2 latest aliases and GitHub publication must all complete
    using the retained signed bytes. Keep earlier build approvals active during
@@ -364,6 +365,8 @@ this before writing job outputs or requesting environment approval.
 ```bash
 gh workflow run release-swift.yml --ref <branch> -f environment=dev
 # optional: -f version_override=0.9.10
+# to reuse a prior run's retained artifact without rebuilding:
+gh workflow run release-swift.yml --ref <ref> -f environment=dev -f resume_run_id=<source run>
 ```
 
 Without a tag the version is read from `ProviderCore.swift` (or
@@ -371,6 +374,12 @@ Without a tag the version is read from `ProviderCore.swift` (or
 without a tag is refused ("Production publication requires a source-matching
 release tag"). Dev releases use `DEV_*` secrets, register with the dev
 coordinator, and create no GitHub Release.
+
+Resume runs with `resume_run_id=<source run>` re-enter the qualification-wait
+and publication steps from a prior completed run's retained artifact, skipping
+build, sign, stage and validation. The resumed workflow uses the same tag/ref
+and never rebuilds or re-signs. Resume dispatch on prod is not allowed with
+`validation_only=true`.
 
 ### Signed validation bundle
 
@@ -445,13 +454,14 @@ A transient R2/artifact-download failure belongs to this downstream job:
 when the workflow attempt number changes. Publication explicitly depends on
 successful staging.
 
-After R2 staging succeeds, review/test these final signed bytes for production, fill in the template's
-actual qualification evidence, and submit it through the admin approval route
+After R2 staging succeeds, both `validate-older-macos` and `validate-macos-27`
+run in parallel to independently qualify the retained bytes. After both
+validation jobs complete, review/test the qualification results, fill in the
+template's actual evidence, and submit it through the admin approval route
 as described in [build qualification](app-attest-build-qualification.md#steps).
-Use a verified Privy admin session from `scripts/admin.sh login` or the admin
-key; the publication key and admin-owned inference/provider credentials cannot
-approve builds. A 200 approval response confirms durable/local readiness but
-does not publish the artifact.
+Use a verified Privy admin session from `scripts/admin.sh login` or the
+admin-session key. A 200 approval response confirms durable/local readiness
+but does not publish the artifact.
 
 Approve the environment-protected **Publish qualified signed release** job
 (`publish-release`, Linux). Its steps are separate from signing:
@@ -460,10 +470,13 @@ Approve the environment-protected **Publish qualified signed release** job
 |---|---|---|
 | 1 | Checkout · Resolve env-specific secrets | Load the source-matching publication helper and scoped release/R2 credentials |
 | 2 | Download this run's exact signed publication artifact · Install publication tools | Retrieve the retained signed bytes without compiling or notarizing again |
-| 3 | Register release with coordinator and publish aliases: registration | Revalidate source/run/version/origin/bundle digest, then `POST /v1/releases`; the coordinator verifies the artifact and atomically checks the exact independent approval |
-| 4 | Readiness | Wait boundedly for `/v1/releases/latest` to report the committed qualified build, or a newer release; do not treat an older cached response as completed publication |
-| 5 | R2 aliases | Only for the current latest build, update both `releases/latest/darkbloom-bundle-macos-arm64.tar.gz` and its legacy `eigeninference-bundle` alias |
-| 6 | GitHub publication | Prod/tag only: create or resume a draft, upload a missing bundle (repair only an incomplete `starter` placeholder), verify the downloaded asset's exact hash, then publish. An already published exact asset is verified without replacement |
+| 3 | Await independent build qualification | Polls `POST /v1/releases/qualification` for up to `QUALIFICATION_WAIT_MINUTES` (default 60); `revoked` or `mismatched` fail at once; `approved` proceeds; `pending` sleeps and retries; unsupported (404/405) logs a warning and proceeds |
+| 4 | Register release with coordinator and publish aliases: registration | Revalidate source/run/version/origin/bundle digest, then `POST /v1/releases`; the coordinator verifies the artifact and atomically checks the exact independent approval |
+| 5 | Readiness | Wait boundedly for `/v1/releases/latest` to report the committed qualified build, or a newer release; do not treat an older cached response as completed publication |
+| 6 | R2 aliases | Only for the current latest build, update both `releases/latest/darkbloom-bundle-macos-arm64.tar.gz` and its legacy `eigeninference-bundle` alias |
+| 7 | GitHub publication | Prod/tag only: create or resume a draft, upload a missing bundle (repair only an incomplete `starter` placeholder), verify the downloaded asset's exact hash, then publish. An already published exact asset is verified without replacement |
+
+New `verify-release` job after `publish-release` runs `verify` to validate `/v1/releases/latest`, both `releases/latest/` aliases, and (on prod) the GitHub release asset.
 
 If qualification is absent, the publication job stops with 409 before advancing
 the registered/latest release or aliases. Approve the retained artifact and

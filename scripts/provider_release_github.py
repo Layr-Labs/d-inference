@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 
 
-def publish_github_release(root, bundle_name, expected_hash, env, is_latest):
+def publish_github_release(root, bundle_name, expected_hash, env, is_latest, qualification_evidence=None):
     tag = env['GITHUB_REF_NAME']
     repo = env['GITHUB_REPOSITORY']
 
@@ -22,12 +22,24 @@ def publish_github_release(root, bundle_name, expected_hash, env, is_latest):
             raise ValueError('GitHub release tag differs from staged artifact')
         return release
 
+    def notes_file():
+        # qualification_evidence is data (an approved evidence string, or a
+        # fixed "unavailable" phrase): appended to a fresh file and passed via
+        # --notes-file, never shell-interpolated. Default None keeps existing
+        # callers/tests (no #1177 qualification gate) on the original file.
+        if qualification_evidence is None:
+            return root / 'release-notes.md'
+        augmented = root / 'release-notes-with-qualification.md'
+        augmented.write_text((root / 'release-notes.md').read_text() +
+                              '\n### Qualification\n\n' + qualification_evidence + '\n')
+        return augmented
+
     release = view()
     if release is None:
         # Keep each step recoverable: a failed create/upload/edit can leave a
         # draft or starter asset. A retry re-reads state instead of rebuilding.
         gh('create', tag, '--draft', '--verify-tag', '--title', tag,
-           '--notes-file', str(root / 'release-notes.md'), '--generate-notes', check=True)
+           '--notes-file', str(notes_file()), '--generate-notes', check=True)
         release = view(required=True)
 
     assets = [asset for asset in release['assets'] if asset['name'] == bundle_name]

@@ -3,11 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"net/url"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 func TestRefundRequiresExactOperatorAssertions(t *testing.T) {
@@ -33,8 +36,33 @@ func TestPostgresAuditAndApprovedRefund(t *testing.T) {
 	if dsn == "" {
 		t.Skip("disposable DATABASE_URL required")
 	}
-	t.Setenv("EIGENINFERENCE_DATABASE_URL", dsn)
 	ctx := context.Background()
+	// go test ./... runs this package beside store's table-truncating tests.
+	// Give the executable an independent database, not just unique row IDs.
+	u, err := url.Parse(dsn)
+	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") {
+		t.Fatal("DATABASE_URL must be a PostgreSQL URL")
+	}
+	admin, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := "payout_audit_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	quoted := pgx.Identifier{name}.Sanitize()
+	if _, err = admin.Exec(ctx, "CREATE DATABASE "+quoted+" TEMPLATE template0"); err != nil {
+		admin.Close(ctx)
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, err := admin.Exec(ctx, "DROP DATABASE "+quoted+" WITH (FORCE)")
+		if err != nil {
+			t.Error(err)
+		}
+		admin.Close(ctx)
+	})
+	u.Path = "/" + name
+	dsn = u.String()
+	t.Setenv("EIGENINFERENCE_DATABASE_URL", dsn)
 	s, err := store.NewPostgres(ctx, store.Config{DatabaseURL: dsn})
 	if err != nil {
 		t.Fatal(err)

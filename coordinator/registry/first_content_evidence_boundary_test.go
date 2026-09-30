@@ -196,6 +196,11 @@ func TestExplicitMeasurementTimeBoundaries(t *testing.T) {
 
 // TestResolveEffectiveTPSPrecedence pins the decode-rate fallback chain for
 // providers without a qualified performance profile.
+//
+// After #1243 merges, this table needs a stale-idle row:
+// {observedDecodeTPS: 40, fleetMedianTPS: 60, modelLoaded: true,
+// decodePerformanceAgeMs: 30 min + 1 ms} gives 60. The row is not here yet
+// because decodePerformanceAgeMs does not exist on master.
 func TestResolveEffectiveTPSPrecedence(t *testing.T) {
 	for _, tc := range []struct {
 		name string

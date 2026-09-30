@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-28 · commit `45198665d`
+> Last updated: 2026-09-30
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -10,15 +10,21 @@ re-downloads artifacts and requires independent App Attest qualification before
 activating a production release. Staging/publication failures retry the retained
 artifact; GitHub and R2 publication are separate recoverable steps.
 
-The prepared version is **0.9.11**; its source changes since `v0.9.9` are
-collected in [`CHANGELOG.md`](../../CHANGELOG.md) (the unshipped 0.9.10
-candidate plus the prefix-cache hit-rate set, whose rollout steps are in
-[`cache-routing-rollout.md`](cache-routing-rollout.md)). The 0.9.10 rollout
-order below applies unchanged: the new inference-request field is optional in
-both directions. The version bump prepares
-the source for the provider bundle. Publication and coordinator deployment remain
-separate operations; the bump alone does not change the registered release
-returned by `GET /v1/releases/latest`.
+The prepared version is **0.9.12**; its source changes since `v0.9.9` are
+collected in [`CHANGELOG.md`](../../CHANGELOG.md): the unshipped 0.9.10
+candidate, the prefix-cache hit-rate set, and model-download cache recovery.
+Cache rollout steps are in [`cache-routing-rollout.md`](cache-routing-rollout.md).
+The 0.9.10 rollout order below applies unchanged: the new inference-request
+field is optional in both directions. The version bump prepares the source for
+the provider bundle. Publication and coordinator deployment remain separate
+operations; the bump alone does not change the registered release returned by
+`GET /v1/releases/latest`.
+
+For cache-recovery qualification, exercise foreground downloads and background
+prefetch with a dangling model-directory symlink: the original link is retained
+as a hidden sibling, and verified weights publish into the selected cache.
+Confirm valid external-directory links still receive downloads. See
+[model download behavior](../provider/cli-reference.md#darkbloom-models-download-id).
 
 Keep `ProviderCore.version` in
 `provider-swift/Sources/ProviderCore/ProviderCore.swift` as the concise release

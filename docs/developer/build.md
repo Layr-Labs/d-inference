@@ -1,11 +1,16 @@
 # Build
 
-> Last updated: 2026-09-28 · commit `45198665d`
+> Last updated: 2026-09-30
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
 source-matched `mlx.metallib`), and the console and marketing Next.js UIs.
 `make build` builds those components; the admin UI is built separately below.
+
+Coordinator CI builds the adversarial-number test once without instrumentation
+for its enforced performance budget, then builds the full suite with race
+detection and atomic coverage. See [numeric parsing tests](test.md#adversarial-numeric-parsing)
+for the separate commands and their timing limits.
 
 Registry-ID support changes Swift provider policy and Rust prompt normalization
 together. Build the paired coordinator/sidecar/provider candidate; the v6
@@ -15,6 +20,33 @@ merged native SDK pin and does not require new model weights. See
 
 Docs Lint needs Git history to validate moved source links in frozen records;
 its checkout uses `fetch-depth: 0` (`.github/workflows/ci.yml`, `docs` job).
+Freshness stamps contain only dates. The checker recovers legacy verification
+commits from document history, or the particular link's introduction commit for
+new date-only records; it never selects a commit by date. A format-only migration
+uses `scripts/docs-stamp.sh --from-git` to preserve existing dates and evidence.
+The job also initializes the exact pinned `libs/mlx-swift-lm` submodule so
+model-support documentation links are checked against real SDK files.
+
+The MiMo Rust parser/planner and provider prompt regressions require public
+metadata, not model weights. Both CI jobs run
+`scripts/prepare-mimo-prompt-fixtures.py`; follow the
+[pinned fixture procedure](mimo-prompt-fixtures.md) for local runs. Missing
+inputs fail rather than silently skipping assertions.
+
+Provider CI also runs `scripts/prepare-mimo-provider-fixtures.py` offline. It
+writes a deterministic, bounded synthetic BF16 target/vision/audio-patch/three-head
+inventory, not the selected model or its audio codec. Routine metadata tests use
+the symmetric 128-context fixture; the separate complete-prefix process uses
+`--asymmetric` for K64/V128 and 1,024-context geometry. No Python MLX installation,
+native evaluation, model download, private corpus or verification receipt is
+needed to provision these files. See [MiMo provider CI tests](test.md#mimo-provider-ci-fixtures)
+for environment bindings and the isolated native selections.
+The SDK qualification lane in the shared release-build action provisions the
+same routine fixtures before its watchdog-driven provider tests. Release-only
+builds do not provision test fixtures or enable native qualification.
+
+Production prompt parity compares the generated corpus byte-for-byte with its
+checked-in fixture, including its EOF format with no extra newline.
 
 Changes to native loading estimates and retirement require a rebuilt provider
 test product, not only a new CLI. Bind both products and the SDK/metallib to the
@@ -47,6 +79,10 @@ The `ProviderAppAttest` Swift target uses public DeviceCheck/Security APIs. Its 
 
 Provider signing, R2 staging and publication run in separate jobs in `.github/workflows/release-swift.yml`. `scripts/provider-release-publication.py` stages the final signed bundle under an immutable digest path, retains metadata, and gates publication on coordinator qualification. A staging or publication retry downloads and reuses the original signed artifact and does not rerun compilation or notarization. `scripts/provider_release_github.py` resumes draft/upload state, verifies asset hashes before publishing and never replaces completed mismatched bytes. See [build qualification](../operations/app-attest-build-qualification.md).
 
+The revision publisher accepts optional per-version HF repo, commit and path-prefix flags. It runs the SwiftPM `darkbloom-publish` executable to hash
+artifacts. It also needs Python 3 and the AWS CLI; use the existing pinned tools.
+The [revision runbook](../operations/model-revisions.md) describes its invocation.
+
 ## CI runner trust boundary
 
 Routine PR and push checks run on Tenki: Linux jobs use
@@ -63,7 +99,8 @@ Blacksmith. `.github/workflows/release-swift.yml` and
 `.github/workflows/provider-release-cache.yml` pin macOS 27 with Xcode 27 for
 build and signing, and macOS 26 for the older-OS smoke. Their Linux jobs use
 `blacksmith-4vcpu-ubuntu-2404`. Signing validation, model registration,
-credentialed review automation, and benchmark approval/reporting also run on
+credentialed review automation (including the advisory threat-model review),
+and benchmark approval/reporting also run on
 Blacksmith. The three-provider benchmark retains its 48 GB Blacksmith Mac; its
 model weights alone exceed Tenki's 32 GB Mac.
 
@@ -89,6 +126,25 @@ deployments retain the separate GCP procedure in
 [the coordinator runbook](../operations/coordinator-deploy.md).
 
 ## SDK 27 release builds and caches
+
+Serving performance work changes the pinned CBv2 library as well as the
+provider. Initialize the recorded submodules before building, and retain
+source-matched Metal libraries for benchmarks. The
+[profile qualification procedure](serving-performance-qualification.md)
+records the exact model/runtime/backend/hardware identity; a successful build
+alone does not qualify a wider serving limit. Use
+`python3 scripts/build-serving-qualification.py --output /tmp/qualification-build`
+after committing the candidate. This cleans prior products, selects the dedicated
+`ServingQualificationTests` target with release optimization and `-enable-testing`,
+stages its source-matched Metal library, and runs the actual executable-identity
+test. The ordinary package graph still includes all unit tests. Pass the generated
+`build-receipt.json` to `scripts/run-serving-qualification.py --build-receipt`;
+the runner verifies the source, binary and metallib binding before collecting
+model/runtime evidence. Neither command installs a provider. Release Integrity
+CI runs the offline `scripts/serving_performance/` tests without building Swift
+or downloading weights; hardware qualification still requires the managed build.
+Archived raw-corpus replay is opt-in; see the
+[local evidence checks](serving-performance-qualification.md#verify-local-evidence).
 
 The release pipeline runs optimized products and SDK qualification on separate
 `blacksmith-12vcpu-macos-27` runners. Both call `.github/actions/provider-release-build/action.yml`;
@@ -166,7 +222,7 @@ The provider consumes the local packages through immutable Git submodule pins:
 | Package | Merged revision | Included update |
 |---|---|---|
 | `libs/mlx-swift` | `0f4fe403bef6899e8a72882bc6d4036a7a62ae31` | [PR #28](https://github.com/Layr-Labs/mlx-swift/pull/28): exact constant reuse for eligible Bonsai packed projections |
-| `libs/mlx-swift-lm` | `e22fc82bdb7bfbd93874d56c7df9ca3306782b09` | [PR #155](https://github.com/Layr-Labs/mlx-swift-lm/pull/155): exact Bonsai carry scheduling and safe HTTP failures |
+| `libs/mlx-swift-lm` | `4101d4c1bfa6b3175e7f34393e8c235a75a7c1be` | [PR #170](https://github.com/Layr-Labs/mlx-swift-lm/pull/170): completed prefill receipts, confirmed-token timing and per-engine mixed-prefill policy |
 
 Keep both local packages in the provider build. The SDK's standalone package
 manifest can still reference a pre-merge Swift review revision; the nested-test
@@ -174,6 +230,9 @@ procedure in [test.md](test.md#4-provider-swift--unit-tests-with-a-source-matche
 Swift gitlink. The MLX core and C-wrapper pins are unchanged by this update.
 Rebuild the consumer after changing pins; earlier full-model measurements are
 evidence for their recorded dependency set, not a new benchmark of these pins.
+The pin uses merged SDK `main` history. Its production libraries and package
+manifest match the reviewed head `b52335b839d80c8e6d4194ebbd8809d737cd8eb3`;
+subsequent merged changes improve test reliability, fork CI and documentation.
 
 ### Native Flash-Next candidate
 
@@ -661,7 +720,7 @@ local stub servers; its default observation mode sends only public GETs.
 | `provider-build` | `swift build` + `scripts/fetch-metallib.sh <bin-path>` |
 | `provider-test` | `swift build --build-tests`, stage `mlx.metallib` into the bin dir and every `*PackageTests.xctest/Contents/MacOS`, then `swift test --skip-build` |
 | `provider` | `provider-build` + `provider-test` |
-| `benchmark-wrapper-test` | `cd scripts && python3 -m unittest discover -s gemma_contbatch/tests -t .` |
+| `benchmark-wrapper-test` | Python unittest discovery for `gemma_contbatch/tests` and `serving_performance` from `scripts/` |
 | `benchmark-gemma-contbatch` | `python3 scripts/benchmark-gemma-contbatch.py $(GEMMA_BENCHMARK_ARGS)` (needs GPU + weights) |
 | `ui-install` / `ui-lint` / `ui-test` / `ui-build` / `ui` | `npm install` / `npx eslint src/` / `npm test` / `npm run build` in `console-ui/` |
 | `e2e-integration` | `go test ./e2e/... -run TestIntegration -v` |
@@ -768,3 +827,13 @@ and the provider/nested CI jobs invoke this helper. A missing test runner or
 failed source verification is an error; an existing library is always replaced.
 See [the live-test setup](test.md) for the pinned DiffusionGemma artifact and
 opt-in encrypted transport gate.
+
+## Advisory review tooling
+
+The [threat-model PR review](threat-model-review.md) uses Python 3.9+ standard-library
+HTTP/JSON modules and requires no package installation. CI runs its regression
+tests against local HTTP fixtures; the live workflow uses a repository Actions
+secret and the trusted base checkout. Full PR scans read immutable Git blobs as
+data and batch complete changed-file text; they never build or execute PR code.
+Opus 5.5 and GPT-6 Astra use the same OpenRouter key for independent full scans;
+their attributed findings are combined into one advisory comment.

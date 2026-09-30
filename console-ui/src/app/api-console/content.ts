@@ -111,7 +111,7 @@ export const ENDPOINTS: Endpoint[] = [
         "completion": "0.0000002",
         "image": "0",
         "request": "0",
-        "input_cache_read": "0"
+        "input_cache_read": "0.000000025"
       },
       "supported_sampling_parameters": ["temperature", "top_p", "top_k", "stop", "seed", "max_tokens"],
       "supported_features": ["tools", "reasoning"],
@@ -124,7 +124,7 @@ export const ENDPOINTS: Endpoint[] = [
     }
   ]
 }`,
-    notes: "OpenAI-compatible model list. Top-level fields follow the OpenRouter provider schema (per-token USD pricing strings, modalities, supported features). Darkbloom-native fields (trust_level, provider_count) live under metadata. A dedicated OpenRouter provider feed (pure schema, no metadata) is served at GET /v1/models/openrouter.",
+    notes: "OpenAI-compatible model list. Top-level fields follow the OpenRouter provider schema (per-token USD pricing strings, modalities, supported features). pricing.input_cache_read is the per-token rate for prompt tokens a provider serves from its prefix cache (reported back as usage.prompt_tokens_details.cached_tokens). Darkbloom-native fields (trust_level, provider_count) live under metadata. A dedicated OpenRouter provider feed (pure schema, no metadata) is served at GET /v1/models/openrouter.",
   },
   {
     method: "GET",
@@ -172,9 +172,16 @@ export const ENDPOINTS: Endpoint[] = [
     auth: false,
     response: `{
   "prices": [
-    {"model": "${EXAMPLE_MODEL}", "input_price": 50000, "output_price": 200000, "input_usd": "$0.05", "output_usd": "$0.20"}
-  ]
+    {"model": "${EXAMPLE_MODEL}", "input_price": 50000, "output_price": 200000, "cache_read_price": 25000, "input_usd": "$0.0500", "output_usd": "$0.2000", "cache_read_usd": "$0.0250"}
+  ],
+  "fallback_input_price": 50000,
+  "fallback_output_price": 200000,
+  "fallback_cache_read_price": 25000,
+  "fallback_input_usd": "$0.0500",
+  "fallback_output_usd": "$0.2000",
+  "fallback_cache_read_usd": "$0.0250"
 }`,
+    notes: "Prices are micro-USD per 1M tokens. cache_read_price is what prompt tokens served from a provider's prefix cache cost instead of input_price; models that set no explicit rate default to half the input price.",
   },
   {
     method: "GET",
@@ -196,11 +203,12 @@ export const ENDPOINTS: Endpoint[] = [
     response: `{
   "usage": [
     {
-      "request_id": "...",
+      "job_id": "...",
       "model": "${EXAMPLE_MODEL}",
       "prompt_tokens": 150,
+      "cached_tokens": 120,
       "completion_tokens": 500,
-      "cost_micro_usd": 420,
+      "cost_micro_usd": 104,
       "timestamp": "2026-04-11T22:00:00Z"
     }
   ]

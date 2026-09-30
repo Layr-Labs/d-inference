@@ -1,6 +1,6 @@
 # Five-model native KV type probes
 
-> Last updated: 2026-09-05 · commit `825696740`
+> Last updated: 2026-09-05
 
 All five exact fleet artifacts passed the loaded target KV probe on an Apple M5
 Max with 128 GiB memory, running macOS 26.5.2. Runs followed the requested order:

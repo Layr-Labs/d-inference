@@ -1,6 +1,6 @@
 # Physical macOS 27 App Attest validation
 
-> Last updated: 2026-09-14 · commit `cc4847115`
+> Last updated: 2026-09-14
 
 Physical Mac validation of the App Attest shadow draft, including corrections
 discovered with Apple-generated proofs and the real provider registration path.

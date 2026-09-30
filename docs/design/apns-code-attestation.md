@@ -1,6 +1,6 @@
 # APNs-based provider code-identity attestation
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-03
 
 Status: **Implemented (v0.6.0)** — 2026-06-14 — as built today in [`../architecture/security/attestation.md`](../architecture/security/attestation.md#flag--apns-code-identity); the body below is frozen at the decision.
 

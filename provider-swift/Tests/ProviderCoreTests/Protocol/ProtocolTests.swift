@@ -1467,6 +1467,7 @@ private func fullInferenceProfile() -> InferenceProfile {
     d.continuation = .cancelled
     d.projection = .notAttempted
     d.projectionReason = .unsupportedScheduler
+    d.unboundedReason = .invalidProjectionTransition
     d.observedUs = maxUs
     d.remainingUs = maxUs
     d.submitRemainingUs = maxUs
@@ -1694,7 +1695,9 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
     let telemetry = fullCapacityTelemetry()
     let capacity = BackendCapacity(
         slots: [], gpuMemoryActiveGb: 1, gpuMemoryPeakGb: 2, gpuMemoryCacheGb: 0.5,
-        totalMemoryGb: 64, freeForLoadGb: 10, telemetry: telemetry)
+        totalMemoryGb: 64, freeForLoadGb: 10,
+        loadUsableGb: 14.3, loadHeadroomGb: 6.5,
+        loadTransitionActive: true, telemetry: telemetry)
     let data = try JSONEncoder().encode(capacity)
     let object = try jsonObject(data)
     let telemetryObject = try #require(object["telemetry"] as? [String: Any])
@@ -1704,6 +1707,9 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
             "inflight_tasks",
         ])
     #expect(telemetryObject["memory_pressure_level"] as? String == "critical")
+    #expect(object["load_usable_gb"] as? Double == 14.3)
+    #expect(object["load_headroom_gb"] as? Double == 6.5)
+    #expect(object["load_transition_active"] as? Bool == true)
     let decoded = try JSONDecoder().decode(BackendCapacity.self, from: data)
     #expect(decoded == capacity)
 
@@ -1712,7 +1718,11 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
         totalMemoryGb: 64)
     let legacyData = try JSONEncoder().encode(legacy)
     #expect(try jsonObject(legacyData)["telemetry"] == nil)
+    #expect(try jsonObject(legacyData)["load_usable_gb"] == nil)
+    #expect(try jsonObject(legacyData)["load_headroom_gb"] == nil)
+    #expect(try jsonObject(legacyData)["load_transition_active"] == nil)
     #expect(try JSONDecoder().decode(BackendCapacity.self, from: legacyData).telemetry == nil)
+    #expect(try JSONDecoder().decode(BackendCapacity.self, from: legacyData).loadUsableGb == nil)
     let unknownLevel = #"{"slots":[],"gpu_memory_active_gb":1,"gpu_memory_peak_gb":2,"gpu_memory_cache_gb":0.5,"total_memory_gb":64,"telemetry":{"memory_pressure_level":"apocalyptic"}}"#
     #expect(
         try JSONDecoder().decode(BackendCapacity.self, from: Data(unknownLevel.utf8))
@@ -1933,6 +1943,9 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
     #expect(capacity.telemetry?.inflightTasks == 3)
     #expect(capacity.slots.first?.telemetry?.prefillTokensTotal == 1_237_904)
     #expect(capacity.slots.first?.telemetry?.isolatedPrefillTps == 1655.2)
+    #expect(capacity.slots.first?.telemetry?.prefillRequestsTotal == 512)
+    #expect(capacity.slots.first?.performanceMeasurements?.isolatedPrefill?.sampleCount == 20)
+    #expect(capacity.slots.first?.performanceMeasurements?.workloadBuckets.first?.otherModelActivity == true)
     #expect(capacity.slots.first?.evalInFlightMs == 0)  // top-level field absent in fixture
     #expect(h.stats.cancelStageDecodeTotal == 20)
     #expect(h.stats.cancelAbortNsSum == 1_284_000_000)

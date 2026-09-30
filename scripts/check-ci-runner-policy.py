@@ -34,6 +34,7 @@ BLACKSMITH_JOBS = {
     },
     'register-model.yml': {'register': BLACKSMITH_LINUX},
     'claude.yml': {'claude': BLACKSMITH_LINUX},
+    'threat-model-review.yml': {'review': BLACKSMITH_LINUX},
     'codex.yml': {'codex': BLACKSMITH_LINUX, 'post_feedback': BLACKSMITH_LINUX},
     'benchmarks.yml': {
         'approve': BLACKSMITH_LINUX,

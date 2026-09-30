@@ -341,8 +341,9 @@ func TestProbePlanCandidatesHappyPath(t *testing.T) {
 		t.Fatalf("confirmed entry = %+v, want quote p90 800ms stored", plan.entries[0].view)
 	}
 	id, p90, ok := plan.BestConfirmedBackup()
-	if !ok || id != "hq01" || p90 != 800*time.Millisecond {
-		t.Fatalf("BestConfirmedBackup = (%q, %v, %v), want (hq01, 800ms, true)", id, p90, ok)
+	wantP90 := max(800*time.Millisecond, time.Duration(plan.entries[0].view.FirstContent.ConservativeMs*float64(time.Millisecond)))
+	if !ok || id != "hq01" || p90 != wantP90 {
+		t.Fatalf("BestConfirmedBackup = (%q, %v, %v), want (hq01, %v, true)", id, p90, ok, wantP90)
 	}
 	if trackerLen(reg) != 0 {
 		t.Fatal("tracker entries leaked after all probes resolved")
@@ -472,8 +473,9 @@ func TestDispatchPlanConfirmDemoteOrdering(t *testing.T) {
 		}
 	}
 	id, p90, ok := plan.BestConfirmedBackup()
-	if !ok || id != "rk01" || p90 != 400*time.Millisecond {
-		t.Fatalf("BestConfirmedBackup = (%q, %v, %v), want (rk01, 400ms, true)", id, p90, ok)
+	wantP90 := max(400*time.Millisecond, time.Duration(plan.entries[0].view.FirstContent.ConservativeMs*float64(time.Millisecond)))
+	if !ok || id != "rk01" || p90 != wantP90 {
+		t.Fatalf("BestConfirmedBackup = (%q, %v, %v), want (rk01, %v, true)", id, p90, ok, wantP90)
 	}
 
 	// Demotion outranks a prior confirmation (it is always the later signal).
@@ -600,9 +602,8 @@ func TestHedgeGovernorSnapshot(t *testing.T) {
 
 // A capacity-silent (all-legacy) fleet returns structural zeros — the same
 // shape as saturation — so it must be distinguishable via
-// capacitySignalsAvailable=false, letting the api bypass the governor and
-// keep today's unconditional 50% hedge (plan decision 3: legacy fleets keep
-// current behavior).
+// capacitySignalsAvailable=false. The API suppresses insurance when neither
+// spare capacity nor a feasible backup forecast can be established.
 func TestHedgeGovernorSnapshotCapacitySilentFleet(t *testing.T) {
 	reg := New(testLogger())
 	model := "governor-legacy-model"

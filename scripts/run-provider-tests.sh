@@ -18,14 +18,15 @@ isolated_pattern="ProcessMemoryNativeIntegrationTests|${isolated_pattern}"
 # Swift Testing otherwise overlaps independent suites sharing process-wide MLX
 # state and cooperative-executor capacity. Tests still create their own tasks
 # and controlled interleavings; only unrelated test cases run sequentially.
-env -u DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST \
+# MiMo native fixtures have their own explicit, bounded CI selections.
+env -u DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST -u MIMO_V26_SERIAL_NATIVE_TESTS \
   swift test --skip-build --no-parallel --skip "$isolated_pattern" || provider_test_status=$?
 for test_filter in "${isolated_filters[@]}"; do
-  env -u DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST \
+  env -u DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST -u MIMO_V26_SERIAL_NATIVE_TESTS \
     "$script_directory/run-nested-suite.sh" "$test_filter" --no-parallel || provider_test_status=$?
 done
 # This assertion observes the real allocator and must own its entire process,
 # not merely run sequentially beside other tests in the same suite/process.
-"$script_directory/run-exclusive-native-gpu-test.sh" \
+env -u MIMO_V26_SERIAL_NATIVE_TESTS "$script_directory/run-exclusive-native-gpu-test.sh" \
   evaluatedPagesAvoidDoubleTaxAndRetainedAliasKeepsPressure || provider_test_status=$?
 exit "$provider_test_status"

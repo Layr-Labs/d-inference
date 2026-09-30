@@ -1,6 +1,6 @@
 # Provider Reconnect Churn — Root Cause Analysis
 
-> Last updated: 2026-08-25 · commit `3b7c281fd`
+> Last updated: 2026-08-25
 
 **Date:** 2026-07-03
 **Scope:** production `provider_sessions` (Jun 27 – Jul 3, 2026), coordinator WS lifecycle (`coordinator/api/provider.go`, `coordinator/registry/registry.go`), provider reconnect logic (`provider-swift/Sources/ProviderCore/Coordinator/`)

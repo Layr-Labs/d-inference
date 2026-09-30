@@ -197,6 +197,14 @@ runs on `vX.Y.Z` tags; dev publication uses
 `workflow_dispatch`, and every requested version must equal the checked-in
 constants.
 
+For ordinary PRs, follow the
+[changelog contribution guidance](CONTRIBUTING.md#changelog-entries-with-less-merge-contention):
+keep user-visible changes in a small topic-specific `Unreleased` section,
+update it in place, and preserve other PRs' entries when resolving conflicts.
+Do not assign a release version, rewrite unrelated sections or claim shipment
+without an explicitly requested release operation. Topic-local edits reduce
+contention but cannot prevent same-location insertion conflicts.
+
 ## Deploying
 
 Canonical runbook: `docs/operations/coordinator-deploy.md`
@@ -273,6 +281,19 @@ Provider state lives in several fields that are read by different code paths wit
 - Providers can hold up to `maxModelSlots` models simultaneously (default 3). Do not assume a model swap evicts all other models.
 - The provider's memory model is `UnifiedMemoryCap` (`provider-swift/Sources/ProviderCore/Inference/Memory/UnifiedMemoryCap.swift`): hard cap = 0.90 × physical RAM (always leaving ≥ 2 GiB for the OS; `DARKBLOOM_MEM_CAP_FRACTION` override). The model-load gate requires resident weights + incoming weights + headroom (the resolved activation reserve plus 1 GiB minimum KV) ≤ the cap, and a post-load guard unloads a freshly-loaded model whose measured live KV headroom is below the minimum serveable KV. Every admit-time consumer (load gate, pending-load reservation, startup preload, doctor and coordinator) must use the scanner's complete LOAD estimate, not bare steady residency. Ordinary/unknown layouts retain disk × 1.2; eligible native Qwen4 SSD-offload layouts use `Qwen4ExpLoadFootprint`'s validated header-derived copy allowance, mirrored by `native_load_transient_bytes` in Swift/Go and revalidated before allocation. All compute, MTP and vision payloads remain counted. Never reduce OS/activation/KV safeguards to make a test pass. A recent owned Qwen4 retirement permits only a bounded real-headroom recheck, not speculative reclaim credit. Measured post-load residency lives separately in `servabilityMeasuredResidentGiB` and informs post-load token budgets; it is not a substitute load allowance. The `DARKBLOOM_ACTIVATION_RESERVE_GB` env override is **raise-only against the resolved floor**; only programmatic `activationReserveBytes` values (tests) are honored as given.
 - The activation reserve inside that cap resolves **per serving set** (≥ the per-model release): `resolvedActivationReserveBytes(modelIDs:)` takes the max over advertised ∪ resident ∪ loading models of each member's **measured floor** (`measuredActivationFloorsBytes`, exact catalog-id match) with the flat 5.5 GiB default for any unmeasured member — so one unmeasured model pins the default, and vision-capable models deliberately have NO measured floor until a vision-inclusive peak is measured (the tower transient rides this reserve; text-decode evidence alone must not lower it). The resolved reserve threads through the load gate, `KVHeadroomProbe`, `GlobalKVCacheBudget` (epoch-stamped pushes — cross-actor delivery is not FIFO), engine KV grants, the heartbeat clamp, `free_for_load_gb`, and doctor **in lockstep**; a consumer left on the flat figure re-creates the admit-then-fail class this design removed. `coordinator/registry/servability.go` mirrors both tables (`servabilityActivationFloorGB` default + `servabilityModelActivationFloorsGB`, selected per model by `servabilityActivationFloor`: the model's measured floor, else 5.5 GiB; `servabilityMeasuredResidentGiB` likewise supplies measured weights, else the padded catalog figure — no provider-version regimes, because routed providers are past the routing floor). **The provider table and the coordinator mirror must move in the same commit**, floors and measured weights alike; retuning either side alone silently desyncs admission (the historical score-tensor surcharge incident). A per-SHAPE/formula reserve remains banned on both sides — floors are measured constants, never modelled; the measurement convention must include a ≥ 4k-token B=8 cell (short-prompt cells under-measure the saturated envelope — see `docs/reports/2026-08-30-activation-floor-measurements.md`).
+
+### Native MiMo load quotations
+
+Exact `mimo_v2` with a validated closed payload inventory uses
+`MiMoV26DiscoveryLoadFootprint` to quote the existing strict main and ordinary
+sidecar **full LOAD** requests. Discovery reads headers/stat metadata only, not
+weight payload hashes or native arrays. The positive `native_load_transient_bytes`
+supplement does not mean SSD offload: MiMo keeps `ssd_offloaded_weight_bytes` zero.
+Swift discovery/preload/readiness and Go normal/swap/warm/cold routing must agree.
+Go preserves the raw catalog/source-size floor, adds the supplement once, and
+retains conservative legacy pricing for malformed or unsupported declarations.
+Do not replace these bounds with steady residency, change reserve floors, or
+skip the actual load claims and post-load serviceability gates.
 
 ### Coordinator Mutation Checklist
 

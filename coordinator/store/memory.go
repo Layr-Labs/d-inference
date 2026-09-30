@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	crs "github.com/eigeninference/d-inference/coordinator/store/cacheroutingstate"
 	"sort"
 	"strconv"
 	"strings"
@@ -57,13 +58,16 @@ type MemoryStore struct {
 	ledgerSeq     int64 // auto-increment ID
 
 	// Observation-only keys; independent from provider/rewards identity.
-	appAttestShadowKeys  map[string]AppAttestShadowKey
-	appAttestRevocations map[string]bool
-	machineInventory     *memoryMachineInventory
-	appAttestEvidence    map[string]memoryAppAttestEvidence
-	appAttestEnrollments map[string]AppAttestEnrollment
-	appAttestBuilds      map[string]AppAttestBuildQualification
-	appAttestRotations   map[string]AppAttestKeyRotation
+	appAttestShadowKeys     map[string]AppAttestShadowKey
+	appAttestRevocations    map[string]bool
+	machineInventory        *memoryMachineInventory
+	appAttestEvidence       map[string]memoryAppAttestEvidence
+	appAttestEnrollments    map[string]AppAttestEnrollment
+	appAttestBuilds         map[string]AppAttestBuildQualification
+	cacheHolders            map[crs.HolderKey]crs.HolderRecord
+	cacheDemand             map[string]time.Time
+	cacheRoutingFingerprint string
+	appAttestRotations      map[string]AppAttestKeyRotation
 
 	// Referral system
 	referrersByCode    map[string]*Referrer // code → referrer
@@ -542,20 +546,6 @@ func (s *MemoryStore) KeySpendSince(keyID string, since time.Time) int64 {
 	return total
 }
 
-// RecordUsage appends a usage record to the in-memory log.
-func (s *MemoryStore) RecordUsage(providerID, consumerKey, model string, promptTokens, completionTokens int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.usage = append(s.usage, UsageRecord{
-		ProviderID:       providerID,
-		ConsumerKey:      consumerKey,
-		Model:            model,
-		PromptTokens:     promptTokens,
-		CompletionTokens: completionTokens,
-		Timestamp:        time.Now(),
-	})
-}
-
 // UsageRecords returns a copy of all usage records.
 func (s *MemoryStore) UsageRecords() []UsageRecord {
 	s.mu.RLock()
@@ -789,43 +779,22 @@ func (s *MemoryStore) UsageByConsumer(consumerKey string) []UsageRecord {
 	return out
 }
 
-// RecordUsageWithCostAndLocation logs a usage event with request location (in-memory).
-func (s *MemoryStore) RecordUsageWithCostAndLocation(providerID, consumerKey, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation) {
-	s.RecordUsageFull(providerID, consumerKey, "", model, requestID, promptTokens, completionTokens, costMicroUSD, requestLocation)
-}
-
-// RecordUsageFull logs a usage event with full attribution (incl. API key ID)
-// and updates the per-key spend accumulator used for cap enforcement.
-func (s *MemoryStore) RecordUsageFull(providerID, consumerKey, keyID, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation) {
-	s.RecordUsageFullWithPublicModel(providerID, consumerKey, keyID, model, "", requestID, promptTokens, completionTokens, costMicroUSD, requestLocation)
-}
-
-// RecordUsageFullWithPublicModel logs usage with concrete billing model and an
-// optional consumer-facing model name for usage history.
-func (s *MemoryStore) RecordUsageFullWithPublicModel(providerID, consumerKey, keyID, model, publicModel, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation) {
+// RecordUsage logs a usage event (in-memory) and updates the per-key spend
+// accumulator used for cap enforcement. The record's location is copied so the
+// caller cannot mutate stored state; the store assigns the timestamp.
+func (s *MemoryStore) RecordUsage(rec UsageRecord) {
 	now := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var locCopy *ProviderLocation
-	if requestLocation != nil {
-		cp := *requestLocation
-		locCopy = &cp
+	if rec.RequestLocation != nil {
+		cp := *rec.RequestLocation
+		rec.RequestLocation = &cp
 	}
-	s.usage = append(s.usage, UsageRecord{
-		ProviderID:       providerID,
-		ConsumerKey:      consumerKey,
-		KeyID:            keyID,
-		Model:            model,
-		PublicModel:      publicModel,
-		PromptTokens:     promptTokens,
-		CompletionTokens: completionTokens,
-		RequestLocation:  locCopy,
-		Timestamp:        now,
-		RequestID:        requestID,
-		CostMicroUSD:     costMicroUSD,
-	})
-	if keyID != "" && costMicroUSD > 0 {
-		s.addKeySpendLocked(keyID, costMicroUSD, now)
+	rec.Timestamp = now
+	rec.CreatedAt = now
+	s.usage = append(s.usage, rec)
+	if rec.KeyID != "" && rec.CostMicroUSD > 0 {
+		s.addKeySpendLocked(rec.KeyID, rec.CostMicroUSD, now)
 	}
 }
 
@@ -1548,29 +1517,23 @@ func (s *MemoryStore) CompleteBillingSession(sessionID string) error {
 
 // --- Custom Pricing ---
 
-func (s *MemoryStore) SetModelPrice(accountID, model string, inputPrice, outputPrice int64) error {
+func (s *MemoryStore) SetModelPrice(price ModelPrice) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	key := accountID + ":" + model
-	s.modelPrices[key] = ModelPrice{
-		AccountID:   accountID,
-		Model:       model,
-		InputPrice:  inputPrice,
-		OutputPrice: outputPrice,
-	}
+	s.modelPrices[price.AccountID+":"+price.Model] = price.clone()
 	return nil
 }
 
-func (s *MemoryStore) GetModelPrice(accountID, model string) (int64, int64, bool) {
+func (s *MemoryStore) GetModelPrice(accountID, model string) (ModelPrice, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	mp, ok := s.modelPrices[accountID+":"+model]
 	if !ok {
-		return 0, 0, false
+		return ModelPrice{}, false
 	}
-	return mp.InputPrice, mp.OutputPrice, true
+	return mp.clone(), true
 }
 
 func (s *MemoryStore) ListModelPrices(accountID string) []ModelPrice {
@@ -1580,7 +1543,7 @@ func (s *MemoryStore) ListModelPrices(accountID string) []ModelPrice {
 	var prices []ModelPrice
 	for _, mp := range s.modelPrices {
 		if mp.AccountID == accountID {
-			prices = append(prices, mp)
+			prices = append(prices, mp.clone())
 		}
 	}
 	return prices
@@ -1622,7 +1585,27 @@ func (s *MemoryStore) UpsertModelRegistryEntry(entry *ModelRegistryEntry) error 
 func (s *MemoryStore) SetModelVersion(entry *ModelRegistryEntry, version *ModelVersion, files []ModelVersionFile) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.setModelVersionLocked(entry, version, files, false)
+}
 
+func (s *MemoryStore) SetExistingModelVersion(version *ModelVersion, files []ModelVersionFile) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry := s.modelRegistry[version.ModelID]
+	if entry == nil || s.modelRegistryRecordLocked(version.ModelID) == nil {
+		return ErrNotFound
+	}
+	return s.setModelVersionLocked(entry, version, files, true)
+}
+
+func (s *MemoryStore) setModelVersionLocked(entry *ModelRegistryEntry, version *ModelVersion, files []ModelVersionFile, preserveExistingSource bool) error {
+
+	if old := s.modelVersions[modelVersionKey(version.ModelID, version.Version)]; old != nil &&
+		(old.AggregateSHA256 != version.AggregateSHA256 || old.R2Prefix != version.R2Prefix ||
+			old.TotalSizeBytes != version.TotalSizeBytes || old.FileCount != version.FileCount ||
+			!sameModelVersionFiles(s.modelVersionFiles[old.ID], files)) {
+		return ErrModelVersionImmutable
+	}
 	now := time.Now()
 	entryCopy := cloneModelRegistryEntry(entry)
 	if existing, ok := s.modelRegistry[entry.ID]; ok && !existing.CreatedAt.IsZero() {
@@ -1640,8 +1623,19 @@ func (s *MemoryStore) SetModelVersion(entry *ModelRegistryEntry, version *ModelV
 	versionCopy := cloneModelVersion(version)
 	if existing, ok := s.modelVersions[key]; ok {
 		versionCopy.ID = existing.ID
-		if versionCopy.UploadedAt.IsZero() {
-			versionCopy.UploadedAt = existing.UploadedAt
+		// Re-registration must not undo an explicit retirement, including when
+		// a later promotion fails or the coordinator restarts before syncing.
+		if existing.Status == "retired" {
+			versionCopy.Status = "retired"
+		}
+		// Identical publication retries retain the first publisher's audit
+		// identity, even when a different credential replays the manifest.
+		versionCopy.UploadedBy = existing.UploadedBy
+		versionCopy.UploadedAt = existing.UploadedAt
+		if preserveExistingSource {
+			// A revision replay must not undo a later explicit mirror edit via
+			// full registration, which still supports add/change/clear.
+			versionCopy.HuggingFaceArtifact = cloneHuggingFaceArtifact(existing.HuggingFaceArtifact)
 		}
 		versionCopy.PromotedAt = cloneTimePtr(existing.PromotedAt)
 	} else {
@@ -1654,7 +1648,10 @@ func (s *MemoryStore) SetModelVersion(entry *ModelRegistryEntry, version *ModelV
 	s.modelVersions[key] = &versionCopy
 	s.modelVersionByID[versionCopy.ID] = &versionCopy
 	version.ID = versionCopy.ID
+	version.UploadedBy = versionCopy.UploadedBy
 	version.UploadedAt = versionCopy.UploadedAt
+	version.Status = versionCopy.Status
+	version.HuggingFaceArtifact = cloneHuggingFaceArtifact(versionCopy.HuggingFaceArtifact)
 
 	fileCopies := make([]ModelVersionFile, len(files))
 	for i := range files {
@@ -1671,7 +1668,10 @@ func (s *MemoryStore) PromoteModelVersion(modelID, version string) error {
 	defer s.mu.Unlock()
 
 	v, ok := s.modelVersions[modelVersionKey(modelID, version)]
-	if !ok {
+	if ok && v.Status == "retired" {
+		return ErrModelVersionRetired
+	}
+	if !ok || v.Status != "ready" {
 		return fmt.Errorf("model version %q %q not found", modelID, version)
 	}
 	now := time.Now()
@@ -1835,7 +1835,14 @@ func (s *MemoryStore) modelRegistryRecordLocked(modelID string) *ModelRegistryRe
 	entryCopy := cloneModelRegistryEntry(entry)
 	versionCopy := cloneModelVersion(version)
 	files := append([]ModelVersionFile(nil), s.modelVersionFiles[versionID]...)
-	return &ModelRegistryRecord{ModelRegistryEntry: entryCopy, ActiveVersion: &versionCopy, Files: files}
+	rec := &ModelRegistryRecord{ModelRegistryEntry: entryCopy, ActiveVersion: &versionCopy, Files: files}
+	for _, candidate := range s.modelVersions {
+		if candidate.ModelID == modelID && candidate.PromotedAt != nil && candidate.Status == "ready" {
+			rec.ServingVersions = append(rec.ServingVersions, cloneModelVersion(candidate))
+		}
+	}
+	sort.Slice(rec.ServingVersions, func(i, j int) bool { return rec.ServingVersions[i].Version < rec.ServingVersions[j].Version })
+	return rec
 }
 
 func modelVersionKey(modelID, version string) string {

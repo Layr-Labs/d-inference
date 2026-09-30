@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-27 · commit `ca4eb0b16`
+> Last updated: 2026-09-29
 
 The complete public HTTP surface of the coordinator, derived from the 115 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -215,7 +215,7 @@ Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInter
 | Method | Path | Handler | Auth | Limiter | Notes |
 |---|---|---|---|---|---|
 | GET | `/v1/payments/balance` | `handleBalance` (`coordinator/api/consumer.go`) | `key` | — | `BalanceResponse` `{balance_micro_usd, balance_usd, withdrawable_micro_usd, withdrawable_usd}` |
-| GET | `/v1/payments/usage` | `handleUsage` (`coordinator/api/consumer.go`) | `key` | — | `UsageResponse` `{usage: [...]}`; recent history only ([retention](pricing-model.md#constants)) |
+| GET | `/v1/payments/usage` | `handleUsage` (`coordinator/api/consumer.go`) | `key` | — | `UsageResponse` `{usage: [...]}`; each `payments.UsageEntry` carries `cached_tokens` (omitted when 0) — the subset of `prompt_tokens` billed at the cache-read rate; recent history only ([retention](pricing-model.md#constants)) |
 | GET | `/v1/billing/wallet/balance` | `handleWalletBalance` (`coordinator/api/billing_handlers.go`) | `key` | — | Wallet view of the ledger balance |
 | GET | `/v1/billing/methods` | `handleBillingMethods` (`coordinator/api/billing_handlers.go`) | `—` | — | Which top-up methods are enabled |
 | GET | `/v1/provider/account-earnings` | `handleAccountEarnings` (`coordinator/api/billing_handlers.go`) | `key` | — | Earnings across the account's providers |
@@ -225,8 +225,8 @@ Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInter
 | GET | `/v1/me/providers` | `handleMyProviders` (`coordinator/api/me_handlers.go`) | `user` | — | Machines linked to the account |
 | GET | `/v1/me/self-route-models` | `handleMySelfRouteModels` (`coordinator/api/me_handlers.go`) | `user` | — | Models the account's own machines can serve |
 | DELETE | `/v1/me/providers/{id}` | `handleDeleteMyProvider` (`coordinator/api/me_handlers.go`) | `user` | `fin` | Unlink a machine |
-| GET | `/v1/pricing` | `handleGetPricing` (`coordinator/api/billing_handlers.go`) | `—` | — | Public price table; see [`pricing-model.md`](pricing-model.md) |
-| PUT | `/v1/pricing` | `handleSetPricing` (`coordinator/api/billing_handlers.go`) | `user` | — | Provider sets its own prices |
+| GET | `/v1/pricing` | `handleGetPricing` (`coordinator/api/billing_handlers.go`) | `—` | — | Public price table, `types.PricingResponse` `{prices: [{model, input_price, output_price, cache_read_price, input_usd, output_usd, cache_read_usd}], fallback_input_price, fallback_output_price, fallback_cache_read_price, fallback_*_usd}`; `cache_read_price` is the effective rate (derived when the row sets none); see [`pricing-model.md`](pricing-model.md) |
+| PUT | `/v1/pricing` | `handleSetPricing` (`coordinator/api/billing_handlers.go`) | `user` | — | Provider sets its own prices: `{model, input_price, output_price, cache_read_price?}` (`modelPriceInput`, `coordinator/api/model_pricing.go`; `0 ≤ cache_read_price ≤ input_price`, omitted = derived) → `types.PriceUpdateResponse` |
 | DELETE | `/v1/pricing` | `handleDeletePricing` (`coordinator/api/billing_handlers.go`) | `user` | — | Revert to defaults |
 
 All six `/v1/me/*` routes are wrapped in `requirePrivyAuth`, so they are Privy-JWT only.
@@ -355,7 +355,7 @@ client receipt. See [incoming request accounting](../architecture/request-accoun
 | GET | `/v1/releases/latest` | `handleLatestRelease` (`coordinator/api/release_handlers.go`) | `—` | Latest release record |
 | GET | `/readyz` | `handleReadyz` (`coordinator/api/drain.go`) | `—` | 200 normally; 503 while draining |
 
-The 0.9.10 candidate sets `LatestProviderVersion = "0.9.10"` in
+The 0.9.12 candidate sets `LatestProviderVersion = "0.9.12"` in
 `coordinator/api/server.go`. A registered active release still takes precedence
 for version displays; this fallback change does not publish an updater release.
 `GET /v1/releases/latest` requires a registered release and returns 404 when none
@@ -379,11 +379,11 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 
 | Method | Path | Handler | Auth | Notes |
 |---|---|---|---|---|
-| PUT | `/v1/admin/pricing` | `handleAdminPricing` (`coordinator/api/billing_handlers.go`) | `admin` | Platform default price table |
+| PUT | `/v1/admin/pricing` | `handleAdminPricing` (`coordinator/api/billing_handlers.go`) | `admin` | Platform default price table; same body and response as `PUT /v1/pricing` (`modelPriceInput` → `types.PriceUpdateResponse`) |
 | PUT | `/v1/admin/users/role` | `handleAdminSetUserRole` (`coordinator/api/billing_handlers.go`) | `admin` | Role selects the consumer or service limiter |
 | PUT | `/v1/admin/users/platform-fee` | `handleAdminSetUserPlatformFee` (`coordinator/api/billing_handlers.go`) | `admin` | Per-user fee override; fee policy in [`../architecture/billing.md#invariants`](../architecture/billing.md#invariants) |
-| POST | `/v1/admin/models/register` | `handleRegisterModel` (`coordinator/api/model_registry_handlers.go`) | `publishing` | Publish a model build |
-| POST | `/v1/admin/models/` | `handleAdminModelRegistryAction` (`coordinator/api/model_registry_handlers.go`) | `publishing` | Registry actions selected by path suffix |
+| POST | `/v1/admin/models/register` | `handleRegisterModel` (`coordinator/api/model_registry_handlers.go`) | `publishing` | Publish a model build; optional `cache_read_price` beside `input_price`/`output_price` (`modelPriceInput`); the response (`registerModelResponse`) quotes the effective platform rates |
+| POST | `/v1/admin/models/` | `handleAdminModelRegistryAction` (`coordinator/api/model_registry_handlers.go`) | `publishing` | Registry actions selected by path suffix, including `publish-revision` (version plus optional pinned `hugging_face_artifact`) and `retire-revision` (version); publication returns 503 if its committed promotion has not reached live policy or desired-state delivery to a provider fails; [revision contracts](model-registry-format.md#admin-actions) |
 | GET / POST | `/v1/admin/models/aliases` | `handleModelAliasList`, `handleModelAliasUpsert` (`coordinator/api/model_alias_handlers.go`) | `publishing` | Two registrations; upserts fan out `desired_models` (see [Version gating](#version-gating)) |
 | DELETE | `/v1/admin/models/aliases/{aliasID}` | `handleModelAliasDelete` (`coordinator/api/model_alias_handlers.go`) | `publishing` | |
 | GET / POST | `/v1/admin/models/openrouter-aliases` | `handleOpenRouterAliasList`, `handleOpenRouterAliasUpsert` (`coordinator/api/openrouter_alias_handlers.go`) | `publishing` | Two registrations |
@@ -423,6 +423,15 @@ Total: 4 + 9 + 10 + 3 + 15 + 13 + 6 + 6 + 5 + 3 + 1 + 41 + 1 = **117 registratio
 
 ## Exact cache status
 
+Typed audio content (`input_audio` / `audio_url`), including malformed audio
+parts and audio-bearing tool output, is ineligible for the text-only prefix
+planner. Ordinary text mentioning audio and opaque tool argument strings are
+not audio-presence signals. This exclusion does not enable audio routing or a
+provider capability, and does not classify audio as vision for billing.
+Sources: `coordinator/api/audio_cache_eligibility.go`,
+`coordinator/promptcontract/endpoint_lower.go` and
+`coordinator/promptsidecar/src/endpoint.rs`.
+
 `GET /v1/cache/status` returns aggregate operational state, with no provider,
 model, tenant, prompt, token, hash, scope, or epoch identifiers
 (`ExactCacheStatus`, `coordinator/api/exact_cache_status.go`). Readiness counts
@@ -436,9 +445,22 @@ are advertised provider/model pairs, not unique models or guaranteed cache hits.
 | `providers.memory_ready_models` | Ready resident capabilities, counted separately from SSD readiness | `coordinator/registry/cache_status.go` (`PrefixCacheProtocolStatus`) |
 | `lifecycle.fences_applied` | Proof-fence windows opened or escalated | `coordinator/registry/cache_routing.go` (`CacheRoutingLifecycleStatus`); `coordinator/registry/cache_proof_fence.go` (`rejectCapability`) |
 | `lifecycle.fences_expired` | Windows that lifted by time, each counted once | Same; `coordinator/registry/cache_proof_fence.go` (`countLapseLocked`) |
-| `lifecycle.fenced_capabilities` | Currently fenced provider/model/tier capabilities | Same; `coordinator/registry/cache_proof_fence.go` (`sweepFencesLocked`) |
+| `lifecycle.persistence.enabled` / `.ready` | Persistence is started / restore has established the key generation. Holder and demand writes wait for `ready`; failed restores retry each flush tick | `coordinator/registry/cachepersist/status.go` (`Status`); `coordinator/registry/cache_persistence_registry.go` (`runCacheRoutingPersistence`) |
+| `lifecycle.persistence.restored_holders` / `.restored_demand` | Holder rows accepted into the parked set during boot or retry, and restored demand entries accepted by the index. Loads enforce TTL, caps and clock-skew bounds | `coordinator/registry/cachepersist/restore.go` (`Restore`, `SeedDemandPersisted`) |
+| `lifecycle.persistence.pending_holders` / `.bound_holders` / `.dropped_pending` | Currently parked holders (not pending writes), cumulative bindings, and parked/restored rows dropped for expiry, capacity, identity mismatch, abandoned epoch or invalidation fences | `coordinator/registry/cachepersist/pending.go` (`Park`, `AddBound`, `prunePendingChunked`); `coordinator/registry/cache_persistence.go` (`bindRowsLocked`, `settleParkedChunk`); `coordinator/registry/cachepersist/restore.go` (`Restore`) |
+| `lifecycle.persistence.key_rotated` | This boot reset a different recorded cache-key generation, covering the master key and all derivation versions. Excludes first initialization and completion of an in-progress reset | `coordinator/registry/cachepersist/restore.go` (`Restore`) |
+| `lifecycle.persistence.flushes` / `.flush_errors` | Nonempty or reset-only flush attempts, and their failures. Unwritten mutations stay pending; successful chunks clear only matching revisions | `coordinator/registry/cachepersist/flush.go` (`Flush`, `recordFlush`); `coordinator/registry/cachepersist/mutations.go` (`acknowledgeHolders`, `acknowledgeDemand`) |
+| `lifecycle.persistence.rows_written` / `.rows_deleted` | Holder/demand rows successfully submitted in upsert chunks / holder keys successfully submitted in delete chunks. Deletes can name missing rows; neither is a current row count or a count of rows actually changed. Reset/prune deletions are excluded | `coordinator/registry/cachepersist/mutations.go` (`acknowledgeHolders`, `acknowledgeDemand`) |
+| `lifecycle.persistence.dropped_dirty` | Upsert/demand marks dropped at their pending cap, plus pending holder upserts discarded by delete-backlog overflow | `coordinator/registry/cachepersist/marks.go` (`MarkHolderUpsert`, `MarkDemand`); `coordinator/registry/cachepersist/reset.go` (`requireResetLocked`) |
+| `lifecycle.persistence.overflow_resets` / `.stale_upserts` | Delete-backlog overflows requesting a durable reset (not completed resets) / holder upserts rejected because evidence is at or before a per-key invalidation or the process-lifetime overflow cutoff | `coordinator/registry/cachepersist/reset.go` (`requireResetLocked`); `coordinator/registry/cachepersist/marks.go` (`MarkHolderUpsert`); `coordinator/registry/cachepersist/delete_fences.go` (`tombstonedLocked`) |
+| `lifecycle.persistence.last_flush_ms` / `.last_flush_at` | Duration and completion time of the last counted flush, successful or failed, including a mid-flush reset. Time is UTC RFC 3339 and omitted before any counted flush | `coordinator/registry/cachepersist/flush.go` (`recordFlush`); `coordinator/registry/cachepersist/status.go` (`Status`) |
+| `lifecycle.fenced_capabilities` | Currently fenced provider/model/tier capabilities | `coordinator/registry/cache_proof_fence.go` (`sweepFencesLocked`) |
 | `lifecycle.demand_entries` | Entries currently in the observed-demand index | `coordinator/registry/cache_demand.go` (`stats`) |
 | `lifecycle.demand_cap_evictions` | Demand entries evicted by the cap inside their TTL; a growing count means repeated prefixes are being reported as novel | Same |
+
+The persistence field names are unchanged. Routing reads remain in memory;
+write-behind, restore and overflow guarantees are defined in
+[cache persistence](../architecture/cache-aware-routing.md#persistence-across-restarts).
 
 The artifact-list fields have Prometheus gauges
 `exact_cache_artifact_allowlist_configured`, `exact_cache_artifact_allowlist_count`
@@ -489,10 +511,58 @@ bundles dereference `reputation.score` and cannot consume the new response.
 Existing tabs running an older bundle must reload. The updated console also
 accepts older responses containing the extra field.
 
+## First-content routing and retry behavior
+
+Inference planning may obtain exact input work from the verified model/template
+tokenizer before dispatch. The internal numeric provenance is not a client
+request field. Planning, retries and provider reconciliation spend the same
+original first-content clock; neither corrected counts nor a calibrated margin
+extend it. Unsupported shapes keep conservative fallback, and billing continues
+to settle actual provider usage (`planPromptRoute`, `coordinator/api/prompt_work.go`).
+
+Public inference uses [first-content routing](../architecture/first-content-routing.md)
+by default across chat completions, Responses, completions and Anthropic messages.
+Internal retries, cache planning, quotes, queue waits and hedges consume the same
+original request deadline. Predictive provider refusals do not count as node
+health failures; after two, another attempt needs fresh feasible evidence.
+A request can launch at most one speculative backup. Current error JSON and
+`Retry-After` contracts remain; unavailable deadline-bound capacity can produce
+an earlier overload response instead of waiting the queue maximum. Explicit
+owner routing, deadline exemptions and valid empty completions keep their
+existing contracts (`coordinator/api/first_content_retry.go`,
+`coordinator/api/first_content_preflight.go`).
+
 ## Provider capacity observations
 
 `GET /v1/me/providers` exposes the accepted backend slot snapshot through
 `backend_capacity.slots` (`handleMyProviders`, `coordinator/api/me_handlers.go`). The
+owner-only response also carries optional `backend_capacity.load_usable_gb`
+(live no-eviction load memory before serving headroom),
+`backend_capacity.load_headroom_gb` (activation plus minimum-KV reserve for
+the current serving set), each model's `estimated_memory_gb`, and
+`capacity_model_ids`: the catalog/capability-accepted subset to which the
+canonicalized heartbeat slots and memory sample apply. The response also carries
+`capacity_accepted_at`, the coordinator time of the last applied capacity
+snapshot. A repeated or out-of-order capacity sequence can advance
+`last_heartbeat` for liveness without refreshing this timestamp. The owner
+load verdict uses `capacity_accepted_at` and withholds stale or absent samples.
+`models_replace` clears this owner load evidence until an accepted heartbeat
+for the replacement inventory arrives, including when a model ID is reused.
+It also carries optional `backend_capacity.load_transition_active`, which marks
+an in-flight model load or load-gate update before a slot exists. The provider
+emits a capacity heartbeat when this transition changes. My Macs and the
+coordinator attention count defer memory failures while it is active.
+My Macs shows `estimated_memory_gb + load_headroom_gb` against `load_usable_gb` for
+cold accepted models. A crashed slot retains weights and gets a separate
+backend warning, not a cold-load verdict. Owner-only/off-catalog models remain
+in `models` but are not assigned a load verdict from a different canonical inventory.
+Missing fields from older providers mean unknown, never zero or
+"fits"; a stale capacity sample, active or queued request, in-flight load or
+reloading slot also withholds a definitive cold-load failure. The coordinator does not route
+from these owner diagnostics.
+The existing `free_for_load_gb` remains the routing input and may credit
+eviction of idle slots, so it is not interchangeable with the no-eviction
+preload budget. The
 optional `paged_storage` object carries bounded allocator observations; omitted
 fields mean uninstrumented. Its exact fields and sample-age rules live in the
 [wire reference](protocol-messages.md#slotspaged_storage). The coordinator
@@ -695,7 +765,7 @@ root response marked `incomplete` because generation reached its output limit.
 
 ### Completions and Messages
 
-`/v1/completions` and `/v1/messages` are lowered to the chat contract (`coordinator/promptcontract/endpoint_lower.go`, `coordinator/promptcontract/endpoint_lower_messages.go`); responses are re-shaped by `coordinator/api/generic_endpoint_response.go` and streams by `coordinator/api/generic_endpoint_stream.go`, which terminates with `data: [DONE]`.
+`/v1/completions` and `/v1/messages` are lowered to the chat contract (`coordinator/promptcontract/endpoint_lower.go`, `coordinator/promptcontract/endpoint_lower_messages.go`); responses are re-shaped by `coordinator/api/generic_endpoint_response.go` and streams by `coordinator/api/generic_endpoint_stream.go`, which terminates with `data: [DONE]`. Usage reports a validated cache hit in each endpoint's own schema (`completionsUsage`, `messagesUsage`): `/v1/completions` adds `usage.prompt_tokens_details.cached_tokens` (a subset of `prompt_tokens`); `/v1/messages` reports `cache_read_input_tokens` and excludes those tokens from `input_tokens`, as Anthropic does. Streams carry the same object on their terminal event: the final `text_completion` chunk's `usage` for completions, and the `message_delta` `usage` for messages (its `message_start` still reports `input_tokens: 0`, because usage is known only at the end).
 
 ## SSE framing
 
@@ -837,3 +907,8 @@ An unknown payout outcome held for manual reconciliation remains `status=pending
 Promotion input is `{ "model_id": "...", "tokens": 150000000, "claim_starts_at": "RFC3339", "claim_ends_at": "RFC3339 or null", "signup_cutoff_at": "RFC3339", "max_claims": 250, "enabled": true }`. Signup eligibility is strictly before `signup_cutoff_at` using the persisted account creation timestamp. `max_claims` accepts integers in `[1, 1000000]`. A null claim end is supported, but the Bonsai launch draft has an explicit end. Only `enabled` is mutable; conflicting terms return `409 promotion_conflict`. Tokens are integers in `[1, 1000000000000]`. Grant responses have a `grants` array containing `model_id`, `total_tokens`, `used_tokens`, `reserved_tokens`, `remaining_tokens` (available after reservations), and `claimed_at`. There is no expiry field. Claiming requires `{"model_id":"..."}`, uses the server clock and does not require catalog registration. Repeated successful claims return the existing grant without consuming another slot, including after the window or cap closes. Service accounts receive no grant. Responses also include `offers` with `model_id`, `tokens`, `max_claims`, `remaining_claims`, `signup_cutoff_at`, `claim_ends_at` and `status` (`available`, `claimed`, `sold_out`, `ineligible`, or `unavailable`). Claim failures return `403 promotion_ineligible`, `409 promotion_sold_out`, `409 promotion_unavailable`, or `404 promotion_not_found`.
 
 Inference returns `402 free_tokens_exhausted` when the claimed allowance is exhausted or held by active requests and paid balance is insufficient. `402 promotion_balance_required` means remaining free tokens plus paid balance cannot cover the request's upper bound. Both carry an OpenAI-compatible `error.code` and user-facing message. Paid fallback succeeds when funded. See [operations/model-token-promotions.md](../operations/model-token-promotions.md).
+
+## MiMo prompt parity fixtures
+
+See [MiMo prompt fixture reproduction](../developer/mimo-prompt-fixtures.md)
+for the independent pinned corpus and metadata required by the Rust parity gate.

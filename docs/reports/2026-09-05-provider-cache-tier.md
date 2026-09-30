@@ -1,6 +1,6 @@
 # Provider cache tier advertisement check
 
-> Last updated: 2026-09-05 · commit `e3f3fd160`
+> Last updated: 2026-09-05
 
 The provider now advertises resident prefix evidence only when its engine can
 actually select that tier. An accepted complete SSD checkpoint store takes

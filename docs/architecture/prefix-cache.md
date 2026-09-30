@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-09-28 · commit `ae4925180`
+> Last updated: 2026-09-28
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -573,6 +573,19 @@ with zero failures, on integrated source `97a439359` with native library
 explicit ephemeral-key control; successful production-key process-restart reuse
 and live multi-provider routing remain unmeasured. Earlier resident measurements
 are separate from the SSD results.
+
+### Device work during checkpoint transfer
+
+SSD checkpoint donation, staging and hybrid import/export may evaluate device
+arrays outside a scheduled inference row. These scopes hold a noncharging
+`WholeMacUnboundedActivity` from the shared service budget, so deadline forecasts
+cannot mistake that activity for an idle GPU. Existing memory reservations and
+checkpoint ownership remain authoritative. Nested scopes release independently;
+ending a transfer never makes a previously captured calibration guard valid
+again (`SSDPrefixCache`, `SSDHybridCheckpointStore`,
+`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/WholeMacUnboundedActivity.swift`).
+See [first-content routing](first-content-routing.md) for the calibrated-work
+rules applied to these signals.
 
 ## Invariants
 

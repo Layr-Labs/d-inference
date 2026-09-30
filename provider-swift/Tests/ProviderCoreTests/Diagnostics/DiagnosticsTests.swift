@@ -57,6 +57,50 @@ import Testing
     let d = ModelFitDiagnostic.diagnose(modelID: "big", weightGb: 25.0, usableGb: 21.0)
     #expect(d.level == .fail)
     #expect(d.message.contains("31.5"))
+    #expect(d.message.contains("10.5 GB short"))
+    #expect(d.fix?.contains("darkbloom doctor") == true)
+}
+
+@Test func modelLoadReadinessRejectsUnknownAndPreservesExactGap() {
+    let budget = ModelLoadReadiness(
+        estimatedMemoryGb: 18.2, headroomGb: 6.5, usableGb: 14.3)
+    #expect(abs((budget?.requiredGb ?? 0) - 24.7) < 0.0001)
+    #expect(abs((budget?.shortfallGb ?? 0) - 10.4) < 0.0001)
+    #expect(budget?.canLoadNow == false)
+    #expect(ModelLoadReadiness(estimatedMemoryGb: 18, headroomGb: .nan, usableGb: 14) == nil)
+}
+
+@Test func modelFitSeparatesResidentAndEvictionAwareLoads() {
+    let resident = ModelFitDiagnostic.diagnose(
+        modelID: "qwen", weightGb: 18.2, usableGb: 14.3,
+        alreadyResident: true)
+    #expect(resident.level == .info)
+    #expect(resident.message.contains("already resident"))
+
+    let evictable = ModelFitDiagnostic.diagnose(
+        modelID: "qwen", weightGb: 18.2, usableGb: 14.3,
+        evictionAwareWeightGb: 19)
+    #expect(evictable.level == .warn)
+    #expect(evictable.message.contains("startup preload will not evict"))
+
+    let impossible = ModelFitDiagnostic.diagnose(
+        modelID: "qwen", weightGb: 18.2, usableGb: 14.3,
+        evictionAwareWeightGb: 7.8)
+    #expect(impossible.level == .fail)
+
+    let paired = ModelFitDiagnostic.diagnose(
+        modelID: "qwen", weightGb: 18.2, usableGb: 14.3,
+        evictionAwareWeightGb: 14, loadHeadroomGb: 8)
+    #expect(paired.level == .fail)
+    #expect(paired.message.contains("26.2 GB"))
+    #expect(paired.message.contains("4.2 GB short"))
+    #expect(paired.fix?.contains("Free at least 4.2 GB") == true)
+
+    let busy = ModelFitDiagnostic.diagnose(
+        modelID: "qwen", weightGb: 18.2, usableGb: 14.3,
+        evictionAwareWeightGb: 7.8, busyServing: true)
+    #expect(busy.level == .info)
+    #expect(busy.message.contains("recheck when this Mac is idle"))
 }
 
 @Test func modelFitPassesWhenItFits() {

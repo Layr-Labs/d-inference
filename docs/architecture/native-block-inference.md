@@ -1,6 +1,6 @@
 # Native block-generation adapter
 
-> Last updated: 2026-09-20 · commit `76a8f03d9`
+> Last updated: 2026-09-20
 
 This page explains the native block engine and its provider bridge boundary.
 DiffusionGemma uses explicit native-container ownership through ordinary slot

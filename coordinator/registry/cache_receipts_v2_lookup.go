@@ -115,6 +115,9 @@ func (t *cacheRoutingTracker) applyLookupV2Decision(
 			ModelAggregateHash:      msg.ModelAggregateHash,
 			PromptContractID:        msg.PromptContractID,
 			CacheEpoch:              msg.CacheEpoch,
+			BlockHashVersion:        capability.BlockHashVersion,
+			ReadyBoundaryMode:       capability.ReadyBoundaryMode,
+			Tier:                    msg.Tier,
 			Anchor:                  anchor,
 			RequiredRecomputeTokens: msg.RequiredRecomputeTokens,
 			StageMs:                 msg.StageMs,
@@ -127,12 +130,12 @@ func (t *cacheRoutingTracker) applyLookupV2Decision(
 			}
 		}
 		t.upsertHolderLocked(key, holder)
-		t.supersedeDeeperHoldersLocked(providerID, attempt.Plan, anchor, msg.Tier, routeKey)
+		t.supersedeDeeperHoldersLocked(providerID, attempt.Plan, anchor, msg.Tier, msg.CacheEpoch, routeKey)
 	case "miss_absent", "miss_corrupt":
 		for _, anchor := range attempt.Plan.Boundaries {
-			t.removeHolderLocked(
+			t.invalidateBoundaryLocked(
 				cacheTierBoundaryKey(routeKey, attempt.Plan, anchor, msg.Tier),
-				providerID,
+				providerID, msg.Tier, msg.CacheEpoch,
 				cacheHolderRemovalMissInvalidation,
 			)
 		}
@@ -147,6 +150,15 @@ func (t *cacheRoutingTracker) applyLookupV2Decision(
 		}
 	}
 	return CacheReceiptResult{Accepted: true, Reason: CacheReceiptAccepted, PromptTokens: attempt.Plan.PromptTokenCount}
+}
+
+// A validated miss or shorter hit also invalidates evidence not yet restored
+// into the live index. The attempt supplies its durable identity in that case.
+func (t *cacheRoutingTracker) invalidateBoundaryLocked(key, providerID, tier, epoch string, reason cacheHolderRemovalReason) {
+	if _, live := t.holders[key][providerID]; !live && key != "" && tier == "ssd" && t.persister != nil {
+		t.persistRowAfterLossLocked(key, epoch, providerID, t.now())
+	}
+	t.removeHolderLocked(key, providerID, reason)
 }
 
 // supersedeDeeperHoldersLocked drops this provider's holders, in the receipt's
@@ -165,14 +177,14 @@ func (t *cacheRoutingTracker) applyLookupV2Decision(
 // continuation of the same prefix is not in this plan and is not removed.
 func (t *cacheRoutingTracker) supersedeDeeperHoldersLocked(
 	providerID string, plan CachePlan, matched protocol.PrefixCacheAnchor,
-	tier string, routeKey []byte,
+	tier, epoch string, routeKey []byte,
 ) {
 	for _, boundary := range plan.Boundaries {
 		if boundary.TokenCount <= matched.TokenCount {
 			continue
 		}
 		if key := cacheTierBoundaryKey(routeKey, plan, boundary, tier); key != "" {
-			t.removeHolderLocked(key, providerID, cacheHolderRemovalShorterHit)
+			t.invalidateBoundaryLocked(key, providerID, tier, epoch, cacheHolderRemovalShorterHit)
 		}
 	}
 }

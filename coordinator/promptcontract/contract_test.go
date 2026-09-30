@@ -99,6 +99,7 @@ func TestSharedContractVectors(t *testing.T) {
 			LegacyV3PromptContractID string     `json:"legacy_v3_prompt_contract_id"`
 			LegacyV4PromptContractID string     `json:"legacy_v4_prompt_contract_id"`
 			LegacyV5PromptContractID string     `json:"legacy_v5_prompt_contract_id"`
+			LegacyV6PromptContractID string     `json:"legacy_v6_prompt_contract_id"`
 		} `json:"vectors"`
 	}
 	encoded, err := os.ReadFile(filepath.Join("..", "..", "fixtures", "prompt-contract", "v1", "contract_vectors.json"))
@@ -125,7 +126,10 @@ func TestSharedContractVectors(t *testing.T) {
 		if fixture.LegacyV5PromptContractID == "" || actual == fixture.LegacyV5PromptContractID {
 			t.Fatal("registered Qwen4 ID semantics reused the legacy v5 contract")
 		}
-		for _, version := range []string{"darkbloom-request-normalization-v3", "darkbloom-request-normalization-v4", "darkbloom-request-normalization-v5"} {
+		if fixture.LegacyV6PromptContractID == "" || actual == fixture.LegacyV6PromptContractID {
+			t.Fatal("native MiMo semantics reused the legacy v6 contract")
+		}
+		for _, version := range []string{"darkbloom-request-normalization-v3", "darkbloom-request-normalization-v4", "darkbloom-request-normalization-v5", "darkbloom-request-normalization-v6"} {
 			legacy := CurrentVersions()
 			legacy.Normalization = version
 			if _, err := ContractID(fixture.Artifacts, legacy); !errors.Is(err, ErrInvalidVersions) {

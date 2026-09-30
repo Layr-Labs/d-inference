@@ -424,7 +424,7 @@ func TestDispatchOneProviderUsesPinnedExpiredClockWithoutRecomputing(t *testing.
 	}
 }
 
-func TestDeadlineUnreachableAllProvidersReturnSingle429(t *testing.T) {
+func TestDeadlineUnreachableStopsAfterTwoWithoutFreshEvidence(t *testing.T) {
 	t.Setenv("EIGENINFERENCE_CAPACITY_COOLDOWN_THRESHOLD", "1")
 	reg, st, srv, ts := setupTTFTFailoverServer(t)
 	srv.SetTTFTHardReject(true)
@@ -480,10 +480,8 @@ func TestDeadlineUnreachableAllProvidersReturnSingle429(t *testing.T) {
 	}
 
 	attempts := recorder.snapshot()
-	if len(attempts) != providerCount {
-		t.Fatalf(
-			"dispatches = %d, want all %d untried providers (capacity cap is %d): %+v",
-			len(attempts), providerCount, maxCapacityClassRetries, attempts)
+	if len(attempts) != predictiveRefusalRefreshThreshold {
+		t.Fatalf("dispatches = %d, want two refusals followed by a fresh-evidence requirement: %+v", len(attempts), attempts)
 	}
 	assertAttemptBudgetsDecrease(t, attempts)
 	for _, provider := range providers {
@@ -491,7 +489,7 @@ func TestDeadlineUnreachableAllProvidersReturnSingle429(t *testing.T) {
 	}
 
 	routes, rejections := waitForDeadlineTelemetry(
-		t, st, providerCount, 1)
+		t, st, predictiveRefusalRefreshThreshold, 1)
 	if len(rejections) != 1 {
 		t.Fatalf("rejection rows = %d, want exactly 1: %+v", len(rejections), rejections)
 	}
@@ -510,10 +508,10 @@ func TestDeadlineUnreachableAllProvidersReturnSingle429(t *testing.T) {
 			deadlineRoutes++
 		}
 	}
-	if deadlineRoutes != providerCount {
+	if deadlineRoutes != predictiveRefusalRefreshThreshold {
 		t.Errorf(
 			"deadline route rows = %d, want %d; routes=%+v",
-			deadlineRoutes, providerCount, routes)
+			deadlineRoutes, predictiveRefusalRefreshThreshold, routes)
 	}
 	outcome := awaitRequestOutcomes(t, st, 1)[0]
 	if outcome.Termination != "rejected" || outcome.NormalizedCode != "ext_coordinator_exhausted" {
@@ -544,7 +542,7 @@ func postGenericInference(
 
 func TestAcceptedDoesNotStopSpeculativeFirstContentRace(t *testing.T) {
 	reg, st, _, ts := setupTTFTFailoverServerWithConfig(t, ServerConfig{
-		FirstContentDeadlineBase: 400 * time.Millisecond,
+		FirstContentDeadlineBase: 3 * time.Second,
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -567,14 +565,17 @@ func TestAcceptedDoesNotStopSpeculativeFirstContentRace(t *testing.T) {
 		}
 		fp.serveFull(ctx, req, model, markerFor(fp.name))
 	}
-	startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
+	primary := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
 		Name: "accepted-primary", Version: "0.8.10", DecodeTPS: 200,
 		Models: []failoverModelSpec{{ID: model}}, Script: script,
 	})
-	startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
+	backup := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
 		Name: "content-backup", Version: "0.8.10", DecodeTPS: 100,
 		Models: []failoverModelSpec{{ID: model}}, Script: script,
 	})
+
+	reportIdleFirstContentEvidence(reg, primary.registryID, model)
+	reportIdleFirstContentEvidence(reg, backup.registryID, model)
 
 	status, body, err := postChat(
 		ctx, ts.URL, "test-key", buildChatBody(t, model, true, nil))

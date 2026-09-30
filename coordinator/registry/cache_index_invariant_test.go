@@ -383,6 +383,17 @@ func TestCacheIndexConcurrentTrackerOperations(t *testing.T) {
 	h.clock.Advance(26 * time.Minute)
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
+	var stopOnce sync.Once
+	stopWorkers := func() {
+		stopOnce.Do(func() { close(stop) })
+		wg.Wait()
+	}
+	// A fatal receipt assertion must not leak these workers into later tests
+	// (especially testing.AllocsPerRun's process-wide allocation measurement).
+	defer stopWorkers()
+	concurrentStart := h.clock.Now()
+	clockBudget := min(cacheRoutingAttemptTTL, cacheRoutingInFlightAttemptTTL) / 4
+	const clockSteps = 1000
 	run := func(fn func(i int)) {
 		wg.Add(1)
 		go func() {
@@ -402,15 +413,29 @@ func TestCacheIndexConcurrentTrackerOperations(t *testing.T) {
 	run(func(i int) { h.matches(h.plan(i%4000), h.clock.Now()) })
 	run(func(i int) { tracker.invalidateProviderModel("other", "model", cacheHolderRemovalCapabilityChange) })
 	run(func(i int) { tracker.disconnect("another", cacheHolderRemovalDisconnect) })
-	run(func(i int) { h.clock.Advance(time.Millisecond) })
+	// The initial 26-minute advance already makes old holders eligible for
+	// concurrent expiry. Keep clock writes racing with tracker operations,
+	// without making a newly prepared lookup/ready transaction expire merely
+	// because this goroutine receives more CPU time than the donating thread.
+	run(func(i int) {
+		if i < clockSteps {
+			h.clock.Advance(clockBudget / clockSteps)
+		}
+	})
 	for index := 10_000; index < 10_600; index++ {
 		h.donate(index)
 	}
-	close(stop)
-	wg.Wait()
+	// Once every lookup/ready transaction is complete, expire the late holders
+	// too while the same tracker workers are still active.
+	h.clock.Advance(26 * time.Minute)
+	h.r.CacheRoutingStateCounts()
+	stopWorkers()
+	if elapsed := h.clock.Now().Sub(concurrentStart); elapsed > 26*time.Minute+clockBudget {
+		t.Fatalf("concurrent clock advanced %s beyond the two-phase expiry budget", elapsed)
+	}
 	assertCacheIndexInvariants(t, tracker, "concurrent")
-	// The clock goroutine runs far ahead, so how many of the late donations
-	// are still live is not fixed; the books must balance all the same.
+	// Both generations of expired holders must balance regardless of how the
+	// concurrent sweeps interleave or whether a bounded sweep remains pending.
 	holders, _ := h.r.CacheRoutingStateCounts()
 	lifecycle := h.r.CacheRoutingLifecycleStatus()
 	removed := uint64(0)

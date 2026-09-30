@@ -1,6 +1,6 @@
 # Paged physical ownership and admission check
 
-> Last updated: 2026-09-05 · commit `59e8a7bb2`
+> Last updated: 2026-09-05
 
 The opt-in segmented paged backend now accounts for actual native buffer
 ownership under the engine's admission budget, including growth, grant shrink,

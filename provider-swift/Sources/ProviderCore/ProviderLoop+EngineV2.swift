@@ -72,7 +72,7 @@ final class EngineV2NewcomerBox: @unchecked Sendable {
     }
 
     /// Drop the strong reference to the container. The weights become
-    /// reclaimable; pair with `MLX.Memory.clearCache()` so the pool
+    /// reclaimable; pair with `clearCacheAfterConfirmedNativeOwnership()` so the pool
     /// returns their buffers before anything re-reads live residency.
     func release() {
         lock.withLock { _container = nil }
@@ -192,6 +192,10 @@ extension ProviderLoop {
                 .addingReportingOverflow(UInt64(max(0, slot.sizing.weightsBytes)))
             totalWeights = overflow ? .max : sum
         }
+        for (modelID, sizing) in nativeMiMoRetiringSizing where modelSlots[modelID] == nil {
+            let (sum, overflow) = totalWeights.addingReportingOverflow(UInt64(max(0, sizing.weightsBytes)))
+            totalWeights = overflow ? .max : sum
+        }
         let physical = engineV2SlotHooks?.physicalMemoryBytes
             ?? ProcessInfo.processInfo.physicalMemory
         return UnifiedMemoryCap.kvBudgetBytes(
@@ -304,6 +308,7 @@ extension ProviderLoop {
         newcomer newcomerBox: EngineV2NewcomerBox,
         tokenizer: TokenizerHandle,
         sizing: SlotSizingSnapshot,
+        modelArtifactSHA256: String? = nil,
         cacheEligibleWeightHash: String? = nil
     ) async throws -> EngineV2Bridge {
         let build = try await resliceAndBuildEngineV2Bundle(
@@ -317,6 +322,7 @@ extension ProviderLoop {
             specDecPreparation: SpecDecPreparation(
                 artifact: nil,
                 status: .disabled(.configDisabled, configured: false)),
+            modelArtifactSHA256: modelArtifactSHA256,
             cacheEligibleWeightHash: cacheEligibleWeightHash)
         return build.bundle.bridge
     }
@@ -333,8 +339,13 @@ extension ProviderLoop {
         tokenizer: TokenizerHandle,
         targetSizing: SlotSizingSnapshot,
         specDecPreparation: SpecDecPreparation,
-        cacheEligibleWeightHash: String? = nil
+        modelArtifactSHA256: String? = nil,
+        cacheEligibleWeightHash: String? = nil,
+        registerInRuntime: Bool = true
     ) async throws -> EngineV2SlotBuild {
+        let nativeLoad = Self.nativeMiMoLoad(in: try newcomerBox.borrowModel())
+        try requireNativeMiMoProcessWorkAllowed()
+        if nativeLoad != nil, engineV2SlotHooks != nil { throw MiMoV26ServingLoadError.nativeOwnerMismatch }
         var prepared: EngineV2ServingPreparation
         do {
             let slotLogger = logger
@@ -350,8 +361,9 @@ extension ProviderLoop {
                 logInfo: { slotLogger.info($0) },
                 logWarning: { slotLogger.warning($0) })
         } catch {
+            if nativeLoad != nil { throw error } // real TX owns native unwind
             await newcomerBox.releaseAfterExternalResources()
-            MLX.Memory.clearCache()
+            clearCacheAfterConfirmedNativeOwnership()
             throw error
         }
         // Prepare-stage fail-open (artifact revalidation, assistant load, or
@@ -395,7 +407,7 @@ extension ProviderLoop {
             if let pendingLoad = pendingLoadLeases[modelId] {
                 await kvBudget.reducePendingLoad(pendingLoad, remainingWeightBytes: 0)
             }
-            MLX.Memory.clearCache()
+            clearCacheAfterConfirmedNativeOwnership()
             fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes)
             targets = EngineV2KVSizing.resliceGrants(
                 existing: existing.map(\.slot),
@@ -419,9 +431,10 @@ extension ProviderLoop {
             // Pre-shrink refusal: no grants were mutated, but drop the
             // newcomer's weights promptly so live residency reflects the
             // refusal before the caller's error handling runs.
+            if nativeLoad != nil { throw InferenceError.modelLoadFailed(message) }
             prepared.assistant?.release()
             await newcomerBox.releaseAfterExternalResources()
-            MLX.Memory.clearCache()
+            clearCacheAfterConfirmedNativeOwnership()
             throw InferenceError.modelLoadFailed(message)
         }
 
@@ -456,12 +469,16 @@ extension ProviderLoop {
                 kvBytesCapacity: targets[modelId] ?? 0,
                 specDecPreparation: specDecPreparation,
                 preparedModel: prepared,
-                cacheEligibleWeightHash: cacheEligibleWeightHash)
+                modelArtifactSHA256: modelArtifactSHA256,
+                cacheEligibleWeightHash: cacheEligibleWeightHash,
+                registerInRuntime: registerInRuntime)
         } catch {
+            if nativeLoad != nil { throw error } // no release, Void proof, or speculative restore
             prepared.assistant?.release()
             await newcomerBox.releaseAfterExternalResources()
-            MLX.Memory.clearCache()
+            clearCacheAfterConfirmedNativeOwnership()
             for entry in existing {
+                guard nativeMiMoAllowsReclamation() else { break }
                 await entry.bridge.updateKVBytesCapacity(entry.previousGrant)
             }
             throw error
@@ -472,6 +489,7 @@ extension ProviderLoop {
         // previous state left a slot under-granted).
         for entry in existing {
             if let target = targets[entry.slot.modelId], target > entry.previousGrant {
+                guard nativeMiMoAllowsReclamation() else { break }
                 await entry.bridge.updateKVBytesCapacity(target)
             }
         }
@@ -488,11 +506,16 @@ extension ProviderLoop {
         bundle: ProviderEngineBundle,
         newcomer: EngineV2NewcomerBox
     ) async {
+        if let container = newcomer.modelContainer, Self.nativeMiMoLoad(in: container) != nil {
+            // Native callers must leave the setup operation/task and use the
+            // actual transaction path; generic unwind is not native authority.
+            return
+        }
         await engineV2Runtime.unregister(modelId: modelId)
         await bundle.bridge.shutdown()
         bundle.releaseAssistant()
         await newcomer.releaseAfterExternalResources()
-        MLX.Memory.clearCache()
+        clearCacheAfterConfirmedNativeOwnership()
         await resliceGrowSurvivorsLocked()
     }
 
@@ -524,7 +547,9 @@ extension ProviderLoop {
     /// invariant holds throughout. Used directly by `ensureModelLoaded`'s
     /// post-bridge-guard failure path, which already holds the gate.
     internal func resliceGrowSurvivorsLocked() async {
+        guard nativeMiMoAllowsReclamation() else { return }
         let survivors = await existingSlotGrants(excludingModelId: "")
+        guard nativeMiMoAllowsReclamation() else { return }
         guard !survivors.isEmpty else { return }
         let fleetBudget = fleetKVBudgetBytes(extraWeightBytes: 0)
         let targets = EngineV2KVSizing.resliceGrants(
@@ -538,6 +563,7 @@ extension ProviderLoop {
         }
         for entry in survivors {
             if let target = targets[entry.slot.modelId], target > entry.previousGrant {
+                guard nativeMiMoAllowsReclamation() else { break }
                 await entry.bridge.updateKVBytesCapacity(target)
             }
         }
@@ -569,6 +595,7 @@ extension ProviderLoop {
         kvBytesCapacity: Int,
         specDecPreparation: SpecDecPreparation,
         preparedModel: EngineV2PreparedModel?,
+        modelArtifactSHA256: String? = nil,
         cacheEligibleWeightHash: String? = nil,
         registerInRuntime: Bool = true
     ) async throws -> ProviderEngineBundle {
@@ -577,6 +604,7 @@ extension ProviderLoop {
             container: .autoregressive(container), tokenizer: tokenizer, sizing: sizing,
             kvBytesCapacity: kvBytesCapacity, specDecPreparation: specDecPreparation,
             preparedModel: preparedModel.map(EngineV2ServingPreparation.autoregressive),
+            modelArtifactSHA256: modelArtifactSHA256,
             cacheEligibleWeightHash: cacheEligibleWeightHash, registerInRuntime: registerInRuntime)
     }
 
@@ -591,10 +619,15 @@ extension ProviderLoop {
         kvBytesCapacity: Int,
         specDecPreparation: SpecDecPreparation,
         preparedModel: EngineV2ServingPreparation?,
+        modelArtifactSHA256: String? = nil,
         cacheEligibleWeightHash: String? = nil,
         registerInRuntime: Bool = true
     ) async throws -> ProviderEngineBundle {
         let maxConcurrent = engineV2MaxConcurrent(forModel: modelId)
+        try requireNativeMiMoProcessWorkAllowed()
+        if Self.nativeMiMoLoad(in: container) != nil, engineV2SlotHooks != nil {
+            throw MiMoV26ServingLoadError.nativeOwnerMismatch
+        }
 
         // Assembly is shared with the standalone server via
         // `EngineV2SlotFactory` (one construction path, no drift) —
@@ -651,6 +684,8 @@ extension ProviderLoop {
                 sizing: sizing,
                 kvBytesCapacity: kvBytesCapacity,
                 maxConcurrentRequests: maxConcurrent,
+                automaticallySelectConcurrency: !loopConfig.config.backend.engineV2MaxConcurrentIsExplicit
+                    && loopConfig.config.backend.engineV2MaxConcurrentByModel[modelId] == nil,
                 kvBudget: kvBudget,
                 // The serving-set resolved reserve, so the paged capacity
                 // decision inside the factory measures headroom against the
@@ -660,8 +695,9 @@ extension ProviderLoop {
                 kvBackendConfigByModel: loopConfig.config.backend.engineV2KVBackendByModel,
                 prefillDeadlineMode:
                     loopConfig.config.backend.prefillDeadlineMode,
-                // SSD-tier metadata binding: the verified hash for the bytes
-                // this slot loaded (nil/blank disables reusable SSD caching).
+                // The loaded artifact's profile identity is independent of
+                // SSD reuse eligibility (nil/blank cache hash disables SSD).
+                modelArtifactSHA256: modelArtifactSHA256,
                 weightHash: cacheEligibleWeightHash,
                 specDecPreparation: specDecPreparation,
                 preparedModel: preparedModel,

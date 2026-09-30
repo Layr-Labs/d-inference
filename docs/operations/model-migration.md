@@ -1,6 +1,6 @@
 # Migrate a public model to a new build
 
-> Last updated: 2026-09-27 · commit `5d0dd2674`
+> Last updated: 2026-09-28
 
 Runbook for moving a public model name (an **alias**, e.g. `gemma-4-26b`) from
 one concrete build to another with no downtime and without consumers ever
@@ -110,7 +110,9 @@ uses the GitHub secret `MODEL_REGISTRY_PUBLISHING_KEY`; inputs `model_id`,
 `version`, `display_name`, `family`, `architecture`, `quantization`,
 `capabilities_csv`, `required_provider_capabilities`, `max_context_length`,
 `max_output_length`, `min_ram_gb`, `description`, `runtime_parameters_json`,
-`metadata_json`, `input_price`, `output_price`, `promote`, `coordinator_url`)
+`metadata_json`, `input_price`, `output_price`, optional `cache_read_price`
+(empty = half the input price, and clears a previously set rate), `promote`,
+`coordinator_url`)
 or call the endpoint directly:
 
 ```bash

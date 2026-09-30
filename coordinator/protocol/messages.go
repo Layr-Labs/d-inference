@@ -29,15 +29,16 @@ import (
 // Message type constants.
 const (
 	// Provider → Coordinator.
-	TypeRegister               = "register"
-	TypeHeartbeat              = "heartbeat"
-	TypeProviderDrain          = "provider_drain"
-	TypeProviderDrainAck       = "provider_drain_ack"
-	TypeInferenceAccepted      = "inference_accepted"
-	TypeInferenceResponseChunk = "inference_response_chunk"
-	TypeInferenceComplete      = "inference_complete"
-	TypeInferenceError         = "inference_error"
-	TypeAttestationResponse    = "attestation_response"
+	TypeRegister                   = "register"
+	TypeHeartbeat                  = "heartbeat"
+	TypeProviderDrain              = "provider_drain"
+	TypeProviderDrainAck           = "provider_drain_ack"
+	TypeInferenceAccepted          = "inference_accepted"
+	TypeServiceReservationReleased = "service_reservation_released"
+	TypeInferenceResponseChunk     = "inference_response_chunk"
+	TypeInferenceComplete          = "inference_complete"
+	TypeInferenceError             = "inference_error"
+	TypeAttestationResponse        = "attestation_response"
 	// TypeCodeAttestationResponse is the provider's reply to the APNs-delivered
 	// code-identity challenge (E_K(nonce) push). Distinct from the liveness
 	// attestation_response: this is the WebSocket return leg of the push round-trip.
@@ -149,9 +150,10 @@ type Hardware struct {
 
 // ModelInfo describes a model available on a provider.
 type ModelInfo struct {
-	// Only providers declaring validated SSD-offloaded weight payload use the
-	// padded resident estimate for cold routing. Ordinary models retain the
-	// catalog/measured-weight policy of their current engine release.
+	// Full native LOAD estimate in GiB. Eligible Qwen4 declares a supplement
+	// over SSD-reduced resident bytes; canonical MiMo declares root + installed
+	// sidecar LOAD minus all SizeBytes, with no SSD discount. Size/supplement
+	// fields are bytes. Missing or invalid declarations retain legacy routing.
 	EstimatedMemoryGB        float64 `json:"estimated_memory_gb,omitempty"`
 	SSDOffloadedWeightBytes  int64   `json:"ssd_offloaded_weight_bytes,omitempty"`
 	NativeLoadTransientBytes int64   `json:"native_load_transient_bytes,omitempty"`
@@ -320,16 +322,22 @@ type HeartbeatMessage struct {
 // BackendSlotCapacity describes the capacity state of a single backend slot
 // (one MLX-Swift in-process model serving one model).
 type BackendSlotCapacity struct {
-	Model              string `json:"model"`                     // model ID for this slot
-	State              string `json:"state"`                     // "running", "idle_shutdown", "crashed", "reloading"
-	NumRunning         int    `json:"num_running"`               // requests actively generating
-	NumWaiting         int    `json:"num_waiting"`               // requests queued in backend scheduler
-	MaxConcurrency     int    `json:"max_concurrency,omitempty"` // provider-reported concurrent request cap for this slot
-	ActiveTokens       int64  `json:"active_tokens"`             // sum of (prompt_tokens + completion_tokens) across running requests
-	MaxTokensPotential int64  `json:"max_tokens_potential"`      // sum of max_tokens across running requests (worst-case growth)
+	PromptWorkIdentity *PromptWorkIdentity                  `json:"prompt_work_identity,omitempty"`
+	PerformanceProfile *ServingPerformanceProfileReference  `json:"performance_profile,omitempty"`
+	DeadlineProfile    *DeadlinePerformanceProfileReference `json:"deadline_profile,omitempty"`
+	DeadlineWork       *DeadlineWork                        `json:"deadline_work,omitempty"`
+	// Transient routing observations; not part of persisted numeric SlotTelemetry.
+	PerformanceMeasurements *PerformanceMeasurements `json:"performance_measurements,omitempty"`
+	Model                   string                   `json:"model"`                     // model ID for this slot
+	State                   string                   `json:"state"`                     // "running", "idle_shutdown", "crashed", "reloading"
+	NumRunning              int                      `json:"num_running"`               // requests actively generating
+	NumWaiting              int                      `json:"num_waiting"`               // requests queued in backend scheduler
+	MaxConcurrency          int                      `json:"max_concurrency,omitempty"` // provider-reported concurrent request cap for this slot
+	ActiveTokens            int64                    `json:"active_tokens"`             // sum of (prompt_tokens + completion_tokens) across running requests
+	MaxTokensPotential      int64                    `json:"max_tokens_potential"`      // sum of max_tokens across running requests (worst-case growth)
 
 	ObservedDecodeTPS     float64 `json:"observed_decode_tps,omitempty"`      // EWMA of measured per-request decode TPS
-	ObservedPrefillTPS    float64 `json:"observed_prefill_tps,omitempty"`     // EWMA of measured per-request prefill TPS (admission→first token); omitted when unmeasured
+	ObservedPrefillTPS    float64 `json:"observed_prefill_tps,omitempty"`     // EWMA of cold prefill TPS; new providers use engine prompt timings and explicit measurement metadata
 	ActiveTokenBudgetUsed int64   `json:"active_token_budget_used,omitempty"` // tokens reserved by active requests (prompt + max_output)
 	ActiveTokenBudgetMax  int64   `json:"active_token_budget_max,omitempty"`  // maximum token budget for this slot
 	QueuedTokenBudget     int64   `json:"queued_token_budget,omitempty"`      // tokens reserved by queued requests
@@ -441,11 +449,17 @@ type MLXCacheReclaimerTelemetry struct {
 // on a provider. Reported in heartbeats so the coordinator can make informed
 // routing decisions based on actual GPU utilization rather than hardcoded limits.
 type BackendCapacity struct {
-	Slots             []BackendSlotCapacity `json:"slots"`                // per-model slot capacity
-	GPUMemoryActiveGB float64               `json:"gpu_memory_active_gb"` // Metal active memory (shared across all slots)
-	GPUMemoryPeakGB   float64               `json:"gpu_memory_peak_gb"`   // Metal peak memory
-	GPUMemoryCacheGB  float64               `json:"gpu_memory_cache_gb"`  // Metal cache memory (reclaimable)
-	TotalMemoryGB     float64               `json:"total_memory_gb"`      // total system/GPU memory
+	WholeMacServiceUsed *float64 `json:"whole_mac_service_used,omitempty"`
+	// Version 1 sends explicit attempt release proof after pipeline and engine retirement.
+	WholeMacServiceRetirementProtocol int `json:"whole_mac_service_retirement_protocol,omitempty"`
+	// Ephemeral coordinator reservation IDs represented in WholeMacServiceUsed.
+	// Local and legacy request charges contribute only to the aggregate total.
+	WholeMacServiceReservations []WholeMacServiceReservation `json:"whole_mac_service_reservations,omitempty"`
+	Slots                       []BackendSlotCapacity        `json:"slots"`                // per-model slot capacity
+	GPUMemoryActiveGB           float64                      `json:"gpu_memory_active_gb"` // Metal active memory (shared across all slots)
+	GPUMemoryPeakGB             float64                      `json:"gpu_memory_peak_gb"`   // Metal peak memory
+	GPUMemoryCacheGB            float64                      `json:"gpu_memory_cache_gb"`  // Metal cache memory (reclaimable)
+	TotalMemoryGB               float64                      `json:"total_memory_gb"`      // total system/GPU memory
 	// FreeForLoadGB is the max additional model-WEIGHT footprint (GB) the
 	// provider can load right now: net of the 90% unified-memory cap, OS/operator
 	// reserve, and activation+min-KV load headroom, clamped to real OS-available
@@ -454,6 +468,15 @@ type BackendCapacity struct {
 	// re-derives free memory). A pointer so a legacy provider that doesn't report
 	// it is nil (→ coordinator falls back to the total-memory heuristic).
 	FreeForLoadGB *float64 `json:"free_for_load_gb,omitempty"`
+	// LoadUsableGB is the live no-eviction load gate before activation and
+	// minimum-KV headroom. LoadHeadroomGB is that headroom for the current
+	// serving set. Both are owner diagnostics, not routing inputs. A cold model
+	// needs estimated_memory_gb + load_headroom_gb of load_usable_gb.
+	LoadUsableGB   *float64 `json:"load_usable_gb,omitempty"`
+	LoadHeadroomGB *float64 `json:"load_headroom_gb,omitempty"`
+	// LoadTransitionActive marks an in-flight model load or load-gate update.
+	// Its pending reservation makes an owner's memory verdict temporary.
+	LoadTransitionActive *bool `json:"load_transition_active,omitempty"`
 	// MLXCacheReclaimer is nil for providers predating allocator telemetry.
 	MLXCacheReclaimer *MLXCacheReclaimerTelemetry `json:"mlx_cache_reclaimer,omitempty"`
 	// CapacitySeq is a per-connection monotonically increasing sequence number
@@ -723,18 +746,30 @@ type InferenceRequestBody struct {
 // InferenceRequestMessage tells a provider to run inference. EncryptedBody
 // carries the NaCl Box encrypted request; only the provider's hardened process
 // can decrypt it using its X25519 private key. There is no plaintext body.
+// ServiceReservationReleasedMessage proves this attempt can no longer acquire
+// service work and all of its service leases have retired. It is independent
+// of inference terminal/billing and is scoped to the current connection.
+type ServiceReservationReleasedMessage struct {
+	Type                 string `json:"type"`
+	ServiceReservationID string `json:"service_reservation_id"`
+}
+
 type InferenceRequestMessage struct {
 	Type      string `json:"type"`
 	RequestID string `json:"request_id"`
+	// Fresh opaque ID for this committed service reservation, distinct from
+	// request_id across retries. Providers echo it only while holding its lease.
+	ServiceReservationID string `json:"service_reservation_id,omitempty"`
 	// E2E encrypted request body.
 	EncryptedBody *EncryptedPayload `json:"encrypted_body,omitempty"`
 	// FirstContentBudgetMS is the positive time remaining for this dispatch
 	// attempt to produce its first content-bearing chunk. Zero preserves the
 	// legacy wire shape by omitting the field.
-	FirstContentBudgetMS int64  `json:"first_content_budget_ms,omitempty"`
-	CacheReceiptNonce    string `json:"cache_receipt_nonce,omitempty"`
-	CacheScope           string `json:"cache_scope,omitempty"`
-	PrefixCacheProtocol  int    `json:"prefix_cache_protocol,omitempty"`
+	FirstContentBudgetMS int64       `json:"first_content_budget_ms,omitempty"`
+	PromptWork           *PromptWork `json:"prompt_work,omitempty"`
+	CacheReceiptNonce    string      `json:"cache_receipt_nonce,omitempty"`
+	CacheScope           string      `json:"cache_scope,omitempty"`
+	PrefixCacheProtocol  int         `json:"prefix_cache_protocol,omitempty"`
 	// Echoed only for a negotiated checkpoint receipt attempt. An older
 	// coordinator omits this, so new providers suppress checkpoint receipts.
 	CacheReceiptBoundaryMode string `json:"cache_receipt_boundary_mode,omitempty"`
@@ -811,9 +846,11 @@ type PrefetchModelMessage struct {
 // pointer (no weights). PreviousBuild (if set) stays acceptable to serve during
 // a staggered rollout so a not-yet-swapped provider keeps serving.
 type DesiredModelEntry struct {
-	ModelName     string `json:"model_name"`               // clean/public alias, e.g. "gemma-4-26b"
-	DesiredBuild  string `json:"desired_build"`            // concrete build id to converge to
-	PreviousBuild string `json:"previous_build,omitempty"` // still-acceptable build mid-rollout
+	Revision        string `json:"revision,omitempty"`
+	AggregateSHA256 string `json:"aggregate_sha256,omitempty"`
+	ModelName       string `json:"model_name"`               // clean/public alias, e.g. "gemma-4-26b"
+	DesiredBuild    string `json:"desired_build"`            // concrete build id to converge to
+	PreviousBuild   string `json:"previous_build,omitempty"` // still-acceptable build mid-rollout
 }
 
 // DesiredModelsMessage is the coordinator's declarative statement of the desired
@@ -1081,6 +1118,12 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		}
 		pm.Payload = &msg
 
+	case TypeServiceReservationReleased:
+		var msg ServiceReservationReleasedMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return err
+		}
+		pm.Payload = &msg
 	case TypeInferenceAccepted:
 		var msg InferenceAcceptedMessage
 		if err := json.Unmarshal(data, &msg); err != nil {

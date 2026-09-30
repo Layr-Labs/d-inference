@@ -60,7 +60,7 @@ func seedRetiredBackfillData(t *testing.T, s *PostgresStore) {
 	if err := s.CreditWithdrawable("acct-retired", 700, LedgerPayout, "retired-ref"); err != nil {
 		t.Fatalf("CreditWithdrawable: %v", err)
 	}
-	s.RecordUsage("prov-retired", "consumer", "model", 11, 13)
+	s.RecordUsage(UsageRecord{ProviderID: "prov-retired", ConsumerKey: "consumer", Model: "model", PromptTokens: 11, CompletionTokens: 13})
 	if err := s.RecordProviderEarning(&ProviderEarning{
 		AccountID:      "acct-retired",
 		ProviderID:     "prov-retired",

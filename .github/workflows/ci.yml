@@ -47,8 +47,17 @@ jobs:
           ./scripts/test-prod-env-refresh.sh
       - name: Test startup observer against local stubs
         run: python3 -m unittest discover -s scripts/startup_measurement -t scripts -p 'test_*.py'
+      - name: Test advisory threat review with local HTTP fixtures
+        run: |
+          python3 .github/scripts/test-threat-model-review.py
+          python3 .github/scripts/test-threat-full-scan.py
+          python3 .github/scripts/test-threat-ensemble.py
       - name: Test native GPU CI routing without a GPU
         run: python3 scripts/test-native-gpu-ci.py
+      - name: Test bounded MiMo provider fixture provisioning offline
+        run: python3 scripts/test-prepare-mimo-provider-fixtures.py
+      - name: Test serving qualification evidence and catalogs without a GPU
+        run: python3 -m unittest discover -s scripts/serving_performance -t scripts -p 'test_*.py'
 
   docs:
     name: Docs Lint
@@ -57,9 +66,13 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-          fetch-depth: 0 # Frozen source links are checked at their stamped commits.
+          fetch-depth: 0 # Frozen source links require committed document provenance.
+      - name: Initialize pinned SDK documentation
+        run: git submodule update --init --depth 1 libs/mlx-swift-lm
       - name: Test historical source-link validation
         run: python3 scripts/test-docs-check-historical-links.py
+      - name: Test date-only freshness stamping
+        run: python3 scripts/test-docs-stamp.py
       - name: Check freshness stamps, links, cited paths, orphans
         run: ./scripts/docs-check.sh
 
@@ -87,6 +100,8 @@ jobs:
       - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
         with:
           go-version-file: go.mod
+      - name: Check adversarial numeric parsing without instrumentation
+        run: go test -race=false -cover=false ./coordinator/api -run '^TestConstrainedExactNonnegativeIntBoundsAdversarialLiterals$' -count=1
       - name: Run tests
         env:
           DATABASE_URL: postgres://testbed:testbed@127.0.0.1:5432/testbed?sslmode=disable
@@ -162,6 +177,10 @@ jobs:
         run: |
           rustup toolchain install 1.88.0 --profile minimal --component rustfmt --component clippy
           rustup override set 1.88.0
+      - name: Verify MiMo fixture setup without network
+        run: python3 scripts/test-prepare-mimo-prompt-fixtures.py
+      - name: Prepare pinned public MiMo metadata and original corpus
+        run: python3 scripts/prepare-mimo-prompt-fixtures.py --output "$RUNNER_TEMP/mimo-prompt-fixtures" --github-env "$GITHUB_ENV"
       - name: Check formatting, lint, and tests
         working-directory: coordinator/promptsidecar
         run: |
@@ -252,7 +271,15 @@ jobs:
         run: |
           rustup toolchain install 1.88.0 --profile minimal
           rustup override set 1.88.0
+      - name: Prepare pinned MiMo prompt metadata and original corpus
+        run: python3 scripts/prepare-mimo-prompt-fixtures.py --output "$RUNNER_TEMP/mimo-prompt-fixtures" --github-env "$GITHUB_ENV"
+      - name: Prepare bounded synthetic MiMo provider fixtures offline
+        id: mimo-fixtures
+        run: |
+          python3 scripts/prepare-mimo-provider-fixtures.py --output "$RUNNER_TEMP/mimo-provider-fixtures" --github-env "$GITHUB_ENV"
+          python3 scripts/prepare-mimo-provider-fixtures.py --output "$RUNNER_TEMP/mimo-prefix-fixtures" --asymmetric
       - name: Build provider-swift (incl. tests)
+        id: build-provider-tests
         working-directory: provider-swift
         # Build the TEST bundle too, so the .xctest bundle exists before we
         # place the metallib next to its runner binary (see next step).
@@ -262,6 +289,7 @@ jobs:
           # not guaranteed to be linked merely because the test bundle builds.
           swift build --product darkbloom-fan-helper
       - name: Build and stage source-matched mlx.metallib
+        id: place-provider-metallib
         run: |
           set -euo pipefail
           command -v cmake >/dev/null 2>&1 || brew install cmake
@@ -269,10 +297,38 @@ jobs:
           METALLIB_CACHE_DIR="$RUNNER_TEMP/metallib-cache" \
             ./scripts/stage-test-metallib.sh "$provider_bin"
       - name: Run Swift tests
+        env:
+          MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS: '1'
         working-directory: provider-swift
         # Reuse the built bundle and matched metallib. The exact allocator
         # suite runs in its own process even if the general suite fails.
         run: ../scripts/run-provider-tests.sh
+      - name: Run isolated native MiMo startup gates
+        if: ${{ !cancelled() && steps.mimo-fixtures.outcome == 'success' && steps.build-provider-tests.outcome == 'success' && steps.place-provider-metallib.outcome == 'success' }}
+        working-directory: provider-swift
+        timeout-minutes: 5
+        env:
+          MIMO_V26_SERIAL_NATIVE_TESTS: '1'
+        run: ../scripts/run-nested-suite.sh 'MiMoV26StandaloneLifecycleTests.test(ActualScannerPreloadStartsListenerWithSameNativeOwner|StartRefusesActualUnpublishedPreloadWithoutReplacingOwner)' --no-parallel
+      - name: Run isolated native MiMo complete-prefix gates
+        if: ${{ !cancelled() && steps.mimo-fixtures.outcome == 'success' && steps.build-provider-tests.outcome == 'success' && steps.place-provider-metallib.outcome == 'success' }}
+        working-directory: provider-swift
+        timeout-minutes: 5
+        env:
+          MIMO_V26_SERIAL_NATIVE_TESTS: '1'
+          MIMO_V26_SERIAL_LOAD_FIXTURES: ${{ runner.temp }}/mimo-prefix-fixtures
+        run: ../scripts/run-nested-suite.sh 'MiMoV26NativeLoadTransactionTests.testNativeCompletePrefix' --no-parallel
+      - name: Run isolated native MiMo retained-fault gate
+        if: ${{ !cancelled() && steps.mimo-fixtures.outcome == 'success' && steps.build-provider-tests.outcome == 'success' && steps.place-provider-metallib.outcome == 'success' }}
+        working-directory: provider-swift
+        timeout-minutes: 5
+        env:
+          MIMO_V26_SERIAL_NATIVE_TESTS: '1'
+          MIMO_V26_PROVIDER_LIFETIME_NATIVE_TESTS: '1'
+          MIMO_V26_PROVIDER_LIFETIME_FAULT_CASE: testNativeFenceRefusalKeepsActualBundlePermitAndBlocksOtherOwnerReclaim
+          DARKBLOOM_PREFIX_CACHE: '0'
+          DARKBLOOM_PREFIX_CACHE_MEMORY: '0'
+        run: ../scripts/run-nested-suite.sh testNativeFenceRefusalKeepsActualBundlePermitAndBlocksOtherOwnerReclaim --no-parallel
       - name: Verify production prompt parity
         run: ./scripts/verify-prompt-parity.sh
       # FLAKE-ORDERING GUARD (audit fix, v0.8.0): every nested step below runs

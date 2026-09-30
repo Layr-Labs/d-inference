@@ -1,6 +1,6 @@
 # Five-model quality probe: integrity passes, answer quality remains open
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-06
 
 All five model jobs pass native integrity checks, but the short output budgets do not establish representative answer quality: 58 of 60 responses hit their caps. Final semantic review records two passing responses, 14 failing responses across seven code tasks, and 44 inconclusive responses; these results alone do not establish a paged-attention migration defect.
 

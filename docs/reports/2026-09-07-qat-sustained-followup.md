@@ -1,6 +1,6 @@
 # QAT sustained generation and matched prompt control
 
-> Last updated: 2026-09-07 · commit `32a756317`
+> Last updated: 2026-09-07
 
 Gemma 4 26B QAT sustains paged generation for more than 18 seconds on a 19,711-token, nonrepetitive prompt, with direct batch-one forward traces and clean cancellation, accounting and retirement. Its earlier short refusal also reproduces on contiguous attention with the identical request. The exact 2,048-token benchmark verdicts remain failed: the new paged responses end naturally at 1,878 tokens, while the matched contiguous responses reach their 2,048-token cap.
 

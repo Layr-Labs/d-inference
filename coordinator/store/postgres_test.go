@@ -527,7 +527,7 @@ func TestPostgresMigrateNeverDeletesModelPrices(t *testing.T) {
 		{"acct-not-a-user", "gemma-4-26b"},
 	}
 	for _, p := range prices {
-		if err := s.SetModelPrice(p.account, p.model, 50_000, 200_000); err != nil {
+		if err := s.SetModelPrice(ModelPrice{AccountID: p.account, Model: p.model, InputPrice: 50_000, OutputPrice: 200_000}); err != nil {
 			t.Fatalf("set %s price: %v", p.account, err)
 		}
 	}
@@ -538,8 +538,8 @@ func TestPostgresMigrateNeverDeletesModelPrices(t *testing.T) {
 	}
 
 	for _, p := range prices {
-		if in, out, ok := s.GetModelPrice(p.account, p.model); !ok || in != 50_000 || out != 200_000 {
-			t.Errorf("%s price = (%d, %d, %v) after restart, want (50000, 200000, true)", p.account, in, out, ok)
+		if mp, ok := s.GetModelPrice(p.account, p.model); !ok || mp.InputPrice != 50_000 || mp.OutputPrice != 200_000 {
+			t.Errorf("%s price = (%+v, %v) after restart, want (50000, 200000, true)", p.account, mp, ok)
 		}
 	}
 }
@@ -703,7 +703,7 @@ func TestFreshDatabaseSchemaServesWithdrawableAndUsageTotals(t *testing.T) {
 		t.Fatalf("withdrawable balance = %d, want 700", got)
 	}
 
-	s.RecordUsage("prov", "consumer", "model", 11, 13)
+	s.RecordUsage(UsageRecord{ProviderID: "prov", ConsumerKey: "consumer", Model: "model", PromptTokens: 11, CompletionTokens: 13})
 	totals, err := s.UsageTotals()
 	if err != nil {
 		t.Fatalf("UsageTotals: %v", err)

@@ -3,6 +3,13 @@ created: "2026-05-14"
 # Optional App Attest diagnostic boundary re-checked 2026-09-26 against cf5982227:
 # the added TB-002 paragraph covers diagnostic metadata only; it does not
 # re-verify the older threat entries or change the serving-trust assumptions.
+# Caller-field minimization re-checked 2026-09-27 against d621f9772 plus the
+# provider-body privacy candidate: parseInferencePrelude removes only top-level
+# user and generic metadata before provider-body preparation. Nested or other
+# caller content can still identify a person; providers remain plaintext endpoints
+# for routed requests. Authentication/account cache scopes are unchanged. This
+# does not re-verify the other historical threat entries; see encryption.md's
+# provider-bound-field-minimization section for the exact boundary.
 # Partially re-verified 2026-09-03 against commit 5d400cf75: A-001, A-003, T-003
 # and T-011 were corrected to the shipped design (the coordinator is a plaintext
 # endpoint on every request; the provider X25519 key is per-process and never on

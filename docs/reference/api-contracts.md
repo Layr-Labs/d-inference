@@ -18,6 +18,19 @@ Admin request-profile records expose additive
 [prediction decision fields](prediction-decision-telemetry.md). Public inference
 responses and error codes are unchanged.
 
+## Provider-bound caller fields
+
+The coordinator accepts top-level `user` and generic `metadata` on the four
+inference endpoints but removes them from provider-bound bodies before encryption.
+The shared `parseInferencePrelude` calls `stripProviderCallerIdentity`
+(`coordinator/api/inference_preprocess.go`, `coordinator/api/provider_body_privacy.go`),
+so direct dispatch, queueing, retries and endpoint/model rewrites use the same
+minimized body. Nested messages, tool arguments, schema properties and media are
+unchanged. `metadata_details` remains the separate coordinator response-metadata
+opt-in. Authentication, billing ownership and cache scopes remain context-derived.
+This is field minimization, not anonymity; see the
+[privacy boundary](../architecture/security/encryption.md#provider-bound-field-minimization).
+
 ## Graceful provider lifecycle
 
 Lifecycle drains preserve the existing public inference protocol. A reservation

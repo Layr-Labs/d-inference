@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-30 · commit `e351f359c`
+> Last updated: 2026-09-29 · commit `12979b36a`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -780,7 +780,9 @@ through `Registry.Heartbeat`. Idle providers send unchanged heartbeats every
 two simulated hours of arrivals take less than one second. They check that
 every idle, loaded provider is selected within 5 minutes plus one request
 time while requests arrive, and they report the share of the busiest
-provider. The 5-minute bound is a policy number.
+provider. The 5-minute bound is the bound proposed in #1238 and #1254. It is
+a proposed policy that the maintainers own, and the routing code does not
+meet it yet: some of these tests fail.
 
 Run it with the package tests, for example
 `go test ./coordinator/registry/routingsim/...` (`TestRoutingSimCalibration`

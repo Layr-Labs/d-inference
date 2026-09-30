@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"math/rand"
 	"sort"
 	"strings"
@@ -54,7 +55,14 @@ const (
 	// rate. Real per-request rates vary, so a provider's EWMA changes after
 	// each request it serves.
 	loopMeasurementNoise = 0.03
-	loopEWMAWeight       = 0.5
+	// loopEWMAWeight is the weight of a new sample in the provider's EWMA.
+	// The Swift provider uses 0.3 for decode
+	// (provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Accounting.swift:161)
+	// and for prefill (EngineV2Bridge+Measurements.swift, updatePrefillTpsEwma).
+	loopEWMAWeight = 0.3
+	// loopSlowRunTolerance ends a run of slow setup samples once the EWMA
+	// is within this fraction of the slow rate.
+	loopSlowRunTolerance = 0.01
 )
 
 // measurementPath selects how a simulated provider reports performance.
@@ -78,9 +86,11 @@ type loopProviderSpec struct {
 	// established providers start with dated measurements, as a provider
 	// that has served work for a while. Other providers start with none.
 	established bool
-	// lastDecodeTPS and lastPrefillTPS, when positive, replace the EWMA
-	// values in the last setup report, so that the latest dated measurement
-	// is this value.
+	// lastDecodeTPS and lastPrefillTPS, when positive, are the rates of the
+	// provider's last requests before it became idle. Setup blends slow
+	// samples into the EWMA, as the provider does, until the reported EWMA is
+	// within loopSlowRunTolerance of this rate. One slow sample alone moves
+	// an EWMA with weight 0.3 only part of the way.
 	lastDecodeTPS  float64
 	lastPrefillTPS float64
 }
@@ -337,8 +347,9 @@ func (s *loopSim) join(lp *loopProvider) {
 	if lp.spec.established {
 		// Two setup reports with different values date the measurement at
 		// the first report, as for a provider that has served before.
-		lp.setEWMA(loopPeerDecodeTPS*0.98, loopPeerPrefillTPS*0.98)
+		lp.observe(loopPeerDecodeTPS*0.98, loopPeerPrefillTPS*0.98)
 		s.heartbeat(lp)
+		lp.observe(loopPeerDecodeTPS, loopPeerPrefillTPS)
 		decode, prefill := loopPeerDecodeTPS, loopPeerPrefillTPS
 		if lp.spec.lastDecodeTPS > 0 {
 			decode = lp.spec.lastDecodeTPS
@@ -346,7 +357,9 @@ func (s *loopSim) join(lp *loopProvider) {
 		if lp.spec.lastPrefillTPS > 0 {
 			prefill = lp.spec.lastPrefillTPS
 		}
-		lp.setEWMA(decode, prefill)
+		for !withinTolerance(lp.decodeEWMA, decode) || !withinTolerance(lp.prefillEWMA, prefill) {
+			lp.observe(decode, prefill)
+		}
 	}
 	s.heartbeat(lp)
 	// Offset each provider's baseline heartbeat inside the interval, so
@@ -356,12 +369,21 @@ func (s *loopSim) join(lp *loopProvider) {
 	s.push(time.Now().Add(loopChallengeInterval), eventChallenge, lp, "")
 }
 
-// setEWMA records a measurement as though one sample had just completed.
-func (lp *loopProvider) setEWMA(decode, prefill float64) {
+// observe blends one completed sample into the EWMAs as the Swift provider
+// does: the first sample sets the value, later samples take loopEWMAWeight.
+func (lp *loopProvider) observe(decode, prefill float64) {
+	if lp.ewmaInitialized {
+		decode = loopEWMAWeight*decode + (1-loopEWMAWeight)*lp.decodeEWMA
+		prefill = loopEWMAWeight*prefill + (1-loopEWMAWeight)*lp.prefillEWMA
+	}
 	lp.decodeEWMA, lp.prefillEWMA, lp.ewmaInitialized = decode, prefill, true
 	lp.decodeCount++
 	lp.prefillCount++
 	lp.lastSampleAt = time.Now()
+}
+
+func withinTolerance(value, target float64) bool {
+	return math.Abs(value-target) <= loopSlowRunTolerance*target
 }
 
 func (s *loopSim) sample(truth float64) float64 {
@@ -419,12 +441,7 @@ func (s *loopSim) complete(lp *loopProvider, id string) {
 	delete(lp.inFlight, id)
 	lp.provider.RemovePending(id)
 	s.reg.SetProviderIdle(lp.spec.id)
-	decode, prefill := s.sample(loopPeerDecodeTPS), s.sample(loopPeerPrefillTPS)
-	if lp.ewmaInitialized {
-		decode = loopEWMAWeight*decode + (1-loopEWMAWeight)*lp.decodeEWMA
-		prefill = loopEWMAWeight*prefill + (1-loopEWMAWeight)*lp.prefillEWMA
-	}
-	lp.setEWMA(decode, prefill)
+	lp.observe(s.sample(loopPeerDecodeTPS), s.sample(loopPeerPrefillTPS))
 	if len(lp.inFlight) == 0 {
 		lp.idleSince = time.Now()
 	}

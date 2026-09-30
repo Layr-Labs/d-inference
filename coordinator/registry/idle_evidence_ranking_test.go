@@ -10,9 +10,19 @@ import (
 )
 
 // staleIdleDecodeAge is the age after which an idle provider's decode
-// measurement must no longer lower its ranking. Thirty minutes is the bound
-// proposed in #1243. It is a policy number and the maintainers own it.
+// measurement must no longer lower its ranking. It mirrors
+// idleDecodeMeasurementMaxAge from #1243. That symbol does not exist on
+// master, so this test cannot reference it yet. After #1243 merges, this
+// test must use idleDecodeMeasurementMaxAge instead of this copy. The value
+// is a policy number and the maintainers own it.
 const staleIdleDecodeAge = 30 * time.Minute
+
+// explorationBound is the evidence gap after which an idle provider may
+// compete for work. It mirrors firstContentEvidenceExplorationAfter from
+// #1254. That symbol does not exist on master, so this test cannot reference
+// it yet. After #1254 merges, this test must use
+// firstContentEvidenceExplorationAfter instead of this copy.
+const explorationBound = 5 * time.Minute
 
 // idleEvidenceModel is the model of every provider in these tests.
 const idleEvidenceModel = "idle-evidence-model"
@@ -144,11 +154,16 @@ func TestIdleDecodeMeasurementAgeDoesNotLoseSelection(t *testing.T) {
 	}
 }
 
-// TestExploredIdleProviderIsCostedAtFleetMedian checks the combined result
-// that #1243 and #1254 aim for. #1254 lets an idle provider without usable
-// evidence compete after five minutes. The provider must then be costed at
-// the fleet median decode rate, not at an old slow value. Otherwise it is
-// admitted to the pool but still cannot win.
+// TestExploredIdleProviderIsCostedAtFleetMedian asserts a proposed policy.
+// It is not a regression test for #1243 or #1254. #1254 admits an idle
+// provider without usable evidence to the pool after explorationBound, and it
+// does not promise that the provider is selected. #1243 keeps an old decode
+// rate until staleIdleDecodeAge, on purpose. The proposed policy goes beyond
+// both: from explorationBound, an explored provider is costed at the fleet
+// median, so that admission can lead to selection. This test checks the decode
+// half of that policy. The closed-loop tests in routingsim cover the prefill
+// half. The maintainers own this policy. The row at explorationBound plus one
+// minute fails with both fixes applied.
 func TestExploredIdleProviderIsCostedAtFleetMedian(t *testing.T) {
 	const fleetMedian = 52.0
 	for _, tc := range []struct {
@@ -157,7 +172,7 @@ func TestExploredIdleProviderIsCostedAtFleetMedian(t *testing.T) {
 		age        time.Duration
 	}{
 		{"no_measurement", false, 0},
-		{"measured_just_past_exploration_bound", true, 5*time.Minute + time.Minute},
+		{"measured_just_past_exploration_bound", true, explorationBound + time.Minute},
 		{"measured_past_stale_decode_age", true, staleIdleDecodeAge + time.Minute},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -19,11 +19,16 @@ isolated_pattern="ProcessMemoryNativeIntegrationTests|${isolated_pattern}"
 # Swift Testing otherwise overlaps independent suites sharing process-wide MLX
 # state and cooperative-executor capacity. Tests still create their own tasks
 # and controlled interleavings; only unrelated test cases run sequentially.
-env -u DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST \
+env -u DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST -u DARKBLOOM_ISOLATED_DEADLINE_TEST \
   swift test --skip-build --no-parallel --skip "$isolated_pattern" || provider_test_status=$?
 for test_filter in "${isolated_filters[@]}"; do
-  env -u DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST \
-    "$script_directory/run-nested-suite.sh" "$test_filter" --no-parallel || provider_test_status=$?
+  if [ "$test_filter" = acceptedThenExpired ]; then
+    env -u DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST DARKBLOOM_ISOLATED_DEADLINE_TEST=1 \
+      "$script_directory/run-nested-suite.sh" "$test_filter" --no-parallel || provider_test_status=$?
+  else
+    env -u DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST -u DARKBLOOM_ISOLATED_DEADLINE_TEST \
+      "$script_directory/run-nested-suite.sh" "$test_filter" --no-parallel || provider_test_status=$?
+  fi
 done
 # This assertion observes the real allocator and must own its entire process,
 # not merely run sequentially beside other tests in the same suite/process.

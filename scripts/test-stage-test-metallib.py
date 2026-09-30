@@ -53,6 +53,14 @@ class StageTestMetallibTests(unittest.TestCase):
         self.assertEqual(self.run_stage().returncode, 7)
         self.assertEqual(path.read_text(), "prior-runtime")
 
+    def test_cache_identity_includes_downloadable_metal_compiler(self):
+        source = pathlib.Path(__file__).with_name("fetch-metallib.sh").read_text()
+        identity = source.split('TOOLCHAIN_HASH="$(')[1].split('CACHE_DIR=')[0]
+        self.assertIn('"$METAL_VERSION"', identity)
+        self.assertIn('"metal=$METAL_COMPILER_HASH"', identity)
+        self.assertIn('xcrun --no-cache --sdk macosx metal --version', source)
+        self.assertIn('shasum -a 256 "$METAL_COMPILER"', source)
+
 
 if __name__ == "__main__":
     unittest.main()

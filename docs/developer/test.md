@@ -941,7 +941,9 @@ The accepted-then-expired engine case also runs in a fresh process. Its controll
 engine admits before a real two-second deadline and returns after that deadline;
 the original accepted/expired profiling and cancellation assertions remain. This
 removes the former 30-second allowance for unrelated suite load, not a production
-deadline. It remains subject to the isolated nonempty/no-skips gate.
+deadline. The shell runner sets `DARKBLOOM_ISOLATED_DEADLINE_TEST=1` only for that
+isolated invocation. Direct/IDE runs retain the original 30-second setup margin.
+It remains subject to the isolated nonempty/no-skips gate.
 
 ### Parallel Provider CI
 

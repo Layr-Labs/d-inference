@@ -86,6 +86,8 @@ class CacheIdentityTests(unittest.TestCase):
                     "files": {"SDKSettings.json": {"sha256": "sdk-bytes"}}},
             "xcode": {"version": "Xcode 27.0\nBuild version 18A100", "developer_dir": "/Xcode",
                       "clang": {"sha256": "clang-bytes"}},
+            "metal": {"version": "Apple metal version 32023.42",
+                      "compiler": {"sha256": "metal-bytes"}},
             "rust": {"version": "rustc 1.88.0 (abc)\ncommit-hash: abc",
                      "compiler": {"sha256": "rust-bytes"}},
             "build_env": {"MACOSX_DEPLOYMENT_TARGET": "14.0",
@@ -172,6 +174,25 @@ class CacheIdentityTests(unittest.TestCase):
             else:
                 self.assertEqual(before, after)
             self.assertEqual(before["metallib-key"], after["metallib-key"])
+
+    def test_metal_version_and_compiler_bytes_split_all_build_and_metallib_keys(self):
+        sources = cache.tracked.inventory(self.root)
+        with patch.object(cache.tracked, "inventory", return_value=sources):
+            for lane in cache.LANE_PURPOSES:
+                before = self.keys(lane)
+                for path in (("version",), ("compiler", "sha256")):
+                    with self.subTest(lane=lane, path=path):
+                        metadata = deepcopy(self.metadata)
+                        field = metadata["metal"]
+                        for name in path[:-1]:
+                            field = field[name]
+                        field[path[-1]] += "changed"
+                        after = self.keys(lane, metadata)
+                        self.assertNotEqual(before["toolchain-digest"], after["toolchain-digest"])
+                        self.assertNotEqual(before["swift-prefix"], after["swift-prefix"])
+                        self.assertNotEqual(before["metallib-key"], after["metallib-key"])
+                        if lane == "parity":
+                            self.assertNotEqual(before["rust-prefix"], after["rust-prefix"])
 
     def test_checkout_paths_split_objects_not_metallib(self):
         other = self.temporary / "other checkout"
@@ -279,6 +300,8 @@ class ToolchainSelectionTests(unittest.TestCase):
         self.commands = {
             ("xcrun", "--sdk", "macosx", "--find", "swift"): "/Xcode/usr/bin/swift",
             ("xcrun", "--sdk", "macosx", "--show-sdk-path"): "/Xcode/SDKs/MacOSX.sdk",
+            ("xcrun", "--no-cache", "--sdk", "macosx", "--find", "metal"): "/mounted/Metal.xctoolchain/usr/bin/metal",
+            ("xcrun", "--no-cache", "--sdk", "macosx", "metal", "--version"): "Apple metal version 32023.42",
         }
         self.probe = self.enterContext(patch.object(identity, "command", side_effect=lambda *args: self.commands[args]))
         self.sdk = self.enterContext(patch.object(identity, "sdk_metadata", return_value={"build": "sdk-build"}))
@@ -311,7 +334,9 @@ class ToolchainSelectionTests(unittest.TestCase):
         self.assertEqual(dict(os.environ), previous)
         metadata.assert_called_once_with("release")
         self.assertEqual([call.args for call in self.probe.call_args_list],
-                         [("xcrun", "--sdk", "macosx", "--show-sdk-path")])
+                         [("xcrun", "--sdk", "macosx", "--show-sdk-path"),
+                          ("xcrun", "--no-cache", "--sdk", "macosx", "--find", "metal"),
+                          ("xcrun", "--no-cache", "--sdk", "macosx", "metal", "--version")])
         self.sdk.assert_called_once_with(Path("/Xcode/SDKs/MacOSX.sdk"))
 
     def test_path_binary_and_sdkroot_variation_change_identity(self):
@@ -330,6 +355,35 @@ class ToolchainSelectionTests(unittest.TestCase):
             self.assertNotEqual(identity.digest(changed_swift), identity.digest(changed_sdk))
             self.assertEqual(changed_sdk["sdk"]["path"], "/other/sdk")
             self.assertEqual(dict(os.environ), {"SDKROOT": "/other/sdk"})
+
+    def test_prepared_metal_fingerprint_changes_for_version_and_bytes_not_mount(self):
+        find = ("xcrun", "--no-cache", "--sdk", "macosx", "--find", "metal")
+        version = ("xcrun", "--no-cache", "--sdk", "macosx", "metal", "--version")
+        with patch.object(identity, "toolchain_metadata", side_effect=lambda lane: {"swift": {}}):
+            before = cache.toolchain_metadata("provider")
+            self.assertEqual(before["metal"], {"version": "Apple metal version 32023.42",
+                                               "compiler": {"sha256": "tool-bytes"}})
+            self.commands[find] = "/different-random-mount/Metal.xctoolchain/usr/bin/metal"
+            self.assertEqual(before, cache.toolchain_metadata("provider"))
+            self.commands[version] += " updated"
+            self.assertNotEqual(identity.digest(before), identity.digest(cache.toolchain_metadata("provider")))
+            self.commands[version] = before["metal"]["version"]
+            self.external.side_effect = lambda path: {"path": str(path), "sha256":
+                                                     "updated-bytes" if path.name == "metal" else "tool-bytes"}
+            self.assertNotEqual(identity.digest(before), identity.digest(cache.toolchain_metadata("provider")))
+            self.assertEqual(dict(os.environ), {})
+
+    def test_unprepared_metal_probe_fails_and_restores_environment(self):
+        def probe(*arguments):
+            if arguments[-2:] == ("--find", "metal"):
+                raise subprocess.CalledProcessError(1, arguments)
+            return self.commands[arguments]
+
+        self.probe.side_effect = probe
+        with patch.object(identity, "toolchain_metadata", return_value={"swift": {}}):
+            with self.assertRaises(subprocess.CalledProcessError):
+                cache.toolchain_metadata("provider")
+        self.assertEqual(dict(os.environ), {})
 
     def test_inconsistent_provider_overrides_are_rejected_without_mutation(self):
         for name, value in (("PROVIDER_SWIFT", "/other/swift"), ("PROVIDER_SDKROOT", "/other/sdk")):

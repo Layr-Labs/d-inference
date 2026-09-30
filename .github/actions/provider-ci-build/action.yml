@@ -27,6 +27,9 @@ runs:
       if: inputs.lane == 'parity'
       shell: bash
       run: rustup toolchain install 1.88.0 --profile minimal
+    - name: Prepare source-matched Metal compiler
+      shell: bash
+      run: python3 scripts/prepare-metal-toolchain.py
     - name: Resolve compatible build and Metal caches
       id: keys
       shell: bash
@@ -97,9 +100,6 @@ runs:
           provider-swift/.build
           libs/mlx-swift-lm/.build
         key: ${{ steps.keys.outputs.swift-key }}
-    - name: Prepare source-matched Metal compiler
-      shell: bash
-      run: python3 scripts/prepare-metal-toolchain.py
     - name: Restore source-matched Metal cache
       id: metallib-cache
       uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0

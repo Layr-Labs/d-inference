@@ -234,6 +234,7 @@ jobs:
           submodules: recursive
       - name: Build SDK CI prerequisites
         id: provider-ci-build
+        timeout-minutes: 35
         uses: ./.github/actions/provider-ci-build
         with:
           lane: sdk

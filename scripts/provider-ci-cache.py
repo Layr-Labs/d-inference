@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Emit compatible cache keys for provider, nested SDK, and prompt parity CI.
 
-Run `keys --lane provider|sdk|parity` after checkout and toolchain selection.
+Run `keys --lane provider|sdk|parity` after checkout and Metal toolchain setup.
 Parity requires Rust 1.88.0 to be installed first. Redirect scalar stdout to
 GITHUB_OUTPUT. Swift/Rust restore prefixes retain all compatibility boundaries;
 the shared metallib key is exact-only. Cache hits never authorize skipping tests
@@ -72,6 +72,13 @@ def toolchain_metadata(lane: str) -> dict:
         # fetch-metallib.sh uses xcrun's macosx SDK, which can differ from an
         # explicit SDKROOT used by the Swift build.
         metadata["metallib_sdk"] = identity.sdk_metadata(metal_sdk)
+        metal = Path(identity.command("xcrun", "--no-cache", "--sdk", "macosx", "--find", "metal"))
+        # Downloaded Metal components can mount at different paths on each
+        # runner. Their version and bytes, not mount location, identify codegen.
+        metadata["metal"] = {
+            "version": identity.command("xcrun", "--no-cache", "--sdk", "macosx", "metal", "--version"),
+            "compiler": {"sha256": identity.external_file(metal)["sha256"]},
+        }
         return metadata
     finally:
         for name, value in previous.items():
@@ -118,7 +125,7 @@ def keys(root: Path, lane: str, metadata: dict | None = None) -> dict[str, str]:
     deployment_target = metadata["build_env"].get("MLX_METALLIB_DEPLOYMENT_TARGET") or "26.2"
     metallib_hash = identity.digest({
         "version": CACHE_VERSION, "mlx_commit": mlx_commit,
-        "xcode": metadata["xcode"], "sdk": metadata["metallib_sdk"],
+        "xcode": metadata["xcode"], "sdk": metadata["metallib_sdk"], "metal": metadata["metal"],
         "os": metadata["os"], "arch": metadata["arch"],
         "os_version": metadata["os_version"], "os_build": metadata["os_build"],
         "deployment_target": deployment_target, "jit": "OFF",

@@ -143,7 +143,8 @@ reuses only unchanged tracked source files; changed files retain fresh timestamp
 Every cache hit still runs the full build and runtime-resource staging commands.
 
 The source-matched Metal cache is separate and shared only across compatible
-lanes. Its key binds the native MLX pin, Xcode/SDK identity, helper contract, and
+lanes. Its key binds the native MLX pin, Xcode/SDK identity, the independently
+downloaded Metal compiler version and bytes, helper contract, and
 deployment target. Restored runtime bundles and metallibs are discarded before
 building; `scripts/stage-test-metallib.sh` invokes the validating source builder
 and stages the library beside the actual test runner and inside its resource

@@ -18,7 +18,8 @@ args = sys.argv[1:]
 selected = args[args.index('--filter') + 1] if '--filter' in args else 'general'
 flag = os.environ.get('DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST')
 with open(os.environ['FAKE_SWIFT_LOG'], 'a') as log:
-    log.write(json.dumps({'filter': selected, 'args': args, 'exclusive': flag}) + '\n')
+    log.write(json.dumps({'filter': selected, 'args': args, 'exclusive': flag,
+                         'deadline_isolated': os.environ.get('DARKBLOOM_ISOLATED_DEADLINE_TEST')}) + '\n')
 if selected == os.environ.get('FAKE_SWIFT_FAIL'):
     print('simulated assertion failure')
     raise SystemExit(17)
@@ -86,6 +87,7 @@ class NativeGPUTestRouting(unittest.TestCase):
         for row in calls:
             self.assertIn('--no-parallel', row['args'])
             self.assertEqual(row['exclusive'], '1' if row['filter'] == MEMORY else None)
+            self.assertEqual(row['deadline_isolated'], '1' if row['filter'] == 'acceptedThenExpired' else None)
 
     def test_kernel_suite_and_composition_use_separate_invocations(self):
         result, calls = self.run_script('run-paged-kernel-tests.sh')

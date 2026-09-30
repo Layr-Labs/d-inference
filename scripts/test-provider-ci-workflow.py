@@ -107,6 +107,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 self.assertEqual(field(builds[0], "lane", indent=10), lane)
                 self.assertEqual(field(builds[0], "id"), "provider-ci-build")
                 self.assertIsNone(field(builds[0], "if"))
+                if lane == "sdk":
+                    self.assertEqual(field(builds[0], "timeout-minutes"), "35")
                 self.assertNotIn("actions/cache/restore@", self.jobs[job_id])
                 self.assertNotIn("spm-v3-", self.jobs[job_id])
 

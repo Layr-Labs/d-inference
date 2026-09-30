@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-27 · commit `2b714c427`
+> Last updated: 2026-09-29 · commit `9d39ab7e6`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -37,6 +37,7 @@ Production publication requires independent [durable App Attest build qualificat
 ### 0.9.10 rollout order
 
 1. Merge the version bump, then verify Release Integrity, Provider Tests,
+   Provider SDK Tests, Provider Prompt Parity,
    Coordinator Tests, E2E Integration Tests, and both SDK 27 release-preparation
    lanes on the final source. Build-cache success and a source version bump are
    neither signed-bundle qualification nor publication.
@@ -333,6 +334,7 @@ message** (step 4), so write the tag message from this entry.
 ### 3. Merge to `master` and wait for CI
 
 Open a PR with the bump + changelog; "Release Integrity", "Provider Tests",
+"Provider SDK Tests", "Provider Prompt Parity",
 "Coordinator Tests", and "E2E Integration Tests" must be green. The release
 workflow re-runs `scripts/verify-prompt-parity.sh` itself, so a prompt-contract
 change that is not fixture-synced will fail the release, not just CI.

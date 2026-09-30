@@ -1,6 +1,6 @@
 # Data flow: one request end to end
 
-> Last updated: 2026-09-26 · commit `3e9dcf6b4`
+> Last updated: 2026-09-28
 
 A consumer request travels consumer → coordinator → provider → coordinator → consumer. This page shows that journey once — as a sequence diagram and a stage table naming the code that owns each step — for anyone tracing a request through the coordinator.
 
@@ -61,7 +61,7 @@ Two things the diagram makes visible. First, the consumer receives no bytes unti
 | 10 | Reserve funds | Worst-case cost held on the account ledger; 402 when it cannot be | `reserveInferenceBalance` (`coordinator/api/inference_admission.go`); [`billing.md`](billing.md) |
 | 11 | Fetch media | Remote `image_url` parts fetched and inlined; billed as media | `resolveRemoteMedia` (`coordinator/api/media_resolve.go`) |
 | 12 | Capacity admission | Is there an eligible provider that can accept this prompt now? 429/503/413 otherwise | `runInferenceAdmission` (`coordinator/api/inference_admission.go`) |
-| 13 | Plan | Cache-aware route plan for the prompt prefix | `planCacheRoute` (`coordinator/api/cache_planning.go`); [`cache-aware-routing.md`](cache-aware-routing.md) |
+| 13 | Plan | Cache-aware route plan for the prompt prefix | `planCacheRoute` (`coordinator/api/prompt_artifacts.go`); [`cache-aware-routing.md`](cache-aware-routing.md) |
 | 14 | **Select provider** | Lowest-estimated-cost candidate from the request-local plan, with bounded alternatives for failover | `dispatchPrimary` → `registry.Queue` (`coordinator/api/dispatch.go`); scoring in [`routing.md`](routing.md) |
 | 15 | Encrypt | Fresh session keys; the job body is sealed to the provider's public key | `e2e.GenerateSessionKeys`, `e2e.Encrypt` (`coordinator/internal/e2e/e2e.go`), called from `dispatchPrimary` |
 | 16 | Send | `inference_request` over the provider WebSocket | `coordinator/api/dispatch.go`, message types in `coordinator/protocol/messages.go` |
@@ -69,7 +69,7 @@ Two things the diagram makes visible. First, the consumer receives no bytes unti
 | 18 | Wait for first content | Chunks buffered ([`chunkBufferSize`](../reference/api-contracts.md#timeouts-and-constants)); a speculative backup may race; failover on error or deadline | `waitFirstChunk`, `runSpeculative`, `runRace`, `shouldStopFailover` (`coordinator/api/dispatch.go`) |
 | 19 | Commit | Status, headers and the first frame are written; from here the status cannot change | `commitFirstContent`, `writeCommittedResponse` (`coordinator/api/dispatch.go`), `writeSSEResponseHeader` (`coordinator/api/sse_response.go`), `writeCommittedProviderHeaders` (`coordinator/api/response_metadata.go`) |
 | 20 | Relay | Each chunk normalised and forwarded as one SSE event; usage/finish frames held to the end; single `[DONE]` | `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consumer_stream.go`); `normalizeSSEChunk` (`coordinator/api/sse_normalize.go`); `stripSSEDoneEvents` (`coordinator/api/sse_events.go`) |
-| 21 | Settle | Charge the account from provider-reported usage, record usage against the alias, credit the provider | `handleCompleteAt` → `claimSettlement`, `ledger.Charge`, `store.RecordUsageFullWithPublicModel`, `store.CreditProviderAccount` (`coordinator/api/provider.go`); [`billing.md`](billing.md) |
+| 21 | Settle | Charge the account from provider-reported usage, record usage against the alias, credit the provider | `handleCompleteAt` → `claimSettlement`, `ledger.Charge`, `store.RecordUsage`, `store.CreditProviderAccount` (`coordinator/api/provider.go`); [`billing.md`](billing.md) |
 | 22 | Client gone | Disconnect before commit records 499 and sends `cancel` to the provider | `emitClientGone` (`coordinator/api/dispatch.go`), `sendProviderCancel` (`coordinator/api/consumer.go`) |
 
 The platform fee applied at stage 21 is stated once, in [`billing.md#invariants`](billing.md#invariants).
@@ -116,7 +116,7 @@ Each row is the stage at which a request can end early and what the consumer see
 | Response relay and SSE | `coordinator/api/consumer_stream.go` — `handleStreamingResponseWithFirstChunkAndError`; `coordinator/api/sse_normalize.go` — `normalizeSSEChunk`; `coordinator/api/sse_events.go` — `stripSSEDoneEvents` |
 | Reservation and capacity admission | `coordinator/api/inference_admission.go` — `reserveInferenceBalance`, `runInferenceAdmission` |
 | Remote media | `coordinator/api/media_resolve.go` — `resolveRemoteMedia` |
-| Cache route plan | `coordinator/api/cache_planning.go` — `planCacheRoute` |
+| Cache route plan | `coordinator/api/prompt_artifacts.go` — `planCacheRoute` |
 | Dispatch, speculative backup, commit, client-gone | `coordinator/api/dispatch.go` — `dispatchState.run`, `dispatchPrimary`, `waitFirstChunk`, `runSpeculative`, `runRace`, `commitFirstContent`, `writeCommittedResponse`, `emitClientGone`; `coordinator/api/sse_response.go` — `writeSSEResponseHeader`; `coordinator/api/response_metadata.go` — `writeCommittedProviderHeaders`, `requestTimingDetails` |
 | Per-request encryption | `coordinator/internal/e2e/e2e.go` — `GenerateSessionKeys`, `Encrypt` |
 | Wire messages | `coordinator/protocol/messages.go` |

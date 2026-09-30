@@ -1,6 +1,6 @@
 # Cache-aware routing: activation, ramp and rollback
 
-> Last updated: 2026-09-26 · commit `3e9dcf6b4`
+> Last updated: 2026-09-29
 
 How to turn provider-confirmed prefix-cache routing on for the production
 coordinator, widen its activation bounds one at a time, and turn it off again.
@@ -70,13 +70,7 @@ the same request from the same account remains in or out of the cohort.
   ([`EIGENINFERENCE_PROMPT_SIDECAR_ENABLED`](../reference/configuration.md#prompt-sidecar-and-media-fetch);
   `curl -fsS localhost:8080/v1/cache/status | jq -e .sidecar.ready`). Without
   it every request gets a non-participating plan and routing `on` changes
-  nothing. This aggregate means the runtime has some usable tokenizer
-  membership, not complete catalog readiness or current Go participation for
-  every model. Verify the intended model's artifact and current-generation
-  preload acknowledgement as described in
-  [per-contract readiness](../architecture/prompt-contract-sidecar.md#process-and-lifecycle);
-  `.preload.ready` and `.preload.contract_count` are subset diagnostics, not
-  proof of a particular contract or a native KV hit.
+  nothing.
 - Datadog open on the `exact_cache.*` gauges
   (`emitExactCacheDDGauges`, `coordinator/api/exact_cache_metrics.go`) and the
   `routing.cache_selection_terminal`, `routing.cache_selection_precision` and
@@ -174,7 +168,14 @@ the same request from the same account remains in or out of the cohort.
    `mode`, `activation_percent`, `max_plan_qps`, `ttl`, `max_holders`,
    `max_discount_ms` and `max_cost_fraction` (`coordinator/cmd/coordinator/main.go`);
    `null` means no optional clipping beyond avoidable prefill work. A rejected configuration logs `cache routing configuration rejected` and
-   exits before listening.
+   exits before listening. With `EIGENINFERENCE_CACHE_ROUTING_PERSIST` on (the
+   default), boot also logs `cache routing persistence restored` with parked
+   holder and demand counts. Check `lifecycle.persistence.ready` and then
+   `bound_holders` in `GET /v1/cache/status` as providers reconnect and apply
+   matching capabilities. A failed boot restore is retried every 5 s; mutations
+   stay pending and holder/demand writes wait for success. Routing still reads
+   its in-memory index. See [persistence during restarts](#persistence-during-restarts)
+   for reset precautions.
 
    ```bash
    sudo docker logs coordinator 2>&1 | grep -E 'cache routing configuration rejected|provider-confirmed cache routing configured'
@@ -186,6 +187,37 @@ the same request from the same account remains in or out of the cohort.
    `EIGENINFERENCE_CACHE_ROUTING_MAX_PLAN_QPS` — never both in one change —
    by repeating steps 3–4 with the new value, and observe again before the
    next step.
+
+### Persistence during restarts
+
+Inspect `GET /v1/cache/status` → `lifecycle.persistence` after a swap. Restored,
+parked and bound counts describe routing evidence, not confirmed cache hits.
+The final flush follows HTTP shutdown, provider-socket closure/join and the
+periodic writer's join; a bounded shutdown can still lose pending work.
+
+- If `flush_errors` grows, inspect store health. Failed writes remain pending;
+  successful chunks acknowledge only their matching revisions. `rows_deleted`
+  counts successfully submitted keys, including keys with no row, not rows
+  actually removed. Exact [counter semantics](../reference/api-contracts.md#exact-cache-status)
+  distinguish dropped work and stale-evidence rejection.
+- If `overflow_resets` grows, the delete backlog exceeded its budget. The writer
+  wakes to reset the durable copy; the counter records overflow, not completion.
+  The process keeps a timestamp cutoff that rejects older or equal evidence
+  even after reset. A durable in-progress marker makes an interrupted reset
+  recoverable on boot, but a crash before that marker can still restore
+  invalidated evidence. Verify recovery in the logs and `flush_errors`.
+- Rotate `EIGENINFERENCE_CACHE_MASTER_KEY`, or deploy changed key-derivation
+  versions, with an approved **non-overlapping restart**: stop the old container
+  before the new one boots. `key_rotated: true` indicates the resulting rebuild.
+  The writer is serialized only within one process. Another container can write
+  stale rows during a generation or overflow reset; neither the marker nor the
+  process-local cutoff coordinates multiple writers.
+- Keep coordinator clocks aligned. Beyond the store's one-minute skew
+  allowance, the lagging instance can prune the other's fresh rows.
+
+The [persistence mechanism](../architecture/cache-aware-routing.md#persistence-across-restarts)
+and its limits are unchanged at the store-schema, wire and configuration level
+by the refactor; no new rollout knob is required.
 
 ### Add Bonsai to an existing routing cohort
 
@@ -233,6 +265,99 @@ activation example above is not a reset procedure.
    disables caching for all its models. Apply it to the actual daemon
    environment; restarting an existing LaunchAgent does not import shell
    changes. See [provider environment propagation](../reference/configuration.md#where-values-are-set).
+
+### Widen the plan gate and add Nemotron Lightning and Bonsai 2
+
+Use this after the 2026-09 hit-rate fix set is deployed (bounded proof fence,
+per-file eviction without epoch rotation, in-window holder preference,
+demand-gated donation; see the
+[analysis report](../reports/2026-09-26-prefix-cache-hit-rate-analysis.md)).
+Production at that point ran `EIGENINFERENCE_CACHE_ROUTING_MAX_PLAN_QPS=40`
+against roughly 50 evaluations per second, so 27.7% of requests were dispatched
+with no cache scope, and the sidecar already reported overloads at
+`EIGENINFERENCE_PROMPT_SIDECAR_MAX_CONCURRENCY=8`. Raise capacity before the
+cap, one bound per restart, and observe between steps.
+
+1. **Sidecar capacity first.** Double planner concurrency and give the child
+   memory headroom (RSS was 781 MB of the 1,024 MB limit):
+
+   ```bash
+   sudo cp -p /etc/d-inference/env "/etc/d-inference/env.bak.$(date -u +%Y%m%dT%H%M%SZ)"
+   sudo sed -i -E \
+     -e 's/^EIGENINFERENCE_PROMPT_SIDECAR_MAX_CONCURRENCY=.*/EIGENINFERENCE_PROMPT_SIDECAR_MAX_CONCURRENCY=16/' \
+     -e 's/^EIGENINFERENCE_PROMPT_SIDECAR_MEMORY_LIMIT_MIB=.*/EIGENINFERENCE_PROMPT_SIDECAR_MEMORY_LIMIT_MIB=2048/' \
+     /etc/d-inference/env
+   ```
+
+   Restart per [`coordinator-deploy.md`](coordinator-deploy.md). Watch
+   `.sidecar.overloads`, `.sidecar.planner.plans.at_capacity` and
+   `.sidecar.rss_bytes` stay flat over an hour before the next step.
+
+2. **Plan QPS.** Raise the cap above the observed evaluation rate:
+
+   ```bash
+   sudo sed -i -E 's/^EIGENINFERENCE_CACHE_ROUTING_MAX_PLAN_QPS=.*/EIGENINFERENCE_CACHE_ROUTING_MAX_PLAN_QPS=120/' /etc/d-inference/env
+   ```
+
+   Restart. `.activation.rate_limited` should stop growing and the
+   `unreported` share of `routing.cache_model.usage` should fall by roughly a
+   quarter. If `.sidecar.overloads` climbs instead, return to step 1 with a
+   higher concurrency before retrying.
+
+3. **Holder lifetime.** Providers keep a cache file for 30 minutes after its
+   last use (`SSDPrefixCachePolicy.defaultTTLSeconds = 1800`, the limit signed
+   off in `docs/threat-model.yaml` T-041) and no longer rotate their epoch on
+   eviction. Keep the coordinator's holder TTL just inside that window so a
+   holder never outlives its file:
+
+   ```bash
+   sudo sed -i -E 's/^EIGENINFERENCE_CACHE_ROUTING_TTL=.*/EIGENINFERENCE_CACHE_ROUTING_TTL=25m/' /etc/d-inference/env
+   ```
+
+   Restart. Do this only after the fleet's majority runs the provider release
+   that carries the 30-minute TTL; against older providers (15 minutes) leave
+   the holder TTL at `10m`. The holder and observed-demand indexes are sized
+   for this window (`cacheRoutingMaxEntries`, `cacheDemandMaxEntries`,
+   `coordinator/registry/cache_routing.go`). `.holders` should rise well above
+   the previous ~1,000, `holder_removed.epoch_change` should fall toward zero
+   as providers upgrade, `holder_removed.capacity_eviction` should stay flat,
+   and `holder_removed.ttl` becomes the dominant removal reason, which is the
+   healthy state.
+
+4. **Append the two tuples.** Both were derived on 2026-09-26 from the active
+   registry versions (`nvidia-nemotron-3.5-lightning` `2026-09-09-r1`,
+   `ternary-bonsai-2-27b` `2026-09-17-r1`) with the coordinator's own
+   `promptcontract.ContractID` over the manifest's tokenizer/template/config
+   files; the same derivation reproduces the live `gpt-oss-20b` tuple exactly.
+   Re-derive if either model's active version changes. Append, never replace:
+
+   ```bash
+   sudo python3 - <<'PY'
+   import json, re
+   p = "/etc/d-inference/env"
+   src = open(p).read()
+   m = re.search(r"^EIGENINFERENCE_CACHE_ROUTING_ALLOWED_ARTIFACTS=(.*)$", src, re.M)
+   cur = json.loads(m.group(1))
+   add = [
+     {"model_id": "nvidia-nemotron-3.5-lightning",
+      "model_aggregate_sha256": "be622ff6ae88533eb31ce984ddc95e5edc3bc52de1767536f2058151383d891a",
+      "prompt_contract_id": "6a80df579e0d7c3b1db40d766831c1b0f75efd6864c6ee521d49557b9c7353b8"},
+     {"model_id": "ternary-bonsai-2-27b",
+      "model_aggregate_sha256": "ea1e901e4946c0ba9ad70c78517548808b353db6b3a13e87a8fa20468d81244c",
+      "prompt_contract_id": "ce88a818490c1dcee6f5dac3b53f13ffe56e3f3ab91728626e9985b31a7d38e5"},
+   ]
+   have = {(t["model_id"], t["model_aggregate_sha256"], t["prompt_contract_id"]) for t in cur}
+   cur += [t for t in add if (t["model_id"], t["model_aggregate_sha256"], t["prompt_contract_id"]) not in have]
+   out = src[:m.start(1)] + json.dumps(cur, separators=(",", ":")) + src[m.end(1):]
+   open(p, "w").write(out)
+   print(len(cur), "tuples")
+   PY
+   sudo grep -c '"model_id"' /etc/d-inference/env
+   ```
+
+   Restart and confirm `artifact_allowlist.count` is 7. Bonsai's median prompt
+   is about 126 tokens, so expect few Bonsai hits until the checkpoint floor
+   drops; Nemotron has 83% of prompts above 1,024 tokens.
 
 ## Verification
 

@@ -28,6 +28,7 @@ private actor MiMoWiringStartGate {
 }
 
 final class MiMoV26WiredResidencyTests: XCTestCase {
+    private enum FixtureError: Error { case metadataFixtureRequired }
     private let gib: UInt64 = 1 << 30
 
     func testOffDefaultAndReserveCeilings() {
@@ -67,16 +68,32 @@ final class MiMoV26WiredResidencyTests: XCTestCase {
             shrinkThresholdRatio: 0, shrinkCooldown: 0, policyOnlyWhenUnsupported: true,
             useRecommendedWorkingSetWhenUnsupported: false))
     }
-    private func metadataTransaction() throws
+    private func hostFaultFixture(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> URL {
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_WIRED_HOST_FAULT_CASE", environment: environment)
+        guard let path = environment["MIMO_V26_WIRED_METADATA_FIXTURE"], !path.isEmpty else {
+            throw FixtureError.metadataFixtureRequired
+        }
+        return URL(fileURLWithPath: path)
+    }
+
+    private func metadataTransaction(directory: URL? = nil) throws
         -> (MiMoV26NativeLoadRegistry, MiMoV26NativeLoadTransaction) {
-        guard let path = ProcessInfo.processInfo.environment["MIMO_V26_WIRED_METADATA_FIXTURE"] else {
-            throw XCTSkip("Point to an existing strict native metadata fixture; no weights are evaluated")
+        let root: URL
+        if let directory {
+            root = directory
+        } else {
+            guard let path = ProcessInfo.processInfo.environment["MIMO_V26_WIRED_METADATA_FIXTURE"] else {
+                throw XCTSkip("Point to an existing strict native metadata fixture; no weights are evaluated")
+            }
+            root = URL(fileURLWithPath: path)
         }
         let budget = GlobalKVCacheBudget(capFraction: 0.90, activationReserveBytes: 1 << 30,
             configReserveBytes: 4 << 30, memorySnapshot: {
                 .init(total: 64 << 30, active: 0, cache: 0, systemAvailable: 64 << 30)
             })
-        let load = try XCTUnwrap(MiMoV26ServingLoad.inspect(directory: URL(fileURLWithPath: path)))
+        let load = try XCTUnwrap(MiMoV26ServingLoad.inspect(directory: root))
         let registry = MiMoV26NativeLoadRegistry()
         let lifecycle = try registry.openLifecycle()
         try load.claim(budget: budget, lifecycle: lifecycle, registry: registry)
@@ -158,10 +175,10 @@ final class MiMoV26WiredResidencyTests: XCTestCase {
     }
 
     func testHostInjectedPostStartFaultRetainsTicketWithoutClaimingMetalFailureCoverage() async throws {
-        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_WIRED_HOST_FAULT_CASE")
+        let directory = try hostFaultFixture()
         try await Device.withDefaultDevice(.cpu) {
             struct HostInjectedFault: Error {}
-            let (registry, transaction) = try metadataTransaction()
+            let (registry, transaction) = try metadataTransaction(directory: directory)
             let policy = MiMoV26WiredResidency.Policy()
             let owner = MiMoV26WiredResidency.makeForPolicyOnlyTesting(
                 transaction: transaction, residentPayloadBytes: 64, ceiling: { 128 },
@@ -180,6 +197,22 @@ final class MiMoV26WiredResidencyTests: XCTestCase {
             // a real failed owner. No backend error/restoration pass is claimed.
             _ = Unmanaged.passRetained(owner)
             withExtendedLifetime((registry, transaction)) {}
+        }
+    }
+
+    func testHostFaultFixtureRequiresOptInAndFailsWhenMissing() {
+        XCTAssertThrowsError(try hostFaultFixture(environment: [:])) {
+            XCTAssertTrue($0 is XCTSkip, "Disabled fault tests must skip before fixture setup")
+        }
+        for environment in [
+            ["MIMO_V26_WIRED_HOST_FAULT_CASE": "1"],
+            ["MIMO_V26_WIRED_HOST_FAULT_CASE": "1", "MIMO_V26_WIRED_METADATA_FIXTURE": ""],
+        ] {
+            XCTAssertThrowsError(try hostFaultFixture(environment: environment)) {
+                guard case FixtureError.metadataFixtureRequired = $0 else {
+                    return XCTFail("An opted-in missing fixture must fail, not skip: \($0)")
+                }
+            }
         }
     }
 

@@ -3,6 +3,8 @@
 import json
 import os
 from pathlib import Path
+import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -12,15 +14,30 @@ ROOT = Path(__file__).resolve().parent.parent
 MEMORY = 'evaluatedPagesAvoidDoubleTaxAndRetainedAliasKeepsPressure'
 COMPOSITION = 'decodeBatchCompositionInvariance'
 EXCLUSIVE = (MEMORY, COMPOSITION)
+MIMO_METHODS = {
+    'startup': ('Server/MiMo/MiMoV26StandaloneLifecycleTests.swift', (
+        'testActualScannerPreloadStartsListenerWithSameNativeOwner',
+        'testStartRefusesActualUnpublishedPreloadWithoutReplacingOwner')),
+    'complete-prefix': ('MiMo/MiMoV26NativeLoadTransactionTests.swift', (
+        'testNativeCompletePrefixOFFUsesExactOwnerAndRealRetirement',
+        'testNativeCompletePrefixONUsesExactOwnerAndRealRetirement',
+        'testNativeCompletePrefixONRefusesUnderfundedArenaAndRetiresCleanly',
+        'testNativeCompletePrefixONPublishesAnActualInteriorBoundaryBeforeRetirement')),
+    'retained-fault': ('ProviderLoop/MiMo/ProviderLoopNativeMiMoLifetimeTests.swift', (
+        'testNativeFenceRefusalKeepsActualBundlePermitAndBlocksOtherOwnerReclaim',)),
+}
 FAKE_SWIFT = r'''
-import json, os, sys
+import json, os, re, sys
 args = sys.argv[1:]
 selected = args[args.index('--filter') + 1] if '--filter' in args else 'general'
 flag = os.environ.get('DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST')
 with open(os.environ['FAKE_SWIFT_LOG'], 'a') as log:
     log.write(json.dumps({'filter': selected, 'args': args, 'exclusive': flag,
                          'deadline_isolated': os.environ.get('DARKBLOOM_ISOLATED_DEADLINE_TEST'),
-                         'mimo_native': os.environ.get('MIMO_V26_SERIAL_NATIVE_TESTS')}) + '\n')
+                         'mimo_native': os.environ.get('MIMO_V26_SERIAL_NATIVE_TESTS'),
+                         'mimo_env': {key: value for key, value in os.environ.items()
+                                      if key.startswith('MIMO_') or key in (
+                                          'DARKBLOOM_PREFIX_CACHE', 'DARKBLOOM_PREFIX_CACHE_MEMORY')}}) + '\n')
 if selected == os.environ.get('FAKE_SWIFT_FAIL'):
     print('simulated assertion failure')
     raise SystemExit(17)
@@ -44,7 +61,9 @@ if skipped:
 if not exclusive and flag is not None:
     print('exclusive opt-in leaked to an ordinary invocation')
     raise SystemExit(19)
-print('✔ Test run with 1 test passed after 0.001 seconds.')
+count = sum(bool(re.search(selected, method)) for method in json.loads(os.environ['FAKE_SWIFT_METHODS'])) \
+    if 'FAKE_SWIFT_METHODS' in os.environ else 1
+print(f'✔ Test run with {count} tests passed after 0.001 seconds.')
 '''
 
 
@@ -73,6 +92,22 @@ class NativeGPUTestRouting(unittest.TestCase):
                                 text=True, capture_output=True, timeout=20)
         calls = [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
         return result, calls
+
+    def mimo_workflow_gates(self):
+        workflow = (ROOT / '.github/workflows/ci.yml').read_text().split('  test-provider:', 1)[1]
+        workflow = workflow.split('  cache-swift:', 1)[0]
+        steps = re.findall(r'^      - name: Run isolated native MiMo (\S+) gates?\n(.*?)(?=^      - name:|\Z)',
+                           workflow, re.MULTILINE | re.DOTALL)
+        self.assertEqual(len(steps), 3)
+        self.assertEqual({name for name, _ in steps}, set(MIMO_METHODS))
+        gates = {}
+        for name, step in steps:
+            command = shlex.split(re.search(r'^        run: (.+)$', step, re.MULTILINE).group(1))
+            self.assertEqual(command[0], '../scripts/run-nested-suite.sh')
+            environment = {key: value.strip("'") for key, value in
+                           re.findall(r'^          (\w+): (.+)$', step, re.MULTILINE)}
+            gates[name] = (command[1:], environment)
+        return gates
 
     def test_provider_routes_every_isolated_case_without_flag_leakage(self):
         result, calls = self.run_script('run-provider-tests.sh')
@@ -148,20 +183,62 @@ class NativeGPUTestRouting(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn('executed ZERO tests', result.stdout)
 
-    def test_mimo_gate_rejects_empty_and_skipped_runs(self):
+    def test_workflow_mimo_gates_select_intended_methods_and_forward_environments(self):
         self.env.pop('DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST')
-        selected = 'MiMoV26NativeLoadTransactionTests.testNativeCompletePrefix'
-        result, calls = self.run_script('run-nested-suite.sh', selected, '--no-parallel',
-                                        FAKE_SWIFT_EMPTY=selected)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('executed ZERO tests', result.stdout)
-        self.assertEqual(len(calls), 1)
-        for style in ('swift-testing', 'xctest'):
-            with self.subTest(style=style):
-                result, _ = self.run_script('run-nested-suite.sh', selected, '--no-parallel',
-                                            FAKE_SWIFT_SKIP=selected, FAKE_SWIFT_SKIP_STYLE=style)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn('skipped one or more tests', result.stdout)
+        inherited = {
+            'MIMO_V26_SERIAL_LOAD_FIXTURES': str(self.work / 'mimo-provider-fixtures'),
+            'MIMO_V26_WIRED_METADATA_FIXTURE': str(self.work / 'mimo-provider-fixtures/tiny-bf16'),
+            'MIMO_PROMPT_ARTIFACT_DIRECTORY': str(self.work / 'mimo-prompt-fixtures'),
+            'MIMO_PROMPT_REFERENCE_VECTORS': str(ROOT / 'fixtures/prompt-contract/mimo-v26-additional20.json'),
+        }
+        self.env.update(inherited)
+        expected_environments = {
+            'startup': {'MIMO_V26_SERIAL_NATIVE_TESTS': '1'},
+            'complete-prefix': {'MIMO_V26_SERIAL_NATIVE_TESTS': '1',
+                                'MIMO_V26_SERIAL_LOAD_FIXTURES': '${{ runner.temp }}/mimo-prefix-fixtures'},
+            'retained-fault': {
+                'MIMO_V26_SERIAL_NATIVE_TESTS': '1', 'MIMO_V26_PROVIDER_LIFETIME_NATIVE_TESTS': '1',
+                'MIMO_V26_PROVIDER_LIFETIME_FAULT_CASE': MIMO_METHODS['retained-fault'][1][0],
+                'DARKBLOOM_PREFIX_CACHE': '0', 'DARKBLOOM_PREFIX_CACHE_MEMORY': '0',
+            },
+        }
+        for name, (args, environment) in self.mimo_workflow_gates().items():
+            with self.subTest(gate=name):
+                self.assertEqual(environment, expected_environments[name])
+                self.assertEqual(args[1:], ['--no-parallel'])
+                source, expected_methods = MIMO_METHODS[name]
+                suite = Path(source).stem
+                text = (ROOT / 'provider-swift/Tests/ProviderCoreTests' / source).read_text()
+                methods = [f'ProviderCoreTests.{suite}/{method}'
+                           for method in re.findall(r'\bfunc (test\w+)\s*\(', text)]
+                selected = {method for method in methods if re.search(args[0], method)}
+                self.assertEqual(selected, {f'ProviderCoreTests.{suite}/{method}' for method in expected_methods})
+                environment = {key: value.replace('${{ runner.temp }}', str(self.work))
+                               for key, value in environment.items()}
+                result, calls = self.run_script('run-nested-suite.sh', *args, **environment,
+                                                FAKE_SWIFT_METHODS=json.dumps(methods))
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(f'Test run with {len(expected_methods)} tests passed', result.stdout)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(calls[0]['filter'], args[0])
+                self.assertEqual(calls[0]['args'], ['test', '--skip-build', '--filter', *args])
+                self.assertIsNone(calls[0]['exclusive'])
+                self.assertEqual(calls[0]['mimo_env'], {**inherited, **environment})
+
+    def test_workflow_mimo_gates_reject_failures_empty_and_skipped_runs(self):
+        self.env.pop('DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST')
+        for name, (args, environment) in self.mimo_workflow_gates().items():
+            for mode, message in [('FAIL', 'simulated assertion failure'), ('EMPTY', 'executed ZERO tests'),
+                                  ('SKIP', 'skipped one or more tests')]:
+                for style in ('swift-testing', 'xctest') if mode == 'SKIP' else ('swift-testing',):
+                    with self.subTest(gate=name, mode=mode, style=style):
+                        result, calls = self.run_script('run-nested-suite.sh', *args, **environment,
+                                                        **{f'FAKE_SWIFT_{mode}': args[0],
+                                                           'FAKE_SWIFT_SKIP_STYLE': style})
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn(message, result.stdout)
+                        self.assertEqual(len(calls), 1)
+                        self.assertEqual(calls[0]['filter'], args[0])
 
     def test_exclusive_helper_rejects_broad_or_extra_selectors_before_swift(self):
         for args in [(), ('CBv2PagedKernelTests',), (MEMORY, '--filter', 'anything')]:

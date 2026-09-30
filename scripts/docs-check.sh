@@ -54,7 +54,7 @@ fail() { printf 'docs-check: %s\n' "$*" >&2; ERRORS=$((ERRORS + 1)); }
 # ---------------------------------------------------------------------------
 for f in "${FILES[@]}"; do
     case "$f" in docs/.private/*) continue ;; esac
-    if ! head -n 12 "$f" | grep -Eq '^> Last updated: [0-9]{4}-[0-9]{2}-[0-9]{2}$'; then
+    if ! python3 scripts/docs-historical-source.py --check-stamp "$f"; then
         fail "$f: missing date-only freshness stamp (run scripts/docs-stamp.sh \"$f\")"
     fi
 done
@@ -62,12 +62,10 @@ done
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-# Print Markdown text with fenced code blocks removed (so example output is not
+# Print Markdown text with code blocks removed (so example output is not
 # treated as citations) — inline code spans are kept.
-strip_fences() {
-    awk 'BEGIN { infence = 0 }
-         /^[[:space:]]*(```|~~~)/ { infence = !infence; next }
-         !infence { print }' "$1"
+strip_code_blocks() {
+    python3 scripts/docs-historical-source.py --without-code-blocks "$1"
 }
 
 # Collapse `.` and `..` segments of a repo-relative path without touching the
@@ -132,7 +130,7 @@ historical_source_exists() {
 check_links() {
     local f=$1 dir target path original_target
     dir=$(dirname "$f")
-    # Inline links [text](target) and reference definitions [id]: target.
+    # Use the same non-code links for current checks and historical provenance.
     # The loop reads from process substitution (not a pipeline) so that `fail`
     # increments ERRORS in this shell rather than in a throwaway subshell.
     while IFS= read -r target; do
@@ -153,10 +151,7 @@ check_links() {
             historical_source_exists "$f" "$path" "$original_target" && continue
             fail "$f: broken link -> $target"
         fi
-    done < <(
-        { grep -oE '\]\([^)[:space:]]+' "$f" | sed 's/^](//' ;
-          grep -oE '^\[[^]]+\]:[[:space:]]+[^[:space:]]+' "$f" | sed -E 's/^\[[^]]+\]:[[:space:]]+//' ; } 2>/dev/null
-    )
+    done < <(python3 scripts/docs-historical-source.py --links "$f")
 }
 
 for f in "${FILES[@]}" "${EXTRA_LINK_FILES[@]}"; do
@@ -196,7 +191,7 @@ check_citations() {
             fail "$f: cites missing path \`$cite\`"
         fi
     done < <(
-        strip_fences "$f" |
+        strip_code_blocks "$f" |
         grep -oE '`('"$CITE_ROOTS"')/[^` ]*`' 2>/dev/null |
         tr -d '`' |
         sort -u
@@ -220,7 +215,7 @@ if [ "$ORPHAN_CHECK" -eq 1 ]; then
     for f in "${FILES[@]}" "${EXTRA_LINK_FILES[@]}"; do
         [ -f "$f" ] || continue
         dir=$(dirname "$f")
-        grep -oE '\]\([^)[:space:]]+' "$f" 2>/dev/null | sed 's/^](//' |
+        python3 scripts/docs-historical-source.py --links "$f" |
         while IFS= read -r target; do
             case "$target" in http://*|https://*|mailto:*|\#*) continue ;; esac
             target=${target%%#*}; target=${target%%\?*}

@@ -24,18 +24,25 @@ history (`.github/workflows/ci.yml`, `docs`).
    at the record's creation, copy boundary, or a break in link continuity:
 
    ```bash
-   git log --follow -p -- docs/reports/2026-08-25-v0.8.12-prefill-deadline-admission.md
+   git log --follow -m -p -- docs/reports/2026-08-25-v0.8.12-prefill-deadline-admission.md
    ```
 
    Use the exact `commit` from that legacy header for the original source
    citations and line anchors. A newly created date-only record instead uses
    the commit that introduced the particular Markdown link. Inspect the patch,
-   not just a prose mention or fenced Markdown sample; a later reintroduction
+   not just a prose mention or code block/span sample; a later reintroduction
    is a new link and cannot reuse a legacy header from before the break. Resolve
    relative links from the document's location at each commit: an adjusted link
    can retain its destination across a rename, while unchanged text can point
-   somewhere different. Never guess a commit from the freshness date. The
-   current renamed source file may have different contents or line numbers.
+   somewhere different. Only the first metadata line outside code in the first
+   12 physical lines is the header; later legacy-stamp examples are not evidence.
+   Inspect merge snapshots as well as parent patches: default `git log --follow`
+   can omit a link or stamp introduced by merge resolution. The checker follows
+   an unchanged document into its matching parent; otherwise it follows the
+   first parent retaining the same source destination. If no parent has the
+   link, the merge is its introduction. Never guess a commit from the freshness
+   date. The current renamed source file may have different contents or line
+   numbers.
 2. Open the original source snapshot in GitHub, then follow the path from the
    report. These snapshots cover the source links affected by the provider
    folder reorganization:
@@ -61,12 +68,12 @@ Run `make docs-check` after a source move. When a frozen record's relative
 source link no longer resolves in the working tree, the checker requires that
 exact target at the recovered legacy commit or the date-only link's introduction
 commit (`scripts/docs-historical-source.py`, `source_exists`). Historical link
-extraction ignores fenced samples; their presence cannot backdate a real link.
-The current checker still validates link-shaped text inside samples, so preserve
-frozen examples and use immutable source URLs for new samples of retired paths.
-Unresolvable or malformed legacy stamps, absent link provenance, shallow history, and missing
-historical objects or targets remain errors. For an uncommitted new record with
-a retired source path, cite an immutable source URL rather than borrowing an
+extraction is shared with current link validation and orphan detection. All three
+ignore code blocks/spans; samples cannot backdate a real link or make a page
+reachable. Unresolvable or malformed legacy stamps, absent link provenance,
+shallow history, and missing historical objects or targets remain errors. For an
+uncommitted new record with a retired source path, cite an immutable source URL
+rather than borrowing an
 unrelated older commit. Current documentation and links to documentation pages
 still require current targets.
 

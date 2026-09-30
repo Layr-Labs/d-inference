@@ -268,12 +268,16 @@ public enum LaunchAgent: Sendable {
     /// `MiMoV26DecodeDefaults.environmentKeys`: the MiMo short-forward decode
     /// kernels (fused norms, distinct-expert MXFP4, FP32 router GEMV) are on by
     /// default in the SDK; their per-kernel rollbacks use the same values.
+    /// `DARKBLOOM_MIMO_RECTANGULAR_VERIFY` and
+    /// `MiMoV26DecodeDefaults.verifyEnvironmentKeys`: exact rectangular MTP
+    /// verification is the MiMo default; each rollback must reach the job.
     static let inferencePassthroughEnvKeys = [
         EngineV2Factory.maxPartialPrefillsKey,
         PrefillDeadlineMode.environmentKey,
         MiMoV26WiredResidency.environmentFlag,
         PrefixCachePolicy.mimoCompletePrefixEnvironmentFlag,
-    ] + MiMoV26DecodeDefaults.environmentKeys
+        EngineV2SlotFactory.mimoRectangularVerifyEnvironmentKey,
+    ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 
     static let passthroughEnvKeys = [
         "DARKBLOOM_DRAIN_TIMEOUT_SECONDS",

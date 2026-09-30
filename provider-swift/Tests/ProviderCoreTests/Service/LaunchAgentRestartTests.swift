@@ -162,6 +162,20 @@ struct LaunchAgentEnvironmentTests {
         #expect(WatchdogAgent.passthroughEnvKeys.allSatisfy { !keys.contains($0) })
     }
 
+    @Test func forwardsMiMoExactVerifyRollbacksToProviderJob() {
+        // Exact rectangular MTP verification is the MiMo default; turning it
+        // back to serial scoring only works if the rollback reaches launchd.
+        let keys = [EngineV2SlotFactory.mimoRectangularVerifyEnvironmentKey]
+            + MiMoV26DecodeDefaults.verifyEnvironmentKeys
+        #expect(keys.count == 3)
+        #expect(keys.allSatisfy { LaunchAgent.inferencePassthroughEnvKeys.contains($0) })
+        let rollback = Dictionary(uniqueKeysWithValues: keys.map { ($0, "0") })
+        let out = LaunchAgent.passthroughEnvironment(from: rollback)
+        #expect(out == rollback)
+        #expect(EngineV2SlotFactory.nativeMiMoVerificationMode(wantsMTP: true, environment: out)
+            == .serialTarget)
+    }
+
     @Test func preservesMalformedNonEmptyControlsForRuntimeSecureDefault() {
         let out = LaunchAgent.passthroughEnvironment(from: [
             EngineV2Factory.maxPartialPrefillsKey: "not-an-integer",

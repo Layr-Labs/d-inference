@@ -2,6 +2,8 @@
 
 > Last updated: 2026-09-30
 
+The OpenRouter cancellation fixture observes the existing completed-write profile stamp before canceling a dispatched request. Receiving provider bytes alone does not prove that the writer has finished; cancellation during an in-flight write may correctly abort that connection. Registry writer tests cover that separate outcome, while this fixture continues to require a matching cancel frame and exact settlement cleanup.
+
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
 lint — and which CI workflow runs what. `make test` runs every unit suite plus

@@ -34,6 +34,10 @@ The [native MiMo V2.6 candidate](../architecture/inference.md#native-mimo-v26-ca
 has no qualified minimum RAM tier or sustained-throughput guarantee. Its
 managed loader prices the complete validated load plan, including retained
 trained components; a separately loaded audio codec has its own admitted owner.
+WAV input conversion prices every decoded channel and the native resampling
+plan. Wider accepted input formats do not reduce the activation or OS reserves
+or establish a new minimum RAM tier; see `MiMoV26OrdinaryServingPolicy` and
+`MiMoV26EncodedMediaIngress`.
 File size, header estimates and logical permit settlement are not measured
 whole-process peak residency. The configured native context is not replaced by
 a smaller benchmark input bound.

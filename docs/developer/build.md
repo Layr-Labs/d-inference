@@ -42,6 +42,9 @@ native evaluation, model download, private corpus or verification receipt is
 needed to provision these files. See [MiMo provider CI tests](test.md#mimo-provider-ci-fixtures)
 for environment bindings and the isolated native selections.
 
+Production prompt parity compares the generated corpus byte-for-byte with its
+checked-in fixture, including the final newline written by `prompt-fixtures`.
+
 Changes to native loading estimates and retirement require a rebuilt provider
 test product, not only a new CLI. Bind both products and the SDK/metallib to the
 same checkout before running the [memory and lifecycle gates](test.md).

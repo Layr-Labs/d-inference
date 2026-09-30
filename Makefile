@@ -7,6 +7,7 @@
         landing-install landing-build landing-lint landing-test landing \
         e2e-integration e2e-benchmark e2e \
         docs-check docs-impact-check docs-stamp \
+        mutation-registry \
         test build all clean
 
 help:
@@ -122,6 +123,22 @@ docs-impact-check: ## Check source changes have their mapped canonical docs (BAS
 
 docs-stamp: ## Refresh the freshness stamp on changed docs (FILES=... to target specific files)
 	./scripts/docs-stamp.sh $(FILES)
+
+# ---- Mutation testing (report-only) ---------------------------------------
+# Measures how well the registry tests catch small code changes in the routing
+# and scheduler files. It never fails on the score and is not part of `test`.
+
+GREMLINS_VERSION ?= v0.6.0
+MUTATION_OUT ?= artifacts/mutation
+MUTATION_BUDGET ?= 240m
+MUTATION_WORKERS ?= 0
+MUTATION_TIMEOUT_COEFFICIENT ?= 5
+
+mutation-registry: ## Report-only mutation test of registry routing files (MUTATION_OUT=artifacts/mutation)
+	GREMLINS_VERSION="$(GREMLINS_VERSION)" MUTATION_OUT="$(MUTATION_OUT)" \
+	    MUTATION_BUDGET="$(MUTATION_BUDGET)" MUTATION_WORKERS="$(MUTATION_WORKERS)" \
+	    MUTATION_TIMEOUT_COEFFICIENT="$(MUTATION_TIMEOUT_COEFFICIENT)" \
+	    ./scripts/mutation-registry.sh
 
 # ---- Aggregates ------------------------------------------------------------
 

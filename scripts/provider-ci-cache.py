@@ -25,6 +25,7 @@ LANE_PURPOSES = {
     "parity": "parity-swift-debug-rust",
 }
 MLX_SOURCE = "libs/mlx-swift/Source/Cmlx/mlx"
+SWIFT_WRAPPER = Path(__file__).resolve().with_name("provider-release-swift.sh")
 METALLIB_RECIPE_PATHS = ("scripts/fetch-metallib.sh", "scripts/stage-test-metallib.sh")
 RECIPE_PATHS = (
     ".github/workflows/ci.yml",
@@ -33,6 +34,8 @@ RECIPE_PATHS = (
     "scripts/test-provider-ci-cache.py",
     "scripts/provider-release-cache.py",
     "scripts/prepare-metal-toolchain.py",
+    "scripts/prepare-provider-release-toolchain.sh",
+    "scripts/provider-release-swift.sh",
     "scripts/run-provider-tests.sh",
     "scripts/run-provider-test-watchdog.py",
     "scripts/run-nested-suite.sh",
@@ -43,7 +46,7 @@ RECIPE_PATHS = (
 
 
 def toolchain_metadata(lane: str) -> dict:
-    """Fingerprint bare PATH Swift builds without changing their environment."""
+    """Fingerprint PATH Swift or the repository wrapper and restore probe env."""
     if lane not in LANE_PURPOSES:
         raise ValueError("Unknown provider CI lane")
     swift_path = shutil.which("swift")
@@ -53,22 +56,35 @@ def toolchain_metadata(lane: str) -> dict:
     # Apple's /usr/bin driver delegates to the selected Xcode toolchain;
     # fingerprint that compiler's siblings, not unrelated /usr/bin tools.
     compiler = invocation
-    if invocation.resolve() == Path("/usr/bin/swift"):
-        compiler = Path(identity.command("xcrun", "--sdk", "macosx", "--find", "swift"))
-    metal_sdk = Path(identity.command("xcrun", "--sdk", "macosx", "--show-sdk-path"))
-    sdk = Path(os.environ.get("SDKROOT") or str(metal_sdk))
+    wrapped = invocation.resolve() == SWIFT_WRAPPER
     swift_override = os.environ.get("PROVIDER_SWIFT")
     sdk_override = os.environ.get("PROVIDER_SDKROOT")
+    if wrapped:
+        # The checked-in wrapper delegates to these exact values and forces
+        # native SwiftPM plus this SDK. An arbitrary PATH script is not trusted.
+        if not swift_override or not sdk_override:
+            raise ValueError("Repository Swift wrapper requires selected compiler and SDK")
+        compiler = Path(swift_override)
+        if compiler.resolve() in {invocation.resolve(), invocation}:
+            raise ValueError("Repository Swift wrapper cannot delegate to itself")
+    elif invocation.resolve() == Path("/usr/bin/swift"):
+        compiler = Path(identity.command("xcrun", "--sdk", "macosx", "--find", "swift"))
+    metal_sdk = Path(identity.command("xcrun", "--sdk", "macosx", "--show-sdk-path"))
+    sdk = Path(sdk_override if wrapped else os.environ.get("SDKROOT") or str(metal_sdk))
     if swift_override and Path(swift_override).resolve() not in {invocation.resolve(), compiler.resolve()}:
         raise ValueError("PROVIDER_SWIFT differs from the compiler invoked by PATH swift")
     if sdk_override and Path(sdk_override).resolve() != sdk.resolve():
         raise ValueError("PROVIDER_SDKROOT differs from the effective SDKROOT")
     selected = {"PROVIDER_SWIFT": str(compiler), "PROVIDER_SDKROOT": str(sdk)}
+    if wrapped:
+        selected["SDKROOT"] = str(sdk)
     previous = {name: os.environ.get(name) for name in selected}
     try:
         os.environ.update(selected)
         metadata = identity.toolchain_metadata("qualification" if lane == "parity" else "release")
-        metadata["swift"]["invocation"] = identity.external_file(invocation)
+        # RUNNER_TEMP changes between machines. The known symlink always
+        # invokes this source file; the outer cache key already binds checkout.
+        metadata["swift"]["invocation"] = identity.external_file(SWIFT_WRAPPER if wrapped else invocation)
         # fetch-metallib.sh uses xcrun's macosx SDK, which can differ from an
         # explicit SDKROOT used by the Swift build.
         metadata["metallib_sdk"] = identity.sdk_metadata(metal_sdk)

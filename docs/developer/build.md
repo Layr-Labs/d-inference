@@ -86,6 +86,53 @@ The revision publisher accepts optional per-version HF repo, commit and path-pre
 artifacts. It also needs Python 3 and the AWS CLI; use the existing pinned tools.
 The [revision runbook](../operations/model-revisions.md) describes its invocation.
 
+## CI runner trust boundary
+
+Routine PR and push checks run on Tenki: Linux jobs use
+`tenki-standard-medium-4c-8g`. The independent Provider Unit Tests, Provider SDK
+Tests, and Provider Prompt Parity lanes, plus E2E tests, use
+`tenki-macos-26-large` with
+`DEVELOPER_DIR=/Applications/Xcode_27.0.app/Contents/Developer`. These jobs
+have read-only GitHub permissions, do not reference GitHub secrets or attach
+protected environments, and discard checkout credentials. Public E2E models
+download anonymously. `scripts/check-ci-runner-policy.py` checks this boundary. The provider CI cache fingerprints the selected compiler and SDK behind
+the checked-in Swift wrapper, retains the wrapper bytes as invocation identity,
+and rejects compiler overrides from other PATH wrappers.
+
+Release preparation, unsigned build, SDK qualification, signing, notarization,
+R2 staging, publication and signed-artifact compatibility checks all execute on
+Blacksmith. `.github/workflows/release-swift.yml` and
+`.github/workflows/provider-release-cache.yml` pin macOS 27 with Xcode 27 for
+build and signing, and macOS 26 for the older-OS smoke. Their Linux jobs use
+`blacksmith-4vcpu-ubuntu-2404`. Signing validation, model registration,
+credentialed review automation (including the advisory threat-model review),
+and benchmark approval/reporting also run on
+Blacksmith. The three-provider benchmark retains its 48 GB Blacksmith Mac; its
+model weights alone exceed Tenki's 32 GB Mac.
+
+Blacksmith's macOS 27 image selects Xcode 27 by default. The release selector
+reads that choice with `xcode-select` and `xcrun` after checkout, then requires
+SDK 27.0 and Swift 6.4. Do not set `DEVELOPER_DIR` at job scope: a guessed app
+path can break `/usr/bin/git` before checkout and before the selector runs.
+The image's default `python3` may be older than the release helpers require.
+Every macOS 27 release job pins Python 3.12.10 with `actions/setup-python`
+after checkout and before invoking those helpers; the runner-policy check
+enforces that order.
+Blacksmith's macOS 27 image also lacks `rustup`. Qualification and signing
+validation install a checksum-verified Rustup 1.28.2 bootstrap from the Rust
+project, then the exact Rust 1.88.0 toolchain required by prompt parity.
+It also lacks Homebrew and CMake; release Metal builds use a checksum-verified
+Kitware CMake 3.31.12 archive instead of a Homebrew fallback. The release
+Actions metallib cache and the shared fetch helper include the CMake version
+and executable digest, so a different generator cannot reuse those bytes.
+
+Release artifacts pass through GitHub Actions, but Tenki does not compile or
+cache their release inputs. Blacksmith is trusted to execute the release and
+receive its credentials; source and artifact-identity checks do not prove a
+runner's compiler integrity. Production coordinator container builds and
+deployments retain the separate GCP procedure in
+[the coordinator runbook](../operations/coordinator-deploy.md).
+
 ## SDK 27 release builds and caches
 
 Serving performance work changes the pinned CBv2 library as well as the
@@ -108,7 +155,7 @@ Archived raw-corpus replay is opt-in; see the
 [local evidence checks](serving-performance-qualification.md#verify-local-evidence).
 
 The release pipeline runs optimized products and SDK qualification on separate
-`xcode-27-xlarge` runners. Both call `.github/actions/provider-release-build/action.yml`;
+`blacksmith-12vcpu-macos-27` runners. Both call `.github/actions/provider-release-build/action.yml`;
 only the optimized lane transfers an unsigned app and its file inventory to
 signing. All binaries, SwiftPM resource bundles and the source-matched Metal
 library travel together. Signing verifies the same-run artifact's source commit,

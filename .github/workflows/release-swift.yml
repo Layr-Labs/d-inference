@@ -77,6 +77,8 @@ env:
 
 jobs:
   resolve-env:
+    permissions:
+      contents: read
     runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       environment: ${{ steps.pick.outputs.environment }}
@@ -84,6 +86,8 @@ jobs:
       publish: ${{ steps.pick.outputs.publish }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
       - id: pick
         env:
           RELEASE_ENVIRONMENT: ${{ inputs.environment }}
@@ -94,7 +98,7 @@ jobs:
   build-provider:
     name: Build optimized SDK 27 provider
     needs: resolve-env
-    runs-on: xcode-27-xlarge
+    runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 60
     permissions:
       contents: read
@@ -109,6 +113,9 @@ jobs:
         with:
           submodules: recursive
           persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
       - run: ./scripts/check-release-version.sh "$VERSION"
       - uses: ./.github/actions/provider-release-build
         id: build
@@ -140,7 +147,7 @@ jobs:
   qualify-sdk:
     name: Qualify provider with SDK 27
     needs: resolve-env
-    runs-on: xcode-27-xlarge
+    runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 60
     permissions:
       contents: read
@@ -149,6 +156,9 @@ jobs:
         with:
           submodules: recursive
           persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
       - uses: ./.github/actions/provider-release-build
         with:
           lane: qualification
@@ -156,9 +166,8 @@ jobs:
   build-and-release:
     name: Sign, notarize and retain exact artifact
     needs: [resolve-env, build-provider, qualify-sdk]
-    # App Attest's current code measurements require SDK 27. The ordinary
-    # Blacksmith image is macOS 26.3 and cannot install Apple's SDK 27 tools.
-    runs-on: xcode-27
+    # The signed artifact and its unsigned inputs are all built on Blacksmith.
+    runs-on: blacksmith-12vcpu-macos-27
     environment: ${{ needs.resolve-env.outputs.environment }}
     outputs:
       validation_artifact: ${{ steps.validation_identity.outputs.artifact_name }}
@@ -206,8 +215,13 @@ jobs:
       - name: Checkout (with submodules)
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           submodules: recursive
           fetch-depth: 0   # gh release --generate-notes wants full history
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
 
       - name: Validate release version integrity
         run: ./scripts/check-release-version.sh "$VERSION"
@@ -990,12 +1004,15 @@ jobs:
     name: Signed SDK 27 artifact on older macOS
     needs: [resolve-env, build-and-release]
     if: needs.resolve-env.outputs.publish == 'false'
-    runs-on: blacksmith-12vcpu-macos-latest
+    # Keep the older-OS proof within the release trust boundary.
+    runs-on: blacksmith-12vcpu-macos-26
     permissions:
       contents: read
       actions: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
       - name: Verify and smoke the exact signed validation artifact
         env:
           GH_TOKEN: ${{ github.token }}

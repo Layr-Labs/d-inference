@@ -5,12 +5,31 @@ on:
     branches: [master, main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
-  release-integrity:
-    name: Release Integrity
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+  runner-policy:
+    name: CI Runner Policy
+    runs-on: tenki-standard-medium-4c-8g
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Check runner and credential boundaries
+        run: |
+          python3 -m venv "$RUNNER_TEMP/runner-policy"
+          "$RUNNER_TEMP/runner-policy/bin/pip" install PyYAML==6.0.3
+          "$RUNNER_TEMP/runner-policy/bin/python" scripts/test-ci-runner-policy.py
+          "$RUNNER_TEMP/runner-policy/bin/python" scripts/check-ci-runner-policy.py
+
+  release-integrity:
+    name: Release Integrity
+    runs-on: tenki-standard-medium-4c-8g
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
       - name: Check source, fallback, and installer parity
         run: |
           ./scripts/check-release-version.sh
@@ -44,10 +63,11 @@ jobs:
 
   docs:
     name: Docs Lint
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: tenki-standard-medium-4c-8g
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           fetch-depth: 0 # Frozen source links require committed document provenance.
       - name: Initialize pinned SDK documentation
         run: git submodule update --init --depth 1 libs/mlx-swift-lm
@@ -60,7 +80,7 @@ jobs:
 
   test-coordinator:
     name: Coordinator Tests
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: tenki-standard-medium-4c-8g
     services:
       postgres:
         image: postgres:16
@@ -77,6 +97,8 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
         with:
           go-version-file: go.mod
@@ -130,9 +152,11 @@ jobs:
 
   lint-coordinator:
     name: Coordinator Lint
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: tenki-standard-medium-4c-8g
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
         with:
           go-version-file: go.mod
@@ -143,9 +167,11 @@ jobs:
 
   test-prompt-sidecar:
     name: Prompt Sidecar Tests
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: tenki-standard-medium-4c-8g
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
         with:
           go-version-file: go.mod
@@ -200,11 +226,21 @@ jobs:
 
   test-provider:
     name: Provider Unit Tests
-    runs-on: blacksmith-12vcpu-macos-latest
+    runs-on: tenki-macos-26-large
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           submodules: recursive
+      - name: Verify Xcode 27 toolchain
+        run: |
+          xcodebuild -version
+          xcrun swift --version
+          test "$(xcrun --sdk macosx --show-sdk-version)" = '27.0'
+      - name: Select native SwiftPM resource layout
+        run: ./scripts/prepare-provider-release-toolchain.sh
       - name: Build provider CI prerequisites
         id: provider-ci-build
         uses: ./.github/actions/provider-ci-build
@@ -265,11 +301,21 @@ jobs:
 
   test-provider-sdk:
     name: Provider SDK Tests
-    runs-on: blacksmith-12vcpu-macos-latest
+    runs-on: tenki-macos-26-large
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           submodules: recursive
+      - name: Verify Xcode 27 toolchain
+        run: |
+          xcodebuild -version
+          xcrun swift --version
+          test "$(xcrun --sdk macosx --show-sdk-version)" = '27.0'
+      - name: Select native SwiftPM resource layout
+        run: ./scripts/prepare-provider-release-toolchain.sh
       - name: Build SDK CI prerequisites
         id: provider-ci-build
         timeout-minutes: 35
@@ -383,11 +429,21 @@ jobs:
 
   test-provider-parity:
     name: Provider Prompt Parity
-    runs-on: blacksmith-12vcpu-macos-latest
+    runs-on: tenki-macos-26-large
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           submodules: recursive
+      - name: Verify Xcode 27 toolchain
+        run: |
+          xcodebuild -version
+          xcrun swift --version
+          test "$(xcrun --sdk macosx --show-sdk-version)" = '27.0'
+      - name: Select native SwiftPM resource layout
+        run: ./scripts/prepare-provider-release-toolchain.sh
       - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
         with:
           go-version-file: go.mod
@@ -416,7 +472,7 @@ jobs:
 
   provider-test-gate:
     name: Provider Tests
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: tenki-standard-medium-4c-8g
     needs: [test-provider, test-provider-sdk, test-provider-parity]
     if: ${{ always() }}
     steps:
@@ -432,12 +488,22 @@ jobs:
 
   cache-swift:
     name: Swift Build + Cache
-    runs-on: blacksmith-12vcpu-macos-latest
+    runs-on: tenki-macos-26-large
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
     if: github.event_name == 'push'
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           submodules: recursive
+      - name: Verify Xcode 27 toolchain
+        run: |
+          xcodebuild -version
+          xcrun swift --version
+          test "$(xcrun --sdk macosx --show-sdk-version)" = '27.0'
+      - name: Select native SwiftPM resource layout
+        run: ./scripts/prepare-provider-release-toolchain.sh
       - name: Restore SwiftPM cache
         uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
@@ -446,9 +512,9 @@ jobs:
             ~/Library/org.swift.swiftpm
             provider-swift/.build
             libs/mlx-swift-lm/.build
-          key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
+          key: spm-tenki-xcode27-v1-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
           restore-keys: |
-            spm-v3-${{ runner.os }}-
+            spm-tenki-xcode27-v1-${{ runner.os }}-
       - name: Discard metallibs restored by the generic SwiftPM cache
         run: |
           for root in provider-swift/.build libs/mlx-swift-lm/.build; do
@@ -467,13 +533,15 @@ jobs:
             ~/Library/org.swift.swiftpm
             provider-swift/.build
             libs/mlx-swift-lm/.build
-          key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
+          key: spm-tenki-xcode27-v1-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
 
   lint-console:
     name: Console UI Lint & Build
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: tenki-standard-medium-4c-8g
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'

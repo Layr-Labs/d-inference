@@ -57,7 +57,7 @@ runs:
     - name: Install pinned Rust for prompt parity
       if: inputs.lane == 'qualification'
       shell: bash
-      run: rustup toolchain install 1.88.0 --profile minimal
+      run: ./scripts/install-release-rust.sh
     - name: Resolve compatible build cache keys
       id: keys
       shell: bash
@@ -102,6 +102,9 @@ runs:
     - name: Ensure matching Metal compiler is available
       shell: bash
       run: python3 scripts/prepare-metal-toolchain.py
+    - name: Install pinned CMake for Metal build
+      shell: bash
+      run: ./scripts/install-release-cmake.sh
     - name: Resolve source-matched metallib cache namespace
       id: mlxkey
       shell: bash
@@ -116,7 +119,11 @@ runs:
         XCODE=$(xcodebuild -version | tr -cs '[:alnum:].' '-')
         METAL_COMPILER=$(xcrun --no-cache --sdk macosx --find metal)
         METAL_SHA=$(shasum -a 256 "$METAL_COMPILER" | cut -d' ' -f1)
-        echo "key=metallib-helper-v2-${MLX_SHA}-${HELPER_SHA}-${METAL_SHA}-${XCODE}-sdk${SDK}-dt${MLX_METALLIB_DEPLOYMENT_TARGET}-jitoff" >> "$GITHUB_OUTPUT"
+        CMAKE_COMPILER=$(command -v cmake)
+        CMAKE_VERSION=$(cmake --version)
+        CMAKE_BINARY_SHA=$(shasum -a 256 "$CMAKE_COMPILER" | cut -d' ' -f1)
+        CMAKE_SHA=$(printf '%s\n' "$CMAKE_VERSION" "$CMAKE_BINARY_SHA" | shasum -a 256 | cut -d' ' -f1)
+        echo "key=metallib-helper-v3-${MLX_SHA}-${HELPER_SHA}-${METAL_SHA}-${CMAKE_SHA}-${XCODE}-sdk${SDK}-dt${MLX_METALLIB_DEPLOYMENT_TARGET}-jitoff" >> "$GITHUB_OUTPUT"
         echo "mlx_sha_short=${MLX_SHA:0:12}" >> "$GITHUB_OUTPUT"
     - name: Restore source-matched metallib cache
       id: metallib-cache
@@ -131,7 +138,7 @@ runs:
         METALLIB_CACHE_DIR: ${{ runner.temp }}/metallib-cache
       run: |
         set -euo pipefail
-        command -v cmake >/dev/null 2>&1 || brew install cmake
+        cmake --version
         MLX_SRC="libs/mlx-swift/Source/Cmlx/mlx"
         ./scripts/fetch-metallib.sh "$RUNNER_TEMP/metallib"
         test -z "$(git -C "$MLX_SRC" status --porcelain=v1 --untracked-files=all)"

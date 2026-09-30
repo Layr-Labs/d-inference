@@ -29,6 +29,9 @@ class SigningValidationTests(unittest.TestCase):
             self.assertNotIn(forbidden, workflow)
         build_job = workflow.split("  signing:", 1)[0]
         self.assertNotIn("secrets.", build_job)
+        self.assertIn("run: bash tooling/scripts/install-release-rust.sh", build_job)
+        self.assertIn("run: bash tooling/scripts/install-release-cmake.sh", build_job)
+        self.assertNotIn("brew install cmake", build_job)
         self.assertIn("provider-signing-validation.py cli-entitlements", workflow)
 
     def make_archive(self, directory, mutate=False, info_updates=None):

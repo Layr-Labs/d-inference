@@ -5,10 +5,13 @@ on:
     branches: [master, main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   integration-tests:
     name: E2E Integration Tests
-    runs-on: blacksmith-12vcpu-macos-latest
+    runs-on: tenki-macos-26-large
     # Job budget = the sum of every step's worst case, not the warm-path wall
     # time. Test allowances: 25m (blocking paged lane) + 15m (expected-red
     # exact-cache lane) + 10m (default-posture smoke) = 50m. Setup/build/
@@ -17,6 +20,8 @@ jobs:
     # + gemma-4 snapshot downloads — budget 25m. 50m + 25m = 75m.
     timeout-minutes: 75
     env:
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+      LC_ALL: en_US.UTF-8
       DARKBLOOM_REPO_ROOT: ${{ github.workspace }}
       DARKBLOOM_PROMPT_SIDECAR_BINARY: ${{ github.workspace }}/coordinator/promptsidecar/target/release/promptsidecar
       TESTBED_PROVIDER_CONFIG: debug
@@ -25,6 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           submodules: recursive
           fetch-depth: 0
 
@@ -32,6 +38,13 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Verify Xcode 27 toolchain
+        run: |
+          xcodebuild -version
+          xcrun swift --version
+          test "$(xcrun --sdk macosx --show-sdk-version)" = '27.0'
+      - name: Select native SwiftPM resource layout
+        run: ./scripts/prepare-provider-release-toolchain.sh
       - name: Install Postgres
         run: brew install postgresql@16
 
@@ -73,18 +86,8 @@ jobs:
           python3 -m venv /tmp/mlxvenv
           /tmp/mlxvenv/bin/pip install huggingface_hub
 
-      - name: Download model (protected read-only auth)
-        if: github.event_name == 'push'
-        env:
-          HF_TOKEN: ${{ secrets.HF_READ_TOKEN }}
+      - name: Download public models without credentials
         run: |
-          /tmp/mlxvenv/bin/python -c "import os; from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gpt-oss-20b-MXFP4-Q8', revision=os.environ['GPT_OSS_REVISION'], token=os.environ.get('HF_TOKEN') or None)"
-          /tmp/mlxvenv/bin/python -c "import os; from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gemma-4-e2b-it-4bit', revision=os.environ['EXACT_CACHE_MODEL_REVISION'], token=os.environ.get('HF_TOKEN') or None)"
-
-      - name: Download public model (pull request)
-        if: github.event_name == 'pull_request'
-        run: |
-          echo "Pull request: downloading public model without Hugging Face authentication"
           /tmp/mlxvenv/bin/python -c "import os; from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gpt-oss-20b-MXFP4-Q8', revision=os.environ['GPT_OSS_REVISION'], token=False)"
           /tmp/mlxvenv/bin/python -c "import os; from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gemma-4-e2b-it-4bit', revision=os.environ['EXACT_CACHE_MODEL_REVISION'], token=False)"
 

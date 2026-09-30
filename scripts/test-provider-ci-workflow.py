@@ -16,6 +16,14 @@ ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / ".github/workflows/ci.yml"
 ACTION = ROOT / ".github/actions/provider-ci-build/action.yml"
 BUILD_ACTION = "./.github/actions/provider-ci-build"
+TOOLCHAIN_COMMANDS = {
+    "Verify Xcode 27 toolchain": (
+        "xcodebuild -version\n"
+        "xcrun swift --version\n"
+        "test \"$(xcrun --sdk macosx --show-sdk-version)\" = '27.0'"
+    ),
+    "Select native SwiftPM resource layout": "./scripts/prepare-provider-release-toolchain.sh",
+}
 READY = "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}"
 MIMO_READY = "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}"
 PROVIDER_MIMO_READY = "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-prompt-fixtures.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}"
@@ -103,7 +111,10 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         for job_id, lane in LANES.items():
             with self.subTest(lane=lane):
                 job = self.jobs[job_id]
-                self.assertIn("    runs-on: blacksmith-12vcpu-macos-latest", job)
+                self.assertIn("    runs-on: tenki-macos-26-large", job)
+                self.assertIn("      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer", job)
+                self.assertIn("          persist-credentials: false", job)
+                self.assertIn("run: ./scripts/prepare-provider-release-toolchain.sh", job)
                 self.assertNotRegex(job, re.compile(r"^    (needs|if|strategy):", re.MULTILINE), msg=job)
                 self.assertNotIn("continue-on-error:", job)
                 self.assertNotIn("DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST:", job)
@@ -112,6 +123,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
     def test_existing_required_check_requires_every_lane_even_after_failures(self):
         job = self.jobs["provider-test-gate"]
         self.assertIn("    name: Provider Tests\n", job)
+        self.assertIn("    runs-on: tenki-standard-medium-4c-8g\n", job)
         self.assertIn("    needs: [test-provider, test-provider-sdk, test-provider-parity]\n", job)
         self.assertIn("    if: ${{ always() }}\n", job)
         self.assertNotIn("continue-on-error:", job)
@@ -145,9 +157,25 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 self.assertNotIn("actions/cache/restore@", self.jobs[job_id])
                 self.assertNotIn("spm-v3-", self.jobs[job_id])
 
+    def test_every_lane_selects_native_toolchain_before_building(self):
+        for job_id in LANES:
+            with self.subTest(job=job_id):
+                steps = step_blocks(self.jobs[job_id])
+                build = next(step for step in steps if field(step, "uses") == BUILD_ACTION)
+                setup = [step for step in steps if field(step, "name", indent=6) in TOOLCHAIN_COMMANDS]
+                self.assertEqual([field(step, "name", indent=6) for step in setup], list(TOOLCHAIN_COMMANDS))
+                for step in setup:
+                    self.assertEqual(run_command(step), TOOLCHAIN_COMMANDS[field(step, "name", indent=6)])
+                    self.assertIsNone(field(step, "if"))
+                    self.assertIsNone(field(step, "working-directory"))
+                    self.assertNotIn("continue-on-error:", step)
+                    self.assertGreater(steps.index(step), 0)
+                    self.assertLess(steps.index(step), steps.index(build))
+
     def test_provider_entrypoint_and_resource_installer_checks_are_retained(self):
         steps = step_blocks(self.jobs["test-provider"])
         expected = (
+            *TOOLCHAIN_COMMANDS.values(),
             "python3 scripts/test-qwen4-packaged-resources.py",
             "python3 scripts/test-profile-inventory-auth.py",
             MIMO_PREPARE,
@@ -171,8 +199,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         steps = step_blocks(self.jobs["test-provider-sdk"])
         gates = {field(step, "name", indent=6): step for step in steps if field(step, "run")}
         self.assertEqual(len(gates), sum(bool(field(step, "run")) for step in steps))
-        self.assertEqual(set(gates), set(SDK_COMMANDS) | {"Run Nemotron production SDK gates"})
-        for name, command in SDK_COMMANDS.items():
+        self.assertEqual(set(gates), set(TOOLCHAIN_COMMANDS) | set(SDK_COMMANDS) | {"Run Nemotron production SDK gates"})
+        for name, command in (TOOLCHAIN_COMMANDS | SDK_COMMANDS).items():
             with self.subTest(gate=name):
                 self.assertEqual(run_command(gates[name]), command)
         commands = "\n".join(run_command(step) for step in gates.values())
@@ -182,7 +210,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
 
     def test_every_sdk_gate_requires_successful_build_but_not_earlier_tests(self):
         for step in step_blocks(self.jobs["test-provider-sdk"]):
-            if field(step, "run"):
+            if field(step, "run") and field(step, "name", indent=6) not in TOOLCHAIN_COMMANDS:
                 with self.subTest(gate=field(step, "name", indent=6)):
                     self.assertEqual(field(step, "if"), READY)
                     self.assertEqual(field(step, "working-directory"), "libs/mlx-swift-lm")
@@ -239,7 +267,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(field(go[0], "go-version-file", indent=10), "go.mod")
         runs = [step for step in steps if field(step, "run")]
         self.assertEqual([run_command(step) for step in runs],
-                         [MIMO_PREPARE, "./scripts/verify-prompt-parity.sh"])
+                         [*TOOLCHAIN_COMMANDS.values(), MIMO_PREPARE, "./scripts/verify-prompt-parity.sh"])
         self.assertEqual(field(runs[-1], "if"), MIMO_READY)
 
     def test_fixture_prerequisites_are_fail_closed_in_provider_and_parity(self):

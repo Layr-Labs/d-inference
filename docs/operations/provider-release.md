@@ -171,9 +171,16 @@ For App Attest coexistence, both signing workflows prepare optional profile-auth
 1. After merging release inputs, let **SDK 27 release preparation** complete on
    `master`, or dispatch `.github/workflows/provider-release-cache.yml` on
    `master`. It runs optimized compilation and SDK qualification on separate
-   `xcode-27-xlarge` runners, with no signing secrets or publication steps. This seeds
+   `blacksmith-12vcpu-macos-27` runners, with no signing secrets or publication steps. This seeds
    caches in the default branch's scope, which release tags can restore. PR
    validation caches stay isolated to their PR and do not seed `master`.
+   Each macOS 27 job selects the image's Xcode 27 and pins Python 3.12.10
+   after checkout, before running the release helpers. Qualification also
+   installs checksum-verified Rustup and the pinned Rust 1.88.0 toolchain
+   before running prompt parity. Both lanes install the checksum-verified
+   CMake 3.31.12 distribution for the Metal library build; no Homebrew is
+   required on Blacksmith. Changes limited to either bootstrap script still
+   trigger both PR preparation lanes.
    Pipeline shutdown changes run these lanes on their PR as well; the
    [shutdown drain regression](../developer/test.md#sdk-27-release-qualification)
    must pass before retrying a release that failed that assertion.
@@ -391,11 +398,16 @@ R2 uploads, release registration and GitHub Release creation. The default remain
 The Actions artifact contains the final signed tarball and
 `darkbloom-validation-identity.json`, with source/submodule revisions and final
 bundle, executable and metallib hashes plus the full SHA-256 CodeDirectory digest and build SDK version.
-The release build uses GitHub’s `xcode-27` runner with Apple Command Line Tools
-27.0 / Swift 6.4 preinstalled. The ordinary Blacksmith runner was observed on
-macOS 26.3, below the SDK 27 installer’s 26.4 minimum; it remains the general
-PR CI environment. The selector refuses an older SDK/compiler instead of
-installing software or falling back.
+The unsigned build, SDK qualification, signing and notarization use
+Blacksmith's `blacksmith-12vcpu-macos-27` image. The runner selects Xcode 27
+by default. After checkout, `scripts/prepare-provider-release-toolchain.sh`
+resolves that selection through `xcode-select` and `xcrun`; it requires SDK 27.0
+and Swift 6.4 and refuses an older compiler or SDK. Do not set a guessed
+`DEVELOPER_DIR` at job scope: `/usr/bin/git` can fail before checkout if that
+app path does not exist. Linux staging and publication use
+`blacksmith-4vcpu-ubuntu-2404`. All release preparation and signed-artifact
+handling run on Blacksmith; routine PR tests use the separate
+[Tenki CI boundary](../developer/build.md#ci-runner-trust-boundary).
 The workflow obtains Xcode's matching Metal compiler through
 `xcodebuild -downloadComponent MetalToolchain` when the image omits it, and
 checks availability before computing the source-matched metallib cache key.
@@ -407,7 +419,7 @@ executable whose recorded SDK differs from the selected SDK fails qualification.
 The CodeDirectory digest is also printed in production release notes and supplies
 the measurement side of an explicitly qualified App Attest binary/code-hash pair.
 Recording it does not authorize the build. In validation-only mode, a second
-job downloads that exact artifact to the older macOS runner, verifies its
+job downloads that exact artifact to Blacksmith's macOS 26 runner, verifies its
 source/archive hashes and notarization, and requires all four runtime smoke
 markers. It asserts that the host is below macOS 27 so the compatibility lane
 cannot silently become another current-OS run. Retention is 14 days. Verify those hashes
@@ -419,7 +431,7 @@ durability or authorize rollout.
 
 After `build-provider` and `qualify-sdk` both succeed, approve the pending
 `prod` (or `dev`) deployment for **Sign, notarize and retain exact artifact**
-(`build-and-release`, `xcode-27`). Compilation and SDK tests have already run
+(`build-and-release`, `blacksmith-12vcpu-macos-27`). Compilation and SDK tests have already run
 in the parallel jobs; the signing job consumes their source-bound artifact.
 The relevant signing steps run in this order:
 

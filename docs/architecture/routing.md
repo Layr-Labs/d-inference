@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-29 · commit `60230b143`
+> Last updated: 2026-09-30 · commit `e351f359c`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -769,6 +769,18 @@ traffic before deploy. It has no binary; it is driven from tests.
   `LoadProfilesNDJSON` turns exported request profiles into arrivals.
 - `report.go` — `Summarize` buckets results by prompt length and
   `EstimatedCliff` finds the prompt size where acceptance collapses.
+
+The closed-loop tests feed each routing result back into fleet state
+(`closed_loop_sim_test.go`, `closed_loop_starvation_test.go`). The provider
+that `ReserveProviderEx` selects serves the request, releases it with
+`RemovePending` and `SetProviderIdle`, and reports a changed measurement
+through `Registry.Heartbeat`. Idle providers send unchanged heartbeats every
+5 s. Each scenario runs on the legacy EWMA path and on the explicit
+`performance_measurements` path. The tests run under `testing/synctest`, so
+two simulated hours of arrivals take less than one second. They check that
+every idle, loaded provider is selected within 5 minutes plus one request
+time while requests arrive, and they report the share of the busiest
+provider. The 5-minute bound is a policy number.
 
 Run it with the package tests, for example
 `go test ./coordinator/registry/routingsim/...` (`TestRoutingSimCalibration`

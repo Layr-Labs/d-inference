@@ -1,10 +1,11 @@
 # Reports — dated records
 
-> Last updated: 2026-09-27 · commit `d621f9772`
+> Last updated: 2026-09-30
 
 - [Cache planning admission](2026-09-24-cache-planner-admission.md) — reproduced admission loss, bounded client repair and exactness/lifecycle qualification.
+
 - [SSD eviction and cache discovery](2026-09-24-cache-eviction-publication.md) — reproduced discovery loss, active-store retirement repair and native qualification.
-- [Connected cache qualification](2026-09-27-cache-connected-qualification.md) — real API reuse, concurrent requests, Gemma reconstruction, expiry boundaries and release limitations.
+- [Connected cache qualification](2026-09-27-cache-connected-qualification.md) — real API reuse, concurrent requests, Gemma reconstruction, expiry boundaries and preserved release limitations.
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -15,6 +16,9 @@ what was decided and whether it shipped read [`../design/README.md`](../design/R
 File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
 
+- [First-content performance and M5 capacity investigation](2026-09-28-first-content-performance.md) — production latency, deadline-refusal amplification and prefill measurement bounds; separates observations from unqualified concurrency targets.
+- [Qwen chunk-partition parity and chunk-agnostic recurrent capture](2026-09-27-qwen-chunk-partition-parity.md) — dense Qwen3.5-9B checkpoint state is bit-identical across chunk partitions and the MoE varies cold already, so recurrent capture now takes every 256-token-aligned range end; live results for the company-leaves case.
+- [Prefix cache hit rate: production analysis and levers](2026-09-26-prefix-cache-hit-rate-analysis.md) — 1.4–5.2% per-model hit rates with cache routing on at 100%; per-file epoch rotation, write churn, checkpoint geometry, credit-vs-load selection and the 40 QPS plan cap ranked as levers.
 - [App Attest post-swap authorization failures](2026-09-22-app-attest-postswap-grants.md) — signed assertion framing, archive-gap recovery, and the distinction between prospective policy and an active grant.
 - [App Attest recovery and snapshot investigation](2026-09-22-app-attest-recovery.md) — authenticated macOS framing, failed enrollment recovery, false-zero UI reproduction and distinct unresolved native assertion failures.
 

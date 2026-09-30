@@ -30,12 +30,13 @@ extension ProviderLoop {
         logger.info("Hardware: \(loopConfig.hardware.chipName), \(loopConfig.hardware.memoryGb) GB RAM, \(loopConfig.hardware.gpuCores) GPU cores")
         logger.info("Models: \(loopConfig.models.count) advertised")
         logger.info("Coordinator: \(loopConfig.coordinatorURL)")
+        let usesHostServices = serveUsesHostServices
 
         // Maintain the entire encrypted SSD-cache root even when no model is
         // loaded. This is metadata/file-only work: no weights or KV arrays are
         // constructed. It closes TTL and shared disk-budget gaps for unloaded dirs.
-        SSDPrefixCacheFactory.startWholeRootMaintenance()
-        defer { SSDPrefixCacheFactory.stopWholeRootMaintenance() }
+        if usesHostServices { SSDPrefixCacheFactory.startWholeRootMaintenance() }
+        defer { if usesHostServices { SSDPrefixCacheFactory.stopWholeRootMaintenance() } }
 
         // Keep the network stack alive during sleep for APN/MDM push delivery.
         networkAssertion.acquire()
@@ -59,13 +60,13 @@ extension ProviderLoop {
         // installs too. KeepAlive stays false to avoid racing the updater.
 
         // Surface any prior-run OOM and react to live memory pressure. Best-effort.
-        startMemoryProtection()
+        if usesHostServices { startMemoryProtection() }
         // On any controlled exit (return/throw — i.e. NOT a jetsam SIGKILL),
         // drop a memory-pressure marker so a survived pressure spike isn't
         // misreported as an OOM next launch. A real kill bypasses this.
         defer {
             memoryPressureMonitor?.cancel()
-            OOMDetector.clearMarker()
+            if usesHostServices { OOMDetector.clearMarker() }
         }
 
         // 1. Apply security hardening
@@ -145,9 +146,11 @@ extension ProviderLoop {
         // / no-GUI box gets nil and registers un-attested (fail-closed at routing).
         var apnsDeviceToken: String?
         #if os(macOS)
-        apnsDeviceToken = await APNsBridge.shared.awaitDeviceToken(timeoutSeconds: 10)
-        if apnsDeviceToken == nil {
-            logger.warning("no APNs device token — legacy code verification unavailable; awaiting coordinator authorization")
+        if usesHostServices {
+            apnsDeviceToken = await APNsBridge.shared.awaitDeviceToken(timeoutSeconds: 10)
+            if apnsDeviceToken == nil {
+                logger.warning("no APNs device token — legacy code verification unavailable; awaiting coordinator authorization")
+            }
         }
         #endif
 
@@ -214,30 +217,32 @@ extension ProviderLoop {
         // replying over THIS WebSocket. The app delegate delivers pushes via the
         // bridge; we hop into the actor to use K + the signer + this send handle.
         #if os(macOS)
-        let pushHistory = apnsPushHistory
-        APNsBridge.shared.trackDeviceToken(in: pushHistory)
-        APNsBridge.shared.setPushHandler { [weak self] userInfo in
-            // Receipt is recorded before any parsing or validation so doctor
-            // and `push_history` can tell "never delivered" from "not answered".
-            pushHistory.recordReceipt()
-            // Extract the Sendable EncryptedPayload synchronously here so the
-            // non-Sendable [String: Any] never crosses into the actor Task.
-            guard let self, let challenge = ProviderLoop.extractCodeChallenge(userInfo) else { return }
-            // Only a push-delivered challenge counts as a push reply; resume
-            // challenges arrive over the WebSocket through the same handler.
-            Task { await self.handleCodeChallenge(challenge, send: send, onWritten: { pushHistory.recordReply() }) }
-        }
+        if usesHostServices {
+            let pushHistory = apnsPushHistory
+            APNsBridge.shared.trackDeviceToken(in: pushHistory)
+            APNsBridge.shared.setPushHandler { [weak self] userInfo in
+                // Receipt is recorded before any parsing or validation so doctor
+                // and `push_history` can tell "never delivered" from "not answered".
+                pushHistory.recordReceipt()
+                // Extract the Sendable EncryptedPayload synchronously here so the
+                // non-Sendable [String: Any] never crosses into the actor Task.
+                guard let self, let challenge = ProviderLoop.extractCodeChallenge(userInfo) else { return }
+                // Only a push-delivered challenge counts as a push reply; resume
+                // challenges arrive over the WebSocket through the same handler.
+                Task { await self.handleCodeChallenge(challenge, send: send, onWritten: { pushHistory.recordReply() }) }
+            }
 
-        // If the device token wasn't ready at registration (APNs slow / GUI
-        // session still coming up), keep watching: when it arrives, reconnect so
-        // registration re-runs WITH the token. Otherwise the provider would stay
-        // un-attested (and unroutable under enforcement) until the process restarts.
-        if apnsDeviceToken == nil {
-            let log = logger
-            Task {
-                if let late = await APNsBridge.shared.awaitDeviceToken(timeoutSeconds: 60) {
-                    log.info("APNs device token arrived after registration — reconnecting to re-register with token")
-                    await self.refreshAPNsAfterDrain(late)
+            // If the device token wasn't ready at registration (APNs slow / GUI
+            // session still coming up), keep watching: when it arrives, reconnect so
+            // registration re-runs WITH the token. Otherwise the provider would stay
+            // un-attested (and unroutable under enforcement) until the process restarts.
+            if apnsDeviceToken == nil {
+                let log = logger
+                Task {
+                    if let late = await APNsBridge.shared.awaitDeviceToken(timeoutSeconds: 60) {
+                        log.info("APNs device token arrived after registration — reconnecting to re-register with token")
+                        await self.refreshAPNsAfterDrain(late)
+                    }
                 }
             }
         }

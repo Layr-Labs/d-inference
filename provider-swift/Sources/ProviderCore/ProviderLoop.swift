@@ -568,6 +568,12 @@ public actor ProviderLoop {
     /// `.serialized` only orders tests WITHIN a suite).
     internal var daemonStateFileOverride: URL?
 
+    /// Test seam: false keeps `run()` away from state this Mac shares with a
+    /// real provider: the OOM marker and scan watermark in `~/.darkbloom`,
+    /// the whole SSD prefix-cache root, and the process-wide APNs bridge
+    /// (its startup token wait is 10 seconds). Always true in production.
+    internal var serveUsesHostServices = true
+
     /// APNs code-identity push receipt/reply history beside the state file.
     internal var apnsPushHistory: APNsPushHistoryStore {
         APNsPushHistoryStore(directory: (daemonStateFileOverride ?? DaemonStateFile.path()).deletingLastPathComponent())

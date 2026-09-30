@@ -53,12 +53,13 @@ const (
 	// writing it. Measured (BenchmarkCacheDemandMemory, settled heap): 200 B
 	// per entry, which is the 43-byte base64url HMAC key, a list.Element, a
 	// boxed cacheDemandEntry and a map slot, so a full index is about 191 MiB.
-	cacheDemandMaxEntries                 = 1_000_000
-	cacheRoutingMaxAttempts               = 50_000
-	cacheRoutingMaxReceiptTokens          = 1_000_000
-	cacheRoutingMaxStageMs                = 10 * 60 * 1000.0
-	cacheRoutingMemoryTTL                 = 30 * time.Second
-	cacheRoutingMaxCheckpointReadyAnchors = 16
+	cacheDemandMaxEntries                        = 1_000_000
+	cacheRoutingMaxAttempts                      = 50_000
+	cacheRoutingMaxReceiptTokens                 = 1_000_000
+	cacheRoutingMaxStageMs                       = 10 * 60 * 1000.0
+	cacheRoutingMemoryTTL                        = 30 * time.Second
+	cacheRoutingMaxCheckpointReadyAnchors        = 16
+	cacheRoutingMaxAttemptBytes           uint64 = 64 << 20
 )
 
 type CachePlan struct {
@@ -130,6 +131,7 @@ type cacheHolder struct {
 }
 
 type cacheAttempt struct {
+	accountedBytes        uint64
 	RequestID             string
 	ProviderID            string
 	Provider              *Provider
@@ -326,6 +328,8 @@ type cacheRoutingTracker struct {
 	// bound rows re-enter through upsertHolderLocked so they are not re-marked.
 	persister           *cachepersist.Persister
 	restoring           bool
+	attemptBytes        uint64
+	maxAttemptBytes     uint64
 	holders             map[string]map[string]cacheHolder
 	attempts            map[string]cacheAttempt
 	holderOrder         cacheHolderOrderHeap
@@ -389,7 +393,8 @@ func newCacheRoutingTracker(ttl time.Duration, maxHolders int) *cacheRoutingTrac
 		generation: &cacheRoutingGeneration{},
 		demand:     newCacheDemandTracker(cacheDemandMaxEntries, ttl),
 		ttl:        ttl, maxHolders: maxHolders, maxEntries: cacheRoutingMaxEntries, maxAttempts: cacheRoutingMaxAttempts,
-		holders: make(map[string]map[string]cacheHolder), attempts: make(map[string]cacheAttempt),
+		maxAttemptBytes: cacheRoutingMaxAttemptBytes,
+		holders:         make(map[string]map[string]cacheHolder), attempts: make(map[string]cacheAttempt),
 		holderOrderByRef: make(map[cacheHolderRef]*cacheHolderOrderEntry), attemptOrderByNonce: make(map[string]*cacheAttemptOrderEntry),
 		holdersByProvider:  make(map[string]map[*cacheHolderOrderEntry]struct{}),
 		attemptsByProvider: make(map[string]map[*cacheAttemptOrderEntry]struct{}),

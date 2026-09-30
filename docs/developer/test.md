@@ -11,6 +11,19 @@ the docs lint locally; CI runs a subset per pull request (see the CI workflow
 map: the Gemma benchmark-wrapper tests run only locally). The e2e suite needs an Apple Silicon
 Mac with the test checkpoints cached.
 
+The registry's `TestCacheAttemptBudget*` tests cover logical byte charging,
+checked arithmetic, exact-edge admission, immutable replacement/refunds and
+detached tracker storage. `TestCacheAttemptTrackedHashBytesStayWithinLogicalBudget`
+uses 137 attempts with 3,906 valid boundaries each to distinguish byte-bounded
+admission from the old count-only tracker; it allocates no model or million-token
+prompt. Run these with `go test -race ./registry -run
+'^TestCacheAttempt(Budget|TrackedHash|Nonce)' -count=1` from
+`coordinator`, together with the existing cache preparation, ownership,
+capability-generation and accepted-write cutoff regressions. Byte refusal must
+remain nil-error cold inference, with no cache metadata or calibration exclusion.
+These are logical state/ownership tests, not physical-memory measurements,
+native SSD hit-rate benchmarks or hosted certification.
+
 The Nemotron coordinator-serving path uses typed SDK events. `OpenAIServiceTests`
 and `ToolCallParserIntegrationTests` in `libs/mlx-swift-lm/Tests/MLXLMServerTests`
 check SSE/collected reasoning, content, tool calls, usage and terminals without
@@ -704,6 +717,24 @@ source/dependency/binary/metallib/artifact tuple:
 ## App Attest validation
 
 The [App Attest shadow validation commands](../reference/app-attest-shadow.md#validation) cover cryptography, protocol symmetry, counter races, unchanged routing, and coexistence signing. Live macOS 27 acceptance remains separate.
+
+## Cache attempt ownership during model replacement
+
+Run the real Registry publication/accounting regression after changing model
+inventory or attempt retention:
+
+```bash
+go test -race ./coordinator/registry \
+  -run '^TestCacheModelSwitchPreservesOrRevokesPublishedOwnership$' -count=1
+```
+
+It first proves a durable holder and charged completed attempts, then exercises a
+settled model-list replacement. Validation-only must not mutate either state.
+An unchanged model/hash retains legitimate delayed publication. Removal or weight
+replacement refunds retained attempt ownership and removes holders. Re-adding
+the original model/capability must still reject the old nonce specifically as an
+unavailable attempt, not merely because a capability is absent. The gate has three
+scenario leaves and does not load a model or substitute for provider/API tests.
 
 ## Prerequisites
 

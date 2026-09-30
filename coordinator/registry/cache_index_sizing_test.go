@@ -303,6 +303,8 @@ func TestCacheAttemptSweepAndCapFollowExpiry(t *testing.T) {
 	tracker := newCacheRoutingTracker(time.Minute, defaultCacheRoutingMaxHolders)
 	tracker.maxAttempts = 2
 	base := time.Unix(1_700_000_000, 0)
+	now := func() time.Time { return base }
+	tracker.clock.Store(&now)
 	store := func(nonce string, after time.Duration) {
 		t.Helper()
 		created := base.Add(after)

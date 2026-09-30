@@ -712,7 +712,7 @@ func TestExactRoutingTrackerRemainsBoundedUnderConcurrency(t *testing.T) {
 					UpdatedAt:  now,
 					ExpiresAt:  now.Add(time.Minute),
 				})
-				tracker.storeAttemptLocked(nonce, cacheAttempt{
+				admitted := tracker.storeAttemptLocked(nonce, cacheAttempt{
 					RequestID:  fmt.Sprintf("request-%d-%d", worker, index),
 					ProviderID: fmt.Sprintf("provider-%d", worker),
 					CreatedAt:  now.Add(time.Duration(worker*200+index) * time.Nanosecond),
@@ -720,6 +720,10 @@ func TestExactRoutingTrackerRemainsBoundedUnderConcurrency(t *testing.T) {
 				})
 				tracker.enforceAttemptCapLocked()
 				tracker.mu.Unlock()
+				if !admitted {
+					t.Error("bounded concurrency fixture insertion refused")
+					return
+				}
 			}
 		}(worker)
 	}

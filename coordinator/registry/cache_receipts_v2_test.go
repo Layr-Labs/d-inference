@@ -33,7 +33,7 @@ func testV2Attempt(
 ) {
 	now := time.Now()
 	tracker.mu.Lock()
-	tracker.storeAttemptLocked(nonce, cacheAttempt{
+	admitted := tracker.storeAttemptLocked(nonce, cacheAttempt{
 		RequestID:  "request-" + nonce,
 		ProviderID: "provider",
 		Model:      capability.ModelID,
@@ -52,6 +52,9 @@ func testV2Attempt(
 		ExpectedBoundaries: map[int]string{prompt.TokenCount: prompt.ChainHash},
 	})
 	tracker.mu.Unlock()
+	if !admitted {
+		panic("fixture cache attempt admission refused")
+	}
 }
 
 func testV2Lookup(

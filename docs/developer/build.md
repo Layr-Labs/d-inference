@@ -890,3 +890,16 @@ secret and the trusted base checkout. Full PR scans read immutable Git blobs as
 data and batch complete changed-file text; they never build or execute PR code.
 Opus 5.5 and GPT-6 Astra use the same OpenRouter key for independent full scans;
 their attributed findings are combined into one advisory comment.
+
+## Stripe migration maintenance
+
+Build the audit/repair binary with `go build -o /tmp/payout-audit ./coordinator/cmd/payout-audit`.
+It uses the configured database without running migrations and defaults to read-only
+bounded output. Applying a refund requires an exact withdrawal ID, expected amount
+and an operator-verified Stripe request. See [the cutover runbook](../operations/stripe-migration.md).
+
+Exercise the API, funding and settlement contracts with
+`go test ./coordinator/api ./coordinator/billing/... ./coordinator/store ./coordinator/cmd/payout-audit`.
+Set `DATABASE_URL` to a disposable local PostgreSQL database to run transaction,
+concurrency and rollback coverage. Never point tests at production. Console
+migration coverage runs with `npm test` in `console-ui`.

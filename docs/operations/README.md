@@ -1,6 +1,6 @@
 # Operations runbooks
 
-> Last updated: 2026-09-28
+> Last updated: 2026-09-30
 
 Procedures for deploying, migrating, and operating Darkbloom production
 infrastructure. Every runbook has the same shape — when to use, prerequisites,
@@ -46,3 +46,5 @@ Provider CLI releases register a release with the production coordinator and
 follow both rules: [`provider-release.md`](provider-release.md).
 
 - [App Attest recovery rollout](app-attest-rollout.md) — fixed-provider cohorts, receipt recovery, qualification and gates for later MDM retirement.
+
+- [Stripe account migration](stripe-migration.md) — activate self-service Global Payouts, retain old settlement and move Checkout.

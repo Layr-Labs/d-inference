@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — self-service bank payout migration
+
+- Add an explicit Global Payouts cutover for all supported bank destinations. Existing Connect users complete their own bank setup; history, earned balances and legacy account references are retained. US bank setup uses local transfers.
+- Separate legacy Connect credentials and connected-account webhook verification from Checkout. Current and legacy Checkout events settle atomically without duplicate deposits.
+- Recover verified rejected-transfer refunds atomically, require exact Stripe payout evidence during cutover, and check financial-account funding plus fees before new payout debits. Add a bounded audit tool and explicit, operator-verified historical refund repair.
+
 ## Release candidate v0.9.13 — MiMo memory admission (not shipped)
 
 - Accept bounded AAC audio in MP4/MOV and mono/stereo PCM8/16/24/32 and Float32 WAV input from 8–192 kHz for MiMo audio. Preserve sample rate and channels for the native resampler, reserve all decoded/resampled samples, and qualify the authenticated path with the genuine audio codec before release.

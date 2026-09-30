@@ -523,6 +523,7 @@ func TestDeadlineUnreachableStopsAfterTwoWithoutFreshEvidence(t *testing.T) {
 func postGenericInference(
 	ctx context.Context,
 	baseURL, endpoint, body string,
+	route ...string,
 ) (int, string, error) {
 	req, err := http.NewRequestWithContext(
 		ctx, http.MethodPost, baseURL+endpoint, strings.NewReader(body))
@@ -531,6 +532,9 @@ func postGenericInference(
 	}
 	req.Header.Set("Authorization", "Bearer test-key")
 	req.Header.Set("Content-Type", "application/json")
+	if len(route) > 0 {
+		req.Header.Set("X-Darkbloom-Route", route[0])
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return 0, "", err

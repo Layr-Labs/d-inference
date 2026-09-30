@@ -179,7 +179,9 @@ async fn preload_failure_gates_plans_until_active_set_recovers() {
     let missing = "f".repeat(64);
 
     let failed = planner
-        .preload_contracts(vec![fixture.contract_id.clone(), missing])
+        // All-failed replacement remains globally closed. A separate partial
+        // readiness regression covers a healthy member beside a failed member.
+        .preload_contracts(vec![missing])
         .await
         .unwrap();
     assert!(!failed.ready);

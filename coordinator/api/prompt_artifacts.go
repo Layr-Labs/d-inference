@@ -2,7 +2,6 @@ package api
 
 import (
 	"github.com/eigeninference/d-inference/coordinator/api/promptwork"
-
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )

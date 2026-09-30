@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-09-29
+> Last updated: 2026-09-30
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -131,6 +131,38 @@ lists every name).
 | `routing.unservable_reclassified`, `routing.first_chunk_timeout_reclassified`, `routing.client_error_passthrough`, `routing.oversized_request_rejected`, `routing.deadline_unreachable_rejected`, `routing.invalid_ttft`, `routing.dispatch_client_error_stop`, `routing.first_chunk_timeout_ladder_capped`, `routing.hedge_governor_suppressed`, `routing.pending_load_backoff`, `routing.scan_admission_timeout`, `routing.ttft_admission`, `routing.ttft_spread`, `routing.provider_selected`, `routing.load_model_rejects` | count | mostly `model` | routing edge cases |
 | `http.requests` (count), `http.latency_ms` (histogram) | — | `method`, `path`, `status_code` | every HTTP request (`loggingMiddleware`, `coordinator/api/server.go`) |
 
+### Optional cache-planning decisions
+
+`coordinator/api/cache_planning.go` (`planCacheRoute`) records one decision after
+successful inference preflight across the four inference endpoints. This includes
+early dependency/artifact/preload refusals and generic native-forward lowering
+fallback. It excludes requests rejected before that point. Queueing, retries and
+hedges retain that decision rather than adding another sample per attempt.
+
+| Admin metric | Datadog name, before the configured prefix | Labels | Meaning |
+|---|---|---|---|
+| `exact_cache_planning_decision_total` | `exact_cache.planning_decision` | `reason` | One post-preflight optional-planning decision, not an HTTP-arrival, provider-attempt, Rust-execution or cache-hit count |
+| `exact_cache_planning_decision_latency_ms` | `exact_cache.planning_decision_latency_ms` | `reason` | Nonnegative helper elapsed milliseconds, including early refusals; not consumer TTFT or only sidecar execution time |
+
+The closed reasons, in prerequisite order, are `lowering_unsupported`,
+`dependencies_unavailable`, `artifact_missing`, `artifact_failed` or
+`artifact_pending`, `artifact_invalid`, and `preload_not_ready`. Once those gates
+pass, the Registry supplies `off`, `ineligible`, `sampled_out`, `throttled`,
+`cold_only`, `sidecar_error`, `no_boundaries`, `invalid_plan` or `planned`;
+unrecognized future results map to `unknown_outcome` only in this new metric.
+`lowering_unsupported` describes the generic native-forward fallback, not every
+normalization rejection before preflight. Error text, artifact paths, accounts,
+scopes, hashes, aliases and request IDs never become reason labels
+(`coordinator/api/cache_planning_telemetry.go`).
+
+Existing populations are unchanged: `exact_cache_plan_total` records every
+Registry-planner result, while `exact_cache_plan_latency_ms` records only results
+with `SidecarCalled=true`. Off/ineligible/sampled-out/throttled decisions can
+increment the former without a sidecar latency sample. `SidecarCalled`
+means the Go client was invoked; an expired or refused client call can submit
+no Unix-socket request. Do not treat the broader new denominator as a historical
+hit-rate improvement or regression. Public cache-status JSON is unchanged.
+
 ### Cache results by model (internal)
 
 `coordinator/api/cache_model_telemetry.go` emits the following Datadog counters
@@ -145,6 +177,8 @@ and the public cache status retain their aggregate-only contract.
 
 | Suffix | Labels besides `model` | Population / interpretation |
 |---|---|---|
+| `planning_decision` | `reason` | Same post-preflight population and closed reasons as the aggregate planning-decision metric. The existing catalog-bounded model label is captured once at helper entry, not taken from the caller alias. |
+| `planning_decision_latency_us`, `planning_decision_latency_samples` | `reason` | Helper latency sum in rounded microseconds and sample count for the same decisions, including early refusals; not total request TTFT. |
 | `usage` | `outcome`, `tier` | Completion terminals with retained pending/parked ownership, at the same seam as aggregate cache usage. Outcome is `hit`, `miss_absent`, `miss_corrupt`, `skipped_capacity`, `skipped_cost`, `skipped_policy`, `invalid` or `unreported`. `invalid`/`unreported` use tier `none`; they are coverage gaps, not misses. Duplicate and unknown terminals do not count. |
 | `cached_tokens`, `prefill_tokens_saved` | `tier` | Validated provider-reported token totals. Cached tokens may exceed saved prefill tokens when replay is required. Neither count requires an accepted routing proof. |
 | `provider_stage_us`, `provider_stage_samples` | `outcome`, `tier` | Sum of provider-reported staging microseconds (rounded per sample) and sample count for valid usage. Divide to obtain mean stage time. This is overhead, not time saved. |
@@ -162,6 +196,12 @@ and the public cache status retain their aggregate-only contract.
 Timing sums/sample counters work with both HTTPS and DogStatsD. The admin
 registry additionally exposes `cache_model_provider_stage_ms` and
 `cache_model_ttft_ms` and `cache_model_estimated_ttft_saved_ms` histograms with the corresponding labels.
+`coordinator/api/cache_planning_telemetry.go` uses the same counter/timing helpers;
+its admin histogram is `cache_model_planning_decision_latency_ms{model,reason}`.
+Its Datadog model names are `routing.cache_model.planning_decision`,
+`routing.cache_model.planning_decision_latency_us` and
+`routing.cache_model.planning_decision_latency_samples`; no per-model Datadog
+latency histogram is added by these helpers.
 Admin `cache_model_usage_prefill_saved_percent` and
 `cache_model_selection_prefill_saved_percent` histograms report per-request
 percentages; use same-label summed counters for token-weighted coverage.

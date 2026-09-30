@@ -204,9 +204,9 @@ func (p *Provisioner) Counts() ProvisionCounts {
 }
 
 // Snapshot returns the current catalog generation and the sorted, deduplicated
-// set of contracts whose artifacts are fully verified. A caller must require
-// Pending==0 and Failed==0 before treating ContractIDs as the active preload
-// set; partial readiness is never enough to open cache routing.
+// set of contracts whose artifacts are fully verified. Unrelated pending or
+// failed models are not members. Runtime participation additionally requires
+// current-generation, per-contract preload acknowledgement.
 func (p *Provisioner) Snapshot() ProvisionSnapshot {
 	if p == nil {
 		return ProvisionSnapshot{}

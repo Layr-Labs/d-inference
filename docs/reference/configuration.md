@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-29
+> Last updated: 2026-09-30
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -542,7 +542,8 @@ provider or model command is running. Code:
 
 These controls affect the dedicated [native MiMo path](../architecture/inference.md#native-mimo-v26-candidate).
 They do not add a catalog entry, bypass the advertised-model allowlist, grant
-media/audio capabilities or qualify a performance route. None of the
+media/audio capabilities or qualify a performance route. Except for the
+`DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY` rollback, none of the
 `DARKBLOOM_MIMO_*` names below is a LaunchAgent passthrough entry; install
 process-scoped settings before first use and restart for latched kernel flags.
 
@@ -552,7 +553,7 @@ process-scoped settings before first use and restart for latched kernel flags.
 | `DARKBLOOM_MIMO_RECTANGULAR_VERIFY` | exact `1` | off; serial target when MTP is enabled | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift` (`nativeMiMoVerificationMode`); does not itself enable MTP and remains subject to exact greedy/state qualification |
 | `DARKBLOOM_MIMO_RECTANGULAR_SCALAR_DENSE` | exact `1` | off | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26RectangularDense.swift` (`enabledByEnvironment`); separately charged scalar-shape projections only in genuine admitted rectangular verification; full target/head-state qualification remains required |
 | `DARKBLOOM_MIMO_NATIVE_PAGED_TARGET` | exact `1` with an explicit paged backend | off | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift`; separately issued asymmetric target-only or explicit serial-MTP paging, including authenticated complete-prefix composition; rectangular verification and managed media remain refused in this profile |
-| `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY` | exact `1` | off | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26WiredResidency.swift` (`isEnabled`, `Bounds`, `Policy`); shared-manager, owned-lifetime acceleration only, never load admission or physical-page coverage proof |
+| `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY` | rollback: trimmed, case-insensitive `0`, `false`, `no`, `off` | on (standing residency for the native weight payload, bounded by the safe ceiling) | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26WiredResidency.swift` (`isEnabled`, `Bounds`, `Policy`); shared-manager, owned-lifetime acceleration only, never load admission or physical-page coverage proof. Without it a 256 GiB M3 Ultra measured ~0.4 tok/s decode versus ~38 tok/s. Forwarded to the launchd provider job so the rollback reaches installed providers |
 | `DARKBLOOM_MIMO_COMPLETE_PREFIX` | exact `1` AND existing model-scoped prefix-cache policy enabled | off | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/EngineV2SlotFactory+MiMoPrefix.swift` (`nativeMiMoPrefixRefusal`); text-only contiguous or issued paged COMPLETE checkpoints, exact store/process/loaded-owner binding; media requests keep an honest prefix miss |
 
 Only NAX attention and admitted block grouping below default on; the other

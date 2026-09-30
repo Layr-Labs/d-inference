@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-09-28
+> Last updated: 2026-09-30
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -43,7 +43,10 @@ whole-process peak residency. The configured native context is not replaced by
 a smaller benchmark input bound.
 
 The existing load cap, operator reserve, activation reserve, KV allowance and
-live OS-headroom checks remain decisive. The optional standing-residency policy
+live OS-headroom checks remain decisive. The default standing-residency policy
+(rollback: `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY=0`) keeps the native weight
+payload resident; without it the driver re-wires the expert tensors per command
+buffer under memory pressure and decode collapses on a 256 GiB host. It
 uses the shared MLX manager and computes its group ceiling after allowing the
 larger of 16 GiB or 10% of physical RAM for unwired system use. It does not lower
 a pre-existing manager baseline or cap other policy groups, so this is not a

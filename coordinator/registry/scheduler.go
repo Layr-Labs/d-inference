@@ -2206,11 +2206,12 @@ func healthPenaltyMs(m protocol.SystemMetrics, gpuActiveGB, totalMemGB float64) 
 // resolveEffectiveTPS returns the best available decode TPS estimate.
 // Qualified curves use their measured conservative width point; unmatched
 // configurations fall back through observed EWMA, fleet median and benchmark.
+// Long-idle providers cannot remain pinned to a dated stale observation.
 func resolveEffectiveTPS(snap *routingSnapshot) float64 {
 	if point, ok := snap.performanceProfile.batchAt(max(1, snapshotOccupancy(snap)+1)); ok {
 		return point.DecodeP10TPS
 	}
-	if snap.observedDecodeTPS > 0 {
+	if snap.observedDecodeTPS > 0 && !staleIdleDecodeMeasurement(snap) {
 		return snap.observedDecodeTPS
 	}
 	if snap.fleetMedianTPS > 0 {

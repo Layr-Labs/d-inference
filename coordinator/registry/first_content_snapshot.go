@@ -9,11 +9,14 @@ import "time"
 func (r *Registry) fillFirstContentSnapshot(s *routingSnapshot, p *Provider, now time.Time) {
 	s.capacityAcceptedAt, s.capacitySeq = p.CapacityAcceptedAt, p.capacitySeq
 	s.transportMs, s.conservativeTransportMs, s.transportAgeMs = transportForecast(p.transport, now)
-	s.capacityAgeMs, s.performanceAgeMs = -1, -1
+	s.capacityAgeMs, s.performanceAgeMs, s.decodePerformanceAgeMs = -1, -1, -1
 	s.contendedPerformanceAgeMs = -1
 	s.promptWorkArtifactHash, s.promptWorkContractID = providerPromptWorkIdentityLocked(p, s.model)
 	if !p.CapacityAcceptedAt.IsZero() {
 		s.capacityAgeMs = heartbeatAgeMs(now, p.CapacityAcceptedAt)
+	}
+	if sample, ok := p.firstContentMeasurements[s.model]; ok && !sample.decodeObservedAfter.IsZero() {
+		s.decodePerformanceAgeMs = heartbeatAgeMs(now, sample.decodeObservedAfter)
 	}
 	if sample, ok := p.firstContentMeasurements[s.model]; ok && !sample.observedAfter.IsZero() && !sample.decodeObservedAfter.IsZero() {
 		s.performanceAgeMs = max(heartbeatAgeMs(now, sample.observedAfter), heartbeatAgeMs(now, sample.decodeObservedAfter))

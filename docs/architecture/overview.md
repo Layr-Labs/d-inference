@@ -1,6 +1,6 @@
 # System overview — how a Darkbloom request works
 
-> Last updated: 2026-09-21 · commit `ce809b792`
+> Last updated: 2026-09-27
 
 Darkbloom sells inference on other people's Apple Silicon Macs. A Go
 **coordinator** accepts OpenAI- and Anthropic-shaped HTTP requests, picks an
@@ -171,8 +171,8 @@ consumer routing to a provider it owns (self-route) pays nothing.
    `coordinator/api/server.go`) equals `ProviderCore.version`; the test
    `coordinator/api/provider_version_sync_test.go` enforces it.
 7. Telemetry wire types are mirrored in Go, Swift, and TypeScript and pinned by
-   symmetry tests; the ingestion allowlist never admits prompt or completion
-   text ([`telemetry.md`](telemetry.md)).
+   symmetry tests; the coordinator ingests no client telemetry, so no telemetry
+   path carries prompt or completion text ([`telemetry.md`](telemetry.md)).
 8. Production persistence is Postgres; the coordinator refuses to start
    without `EIGENINFERENCE_DATABASE_URL` unless
    `EIGENINFERENCE_ALLOW_MEMORY_STORE=true` (`coordinator/cmd/coordinator/main.go`).

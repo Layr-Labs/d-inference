@@ -553,6 +553,13 @@ func (r *Registry) effectiveMaxConcurrencyForModelResolvedLocked(p *Provider, mo
 // Caller holds r.mu and p.mu.
 func (r *Registry) effectiveMaxConcurrencyForModelRateLocked(p *Provider, model string, rate soloModelTPS) int {
 	base := p.maxConcurrencyForModelLocked(model)
+	if profile := qualifiedPerformanceProfileLocked(p, model); profile != nil {
+		floor := 0.0
+		if r.qualityCapEnabled {
+			floor = r.qualityCapFloorTPS
+		}
+		return profile.concurrencyForDecodeFloor(base, floor)
+	}
 	if !r.qualityCapEnabled {
 		return base
 	}
@@ -596,5 +603,5 @@ func (r *Registry) effectiveMaxConcurrencyForModelRateLocked(p *Provider, model 
 // Caller holds r.mu and p.mu.
 func (r *Registry) hasConcurrencyHeadroomForModelCapResolvedLocked(p *Provider, model string) bool {
 	return p.pendingLoadForModelLocked(model) < r.effectiveMaxConcurrencyForModelResolvedLocked(p, model) &&
-		p.pendingCount() < p.maxConcurrency()
+		p.pendingCount() < p.maxConcurrency() && p.hasWholeMacServiceHeadroomLocked(model)
 }

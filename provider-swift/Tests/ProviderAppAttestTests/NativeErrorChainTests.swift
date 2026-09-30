@@ -91,14 +91,16 @@ final class NativeErrorChainTests: XCTestCase {
         let publicKey = Data(repeating: 3, count: 32).base64EncodedString()
         func request(_ action: String, key: String? = nil) -> AppAttestShadowPayload {
             var p = AppAttestShadowPayload(action: action, session: session)
+            p.protocolVersion = 3; p.accountScope = String(repeating: "a", count: 64)
             p.environment = "production"; p.keyID = key
             if action != "prepare" { p.challenge = Data(repeating: 2, count: 32).base64EncodedString() }
             return p
         }
+        let proofStatus = AppAttestStatus(osVersion: "27.0.0", osBuild: "test", appVersion: "0.9.10", chip: "test", binaryHash: String(repeating: "b", count: 64))
         let ready = await client.respond(to: request("prepare"), publicKey: publicKey)
         XCTAssertNil(ready.nativeErrorChain)
-        _ = await client.respond(to: request("attest", key: ready.keyID), publicKey: publicKey)
-        let failed = await client.respond(to: request("assert", key: ready.keyID), publicKey: publicKey)
+        _ = await client.respond(to: request("attest", key: ready.keyID), publicKey: publicKey, status: proofStatus)
+        let failed = await client.respond(to: request("assert", key: ready.keyID), publicKey: publicKey, status: proofStatus)
         XCTAssertEqual(failed.result, "apple_error")
         XCTAssertEqual(failed.nativeErrorChain?.map(\.domain), [.devicecheck, .cryptotokenkit, .aks])
         XCTAssertEqual(failed.appleError?.underlyingDomain, "other")

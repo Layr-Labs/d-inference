@@ -85,7 +85,7 @@ func (s Suite) newORModelFixture(t *testing.T, holds bool, model, alias string) 
 		if err := st.PromoteModelVersion(id, "v1"); err != nil {
 			t.Fatal(err)
 		}
-		if err := st.SetModelPrice("platform", id, 50_000, 200_000); err != nil {
+		if err := st.SetModelPrice(store.ModelPrice{AccountID: "platform", Model: id, InputPrice: 50_000, OutputPrice: 200_000}); err != nil {
 			t.Fatal(err)
 		}
 	}

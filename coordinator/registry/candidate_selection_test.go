@@ -51,68 +51,56 @@ func BenchmarkSelectRoutingCandidate(b *testing.B) {
 // every permitted winner rather than requiring a particular random draw.
 func TestSelectRoutingCandidateMatchesRankingPolicy(t *testing.T) {
 	rng := rand.New(rand.NewSource(82427))
-	for trial := 0; trial < 1000; trial++ {
+	for trial := 0; trial < 2000; trial++ {
 		pool := make([]*routingCandidate, 1+rng.Intn(25))
 		for i := range pool {
-			discount := 0.0
-			if rng.Intn(4) == 0 {
-				discount = 500
-			}
-			pool[i] = mkCandidate(fmt.Sprint(i), float64(rng.Intn(20)*500), rng.Intn(4), rng.Intn(4), discount)
+			discount := float64(rng.Intn(4) * 100)
+			pool[i] = mkCandidate(fmt.Sprint(i), float64(rng.Intn(20)*25), rng.Intn(4), rng.Intn(4), discount)
+			pool[i].cacheEvidenceWeight = float64(1+rng.Intn(4)) / 4
+			// Legacy generation/max-token costs must never become the primary
+			// ranking quantity again.
+			pool[i].costMs = float64(rng.Intn(100000))
 		}
 		original := slices.Clone(pool)
-		near := slices.Clone(pool)
-		slices.SortStableFunc(near, func(a, b *routingCandidate) int {
-			if a.costMs < b.costMs {
+		ordered := slices.Clone(pool)
+		slices.SortStableFunc(ordered, func(a, b *routingCandidate) int {
+			if a.firstContent.ExpectedMs < b.firstContent.ExpectedMs {
 				return -1
 			}
-			if a.costMs > b.costMs {
+			if a.firstContent.ExpectedMs > b.firstContent.ExpectedMs {
 				return 1
 			}
 			return 0
 		})
-		minimum := near[0].costMs
-		window := nearTieCostWindowMs
-		if slices.ContainsFunc(pool, func(c *routingCandidate) bool { return c.breakdown.CacheDiscountMs > 0 }) {
-			window = 0
+		near := slices.DeleteFunc(slices.Clone(ordered), func(c *routingCandidate) bool {
+			return c.firstContent.ExpectedMs > ordered[0].firstContent.ExpectedMs+100
+		})
+		leastWork := near[0].firstContent.ServiceMs
+		for _, c := range near {
+			leastWork = min(leastWork, c.firstContent.ServiceMs)
 		}
-		near = slices.DeleteFunc(near, func(c *routingCandidate) bool {
-			return c.costMs > minimum+window
-		})
-		slices.SortStableFunc(near, func(a, b *routingCandidate) int {
-			if a.effectiveQueue != b.effectiveQueue {
-				return a.effectiveQueue - b.effectiveQueue
+		choices := slices.DeleteFunc(slices.Clone(near), func(c *routingCandidate) bool { return c.firstContent.ServiceMs != leastWork })
+		credited := slices.DeleteFunc(slices.Clone(choices), func(c *routingCandidate) bool { return c.firstContent.CachedTokens <= 0 })
+		if len(credited) > 0 {
+			weight := 0.0
+			for _, c := range credited {
+				weight = max(weight, c.cacheEvidenceWeight)
 			}
-			return a.snapshot.totalPending - b.snapshot.totalPending
-		})
-		equivalent := slices.Clone(near)
-		queue, pending := near[0].effectiveQueue, near[0].snapshot.totalPending
-		equivalent = slices.DeleteFunc(equivalent, func(c *routingCandidate) bool {
-			return c.effectiveQueue != queue || c.snapshot.totalPending != pending
-		})
-		choices := equivalent
-		wantPath := SelectionUniqueMin
-		switch {
-		case len(choices) > 1:
-			wantPath = SelectionRandom
-		case len(near) > 1:
-			wantPath = SelectionTieQueue
-			if slices.ContainsFunc(near, func(c *routingCandidate) bool { return c != choices[0] && c.effectiveQueue == queue }) {
-				wantPath = SelectionTiePending
+			choices = slices.DeleteFunc(credited, func(c *routingCandidate) bool { return c.cacheEvidenceWeight != weight })
+		}
+		winner, runnerUp, nearSize, _ := selectRoutingCandidate(pool)
+		if !slices.Contains(choices, winner) || nearSize != len(near) {
+			t.Fatalf("trial %d: winner outside allowed fast/work/affinity set", trial)
+		}
+		var expectedRunner *routingCandidate
+		for _, c := range ordered {
+			if c != winner {
+				expectedRunner = c
+				break
 			}
 		}
-		winner, runnerUp, nearSize, path := selectRoutingCandidate(pool)
-		if !slices.Contains(choices, winner) || nearSize != len(near) || path != wantPath {
-			t.Fatalf("trial %d: winner=%v near=%d path=%s; want one of %v near=%d path=%s", trial, winner, nearSize, path, choices, len(near), wantPath)
-		}
-		var wantRunnerUp *routingCandidate
-		for _, c := range pool {
-			if c != winner && (wantRunnerUp == nil || c.costMs < wantRunnerUp.costMs) {
-				wantRunnerUp = c
-			}
-		}
-		if runnerUp != wantRunnerUp || !slices.Equal(pool, original) {
-			t.Fatalf("trial %d: incorrect runner-up or mutated candidate pool", trial)
+		if runnerUp != expectedRunner || !slices.Equal(pool, original) {
+			t.Fatalf("trial %d: wrong runner-up or mutated pool", trial)
 		}
 	}
 }

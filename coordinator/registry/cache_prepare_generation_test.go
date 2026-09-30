@@ -16,9 +16,10 @@ func generationTestConfig(mode string) CacheRoutingConfig {
 
 func assertOrdinaryCacheFrame(t *testing.T, snapshot CacheAttemptSnapshot) {
 	t.Helper()
-	message := protocol.InferenceRequestMessage{CacheReceiptNonce: "old", CacheScope: "old", PrefixCacheProtocol: 2, CacheReceiptBoundaryMode: "old"}
+	staleRepeat := 512
+	message := protocol.InferenceRequestMessage{CacheReceiptNonce: "old", CacheScope: "old", PrefixCacheProtocol: 2, CacheReceiptBoundaryMode: "old", CacheRepeatedPrefixTokens: &staleRepeat}
 	snapshot.ApplyTo(&message)
-	if message.CacheReceiptNonce != "" || message.CacheScope != "" || message.PrefixCacheProtocol != 0 || message.CacheReceiptBoundaryMode != "" {
+	if message.CacheReceiptNonce != "" || message.CacheScope != "" || message.PrefixCacheProtocol != 0 || message.CacheReceiptBoundaryMode != "" || message.CacheRepeatedPrefixTokens != nil {
 		t.Fatalf("revoked attempt leaked cache metadata: %+v", message)
 	}
 }

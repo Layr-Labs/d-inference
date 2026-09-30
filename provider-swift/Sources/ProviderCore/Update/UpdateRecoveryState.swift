@@ -23,9 +23,12 @@ public struct InstalledReleaseRecord: Codable, Sendable, Equatable {
 }
 
 public struct VerifiedPredecessor: Codable, Sendable, Equatable {
+    /// Install layout of the recorded tree. Only the signed `Darkbloom.app`
+    /// layout is installable; the field stays in the persisted manifest (and
+    /// the transaction journal) so a rolled-back predecessor binary can still
+    /// decode state this release wrote.
     public enum Layout: String, Codable, Sendable {
         case app
-        case flat
     }
 
     public var release: InstalledReleaseRecord

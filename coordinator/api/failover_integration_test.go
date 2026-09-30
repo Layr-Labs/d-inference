@@ -12,8 +12,8 @@ package api
 //     content-bearing chunk results in a transparent retry on another
 //     provider — invisible to the consumer (200, clean stream, one [DONE]).
 //     In-band SSE errors are surfaced ONLY after content has flowed.
-//   - [WS-R] Inference-error cooldown, tools version floors, and the
-//     template_render_ok routing gate (see failover_routing_integration_test.go).
+//   - [WS-R] Inference-error cooldown and the template_render_ok routing
+//     gate (see failover_routing_integration_test.go).
 //   - [WS-T] Tool-schema normalization reaching the provider (see
 //     failover_routing_integration_test.go).
 //
@@ -105,6 +105,7 @@ type failoverProvider struct {
 	privKey         [32]byte
 	registryID      string
 	script          inferenceScript
+	quoteScript     func(context.Context, *failoverProvider, protocol.CapacityProbeMessage)
 	dispatches      atomic.Int32
 	bodies          chan []byte
 	done            chan struct{}
@@ -119,6 +120,7 @@ type failoverProviderConfig struct {
 	DecodeTPS       float64
 	Models          []failoverModelSpec
 	Script          inferenceScript
+	QuoteScript     func(context.Context, *failoverProvider, protocol.CapacityProbeMessage)
 	AppAttestFrames chan protocol.AppAttestShadowPayload
 }
 
@@ -217,6 +219,7 @@ func startFailoverProvider(t *testing.T, ctx context.Context, ts *httptest.Serve
 		privKey:         keypair.private,
 		registryID:      registryID,
 		script:          cfg.Script,
+		quoteScript:     cfg.QuoteScript,
 		bodies:          make(chan []byte, 8),
 		done:            make(chan struct{}),
 		appAttestFrames: cfg.AppAttestFrames,
@@ -257,6 +260,11 @@ func (fp *failoverProvider) run(ctx context.Context) {
 			resp := makeValidChallengeResponse(data, fp.pubKey)
 			if err := fp.conn.Write(ctx, websocket.MessageText, resp); err != nil {
 				return
+			}
+		case protocol.TypeCapacityProbe:
+			var probe protocol.CapacityProbeMessage
+			if fp.quoteScript != nil && json.Unmarshal(data, &probe) == nil {
+				fp.quoteScript(ctx, fp, probe)
 			}
 		case protocol.TypeInferenceRequest:
 			var req protocol.InferenceRequestMessage
@@ -403,11 +411,12 @@ func testFailureClassification(errMsg string, statusCode int) (protocol.Inferenc
 		return protocol.FailureCodeCapacity, errorReasonQueueFull
 	case statusCode == http.StatusTooManyRequests || statusCode == http.StatusServiceUnavailable:
 		return protocol.FailureCodeCapacity, errorReasonCapacityBusy
+	case statusCode == http.StatusBadRequest:
+		// A deterministic request-shape rejection. The raw text is still
+		// discarded by the production sanitizer.
+		return protocol.FailureCodeInvalidRequest, ""
 	default:
-		// Keep generic historical fixtures legacy-shaped. Their raw text is still
-		// discarded by the production sanitizer; bounded status supplies only the
-		// rolling-upgrade behavior under test.
-		return "", ""
+		return protocol.FailureCodeGenerationFailure, ""
 	}
 }
 

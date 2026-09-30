@@ -15,12 +15,19 @@ const SLOT_TAG: Record<string, { label: string; cls: string }> = {
 };
 
 export function ModelsStrip({ provider }: { provider: MyProvider }) {
-  // Prefer the reported warm set; fall back to the single current model.
-  const warm = provider.warm_models?.length
-    ? provider.warm_models
-    : provider.current_model
-      ? [provider.current_model]
-      : [];
+  // Backend slots are authoritative when present. Warm/current fields are
+  // compatibility fallbacks only for providers without a capacity snapshot.
+  let warm: string[] = [];
+  if (provider.backend_capacity) {
+    warm = provider.backend_capacity.slots
+      .filter((slot) => slot.state === "idle" || slot.state === "running"
+        || slot.state === "crashed" || slot.state === "reloading")
+      .map((slot) => slot.model);
+  } else if (provider.warm_models?.length) {
+    warm = provider.warm_models;
+  } else if (provider.current_model) {
+    warm = [provider.current_model];
+  }
 
   // Map model id -> backend slot state so we can tag cold/crashed/reloading.
   const slotState = new Map<string, string>();
@@ -53,8 +60,10 @@ export function ModelsStrip({ provider }: { provider: MyProvider }) {
           <p className="text-[10px] uppercase tracking-wider text-text-tertiary">Loaded</p>
           <div className="flex flex-wrap gap-1.5">
             {warm.map((m) => {
-              const active = m === provider.current_model;
-              const tag = SLOT_TAG[slotState.get(m) ?? ""];
+              const state = slotState.get(m);
+              const active = m === provider.current_model &&
+                (!provider.backend_capacity || state === "idle" || state === "running");
+              const tag = SLOT_TAG[state ?? ""];
               return (
                 <span
                   key={m}

@@ -22,7 +22,7 @@ func (x *Session) updateServingAuthorization(status *protocol.AppAttestStatus, e
 		x.lastOutcome = last
 	}()
 	a := x.s.authorizer
-	if a == nil || status == nil || x.protocolVersion != 3 {
+	if a == nil || status == nil {
 		return
 	}
 	current, revoked := x.s.registry.RecordVerifiedAppAttestPresenter(x.provider,
@@ -226,7 +226,7 @@ func confirmedAppAttestPolicyViolation(verdict appattest.AuthorizationVerdict) b
 }
 
 func (s *Service) appAttestIdentityCandidate(r *protocol.RegisterMessage, account string) bool {
-	return s.NeedsIdentityAccount(r) && appAttestAccountRolloutDecision(r.Version, account, s.config.RolloutPercent) == "enabled"
+	return s.NeedsIdentityAccount(r) && appAttestAccountRolloutDecision(account, s.config.RolloutPercent) == "enabled"
 }
 
 // NeedsIdentityAccount is only the structural prerequisite for an early token
@@ -234,8 +234,7 @@ func (s *Service) appAttestIdentityCandidate(r *protocol.RegisterMessage, accoun
 // Legacy-only registrations can retain their post-attestation token lookup.
 func (s *Service) NeedsIdentityAccount(r *protocol.RegisterMessage) bool {
 	return s.config.ServingEnabled && s.config.Environment == "production" && r != nil && r.AppAttestProtocol == 3 &&
-		s.config.RolloutPercent > 0 && s.config.RolloutPercent <= 100 && appAttestCandidateOSSupported(r) &&
-		appAttestProviderVersionSafe(r.Version)
+		s.config.RolloutPercent > 0 && s.config.RolloutPercent <= 100 && appAttestCandidateOSSupported(r)
 }
 
 // A protocol-v3 build also runs on older macOS. An explicit older OS report

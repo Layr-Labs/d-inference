@@ -17,6 +17,7 @@ func TestPrimaryFailureThenBackupErrorKeepsRecordedAttempts(t *testing.T) {
 		Error:       "primary failed",
 		ErrorReason: "primary_failure",
 		StatusCode:  http.StatusInternalServerError,
+		FailureCode: protocol.FailureCodeGenerationFailure,
 	}
 	d.updateSpeculativeFailure(primaryPR, primaryFailure)
 
@@ -40,6 +41,7 @@ func TestPrimaryFailureThenBackupTimeoutKeepsRecordedAttempts(t *testing.T) {
 		Error:       "primary failed",
 		ErrorReason: "primary_failure",
 		StatusCode:  http.StatusInternalServerError,
+		FailureCode: protocol.FailureCodeGenerationFailure,
 	}
 	d.updateSpeculativeFailure(primaryPR, primaryFailure)
 
@@ -76,6 +78,7 @@ func TestSpeculativeBackupFailureAttributesBackupKVBackend(t *testing.T) {
 					Error:       "backup failed",
 					ErrorReason: "backup_failure",
 					StatusCode:  http.StatusBadGateway,
+					FailureCode: protocol.FailureCodeGenerationFailure,
 				}
 			},
 		},
@@ -116,6 +119,7 @@ func TestSpeculativeBackupFailureAttributesBackupKVBackend(t *testing.T) {
 				Error:       "primary failed",
 				ErrorReason: "primary_failure",
 				StatusCode:  http.StatusInternalServerError,
+				FailureCode: protocol.FailureCodeGenerationFailure,
 			})
 			d.pr, d.provider, d.requestID = nil, nil, ""
 
@@ -175,6 +179,7 @@ func TestDeterministicPrimaryVerdictKeepsPrimaryAttribution(t *testing.T) {
 		Error:       "prompt malformed",
 		ErrorReason: "bad_request",
 		StatusCode:  http.StatusBadRequest,
+		FailureCode: protocol.FailureCodeInvalidRequest,
 	}
 	d.updateSpeculativeFailure(primaryPR, verdict)
 	d.latchDeterministicLoser(primary, verdict)
@@ -188,6 +193,7 @@ func TestDeterministicPrimaryVerdictKeepsPrimaryAttribution(t *testing.T) {
 		Error:       "backup failed",
 		ErrorReason: "backup_failure",
 		StatusCode:  http.StatusBadGateway,
+		FailureCode: protocol.FailureCodeGenerationFailure,
 	}
 	if got := d.racePrimaryFailedWaitBackup(backup, backupPR, nil); got != outcomeRetry {
 		t.Fatalf("outcome = %v, want retry", got)
@@ -246,6 +252,7 @@ func TestFrozenLatchSurvivesLiveMismatchRead(t *testing.T) {
 		Error:       "prompt malformed",
 		ErrorReason: "bad_request",
 		StatusCode:  http.StatusBadRequest,
+		FailureCode: protocol.FailureCodeInvalidRequest,
 	}
 	d.latchDeterministicLoser(primary, verdict)
 

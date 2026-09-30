@@ -84,7 +84,11 @@ func testHuggingFaceArtifactStore(t *testing.T, backing Store) {
 	if again.ActiveVersion.HuggingFaceArtifact != nil {
 		t.Fatal("stale HF source after clearing")
 	}
-	for _, record := range cached.ListActiveModelRegistry() {
+	active, err := cached.ListActiveModelRegistryWithError()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range active {
 		if record.ID == id && record.ActiveVersion.HuggingFaceArtifact != nil {
 			t.Fatal("stale list source")
 		}

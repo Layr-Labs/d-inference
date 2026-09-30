@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -39,8 +41,19 @@ type registerModelRequest struct {
 	RuntimeParameters            map[string]any             `json:"runtime_parameters"`
 	Metadata                     map[string]any             `json:"metadata"`
 	Promote                      bool                       `json:"promote"`
-	InputPrice                   int64                      `json:"input_price"`  // micro-USD per 1M tokens (required)
-	OutputPrice                  int64                      `json:"output_price"` // micro-USD per 1M tokens (required)
+	// Platform price written at registration: input_price and output_price are
+	// required; cache_read_price is optional (see modelPriceInput).
+	modelPriceInput
+}
+
+// registerModelResponse is the POST /v1/admin/models/register response: the
+// stored registry entry and version plus the platform price as it will settle.
+type registerModelResponse struct {
+	Status  string                    `json:"status"`
+	Model   *store.ModelRegistryEntry `json:"model"`
+	Version *store.ModelVersion       `json:"version"`
+	Files   int                       `json:"files"`
+	types.ModelPriceQuote
 }
 
 type publishingActor struct {
@@ -155,12 +168,17 @@ func (s *Server) handleRegisterModel(w http.ResponseWriter, r *http.Request) {
 		files[i] = store.ModelVersionFile{Path: f.Path, SizeBytes: f.SizeBytes, SHA256: f.SHA256, Role: f.Role}
 	}
 	if err := s.store.SetModelVersion(entry, version, files); err != nil {
+		if errors.Is(err, store.ErrModelVersionImmutable) {
+			writeJSON(w, http.StatusConflict, errorResponse("invalid_request_error", err.Error()))
+			return
+		}
 		s.logger.Error("model registry: register failed", "model_id", req.ModelID, "version", req.Version, "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to save model version"))
 		return
 	}
 	// Set platform pricing for this model.
-	if err := s.store.SetModelPrice("platform", req.ModelID, req.InputPrice, req.OutputPrice); err != nil {
+	price := req.modelPrice("platform", req.ModelID)
+	if err := s.store.SetModelPrice(price); err != nil {
 		s.logger.Error("model registry: set pricing failed", "model_id", req.ModelID, "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "model registered but failed to set pricing"))
 		return
@@ -175,18 +193,18 @@ func (s *Server) handleRegisterModel(w http.ResponseWriter, r *http.Request) {
 	}
 	s.SyncModelCatalog()
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":       "registered",
-		"model":        entry,
-		"version":      version,
-		"files":        len(files),
-		"input_price":  req.InputPrice,
-		"output_price": req.OutputPrice,
+	writeJSON(w, http.StatusOK, registerModelResponse{
+		Status:          "registered",
+		Model:           entry,
+		Version:         version,
+		Files:           len(files),
+		ModelPriceQuote: modelPriceQuote(price),
 	})
 }
 
 func (s *Server) handleAdminModelRegistryAction(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requirePublishingAPIKey(w, r); !ok {
+	actor, ok := s.requirePublishingAPIKey(w, r)
+	if !ok {
 		return
 	}
 	modelID, action, ok := parseAdminModelActionPath(r.URL.Path)
@@ -195,6 +213,10 @@ func (s *Server) handleAdminModelRegistryAction(w http.ResponseWriter, r *http.R
 		return
 	}
 	switch action {
+	case "publish-revision":
+		s.handlePublishModelRevision(w, r, modelID, actor)
+	case "retire-revision":
+		s.handleRetireModelRevision(w, r, modelID)
 	case "promote":
 		var req struct {
 			Version string `json:"version"`
@@ -211,7 +233,11 @@ func (s *Server) handleAdminModelRegistryAction(w http.ResponseWriter, r *http.R
 			s.writeModelRegistryStoreError(w, "promote model version", err)
 			return
 		}
-		s.SyncModelCatalog()
+		if !s.syncModelCatalog() {
+			w.Header().Set("Retry-After", "5")
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("internal_error", "revision promoted in storage but live policy refresh or provider delivery failed; retry promotion with the same version"))
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"status": "promoted", "model_id": modelID, "version": req.Version})
 	case "status":
 		var req struct {
@@ -474,6 +500,10 @@ func normalizeCapabilities(in []string) []string {
 }
 
 func (s *Server) writeModelRegistryStoreError(w http.ResponseWriter, operation string, err error) {
+	if errors.Is(err, store.ErrModelVersionRetired) {
+		writeJSON(w, http.StatusConflict, errorResponse("invalid_request_error", err.Error()))
+		return
+	}
 	if isModelRegistryNotFound(err) {
 		writeJSON(w, http.StatusNotFound, errorResponse("not_found", err.Error()))
 		return
@@ -562,7 +592,7 @@ func parseAdminModelActionPath(p string) (string, string, bool) {
 	if rest == p || rest == "" {
 		return "", "", false
 	}
-	for _, action := range []string{"/promote", "/status", "/runtime-parameters", "/capabilities", "/deprecation", "/openrouter-slug", "/hugging-face-id"} {
+	for _, action := range []string{"/publish-revision", "/retire-revision", "/promote", "/status", "/runtime-parameters", "/capabilities", "/deprecation", "/openrouter-slug", "/hugging-face-id"} {
 		if strings.HasSuffix(rest, action) {
 			modelID, err := url.PathUnescape(strings.TrimSuffix(rest, action))
 			if err != nil {
@@ -602,11 +632,8 @@ func validateRegisterModelRequest(req registerModelRequest) error {
 	if req.MinRAMGB <= 0 {
 		return fmt.Errorf("min_ram_gb must be greater than zero")
 	}
-	if req.InputPrice <= 0 {
-		return fmt.Errorf("input_price is required and must be positive (micro-USD per 1M tokens)")
-	}
-	if req.OutputPrice <= 0 {
-		return fmt.Errorf("output_price is required and must be positive (micro-USD per 1M tokens)")
+	if err := req.modelPriceInput.validate(); err != nil {
+		return err
 	}
 	if err := validateRequiredProviderCapabilities(
 		req.ModelID, req.RequiredProviderCapabilities); err != nil {

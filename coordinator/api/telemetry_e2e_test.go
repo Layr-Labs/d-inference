@@ -1,6 +1,8 @@
 package api
 
-// End-to-end route test for the fail-closed client telemetry sink.
+// End-to-end route test: the coordinator has no client telemetry ingestion.
+// The retired POST /v1/telemetry/events route is gone; a stale client gets a
+// plain not-found without its body being read, reflected or counted.
 
 import (
 	"bytes"
@@ -12,7 +14,7 @@ import (
 	"testing"
 )
 
-func TestTelemetryE2E_IngestionDisabled(t *testing.T) {
+func TestTelemetryE2E_NoClientIngestionRoute(t *testing.T) {
 	const sentinel = "PROMPT_SECRET_E2E_DO_NOT_EXFILTRATE"
 
 	srv, _ := testServer(t)
@@ -29,8 +31,8 @@ func TestTelemetryE2E_IngestionDisabled(t *testing.T) {
 		t.Fatalf("ingest POST: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusGone {
-		t.Fatalf("ingest status = %d, want %d", resp.StatusCode, http.StatusGone)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("ingest status = %d, want %d", resp.StatusCode, http.StatusNotFound)
 	}
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -56,7 +58,7 @@ func TestTelemetryE2E_IngestionDisabled(t *testing.T) {
 	}
 	for key, value := range snap.Counters {
 		if strings.HasPrefix(key, "telemetry_events_total") && value != 0 {
-			t.Fatalf("ingest counter changed despite disabled sink: %s=%d", key, value)
+			t.Fatalf("ingest counter changed without an ingestion route: %s=%d", key, value)
 		}
 	}
 }

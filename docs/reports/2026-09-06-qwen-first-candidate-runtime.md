@@ -1,6 +1,6 @@
 # Qwen-first candidate builds and preserves rollback and capacity
 
-> Last updated: 2026-09-06 · commit `56fa39501`
+> Last updated: 2026-09-06
 
 The Qwen-first candidate builds both release products and passes 20 focused provider/CLI suites on M5: **221 functions, 266 expanded cases, no skips or failures**. Independent source/artifact review passes nine audit groups. These are implementation and synthetic validation results, not real-model release acceptance; Qwen 3.5/3.6 backend differences and the wider execution gates remain open.
 

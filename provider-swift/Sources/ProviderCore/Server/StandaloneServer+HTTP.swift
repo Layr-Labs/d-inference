@@ -79,8 +79,16 @@ extension StandaloneServer {
             responseTracker: responseTracker,
             onServerRunning: { [weak self] _ in
                 await self?.markBound()
+            },
+            modelTypeProvider: { [weak self] modelId in
+                await self?.localModelTypeForAudioAdmission(modelId)
             }
         )
+    }
+
+    /// Metadata only: cold native audio still uses normal strict acquisition.
+    func localModelTypeForAudioAdmission(_ modelId: String) -> String? {
+        slots[modelId]?.modelType ?? models.first(where: { $0.id == modelId })?.modelType
     }
 }
 

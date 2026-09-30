@@ -64,13 +64,6 @@ const (
 	// windows equal while that shared validator uses a symmetric bound.
 	RegistrationAttestationMaxFutureSkew = RegistrationAttestationMaxAge
 
-	// minProviderVersionForReconnectAttestation is the first provider release
-	// that rebuilds and re-signs its registration attestation on every
-	// reconnect. The same release introduced signed protected-runtime claims;
-	// older providers retain challenge-based liveness but cannot receive
-	// effective protected capabilities.
-	minProviderVersionForReconnectAttestation = "0.8.15"
-
 	// MaxConsecutiveChallengeTimeoutsBeforeReconnect is the number of consecutive
 	// transient challenge timeouts (no response within ChallengeResponseTimeout)
 	// after which the coordinator force-closes the provider's WebSocket so it must
@@ -124,6 +117,15 @@ func (ct *challengeTracker) remove(nonce string) *pendingChallenge {
 // handleProviderWS upgrades the connection to WebSocket and manages the
 // provider's lifecycle: registration, heartbeats, and inference responses.
 func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
+	s.providerAdmit.Lock()
+	if s.providersClosing {
+		s.providerAdmit.Unlock()
+		http.Error(w, "coordinator shutting down", http.StatusServiceUnavailable)
+		return
+	}
+	s.providerHandlers.Add(1)
+	s.providerAdmit.Unlock()
+	defer s.providerHandlers.Done()
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		// Allow any origin for provider connections.
 		InsecureSkipVerify: true,
@@ -132,6 +134,9 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 		s.logger.Error("websocket accept failed", "error", err)
 		return
 	}
+
+	s.trackProviderConn(conn, true)
+	defer s.trackProviderConn(conn, false)
 
 	// Raise the read limit to 10 MB. The default 32 KB is too small for
 	// large inference responses.
@@ -144,6 +149,108 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 	s.providerReadLoop(r.Context(), conn, providerID, r)
 }
 
+// CloseProviderConnections stops the provider socket producers for shutdown:
+// no new provider socket is admitted, every hijacked socket the server has
+// tracked since accept is closed (registered or not; the provider reconnects
+// to the next coordinator, and its holders park for that reconnect), and the
+// running handlers are joined so no receipt or heartbeat can arrive behind
+// the caller. Provider sockets are hijacked, so httpServer.Shutdown neither
+// closes nor waits on them. Returns false when the handlers did not all
+// finish before ctx expired.
+func (s *Server) CloseProviderConnections(ctx context.Context) bool {
+	s.providerAdmit.Lock()
+	s.providersClosing = true
+	conns := make([]*websocket.Conn, 0, len(s.providerConns))
+	for c := range s.providerConns {
+		conns = append(conns, c)
+	}
+	s.providerAdmit.Unlock()
+	// Every hijacked socket, whether or not its provider registered; the
+	// read loops return and tear their providers down through the ordinary
+	// disconnect path, which parks their holders. In parallel: CloseNow
+	// waits for the socket's goroutines, and one mid-handshake close must
+	// not hold the others; the join below is what ctx bounds.
+	for _, c := range conns {
+		go func(c *websocket.Conn) { _ = c.CloseNow() }(c)
+	}
+	if s.WaitProviderHandlers(ctx) {
+		s.logger.Info("provider sockets closed for shutdown", "closed", len(conns))
+		return true
+	}
+	s.logger.Warn("provider socket handlers still running at the shutdown deadline", "closed", len(conns))
+	return false
+}
+
+// trackProviderConn records a hijacked provider socket for the shutdown
+// close (add) or forgets it when its handler exits (remove). A socket
+// accepted after the close began is closed here at once.
+func (s *Server) trackProviderConn(conn *websocket.Conn, add bool) {
+	s.providerAdmit.Lock()
+	if s.providerConns == nil {
+		s.providerConns = make(map[*websocket.Conn]struct{})
+	}
+	if !add {
+		delete(s.providerConns, conn)
+		s.providerAdmit.Unlock()
+		return
+	}
+	s.providerConns[conn] = struct{}{}
+	closing := s.providersClosing
+	s.providerAdmit.Unlock()
+	if closing {
+		// Outside the mutex: CloseNow waits for the socket's goroutines.
+		_ = conn.CloseNow()
+	}
+}
+
+// WaitProviderHandlers waits until every admitted provider socket handler
+// has returned or ctx expires. It may be called again after
+// CloseProviderConnections reported a timeout: a handler can spend seconds
+// in its read-error close and its deferred teardown, and evidence it marks
+// meanwhile is only safe once a flush runs after it has returned.
+func (s *Server) WaitProviderHandlers(ctx context.Context) bool {
+	if !s.providerSocketsClosing() {
+		// Before the close, a handler may still be admitted (an Add from
+		// zero would race this Wait); the call is a programming error.
+		s.logger.Error("WaitProviderHandlers called before CloseProviderConnections")
+		return false
+	}
+	done := make(chan struct{})
+	go func() {
+		s.providerHandlers.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// shutdownCloseStatus maps the read error of a socket the coordinator closed
+// for shutdown (CloseNow sends no close frame, so the peer status is -1) to
+// going-away, so the teardown flushes pending requests with the
+// restart-neutral cause and the disconnect metrics count a shutdown close
+// rather than a drop that strikes the provider's health.
+func shutdownCloseStatus(closeStatus websocket.StatusCode, closing bool) websocket.StatusCode {
+	if closeStatus == -1 && closing {
+		return websocket.StatusGoingAway
+	}
+	return closeStatus
+}
+
+// providerSocketsClosing reports whether shutdown has begun closing provider
+// sockets. A read loop checks it right after registering and leaves at once:
+// its socket is being closed, and nothing it could read now may produce a
+// receipt behind the final flush. WaitProviderHandlers refuses to run before
+// it is set.
+func (s *Server) providerSocketsClosing() bool {
+	s.providerAdmit.Lock()
+	defer s.providerAdmit.Unlock()
+	return s.providersClosing
+}
+
 // maxProviderVersionLength bounds the provider-reported binary version accepted
 // at registration. The Swift provider sends the compile-time constant
 // ProviderCore.version ("0.8.15"; release tags must equal it, dev builds are
@@ -154,6 +261,12 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 // paired with the registry's memo bound (maxMemoizedVersionLen), which stops
 // caching above 64 bytes.
 const maxProviderVersionLength = 128
+
+// sessionDisconnectReasonCoordinatorShutdown stamps a session whose socket
+// the coordinator itself closed for shutdown, or whose registration was
+// processed after that close began: distinct from ws_close_<code>, which
+// means the peer sent that close frame.
+const sessionDisconnectReasonCoordinatorShutdown = "coordinator_shutdown"
 
 // sessionDisconnectReason maps a provider read-loop exit to the disconnect
 // reason recorded on its provider_sessions row. Kept to a small, fixed
@@ -173,10 +286,14 @@ const maxProviderVersionLength = 128
 // The registry's own generic "disconnect" remains the reason for closes the
 // read loop did NOT observe first — in practice the stale-eviction sweep —
 // so post-fix, lingering "disconnect" rows ≈ silent drops reaped by eviction.
-func sessionDisconnectReason(closeStatus websocket.StatusCode, oomSuspected bool, readReason string) string {
+// closing marks a socket the coordinator closed for shutdown, stamped
+// coordinator_shutdown whatever status the read reported.
+func sessionDisconnectReason(closeStatus websocket.StatusCode, oomSuspected bool, readReason string, closing bool) string {
 	switch {
 	case oomSuspected:
 		return string(registry.DisconnectReasonOOMSuspected)
+	case closing:
+		return sessionDisconnectReasonCoordinatorShutdown
 	case closeStatus != -1:
 		return "ws_close_" + strconv.Itoa(int(closeStatus))
 	default:
@@ -230,6 +347,40 @@ func (s *Server) closeSessionWithReason(providerID, reason string) {
 	}
 }
 
+// countCloseDisconnect counts a disconnect the read loop classified by a
+// close status: the peer's close frame, or going-away for a socket the
+// coordinator closed for shutdown (and for a registration processed after
+// that close began). Peer-initiated closes were once unmetered — only
+// read_error incremented ws_disconnects_total — so dashboards could not
+// split graceful closes (update, shutdown) from drops.
+func (s *Server) countCloseDisconnect(closeStatus websocket.StatusCode) {
+	if s.metrics != nil {
+		s.metrics.IncCounter("ws_disconnects_total",
+			MetricLabel{"reason", "peer_close"},
+		)
+	}
+	s.ddIncr("ws.disconnects", []string{
+		"reason:peer_close",
+		"code:" + strconv.Itoa(int(closeStatus)),
+	})
+}
+
+// closeSessionOffline flips the provider offline and stamps its session row
+// with reason, ahead of the deferred registry.Disconnect (first close wins
+// requires that order). Offline first — StatusOffline fails every
+// routing-eligibility gate — so a slow store write can never leave a dead
+// provider selectable. Untrusted stays untrusted: it is equally unroutable,
+// and overwriting it would make Disconnect's status-gated online/model
+// decrements run a second time after markUntrusted already decremented.
+func (s *Server) closeSessionOffline(providerID string, provider *registry.Provider, reason string) {
+	provider.Mu().Lock()
+	if provider.Status != registry.StatusUntrusted {
+		provider.Status = registry.StatusOffline
+	}
+	provider.Mu().Unlock()
+	s.closeSessionWithReason(providerID, reason)
+}
+
 // providerReadLoop reads messages from the provider WebSocket and dispatches
 // them. It runs until the connection closes or the context is cancelled.
 func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, r *http.Request) {
@@ -270,25 +421,15 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 	for {
 		_, data, err := conn.Read(loopCtx)
 		if err != nil {
-			closeStatus := websocket.CloseStatus(err)
+			closing := s.providerSocketsClosing()
+			closeStatus := shutdownCloseStatus(websocket.CloseStatus(err), closing)
 			oomSuspected := false
 			readReason := readErrorReasonGeneric
 			if closeStatus != -1 {
 				peerCloseStatus = closeStatus
 				s.logger.Info("provider websocket closed",
 					"provider_id", providerID, "close_code", int(closeStatus))
-				// Peer-initiated closes were previously unmetered — only
-				// read_error incremented ws_disconnects_total — so dashboards
-				// could not split graceful closes (update/shutdown) from drops.
-				if s.metrics != nil {
-					s.metrics.IncCounter("ws_disconnects_total",
-						MetricLabel{"reason", "peer_close"},
-					)
-				}
-				s.ddIncr("ws.disconnects", []string{
-					"reason:peer_close",
-					"code:" + strconv.Itoa(int(closeStatus)),
-				})
+				s.countCloseDisconnect(closeStatus)
 			} else {
 				readReason = readErrorDisconnectReason(err)
 				s.logger.Error("provider websocket read error",
@@ -344,26 +485,16 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// no-op. Skipped when:
 			//   - provider == nil: never registered, so no session row exists
 			//     (writing would fabricate a zero-duration row);
-			//   - ctx.Err() != nil: coordinator shutdown — the next instance's
-			//     startup reconcile labels these "coordinator_restart";
+			//   - ctx.Err() != nil: the loop's context was cancelled (a
+			//     hijacked socket's request context is not cancelled by
+			//     httpServer.Shutdown; a socket the coordinator closed for
+			//     shutdown reads as going-away and is stamped
+			//     coordinator_shutdown above);
 			//   - the registry no longer has the provider: registry.Disconnect
 			//     already ran (stale eviction, duplicate-serial kick) and owns
 			//     the reason for that path.
 			if provider != nil && ctx.Err() == nil && s.registry.GetProvider(providerID) != nil {
-				// The socket is dead, but the deferred registry.Disconnect
-				// only runs after the stamp lands (first close wins requires
-				// that order). Flip the provider offline first — StatusOffline
-				// fails every routing-eligibility gate — so a slow store write
-				// can never leave a dead provider selectable. Untrusted stays
-				// untrusted: it is equally unroutable, and overwriting it would
-				// make Disconnect's status-gated online/model decrements run a
-				// second time after markUntrusted already decremented.
-				provider.Mu().Lock()
-				if provider.Status != registry.StatusUntrusted {
-					provider.Status = registry.StatusOffline
-				}
-				provider.Mu().Unlock()
-				s.closeSessionWithReason(providerID, sessionDisconnectReason(closeStatus, oomSuspected, readReason))
+				s.closeSessionOffline(providerID, provider, sessionDisconnectReason(closeStatus, oomSuspected, readReason, closing))
 			}
 			return
 		}
@@ -432,6 +563,24 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				resolveAccount()
 			}
 			provider = s.registry.Register(providerID, conn, regMsg)
+			if s.providerSocketsClosing() {
+				// Registered after shutdown began closing sockets; the
+				// socket is being closed, so leave before reading anything,
+				// with the same restart-neutral classification a closed
+				// socket gets. The session row this registration opens is
+				// stamped coordinator_shutdown here, as the read-error path
+				// stamps its row: the deferred registry teardown only knows
+				// the generic reason. The open is asynchronous, and a close
+				// that lands first records the closed row itself (first
+				// close wins), so the stamp holds either way.
+				peerCloseStatus = websocket.StatusGoingAway
+				s.logger.Info("provider registered during shutdown; closing", "provider_id", providerID)
+				s.countCloseDisconnect(peerCloseStatus)
+				if ctx.Err() == nil && s.registry.GetProvider(providerID) != nil {
+					s.closeSessionOffline(providerID, provider, sessionDisconnectReasonCoordinatorShutdown)
+				}
+				return
+			}
 			if s.appAttestIdentityCandidate(regMsg, authenticatedAccountID) {
 				provider.RequireVerifiedMachineIdentity()
 			}
@@ -488,7 +637,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// runtime assets such as mlx.metallib under template_hashes.
 			if s.knownRuntimeManifest != nil {
 				runtimeOK, mismatches := s.verifyRuntimeHashesForBackend(
-					regMsg.Backend, regMsg.PythonHash, regMsg.RuntimeHash, regMsg.TemplateHashes)
+					regMsg.Backend, regMsg.TemplateHashes)
 				provider.Mu().Lock()
 				provider.RuntimeVerified = runtimeOK
 				provider.RuntimeManifestChecked = runtimeOK
@@ -499,8 +648,6 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					provider.RuntimeCapabilities = nil
 					provider.FreshCodeAttested = false
 				}
-				provider.PythonHash = regMsg.PythonHash
-				provider.RuntimeHash = regMsg.RuntimeHash
 				provider.TemplateHashes = registry.CloneStringMap(regMsg.TemplateHashes)
 				provider.Mu().Unlock()
 
@@ -527,8 +674,6 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				} else {
 					s.logger.Info("provider runtime integrity verified",
 						"provider_id", providerID,
-						"python_hash", regMsg.PythonHash,
-						"runtime_hash", regMsg.RuntimeHash,
 					)
 				}
 			} else {
@@ -543,14 +688,15 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			}
 
 			// Version cutoff check — runs AFTER runtime check so it takes precedence.
-			// If version is below minimum, override RuntimeVerified to false.
-			if s.minProviderVersion != "" && regMsg.Version != "" && semverLess(regMsg.Version, s.minProviderVersion) {
+			// If version is below minimum (or missing while a floor is set),
+			// override RuntimeVerified to false.
+			if s.belowMinProviderVersion(regMsg.Version) {
 				s.logger.Warn("provider version below minimum — excluded from routing",
 					"provider_id", providerID,
 					"version", regMsg.Version,
 					"min_version", s.minProviderVersion,
 				)
-				s.ddIncr("provider_version_below_minimum", []string{"gate:registration", "version:" + regMsg.Version})
+				s.ddIncr("provider_version_below_minimum", []string{"gate:registration", providerVersionMetricTag(regMsg.Version)})
 				provider.Mu().Lock()
 				provider.RuntimeVerified = false
 				provider.RuntimeManifestChecked = false
@@ -576,9 +722,8 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// reconnects (same process, prefetch state intact) after the alias it
 			// was converging to was deleted/repointed must learn that nothing is
 			// desired anymore, or its in-flight prefetch would hard-swap anyway.
-			// Gated on Swift backend + feature version: a pre-feature provider's
-			// strict decoder throws on unknown types.
-			if s.providerSupportsDesiredModels(regMsg.Backend, regMsg.Version) {
+			// Gated on the Swift backend, the only runtime that understands it.
+			if s.providerSupportsDesiredModels(regMsg.Backend) {
 				if err := s.registry.SendDesiredModels(providerID, s.registry.DesiredModelsForProvider(providerID)); err != nil {
 					s.logger.Warn("failed to send desired_models after register",
 						"provider_id", providerID, "error", err)
@@ -594,6 +739,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					schedulerGeneration = s.mdmScheduler.Submit(loopCtx, providerID, provider, priority)
 				}
 			}
+			saferun.Go(s.logger, "providerTransportLoop", func() {
+				s.providerTransportLoop(loopCtx, provider)
+			})
 			// Start challenge loop after registration
 			saferun.Go(s.logger, "challengeLoop", func() {
 				s.challengeLoop(loopCtx, providerID, provider, tracker)
@@ -720,6 +868,10 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// with the probe state; the read loop only delivers. Synchronous
 			// like heartbeat ingest — no DB or lock-heavy work on this path.
 			s.registry.HandleCapacityQuote(providerID, quoteMsg)
+
+		case protocol.TypeServiceReservationReleased:
+			released := msg.Payload.(*protocol.ServiceReservationReleasedMessage)
+			s.registry.ReleaseServiceReservation(provider, released.ServiceReservationID)
 
 		case protocol.TypeInferenceAccepted:
 			acceptMsg := msg.Payload.(*protocol.InferenceAcceptedMessage)
@@ -1244,17 +1396,16 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 
 	// Verify the signature cryptographically using the provider's Secure
 	// Enclave P-256 public key. The provider signs SHA-256(nonce + timestamp)
-	// with its SE key via eigeninference-enclave CLI.
+	// with its SE key.
 	if resp.Signature == "" {
 		s.handleChallengeFailure(providerID, "empty signature")
 		return
 	}
 
 	// statusFieldsTrusted gates whether we treat resp.SIPEnabled,
-	// resp.BinaryHash etc. as authoritative. False means the provider
-	// signed only nonce+timestamp (legacy or downgrade), so the status
-	// fields are advisory and we must not act on them as if they were
-	// cryptographically bound.
+	// resp.BinaryHash etc. as authoritative. It is true only when the
+	// status signature verified against the attested SE key; a provider
+	// without an attested key (trust none) keeps advisory status fields.
 	statusFieldsTrusted := false
 
 	// If the provider has an attested SE public key, verify the signature.
@@ -1275,26 +1426,19 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			return
 		}
 
-		// Now verify the extended status signature if the provider sent
-		// one. Old providers (pre-v0.3.11) won't — log and continue with
-		// status fields untrusted. Mismatch is fatal: it means either
-		// tampering or the provider is signing a different canonical
+		// Now verify the extended status signature. Every Swift provider
+		// signs the canonical status in every challenge response, so a
+		// missing signature is as fatal as a mismatch: either tampering,
+		// a downgrade, or a provider signing a different canonical
 		// payload than this code expects.
 		statusInput := attestation.StatusCanonicalInput{
-			Nonce:     pc.nonce,
-			Timestamp: pc.timestamp,
-			// Legacy fleet compat only: old providers (< v0.6.31) sign
-			// hypervisor_active into the canonical status, so it must be
-			// carried into the reconstruction when reported. New providers
-			// omit it (nil). See attestation.StatusCanonicalInput.
-			HypervisorActive:  resp.HypervisorActive,
+			Nonce:             pc.nonce,
+			Timestamp:         pc.timestamp,
 			RDMADisabled:      resp.RDMADisabled,
 			SIPEnabled:        resp.SIPEnabled,
 			SecureBootEnabled: resp.SecureBootEnabled,
 			BinaryHash:        resp.BinaryHash,
 			ActiveModelHash:   resp.ActiveModelHash,
-			PythonHash:        resp.PythonHash,
-			RuntimeHash:       resp.RuntimeHash,
 			TemplateHashes:    resp.TemplateHashes,
 			ModelHashes:       resp.ModelHashes,
 		}
@@ -1307,9 +1451,11 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			statusFieldsTrusted = true
 		case attestation.ErrStatusSignatureMissing:
 			s.ddIncr("attestation.challenges", []string{"outcome:status_sig_missing"})
-			s.logger.Warn("provider sent no status_signature — status fields are advisory; upgrade provider to bind them",
+			s.logger.Error("provider sent no status_signature — failing the challenge",
 				"provider_id", providerID,
 			)
+			s.handleChallengeFailure(providerID, "status signature missing")
+			return
 		default:
 			// Instrumentation for the non-recovering status-sig lockout seen on
 			// a couple of nodes (cause unconfirmed). Because the plain challenge
@@ -1337,8 +1483,6 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 				"status_sig_len", len(resp.StatusSignature),
 				"binary_hash_len", len(resp.BinaryHash),
 				"active_model_hash_len", len(resp.ActiveModelHash),
-				"python_hash_len", len(resp.PythonHash),
-				"runtime_hash_len", len(resp.RuntimeHash),
 				"template_hashes_count", len(resp.TemplateHashes),
 				"model_hashes_count", len(resp.ModelHashes),
 			)
@@ -1347,28 +1491,12 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		}
 	}
 
-	// Status-field enforcement policy (asymmetric, by design):
-	//
-	// The checks below act on resp.SIPEnabled / SecureBootEnabled /
-	// RDMADisabled / BinaryHash / ActiveModelHash regardless of
-	// statusFieldsTrusted. The asymmetry is intentional during the
-	// v0.3.11 rollout window:
-	//
-	//   - Negative reports (SIP=false, hash mismatch, etc.) ALWAYS mark
-	//     the provider untrusted. Acting on a negative is safe even if
-	//     the field is spoofable: the worst case is a compromised
-	//     provider DoS-ing itself, which we want anyway.
-	//
-	//   - Positive reports (SIP=true, hash matches) are accepted but
-	//     can only be fully trusted when statusFieldsTrusted is true.
-	//     A v0.3.10 provider with a compromised process (but intact SE
-	//     key) can echo a valid nonce signature while lying that
-	//     SIPEnabled=true. We accept this risk during rollout.
-	//
-	// TODO(security/v0.3.13+): Once `attestation_challenges_total{
-	// outcome="status_sig_missing"}` is zero across the fleet for a
-	// week, treat ErrStatusSignatureMissing as a hard challenge failure
-	// (target: 2 release cycles after v0.3.11 GA).
+	// Status-field enforcement policy: for a provider with an attested SE
+	// key the fields below are bound by the verified status signature.
+	// Negative reports (SIP=false, hash mismatch, etc.) mark the provider
+	// untrusted, and an omitted mandatory field fails the challenge; for a
+	// provider without an attested key the fields stay advisory and it
+	// never holds hardware trust.
 	s.logger.Debug("attestation challenge response verified",
 		"provider_id", providerID,
 		"status_fields_trusted", statusFieldsTrusted,
@@ -1392,8 +1520,13 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		return
 	}
 
-	// Verify fresh Secure Boot status.
-	if resp.SecureBootEnabled != nil && !*resp.SecureBootEnabled {
+	// Verify fresh Secure Boot status. Like SIP, it is mandatory: an omitted
+	// value is not evidence of safety, so fail closed.
+	if resp.SecureBootEnabled == nil {
+		s.handleChallengeFailure(providerID, "Secure Boot status not reported")
+		return
+	}
+	if !*resp.SecureBootEnabled {
 		s.logger.Error("provider Secure Boot disabled in challenge response — marking untrusted",
 			"provider_id", providerID,
 		)
@@ -1409,7 +1542,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 	// so the security boundary is the signed runtime's buffer-registration
 	// discipline.
 	if resp.RDMADisabled == nil {
-		s.handleChallengeFailure(providerID, "RDMA status not reported — provider must update to v0.2.0+")
+		s.handleChallengeFailure(providerID, "RDMA status not reported")
 		return
 	}
 	if !*resp.RDMADisabled {
@@ -1496,7 +1629,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			continue
 		}
 		expectedHash := s.registry.CatalogWeightHash(modelID)
-		if expectedHash != "" && hash != expectedHash {
+		if expectedHash != "" && !s.registry.CatalogAcceptsWeightHash(modelID, hash) {
 			s.logger.Error("provider model weight hash mismatch — possible model swap",
 				"provider_id", providerID,
 				"model", modelID,
@@ -1530,7 +1663,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 				allEnforced = false
 				break
 			}
-			if resp.ActiveModelHash == expectedHash {
+			if s.registry.CatalogAcceptsWeightHash(m.ID, resp.ActiveModelHash) {
 				matched = true
 			}
 		}
@@ -1557,7 +1690,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 				if !s.registry.IsAliasLineageBuild(modelID) {
 					continue
 				}
-				if expected := s.registry.CatalogWeightHash(modelID); expected != "" && hash == expected {
+				if expected := s.registry.CatalogWeightHash(modelID); expected != "" && s.registry.CatalogAcceptsWeightHash(modelID, hash) {
 					matched = true
 					break
 				}
@@ -1619,7 +1752,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			"version", version,
 			"min_version", s.minProviderVersion,
 		)
-		s.ddIncr("provider_version_below_minimum", []string{"gate:challenge_revalidation", "version:" + version})
+		s.ddIncr("provider_version_below_minimum", []string{"gate:challenge_revalidation", providerVersionMetricTag(version)})
 		_ = s.registry.ReconcileAttestedRuntimeCapabilities(providerID)
 		return
 	}
@@ -1777,18 +1910,15 @@ func (s *Server) applyChallengeRuntimePolicy(
 	var mismatches []protocol.RuntimeMismatch
 	if policyActive {
 		runtimeOK, mismatches = s.verifyRuntimeHashesForBackend(
-			provider.Backend, resp.PythonHash, resp.RuntimeHash, resp.TemplateHashes)
+			provider.Backend, resp.TemplateHashes)
 	}
 
 	provider.Mu().Lock()
-	runtimeIdentityChanged :=
-		resp.PythonHash != provider.PythonHash ||
-			resp.RuntimeHash != provider.RuntimeHash ||
-			!maps.EqualFunc(
-				resp.TemplateHashes,
-				provider.TemplateHashes,
-				strings.EqualFold,
-			)
+	runtimeIdentityChanged := !maps.EqualFunc(
+		resp.TemplateHashes,
+		provider.TemplateHashes,
+		strings.EqualFold,
+	)
 
 	provider.RuntimeVerified = policyActive && runtimeOK
 	provider.RuntimeManifestChecked = policyActive && runtimeOK
@@ -1802,8 +1932,6 @@ func (s *Server) applyChallengeRuntimePolicy(
 	if runtimeIdentityChanged {
 		provider.FreshCodeAttested = false
 	}
-	provider.PythonHash = resp.PythonHash
-	provider.RuntimeHash = resp.RuntimeHash
 	provider.TemplateHashes = registry.CloneStringMap(resp.TemplateHashes)
 	provider.Mu().Unlock()
 	return policyActive, runtimeOK, mismatches
@@ -1818,9 +1946,7 @@ func (s *Server) applyChallengeMinVersionPolicy(
 	provider.Mu().Lock()
 	defer provider.Mu().Unlock()
 	version := provider.Version
-	if s.minProviderVersion == "" ||
-		version == "" ||
-		!semverLess(version, s.minProviderVersion) {
+	if !s.belowMinProviderVersion(version) {
 		return version, true
 	}
 	provider.RuntimeVerified = false
@@ -2418,24 +2544,33 @@ func (s *Server) handleCompleteAt(
 	// Service/wholesale traffic is billed at the advertised platform price
 	// (never a provider's higher custom price) and is exempt from the minimum,
 	// so the debit matches the published per-token OpenRouter feed exactly.
+	//
+	// Prompt tokens the provider served from its prefix cache bill at the
+	// cache-read rate (the feed's input_cache_read); the cache usage was
+	// validated above, so billableUsage sees the same cached_tokens the
+	// consumer does and the bill and the usage agree. A model-token promotion
+	// settles through priceModelTokens instead, which prices every prompt token
+	// at rates.Input (no cache-read discount on that path).
 	providerAccountForPricing := ""
 	if p := s.registry.GetProvider(providerID); p != nil {
 		providerAccountForPricing = providerPricingKeys(p)
 	}
-	var customIn, customOut int64
-	var hasCustom bool
+	var price store.ModelPrice
+	var priced bool
 	if !isServiceConsumer && pr.PromotionFreeTokens == 0 {
-		customIn, customOut, hasCustom = s.store.GetModelPrice(providerAccountForPricing, pr.Model)
+		price, priced = s.store.GetModelPrice(providerAccountForPricing, pr.Model)
 	}
-	if !hasCustom {
-		customIn, customOut, hasCustom = s.store.GetModelPrice("platform", pr.Model)
+	if !priced {
+		price, priced = s.store.GetModelPrice("platform", pr.Model)
 	}
-	var totalCost int64
+	rates := payments.RatesFor(price, priced)
+	billable := billableUsage(msg.Usage)
+	settle := rates.CostWithMinimum
 	if isServiceConsumer {
-		totalCost = payments.CalculateCostWithOverridesNoMinimum(pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, customIn, customOut, hasCustom)
-	} else {
-		totalCost = payments.CalculateCostWithOverrides(pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, customIn, customOut, hasCustom)
+		settle = rates.Cost
 	}
+	totalCost := settle(billable)
+	pricedCost := totalCost // before free-route, clamp and uncollected adjustments
 
 	providerPayout := payments.ProviderPayoutWithPercent(totalCost, feePercent)
 
@@ -2489,7 +2624,7 @@ func (s *Server) handleCompleteAt(
 	// with the settlement here.
 	if pr.ModelTokenReservationID != "" {
 		var promotionErr error
-		billingFinalized, totalCost, providerPayout, promotionErr = s.settleModelTokenPromotion(pr, provider, msg.Usage, customIn, customOut, hasCustom, feePercent, freeSelfRoute, recordAccounting)
+		billingFinalized, totalCost, providerPayout, promotionErr = s.settleModelTokenPromotion(pr, provider, msg.Usage, rates, feePercent, freeSelfRoute, recordAccounting)
 		if promotionErr != nil {
 			s.logger.Error("promotion settlement failed", "request_id", msg.RequestID, "reservation_id", pr.ModelTokenReservationID, "error", promotionErr)
 		}
@@ -2636,6 +2771,19 @@ func (s *Server) handleCompleteAt(
 	}
 
 	if billingFinalized {
+		// Revenue effect of the cache hit that was actually settled: what this
+		// request would have cost with every prompt token at the input rate,
+		// less what it did cost, through the same settle function (so the
+		// per-request minimum is honoured). Only a request that settled at its
+		// computed price counts: free self-route and an uncollected charge
+		// settle at 0, an overage clamp or a failed overage charge settles at a
+		// cap the cold price would have hit too, and a model-token promotion
+		// settles through priceModelTokens at the input rate.
+		if pr.ModelTokenReservationID == "" && totalCost > 0 && totalCost == pricedCost && billable.CachedTokens > 0 {
+			if discount := payments.CacheReadDiscount(settle, billable); discount > 0 {
+				s.ddCount("billing.cache_read_discount_micro_usd", discount, []string{"model:" + pr.Model})
+			}
+		}
 
 		// Fallback actual_ttft_ms anchor for the COMMITTED attempt only. The
 		// dispatch/handler goroutine normally stamps FirstContentAt at the
@@ -3137,10 +3285,9 @@ func (s *Server) verifyProviderAttestation(ctx context.Context, providerID strin
 		return nil
 	}
 
-	enforceReconnectFreshness := regMsg.Version != "" &&
-		!semverLess(regMsg.Version, minProviderVersionForReconnectAttestation)
-	if enforceReconnectFreshness &&
-		!attestation.CheckTimestamp(result, RegistrationAttestationMaxAge) {
+	// Providers rebuild and re-sign their registration attestation on every
+	// reconnect, so a stale timestamp is a replay of an old signed claim.
+	if !attestation.CheckTimestamp(result, RegistrationAttestationMaxAge) {
 		result.Valid = false
 		result.Error = "attestation timestamp outside freshness window"
 		provider.SetAttestationResult(&result)
@@ -3148,18 +3295,6 @@ func (s *Server) verifyProviderAttestation(ctx context.Context, providerID strin
 		s.logger.Warn("provider registration attestation replay rejected",
 			"provider_id", providerID)
 		return nil
-	}
-
-	if !enforceReconnectFreshness {
-		// Pre-0.8.15 providers reuse their signed registration blob across
-		// reconnects. Preserve that legacy identity proof, but discard the
-		// protected-runtime fields before storing it so no later trust or
-		// challenge transition can promote apple_m5/mlx_nax from a replayable
-		// claim. Their periodic nonce challenges remain the liveness proof.
-		result.ChipFamily = ""
-		result.RuntimeCapabilities = nil
-		result.MetallibHash = ""
-		provider.SetAttestationResult(&result)
 	}
 
 	// Bind the WebSocket X25519 key used for E2E text encryption to the

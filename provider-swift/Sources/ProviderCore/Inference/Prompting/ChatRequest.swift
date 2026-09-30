@@ -283,69 +283,6 @@ public struct ChatMessage: Codable, Sendable {
     }
 }
 
-// MARK: - Usage
-
-public struct ChunkUsage: Codable, Sendable {
-    public let prompt_tokens: Int
-    public let completion_tokens: Int
-    public let total_tokens: Int
-
-    public init(prompt_tokens: Int, completion_tokens: Int) {
-        self.prompt_tokens = prompt_tokens
-        self.completion_tokens = completion_tokens
-        self.total_tokens = prompt_tokens + completion_tokens
-    }
-}
-
-// MARK: - Response Types (Non-Streaming)
-
-public struct ChatCompletionResponse: Codable, Sendable {
-    public let id: String
-    public let object: String
-    public let created: Int
-    public let model: String
-    public let choices: [ResponseChoice]
-    public let usage: ChunkUsage
-
-    public init(
-        id: String,
-        object: String = "chat.completion",
-        created: Int,
-        model: String,
-        choices: [ResponseChoice],
-        usage: ChunkUsage
-    ) {
-        self.id = id
-        self.object = object
-        self.created = created
-        self.model = model
-        self.choices = choices
-        self.usage = usage
-    }
-}
-
-public struct ResponseChoice: Codable, Sendable {
-    public let index: Int
-    public let message: ResponseMessage
-    public let finish_reason: String
-
-    public init(index: Int, message: ResponseMessage, finish_reason: String) {
-        self.index = index
-        self.message = message
-        self.finish_reason = finish_reason
-    }
-}
-
-public struct ResponseMessage: Codable, Sendable {
-    public let role: String
-    public let content: String
-
-    public init(role: String = "assistant", content: String) {
-        self.role = role
-        self.content = content
-    }
-}
-
 // MARK: - Errors
 
 public enum InferenceError: Error, Sendable {

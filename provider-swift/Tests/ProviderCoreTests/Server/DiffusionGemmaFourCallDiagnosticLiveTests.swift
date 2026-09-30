@@ -72,7 +72,6 @@ struct DiffusionGemmaFourCallDiagnosticLiveTests {
     try #require(
       directory.appendingPathComponent("config.json").resolvingSymlinksInPath()
         == selected.appendingPathComponent("config.json").resolvingSymlinksInPath())
-    try #require(!FileManager.default.fileExists(atPath: LegacyKVCacheSweeper.defaultKVRoot().path))
     _ = Bundle(for: DiffusionFourCallBundleAnchor.self).bundleURL
     let model = try #require(
       ModelScanner.parseModelInfo(snapshotDir: directory, modelName: modelID))

@@ -31,7 +31,7 @@ export default function RootLayout({
     <html lang="en" suppressHydrationWarning>
       <head>
         {/* Preload the Louize hero weight — it renders the LCP heading on the
-            chat empty state and the /login hero, so fetching it eagerly cuts
+            chat empty state and the page headings, so fetching it eagerly cuts
             LCP text delay and font-swap CLS (perf F12). */}
         <link
           rel="preload"

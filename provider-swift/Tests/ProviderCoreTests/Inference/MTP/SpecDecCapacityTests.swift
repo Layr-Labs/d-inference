@@ -309,7 +309,7 @@ private func makeSpecDecLoop() throws -> ProviderLoop {
             coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
         )
     )
-    return try ProviderLoop(config: config, purgeLegacyFiles: false, attestationSigner: nil)
+    return try ProviderLoop(config: config, attestationSigner: nil)
 }
 
 /// Stand-in for the MLXLLM drafter adapter — ProviderCore only ever sees the

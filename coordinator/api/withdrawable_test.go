@@ -338,22 +338,6 @@ func TestAdminRewardThenWithdraw(t *testing.T) {
 	}
 }
 
-// --- Provider wallet (unlinked) earnings are withdrawable ---
-
-func TestWithdrawableBalance_ProviderWalletIsWithdrawable(t *testing.T) {
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
-	_ = st.CreditProviderWallet(&store.ProviderPayout{
-		ProviderAddress: "wallet-addr-1",
-		AmountMicroUSD:  8_000_000,
-		Model:           "test-model",
-		JobID:           "job-1",
-	})
-
-	if w := st.GetWithdrawableBalance("wallet-addr-1"); w != 8_000_000 {
-		t.Errorf("wallet provider earning should be withdrawable: got %d, want 8_000_000", w)
-	}
-}
-
 // --- Referral reward is withdrawable ---
 
 func TestWithdrawableBalance_ReferralRewardIsWithdrawable(t *testing.T) {

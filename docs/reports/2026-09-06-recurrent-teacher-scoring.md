@@ -1,6 +1,6 @@
 # Recurrent teacher scoring uses normal state and peak admission
 
-> Last updated: 2026-09-06 · commit `8af245cc7`
+> Last updated: 2026-09-06
 
 The ordinary teacher-forced diagnostic now runs recurrent targets through
 request-owned state on contiguous and paged storage. Its private row uses normal

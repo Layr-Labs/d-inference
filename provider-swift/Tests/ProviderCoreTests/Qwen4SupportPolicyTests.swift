@@ -36,10 +36,17 @@ struct Qwen4SupportPolicyTests {
                 modelId: other, environment: [PrefixCachePolicy.environmentFlag: "1"]))
         }
         #expect(!EngineV2SupportedModels.isQwen4ExpListingModelID(nil))
-        for model in ["gpt-oss-20b", "gemma-4-26b-qat-4bit"] {
+        for model in ["gpt-oss-20b", "gemma-4-26b-qat-4bit", "Qwen3.5-9B"] {
             #expect(PrefixCachePolicy.isEnabled(modelId: model, environment: [:]))
             #expect(EngineV2KVBackendPolicy.preferredBackend(
                 selection: .auto, modelID: model) == .paged)
+        }
+        // The catalog ID matches exactly: the lowercase spelling, the Hugging
+        // Face repo path and a suffixed variant get neither default.
+        for other in ["qwen3.5-9b", "Qwen/Qwen3.5-9B", "QWEN3.5-9B", "Qwen3.5-9B-mtp"] {
+            #expect(!PrefixCachePolicy.isEnabled(modelId: other, environment: [:]))
+            #expect(EngineV2KVBackendPolicy.preferredBackend(
+                selection: .auto, modelID: other) == .contiguous)
         }
     }
 

@@ -217,6 +217,30 @@ public actor ProviderLoop {
     internal let state: ProviderState
     internal let cancellationRegistry: InferenceCancellationRegistry
     internal let kvBudget: GlobalKVCacheBudget
+    /// One lifecycle belongs to this real loop owner, not to each load. The
+    /// process registry retains native resources independently on failed drain.
+    internal let nativeMiMoRegistry: MiMoV26NativeLoadRegistry
+    internal var nativeMiMoLifecycle: MiMoV26NativeLifecycle?
+    internal var nativeMiMoLifecycleClosed = false
+    internal var nativeMiMoLoads: [String: MiMoV26ServingLoad] = [:]
+    internal var nativeMiMoCandidates: [String: ModelSlot] = [:]
+    internal var nativeMiMoRetiringSizing: [String: SlotSizingSnapshot] = [:]
+    internal var nativeMiMoResliceOwners: Set<UUID> = []
+    internal var nativeMiMoRetiring: Set<String> = []
+    internal var nativeMiMoPendingRetirements: [String: NativeMiMoRetirementProgress] = [:]
+    internal var nativeMiMoRetirementTasks: [String: Task<Void, Never>] = [:]
+    internal var nativeMiMoRetirementReady: Set<String> = []
+    internal var nativeMiMoHostConsumers: [String: [UUID: Task<Void, Never>]] = [:]
+    internal var nativeMiMoHostConsumerWatchers: [UUID: Task<Void, Never>] = [:]
+    internal var nativeMiMoJoinedServingOwners: Set<UUID> = []
+    internal var nativeMiMoJoinedBridgeProgress: [UUID: [Int]] = [:]
+    internal var nativeMiMoShutdownIdentities: [UUID: NativeMiMoShutdownIdentity] = [:]
+    internal var nativeMiMoConsumerLeases: [String: [UUID: NativeLocalConsumerLease]] = [:]
+    internal var nativeMiMoJoinedLeaseRevisions: [UUID: [UUID: UInt64]] = [:]
+    internal var nativeMiMoClosedConsumerLeaseIDs: Set<UUID> = []
+    /// Refusal/hold-only fixture boundary; never supplies a successful native
+    /// result, memory estimate, retirement receipt, or replacement model.
+    internal var nativeMiMoBoundaryForTesting: (@Sendable (String) async throws -> Void)?
     var processMemoryTelemetrySampler = ProcessMemoryTelemetrySampler()
     /// Phase 3: global disk accountant (process-wide, shared across models).
     internal let powerAssertion: InferencePowerAssertion
@@ -369,6 +393,13 @@ public actor ProviderLoop {
     internal var mtpStagingReservations = MTPStagingReservations()
     internal var mtpAdmissionDrains = MTPAdmissionDrains()
     internal var mtpUpgradeMonitorTask: Task<Void, Never>?
+    internal var modelRevisionMonitorTask: Task<Void, Never>?
+    internal var modelRevisionAttempt: (entry: CoordinatorMessage.DesiredModelEntry, task: Task<Void, Never>)?
+    internal var desiredModelRevisions: [String: CoordinatorMessage.DesiredModelEntry] = [:]
+    internal var revisionUpdatesInProgress = Set<String>()
+    internal var modelRevisionActivationID: String?
+    internal var failedModelRevisionRestores: [String: UUID] = [:]
+    internal var prefetchPublicationCounts: [String: Int] = [:]
     internal var mtpUpgradeTransitions: Set<String> = []
     internal var mtpUpgradeWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
 
@@ -542,7 +573,7 @@ public actor ProviderLoop {
     internal var startupPreloadGateWaiter: OneShotBoolContinuation?
     /// Coalesces pre-registration teardown requested by the serve task and a
     /// concurrent signal handler. Detached from a cancelled schedule task.
-    internal var preRegistrationCleanupTask: Task<Void, Never>?
+    internal var preRegistrationCleanupTask: Task<Bool, Never>?
     /// Set once the coordinator event reader owns the normal shutdown path.
     internal var coordinatorEventLoopStarted = false
     /// Suffix of the startup plan not yet completed by the driver. Exposed in
@@ -642,6 +673,12 @@ public actor ProviderLoop {
     /// reflect active/queued requests and adaptive batch-cap changes while
     /// long-running generations are still in flight.
     internal var capacityRefreshTask: Task<Void, Never>?
+    /// Rebuild capacity on shared service acquisition/retirement, independently
+    /// of slot counters and the periodic capacity monitor.
+    internal var serviceAllowanceRefreshTask: Task<Void, Never>?
+    /// Rebuild after once-only prompt/terminal measurements, independent of
+    /// output tokens and the periodic monitor. The heartbeat throttle bounds sends.
+    internal var performanceRefreshTask: Task<Void, Never>?
 
     /// Background task that periodically checks for provider updates and
     /// applies them automatically. nil when auto-update is disabled or
@@ -664,21 +701,21 @@ public actor ProviderLoop {
     public init(config: ProviderLoopConfig) throws {
         try self.init(
             config: config,
-            purgeLegacyFiles: true,
             attestationSigner: Self.createAttestationSigner()
         )
     }
 
     init(
         config: ProviderLoopConfig,
-        purgeLegacyFiles: Bool,
         attestationSigner: (any AttestationSigner)?,
         preloadTaskStarted: (@Sendable (String) -> Void)? = nil,
         beforeModelLoad: (@Sendable (String) async -> Void)? = nil,
         // Scripted slot fixtures must not inherit the test host's RAM.
-        kvBudgetForTesting: GlobalKVCacheBudget? = nil
+        kvBudgetForTesting: GlobalKVCacheBudget? = nil,
+        nativeMiMoRegistryForTesting: MiMoV26NativeLoadRegistry? = nil
     ) throws {
         self.loopConfig = config
+        self.nativeMiMoRegistry = nativeMiMoRegistryForTesting ?? .shared
         self.specDecFunnel = SpecDecArtifactFunnel(
             resolver: SpecDecResolver(),
             catalog: SpecDecCatalogLookup(coordinatorURL: config.coordinatorURL))
@@ -709,9 +746,6 @@ public actor ProviderLoop {
         }
         self.advertisedModels = advertised
         self.modelHashes = config.modelHashes
-        if purgeLegacyFiles {
-            NodeKeyPair.purgeLegacyFiles()
-        }
         self.keyPair = NodeKeyPair.generate()
         self.signer = attestationSigner
         self.attestationBuilder = signer.map { AttestationBuilder(identity: $0) }
@@ -739,10 +773,6 @@ public actor ProviderLoop {
             activationReserveBytes: UnifiedMemoryCap.resolvedActivationReserveBytes(
                 modelIDs: Array(advertised.keys)),
             configReserveBytes: Self.memoryReserveBytes(forGiB: config.config.provider.memoryReserveGB))
-        // Sweep only the retired checkpoint tier's `darkbloom/kv` directory.
-        // The EngineV2 SSD tier uses the separate `darkbloom/kv3` root,
-        // so this cleanup cannot delete current cache data.
-        if purgeLegacyFiles { LegacyKVCacheSweeper.sweep() }
         self.powerAssertion = InferencePowerAssertion(reason: "Darkbloom inference job active")
         self.preloadTaskStarted = preloadTaskStarted
         self.beforeModelLoad = beforeModelLoad
@@ -813,8 +843,10 @@ public actor ProviderLoop {
         /// Scheduler-free sizing facts (weights, fp16 KV rate, context) —
         /// feeds re-slicing, heartbeat fleet context, and the vision gate.
         let sizing: SlotSizingSnapshot
-        /// Hash verified for the exact bytes bracketed around this slot's load.
-        /// Reused only when rebuilding the engine over the retained container.
+        /// Load-bound profile identity, retained across engine rebuilds.
+        /// Reviewed candidates verify matching reads around the container load.
+        let modelArtifactSHA256: String?
+        /// Separate cache eligibility; nil never removes the artifact identity.
         let cacheEligibleWeightHash: String?
         /// Vision-language model (config has `vision_config`). The container
         /// supplies vision preprocessing before multimodal EngineV2 prefill.
@@ -847,13 +879,15 @@ public actor ProviderLoop {
             container: MLXLMCommon.ModelContainer,
             tokenizer: TokenizerHandle,
             sizing: SlotSizingSnapshot,
+            modelArtifactSHA256: String? = nil,
             cacheEligibleWeightHash: String? = nil,
             isVLM: Bool,
             modelType: String?,
             lastInferenceAt: ContinuousClock.Instant
         ) {
             self.init(engineBundle: engineBundle, modelContainer: .autoregressive(container),
-                tokenizer: tokenizer, sizing: sizing, cacheEligibleWeightHash: cacheEligibleWeightHash,
+                tokenizer: tokenizer, sizing: sizing, modelArtifactSHA256: modelArtifactSHA256,
+                cacheEligibleWeightHash: cacheEligibleWeightHash,
                 isVLM: isVLM, modelType: modelType, lastInferenceAt: lastInferenceAt)
         }
 
@@ -862,6 +896,7 @@ public actor ProviderLoop {
             modelContainer: ProviderModelContainer,
             tokenizer: TokenizerHandle,
             sizing: SlotSizingSnapshot,
+            modelArtifactSHA256: String? = nil,
             cacheEligibleWeightHash: String? = nil,
             isVLM: Bool,
             modelType: String?,
@@ -871,6 +906,7 @@ public actor ProviderLoop {
             self.modelContainer = modelContainer
             self.tokenizer = tokenizer
             self.sizing = sizing
+            self.modelArtifactSHA256 = modelArtifactSHA256
             self.cacheEligibleWeightHash = cacheEligibleWeightHash
             self.isVLM = isVLM
             self.modelType = modelType
@@ -883,6 +919,7 @@ public actor ProviderLoop {
             container: MLXLMCommon.ModelContainer,
             tokenizer: TokenizerHandle,
             sizing: SlotSizingSnapshot,
+            modelArtifactSHA256: String? = nil,
             cacheEligibleWeightHash: String? = nil,
             isVLM: Bool,
             modelType: String?,
@@ -900,6 +937,7 @@ public actor ProviderLoop {
                 container: container,
                 tokenizer: tokenizer,
                 sizing: sizing,
+                modelArtifactSHA256: modelArtifactSHA256,
                 cacheEligibleWeightHash: cacheEligibleWeightHash,
                 isVLM: isVLM,
                 modelType: modelType,
@@ -917,18 +955,17 @@ public actor ProviderLoop {
         }
     }
 
-    /// Effective concurrent-request cap for a v2 engine slot: the
-    /// per-model override when configured, else the box-wide
-    /// `engine_v2_max_concurrent`, clamped to [1, 8] (the CBv2 product
-    /// ceiling — see `BackendSettings.engineV2MaxConcurrent`).
+    /// Requested cap, carried to final artifact/backend profile resolution.
+    /// Unknown profiles retain the existing 8 ceiling; reviewed profiles can
+    /// qualify up to 16. The preparation owns the effective advertised value.
     internal func engineV2MaxConcurrent(forModel modelId: String) -> Int {
         let backend = loopConfig.config.backend
         let raw = backend.engineV2MaxConcurrentByModel[modelId]
             ?? backend.engineV2MaxConcurrent
-        return Self.clampEngineV2Concurrency(raw)
+        return ServingPerformanceProfiles.requestedConcurrency(raw)
     }
 
-    /// Pure clamp for the configured concurrency (unit-testable).
+    /// Legacy unknown-profile clamp retained for compatibility tests.
     internal static func clampEngineV2Concurrency(_ raw: UInt64) -> Int {
         Int(min(max(raw, 1), 8))
     }

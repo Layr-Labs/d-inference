@@ -6,18 +6,11 @@ import (
 )
 
 const usageRecordColumns = `provider_id, consumer_key_hash, model, public_model, prompt_tokens,
-	completion_tokens, created_at, request_id, cost_micro_usd, request_location`
+	cached_tokens, completion_tokens, created_at, request_id, cost_micro_usd, request_location`
 
 // UsageRecords returns the most recent 10000 records, newest first.
 func (s *PostgresStore) UsageRecords() []UsageRecord {
 	return s.readUsageRecords(`SELECT ` + usageRecordColumns + ` FROM usage ORDER BY created_at DESC LIMIT 10000`)
-}
-
-// UsageRecordsSince returns records at or after since, oldest first.
-func (s *PostgresStore) UsageRecordsSince(since time.Time) []UsageRecord {
-	return s.readUsageRecords(`SELECT `+usageRecordColumns+`
-		FROM usage WHERE ($1::timestamptz IS NULL OR created_at >= $1)
-		ORDER BY created_at ASC`, nullSince(since))
 }
 
 // readUsageRecords preserves the historical read contract: query failures
@@ -36,7 +29,7 @@ func (s *PostgresStore) readUsageRecords(query string, args ...any) []UsageRecor
 		var r UsageRecord
 		var locationRaw []byte
 		if err := rows.Scan(&r.ProviderID, &r.ConsumerKey, &r.Model, &r.PublicModel,
-			&r.PromptTokens, &r.CompletionTokens, &r.Timestamp, &r.RequestID,
+			&r.PromptTokens, &r.CachedTokens, &r.CompletionTokens, &r.Timestamp, &r.RequestID,
 			&r.CostMicroUSD, &locationRaw); err != nil {
 			continue
 		}

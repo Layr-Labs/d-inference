@@ -1,6 +1,6 @@
 # Checkpoint routing across machines and turns
 
-> Last updated: 2026-09-05 · commit `825696740`
+> Last updated: 2026-09-05
 
 The coordinator routes against actual committed checkpoint endpoints. A longer
 checkpoint on machine B does not imply that B can restore an earlier recurrent

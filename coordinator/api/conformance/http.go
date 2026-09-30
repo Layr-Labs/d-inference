@@ -106,7 +106,7 @@ func (s Suite) TestOpenRouterConformanceFeed(t *testing.T) {
 		if !reflect.DeepEqual(m.InputModalities, []string{"text"}) || !reflect.DeepEqual(m.OutputModalities, []string{"text"}) {
 			t.Fatalf("modalities: %+v", m)
 		}
-		if m.Pricing.Prompt != "0.00000005" || m.Pricing.Completion != "0.0000002" || m.Pricing.InputCacheRead != "0" {
+		if m.Pricing.Prompt != "0.00000005" || m.Pricing.Completion != "0.0000002" || m.Pricing.InputCacheRead != "0.000000025" {
 			t.Fatalf("feed prices: %+v", m.Pricing)
 		}
 		if !reflect.DeepEqual(m.SupportedFeatures, []string{"reasoning", "tools"}) || !reflect.DeepEqual(m.SupportedSamplingParameters, []string{"temperature", "top_p", "top_k", "frequency_penalty", "presence_penalty", "repetition_penalty", "stop", "seed", "max_tokens"}) {

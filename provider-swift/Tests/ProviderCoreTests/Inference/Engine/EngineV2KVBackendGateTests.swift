@@ -195,6 +195,24 @@ struct EngineV2KVBackendGateTests {
         _ = LiveInferenceFixtures.ensureMetallibColocated()
     }
 
+    @Test("qualification constructs width 16 while unknown serving stays at 8")
+    func qualificationConstructionPreservesRequestedWidth() async throws {
+        for purpose in [EngineV2Factory.ConstructionPurpose.serving, .benchmark] {
+            let build = try EngineV2Factory.makeProductionBuild(
+                model: tinyGemma4Text(), modelID: "unreviewed-gemma",
+                tokenizer: StubBridgeTokenizer(), kvBytesCapacity: gateTestCapacity,
+                maxConcurrentRequests: 16, constructionPurpose: purpose,
+                kvBackend: .contiguous, maxContextLength: 2048,
+                environment: gateEnvironment())
+            let expected = purpose == .benchmark ? 16 : 8
+            #expect(build.effectiveMaxConcurrentRequests == expected)
+            await build.engine.shutdown()
+        }
+        // Benchmark intent never removes the native architecture guard.
+        #expect(EngineV2Factory.nativeConcurrentRequestLimit(
+            requested: 16, qwen4: true, environment: [:]) == 1)
+    }
+
     @Test(arguments: candidateQwenIDs)
     func candidateAutoBuild(modelID: String) async throws {
         let build = try makeBuild(model: tinyQwen(), modelID: modelID, kvBackend: .auto)
@@ -434,24 +452,10 @@ struct EngineV2KVBackendGateTests {
         await build.engine.shutdown()
     }
 
-    // DEGRADE, deliberately — the one paged-to-contiguous case that
-    // survives OPEN-9, and the only test pinning the distinction. The kill
-    // switch is an operator override ("do NOT do what you asked"), not a
-    // failure ("we CANNOT do what you asked"); refusing here would 503
-    // every slot on a fleet configured `engine_v2_kv_backend = "paged"`
-    // the moment an operator pulled it. The three refusal tests below are
-    // the other half of that split.
-    @Test("fleet kill switch forces explicit paged to contiguous at the deepest layer")
-    func killSwitchForcesContiguous() async throws {
-        let build = try makeBuild(
-            model: try tinyGPTOSS(),
-            kvBackend: .paged,
-            environment: [EngineV2KVBackendPolicy.killSwitchEnvKey: "0"])
-        #expect(build.kvBackendKind == .contiguous)
-        #expect(build.kvBackendFallbackReason == "kill_switch")
-        await build.engine.shutdown()
-    }
-
+    // The fleet kill switch's paged-to-contiguous DEGRADE (the one case that
+    // survives OPEN-9) is pinned by
+    // `EngineV2PagedPoolDTypeEnvTests.degradedPagedReportsNoDType`; the
+    // refusal tests below are the other half of that split.
     @Test("kernel-ineligible shape REFUSES an explicit paged request")
     func ineligibleShapeRefusesExplicitPaged() async throws {
         // headDim 80 is outside the paged kernel's {64,128,256,512}.

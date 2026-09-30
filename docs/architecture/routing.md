@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-27 · commit `e8d00933d`
+> Last updated: 2026-09-29
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -10,6 +10,12 @@ is slow to produce first content — races a second provider against it.
 Capacity, queues, slot states and the warm pool are covered in
 [`scheduling.md`](scheduling.md); this page covers only choosing among
 eligible providers.
+
+For same-ID weight updates, `CatalogAcceptsWeightHash` and catalog eligibility
+accept the desired and retained approved revisions for that same model. An
+unpromoted or explicitly retired hash is not accepted. Catalog size uses the
+largest retained revision as a conservative admission bound during convergence.
+[Model revisions](model-revisions.md) defines this transition policy.
 
 ## Provider lifecycle drain boundary
 
@@ -65,6 +71,19 @@ Invalid selections leave inventory and drain unchanged. See
 
 ## Context
 
+First-content forecasts include fresh coordinator-to-provider WebSocket RTT.
+`coordinator/registry/provider_transport.go` (`transportForecast`) requires two
+successful samples on the current connection within 90 seconds, and adds RTT
+and measured variation to the existing delivery allowances. The 30-second
+probe loop (`coordinator/api/provider_transport.go`) accepts RTT observations
+up to three seconds; this is a sample limit, not a probe-specific socket
+deadline. It keeps at most one probe outstanding, and an unanswered pong waits
+for ordinary connection teardown. The WebSocket library's control-frame failure
+policy still applies, as for automatic pongs; application writes retain their
+existing watchdog. Missing or stale samples retain the conservative legacy
+allowances. Ping/pong control frames do not hold the application text writer
+while waiting for a pong.
+
 Forced tool choice with media, and media-bearing tool results even with
 `tool_choice: none`, carry `RequestTraits.RequiresNativeMediaTools`. The shared
 eligibility gate requires the selected model's explicit `native_media_tools`
@@ -117,7 +136,7 @@ holding the winner plus up to `dispatchPlanMaxAlternates = 8` retained
 alternates. The API layer (`coordinator/api/dispatch.go`) consumes the plan:
 it dispatches to the winner, may probe alternates for capacity quotes
 (`capacityProbeWindow = 250 * time.Millisecond`,
-`dispatchPlanProbeFanout = 8`, `coordinator/api/dispatch_plan_wiring.go`) and
+`dispatchPlanProbeFanout = 2`, `coordinator/api/dispatch_plan_wiring.go`) and
 falls through the plan on retry or hedge. `ReserveNextFromPlan`
 (`coordinator/registry/dispatch_plan.go`) refreshes remaining time after both
 registry and provider locks are acquired, before evaluating and debiting an
@@ -142,11 +161,11 @@ flowchart TD
     V -->|provider lacks vision| X3[tallyGate vision]
     V --> B[buildCandidateInto]
     B -->|slot_crashed / slot_reloading / no_headroom / thermal_critical / model_too_large / free_memory| X4[tallyGate]
-    B --> C[cost = state + queue + pending + backlog + thisReq + health + capacityRate]
-    C -->|ttft_ceiling| X5[tallyGate]
-    C --> D[applyCacheRoutingCost]
-    D --> P[pool narrowing: prefer owner, avoid version, min decode TPS]
-    P --> SEL[selectRoutingCandidateWithAffinity: unique_min / tie_queue / tie_pending / random / prefix_affinity]
+    B --> D[applyCacheRoutingCost: validate proof and restoration]
+    D --> C[estimateFirstContent: expected and conservative]
+    C -->|credible hard-ceiling miss| X5[tallyGate]
+    C --> P[pool narrowing: owner, feasibility, version and decode quality]
+    P --> SEL[selectRoutingCandidateWithAffinity: 100-ms band and whole-Mac work]
     SEL --> PLAN[dispatch plan: winner + alternates]
     PLAN --> DISP[dispatch to winner]
     DISP -->|no first content by speculativeAt| H[runSpeculative: hedge governor + backup]
@@ -167,6 +186,15 @@ estimate and the remaining weight bytes plus a valid explicit
 Missing/invalid allowance declarations retain the 1.2 load-transient padding.
 Missing/invalid offload or other-family declarations keep the existing
 catalog/measured-weight policy.
+
+Exact `mimo_v2` has a separate full-LOAD declaration with **zero** SSD offload.
+The same helper requires matching ID, checked positive source bytes/supplement,
+finite memory at least their sum, and a valid raw decimal-GB catalog size from
+the normal/swap/warm/cold caller. It retains the greater catalog/source-size
+floor and adds the supplement once. Invalid or absent declarations keep legacy
+pricing; no hardware, catalog identity, activation or request-KV gate is waived.
+See `provider-swift/Sources/ProviderCore/Models/MiMo/MiMoV26DiscoveryLoadFootprint.swift`
+(`estimate`) for the metadata-only strict native main/sidecar quote.
 
 `coordinator/registry/scheduler.go` carries this estimate into cold snapshots.
 `reportedFreeForLoadAdmitsWithOffload` in
@@ -264,9 +292,10 @@ not answer in time) only clears it once `FailedChallenges` reaches the
 threshold, so a single missed challenge does not deroute a provider verified
 seconds earlier. Both paths also record the failure into reputation.
 
-### Cost model
+### Historical cost diagnostics
 
-`buildCandidateInto` prices an eligible provider as
+First-content selection is defined in [first-content routing](first-content-routing.md).
+`buildCandidateInto` retains the historical cost breakdown for profiler comparisons:
 
 ```text
 cost = statePenalty + queueMs + pendingMs + backlogMs + thisReqMs + healthMs + capacityRateMs
@@ -289,19 +318,19 @@ and stores every term in `costBreakdown` with `Total = cost`
 | `thermalPenaltyFairMs` | `2_000.0` | Added when `ThermalState == "fair"`. |
 | `thermalPenaltySeriousMs` | `8_000.0` | Added when `ThermalState == "serious"` (`critical` is a gate, not a penalty). |
 | `defaultCapacityRatePenaltyMs` | `15_000.0` | × windowed capacity-503 rate (`capacity_rate.go`, [below](#gray-box-capacity-signals)). |
-| `nearTieCostWindowMs` | `3_000.0` | Width of the near-tie band in `selectRoutingCandidate`. |
+| `firstContentFastBandMs` | `100.0` | Expected-first-content band in `selectFirstContentCandidate` (`coordinator/registry/first_content_selection.go`). |
 | `defaultRequestedMaxTokens` | `256` | Used for `max_tokens` when the request does not set one. |
 | `effectiveTPSLoadFactor` | `0.39` | Per-concurrent-decode TPS derating (`effectiveDecodeTPS`). |
 | `kvCacheBytesPerToken` | `400_000` | Fallback KV bytes per token when the slot does not report `KVBytesPerToken`. |
 | `modelMemoryHeadroomFactor` | `2.0` | `modelFitsHardware`: model GB × 2 must fit total memory when the manifest gives no `minRAMGb`. |
-| `maxPrefillTPS` | `5000.0` | Cap on any prefill rate used for pricing (`maxPrefillTPS`, `coordinator/registry/heartbeat.go`; `resolvePrefillTPS`, `coordinator/registry/scheduler.go`). |
+| `maxPrefillTPS` | `20_000.0` | Cap on any prefill rate used for pricing (`maxPrefillTPS`, `coordinator/registry/heartbeat.go`; `resolvePrefillTPS`, `coordinator/registry/scheduler.go`). |
 | `defaultPrefillToDecodeRatio` | `12.0` | Static prefill TPS = decode TPS × ratio when the provider reports no prefill rate. |
 | `defaultLongPromptThresholdTokens` | `0` | Long-prompt bias is off until a threshold is set. |
 | `defaultLongPromptPrefillWeight` | `2.0` | Multiplier on first-token-blocking time for long prompts. |
 
 The remaining terms are request-shaped:
 
-- **`backlogMs`** — tokens ahead of this request divided by effective TPS.
+- **`backlogMs`** — physical token commitments divided by effective TPS; a diagnostic, not elapsed waiting or serial decode work.
   For a slot that reports a token budget it is
   `(ActiveTokenBudgetUsed + QueuedTokenBudget) / effectiveTPS`; otherwise
   `backlogTokenMs` sums `MaxTokensPotential`, the backend's waiting requests ×
@@ -310,18 +339,23 @@ The remaining terms are request-shaped:
 - **`thisReqMs`** — `promptTokens / prefillTPS + maxTokens / effectiveTPS`,
   plus `longPromptPenalty`.
 
-**Effective TPS.** `resolveEffectiveTPS` prefers the slot's
+**Effective TPS.** `resolveEffectiveTPS` and `resolvePrefillTPS` first use the
+exact matching reviewed profile's conservative point at or above the batch
+width after admission (`coordinator/registry/performance_profile.go`, `batchAt`).
+A workload-specific live EWMA does not replace that point. Without a fitting
+profile point, `resolveEffectiveTPS` prefers the slot's
 `ObservedDecodeTPS` EWMA, then the fleet median for the model, then the
 static registration rate derated by load:
 `effectiveDecodeTPS = staticTPS / (1 + effectiveTPSLoadFactor × backendRunning)`,
-floored at 1 tok/s. `resolvePrefillTPS` prefers `ObservedPrefillTPS`, else
+floored at 1 tok/s. The prefill fallback prefers `ObservedPrefillTPS`, else
 the static prefill rate (`resolvedPrefillTPS`: the registered `PrefillTPS`,
-or decode × `prefillToDecodeRatio`), capped at `maxPrefillTPS`.
+or decode × `prefillToDecodeRatio`), capped at `maxPrefillTPS`. Reviewed prefill
+points satisfy the same ceiling during profile validation.
 `SetPrefillToDecodeRatio` changes the ratio process-wide; the coordinator
 binary wires it to `EIGENINFERENCE_PREFILL_DECODE_RATIO`
 (`coordinator/cmd/coordinator/main.go`).
 
-**Prefill weighting for long prompts.** `longPromptPenalty(promptTokens,
+**Historical prefill cost weighting for long prompts.** `longPromptPenalty(promptTokens,
 ttftBlockMs)` returns `(longPromptPrefillWeight − 1) × ttftBlockMs` when a
 threshold is set and the prompt reaches it, else `0`. `ttftBlockMs` is the
 request's prefill time plus, for a provider that is not resident, its slot
@@ -341,8 +375,9 @@ dispatch-to-first-content samples at content commit, not full completion
 (`ttftCalibration.appliedRatio`, `coordinator/registry/ttft_calibration.go`).
 `ttftOccupancyAlpha` applies only to the diagnostic shadow estimate, including
 when `EIGENINFERENCE_TTFT_ADMISSION_MODE=enforce`; it does not change the live TTFT ceiling.
-The live estimate drives the `ttft_ceiling` gate, hedge
-timing and the `Retry-After` header; it is not a cost term.
+This calibrated mean remains a diagnostic, separate from the expected and
+conservative forecasts used by current selection and deadline feasibility.
+A learned ratio cannot certify unknown performance evidence.
 
 When the matching heartbeat reports zero running and waiting requests,
 `fillSnapshotPendingAndPool` supplies each local pending request's own prompt
@@ -386,48 +421,26 @@ Sources: `coordinator/registry/qwen4_model_policy.go`
 
 ### Selection paths
 
-Before selection the candidate pool may be narrowed, each step only when it
-leaves at least one candidate (`scanCandidatesLocked`):
+`scanCandidatesLocked` narrows the request-local pool by owner scope, credible
+first-content feasibility, retry version preference and the existing soft decode
+floor. A preference keeps the original pool when it has no matching candidates.
+`selectRoutingCandidateWithAffinity` then chooses within a 100-ms band around
+the minimum health-adjusted expected delivery time, using whole-Mac service work
+before validated cache affinity and spreading equivalent choices. Maximum output
+commitments do not widen that band. The full mechanism, confidence rules and
+reservation invariants are in [first-content routing](first-content-routing.md).
 
-1. `PreferOwner` — keep only providers owned by the caller.
-2. `Traits.AvoidVersion` — keep only providers not running the version that
-   just failed this request (version-diverse retry).
-3. `MinDecodeTPS` — keep only providers whose
-   `projectedPerRequestDecodeTPS` meets the request's floor. The coordinator
-   binary sets the floor from
-   [`EIGENINFERENCE_MIN_DECODE_TPS`](../reference/configuration.md#routing-admission-and-ttft);
-   `0` disables it.
-
-`preferRoutingCandidates` compacts the request-local pool in place.
-`selectRoutingCandidateWithAffinity` ranks it without allocating intermediate candidate lists
-(`coordinator/registry/candidate_selection.go`):
-
-1. **Best cost.** The minimum `costMs`.
-2. **Cost ties.** When any candidate has a cache credit or restore penalty, keep only
-   exact minimum-cost candidates. Otherwise keep every candidate within
-   `nearTieCostWindowMs` ([cost model](#cost-model)), preserving ordinary load
-   spreading. Among the retained candidates choose the lowest `effectiveQueue`,
-   then the lowest `totalPending`.
-3. **Equivalents.** More than one candidate sharing the retained cost range,
-   queue and pending count normally resolves uniformly by `random`. With active
-   cache routing, observed repeat demand and no cache cost adjustment in the
-   pool, a stable keyed ranking prefers a matching, non-quarantined cache
-   capability (`prefix_affinity`). See [cache affinity](cache-aware-routing.md#observed-demand-and-soft-prefix-affinity).
-4. **Path label**: `unique_min` when only one candidate is retained;
-   `tie_pending` when pending count decides between equal queue depths;
-   otherwise `tie_queue`. Equivalent choices use `random` or `prefix_affinity`
-   under the conditions above; an empty pool uses `none`.
-
-`SelectionPath` values (`coordinator/registry/gate_reason.go`): `none`,
-`unique_min`, `tie_queue`, `tie_pending`, `random`, `prefix_affinity`. Historical profiler rows may
-still contain the retired `cache_tiebreak` string. The
-runner-up (the lowest-cost candidate other than the winner) is recorded for telemetry
-and as the first alternate in the dispatch plan.
+`SelectionPath` (`coordinator/registry/gate_reason.go`) retains its historical
+vocabulary for stored rows: `none`, `unique_min`, `tie_queue`, `tie_pending`,
+`random`, `prefix_affinity`, `cache_credit`. Current least-service-work choices
+use `tie_pending`; `cache_credit` requires a useful verified holder among work
+ties. The runner-up records the next first-content alternative.
 
 ### Hedged (speculative) dispatch
 
 A request that has not produced first content by its **speculative point**
-launches a backup and races the two. The mechanics live in
+may launch one distinct feasible backup with spare service allowance. A logical
+request never launches a second hedge after retry. The mechanics live in
 `coordinator/api/dispatch.go` (`runSpeculative`, `runRace`) with timing in
 `coordinator/api/hedge_schedule.go` and `coordinator/api/first_token_clock.go`.
 
@@ -449,7 +462,8 @@ offset       = max(0, min(halfPoint, latestUseful))      # halfPoint alone unles
 request's `ReceivedAt`, so retries do not restart the clock.
 
 **Backup selection.** The backup is drawn from the retained dispatch plan
-(`dispatchFromPlanMachinery`) or, when the plan is exhausted, from a fresh
+(`dispatchFromPlanMachinery`), reranked and revalidated against current evidence,
+or, when the plan is exhausted, from a fresh
 `dispatchOneProvider` scan with the primary and every previously failed
 provider excluded. A `PreferOwner` request being served by the owner's own
 machine never hedges onto the paid public fleet.
@@ -493,7 +507,7 @@ A provider's structural budget (`snapshotStructuralBudget`) is its reported
 resident it is `coldTokenBudgetEstimate`:
 
 ```text
-weightsGiB   = measured resident GiB (version ≥ 0.8.16 and model in table) else catalogGB × coldLoadCatalogGBToMemGiB
+weightsGiB   = measured resident GiB (model in servabilityMeasuredResidentGiB) else catalogGB × coldLoadCatalogGBToMemGiB
 postLoadGiB  = servabilityCapFraction × totalMemoryGB − weightsGiB        # mirrors the provider cap fraction
 tokens       = (postLoadGiB − activationFloorGiB) × 2^30 / kvBytesPerToken  # kvCacheBytesPerToken when unreported
 ```
@@ -503,14 +517,13 @@ tokens       = (postLoadGiB − activationFloorGiB) × 2^30 / kvBytesPerToken  #
 `servabilityActivationFloorGB` and `servabilityModelActivationFloorsGB` mirror
 the provider's `UnifiedMemoryCap` constants, whose values are stated once in
 [`hardware-support.md`](hardware-support.md#constants); the two tables move in
-the same commit. The activation floor is version-gated
-(`servabilityActivationFloor`):
-
-| Provider version | Floor |
-|---|---|
-| empty or `< 0.8.0` (`servabilityActivationFloorMinVersion = "0.8.0"`) | `servabilityLegacyActivationFloorGB = 3.0` |
-| `< 0.8.16` (`servabilityPerModelFloorMinVersion = "0.8.16"`) | `servabilityActivationFloorGB` |
-| `≥ 0.8.16` | per-model table, else `servabilityActivationFloorGB` |
+the same commit. The activation floor (`servabilityActivationFloor`) is the
+model's entry in `servabilityModelActivationFloorsGB`, else
+`servabilityActivationFloorGB`. Neither term depends on the provider version:
+they mirror the per-model reserve that v0.8.16 and later providers hold, and
+older providers are expected to sit below the routing floor
+(`EIGENINFERENCE_MIN_PROVIDER_VERSION`,
+[`configuration.md`](../reference/configuration.md#release-policy-version-floor-and-binary-hashes)).
 
 Per-model tables (`coordinator/registry/servability.go`):
 
@@ -629,7 +642,11 @@ onto the formerly cheapest provider), the admit re-check
 (`tryClaimCapacityProbe`, check-and-claim under `gate.mu`) and the pending
 debit (`addPendingLocked`). `ReserveNextFromPlan`
 (`coordinator/registry/dispatch_plan.go`) commits each plan entry the same
-way. `commitLock` (`coordinator/registry/gate_commit_mode.go`) selects the
+way. The comparison also rechecks the [idle evidence-exploration
+exception](first-content-routing.md#prediction-and-freshness): newly reported
+service or an unretired terminal lease forces a rescan even if pending counts
+and numeric forecasts have not changed.
+`commitLock` (`coordinator/registry/gate_commit_mode.go`) selects the
 mode: `reserveCommitShared` as described, or `reserveCommitGlobal`, which
 takes `r.mu.Lock()` for the commit — the previous fleet-wide serialization,
 kept as the kill switch behind
@@ -818,7 +835,7 @@ must not run in parallel with other scheduler tests in the same process.
 | `no_provider` | No provider advertises the model, or every advertising provider fails a non-capacity gate (`candidateCount == 0` with no capacity rejections). | Preflight returns `429` with `Retry-After` and reason code `no_provider` (`coordinator/api/inference_admission.go`). With [`EIGENINFERENCE_COLD_DISPATCH`](../reference/configuration.md#routing-admission-and-ttft) enabled and an idle on-disk provider that could load the model, the request is queued for a cold dispatch instead (`coldSpillAvailable`, `coordinator/api/cold_dispatch.go`). With breaker-only rejections, fail-open re-scans first (`shouldBypassBreakerFailOpen`). |
 | `model_too_large` | Every advertising provider is cold and `modelFitsHardware` fails (`rejectModelTooLarge`). | Permanent rejection for this fleet composition; `routingsim` reports `OutcomeModelTooLarge`. |
 | All gated on capacity (`machine_busy`) | Providers serve the model but all are at `no_headroom`, `free_memory` or `capacity_cooldown`. | With [`EIGENINFERENCE_QUEUE_BEFORE_SHED`](../reference/configuration.md#routing-admission-and-ttft) enabled (`coordinator/api/cold_dispatch.go`) the request queues per [`scheduling.md`](scheduling.md); otherwise `429` with `Retry-After` from `estimateRetryAfter`. |
-| `ttft_too_slow` | Every candidate's estimated TTFT exceeds the first-content deadline. | Soft by default: the best-available provider still serves. `EIGENINFERENCE_TTFT_HARD_REJECT=true` restores the legacy `429`; vision requests and accounts outside the first-content SLA selector are never TTFT-gated. |
+| `ttft_too_slow` | Every candidate with credible conservative evidence exceeds the first-content deadline. | Soft by default: the best-available provider still serves. `EIGENINFERENCE_TTFT_HARD_REJECT=true` restores the legacy `429`; vision requests and accounts outside the first-content SLA selector are never TTFT-gated. |
 | Queue timeout | A queued request found no eligible provider within the queue's wait bound. | `ErrQueueTimeout` → `429` with `Retry-After`; see [`scheduling.md`](scheduling.md#per-model-request-queue). |
 | Budget-clamped fleet | Every pair for the model is clamped after capacity 503s. | Pairs show as `free_memory` until release or `defaultBudgetClampTTL` ([above](#gray-box-capacity-signals)); heartbeat headroom plus one accept releases early. |
 | Hedge suppressed under load | Governor returns a suppress verdict. | Primary alone is waited on for the remaining deadline (`waitNoBackup`); `routing.hedge_governor_suppressed` counts the verdict. |
@@ -869,7 +886,7 @@ must not run in parallel with other scheduler tests in the same process.
 
 For exempt accounts, zero explicitly disables first-content deadlines: preflight skips its TTFT ceiling, queued and dispatched requests retain an empty `FirstContentDeadline`, and the provider frame omits `first_content_budget_ms`. The Swift inbound handler already interprets an omitted budget as no coordinator first-content deadline. `coordinator/api/first_token_clock.go` (`newFirstContentTimer`) disables the timeout select arm in every first-content wait, including accepted, retry and speculative-race paths. There is no 600-second first-content fallback. Clean empty completions remain eligible for speculative arbitration even with a zero deadline.
 
-Queue limits, provider write watchdogs, client cancellation and disconnect cleanup remain. The existing response/stream timers apply after first content commits. Ranking, ordinary hedge launch hints and capacity probes remain active; exempt probes use a finite advisory planning horizon without arming a request timeout or advancing SLA hedges. Exempt primary scans use the short admission scan-wait slice. Speculative backup scans only acquire an immediately available scan slot; saturation skips the backup and resumes reading the primary. Shadow TTFT metrics remain counterfactual measurements, not enforcement.
+Queue limits, provider write watchdogs, client cancellation and disconnect cleanup remain. The existing response/stream timers apply after first content commits. Ranking, ordinary hedge launch hints and capacity probes remain active; exempt probes, hedges and fresh-evidence recovery after repeated predictive refusal use a finite advisory planning horizon without arming a request timeout or advancing SLA hedges. Exempt primary scans use the short admission scan-wait slice. Speculative backup scans only acquire an immediately available scan slot; saturation skips the backup and resumes reading the primary. Shadow TTFT metrics remain counterfactual measurements, not enforcement.
 
 ### Planned provider reconnects
 

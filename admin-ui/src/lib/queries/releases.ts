@@ -8,8 +8,6 @@ export interface ReleaseRow {
   binary_hash: string;
   bundle_hash: string;
   metallib_hash: string;
-  python_hash: string;
-  runtime_hash: string;
   grpc_binary_hash: string;
   url: string;
   changelog: string;
@@ -28,8 +26,6 @@ export async function listReleases(limit = 200, offset = 0): Promise<ReleaseRow[
             COALESCE(binary_hash, '')      AS binary_hash,
             COALESCE(bundle_hash, '')      AS bundle_hash,
             COALESCE(metallib_hash, '')    AS metallib_hash,
-            COALESCE(python_hash, '')      AS python_hash,
-            COALESCE(runtime_hash, '')     AS runtime_hash,
             COALESCE(grpc_binary_hash, '') AS grpc_binary_hash,
             COALESCE(url, '')              AS url,
             COALESCE(changelog, '')        AS changelog,

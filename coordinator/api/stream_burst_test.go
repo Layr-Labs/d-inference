@@ -113,7 +113,7 @@ func TestStreamRelay_ChatBurstByteIdentical(t *testing.T) {
 	}
 	var recs []store.RequestProfileRecord
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-		if recs = st.RequestProfilesSince(time.Time{}); len(recs) == 1 {
+		if recs = st.RequestProfilesSinceFiltered(time.Time{}, store.RequestProfileFilter{}); len(recs) == 1 {
 			break
 		}
 	}

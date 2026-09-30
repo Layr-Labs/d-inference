@@ -34,12 +34,12 @@ coordinator/          Go control plane (packages live at top level, not internal
 │                     warm-pool controller, two-lane provider WS writer (provider_writer.go),
 │                     routingsim/ (trace-driven routing simulation harness)
 ├── saferun/          panic-safe goroutine runners
-├── stateexport/      consistent encrypted archive of MicroMDM (+ legacy step-ca) state (migration)
+├── stateexport/      consistent encrypted archive of MicroMDM and other /data state (migration)
 ├── store/            in-memory or Postgres persistence
 ├── telemetry/        telemetry event emitter (process logs + Datadog forwarding)
 ├── datadog/          Datadog APM / DogStatsD / Logs API client
 ├── deploy/           container entrypoint (start.sh)
-└── internal/e2e/     X25519 request-encryption helpers (+ cross-compat/tamper tests)
+└── internal/e2e/     X25519 request-encryption helpers (+ tamper tests)
 
 e2e/                  System-level E2E testing framework
 ├── integration_test.go  14 E2E tests (streaming, billing, encryption, attestation, etc.)
@@ -63,11 +63,11 @@ provider-swift/       Swift provider CLI for Apple Silicon Macs
 ├── Sources/darkbloom/                CLI (`start`, `stop`, `status`, `models`, `benchmark`, `doctor`, `login`, `local`, etc.)
 ├── Sources/darkbloom-publish/        registry manifest builder used by publish workflow
 ├── Sources/darkbloom-enclave-cli/    Secure Enclave attestation/sign helper
-├── Sources/ProviderBenchmark*, kv-*  benchmark + KV-cache self-test executables
+├── Sources/ProviderBenchmark/        benchmark harness library behind `darkbloom benchmark`
 └── Tests/                            ProviderCore, ProviderCoreFoundation, CLI, and publish tests
 
 console-ui/           Next.js 16 / React 19 frontend
-├── src/app/          chat (/), billing, models, stats, providers, settings, link, api-console, earn, login
+├── src/app/          chat (/), billing, models, stats, providers, settings, link, api-console, earn
 ├── src/app/api/      chat, auth/keys, keys, payments/*, invite, models, health, pricing, stats,
 │                     telemetry, attestation, device, encryption-key, leaderboard, me, network, admin
 ├── src/components/   chat UI, sidebar, top bar, trust badge, verification panel, invite banner
@@ -90,7 +90,7 @@ scripts/              build, signing, install, and deploy helpers
 ├── publish-model.sh  model registry publish workflow
 ├── fetch-metallib.sh MLX metallib builder (cmake from libs/mlx-swift source)
 ├── smoke-dev.sh      dev-coordinator smoke test
-├── benchmark-models.py, load_soak.py, …  benchmark + soak helpers
+├── benchmarks/       attention, radix and cache benchmark harnesses
 └── entitlements.plist hardened runtime entitlements (network, keychain)
 
 deploy/               infra config: gcp/ (Cloud Build + VM bootstrap), environments/ (dev/prod env),
@@ -140,6 +140,13 @@ make provider-test            # cd provider-swift && swift test
 make provider                 # build + test
 ```
 
+The Swift package depends on the `libs/mlx-swift` and `libs/mlx-swift-lm`
+submodules. `scripts/fetch-metallib.sh` (and the release workflow) build
+`mlx.metallib` from the MLX source nested inside mlx-swift
+(`libs/mlx-swift/Source/Cmlx/mlx`, the tree the Cmlx target compiles against),
+not from the top-level `libs/mlx` submodule; bumping `libs/mlx` alone changes no
+provider bytes.
+
 ### Console UI (Next.js 16)
 ```bash
 make ui-install               # npm install
@@ -163,6 +170,40 @@ make build                    # build all components
 make all                      # test + build everything
 make clean                    # remove built artifacts
 ```
+
+### Testing rules
+
+Every new feature or non-trivial change ships with tests, and every bug fix
+ships with a regression test that fails without the fix.
+
+- Prefer live-isolated tests over mocks: a real in-process HTTP server
+  (`httptest.NewServer(srv.Handler())`), a real in-memory store, or a throwaway
+  Postgres database. Do not mock the thing under test; mocked tests have passed
+  while the real migration failed.
+- Never point tests at production (no live coordinator, prod DB, real Privy
+  tenants or real credentials).
+- When a `store.Store` method has memory and Postgres implementations, cover
+  both.
+- Frontend pages and forms get at least a vitest for validation and state.
+
+## Releases
+
+Never create a release unless explicitly asked. A release bumps
+`ProviderCore.version` (`provider-swift/Sources/ProviderCore/ProviderCore.swift`)
+and `LatestProviderVersion` (`coordinator/api/server.go`) together
+(`scripts/check-release-version.sh` enforces this), then tags the merged master
+commit with an annotated `vX.Y.Z` tag. `.github/workflows/release-swift.yml`
+runs on `vX.Y.Z` tags; dev publication uses
+`workflow_dispatch`, and every requested version must equal the checked-in
+constants.
+
+For ordinary PRs, follow the
+[changelog contribution guidance](CONTRIBUTING.md#changelog-entries-with-less-merge-contention):
+keep user-visible changes in a small topic-specific `Unreleased` section,
+update it in place, and preserve other PRs' entries when resolving conflicts.
+Do not assign a release version, rewrite unrelated sections or claim shipment
+without an explicitly requested release operation. Topic-local edits reduce
+contention but cannot prevent same-location insertion conflicts.
 
 ## Deploying
 
@@ -203,10 +244,12 @@ Dev coordinator deploy (Google Cloud): see `docs/operations/dev-environment.md`.
   - `coordinator/protocol/telemetry.go` (canonical),
   - `provider-swift/Sources/ProviderCore/Telemetry/` (Swift mirror),
   - `console-ui/src/lib/telemetry-types.ts` (TS mirror).
-  Symmetry tests in each language pin enum casing and optional-field omission.
-  Field allowlist additions need parallel updates in
-  `coordinator/api/telemetry_handlers.go`,
-  `provider-swift/Sources/ProviderCore/Telemetry/`, and the TS set above.
+  The Go and Swift symmetry tests pin enum casing and optional-field omission;
+  the TypeScript mirror has no test of its own, so keep it aligned by hand.
+  There is no server-side field allowlist: the coordinator ingests no client
+  telemetry, and the privacy backstop is that no ingestion route exists plus
+  the fixed operational keys each coordinator emitter call site passes. Never
+  add prompt or completion fields to an emitter call or a heartbeat.
 - If you change provider bundle semantics, keep the bundle steps in `.github/workflows/release-swift.yml`, `scripts/install.sh`, and `LatestProviderVersion` in sync.
 - If you change install paths or process invocation, update both the CLI and install flow.
 - Device linking changes often span both coordinator device auth endpoints and the provider `login` / `logout` commands.
@@ -214,16 +257,17 @@ Dev coordinator deploy (Google Cloud): see `docs/operations/dev-environment.md`.
 
 ## Common Pitfalls
 
+- `.external/` is reserved for local external checkouts and must never be committed.
+- Attestation minimum-requirement checks (Secure Enclave, SIP, Secure Boot) run sequentially and each overwrites `result.Error`, so the last failure wins. `AuthenticatedRootEnabled` (ARV) is informational only: logged, not enforced.
 - `coordinator/coordinator` may exist locally as a build artifact (it is gitignored, not tracked). Do not model changes from it, and never commit binaries or other built artifacts.
 - CI release workflow must compute binary SHA-256 hashes AFTER code signing, not before. Providers verify hashes of the signed binary.
 - Model scan uses fast discovery (no hashing) at startup (`ModelScanner`). Weight hashing is on-demand via `WeightHasher.computeHash(for:)` only for models that need attestation/verification. Don't add hashing back to the scan path.
-- Models with broken chat templates are not auto-repaired. The provider runs a scan-time chat-template render self-check (`TemplateRenderCheck`) and reports `template_render_ok=false`; the coordinator then fences **all** requests (plain text, tools, multimodal alike) away from that (provider, model) pair — a crashing template breaks every request shape (`providerEligibleForTraitsLocked`, `registry/request_traits.go`). Only the capability *version floors* are tool-scoped.
+- Models with broken chat templates are not auto-repaired. The provider runs a scan-time chat-template render self-check (`TemplateRenderCheck`) and reports `template_render_ok=false`; the coordinator then fences **all** requests (plain text, tools, multimodal alike) away from that (provider, model) pair — a crashing template breaks every request shape (`providerEligibleForTraitsLocked`, `registry/request_traits.go`). The tool-scoped gates key on advertised capabilities (the tool-constraint protocol for inference-enforced `tool_choice`, `providerSupportsToolConstraintLocked`), never on provider version.
 - The vision tower is driven **one image at a time** (`EngineV2VisionTowerRun.qwenPerImageVisionFeatures`). Qwen3-VL's tower attends over whatever it is handed as one sequence with an N×N intermediate, so batching a request's images made peak device memory quadratic in the image count and asked Metal for buffers many times `MTLDevice.maxBufferLength`. Do not "optimize" the loop back into a single call. `VisionTowerBudget` predicts that peak from the processor's grids and the model's own vision config — the N² multiple is 1 when MLX can fuse the head dim (64/80/128, `sdpa_full_supported_head_dim`) and `numHeads` when it falls back and materializes `[1, H, N, N]` scores — and the whole prefill runs under `MLX.withError` because MLX's default handler is `fatalError`. That handler **records and returns**, so every `eval` site must check the box (`throwIfMLXFaulted`); checking only on block exit lets the code run on after a refused allocation and lets a later Swift throw hide the cause.
 - Store selection (`cmd/coordinator/main.go`): the coordinator uses the **Postgres** store whenever `EIGENINFERENCE_DATABASE_URL` is set (prod does — durable across restarts/deploys), and refuses to start without it unless `EIGENINFERENCE_ALLOW_MEMORY_STORE=true`. The in-memory store is the dev/test fallback only (state lost on restart). Note: the live provider *registry* (WebSocket connections/attestation) is always in-process and is rebuilt on reconnect regardless of store.
 - Request queue timeout is 120 seconds. Initial attestation challenge is sent immediately on registration, then every 5 minutes.
 - Backend idle timeout is 1 hour (not 10 minutes as some comments may say).
 - `handleChunk` never silently drops streamed chunks: when a consumer's chunk buffer is full it gets one 250ms grace window (`chunkOverflowGrace`), then the request is failed with 499 and the provider's generation is cancelled.
-- `hypervisor_active` is retired (#492): current providers no longer send it, but `AttestationResponseMessage.HypervisorActive` and the canonical-status support must keep decoding so signed payloads from older (< v0.6.31) providers still verify. Remove only once the fleet version floor passes v0.6.31.
 
 ### Coordinator State Model — Multiple Overlapping Views
 
@@ -236,7 +280,20 @@ Provider state lives in several fields that are read by different code paths wit
 - Provider-reported slot states include `"running"` (active requests), `"idle"` (loaded, no requests), `"crashed"`, `"reloading"`, and `"idle_shutdown"`. The `"idle"` state means the model IS loaded — treat it the same as `"running"` for warm detection, not as `"unknown"`.
 - Providers can hold up to `maxModelSlots` models simultaneously (default 3). Do not assume a model swap evicts all other models.
 - The provider's memory model is `UnifiedMemoryCap` (`provider-swift/Sources/ProviderCore/Inference/Memory/UnifiedMemoryCap.swift`): hard cap = 0.90 × physical RAM (always leaving ≥ 2 GiB for the OS; `DARKBLOOM_MEM_CAP_FRACTION` override). The model-load gate requires resident weights + incoming weights + headroom (the resolved activation reserve plus 1 GiB minimum KV) ≤ the cap, and a post-load guard unloads a freshly-loaded model whose measured live KV headroom is below the minimum serveable KV. Every admit-time consumer (load gate, pending-load reservation, startup preload, doctor and coordinator) must use the scanner's complete LOAD estimate, not bare steady residency. Ordinary/unknown layouts retain disk × 1.2; eligible native Qwen4 SSD-offload layouts use `Qwen4ExpLoadFootprint`'s validated header-derived copy allowance, mirrored by `native_load_transient_bytes` in Swift/Go and revalidated before allocation. All compute, MTP and vision payloads remain counted. Never reduce OS/activation/KV safeguards to make a test pass. A recent owned Qwen4 retirement permits only a bounded real-headroom recheck, not speculative reclaim credit. Measured post-load residency lives separately in `servabilityMeasuredResidentGiB` and informs post-load token budgets; it is not a substitute load allowance. The `DARKBLOOM_ACTIVATION_RESERVE_GB` env override is **raise-only against the resolved floor**; only programmatic `activationReserveBytes` values (tests) are honored as given.
-- The activation reserve inside that cap resolves **per serving set** (≥ the per-model release): `resolvedActivationReserveBytes(modelIDs:)` takes the max over advertised ∪ resident ∪ loading models of each member's **measured floor** (`measuredActivationFloorsBytes`, exact catalog-id match) with the flat 5.5 GiB default for any unmeasured member — so one unmeasured model pins the default, and vision-capable models deliberately have NO measured floor until a vision-inclusive peak is measured (the tower transient rides this reserve; text-decode evidence alone must not lower it). The resolved reserve threads through the load gate, `KVHeadroomProbe`, `GlobalKVCacheBudget` (epoch-stamped pushes — cross-actor delivery is not FIFO), engine KV grants, the heartbeat clamp, `free_for_load_gb`, and doctor **in lockstep**; a consumer left on the flat figure re-creates the admit-then-fail class this design removed. `coordinator/registry/servability.go` mirrors both tables (`servabilityActivationFloorGB` default + `servabilityModelActivationFloorsGB`, selected per (version, model) by `servabilityActivationFloor`; regimes: 3 GiB pre-0.8.0/unknown, flat 5.5 for 0.8.0 ≤ v < `servabilityPerModelFloorMinVersion`, per-model table above it — fail-open toward the larger legacy budget). **The provider table and the coordinator mirror must move in the same commit**, floors and measured weights alike; retuning either side alone silently desyncs admission (the historical score-tensor surcharge incident). A per-SHAPE/formula reserve remains banned on both sides — floors are measured constants, never modelled; the measurement convention must include a ≥ 4k-token B=8 cell (short-prompt cells under-measure the saturated envelope — see `docs/reports/2026-08-30-activation-floor-measurements.md`).
+- The activation reserve inside that cap resolves **per serving set** (≥ the per-model release): `resolvedActivationReserveBytes(modelIDs:)` takes the max over advertised ∪ resident ∪ loading models of each member's **measured floor** (`measuredActivationFloorsBytes`, exact catalog-id match) with the flat 5.5 GiB default for any unmeasured member — so one unmeasured model pins the default, and vision-capable models deliberately have NO measured floor until a vision-inclusive peak is measured (the tower transient rides this reserve; text-decode evidence alone must not lower it). The resolved reserve threads through the load gate, `KVHeadroomProbe`, `GlobalKVCacheBudget` (epoch-stamped pushes — cross-actor delivery is not FIFO), engine KV grants, the heartbeat clamp, `free_for_load_gb`, and doctor **in lockstep**; a consumer left on the flat figure re-creates the admit-then-fail class this design removed. `coordinator/registry/servability.go` mirrors both tables (`servabilityActivationFloorGB` default + `servabilityModelActivationFloorsGB`, selected per model by `servabilityActivationFloor`: the model's measured floor, else 5.5 GiB; `servabilityMeasuredResidentGiB` likewise supplies measured weights, else the padded catalog figure — no provider-version regimes, because routed providers are past the routing floor). **The provider table and the coordinator mirror must move in the same commit**, floors and measured weights alike; retuning either side alone silently desyncs admission (the historical score-tensor surcharge incident). A per-SHAPE/formula reserve remains banned on both sides — floors are measured constants, never modelled; the measurement convention must include a ≥ 4k-token B=8 cell (short-prompt cells under-measure the saturated envelope — see `docs/reports/2026-08-30-activation-floor-measurements.md`).
+
+### Native MiMo load quotations
+
+Exact `mimo_v2` with a validated closed payload inventory uses
+`MiMoV26DiscoveryLoadFootprint` to quote the existing strict main and ordinary
+sidecar **full LOAD** requests. Discovery reads headers/stat metadata only, not
+weight payload hashes or native arrays. The positive `native_load_transient_bytes`
+supplement does not mean SSD offload: MiMo keeps `ssd_offloaded_weight_bytes` zero.
+Swift discovery/preload/readiness and Go normal/swap/warm/cold routing must agree.
+Go preserves the raw catalog/source-size floor, adds the supplement once, and
+retains conservative legacy pricing for malformed or unsupported declarations.
+Do not replace these bounds with steady residency, change reserve floors, or
+skip the actual load claims and post-load serviceability gates.
 
 ### Coordinator Mutation Checklist
 
@@ -244,7 +301,7 @@ When adding code that mutates provider state or sends commands (`load_model`, et
 
 1. Enumerate every reader of the fields you're mutating (`BackendCapacity.Slots`, `WarmModels`, `CurrentModel`, `pendingModelLoads`).
 2. Check what happens on the failure path — does state get cleaned up on disconnect, timeout, and load failure?
-3. Check concurrent access — heartbeats arrive per-provider on separate goroutines; `TriggerModelSwaps` can race with `drainQueuedRequestsForModels`.
+3. Check concurrent access — heartbeats arrive per-provider on separate goroutines; `TriggerModelSwaps` can race with `drainQueuedRequestsForModelsWithReason`.
 4. Check the cleanup path — `Disconnect()` must clear any per-provider state you add.
 5. Verify pre-existing invariants: `maxModelSlots`, heartbeat field omission semantics (`nil` vs empty), and the `UnifiedMemoryCap` load gate on the provider side.
 6. **Store read-through cache** (`store/cached.go`): `CachedStore` serves `GetUserByAccountID`/`GetUserByPrivyID` and `GetModelRegistryRecord`/`GetModelManifest` from memory and invalidates on the store mutators it overrides. Any NEW `store.Store` method that writes the `users` table or the model-registry tables must be overridden in `CachedStore` to invalidate its domain, or callers read stale data for up to the TTL. Backend-only capabilities discovered by type assertion must go through `store.As` (the decorator implements `Unwrap`).

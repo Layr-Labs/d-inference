@@ -1,6 +1,6 @@
 # App Attest revocation-at-dispatch gap
 
-> Last updated: 2026-09-15 · commit `605651bb9`
+> Last updated: 2026-09-15
 
 Review of the v0.9.4 App Attest revocation boundary. Revocation and receipt
 readiness are sampled only after a successful assertion, normally every ten

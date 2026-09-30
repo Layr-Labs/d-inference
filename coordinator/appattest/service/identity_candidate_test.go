@@ -21,7 +21,7 @@ func TestIdentityCandidatePreservesLegacyOutsideServingCohort(t *testing.T) {
 		{"rollout zero", "production", "account", "0.9.4", "27.0", 0, 3, true, false},
 		{"invalid rollout", "production", "account", "0.9.4", "27.0", 101, 3, true, false},
 		{"unauthenticated", "production", "", "0.9.4", "27.0", 100, 3, true, false},
-		{"unsafe client", "production", "account", "0.9.3", "27.0", 100, 3, true, false},
+		{"released 0.9.3 (protocol 2)", "production", "account", "0.9.3", "27.0", 100, 2, true, false},
 		{"old protocol", "production", "account", "0.9.4", "27.0", 100, 2, true, false},
 		{"older macOS", "production", "account", "0.9.4", "26.0.1", 100, 3, true, false},
 		{"older verbose macOS", "production", "account", "0.9.4", "Version 26.2 (Build 25C10)", 100, 3, true, false},
@@ -41,7 +41,7 @@ func TestIdentityCandidatePreservesLegacyOutsideServingCohort(t *testing.T) {
 	included, excluded := false, false
 	for i := 0; i < 100; i++ {
 		account := fmt.Sprintf("account-%d", i)
-		want := appAttestRolloutDecision(r.Version, account, "canonical-machine", 37) == "enabled"
+		want := appAttestRolloutDecision(account, "canonical-machine", 37) == "enabled"
 		if s.IdentityCandidate(r, account) != want {
 			t.Fatal("registration and exchange cohort decisions differ")
 		}

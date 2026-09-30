@@ -9,7 +9,6 @@ import Testing
     // operator-actionable message (and a fix for the actionable ones).
     let reasons = [
         "SE attestation verified, awaiting MDM verification",
-        "SE attestation verified, awaiting MDM/ACME upgrade", // pre-removal coordinator
         "MDM verification passed",
         "recovered after transient deroute",
         "timeout", "no response", "nonce mismatch", "public key mismatch",
@@ -49,24 +48,6 @@ import Testing
     #expect(TrustReasonCatalog.level(trustLevel: "hardware", status: "untrusted") == .fail)
 }
 
-// MARK: - OSStatusCatalog
-
-@Test func osStatusCatalogMapsLockedKey() {
-    let a = OSStatusCatalog.advice(osStatus: -25308)
-    #expect(a.message.contains("-25308"))
-    #expect(a.fix?.contains("console") == true)
-}
-
-@Test func osStatusCatalogMapsMissingEntitlement() {
-    let a = OSStatusCatalog.advice(osStatus: -34018)
-    #expect(a.message.lowercased().contains("entitlement"))
-}
-
-@Test func osStatusCatalogUnknownEchoesCode() {
-    let a = OSStatusCatalog.advice(osStatus: -99999)
-    #expect(a.message.contains("-99999"))
-}
-
 // MARK: - ModelFitDiagnostic
 
 @Test func modelFitFailsWhenTooLarge() {
@@ -76,6 +57,50 @@ import Testing
     let d = ModelFitDiagnostic.diagnose(modelID: "big", weightGb: 25.0, usableGb: 21.0)
     #expect(d.level == .fail)
     #expect(d.message.contains("31.5"))
+    #expect(d.message.contains("10.5 GB short"))
+    #expect(d.fix?.contains("darkbloom doctor") == true)
+}
+
+@Test func modelLoadReadinessRejectsUnknownAndPreservesExactGap() {
+    let budget = ModelLoadReadiness(
+        estimatedMemoryGb: 18.2, headroomGb: 6.5, usableGb: 14.3)
+    #expect(abs((budget?.requiredGb ?? 0) - 24.7) < 0.0001)
+    #expect(abs((budget?.shortfallGb ?? 0) - 10.4) < 0.0001)
+    #expect(budget?.canLoadNow == false)
+    #expect(ModelLoadReadiness(estimatedMemoryGb: 18, headroomGb: .nan, usableGb: 14) == nil)
+}
+
+@Test func modelFitSeparatesResidentAndEvictionAwareLoads() {
+    let resident = ModelFitDiagnostic.diagnose(
+        modelID: "qwen", weightGb: 18.2, usableGb: 14.3,
+        alreadyResident: true)
+    #expect(resident.level == .info)
+    #expect(resident.message.contains("already resident"))
+
+    let evictable = ModelFitDiagnostic.diagnose(
+        modelID: "qwen", weightGb: 18.2, usableGb: 14.3,
+        evictionAwareWeightGb: 19)
+    #expect(evictable.level == .warn)
+    #expect(evictable.message.contains("startup preload will not evict"))
+
+    let impossible = ModelFitDiagnostic.diagnose(
+        modelID: "qwen", weightGb: 18.2, usableGb: 14.3,
+        evictionAwareWeightGb: 7.8)
+    #expect(impossible.level == .fail)
+
+    let paired = ModelFitDiagnostic.diagnose(
+        modelID: "qwen", weightGb: 18.2, usableGb: 14.3,
+        evictionAwareWeightGb: 14, loadHeadroomGb: 8)
+    #expect(paired.level == .fail)
+    #expect(paired.message.contains("26.2 GB"))
+    #expect(paired.message.contains("4.2 GB short"))
+    #expect(paired.fix?.contains("Free at least 4.2 GB") == true)
+
+    let busy = ModelFitDiagnostic.diagnose(
+        modelID: "qwen", weightGb: 18.2, usableGb: 14.3,
+        evictionAwareWeightGb: 7.8, busyServing: true)
+    #expect(busy.level == .info)
+    #expect(busy.message.contains("recheck when this Mac is idle"))
 }
 
 @Test func modelFitPassesWhenItFits() {
@@ -276,7 +301,6 @@ func daemonStatePersistsInjectedEphemeralSignerIdentity() async throws {
                 provider: ProviderSettings(name: "daemon-identity-test"),
                 backend: BackendSettings(),
                 coordinator: CoordinatorSettings())),
-        purgeLegacyFiles: false,
         attestationSigner: signer)
     await loop.setDaemonStateFileForTesting(url)
     await loop.writeDaemonState()
@@ -535,7 +559,7 @@ struct DesiredModelsForPostureTests {
                 coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
             )
         )
-        return try ProviderLoop(config: config, purgeLegacyFiles: false, attestationSigner: nil)
+        return try ProviderLoop(config: config, attestationSigner: nil)
     }
 
     @Test("a `--model X` selection outside enabled_models stays desired — its failure shows")

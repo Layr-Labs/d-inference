@@ -43,6 +43,12 @@ private extension ProviderLoop {
     }
     func holdSwitchRequest(_ id: String) { acceptedLifecycleRequests.insert(id) }
     func finishSwitchRequest(_ id: String) { acceptedLifecycleRequests.remove(id) }
+    func holdSwitchRevisionAttempt(_ entry: CoordinatorMessage.DesiredModelEntry) -> Task<Void, Never> {
+        revisionTestSetDesired(entry)
+        let task = Task { _ = try? await Task.sleep(for: .seconds(30)) }
+        modelRevisionAttempt = (entry, task)
+        return task
+    }
     func failSwitchModel(_ model: ModelInfo) { failedSelfTestHashes[model.id] = model.weightHash ?? "" }
     func useSwitchSnapshot(
         _ snapshot: URL,
@@ -180,6 +186,33 @@ struct ProviderModelSwitchTests {
         #expect(updatedHash != verifiedHash)
         #expect(changed.hash == updatedHash)
         #expect(changed.recomputed)
+    }
+
+    @Test func explicitSelectionDiscardsPendingWeightRevision() async throws {
+        let mock = MockCoordinator()
+        let url = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+        let (loop, root) = try await switchLoop(url: url.mockProviderWebSocketURL())
+        defer { try? FileManager.default.removeItem(at: root) }
+        await loop.useSwitchSnapshot(try switchSnapshot(in: root))
+        let (client, reader) = await connectSwitchLoop(loop, url: url.mockProviderWebSocketURL())
+        defer { reader.cancel(); Task { await loop.shutdownSwitchPrefetches(); await client.shutdown() } }
+        let obsolete = CoordinatorMessage.DesiredModelEntry(modelName: "old-model", desiredBuild: "old-model",
+            revision: "replacement", aggregateSHA256: String(repeating: "c", count: 64))
+        let attempt = await loop.holdSwitchRevisionAttempt(obsolete)
+        defer { attempt.cancel() }
+        #expect(await loop.pendingModelRevisions() == [obsolete])
+        let result = await loop.switchModels(request: .init(target: try #require(ProcessIdentity.current()),
+            models: ["new-model"], timeoutSeconds: 0))
+        #expect(result.outcome == .switched)
+        // No replacement desired_models frame is needed to forget the prior
+        // selection. A prepared retry cannot reintroduce its old model.
+        #expect(await !loop.state.refusingNewWork)
+        #expect(await loop.pendingModelRevisions().isEmpty)
+        #expect(await !loop.revisionIsDesired(obsolete))
+        #expect(attempt.isCancelled)
+        #expect(await loop.advertisedLocalModelIds() == ["new-model"])
+        #expect(await client.currentAdvertisedModels().map(\.id) == ["new-model"])
     }
 
     @Test(arguments: [false, true])

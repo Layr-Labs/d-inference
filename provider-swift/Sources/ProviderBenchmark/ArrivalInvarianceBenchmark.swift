@@ -26,6 +26,7 @@ public enum ArrivalInvarianceBenchmark {
         let engine: any CBv2Engine
         /// The backend the factory resolved to, with any fallback reason.
         let resolvedBackend: String
+        let effectiveMaxConcurrentRequests: Int
     }
 
     private struct MeasuredRow: Sendable {
@@ -41,18 +42,16 @@ public enum ArrivalInvarianceBenchmark {
         let outputs: [[Int]]
     }
 
-    private static let patterns = [
-        PatternDefinition(name: "burst", delaysMs: [0, 0, 0, 0]),
-        PatternDefinition(name: "stagger-25ms", delaysMs: [0, 25, 50, 75]),
-        PatternDefinition(name: "stagger-100ms", delaysMs: [0, 100, 200, 300]),
-        PatternDefinition(name: "rolling-250ms", delaysMs: [0, 250, 500, 750]),
-    ]
+    private static func patterns(width: Int) -> [PatternDefinition] {
+        [("burst", 0), ("stagger-25ms", 25), ("stagger-100ms", 100), ("rolling-250ms", 250)]
+            .map { name, gap in PatternDefinition(name: name, delaysMs: (0..<width).map { $0 * gap }) }
+    }
 
     /// The tightest inter-arrival gap any topology asks for (25 ms today),
     /// derived from the definitions so a future, denser pattern automatically
     /// tightens the bound instead of silently outgrowing it.
     private static let minimumArrivalGapMs: Double = {
-        let gaps = patterns
+        let gaps = patterns(width: 4)
             .flatMap { zip($0.delaysMs, $0.delaysMs.dropFirst()).map { $1 - $0 } }
             .filter { $0 > 0 }
         return Double(gaps.min() ?? 25)
@@ -79,6 +78,7 @@ public enum ArrivalInvarianceBenchmark {
         modelDirectory: URL,
         promptTokens: Int = 512,
         promptLengths: [Int]? = nil,
+        width: Int = 4,
         decodeTokens: Int = 64,
         iterations: Int = 3,
         arrivalToleranceMs: Double? = nil,
@@ -87,8 +87,10 @@ public enum ArrivalInvarianceBenchmark {
         gemmaOptimizations: GemmaOptimizationSettings
     ) async throws -> ArrivalInvarianceBenchmarkReport {
         let promptTokens = max(2, promptTokens)
-        let promptLengths = promptLengths ?? Array(repeating: promptTokens, count: 4)
-        guard promptLengths.count == 4, promptLengths.allSatisfy({ $0 >= 2 }) else {
+        guard (1...16).contains(width) else { throw BenchmarkError.invalidPromptLengths }
+        let patterns = patterns(width: width)
+        let promptLengths = promptLengths ?? Array(repeating: promptTokens, count: width)
+        guard promptLengths.count == width, promptLengths.allSatisfy({ $0 >= 2 }) else {
             throw BenchmarkError.invalidPromptLengths
         }
         let decodeTokens = max(2, decodeTokens)
@@ -138,6 +140,12 @@ public enum ArrivalInvarianceBenchmark {
             kvBackend: kvBackend
         )
         let engine = engineParts.engine
+        guard engineParts.effectiveMaxConcurrentRequests == width else {
+            await engine.shutdown()
+            throw NSError(domain: "ArrivalInvarianceBenchmark", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Requested width \(width), but native engine cap is \(engineParts.effectiveMaxConcurrentRequests)"])
+        }
+        log("engine scheduler cap: \(engineParts.effectiveMaxConcurrentRequests)")
         log("kv backend selection \(kvBackend.rawValue), engine resolved "
             + engineParts.resolvedBackend)
 
@@ -250,6 +258,7 @@ public enum ArrivalInvarianceBenchmark {
             promptLengthsPerRequest: promptLengths,
             decodeTokensPerRequest: decodeTokens,
             iterations: iterations,
+            effectiveMaxConcurrentRequests: engineParts.effectiveMaxConcurrentRequests,
             gemmaOptimizations: BenchmarkGemmaOptimizations(
                 settings: gemmaOptimizations),
             arrivalToleranceMs: toleranceMs,
@@ -466,12 +475,14 @@ public enum ArrivalInvarianceBenchmark {
                 tokenizer: context.tokenizer,
                 kvBytesCapacity: kvCapacity,
                 maxConcurrentRequests: maxConcurrentRequests,
+                constructionPurpose: .benchmark,
                 kvBudget: BenchmarkMemoryBudget.shared,
                 kvBackend: kvBackend
             )
             return EngineParts(
                 engine: build.engine,
-                resolvedBackend: build.resolvedKVBackendDescriptor)
+                resolvedBackend: build.resolvedKVBackendDescriptor,
+                effectiveMaxConcurrentRequests: build.effectiveMaxConcurrentRequests)
         }
     }
 
@@ -603,7 +614,7 @@ public enum ArrivalInvarianceBenchmark {
 
         var description: String {
             switch self {
-            case .invalidPromptLengths: return "arrival prompt lengths must contain exactly four integers >= 2"
+            case .invalidPromptLengths: return "arrival width must be 1...16 and prompt lengths must contain that many integers >= 2"
             case .noTokens(let row): return "row \(row) produced no tokens"
             case .unexpectedFinish(let row, let reason):
                 return "row \(row) finished unexpectedly: \(reason)"

@@ -170,6 +170,10 @@ extension Benchmark {
             printError("--arrival-prompt-tokens must be >= 2")
             throw ExitCode.failure
         }
+        guard (1...16).contains(arrivalWidth) else {
+            printError("--arrival-width must be between 1 and 16")
+            throw ExitCode.failure
+        }
         guard arrivalDecodeTokens >= 2 else {
             printError("--arrival-decode-tokens must be >= 2")
             throw ExitCode.failure
@@ -181,8 +185,8 @@ extension Benchmark {
 
         let lengths: [Int]?
         if let raw = arrivalPromptLengths {
-            guard let parsed = Self.parseArrivalPromptLengths(raw) else {
-                printError("--arrival-prompt-lengths must contain exactly four integers >= 2")
+            guard let parsed = Self.parseArrivalPromptLengths(raw, width: arrivalWidth) else {
+                printError("--arrival-prompt-lengths must contain exactly \(arrivalWidth) integers >= 2")
                 throw ExitCode.failure
             }
             lengths = parsed
@@ -195,6 +199,7 @@ extension Benchmark {
             modelDirectory: modelDirectory,
             promptTokens: arrivalPromptTokens,
             promptLengths: lengths,
+            width: arrivalWidth,
             decodeTokens: arrivalDecodeTokens,
             iterations: arrivalIterations,
             kvBackend: try resolvedKVBackendSelection(),
@@ -205,11 +210,12 @@ extension Benchmark {
 
     /// Arrival positions identify rows, so invalid/empty fields must never
     /// be filtered out and silently shift the requested topology.
-    static func parseArrivalPromptLengths(_ raw: String) -> [Int]? {
+    static func parseArrivalPromptLengths(_ raw: String, width: Int = 4) -> [Int]? {
+        guard (1...16).contains(width) else { return nil }
         let fields = raw.split(separator: ",", omittingEmptySubsequences: false)
-        guard fields.count == 4 else { return nil }
+        guard fields.count == width else { return nil }
         let values = fields.compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
-        guard values.count == 4, values.allSatisfy({ $0 >= 2 }) else { return nil }
+        guard values.count == width, values.allSatisfy({ $0 >= 2 }) else { return nil }
         return values
     }
 

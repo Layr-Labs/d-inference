@@ -1,7 +1,6 @@
 package registry
 
 import (
-	"sort"
 	"sync"
 	"time"
 
@@ -18,7 +17,7 @@ import (
 // herd had moved, the scan re-ranked the same overloaded boxes, and the
 // request burned its first-content budget on rescan after rescan.
 //
-// The plan retains up to dispatchPlanMaxAlternates of the lowest-cost
+// The plan retains up to dispatchPlanMaxAlternates of the first-content-ranked
 // NON-winner candidates from the SAME scan that selected the primary, plus
 // full-pool aggregate counts for telemetry. It is strictly request-local
 // state: *Provider pointers plus small value snapshots of the ranking terms,
@@ -71,13 +70,15 @@ type PlanSkip struct {
 // captured at scan time. Estimates are scan-time values — ReserveNextFromPlan
 // recomputes everything against live state before reserving.
 type PlanEntry struct {
-	ProviderID string
-	// CostMs is the candidate's full routing cost at scan time (same quantity
-	// selectRoutingCandidate ranked by).
+	FirstContent   FirstContentEstimate
+	HealthMs       float64
+	CapacityRateMs float64
+	ProviderID     string
+	// CostMs retains the legacy cost diagnostic; FirstContent carries the
+	// expected/conservative predictions and service work used for ordering.
 	CostMs float64
-	// TTFTMs is the calibrated scan-time TTFT estimate (0 when the provider
-	// reports no BackendCapacity — unreliable, matching the scan's ceiling
-	// exemption). RawTTFTMs is the uncalibrated formula value alongside.
+	// TTFTMs is the scan-time expected first-content estimate; RawTTFTMs
+	// retains the old predictor diagnostic for calibration comparisons.
 	TTFTMs    float64
 	RawTTFTMs float64
 	// StateMs is the slot-state penalty (0 = warm/running; large = cold load
@@ -95,30 +96,36 @@ type PlanEntry struct {
 	Confirmed bool
 	Demoted   bool
 	// QuoteTTFTP50/P90 are the quoted end-to-end TTFT distribution quantiles
-	// (durations — the wire carries ms floats). P50 is telemetry view only;
-	// production hedge timing reads P90 via BestConfirmedBackup.
+	// (durations — the wire carries ms floats). P50 ranks confirmed choices;
+	// hedge timing reads P90 via BestConfirmedBackup.
 	QuoteTTFTP50 time.Duration
 	QuoteTTFTP90 time.Duration
 	// QuoteAvailableTokens is the quoted live token headroom of the admitting
-	// gate; QuoteConfidence is protocol.CapacityConfidenceHigh/Low. Telemetry
-	// view; no production consumer reads these off the plan today.
+	// gate; only high-confidence, current evidence can qualify a retry.
 	QuoteAvailableTokens int64
 	QuoteConfidence      string
+	QuoteObservedAt      time.Time
+	QuoteCapacitySeq     uint64
 }
 
 // planEntry pairs the exported view with the retained provider identity. The
 // pointer is deliberately unexported: the ONLY way to turn an entry into a
 // dispatchable provider is ReserveNextFromPlan's verify-and-reserve path.
 type planEntry struct {
-	provider *Provider
-	view     PlanEntry
+	evidenceQualified         bool
+	forecastAt                time.Time
+	cacheEvidenceWeight       float64
+	cacheEstimatedTTFTSavedMs float64
+	cacheAffinityEligible     bool
+	provider                  *Provider
+	view                      PlanEntry
 }
 
 // DispatchPlan is the request-local shortlist produced by
-// ReserveProviderWithPlan. Entries are born ordered by ascending scan-time
-// cost and consumed once each (cursor); quote outcomes re-rank the UNCONSUMED
-// tail into confirmed → unprobed/legacy → demoted tiers (cost order preserved
-// within each tier — see resortTailLocked); one full re-scan refresh is
+// ReserveProviderWithPlan. Entries retain first-content order and are consumed
+// once each (cursor); quotes re-rank the unconsumed tail into confirmed,
+// unprobed and demoted tiers, with first-content ordering within each tier.
+// One full re-scan refresh is
 // available for the plan's whole lifetime (RefreshDispatchPlan).
 //
 // Concurrency: a plan belongs to one request, but that request's retry loop,
@@ -129,10 +136,13 @@ type planEntry struct {
 // acquires it strictly after r.mu, and no code path takes r.mu or p.mu while
 // holding it.
 type DispatchPlan struct {
-	mu      sync.Mutex
-	model   string
-	entries []planEntry
-	cursor  int
+	// Serialize consumers while quotes may still update the independent tail lock.
+	reserveMu sync.Mutex
+	mu        sync.Mutex
+	model     string
+	affinity  string
+	entries   []planEntry
+	cursor    int
 	// attempted holds every provider this request has been bound to or has
 	// passed over through this plan: the primary winner plus every entry the
 	// cursor has visited, regardless of outcome. A refresh excludes them all —
@@ -148,16 +158,13 @@ type DispatchPlan struct {
 	deadlineFeasible int
 }
 
-// newDispatchPlan builds the plan from the scan that selected winner. One
-// bounded pass over the already-built pool: it keeps the
-// dispatchPlanMaxAlternates lowest-cost non-winner candidates via insertion
-// into a fixed-capacity slice (O(n·8) comparisons, no full-pool sort, no
-// full-pool copy — only the ≤8 retained entries copy their ranking terms).
-// The scan pool is immutable; live provider identity/state is revalidated when
-// an entry is consumed.
+// newDispatchPlan retains up to eight alternates by repeatedly applying the
+// same first-content selector to the narrowed scan pool. Current identity,
+// forecast, cache proof and physical admission are checked again on consumption.
 func newDispatchPlan(model string, scan candidateScan, winner *routingCandidate) *DispatchPlan {
 	plan := &DispatchPlan{
 		model:     model,
+		affinity:  scan.affinity,
 		entries:   make([]planEntry, 0, dispatchPlanMaxAlternates),
 		attempted: make(map[string]struct{}, dispatchPlanMaxAlternates+1),
 		// Aggregate derivation from the scan tallies: capacity- and
@@ -173,36 +180,8 @@ func newDispatchPlan(model string, scan candidateScan, winner *routingCandidate)
 	if winner != nil {
 		plan.attempted[winner.provider.ID] = struct{}{}
 	}
-	for _, c := range scan.pool {
-		if c == winner {
-			continue
-		}
-		// Insertion position among the retained entries (ascending cost).
-		pos := len(plan.entries)
-		for pos > 0 && c.costMs < plan.entries[pos-1].view.CostMs {
-			pos--
-		}
-		if pos == dispatchPlanMaxAlternates {
-			continue // costlier than every retained entry, list full
-		}
-		if len(plan.entries) < dispatchPlanMaxAlternates {
-			plan.entries = append(plan.entries, planEntry{})
-		}
-		copy(plan.entries[pos+1:], plan.entries[pos:])
-		plan.entries[pos] = planEntry{
-			provider: c.provider,
-			view: PlanEntry{
-				ProviderID:  c.provider.ID,
-				CostMs:      c.costMs,
-				TTFTMs:      c.breakdown.TTFTMs,
-				RawTTFTMs:   c.breakdown.RawTTFTMs,
-				StateMs:     c.breakdown.StateMs,
-				ModelLoaded: c.snapshot.modelLoaded,
-				SlotState:   c.snapshot.slotState,
-				ChipFamily:  c.snapshot.chipFamily,
-			},
-		}
-	}
+	plan.entries = firstContentPlanEntries(scan.pool, winner, scan.affinity)
+
 	return plan
 }
 
@@ -324,238 +303,16 @@ func (r *Registry) ReserveProviderWithPlan(model string, pr *PendingRequest, exc
 	return r.reserveProvider(model, pr, true, excludeIDs...)
 }
 
-// ReserveNextFromPlan consumes plan entries in cost order until one passes the
-// full, CURRENT admission gate chain, reserving it atomically
-// (addPendingLocked) exactly like the primary reservation. Entries that fail
-// are skipped with a bounded reason; the skip list (terminated by an
-// "exhausted" element when the plan runs out) is returned for telemetry and
-// for the caller's refresh decision.
-//
-// Revalidation deliberately reuses the SAME helpers the scan uses — never a
-// copied eligibility switch:
-//   - identity: r.providers[id] must still be the exact retained *Provider
-//     (a reconnect registers a new object under the same ID — its slot state,
-//     trust, and capacity are a stranger's; see Register/Disconnect);
-//   - snapshotProviderIntoLockedEx → providerPassesRoutingGatesLocked (every
-//     structural/privacy/cooldown/trait gate);
-//   - buildCandidateWithReason (slot state, concurrency headroom, thermal,
-//     hardware fit, freeMemoryAdmits — including the in-flight pending debit
-//     and the budget clamp) plus the same TTFT-ceiling condition the scan
-//     enforces;
-//   - providerCanAdmitLockedEx under p.mu, the same final admit re-check
-//     ReserveProviderEx runs (no fail-open breaker carry here: plan entries
-//     are alternates, and a breaker that opened since the scan should skip
-//     the entry — the caller's refresh re-runs the full scan, whose fail-open
-//     valve still protects the all-providers-broken case).
-//
-// Ledger note (why plan reservations cannot double-spend a heartbeat budget):
-// each entry is re-snapshotted, re-costed, admit-checked and debited inside
-// ONE p.mu section (exactly like commitProviderReservation), so
-// freeMemoryAdmits charges every pending request admitted since the plan was
-// built (fillSnapshotPendingAndPool → coordinatorExtra / pooledBudgetAdmits)
-// and no concurrent commit can slip between the check and the debit. r.mu is
-// held for reading across the loop (identity checks against r.providers stay
-// valid); the global commit mode takes it for writing instead. See the ledger
-// rationale on reserveProvider's pending-debit path in scheduler.go.
-//
-// Version-diverse retry (SOFT — parity with scanCandidatesLocked's
-// post-candidate AvoidVersion narrowing): when pr.Traits.AvoidVersion is set,
-// consumption is a two-pass walk. Pass 1 visits the plan in cost order but
-// DEFERS every entry whose provider's LIVE reported version equals the
-// avoided one — read via providerVersion under p.mu during this
-// revalidation, never a scan-time copy, because the provider may have
-// upgraded (or rolled back onto the broken build) since the plan was built.
-// Pass 2 revisits the deferred entries in the same order only when no
-// diverse entry reserved, so diversity never fails closed: a pool that is
-// all-avoided-version behaves exactly as if AvoidVersion were empty, just as
-// the scan keeps its full pool when the diverse set is empty.
-//
-// The Phase-0 shadow TTFT evaluation is intentionally not recomputed for plan
-// reservations: it is observational primary-selection telemetry, and the plan
-// path is the retry/hedge lane.
+// ReserveNextFromPlan snapshots every retained identity against current state,
+// reapplies ownership/feasibility/version/decode preferences, and atomically
+// revalidates the selected candidate before consuming its identity and debiting
+// capacity. Each scan is bounded; cache proof and fresh quotes are evidence,
+// never permission to skip the physical admission gates.
 func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, excludeIDs ...string) (*Provider, RoutingDecision, []PlanSkip) {
 	if pr == nil || pr.RequestID == "" || plan == nil || plan.model == "" {
 		return nil, RoutingDecision{}, []PlanSkip{{Reason: PlanSkipExhausted}}
 	}
-	model := plan.model
-	if pr.Model == "" {
-		pr.Model = model
-	}
-	if pr.RequestedMaxTokens <= 0 {
-		pr.RequestedMaxTokens = defaultRequestedMaxTokens
-	}
-	exclude := make(map[string]struct{}, len(excludeIDs)+len(pr.ExcludedProviderIDs))
-	for _, id := range excludeIDs {
-		exclude[id] = struct{}{}
-	}
-	for _, id := range pr.ExcludedProviderIDs {
-		exclude[id] = struct{}{}
-	}
-	allowedSerials := make(map[string]struct{}, len(pr.AllowedProviderSerials))
-	for _, serial := range pr.AllowedProviderSerials {
-		allowedSerials[serial] = struct{}{}
-	}
-	enforceTTFT := pr.MaxTTFTMs > 0 && !pr.RequiresVision
-
-	var skips []PlanSkip
-	lock := r.commitLock("commit_plan")
-	lock.lock()
-	defer lock.unlock()
-
-	// tryReserve runs the full CURRENT gate chain against one identity-checked
-	// entry and, on success, commits the reservation. Failure appends the
-	// bounded gate_rejected skip.
-	tryReserve := func(entry planEntry) (*Provider, RoutingDecision, bool) {
-		id := entry.view.ProviderID
-		p := entry.provider
-		skip := func(reason PlanSkipReason) {
-			skips = append(skips, PlanSkip{ProviderID: id, Reason: reason})
-		}
-		// Scan-order pre-snapshot filters (scanCandidatesLocked): exclusive
-		// self-route ownership and the attested-serial allowlist.
-		owned := providerOwnedBy(p, pr.OwnerAccountID)
-		if pr.SelfRouteOnly && !owned {
-			skip(PlanSkipGateRejected)
-			return nil, RoutingDecision{}, false
-		}
-		if len(allowedSerials) > 0 && !providerMatchesAllowedSerial(p, allowedSerials) {
-			skip(PlanSkipGateRejected)
-			return nil, RoutingDecision{}, false
-		}
-		relaxTrust := owned && (pr.SelfRouteOnly || pr.PreferOwner)
-
-		// Snapshot, cost, admit and reservation under ONE p.mu hold — the same
-		// commit sequence as commitProviderReservation, so nothing can change
-		// the provider between the admit re-check and the debit.
-		p.mu.Lock()
-		// Registry/provider lock waits consume the same request clock as the
-		// dispatcher's earlier refresh. Recheck after both locks, before any
-		// admission debit, and tighten an enabled TTFT ceiling to what remains.
-		now := time.Now()
-		if !pr.RefreshFirstContentBudget(now) {
-			p.mu.Unlock()
-			skip(PlanSkipGateRejected)
-			return nil, RoutingDecision{}, false
-		}
-		var snap routingSnapshot
-		if ok, _ := r.snapshotProviderIntoPLockedEx(&snap, p, model, pr.Traits, relaxTrust, false, now); !ok {
-			p.mu.Unlock()
-			skip(PlanSkipGateRejected)
-			return nil, RoutingDecision{}, false
-		}
-		candidate, _, ok := r.buildCandidateWithReason(snap, pr, now)
-		if !ok {
-			p.mu.Unlock()
-			skip(PlanSkipGateRejected)
-			return nil, RoutingDecision{}, false
-		}
-		if enforceTTFT && snap.hasBackendCapacity && candidate.breakdown.TTFTMs > pr.MaxTTFTMs {
-			p.mu.Unlock()
-			skip(PlanSkipGateRejected)
-			return nil, RoutingDecision{}, false
-		}
-		if !r.providerCanAdmitLockedEx(p, model, pr.Traits, relaxTrust, false, now) ||
-			(pr.RequiresVision && !r.providerServesVisionModelLocked(p, model, relaxTrust)) {
-			p.mu.Unlock()
-			skip(PlanSkipGateRejected)
-			return nil, RoutingDecision{}, false
-		}
-		// Half-open capacity probe: check-and-claim under gate.mu, identical to
-		// the primary reservation path (p.mu → gate.mu).
-		if !r.tryClaimCapacityProbe(p, model, now) {
-			p.mu.Unlock()
-			skip(PlanSkipGateRejected)
-			return nil, RoutingDecision{}, false
-		}
-		pr.ProviderID = p.ID
-		p.addPendingLocked(pr)
-		if p.Status != StatusUntrusted && p.Status != StatusOffline {
-			p.Status = StatusServing
-		}
-		p.mu.Unlock()
-		// A plan entry is priced and admitted cold: no cache hint is applied,
-		// so the primary scan's cache selection must not describe this
-		// alternate at its terminal. Participation (CacheSelectionMode) and the
-		// scan's opportunity counts describe the request and remain.
-		pr.CacheSelectionTier = ""
-		pr.CacheSelectionDiscountMs = 0
-		pr.CacheSelectionEstimatedTTFTSavedMs = 0
-		pr.CacheSelectionSelected = false
-		pr.CacheOpportunity.CreditWonNearTie = false
-
-		if !slotStateModelLoaded(candidate.snapshot.slotState) {
-			r.RecordWarmPoolColdDispatch(model)
-		}
-		// Same calibrator-join rule as the primary path: warm text dispatches
-		// only (see reserveProvider).
-		bd := candidate.breakdown
-		if !pr.RequiresVision && bd.RawTTFTMs > 0 && bd.StateMs == 0 {
-			ttftCalibration.notePrediction(pr.RequestID, pr.Attempt, model, candidate.snapshot.chipFamily, bd.RawTTFTMs)
-		}
-		// Winner-specific fields only: the scan tallies belong to the plan
-		// (EligibleCount/…), not to this per-entry revalidation, so the count
-		// fields stay zero rather than repeating stale scan-time numbers.
-		decision := RoutingDecision{
-			ProviderID:         p.ID,
-			Model:              model,
-			CostMs:             bd.Total,
-			StateMs:            bd.StateMs,
-			QueueMs:            bd.QueueMs,
-			PendingMs:          bd.PendingMs,
-			BacklogMs:          bd.BacklogMs,
-			ThisReqMs:          bd.ThisReqMs,
-			HealthMs:           bd.HealthMs,
-			CapacityRateMs:     bd.CapacityRateMs,
-			CapacityRejectRate: candidate.capacityRejectRate,
-			EffectiveQueue:     candidate.effectiveQueue,
-			TTFTMs:             bd.TTFTMs,
-			EffectiveTPS:       candidate.effectiveTPS,
-			StaticTPS:          candidate.snapshot.decodeTPS,
-		}
-		return p, decision, true
-	}
-
-	// Pass 1: cost order, deferring live avoided-version entries (see the
-	// version-diverse retry rationale in the doc comment).
-	avoid := pr.Traits.AvoidVersion
-	var deferred []planEntry
-	for {
-		entry, ok := plan.nextEntry()
-		if !ok {
-			break
-		}
-		id := entry.view.ProviderID
-		if _, excluded := exclude[id]; excluded {
-			skips = append(skips, PlanSkip{ProviderID: id, Reason: PlanSkipExcluded})
-			continue
-		}
-		if cur, live := r.providers[id]; !live || cur != entry.provider {
-			skips = append(skips, PlanSkip{ProviderID: id, Reason: PlanSkipStaleSession})
-			continue
-		}
-		if avoid != "" && providerVersion(entry.provider) == avoid {
-			deferred = append(deferred, entry)
-			continue
-		}
-		if p, decision, ok := tryReserve(entry); ok {
-			// Diversity won: the deferred same-version entries were passed
-			// over for this consumption — record them for telemetry.
-			for _, d := range deferred {
-				skips = append(skips, PlanSkip{ProviderID: d.view.ProviderID, Reason: PlanSkipVersionAvoided})
-			}
-			return p, decision, skips
-		}
-	}
-	// Pass 2: no diverse entry was admissible — fall back to the avoided
-	// version rather than failing closed. The pass-1 identity checks remain
-	// valid: r.providers cannot change while r.mu is held in either mode.
-	for _, entry := range deferred {
-		if p, decision, ok := tryReserve(entry); ok {
-			return p, decision, skips
-		}
-	}
-	skips = append(skips, PlanSkip{Reason: PlanSkipExhausted})
-	return nil, RoutingDecision{Model: model}, skips
+	return r.reserveFirstContentFromPlan(pr, plan, excludeIDs...)
 }
 
 // RefreshDispatchPlan performs the plan's single full re-scan refresh: a fresh
@@ -610,23 +367,38 @@ func planEntryRank(v PlanEntry) int {
 	}
 }
 
-// resortTailLocked re-ranks the unconsumed entries after a quote outcome:
-// tier first, ascending scan-time cost within the tier. Cost must be an
-// explicit secondary key (not left to sort stability): entries change tier in
-// quote-arrival order, so by the time a cheap entry is confirmed a costlier
-// one may already sit in the confirmed tier ahead of it — a stability-only
-// sort would freeze that inversion and BestConfirmedBackup would return the
-// wrong entry. Entries the cursor already consumed are never moved — they are
-// history (attempted set, telemetry), not candidates. Caller holds dp.mu.
+// resortTailLocked orders quote tiers using the same first-content band and
+// service-work selector within each tier. Entries already consumed are history.
+// Caller holds the leaf dp.mu; this helper never reads mutable provider state.
 func (dp *DispatchPlan) resortTailLocked() {
 	tail := dp.entries[dp.cursor:]
-	sort.SliceStable(tail, func(i, j int) bool {
-		ri, rj := planEntryRank(tail[i].view), planEntryRank(tail[j].view)
-		if ri != rj {
-			return ri < rj
+	remaining := append([]planEntry(nil), tail...)
+	for i := range tail {
+		bestTier := 3
+		for _, entry := range remaining {
+			bestTier = min(bestTier, planEntryRank(entry.view))
 		}
-		return tail[i].view.CostMs < tail[j].view.CostMs
-	})
+		candidates := make([]*routingCandidate, 0, len(remaining))
+		positions := make(map[*routingCandidate]int, len(remaining))
+		for j, entry := range remaining {
+			if planEntryRank(entry.view) != bestTier {
+				continue
+			}
+			forecast := entry.view.FirstContent
+			if entry.view.Confirmed && entry.view.QuoteTTFTP50 > 0 {
+				forecast.ExpectedMs = max(forecast.ExpectedMs, float64(entry.view.QuoteTTFTP50)/float64(time.Millisecond)+forecast.RestoreMs)
+			}
+			candidate := &routingCandidate{provider: entry.provider, costMs: entry.view.CostMs, firstContent: forecast,
+				cacheEvidenceWeight: entry.cacheEvidenceWeight, cacheEstimatedTTFTSavedMs: entry.cacheEstimatedTTFTSavedMs, cacheAffinityEligible: entry.cacheAffinityEligible,
+				breakdown: costBreakdown{HealthMs: entry.view.HealthMs, CapacityRateMs: entry.view.CapacityRateMs}}
+			candidates = append(candidates, candidate)
+			positions[candidate] = j
+		}
+		chosen, _, _, _ := selectRoutingCandidateWithAffinity(candidates, dp.affinity)
+		j := positions[chosen]
+		tail[i] = remaining[j]
+		remaining = append(remaining[:j], remaining[j+1:]...)
+	}
 }
 
 // ConfirmEntry records an affirmative capacity_quote on the named unconsumed
@@ -636,6 +408,10 @@ func (dp *DispatchPlan) resortTailLocked() {
 // tier. A no-op when the entry was already consumed or is not in the plan —
 // a quote that raced the dispatch loop carries no ordering work to do.
 func (dp *DispatchPlan) ConfirmEntry(providerID string, quote *protocol.CapacityQuoteMessage) {
+	dp.confirmEntryAt(providerID, quote, time.Now())
+}
+
+func (dp *DispatchPlan) confirmEntryAt(providerID string, quote *protocol.CapacityQuoteMessage, observedAt time.Time) {
 	if dp == nil || quote == nil {
 		return
 	}
@@ -652,6 +428,8 @@ func (dp *DispatchPlan) ConfirmEntry(providerID string, quote *protocol.Capacity
 		v.QuoteTTFTP90 = time.Duration(quote.TTFTP90MS * float64(time.Millisecond))
 		v.QuoteAvailableTokens = quote.AvailableTokenBudget
 		v.QuoteConfidence = quote.Confidence
+		v.QuoteObservedAt = observedAt
+		v.QuoteCapacitySeq = quote.CapacitySeq
 		dp.resortTailLocked()
 		return
 	}
@@ -680,21 +458,29 @@ func (dp *DispatchPlan) DemoteEntry(providerID string) {
 	}
 }
 
-// BestConfirmedBackup returns the lowest-scan-cost unconsumed entry whose
-// quote confirmed admissibility, plus its quoted TTFT p90 — the hedge
-// scheduler's backup_ttft_q90 input (hedge_schedule.go). ok=false when no
-// confirmed entry remains; callers then fall back to the coordinator floor.
-// The tail is tier-sorted with cost order preserved inside the confirmed
-// tier, so the first confirmed entry IS the lowest-cost one.
+// BestConfirmedBackup returns the best retained, fresh high-confidence quote
+// for hedge timing. Reservation independently revalidates its session, sequence,
+// current capacity and original deadline before dispatch.
 func (dp *DispatchPlan) BestConfirmedBackup() (providerID string, ttftP90 time.Duration, ok bool) {
 	if dp == nil {
 		return "", 0, false
 	}
 	dp.mu.Lock()
 	defer dp.mu.Unlock()
+	now := time.Now()
 	for i := dp.cursor; i < len(dp.entries); i++ {
-		if v := dp.entries[i].view; v.Confirmed {
-			return v.ProviderID, v.QuoteTTFTP90, true
+		entry := dp.entries[i]
+		v := entry.view
+		age := now.Sub(entry.forecastAt)
+		if !entry.evidenceQualified || entry.forecastAt.IsZero() || age < 0 ||
+			time.Duration(v.FirstContent.CapacityAgeMs)*time.Millisecond+age > firstContentFreshness ||
+			time.Duration(v.FirstContent.PerformanceAgeMs)*time.Millisecond+age > firstContentPerformanceFreshness {
+			continue
+		}
+		if v.Confirmed && !v.Demoted && v.QuoteConfidence == protocol.CapacityConfidenceHigh &&
+			!v.QuoteObservedAt.IsZero() && !now.Before(v.QuoteObservedAt) && now.Sub(v.QuoteObservedAt) <= firstContentFreshness {
+			p90 := max(time.Duration(v.FirstContent.ConservativeMs*float64(time.Millisecond)), v.QuoteTTFTP90+time.Duration(v.FirstContent.RestoreMs*float64(time.Millisecond)))
+			return v.ProviderID, p90, true
 		}
 	}
 	return "", 0, false

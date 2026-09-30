@@ -1,6 +1,9 @@
 package payments
 
-import "testing"
+import (
+	"strconv"
+	"testing"
+)
 
 func TestFormatPerTokenUSD(t *testing.T) {
 	cases := []struct {
@@ -58,12 +61,13 @@ func TestPlatformFeeWithPercent(t *testing.T) {
 	}
 }
 
-func TestCalculateCostNoMinimum(t *testing.T) {
-	const model = "m"
+func TestCostNoMinimum(t *testing.T) {
+	rates := DefaultRates()
 	// A tiny request whose true token cost is below the 100 µUSD floor.
 	// 10 prompt + 10 completion tokens at default rates is far under the floor.
-	withMin := CalculateCostWithOverrides(model, 10, 10, 0, 0, false)
-	noMin := CalculateCostWithOverridesNoMinimum(model, 10, 10, 0, 0, false)
+	small := Usage{PromptTokens: 10, CompletionTokens: 10}
+	withMin := rates.CostWithMinimum(small)
+	noMin := rates.Cost(small)
 
 	if withMin != MinimumCharge() {
 		t.Errorf("with-minimum cost = %d, want floor %d", withMin, MinimumCharge())
@@ -78,21 +82,49 @@ func TestCalculateCostNoMinimum(t *testing.T) {
 	}
 
 	// For a large request above the floor, both variants agree.
-	bigMin := CalculateCostWithOverrides(model, 1_000_000, 1_000_000, 0, 0, false)
-	bigNo := CalculateCostWithOverridesNoMinimum(model, 1_000_000, 1_000_000, 0, 0, false)
-	if bigMin != bigNo {
+	big := Usage{PromptTokens: 1_000_000, CompletionTokens: 1_000_000}
+	if bigMin, bigNo := rates.CostWithMinimum(big), rates.Cost(big); bigMin != bigNo {
 		t.Errorf("above-floor costs should match: withMin=%d noMin=%d", bigMin, bigNo)
 	}
 
 	// Nonzero usage must never be free: a 1-token request whose exact cost
 	// rounds to 0 micro-USD is floored to 1 (no-minimum path).
-	tiny := CalculateCostWithOverridesNoMinimum(model, 1, 0, 0, 0, false)
-	if tiny != 1 {
+	if tiny := rates.Cost(Usage{PromptTokens: 1}); tiny != 1 {
 		t.Errorf("1-token no-minimum cost = %d, want 1 (no free inference)", tiny)
 	}
+	// A fully cached prompt at a zero cache-read rate is still nonzero usage.
+	free := Rates{Input: DefaultInputPricePerMillion, Output: DefaultOutputPricePerMillion}
+	if got := free.Cost(Usage{PromptTokens: 1_000, CachedTokens: 1_000}); got != 1 {
+		t.Errorf("fully cached prompt at cache_read=0 cost = %d, want 1 (no free inference)", got)
+	}
 	// Genuinely zero usage stays zero.
-	if z := CalculateCostWithOverridesNoMinimum(model, 0, 0, 0, 0, false); z != 0 {
+	if z := rates.Cost(Usage{}); z != 0 {
 		t.Errorf("zero-usage no-minimum cost = %d, want 0", z)
+	}
+}
+
+// The OpenRouter feed advertises prompt, completion and input_cache_read as
+// per-token USD strings; a service-account debit must equal what OpenRouter
+// computes from those strings and the usage it receives. Both are derived from
+// the same Rates, so this pins the round trip at micro-USD resolution.
+func TestServiceCostMatchesAdvertisedPerTokenPrices(t *testing.T) {
+	rates := Rates{Input: 300_000, Output: 1_200_000, CacheRead: 30_000}
+	usage := Usage{PromptTokens: 40_000, CachedTokens: 32_000, CompletionTokens: 1_500}
+
+	perToken := func(s string) float64 {
+		v, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			t.Fatalf("parse %q: %v", s, err)
+		}
+		return v
+	}
+	advertised := float64(usage.PromptTokens-usage.CachedTokens)*perToken(FormatPerTokenUSD(rates.Input)) +
+		float64(usage.CachedTokens)*perToken(FormatPerTokenUSD(rates.CacheRead)) +
+		float64(usage.CompletionTokens)*perToken(FormatPerTokenUSD(rates.Output))
+	// USD → micro-USD.
+	wantMicro := int64(advertised*1_000_000 + 0.5)
+	if got := rates.Cost(usage); got != wantMicro {
+		t.Fatalf("service cost = %d µUSD, advertised per-token math = %d µUSD", got, wantMicro)
 	}
 }
 

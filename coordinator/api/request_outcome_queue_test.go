@@ -59,7 +59,8 @@ func TestRequestOutcomeQueuedDispatchDoesNotInheritPriorError(t *testing.T) {
 				received := time.Now()
 				d = &dispatchState{
 					s: srv, r: r, w: w,
-					model: model, publicModel: model, rawBody: []byte(`{"model":"accounting-queued-dispatch","messages":[{"role":"user","content":"hello"}],"max_tokens":64}`),
+					policy: selfRoutePolicy{prefer: true, ownerAccountID: testConsumerID},
+					model:  model, publicModel: model, rawBody: []byte(`{"model":"accounting-queued-dispatch","messages":[{"role":"user","content":"hello"}],"max_tokens":64}`),
 					consumerKey: "test-key", estimatedPromptTokens: 16, requestedMaxTokens: 64,
 					deadline: 5 * time.Second, timing: &registry.RequestTiming{ReceivedAt: received},
 					excludeProviders: map[string]struct{}{}, refundReservation: func() {},

@@ -330,7 +330,7 @@ func TestReserveProviderDecodeFloorNeverFailsClosed(t *testing.T) {
 	}
 }
 
-func TestReserveProviderExcludesSlowProviderWhenTTFTCeilingSet(t *testing.T) {
+func TestReserveProviderPrefersFirstContentWithAndWithoutCeiling(t *testing.T) {
 	reg := New(testLogger())
 	model := "ttft-ceiling-model"
 
@@ -348,7 +348,7 @@ func TestReserveProviderExcludesSlowProviderWhenTTFTCeilingSet(t *testing.T) {
 	fast.PrefillTPS = 1000
 	fast.mu.Unlock()
 
-	// Without a TTFT ceiling the router picks the slow (lower-cost) provider.
+	// Expected first content outranks maximum-output cost even without a ceiling.
 	reqNoCeiling := &PendingRequest{
 		RequestID:             "req-no-ceiling",
 		Model:                 model,
@@ -359,13 +359,14 @@ func TestReserveProviderExcludesSlowProviderWhenTTFTCeilingSet(t *testing.T) {
 	if selected == nil {
 		t.Fatalf("ReserveProviderEx returned nil: %+v", decision)
 	}
-	if selected.ID != slow.ID {
-		t.Fatalf("without ceiling selected %q, want slow provider", selected.ID)
+	if selected.ID != fast.ID {
+		t.Fatalf("without ceiling selected %q, want faster first content", selected.ID)
 	}
 	selected.RemovePending(reqNoCeiling.RequestID)
 	reg.SetProviderIdle(selected.ID)
 
-	// With the TTFT ceiling the router must exclude slow and pick fast.
+	// A legacy cold-load estimate is unknown, not a new hard rejection; the
+	// first-content ranking continues to prefer the warm provider.
 	reqWithCeiling := &PendingRequest{
 		RequestID:             "req-with-ceiling",
 		Model:                 model,
@@ -380,8 +381,8 @@ func TestReserveProviderExcludesSlowProviderWhenTTFTCeilingSet(t *testing.T) {
 	if selected.ID != fast.ID {
 		t.Fatalf("with ceiling selected %q, want fast provider; decision=%+v", selected.ID, decision)
 	}
-	if decision.TTFTRejections != 1 {
-		t.Fatalf("TTFTRejections = %d, want 1", decision.TTFTRejections)
+	if decision.TTFTRejections != 0 {
+		t.Fatalf("unqualified cold forecast must remain unknown, got %d TTFT rejections", decision.TTFTRejections)
 	}
 	if decision.BestTTFTMs <= 0 {
 		t.Fatalf("BestTTFTMs = %f, want > 0", decision.BestTTFTMs)
@@ -396,10 +397,7 @@ func TestReserveProviderReturnsTTFTRejectionsWhenAllTooSlow(t *testing.T) {
 	model := "ttft-all-slow-model"
 
 	p := makeSchedulerProvider(t, reg, "slow", model, 100)
-	p.mu.Lock()
-	p.PrefillTPS = 1000
-	p.BackendCapacity.Slots[0].State = "idle_shutdown"
-	p.mu.Unlock()
+	setFreshIdleFirstContentTelemetry(p, 10)
 
 	req := &PendingRequest{
 		RequestID:             "req-all-slow",
@@ -407,6 +405,7 @@ func TestReserveProviderReturnsTTFTRejectionsWhenAllTooSlow(t *testing.T) {
 		EstimatedPromptTokens: 100,
 		RequestedMaxTokens:    128,
 		MaxTTFTMs:             10_000,
+		FirstContentDeadline:  time.Now().Add(10 * time.Second),
 	}
 	selected, decision := reg.ReserveProviderEx(model, req)
 	if selected != nil {
@@ -427,6 +426,7 @@ func TestReserveProviderVisionIgnoresTextOnlyTTFTCeiling(t *testing.T) {
 	reg := New(testLogger())
 	model := "vision-ttft-projection-incomplete"
 	p := makeSchedulerProvider(t, reg, "vision-provider", model, 100)
+	setFreshIdleFirstContentTelemetry(p, 0.2)
 	p.mu.Lock()
 	p.PrefillTPS = 0.2
 	p.Models[0].IsVision = true
@@ -438,6 +438,7 @@ func TestReserveProviderVisionIgnoresTextOnlyTTFTCeiling(t *testing.T) {
 		EstimatedPromptTokens: 100,
 		RequestedMaxTokens:    128,
 		MaxTTFTMs:             10_000,
+		FirstContentDeadline:  time.Now().Add(10 * time.Second),
 	}
 	if selected, decision := reg.ReserveProviderEx(model, text); selected != nil || decision.TTFTRejections != 1 {
 		t.Fatalf("text request selected=%v decision=%+v, want one TTFT rejection", selected, decision)
@@ -449,6 +450,7 @@ func TestReserveProviderVisionIgnoresTextOnlyTTFTCeiling(t *testing.T) {
 		EstimatedPromptTokens: 100,
 		RequestedMaxTokens:    128,
 		MaxTTFTMs:             10_000,
+		FirstContentDeadline:  time.Now().Add(10 * time.Second),
 		RequiresVision:        true,
 	}
 	selected, decision := reg.ReserveProviderEx(model, media)

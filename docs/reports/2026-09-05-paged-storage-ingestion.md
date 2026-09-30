@@ -1,6 +1,6 @@
 # Paged-storage heartbeat ingestion
 
-> Last updated: 2026-09-05 · commit `544cfa5ee`
+> Last updated: 2026-09-05
 
 The coordinator accepts optional paged allocator observations, preserves their
 capture age, and emits bounded memory gauges and counter deltas. This milestone

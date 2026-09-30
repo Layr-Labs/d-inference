@@ -336,6 +336,7 @@ func TestGenericDispatchQueueWaitUsesAbsoluteDeadline(t *testing.T) {
 	timing := &registry.RequestTiming{ReceivedAt: time.Now()}
 	d := &dispatchState{
 		s:                      s,
+		policy:                 selfRoutePolicy{prefer: true, ownerAccountID: testConsumerID},
 		w:                      httptest.NewRecorder(),
 		r:                      req,
 		model:                  "generic-queue-deadline",

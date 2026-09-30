@@ -1,6 +1,6 @@
 # Native checkpoint page adoption and shared-ledger primitives
 
-> Last updated: 2026-09-05 · commit `456a8dcff`
+> Last updated: 2026-09-05
 
 Private checkpoint pages can now transfer into a native pool without copying
 their KV buffers. The native checks pass 162 distinct cases; the combined

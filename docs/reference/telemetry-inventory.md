@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-09-28 · commit `0bd16a9fa`
+> Last updated: 2026-09-29
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -45,7 +45,7 @@ Producer: the Swift provider over the `GET /ws/provider` WebSocket. Consumer:
 | `profile` (on both terminals) | `inference_complete`, `inference_error` | per attempt, ≤ `MaxInferenceProfileBytes` ([`protocol-messages.md#inference_complete`](protocol-messages.md#inference_complete)) | raw bytes retained on the attempt, decoded on the profile-sink worker → `request_profiles`; `profiler.provider_profile{valid, reason}` | `request_profiles` retention ([below](#coordinator-per-request-records-postgres)) |
 | `cache_stage_ms` and prefix-cache receipts | `inference_complete.usage`, `prefix_cache_lookup*`, `prefix_cache_ready*` | per attempt | `routing.cache_stage_ms`, `routing.cache_lookup_receipt`, `routing.cache_ready_receipt`, `routing.cache_receipt_rejected`, `exact_cache.*`. A receipt mismatch opens or escalates a proof fence, reported by the gauges `exact_cache.fence` tagged `event:applied` or `event:expired` and `exact_cache.fenced_capabilities` (Prometheus `exact_cache_fence{event}`, `exact_cache_fenced_capabilities`; `emitExactCacheDDGauges`, `coordinator/api/exact_cache_metrics.go`). Holder removals are `exact_cache.holder_removed` tagged `reason`, including `reason:shorter_hit` for a hit below a recorded boundary (Prometheus `exact_cache_holder_removed{reason}`). The observed-demand index reports `exact_cache.demand_entries` and `exact_cache.demand_cap_evictions` (Prometheus `exact_cache_demand_entries`, `exact_cache_demand_cap_evictions`) | Datadog |
 | `capacity_quote` | reply to `capacity_probe` | per probed request, within `capacityProbeWindow` ([`../architecture/routing.md#entry-points`](../architecture/routing.md#entry-points)) | `Registry.HandleCapacityQuote` — ledger drift correction | memory |
-| Disconnect | WebSocket close / read error | per session | `ws.disconnects{reason:peer_close, code}` or `{reason:read_error|read_error_control_frame}`; `provider.oom_suspected` when `ClassifyDisconnectReason` (`coordinator/registry/disconnect_classify.go`) sees `memory_pressure ≥ 0.90`, or `≥ 0.80` with in-flight work; `provider_sessions.disconnect_reason` via `CloseProviderSession` (`oom_suspected`, `ws_close_<code>`, `read_error`, `read_error_control_frame`, sweep default `disconnect`) | `provider_sessions` unbounded |
+| Disconnect | WebSocket close / read error | per session | `ws.disconnects{reason:peer_close, code}` or `{reason:read_error|read_error_control_frame}`; `provider.oom_suspected` when `ClassifyDisconnectReason` (`coordinator/registry/disconnect_classify.go`) sees `memory_pressure ≥ 0.90`, or `≥ 0.80` with in-flight work; `provider_sessions.disconnect_reason` via `CloseProviderSession` (`coordinator_shutdown` when the coordinator itself closed the socket for shutdown, or processed the registration after that close began; `oom_suspected`, `ws_close_<code>`, `read_error`, `read_error_control_frame`, sweep default `disconnect`) | `provider_sessions` unbounded |
 | `darkbloom report` log bundle | `POST /v1/provider/log-report` (`handleUploadLogReport`, `coordinator/api/log_report_handlers.go`) | operator-initiated | `provider_log_reports`, ≤ 10 MiB (`maxLogReportBodySize`); `?serial` → `426` | unbounded |
 
 Fields the v0.8.16 provider declares but never populates: `register.prefill_tps`
@@ -227,7 +227,7 @@ Datadog's; nothing is stored locally.
 |---|---|---|---|
 | `inference_routes` | one row per `(request_id, attempt)` | `recordRoutingDecisionFor` (`coordinator/api/dispatch.go`) → `RecordInferenceRoute` (upsert), outcome patched by `UpdateInferenceRouteOutcome` with `COALESCE` | none |
 | `request_rejections` | one row per pre-dispatch or exhausted rejection | `recordRejection` (`coordinator/api/rejection_telemetry.go`); insert errors swallowed | none |
-| `usage` (+ `usage_totals`) | one row per billed completion | `RecordUsageFullWithPublicModel` | none |
+| `usage` (+ `usage_totals`) | one row per billed completion | `store.RecordUsage` | none |
 | `providers`, `provider_reputation` | one row per provider | `UpsertProvider`, `UpsertReputation`, throttled to 30 s | none |
 | `provider_sessions` | one row per WebSocket session | `OpenProviderSession`, `TouchProviderSession`, `CloseProviderSession` | none |
 | `provider_log_reports` | one row per uploaded bundle | `StoreLogReport` | none |

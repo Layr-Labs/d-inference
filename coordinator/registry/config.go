@@ -30,6 +30,9 @@ type CacheRoutingConfig struct {
 	MaxDiscountMs       *float64
 	MaxCostFraction     *float64
 	MasterKey           string
+	// Persist keeps the holder and demand indexes in the store across
+	// restarts (EIGENINFERENCE_CACHE_ROUTING_PERSIST, default on).
+	Persist bool
 }
 
 // QualityCapConfig governs the per-provider admission concurrency cap derived
@@ -141,6 +144,14 @@ func (c WarmPoolConfig) perTickCeiling() int {
 	return c.MaxLoadsPerTick
 }
 
+// activePlanner reports whether this configuration can issue model loads.
+// Zero budgets are effective observe-only mode, including a zero baseline
+// with a positive ramp ceiling. Temporary exhaustion of a positive global
+// budget does not transfer ownership to the legacy planner.
+func (c WarmPoolConfig) activePlanner() bool {
+	return c.Enabled && !c.ObserveOnly && c.perTickCeiling() > 0 && c.MaxGlobalPendingLoads > 0
+}
+
 // ReadConfig reads registry configuration from environment variables.
 func ReadConfig() Config {
 	artifacts, artifactsErr := readCacheRoutingArtifacts()
@@ -186,6 +197,7 @@ func ReadConfig() Config {
 			MaxHolders:          env.EnvInt(env.EnvPrefix+"_CACHE_ROUTING_MAX_HOLDERS", defaultCacheRoutingMaxHolders),
 			MaxDiscountMs:       optionalCacheScoreLimit(env.EnvPrefix + "_CACHE_ROUTING_MAX_DISCOUNT_MS"),
 			MaxCostFraction:     optionalCacheScoreLimit(env.EnvPrefix + "_CACHE_ROUTING_MAX_COST_FRACTION"),
+			Persist:             env.EnvBool(env.EnvPrefix+"_CACHE_ROUTING_PERSIST", true),
 			MasterKey:           strings.TrimSpace(os.Getenv(env.EnvPrefix + "_CACHE_MASTER_KEY")),
 		},
 		QualityCap: QualityCapConfig{

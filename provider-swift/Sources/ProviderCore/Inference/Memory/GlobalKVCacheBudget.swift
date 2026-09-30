@@ -5,6 +5,8 @@ import MLX
 /// schedulers. MLX active/cache counters are global, so per-scheduler token
 /// budgets can otherwise admit requests against the same apparent headroom.
 public actor GlobalKVCacheBudget {
+    nonisolated let serviceBudget: WholeMacServiceBudget
+
     /// The four memory figures an admission decision needs: physical total, MLX's
     /// own active + cache, and the OS's real free RAM (the cross-process view).
     public struct MemorySnapshot: Sendable {
@@ -69,6 +71,8 @@ public actor GlobalKVCacheBudget {
         activationReserveBytes: UInt64? = nil,
         configReserveBytes: UInt64 = 0
     ) {
+        let serviceBudget = WholeMacServiceBudget()
+        self.serviceBudget = serviceBudget
         self.sustainedRejectionAuditThreshold = Self.defaultSustainedRejectionAuditThreshold
         self.rejectionStreakContinuityWindow = Self.defaultRejectionStreakContinuityWindow
         self.clockNow = { .now }
@@ -80,6 +84,8 @@ public actor GlobalKVCacheBudget {
         // Fence async GPU completion before freeing buffers, matching the engine's
         // own reclaim paths (avoids the IOKit completeMemory race seen on M4).
         let clearCache: @Sendable () -> Void = {
+            let deviceActivity = serviceBudget.beginUnboundedActivity()
+            defer { deviceActivity.finish() }
             MLX.Stream().synchronize()
             MLX.Memory.clearCache()
         }
@@ -102,7 +108,11 @@ public actor GlobalKVCacheBudget {
             prepareUsage: { _ = Self.allocatorReady }, snapshot: snapshot)
         self.reclaimer = KVPoolReclaimer(
             clearCache: clearCache,
-            reclaimableBytes: { snapshot().cache })
+            reclaimableBytes: { snapshot().cache },
+            isReclaimAllowed: {
+                let registry = MiMoV26NativeLoadRegistry.shared
+                return !registry.hasRetainedFault && !registry.hasUnretiredClosingTransactions
+            })
     }
 
     init(
@@ -110,6 +120,7 @@ public actor GlobalKVCacheBudget {
         activationReserveBytes: UInt64? = nil,
         configReserveBytes: UInt64 = 0,
         memorySnapshot: @escaping @Sendable () -> MemorySnapshot,
+        serviceBudget suppliedServiceBudget: WholeMacServiceBudget? = nil,
         clearCache: @escaping @Sendable () -> Void = {},
         selfHealMinInterval: Duration = GlobalKVCacheBudget.defaultSelfHealMinInterval,
         reclaimer: KVPoolReclaimer? = nil,
@@ -119,6 +130,8 @@ public actor GlobalKVCacheBudget {
         clockNow: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
         emitAuditEvent: @escaping @Sendable (TelemetrySeverity, String, [String: AnyCodableValue]) -> Void = { _, _, _ in }
     ) {
+        let serviceBudget = suppliedServiceBudget ?? WholeMacServiceBudget()
+        self.serviceBudget = serviceBudget
         let total = memorySnapshot().total
         self.physicalMemoryBytes = total
         self.loadReserveBytes = UnifiedMemoryCap.loadReserveBytes(
@@ -132,7 +145,11 @@ public actor GlobalKVCacheBudget {
         self.auditMinInterval = auditMinInterval
         self.emitAuditEvent = emitAuditEvent
         self.reclaimer = reclaimer ?? KVPoolReclaimer(
-            clearCache: clearCache,
+            clearCache: {
+                let deviceActivity = serviceBudget.beginUnboundedActivity()
+                defer { deviceActivity.finish() }
+                clearCache()
+            },
             reclaimableBytes: { memorySnapshot().cache },
             minInterval: selfHealMinInterval,
             // Tests that don't pin a threshold should never trip the proactive

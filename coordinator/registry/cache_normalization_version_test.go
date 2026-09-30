@@ -13,8 +13,9 @@ import (
 func TestNormalizationVersionMismatchFallsBackToOrdinaryServing(t *testing.T) {
 	var corpus struct {
 		Vectors []struct {
-			Artifacts []promptcontract.Artifact `json:"artifacts"`
-			LegacyID  string                    `json:"legacy_v3_prompt_contract_id"`
+			Artifacts  []promptcontract.Artifact `json:"artifacts"`
+			LegacyV3ID string                    `json:"legacy_v3_prompt_contract_id"`
+			LegacyV6ID string                    `json:"legacy_v6_prompt_contract_id"`
 		} `json:"vectors"`
 	}
 	data, err := os.ReadFile("../../fixtures/prompt-contract/v1/contract_vectors.json")
@@ -32,35 +33,40 @@ func TestNormalizationVersionMismatchFallsBackToOrdinaryServing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, oldCoordinator := range []bool{false, true} {
-		r, _, capability := exactTestRegistry(t)
-		removeTestProvider(r, "provider-a")
-		capability.PromptContractID = vector.LegacyID
-		plan := boundTestCachePlan(r, exactTestPlan(exactTestAnchor(2, "c")))
-		plan.PromptContractID = currentID
-		if oldCoordinator {
-			capability.PromptContractID, plan.PromptContractID = currentID, vector.LegacyID
+	for _, legacyID := range []string{vector.LegacyV3ID, vector.LegacyV6ID} {
+		if legacyID == "" || legacyID == currentID {
+			t.Fatal("missing or unfenced legacy normalization identity")
 		}
-		p := checkpointTestProvider(t, r, "mixed-version", capability)
-		if capabilityMatchesPlan(capability, plan) {
-			t.Fatal("cross-version cache match")
+		for _, oldCoordinator := range []bool{false, true} {
+			r, _, capability := exactTestRegistry(t)
+			removeTestProvider(r, "provider-a")
+			capability.PromptContractID = legacyID
+			plan := boundTestCachePlan(r, exactTestPlan(exactTestAnchor(2, "c")))
+			plan.PromptContractID = currentID
+			if oldCoordinator {
+				capability.PromptContractID, plan.PromptContractID = currentID, legacyID
+			}
+			p := checkpointTestProvider(t, r, "mixed-version", capability)
+			if capabilityMatchesPlan(capability, plan) {
+				t.Fatal("cross-version cache match")
+			}
+			matching := plan
+			matching.PromptContractID = capability.PromptContractID
+			if !capabilityMatchesPlan(capability, matching) {
+				t.Fatal("same-version positive control")
+			}
+			plan.affinityKey = "repeated-prefix"
+			pr := &PendingRequest{RequestID: "mixed-normalization", Model: "model", CachePlan: plan,
+				EstimatedPromptTokens: plan.PromptTokenCount, RequestedMaxTokens: 128}
+			chosen, decision := r.ReserveProviderEx("model", pr)
+			if chosen != p {
+				t.Fatalf("normalization mismatch blocked ordinary serving: %+v", decision)
+			}
+			if decision.SelectionPath == SelectionPrefixAffinity || decision.CacheDiscountMs != 0 ||
+				decision.CacheTier != "" || pr.CacheSelectionSelected {
+				t.Fatalf("normalization mismatch earned cache credit: %+v", decision)
+			}
+			p.RemovePending(pr.RequestID)
 		}
-		matching := plan
-		matching.PromptContractID = capability.PromptContractID
-		if !capabilityMatchesPlan(capability, matching) {
-			t.Fatal("same-version positive control")
-		}
-		plan.affinityKey = "repeated-prefix"
-		pr := &PendingRequest{RequestID: "mixed-normalization", Model: "model", CachePlan: plan,
-			EstimatedPromptTokens: plan.PromptTokenCount, RequestedMaxTokens: 128}
-		chosen, decision := r.ReserveProviderEx("model", pr)
-		if chosen != p {
-			t.Fatalf("normalization mismatch blocked ordinary serving: %+v", decision)
-		}
-		if decision.SelectionPath == SelectionPrefixAffinity || decision.CacheDiscountMs != 0 ||
-			decision.CacheTier != "" || pr.CacheSelectionSelected {
-			t.Fatalf("normalization mismatch earned cache credit: %+v", decision)
-		}
-		p.RemovePending(pr.RequestID)
 	}
 }

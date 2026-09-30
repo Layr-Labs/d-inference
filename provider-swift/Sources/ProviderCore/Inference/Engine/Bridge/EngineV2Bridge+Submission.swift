@@ -58,7 +58,8 @@ extension EngineV2Bridge {
         hybridPrefixIdentity: CBv2HybridPrefixIdentity? = nil,
         mediaKind: EngineV2MediaKind? = nil,
         tokenConstraint: (any CBv2TokenConstraint)? = nil,
-        donationDemand: SSDCheckpointDonationDemand? = nil
+        donationDemand: SSDCheckpointDonationDemand? = nil,
+        promptWork: PromptWork? = nil
     ) async -> AsyncStream<GenerationEvent> {
         do {
             return try await submitTokenized(
@@ -75,7 +76,7 @@ extension EngineV2Bridge {
                 mediaKind: mediaKind,
                 tokenConstraint: tokenConstraint,
                 donationDemand: donationDemand,
-                firstContentDeadline: nil)
+                firstContentDeadline: nil, promptWork: promptWork)
         } catch MultiModelBatchSchedulerEngineError.advertisedContextExceeded {
             // Preserve the typed client rejection across the nonthrowing stream
             // API using only its fixed, content-free scheduler marker.
@@ -116,7 +117,10 @@ extension EngineV2Bridge {
         /// gate; nil keeps the legacy write-every-checkpoint behaviour.
         donationDemand: SSDCheckpointDonationDemand? = nil,
         firstContentDeadline: FirstContentDeadline?,
-        profile: RequestProfileBuilder? = nil
+        profile: RequestProfileBuilder? = nil,
+        serviceReservationID: String? = nil,
+        serviceReservation: ServiceReservationLifetime? = nil,
+        promptWork: PromptWork? = nil
     ) async throws -> AsyncStream<GenerationEvent> {
         // Validate the caller-supplied id before it becomes a dictionary key /
         // cancel-correlation handle: a nil / empty / over-long / non-printable
@@ -125,6 +129,12 @@ extension EngineV2Bridge {
         // hardening risk). See `normalizedRequestId`.
         let id = Self.normalizedRequestId(requestId)
         let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
+        guard canSubmitWithNativeOwner() else {
+            usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
+            continuation.yield(.error("request queue full: engine is shutting down"))
+            continuation.finish()
+            return stream
+        }
 
         // Duplicate request-id guard (legacy: the planner's
         // `duplicateRequestID` rejection). Without it a second submit under
@@ -140,6 +150,20 @@ extension EngineV2Bridge {
             return stream
         }
         let retirementTransfer = EngineV2RetirementTransfer()
+        guard acquireServiceAllowance(requestID: id, serviceReservationID: serviceReservationID,
+            serviceReservation: serviceReservation, promptTokens: promptTokens.count,
+            maxOutputTokens: max(0, request.max_tokens ?? defaultMaxTokens),
+            qualifiedTextWork: multimodal == nil && mediaKind == nil) else {
+            usageSignal?.finalizeLookup(failure: .capacity, fallbackTier: prefixCacheFallbackTier)
+            continuation.yield(.error("token_budget_exhausted: whole-Mac service allowance exhausted"))
+            continuation.finish()
+            return stream
+        }
+        defer {
+            if active[id] == nil && !retirementTransfer.isClaimed {
+                releaseServiceAllowance(requestID: id)
+            }
+        }
         pendingSubmissionIDs.insert(id)
         if let profile { pendingProfiles[id] = profile }
         // Profiler: this prompt is "queued for prefill" for exactly the span
@@ -381,7 +405,31 @@ extension EngineV2Bridge {
         // those bytes twice. Until then its grant is logical, as for idle
         // contiguous slots; every reservation rechecks live headroom.
         var sharedKVReserved = false
+        // Only the genuine native MiMo TX's SAME engine, bridge and global
+        // budget can replace this R claim. A generic owner's marker is not
+        // enough, and all other contiguous paths retain their existing claim.
+        let completePrefixOwnsRequestCharge: Bool
+        if let actual = ownedEngine as? EngineV2, let kvBudget,
+           let transaction = nativeTransaction, nativeTransactionID == transaction.id {
+            completePrefixOwnsRequestCharge = transaction.ownsNativeCompletePrefixRequestCharge(
+                engine: actual, bridge: self, budget: kvBudget)
+        } else { completePrefixOwnsRequestCharge = false }
+        let nativePagedOwnsRequestCharge: Bool
+        if let actual = ownedEngine as? EngineV2, let kvBudget,
+           let transaction = nativeTransaction, nativeTransactionID == transaction.id {
+            nativePagedOwnsRequestCharge = transaction.ownsNativePagedRequestCharge(
+                engine: actual, bridge: self, budget: kvBudget)
+        } else { nativePagedOwnsRequestCharge = false }
+        if kvBackendKind == .paged, nativeTransactionID != nil, !nativePagedOwnsRequestCharge {
+            await releasePreSubmitResources(requestID: id, sharedKVReserved: false,
+                prefixCacheReceiptID: prefixCacheReceiptID, ssdStaged: ssdStaged,
+                readyReceiptRegistered: readyReceiptRegistered, usageSignal: usageSignal, failure: .policy)
+            continuation.yield(.error("native_paged_process_owner_mismatch"))
+            continuation.finish()
+            return stream // no native submission or foreign-budget coverage inference
+        }
         if kvBackendKind == .contiguous, let kvBudget,
+            !completePrefixOwnsRequestCharge,
             (ownedEngine as? CBv2NativeBlockEngine)?.usesProcessMemoryOwner != true,
             (kvBytesPerToken > 0 || fixedRequestBytes > 0 || nativeRequestBytes != nil), cbv2Request.maxTokens > 0
         {
@@ -467,18 +515,23 @@ extension EngineV2Bridge {
             readyReceiptRegistered: readyReceiptRegistered,
             usageSignal: usageSignal)
 
-        // Snapshot queue isolation at the exact engine-submit boundary. The
-        // current provider request is already in `pendingSubmissionIDs`; every
-        // other active or pending row disqualifies this sample.
-        disqualifyOverlappedPrefillSamples()
-        let isolatedPrefillSampleEligible =
-            isIsolatedPrefillSubmitBoundary(currentProviderRequestID: id)
-
         // Reserve the deterministic or monotonic ID before any admission
         // suspension. EngineV2Bridge+Identity defines collision handling.
         let cbv2Id = mintEngineRequestId(
             seed: cbv2Request.sampling.seed, promptTokens: promptTokens)
         cbv2Request.id = cbv2Id
+        let prefillReceipt = EnginePrefillReceipt(activity: measurementActivity, model: modelId,
+            deadlineRateEvidence: deadlineProfile == nil ? nil : serviceBudget?.captureDeadlineRateEvidence())
+        cbv2Request.onPrefillCompleted = { [weak self, prefillReceipt] usage in
+            prefillReceipt.complete(usage)
+            Task { await self?.consumePrefillReceipt(id: id, receipt: prefillReceipt) }
+        }
+        // Accepted requests transfer interval ownership to active state or its
+        // retirement owner. Rejected submissions release in this defer; a
+        // transferred receipt ignores it until actual engine retirement.
+        defer {
+            if active[id]?.prefillReceipt !== prefillReceipt { prefillReceipt.end() }
+        }
         let engineRequest = cbv2Request
         pendingEngineIDs.insert(cbv2Id)
         idMap[id] = cbv2Id
@@ -493,9 +546,26 @@ extension EngineV2Bridge {
 
         // Hoisted so the profiler can name the deadline mode; pure function of
         // bridge state, no suspension between here and the submit below.
-        let deadlineAdmission = firstTokenDeadlineAdmission(
-            deadline: firstContentDeadline,
-            isMultimodal: multimodal != nil)
+        let deadlineAdmission: CBv2FirstTokenDeadlineAdmission?
+        do {
+            deadlineAdmission = try firstTokenDeadlineAdmission(
+                deadline: firstContentDeadline, multimodal: multimodal,
+                requestID: id, promptTokens: promptTokens.count, promptWork: promptWork)
+        } catch {
+            // The capability check is after shared-KV/prefix preparation.
+            // Preserve the existing cold-refusal unwind before returning.
+            await releasePreSubmitResources(
+                requestID: id,
+                sharedKVReserved: sharedKVReserved,
+                prefixCacheReceiptID: prefixCacheReceiptID,
+                ssdStaged: ssdStaged,
+                readyReceiptRegistered: readyReceiptRegistered,
+                usageSignal: usageSignal,
+                failure: .policy)
+            continuation.yield(.error(EngineV2Translation.admissionErrorMessage(for: error)))
+            continuation.finish()
+            return stream
+        }
         if let profile {
             // Profiler engine-submit snapshot: ONE lock for the stamp and the
             // whole occupancy posture at the submit boundary.
@@ -531,7 +601,7 @@ extension EngineV2Bridge {
         // replaces this with the engine-queue commit instant returned by the
         // admission transaction.
         var engineAdmittedAt = ContinuousClock.now
-        guard let engine = ownedEngine else {
+        guard canSubmitWithNativeOwner(), let engine = ownedEngine else {
             await releasePreSubmitResources(
                 requestID: id,
                 sharedKVReserved: sharedKVReserved,
@@ -577,6 +647,7 @@ extension EngineV2Bridge {
                             engineID: cbv2Id,
                             stream: stream,
                             retirement: retirement,
+                            prefillReceipt: prefillReceipt,
                             sharedKVReserved: sharedKVReserved,
                             prefixCacheReceiptID: prefixCacheReceiptID,
                             ssdStaged: ssdStaged,
@@ -601,6 +672,7 @@ extension EngineV2Bridge {
                             engineID: cbv2Id,
                             stream: stream,
                             retirement: retirement,
+                            prefillReceipt: prefillReceipt,
                             sharedKVReserved: sharedKVReserved,
                             prefixCacheReceiptID: prefixCacheReceiptID,
                             ssdStaged: ssdStaged,
@@ -610,6 +682,10 @@ extension EngineV2Bridge {
                         throw error
                     }
                     events = stream
+                    // Atomic admission transfers a generation-bound retirement
+                    // handle even for non-native engines. The pump must retain
+                    // shared service/KV ownership after an early terminal.
+                    nativeRetirement = retirement
                     engineAdmittedAt = admittedAt
                     if let profile {
                         // The engine's commit instant is on the deadline
@@ -655,6 +731,11 @@ extension EngineV2Bridge {
                     let submitted = try native.submitWithRetirement(engineRequest)
                     events = submitted.events
                     nativeRetirement = submitted.retirement
+                } else if let native = engine as? EngineV2,
+                    native.nativeShutdownExecutionContractID != nil {
+                    let submitted = try native.submitWithNativeRetirement(engineRequest)
+                    events = submitted.events
+                    nativeRetirement = submitted.retirement
                 } else {
                     events = try engine.submit(engineRequest)
                 }
@@ -684,6 +765,7 @@ extension EngineV2Bridge {
                 engineID: cbv2Id,
                 stream: cancellation.stream,
                 retirement: cancellation.retirement,
+                prefillReceipt: prefillReceipt,
                 sharedKVReserved: sharedKVReserved,
                 prefixCacheReceiptID: prefixCacheReceiptID,
                 ssdStaged: ssdStaged,
@@ -722,14 +804,11 @@ extension EngineV2Bridge {
         active[id] = ActiveRequestState(
             promptTokens: promptTokens.count,
             maxTokens: cbv2Request.maxTokens,
-            isolatedPrefillSampleEligible:
-                isolatedPrefillSampleEligible
-                && pendingSubmissionIDs.allSatisfy({ $0 == id })
-                && pendingEngineIDs.allSatisfy({ $0 == cbv2Id })
-                && active.isEmpty,
             submittedAt: engineAdmittedAt,
-            profile: profile
+            profile: profile,
+            prefillReceipt: prefillReceipt
         )
+        consumePrefillReceipt(id: id, receipt: prefillReceipt)
         // Wedge instrumentation: the request is now in the engine's hands.
         wedgeMonitor.recordAdmit(now: .now)
 

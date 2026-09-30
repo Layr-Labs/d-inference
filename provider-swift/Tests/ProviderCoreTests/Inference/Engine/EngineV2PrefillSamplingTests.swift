@@ -12,7 +12,7 @@ import Testing
 
 @testable import ProviderCore
 
-private final class PrefillRetirementGate: @unchecked Sendable {
+final class PrefillRetirementGate: @unchecked Sendable {
     private let lock = NSLock()
     private var released = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
@@ -51,7 +51,7 @@ private final class PrefillRetirementGate: @unchecked Sendable {
 
 // MARK: - Manual-script engine (controls delta timing)
 
-private final class PrefillScriptEngine: CBv2Engine, @unchecked Sendable {
+final class PrefillScriptEngine: CBv2Engine, @unchecked Sendable {
     enum DeadlineBehavior: Equatable {
         case admit
         case reject
@@ -62,6 +62,22 @@ private final class PrefillScriptEngine: CBv2Engine, @unchecked Sendable {
     private let lock = NSLock()
     private var _continuations: [AsyncStream<CBv2Event>.Continuation] = []
     private var _ordinarySubmissionCount = 0
+    private var _requests: [CBv2Request] = []
+
+    func completePrefill(_ usage: CBv2Usage, index: Int = 0) {
+        let callback = lock.withLock { _requests[index].onPrefillCompleted }
+        callback?(usage)
+    }
+
+    func completeColdPrefill(index: Int = 0, milliseconds: UInt64 = 100) {
+        let request = lock.withLock { _requests[index] }
+        var usage = CBv2Usage(promptTokens: request.promptTokens.count, completionTokens: 0)
+        var timing = CBv2RequestTiming()
+        timing.prefillFirstLaunchNanos = 1_000_000
+        timing.promptComputedNanos = 1_000_000 + milliseconds * 1_000_000
+        usage.timing = timing
+        request.onPrefillCompleted?(usage)
+    }
     private var _deadlineAdmissions: [CBv2FirstTokenDeadlineAdmission] = []
     private var _deadlineRequestIDs: [CBv2RequestID] = []
     private var _cancelledRequestIDs: [CBv2RequestID] = []
@@ -119,7 +135,7 @@ private final class PrefillScriptEngine: CBv2Engine, @unchecked Sendable {
     }
 
     func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
-        lock.withLock { _ordinarySubmissionCount += 1 }
+        lock.withLock { _ordinarySubmissionCount += 1; _requests.append(request) }
         return makeStream()
     }
 
@@ -194,7 +210,7 @@ private final class PrefillScriptEngine: CBv2Engine, @unchecked Sendable {
     func shutdown() async {}
 }
 
-private struct PrefillStubTokenizer: MLXLMCommon.Tokenizer {
+struct PrefillStubTokenizer: MLXLMCommon.Tokenizer {
     func encode(text: String, addSpecialTokens: Bool) -> [Int] { [] }
     func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String { "x" }
     func convertTokenToId(_ token: String) -> Int? { nil }
@@ -268,7 +284,7 @@ struct EngineV2PrefillSamplingTests {
             prefixCachePrefillTokensSaved: 0)))
     }
 
-    @Test("successful finish feeds the EWMA from submit→first-token timing")
+    @Test("engine prompt timing feeds the EWMA independently of stream delivery")
     func ewmaPopulatedFromRealTiming() async throws {
         let engine = PrefillScriptEngine()
         let bridge = EngineV2Bridge(
@@ -289,9 +305,7 @@ struct EngineV2PrefillSamplingTests {
             requestId: "req-prefill-1")
         let consumer = Task { for await _ in stream {} }
 
-        // Hold the "prefill" open for a real, floor-clearing window before
-        // the first token arrives, then finish.
-        try await Task.sleep(for: .milliseconds(50))
+        engine.completeColdPrefill(milliseconds: 50)
         let continuation = try #require(engine.continuations.first)
         continuation.yield(.delta(text: "x", tokens: [11], logprobs: nil))
         continuation.yield(.finished(
@@ -300,13 +314,11 @@ struct EngineV2PrefillSamplingTests {
         _ = await consumer.value
 
         let reported = await bridge.backendSlotCapacity().observedPrefillTps
-        // 200 tokens over ≥50 ms ⇒ ≤ 4,000 tok/s, comfortably plausible and
-        // non-zero. Bound it loosely (scheduling jitter) rather than pin it.
-        #expect(reported > 0)
-        #expect(reported <= 4_100)
+        // Exact engine service timing is independent of actor/consumer delay.
+        #expect(reported == 4_000)
     }
 
-    @Test("cancelled requests never feed the prefill EWMA")
+    @Test("cancelled requests without completed-prompt evidence do not train prefill")
     func cancelledRequestsDoNotSample() async throws {
         let engine = PrefillScriptEngine()
         let bridge = EngineV2Bridge(
@@ -392,6 +404,7 @@ struct EngineV2PrefillSamplingTests {
         await bridge.backdateSubmissionForTesting(
             requestId: "queued-second", byMilliseconds: 100)
 
+        engine.completeColdPrefill(index: 0)
         let firstContinuation = try #require(engine.continuations.first)
         firstContinuation.yield(.delta(text: "x", tokens: [11], logprobs: nil))
         firstContinuation.yield(.finished(
@@ -402,6 +415,7 @@ struct EngineV2PrefillSamplingTests {
         let isolatedAfterFirst = await bridge._testIsolatedPrefillTps()
         #expect(isolatedAfterFirst == 0)
 
+        engine.completeColdPrefill(index: 1)
         let queuedContinuation = try #require(engine.continuations.last)
         queuedContinuation.yield(.delta(text: "x", tokens: [12], logprobs: nil))
         queuedContinuation.yield(.finished(
@@ -443,6 +457,7 @@ struct EngineV2PrefillSamplingTests {
         await bridge.backdateSubmissionForTesting(
             requestId: "decode-contended-prefill",
             byMilliseconds: 100)
+        engine.completeColdPrefill(index: 1)
         let contendedContinuation = try #require(engine.continuations.last)
         contendedContinuation.yield(.delta(text: "x", tokens: [12], logprobs: nil))
         contendedContinuation.yield(.finished(
@@ -567,6 +582,7 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         await bridge.backdateSubmissionForTesting(
             requestId: "measure-cold-prefill",
             byMilliseconds: 1_000)
+        engine.completeColdPrefill(milliseconds: 1_000)
         let continuation = try #require(engine.continuations.last)
         continuation.yield(.delta(text: "x", tokens: [11], logprobs: nil))
         continuation.yield(.finished(
@@ -620,7 +636,7 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         return false
     }
 
-    @Test("enforce mode carries absolute monotonic deadline and conservative phase rates")
+    @Test("enforce mode carries absolute monotonic deadline and observed phase rates")
     func enforceUsesAtomicAdmission() async throws {
         let engine = PrefillScriptEngine()
         let bridge = try makeProductionBridge(
@@ -652,7 +668,7 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         #expect(admission.deadline == expectedDeadline.instant)
         #expect(
             admission.conservativePrefillTokensPerSecond
-                == measured * EngineV2Bridge.deadlineProjectionRateHaircut)
+                == measured)
         #expect(admission.conservativeDecodeTokensPerSecond == nil)
         #expect(
             await bridge._testSubmissionInstant(requestId: "atomic-admit")
@@ -726,11 +742,15 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         try await Task.sleep(for: .milliseconds(20))
         decodeContinuation.yield(
             .delta(text: "bc", tokens: [12, 13], logprobs: nil))
-        decodeContinuation.yield(.finished(
-            reason: .stop,
-            usage: CBv2Usage(
-                promptTokens: promptTokens.count,
-                completionTokens: 3)))
+        var decodeUsage = CBv2Usage(promptTokens: promptTokens.count, completionTokens: 3)
+        var engineTiming = CBv2RequestTiming()
+        engineTiming.firstTokenNanos = 10_000_000
+        engineTiming.finishedNanos = 30_000_000
+        engineTiming.lastTokenNanos = 30_000_000
+        engineTiming.lastTokenUptimeNanos = DispatchTime.now().uptimeNanoseconds
+        engineTiming.decodeSteps = 2
+        decodeUsage.timing = engineTiming
+        decodeContinuation.yield(.finished(reason: .stop, usage: decodeUsage))
         decodeContinuation.finish()
         _ = await decodeConsumer.value
         let measuredDecode = await bridge.observedDecodeTpsEwma
@@ -746,7 +766,7 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         let admission = try #require(engine.deadlineAdmissions.last)
         #expect(
             admission.conservativeDecodeTokensPerSecond
-                == measuredDecode * EngineV2Bridge.deadlineProjectionRateHaircut)
+                == measuredDecode)
         #expect(profile.wireObject().deadlineDecision?.decodeTps
             == admission.conservativeDecodeTokensPerSecond)
         try await finishLatestSubmission(deadlineStream, engine: engine)
@@ -1143,5 +1163,155 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         #expect(failure.statusCode == 503)
         #expect(failure.errorReason == .deadlineUnreachable)
         #expect(failure.errorReason?.rawValue == "deadline_unreachable")
+    }
+}
+
+@Suite("Early engine performance observations")
+struct EngineEarlyPerformanceTests {
+    private func bridge(_ engine: PrefillScriptEngine, model: String = "gpt-oss-20b") -> EngineV2Bridge {
+        EngineV2Bridge(engine: engine, modelId: model,
+            tokenizer: TokenizerHandle(PrefillStubTokenizer()), eosTokenIds: [])
+    }
+
+    private func usage(saved: Int = 0) -> CBv2Usage {
+        var usage = CBv2Usage(promptTokens: 200, completionTokens: 0,
+            prefixCacheOutcome: saved > 0 ? .hit : .miss,
+            prefixCacheMatchedTokens: saved > 0 ? 180 : 0,
+            prefixCachePrefillTokensSaved: saved)
+        var timing = CBv2RequestTiming()
+        timing.prefillFirstLaunchNanos = 1_000_000
+        timing.promptComputedNanos = 101_000_000
+        usage.timing = timing
+        return usage
+    }
+
+    @Test("prompt completion publishes before output and survives cancellation without double counting")
+    func earlyCancellation() async throws {
+        let engine = PrefillScriptEngine()
+        let bridge = bridge(engine)
+        let stream = await bridge.submitTokenized(promptTokens: Array(repeating: 7, count: 200),
+            request: .init(model: "gpt-oss-20b", messages: [.init(role: "user", content: "hi")]),
+            requestId: "early")
+        let consumer = Task { for await _ in stream {} }
+        let promptUsage = usage()
+        engine.completePrefill(promptUsage)
+        // Explicit actor receipt consumption removes task scheduling from this
+        // assertion while exercising the same once-only production receipt.
+        let receipt = try #require(await bridge.active["early"]?.prefillReceipt)
+        await bridge.consumePrefillReceipt(id: "early", receipt: receipt)
+        let early = await bridge.backendSlotCapacity()
+        #expect(early.observedPrefillTps == 2_000)
+        #expect(early.telemetry?.prefillTokensTotal == 200)
+        #expect(early.telemetry?.prefillRequestsTotal == 1)
+        #expect(early.performanceMeasurements?.isolatedPrefill?.sampleCount == 1)
+        #expect(early.telemetry?.generationRequestsTotal == 0)
+        engine.completePrefill(promptUsage)
+        let continuation = try #require(engine.continuations.first)
+        continuation.yield(.finished(reason: .cancelled, usage: promptUsage))
+        continuation.finish()
+        await consumer.value
+        let terminal = await bridge.backendSlotCapacity()
+        #expect(terminal.telemetry?.prefillRequestsTotal == 1)
+        #expect(terminal.telemetry?.prefillTokensTotal == 200)
+        #expect(terminal.telemetry?.generationRequestsTotal == 1)
+        #expect(terminal.telemetry?.generatedTokensTotal == 0)
+    }
+
+    @Test("stream teardown retains observed output work exactly once without fabricating engine rate")
+    func teardownWork() async throws {
+        let engine = PrefillScriptEngine()
+        let bridge = bridge(engine)
+        let stream = await bridge.submitTokenized(promptTokens: Array(repeating: 7, count: 200),
+            request: .init(model: "gpt-oss-20b", messages: [.init(role: "user", content: "hi")]),
+            requestId: "teardown")
+        let consumer = Task { for await _ in stream {} }
+        let continuation = try #require(engine.continuations.first)
+        continuation.yield(.delta(text: "abc", tokens: [1, 2, 3], logprobs: nil))
+        continuation.finish()
+        await consumer.value
+        await bridge.dropRequest(id: "teardown")
+        await bridge.dropRequest(id: "unknown")
+        let capacity = await bridge.backendSlotCapacity()
+        #expect(capacity.telemetry?.generationRequestsTotal == 1)
+        #expect(capacity.telemetry?.generatedTokensTotal == 3)
+        #expect(capacity.performanceMeasurements?.decode == nil)
+    }
+
+    @Test("actual adopted savings train a reuse bucket without poisoning cold throughput")
+    func actualReuse() async throws {
+        let engine = PrefillScriptEngine()
+        let bridge = bridge(engine)
+        let stream = await bridge.submitTokenized(promptTokens: Array(repeating: 7, count: 200),
+            request: .init(model: "gpt-oss-20b", messages: [.init(role: "user", content: "hi")]),
+            requestId: "reuse")
+        let consumer = Task { for await _ in stream {} }
+        engine.completePrefill(usage(saved: 128))
+        let receipt = try #require(await bridge.active["reuse"]?.prefillReceipt)
+        await bridge.consumePrefillReceipt(id: "reuse", receipt: receipt)
+        let capacity = await bridge.backendSlotCapacity()
+        #expect(capacity.observedPrefillTps == 0)
+        #expect(capacity.telemetry?.prefillTokensTotal == 72)
+        let bucket = try #require(capacity.performanceMeasurements?.workloadBuckets.first)
+        #expect(bucket.cacheState == "reused")
+        #expect(bucket.observation.tokensPerSecond == 720)
+        let continuation = try #require(engine.continuations.first)
+        continuation.yield(.finished(reason: .cancelled, usage: usage(saved: 128)))
+        continuation.finish()
+        await consumer.value
+    }
+
+    @Test("other-model overlap persists after the competing request retires")
+    func crossModelOverlap() {
+        let activity = EngineMeasurementActivity()
+        let first = EnginePrefillReceipt(activity: activity, model: "a")
+        let second = EnginePrefillReceipt(activity: activity, model: "b")
+        second.end()
+        first.complete(usage())
+        let sample = first.take()
+        #expect(sample?.overlap.contended == true)
+        #expect(sample?.overlap.otherModel == true)
+        #expect(first.take() == nil)
+        first.end()
+    }
+
+    @Test("engine decode excludes delivery delay and absent timing does not manufacture capacity")
+    func engineDecodeTiming() {
+        var value = CBv2Usage(promptTokens: 200, completionTokens: 11)
+        #expect(EngineV2Bridge.engineDecodeRate(usage: value, nativeBlock: false) == nil)
+        var timing = CBv2RequestTiming()
+        timing.firstTokenNanos = 1_000_000
+        timing.finishedNanos = 9_101_000_000
+        timing.lastTokenNanos = 101_000_000
+        timing.lastTokenUptimeNanos = 1_000_000_000
+        timing.decodeSteps = 10
+        timing.pausedNanos = 1_000_000
+        timing.detokDelayFirstNanos = 9_000_000_000
+        value.timing = timing
+        #expect(EngineV2Bridge.engineDecodeRate(usage: value, nativeBlock: false) == 100)
+        let now = ContinuousClock.Instant.now
+        #expect(EngineV2Bridge.engineObservationInstant(timing: timing, now: now,
+            uptimeNanos: 4_000_000_000) == now - .seconds(3))
+        timing.decodeSteps = 0
+        value.timing = timing
+        #expect(EngineV2Bridge.engineDecodeRate(usage: value, nativeBlock: false) == nil)
+    }
+
+    @Test("measurement age grows on heartbeats and identical new samples advance count")
+    func observationIdentity() {
+        var measurements = EnginePerformanceMeasurements()
+        let at = ContinuousClock.Instant.now
+        measurements.observe("isolated_prefill", tps: 2_000, prompt: 1_000, context: 1_000,
+            cache: "cold", overlap: .init(), at: at)
+        #expect(measurements.snapshot(now: at + .seconds(2)).isolatedPrefill?.sampleAgeMs == 2_000)
+        measurements.observe("isolated_prefill", tps: 2_000, prompt: 1_000, context: 1_000,
+            cache: "cold", overlap: .init(), at: at + .seconds(3))
+        #expect(measurements.snapshot(now: at + .seconds(4)).isolatedPrefill?.sampleCount == 2)
+        #expect(measurements.snapshot(now: at + .seconds(4)).isolatedPrefill?.sampleAgeMs == 1_000)
+        #expect(measurements.epoch != EnginePerformanceMeasurements().epoch)
+        for i in 0..<100 {
+            measurements.observe("reuse_prefill", tps: 100, prompt: 1 << (i % 18), context: 1 << (i % 17),
+                cache: "reused", overlap: .init(contended: i % 2 == 0, otherModel: i % 4 == 0))
+        }
+        #expect(measurements.snapshot().workloadBuckets.count <= 32)
     }
 }

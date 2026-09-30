@@ -1,0 +1,654 @@
+{
+  "provenance": {
+    "date_utc": "2026-09-28",
+    "coordinator_commit": "ae4925180b459c52286c796432871f1b63f3b8a7",
+    "provider_release": "0.9.11",
+    "mlxlm_commit": "9f70e68dce563c90ad443fef470a713936bf6a4d",
+    "access": "Read-only Cloud SQL replica; 15s statement timeout and 1s lock timeout",
+    "raw_evidence": "Private workspace reports/gemma-ttft-2026-09-28/evidence; operational identifiers excluded from this projection",
+    "telemetry_limit": "Profile percentiles use the existing deterministic FNV-1a 10% cohort; failed and slow retained rows are not treated as a random sample",
+    "latency_limit": "Successful winners; coordinator receipt to first delivered content; excludes OpenRouter-to-coordinator ingress"
+  },
+  "main_windows": {
+    "window-0350": {
+      "successful_profiles": 182,
+      "first_content_ms": {
+        "n": 182,
+        "mean": 1370.305,
+        "p50": 1217.67,
+        "p95": 2609.165,
+        "p99": 3363.253
+      },
+      "engine_prefill_ms": {
+        "n": 182,
+        "mean": 1091.693,
+        "p50": 911.59,
+        "p95": 2297.936,
+        "p99": 2697.974
+      },
+      "engine_queue_ms": {
+        "n": 182,
+        "mean": 4.476,
+        "p50": 1.002,
+        "p95": 3.883,
+        "p99": 22.887
+      },
+      "completed_public_usage": {
+        "kind": "usage",
+        "model": "gemma-4-26b-qat-4bit",
+        "completions": 2602,
+        "providers": 135,
+        "prompt_tokens": 2810.588393543428,
+        "completion_tokens": 195.26671790930052,
+        "total_completion_tokens": 508084
+      }
+    },
+    "window-0420": {
+      "successful_profiles": 880,
+      "first_content_ms": {
+        "n": 880,
+        "mean": 2972.396,
+        "p50": 2662.963,
+        "p95": 6179.089,
+        "p99": 7700.515
+      },
+      "engine_prefill_ms": {
+        "n": 880,
+        "mean": 1931.555,
+        "p50": 1714.908,
+        "p95": 4151.35,
+        "p99": 5364.351
+      },
+      "engine_queue_ms": {
+        "n": 880,
+        "mean": 197.998,
+        "p50": 1.494,
+        "p95": 1405.341,
+        "p99": 2394.249
+      },
+      "completed_public_usage": {
+        "kind": "usage",
+        "model": "gemma-4-26b-qat-4bit",
+        "completions": 11764,
+        "providers": 281,
+        "prompt_tokens": 3093.405814348861,
+        "completion_tokens": 141.4982998979939,
+        "total_completion_tokens": 1664586
+      }
+    },
+    "window-0450": {
+      "successful_profiles": 153,
+      "first_content_ms": {
+        "n": 153,
+        "mean": 1278.7,
+        "p50": 1102.59,
+        "p95": 2649.042,
+        "p99": 3249.25
+      },
+      "engine_prefill_ms": {
+        "n": 153,
+        "mean": 989.3,
+        "p50": 854.398,
+        "p95": 2367.331,
+        "p99": 2598.202
+      },
+      "engine_queue_ms": {
+        "n": 153,
+        "mean": 3.006,
+        "p50": 1.398,
+        "p95": 10.483,
+        "p99": 21.094
+      },
+      "completed_public_usage": {
+        "kind": "usage",
+        "model": "gemma-4-26b-qat-4bit",
+        "completions": 2780,
+        "providers": 153,
+        "prompt_tokens": 2812.4607913669065,
+        "completion_tokens": 297.686690647482,
+        "total_completion_tokens": 827569
+      }
+    }
+  },
+  "waterfall": {
+    "0350": {
+      "n": 182,
+      "mean_ms": {
+        "before_dispatch": 25.39,
+        "engine_queue": 4.476,
+        "prefill_phase": 1091.693,
+        "provider_other": 55.161,
+        "transport_residual": 193.586,
+        "total": 1370.305,
+        "admit_to_first_launch": 0.0
+      }
+    },
+    "0420": {
+      "n": 880,
+      "mean_ms": {
+        "before_dispatch": 458.149,
+        "engine_queue": 197.998,
+        "prefill_phase": 1931.555,
+        "provider_other": 203.685,
+        "transport_residual": 181.009,
+        "total": 2972.396,
+        "admit_to_first_launch": 0.0
+      }
+    },
+    "0450": {
+      "n": 153,
+      "mean_ms": {
+        "before_dispatch": 32.9,
+        "engine_queue": 3.006,
+        "prefill_phase": 989.3,
+        "provider_other": 72.591,
+        "transport_residual": 180.903,
+        "total": 1278.7,
+        "admit_to_first_launch": 0.0
+      }
+    },
+    "0515": {
+      "n": 304,
+      "mean_ms": {
+        "before_dispatch": 135.655,
+        "engine_queue": 92.943,
+        "prefill_phase": 1050.819,
+        "provider_other": 127.282,
+        "transport_residual": 150.235,
+        "total": 1556.935,
+        "admit_to_first_launch": 0.0
+      }
+    }
+  },
+  "deadline_refusals": {
+    "window": "2026-09-28 04:20\u201304:25 UTC",
+    "count": 4286,
+    "bounded": 3892,
+    "unbounded": 394,
+    "occupancy_counts": {
+      "no_running_or_waiting_in_model_snapshot": 1431,
+      "running_and_waiting": 659,
+      "running_only": 429,
+      "waiting_only": 1767
+    },
+    "first_attempt_bounded": 1628,
+    "first_attempt_coordinator_prediction_fits_remaining": 1347,
+    "mismatch_example": {
+      "attempt": 0,
+      "coordinator_predicted_ms": 2669.4001918659246,
+      "coordinator_pending": 1,
+      "snapshot_age_ms": 192,
+      "provider": {
+        "prompt_tokens": 1413,
+        "running_at_admit": 0,
+        "waiting_at_admit": 1,
+        "queued_prefill_tokens_at_admit": 0,
+        "deadline_decision": {
+          "verdict": "deadline_unreachable",
+          "decode_tps": 32.646154280049345,
+          "projection": "bounded",
+          "observed_us": 1138353,
+          "prefill_tps": 233.24896501804275,
+          "remaining_us": 9298645,
+          "submit_remaining_us": 10426272,
+          "projected_service_us": 13958769,
+          "projected_decode_tokens": 6,
+          "projected_prefill_tokens": 3213
+        }
+      }
+    }
+  },
+  "hardware_cohort": {
+    "Apple M1 Ultra": {
+      "n": 2,
+      "providers": 2,
+      "tokens": {
+        "n": 2,
+        "mean": 2615,
+        "p50": 2615.0,
+        "p95": 3845.3,
+        "p99": 3954.66
+      },
+      "prefill_tps": {
+        "n": 2,
+        "mean": 1010.235,
+        "p50": 1010.235,
+        "p95": 1031.95,
+        "p99": 1033.88
+      },
+      "prefill_ms": {
+        "n": 2,
+        "mean": 2557.648,
+        "p50": 2557.648,
+        "p95": 3720.508,
+        "p99": 3823.873
+      },
+      "ttft_ms": {
+        "n": 2,
+        "mean": 2788.562,
+        "p50": 2788.562,
+        "p95": 4011.516,
+        "p99": 4120.223
+      },
+      "reported_isolated_tps": {
+        "n": 2,
+        "mean": 883.27,
+        "p50": 883.27,
+        "p95": 920.911,
+        "p99": 924.257
+      }
+    },
+    "Apple M2 Max": {
+      "n": 3,
+      "providers": 2,
+      "tokens": {
+        "n": 3,
+        "mean": 1584.667,
+        "p50": 1476.0,
+        "p95": 1836.0,
+        "p99": 1868.0
+      },
+      "prefill_tps": {
+        "n": 3,
+        "mean": 905.561,
+        "p50": 901.083,
+        "p95": 921.737,
+        "p99": 923.573
+      },
+      "prefill_ms": {
+        "n": 3,
+        "mean": 1746.925,
+        "p50": 1638.029,
+        "p95": 1991.013,
+        "p99": 2022.389
+      },
+      "ttft_ms": {
+        "n": 3,
+        "mean": 2293.035,
+        "p50": 2170.235,
+        "p95": 2754.015,
+        "p99": 2805.906
+      },
+      "reported_isolated_tps": {
+        "n": 3,
+        "mean": 778.37,
+        "p50": 794.757,
+        "p95": 820.572,
+        "p99": 822.866
+      }
+    },
+    "Apple M2 Ultra": {
+      "n": 2,
+      "providers": 1,
+      "tokens": {
+        "n": 2,
+        "mean": 1295.5,
+        "p50": 1295.5,
+        "p95": 1297.75,
+        "p99": 1297.95
+      },
+      "prefill_tps": {
+        "n": 2,
+        "mean": 1208.779,
+        "p50": 1208.779,
+        "p95": 1216.443,
+        "p99": 1217.124
+      },
+      "prefill_ms": {
+        "n": 2,
+        "mean": 1071.781,
+        "p50": 1071.781,
+        "p95": 1076.715,
+        "p99": 1077.153
+      },
+      "ttft_ms": {
+        "n": 2,
+        "mean": 1161.641,
+        "p50": 1161.641,
+        "p95": 1188.18,
+        "p99": 1190.539
+      },
+      "reported_isolated_tps": {
+        "n": 2,
+        "mean": 1195.516,
+        "p50": 1195.516,
+        "p95": 1196.219,
+        "p99": 1196.282
+      }
+    },
+    "Apple M3 Max": {
+      "n": 2,
+      "providers": 2,
+      "tokens": {
+        "n": 2,
+        "mean": 2702,
+        "p50": 2702.0,
+        "p95": 3877.4,
+        "p99": 3981.88
+      },
+      "prefill_tps": {
+        "n": 2,
+        "mean": 1433.176,
+        "p50": 1433.176,
+        "p95": 1435.343,
+        "p99": 1435.536
+      },
+      "prefill_ms": {
+        "n": 2,
+        "mean": 1883.798,
+        "p50": 1883.798,
+        "p95": 2701.086,
+        "p99": 2773.733
+      },
+      "ttft_ms": {
+        "n": 2,
+        "mean": 2156.947,
+        "p50": 2156.947,
+        "p95": 2953.784,
+        "p99": 3024.614
+      },
+      "reported_isolated_tps": {
+        "n": 2,
+        "mean": 1197.249,
+        "p50": 1197.249,
+        "p95": 1276.398,
+        "p99": 1283.434
+      }
+    },
+    "Apple M3 Ultra": {
+      "n": 61,
+      "providers": 20,
+      "tokens": {
+        "n": 61,
+        "mean": 2977.197,
+        "p50": 3212.0,
+        "p95": 4022.0,
+        "p99": 4075.2
+      },
+      "prefill_tps": {
+        "n": 61,
+        "mean": 2316.175,
+        "p50": 2120.978,
+        "p95": 2756.198,
+        "p99": 3417.003
+      },
+      "prefill_ms": {
+        "n": 61,
+        "mean": 1293.736,
+        "p50": 1407.908,
+        "p95": 1896.295,
+        "p99": 1915.419
+      },
+      "ttft_ms": {
+        "n": 61,
+        "mean": 1471.898,
+        "p50": 1531.698,
+        "p95": 2085.502,
+        "p99": 2426.766
+      },
+      "reported_isolated_tps": {
+        "n": 61,
+        "mean": 2096.623,
+        "p50": 2043.26,
+        "p95": 2590.023,
+        "p99": 2604.169
+      }
+    },
+    "Apple M4 Max": {
+      "n": 35,
+      "providers": 22,
+      "tokens": {
+        "n": 35,
+        "mean": 2721.8,
+        "p50": 3003.0,
+        "p95": 4053.6,
+        "p99": 4087.62
+      },
+      "prefill_tps": {
+        "n": 35,
+        "mean": 1606.078,
+        "p50": 1637.877,
+        "p95": 1856.842,
+        "p99": 2397.835
+      },
+      "prefill_ms": {
+        "n": 35,
+        "mean": 1777.801,
+        "p50": 1634.838,
+        "p95": 2662.555,
+        "p99": 4834.873
+      },
+      "ttft_ms": {
+        "n": 35,
+        "mean": 1993.844,
+        "p50": 1935.69,
+        "p95": 2794.996,
+        "p99": 5012.134
+      },
+      "reported_isolated_tps": {
+        "n": 35,
+        "mean": 1380.403,
+        "p50": 1437.965,
+        "p95": 1593.961,
+        "p99": 1646.635
+      }
+    },
+    "Apple M4 Pro": {
+      "n": 2,
+      "providers": 2,
+      "tokens": {
+        "n": 2,
+        "mean": 2044.5,
+        "p50": 2044.5,
+        "p95": 2692.95,
+        "p99": 2750.59
+      },
+      "prefill_tps": {
+        "n": 2,
+        "mean": 768.215,
+        "p50": 768.215,
+        "p95": 846.53,
+        "p99": 853.491
+      },
+      "prefill_ms": {
+        "n": 2,
+        "mean": 2588.339,
+        "p50": 2588.339,
+        "p95": 3168.572,
+        "p99": 3220.148
+      },
+      "ttft_ms": {
+        "n": 2,
+        "mean": 3044.169,
+        "p50": 3044.169,
+        "p95": 3653.108,
+        "p99": 3707.236
+      },
+      "reported_isolated_tps": {
+        "n": 2,
+        "mean": 606.828,
+        "p50": 606.828,
+        "p95": 667.094,
+        "p99": 672.451
+      }
+    },
+    "Apple M5 Max": {
+      "n": 102,
+      "providers": 47,
+      "tokens": {
+        "n": 102,
+        "mean": 2863.853,
+        "p50": 2865.0,
+        "p95": 4072.85,
+        "p99": 4078.0
+      },
+      "prefill_tps": {
+        "n": 102,
+        "mean": 4562.563,
+        "p50": 4550.955,
+        "p95": 5694.139,
+        "p99": 8348.643
+      },
+      "prefill_ms": {
+        "n": 102,
+        "mean": 634.388,
+        "p50": 643.113,
+        "p95": 904.688,
+        "p99": 1140.129
+      },
+      "ttft_ms": {
+        "n": 102,
+        "mean": 975.225,
+        "p50": 927.442,
+        "p95": 1562.06,
+        "p99": 2844.093
+      },
+      "reported_isolated_tps": {
+        "n": 101,
+        "mean": 3676.76,
+        "p50": 3758.484,
+        "p95": 4429.139,
+        "p99": 4609.33
+      }
+    },
+    "Apple M5 Pro": {
+      "n": 9,
+      "providers": 6,
+      "tokens": {
+        "n": 9,
+        "mean": 2135.222,
+        "p50": 1634.0,
+        "p95": 4016.4,
+        "p99": 4078.48
+      },
+      "prefill_tps": {
+        "n": 9,
+        "mean": 2287.273,
+        "p50": 2237.649,
+        "p95": 2492.409,
+        "p99": 2504.96
+      },
+      "prefill_ms": {
+        "n": 9,
+        "mean": 950.268,
+        "p50": 651.49,
+        "p95": 1865.111,
+        "p99": 1887.512
+      },
+      "ttft_ms": {
+        "n": 9,
+        "mean": 1182.942,
+        "p50": 930.799,
+        "p95": 2529.092,
+        "p99": 2800.921
+      },
+      "reported_isolated_tps": {
+        "n": 9,
+        "mean": 2114.969,
+        "p50": 2295.997,
+        "p95": 2403.44,
+        "p99": 2412.223
+      }
+    },
+    "Apple M5 Ultra": {
+      "n": 12,
+      "providers": 5,
+      "tokens": {
+        "n": 12,
+        "mean": 2921.75,
+        "p50": 2917.0,
+        "p95": 4044.2,
+        "p99": 4051.24
+      },
+      "prefill_tps": {
+        "n": 12,
+        "mean": 8769.176,
+        "p50": 7680.291,
+        "p95": 15709.571,
+        "p99": 21029.129
+      },
+      "prefill_ms": {
+        "n": 12,
+        "mean": 372.415,
+        "p50": 360.993,
+        "p95": 588.743,
+        "p99": 647.803
+      },
+      "ttft_ms": {
+        "n": 12,
+        "mean": 482.947,
+        "p50": 509.116,
+        "p95": 680.128,
+        "p99": 762.858
+      },
+      "reported_isolated_tps": {
+        "n": 12,
+        "mean": 5442.014,
+        "p50": 5212.699,
+        "p95": 6578.973,
+        "p99": 6670.758
+      }
+    }
+  },
+  "all_model_attempts": {
+    "window": "2026-09-28 06:00-06:10 UTC",
+    "cohort": "All routed M5 Max and M5 Ultra attempts; multiple prompt sizes and provider versions; not customer requests",
+    "models": {
+      "EigenLabs/Qwen3.8-27B-4bit-mtp": {
+        "attempts": 1186,
+        "first_dispatches": 437,
+        "deadline_refused_attempts": 751
+      },
+      "Qwen3.5-9B": {
+        "attempts": 23,
+        "first_dispatches": 23,
+        "deadline_refused_attempts": 0
+      },
+      "gemma-4-26b-qat-4bit": {
+        "attempts": 2354,
+        "first_dispatches": 2337,
+        "deadline_refused_attempts": 26
+      },
+      "gpt-oss-20b": {
+        "attempts": 1047,
+        "first_dispatches": 430,
+        "deadline_refused_attempts": 488
+      },
+      "nvidia-nemotron-3.5-lightning": {
+        "attempts": 1,
+        "first_dispatches": 1,
+        "deadline_refused_attempts": 0
+      },
+      "qwen3.5-35b-a3b": {
+        "attempts": 376,
+        "first_dispatches": 240,
+        "deadline_refused_attempts": 129
+      },
+      "qwen3.6-35b-a3b-vl-mtp-mxfp8": {
+        "attempts": 428,
+        "first_dispatches": 367,
+        "deadline_refused_attempts": 18
+      },
+      "ternary-bonsai-2-27b": {
+        "attempts": 41,
+        "first_dispatches": 30,
+        "deadline_refused_attempts": 11
+      }
+    },
+    "hardware_assumptions": {
+      "m5_max_bandwidth_gbs": [
+        460,
+        614
+      ],
+      "m5_ultra_bandwidth_gbs": 1200,
+      "m5_max40_estimated_fp16_tflops_unverified": 155.648,
+      "m5_ultra80_estimated_fp16_tflops_unverified": 311.296
+    },
+    "prefill_burst_illustration": {
+      "assumption": "3000-token cold requests, serialized prefill, fixed prior observed per-request rate used as aggregate rate; projections not burst measurements",
+      "m5_max_8th_request_seconds": 5.27361839438096,
+      "m5_ultra_8th_request_seconds": 3.1248815962832657,
+      "m5_ultra_16th_request_seconds": 6.249763192566531
+    }
+  }
+}

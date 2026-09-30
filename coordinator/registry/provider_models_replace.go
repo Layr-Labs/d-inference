@@ -19,9 +19,13 @@ func (r *Registry) ReplaceProviderModels(p *Provider, msg *protocol.ModelsReplac
 		return nil, nil, 0, errors.New("disconnected")
 	}
 	p.mu.Lock()
+	releasedModelLoad := false
 	defer func() {
 		p.mu.Unlock()
 		r.mu.Unlock()
+		if releasedModelLoad {
+			r.RequestWarmPoolTrigger()
+		}
 	}()
 	if msg.RequestID == "" || len(msg.RequestID) > 64 || msg.DrainRequestID == "" ||
 		!p.drainCommitted || !p.drainReady || p.drainRequestID != msg.DrainRequestID {
@@ -42,7 +46,7 @@ func (r *Registry) ReplaceProviderModels(p *Provider, msg *protocol.ModelsReplac
 		// owner routing, while public routing still requires catalog membership.
 		entry := r.modelCatalog[model.ID]
 		if !r.providerMeetsModelRequirementsLocked(p, model.ID) ||
-			(entry.WeightHash != "" && !strings.EqualFold(model.WeightHash, entry.WeightHash)) {
+			(entry.WeightHash != "" && !entry.acceptsWeightHash(model.WeightHash)) {
 			return nil, nil, 0, errors.New("invalid_models")
 		}
 		selected[model.ID] = model
@@ -113,6 +117,8 @@ func (r *Registry) ReplaceProviderModels(p *Provider, msg *protocol.ModelsReplac
 		if key.ProviderID == p.ID && !keepRuntime(key.ModelID) {
 			delete(r.pendingModelLoads, key)
 			delete(r.pendingModelLoadStarted, key)
+			releasedModelLoad = true
+			p.recordDeadlineActivityLocked(time.Now())
 		}
 	}
 	p.Models = append([]protocol.ModelInfo(nil), msg.Models...)
@@ -122,6 +128,8 @@ func (r *Registry) ReplaceProviderModels(p *Provider, msg *protocol.ModelsReplac
 	// restores both owner fields alongside the accepted capacity snapshot.
 	p.CapacityModelIDs = nil
 	p.CapacityAcceptedAt = time.Time{}
+	p.firstContentMeasurements = nil
+	p.warmWorkCounters = nil
 	p.ToolConstraintProtocol = msg.ToolConstraintProtocol
 	p.ToolConstraintModels = tools
 	if len(invalidated) > 0 {

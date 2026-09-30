@@ -216,6 +216,9 @@ struct StartupPreloaderTests {
             "Model 'raced' loaded but its engine build left insufficient KV headroom under the memory cap (0.1 GB free) — unloaded",
             "loading 'raced' would re-slice some model's KV grant below the 1.0 GB serviceability floor (fleet KV budget 123 B across 2 slots) — refused",
             "Model 'raced' MTP fallback engine construction failed: model load failed: loading 'raced' would re-slice some model's KV grant below the 1.0 GB serviceability floor (fleet KV budget 123 B across 2 slots) — refused — unloaded",
+            "loading 'raced' would leave a model without its fixed request workspace, admission watermark and 1.0 GB minimum KV allowance (fleet KV budget 123 B across 2 slots) — refused",
+            "Model 'raced' MTP fallback engine construction failed: model load failed: loading 'raced' would leave a model without its fixed request workspace, admission watermark and 1.0 GB minimum KV allowance (fleet KV budget 123 B across 2 slots) — refused — unloaded",
+            "MiMo memory grant cannot fit one request workspace plus minimum KV",
         ] {
             let recorder = PreloadRecorder()
             var deps = makeDeps(
@@ -1063,4 +1066,51 @@ struct StartupPreloadPostRegistrationRetirementTests {
         #expect(second.models.map(\.id).contains("healthy"))
         #expect(await client.currentAdvertisedModels().map(\.id) == ["healthy"])
     }
+}
+
+@Test("selected MiMo full LOAD price closes only the causal 182.85–199.67 GiB preload gap")
+func mimoStartupUsesFullLoadNotSteadyResidencyAndStillRejectsOverBudget() async {
+    let info = MiMoDiscoveryFixture.selectedArithmeticInfo()
+    let headroom = 6.5
+    let oldRequired = ModelLoadAdmission.requiredToLoadGb(
+        weightsGb: MiMoDiscoveryFixture.oldLoadGiB, headroomGb: headroom)
+    let required = ModelLoadAdmission.requiredToLoadGb(weightsGb: info.estimatedMemoryGb, headroomGb: headroom)
+    #expect(abs(required - 182.85009114444256) < 0.000000001)
+    #expect(abs(oldRequired - 199.6718770172447) < 0.000000001)
+    for free in [179.0, 182.0, 183.0, 190.0, 199.0, 200.0] {
+        let oldRecord = PreloadRecorder(), actualRecord = PreloadRecorder()
+        let old = StartupPreloader(deps: .init(freeMemoryGb: { free },
+            load: { oldRecord.recordLoad($0) }))
+        let actual = StartupPreloader(deps: .init(freeMemoryGb: { free },
+            load: { actualRecord.recordLoad($0) }))
+        let oldResult = await old.run(candidates: [.init(modelId: info.id, requiredGb: oldRequired)])
+        let result = await actual.run(candidates: [.init(modelId: info.id, requiredGb: required)])
+        #expect(oldRecord.loads == (free >= oldRequired ? [info.id] : []))
+        #expect(actualRecord.loads == (free >= required ? [info.id] : []))
+        #expect(oldResult.skippedInsufficientMemory == (free < oldRequired ? [info.id] : []))
+        #expect(result.skippedInsufficientMemory == (free < required ? [info.id] : []))
+        #expect(result.failed.isEmpty)
+    }
+    // Same full LOAD quote, still a new live headroom decision; never preserve
+    // a stale lower floor or replace load-transient bytes with steady weights.
+    let record = PreloadRecorder()
+    let raised = StartupPreloader(deps: .init(freeMemoryGb: { 183 },
+        load: { record.recordLoad($0) },
+        currentRequiredGb: { _ in ModelLoadAdmission.requiredToLoadGb(weightsGb: info.estimatedMemoryGb, headroomGb: 8) }))
+    let result = await raised.run(candidates: [.init(modelId: info.id, requiredGb: required)])
+    #expect(result.skippedInsufficientMemory == [info.id])
+    #expect(record.loads.isEmpty)
+}
+
+@Test("ProviderLoop startup consumes the genuine strict scanner quote")
+func mimoProviderStartupPlanUsesScannerNativeLoad() async throws {
+    let root = try MiMoDiscoveryFixture.copyTiny()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let info = try MiMoDiscoveryFixture.scan(root)
+    let loop = try await makePreloadLoop(models: [info], backend: BackendSettings())
+    let plan = await loop.startupPreloadPlanForTesting()
+    #expect(plan.count == 1)
+    #expect(plan.first?.modelId == info.id)
+    #expect(plan.first?.requiredGb == ModelLoadAdmission.requiredToLoadGb(
+        weightsGb: info.estimatedMemoryGb, headroomGb: 6.5))
 }

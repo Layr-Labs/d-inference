@@ -19,7 +19,7 @@ func (r *Registry) QuickFirstContentCapacityForRequest(model string, pr *Pending
 		FirstContentDeadline: pr.FirstContentDeadline, MinDecodeTPS: pr.MinDecodeTPS,
 		SelfRouteOnly: pr.SelfRouteOnly, PreferOwner: pr.PreferOwner, OwnerAccountID: pr.OwnerAccountID,
 		AllowedProviderSerials: pr.AllowedProviderSerials, ExcludedProviderIDs: pr.ExcludedProviderIDs,
-		CachePlan: pr.CachePlan}
+		CachePlan: pr.CachePlan, PromptWork: pr.PromptWork}
 	if query.RequestedMaxTokens <= 0 {
 		query.RequestedMaxTokens = defaultRequestedMaxTokens
 	}

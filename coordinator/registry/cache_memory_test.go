@@ -13,6 +13,7 @@ func memoryTestProvider(t *testing.T, r *Registry, id string, capability protoco
 	p := makeSchedulerProvider(t, r, id, "model", 100)
 	p.mu.Lock()
 	p.PrefillTPS = 100
+	p.Models[0].WeightHash = capability.ModelAggregateHash
 	p.PrefixCacheProtocol = 2
 	p.PrefixCacheMemoryModels = map[string]protocol.PrefixCacheV2Capability{"model": capability}
 	p.BackendCapacity.Slots[0].ObservedPrefillTPS = 100

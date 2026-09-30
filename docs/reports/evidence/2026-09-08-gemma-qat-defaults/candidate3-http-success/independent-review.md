@@ -1,6 +1,6 @@
 # Candidate 3 live default-auto rollout: independent review
 
-> Last updated: 2026-09-08 · commit `4ae34f033`
+> Last updated: 2026-09-08
 
 Reviewed 2026-09-08 from all 38 request/response bodies, 372 metrics samples, 10 fixture events, metadata and report. This uses one real M5 provider serving the target model, through a controlled localhost catalog/CDN with identical verified assistant bytes. The HF hint was deliberately omitted. It validates actual default-auto download/load/idle activation wiring; it is not a public-catalog/HF transport test or a trial on 16 physical providers.
 

@@ -3,6 +3,7 @@ package api
 import (
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/promptwork"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
@@ -29,6 +30,12 @@ func (p inferenceAdmissionParams) firstContentRequest(model string, traits regis
 	}
 	if p.cachePlanForModel != nil {
 		pr.CachePlan = p.cachePlanForModel(model)
+	}
+	if p.promptWorkForModel != nil {
+		pr.PromptWork = p.promptWorkForModel(model)
+	}
+	if pr.PromptWork == nil {
+		pr.PromptWork = promptwork.Heuristic(pr.FirstContentPromptTokens)
 	}
 	return pr
 }

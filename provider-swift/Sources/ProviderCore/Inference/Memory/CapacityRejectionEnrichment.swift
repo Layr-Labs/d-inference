@@ -42,6 +42,9 @@ enum CapacityRejectionEnrichment {
         // 503 (reroute) and 429 (queue full) are the two capacity-shaped
         // live-gate statuses; everything else keeps its legacy frame.
         guard failure.statusCode == 503 || failure.statusCode == 429 else { return failure }
+        // A media-preparation reservation is separate from advertised text/KV
+        // capacity. Do not attach a token-budget verdict or busy-slot forecast.
+        guard failure.errorReason != .mediaMemoryUnavailable else { return failure }
         let slot = modelId.flatMap { id in
             published?.slots.first { $0.model == id }
         }

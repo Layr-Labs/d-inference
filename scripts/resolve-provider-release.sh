@@ -2,6 +2,10 @@
 # Resolve workflow inputs before environment approval or access to signing keys.
 set -euo pipefail
 
+if [ -n "${RELEASE_RESUME_RUN_ID:-}" ]; then
+  exec python3 scripts/provider-release-resume.py resolve
+fi
+
 release_environment=${RELEASE_ENVIRONMENT:-prod}
 validation_only=${RELEASE_VALIDATION_ONLY:-false}
 case "$release_environment" in

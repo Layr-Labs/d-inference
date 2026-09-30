@@ -15,6 +15,7 @@ jobs:
         run: |
           ./scripts/check-release-version.sh
           python3 scripts/test-provider-release-resolution.py
+          python3 scripts/test-provider-release-resume.py
           python3 scripts/test-provider-release-toolchain.py
           python3 scripts/test-provider-release-cache.py
           python3 scripts/test-prepare-metal-toolchain.py
@@ -23,13 +24,24 @@ jobs:
           python3 scripts/test-provider-signing-validation.py
           python3 scripts/test-provider-test-watchdog.py
           python3 scripts/test-stage-test-metallib.py
+          python3 scripts/test-provider-ci-cache.py
+          python3 scripts/test-provider-ci-workflow.py
           python3 scripts/test-app-attest-entitlements.py
           ./scripts/sync-install-embed.sh check
           ./scripts/test-prod-env-refresh.sh
       - name: Test startup observer against local stubs
         run: python3 -m unittest discover -s scripts/startup_measurement -t scripts -p 'test_*.py'
+      - name: Test advisory threat review with local HTTP fixtures
+        run: |
+          python3 .github/scripts/test-threat-model-review.py
+          python3 .github/scripts/test-threat-full-scan.py
+          python3 .github/scripts/test-threat-ensemble.py
       - name: Test native GPU CI routing without a GPU
         run: python3 scripts/test-native-gpu-ci.py
+      - name: Test bounded MiMo provider fixture provisioning offline
+        run: python3 scripts/test-prepare-mimo-provider-fixtures.py
+      - name: Test serving qualification evidence and catalogs without a GPU
+        run: python3 -m unittest discover -s scripts/serving_performance -t scripts -p 'test_*.py'
 
   docs:
     name: Docs Lint
@@ -37,9 +49,13 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          fetch-depth: 0 # Frozen source links are checked at their stamped commits.
+          fetch-depth: 0 # Frozen source links require committed document provenance.
+      - name: Initialize pinned SDK documentation
+        run: git submodule update --init --depth 1 libs/mlx-swift-lm
       - name: Test historical source-link validation
         run: python3 scripts/test-docs-check-historical-links.py
+      - name: Test date-only freshness stamping
+        run: python3 scripts/test-docs-stamp.py
       - name: Check freshness stamps, links, cited paths, orphans
         run: ./scripts/docs-check.sh
 
@@ -65,6 +81,8 @@ jobs:
       - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
         with:
           go-version-file: go.mod
+      - name: Check adversarial numeric parsing without instrumentation
+        run: go test -race=false -cover=false ./coordinator/api -run '^TestConstrainedExactNonnegativeIntBoundsAdversarialLiterals$' -count=1
       - name: Run tests
         env:
           DATABASE_URL: postgres://testbed:testbed@127.0.0.1:5432/testbed?sslmode=disable
@@ -154,6 +172,10 @@ jobs:
         run: |
           rustup toolchain install 1.88.0 --profile minimal --component rustfmt --component clippy
           rustup override set 1.88.0
+      - name: Verify MiMo fixture setup without network
+        run: python3 scripts/test-prepare-mimo-prompt-fixtures.py
+      - name: Prepare pinned public MiMo metadata and original corpus
+        run: python3 scripts/prepare-mimo-prompt-fixtures.py --output "$RUNNER_TEMP/mimo-prompt-fixtures" --github-env "$GITHUB_ENV"
       - name: Check formatting, lint, and tests
         working-directory: coordinator/promptsidecar
         run: |
@@ -207,105 +229,128 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   test-provider:
-    name: Provider Tests
-    runs-on: blacksmith-12vcpu-macos-latest
+    name: Provider Unit Tests
+    runs-on: blacksmith-12vcpu-macos-27
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
+      - name: Build provider CI prerequisites
+        id: provider-ci-build
+        uses: ./.github/actions/provider-ci-build
+        with:
+          lane: provider
       - name: Test Qwen resources in a relocated app
         run: python3 scripts/test-qwen4-packaged-resources.py
       - name: Test profile inventory authentication in a terminal
         run: python3 scripts/test-profile-inventory-auth.py
-      - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
-        with:
-          go-version-file: go.mod
-      - name: Restore SwiftPM cache
-        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
-        with:
-          path: |
-            ~/Library/Caches/org.swift.swiftpm
-            ~/Library/org.swift.swiftpm
-            provider-swift/.build
-            libs/mlx-swift-lm/.build
-          key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
-          restore-keys: |
-            spm-v3-${{ runner.os }}-
-      - name: Discard cached runtime resources before rebuilding
+      - name: Prepare pinned public MiMo metadata and original corpus
+        id: mimo-prompt-fixtures
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
+        run: python3 scripts/prepare-mimo-prompt-fixtures.py --output "$RUNNER_TEMP/mimo-prompt-fixtures" --github-env "$GITHUB_ENV"
+      - name: Prepare bounded synthetic MiMo provider fixtures offline
+        id: mimo-fixtures
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
         run: |
-          for root in provider-swift/.build libs/mlx-swift-lm/.build; do
-            [ -d "$root" ] || continue
-            find "$root" -type f -name mlx.metallib -delete
-            # The inactive package may also contain a divergent debug bundle
-            # from an older cache. Each subsequent build recreates its resources.
-            find "$root" -mindepth 3 -maxdepth 3 -type d \
-              -path "$root/*-apple-macosx/*/*.bundle" -prune -exec rm -rf {} +
-          done
-      - name: Install pinned Rust toolchain for production prompt parity
-        run: |
-          rustup toolchain install 1.88.0 --profile minimal
-          rustup override set 1.88.0
-      - name: Build provider-swift (incl. tests)
-        working-directory: provider-swift
-        # Build the TEST bundle too, so the .xctest bundle exists before we
-        # place the metallib next to its runner binary (see next step).
-        run: |
-          swift build --build-tests
-          # The root helper is a separately packaged executable product and is
-          # not guaranteed to be linked merely because the test bundle builds.
-          swift build --product darkbloom-fan-helper
-      - name: Build and stage source-matched mlx.metallib
-        run: |
-          set -euo pipefail
-          command -v cmake >/dev/null 2>&1 || brew install cmake
-          provider_bin=$(cd provider-swift && swift build -c debug --show-bin-path)
-          METALLIB_CACHE_DIR="$RUNNER_TEMP/metallib-cache" \
-            ./scripts/stage-test-metallib.sh "$provider_bin"
+          python3 scripts/prepare-mimo-provider-fixtures.py --output "$RUNNER_TEMP/mimo-provider-fixtures" --github-env "$GITHUB_ENV"
+          python3 scripts/prepare-mimo-provider-fixtures.py --output "$RUNNER_TEMP/mimo-prefix-fixtures" --asymmetric
       - name: Run Swift tests
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-prompt-fixtures.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
+        env:
+          MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS: '1'
         working-directory: provider-swift
         # Reuse the built bundle and matched metallib. The exact allocator
         # suite runs in its own process even if the general suite fails.
         run: ../scripts/run-provider-tests.sh
-      - name: Verify production prompt parity
-        run: ./scripts/verify-prompt-parity.sh
-      # FLAKE-ORDERING GUARD (audit fix, v0.8.0): every nested step below runs
-      # under `if: ${{ !cancelled() && ... }}`. Before this, the nested paged
-      # suites ran with the default `success()` condition, so ANY earlier step
-      # failure — including a known-flaky unit test in `Run Swift tests` —
-      # SKIPPED all six paged correctness gates. On the v0.8.0 PR head that is
-      # exactly what happened: the unit step failed on unrelated flakes and
-      # the paged gates reported `skipped`, i.e. the release's central
-      # correctness signal was silenced by an unrelated flake. `!cancelled()`
-      # keeps the gates running after an earlier failure; each nested RUN step
-      # still requires its own build/metallib prerequisites to have succeeded
-      # so a red build produces one attributable failure, not six cascading
-      # ones. A nested-step failure fails the job as usual (no
-      # continue-on-error anywhere in this chain).
-      - name: Build nested mlx-swift-lm tests
-        id: build-nested-tests
+      - name: Run isolated native MiMo startup gates
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
+        working-directory: provider-swift
+        timeout-minutes: 5
+        env:
+          MIMO_V26_SERIAL_NATIVE_TESTS: '1'
+        run: ../scripts/run-nested-suite.sh 'MiMoV26StandaloneLifecycleTests.test(ActualScannerPreloadStartsListenerWithSameNativeOwner|StartRefusesActualUnpublishedPreloadWithoutReplacingOwner)' --no-parallel
+      - name: Run isolated native MiMo memory admission gates
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
+        working-directory: provider-swift
+        timeout-minutes: 5
+        env:
+          MIMO_V26_SERIAL_NATIVE_TESTS: '1'
+        run: ../scripts/run-nested-suite.sh 'testNativeMemoryAdmission|testNativeShutdownActivitySurvivesPendingHostUntilRealQuiescentDrain' --no-parallel
+      - name: Run isolated native MiMo media admission gates
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
+        working-directory: provider-swift
+        timeout-minutes: 5
+        env:
+          MIMO_V26_SERIAL_NATIVE_TESTS: '1'
+        run: ../scripts/run-nested-suite.sh 'testNativeMediaRelease|testAuthenticatedChatResponsesActuallyRouteEncodedImageThroughNativeBridge|testActualMemoryBackedVideoIndicesAndAuthenticatedNativeRoute|MiMoMediaDecodeMemoryTests' --no-parallel
+      - name: Run isolated native MiMo complete-prefix gates
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
+        working-directory: provider-swift
+        timeout-minutes: 5
+        env:
+          MIMO_V26_SERIAL_NATIVE_TESTS: '1'
+          MIMO_V26_SERIAL_LOAD_FIXTURES: ${{ runner.temp }}/mimo-prefix-fixtures
+        run: ../scripts/run-nested-suite.sh 'MiMoV26NativeLoadTransactionTests.testNativeCompletePrefix' --no-parallel
+      - name: Run isolated native MiMo retained-fault gate
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
+        working-directory: provider-swift
+        timeout-minutes: 5
+        env:
+          MIMO_V26_SERIAL_NATIVE_TESTS: '1'
+          MIMO_V26_PROVIDER_LIFETIME_NATIVE_TESTS: '1'
+          MIMO_V26_PROVIDER_LIFETIME_FAULT_CASE: testNativeFenceRefusalKeepsActualBundlePermitAndBlocksOtherOwnerReclaim
+          DARKBLOOM_PREFIX_CACHE: '0'
+          DARKBLOOM_PREFIX_CACHE_MEMORY: '0'
+        run: ../scripts/run-nested-suite.sh testNativeFenceRefusalKeepsActualBundlePermitAndBlocksOtherOwnerReclaim --no-parallel
+      - name: Restore pinned MiMo audio codec
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57
+        id: mimo-audio-cache
+        with:
+          path: ${{ runner.temp }}/mimo-audio-source
+          key: mimo-audio-source-v2-077033345d80eef3a315e8d394e0589667e80e4cdaba9bc5a7488410c6657265
+      - name: Prepare selected MiMo audio fixture
+        id: mimo-audio-fixtures
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
+        run: python3 scripts/prepare-mimo-audio-fixtures.py --cache "$RUNNER_TEMP/mimo-audio-source" --output "$RUNNER_TEMP/mimo-audio-fixtures" --github-env "$GITHUB_ENV"
+      - name: Cache verified MiMo audio codec
+        if: ${{ !cancelled() && steps.mimo-audio-fixtures.outcome == 'success' && steps.mimo-audio-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57
+        with:
+          path: ${{ runner.temp }}/mimo-audio-source
+          key: mimo-audio-source-v2-077033345d80eef3a315e8d394e0589667e80e4cdaba9bc5a7488410c6657265
+      - name: Run isolated native MiMo audio gate
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-audio-fixtures.outcome == 'success' }}
+        working-directory: provider-swift
+        timeout-minutes: 5
+        env:
+          MIMO_V26_SERIAL_NATIVE_TESTS: '1'
+          MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS: '1'
+        run: ../scripts/run-nested-suite.sh testNativeAudioRelease --no-parallel
+      - name: Run atomic installer artifact tests
         if: ${{ !cancelled() }}
-        working-directory: libs/mlx-swift-lm
-        # Cold builds compile the full Cmlx C++/Metal tree (~20 min on the
-        # 12-vcpu runner); warm runs restore libs/mlx-swift-lm/.build from
-        # the SwiftPM cache and finish in ~1 min.
+        timeout-minutes: 2
+        run: ./scripts/test-install-atomic.sh
+
+  test-provider-sdk:
+    name: Provider SDK Tests
+    runs-on: blacksmith-12vcpu-macos-27
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+      - name: Build SDK CI prerequisites
+        id: provider-ci-build
         timeout-minutes: 35
-        run: |
-          # This standalone package otherwise resolves its remote mlx-swift
-          # branch while loading the root helper's local-source metallib.
-          swift package unedit --force mlx-swift >/dev/null 2>&1 || true
-          swift package edit --path ../mlx-swift mlx-swift
-          swift build --build-tests
-      - name: Place metallib for nested test bundles
-        id: place-nested-metallib
-        if: ${{ !cancelled() && steps.build-nested-tests.outcome == 'success' }}
-        working-directory: libs/mlx-swift-lm
-        run: |
-          set -euo pipefail
-          nested_bin=$(swift build -c debug --show-bin-path)
-          METALLIB_CACHE_DIR="$RUNNER_TEMP/metallib-cache" \
-            ../../scripts/stage-test-metallib.sh "$nested_bin"
+        uses: ./.github/actions/provider-ci-build
+        with:
+          lane: sdk
+      # FLAKE-ORDERING GUARD (audit fix, v0.8.0): every nested step below runs
+      # under !cancelled() with successful build/metallib prerequisites. A
+      # failed suite cannot hide a later correctness gate, and a failed build
+      # produces one attributable failure rather than cascading test failures.
       - name: Verify DiffusionGemma artifact and expert reduction
-        if: ${{ !cancelled() && steps.build-nested-tests.outcome == 'success' && steps.place-nested-metallib.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
         working-directory: libs/mlx-swift-lm
         run: ../../scripts/run-nested-suite.sh 'DiffusionGemma(ArtifactFixture|ExpertReduction)Tests' --no-parallel
       # NOTE (v0.8.0): the guards below exist because these gates once
@@ -324,7 +369,7 @@ jobs:
       # indistinguishable by exit code — so any future change that re-routes
       # the swift-testing pass must be RED here, not green.
       # The suites below are already compiled by the `swift build
-      # --build-tests` step above but were never executed, so the paged-KV
+      # --build-tests` action above but were never executed, so the paged-KV
       # migration had no automated numerical gate. They add no compile time,
       # only run time; one step each so a slow or failing suite is
       # attributable straight from the job summary. They reuse the metallib
@@ -337,33 +382,51 @@ jobs:
       # safety and prompt-hash suites below used to run bare for exactly that
       # reason). Inline copies of a check whose failure mode is silence are
       # that many chances to edit one and miss the rest.
+      - name: Run nested MiMo media decode tests
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        timeout-minutes: 5
+        run: ../../scripts/run-nested-suite.sh 'MiMoV26(OpenRouterMedia|VisionWorkingSet|AudioWorkingSet|VisualDecodeMemory|EncodedVisualDecoder|EncodedAudioDecoder|EncodedAACAudio|EncodedAudiovisualDecoder)Tests|MiMoV26PixelsTests.test(RGB|Temporal|Invalid|Explicit)' --no-parallel
+      - name: Prepare tiny MiMo fixture for media-to-text isolation
+        id: sdk-mimo-isolation-fixture
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
+        run: python3 scripts/prepare-mimo-provider-fixtures.py --output "$RUNNER_TEMP/mimo-media-isolation"
+      - name: Verify media refusal leaves the native text engine usable
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.sdk-mimo-isolation-fixture.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        timeout-minutes: 5
+        env:
+          MIMO_V26_SERIAL_NATIVE_TESTS: '1'
+          MIMO_V26_NATIVE_MEDIA_DEADLINE_TESTS: '1'
+          MIMO_V26_SERIAL_LOAD_FIXTURES: ${{ runner.temp }}/mimo-media-isolation
+        run: ../../scripts/run-nested-suite.sh MiMoV26NativeMediaDeadlineTests.testMediaReservationRefusalLeavesTextEngineUsable --no-parallel
       - name: Run nested paged safety tests
-        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
         working-directory: libs/mlx-swift-lm
         # Runtime smoke over the JIT-compiled paged Metal kernels.
         timeout-minutes: 10
         run: ../../scripts/run-nested-suite.sh CBv2PagedSafetyTests
       - name: Run nested prompt-hash tests
-        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
         working-directory: libs/mlx-swift-lm
         # Prefix-cache prompt-hash identity; pure Swift.
         timeout-minutes: 10
         run: ../../scripts/run-nested-suite.sh CBv2PrefixCacheHasherTests
       - name: Run nested paged eligibility tests
-        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
         working-directory: libs/mlx-swift-lm
         # Pure Swift threadgroup-budget arithmetic; no GPU dispatch.
         timeout-minutes: 5
         run: ../../scripts/run-nested-suite.sh CBv2PagedEligibilityTests
       - name: Run nested paged backend tests
-        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
         working-directory: libs/mlx-swift-lm
         # Pool bookkeeping, per-sequence page tables, windowed rings,
         # reservation admission, backend lifecycle. Small MLX arrays only.
         timeout-minutes: 10
         run: ../../scripts/run-nested-suite.sh CBv2PagedBackendTests
       - name: Run nested paged kernel parity tests
-        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
         working-directory: libs/mlx-swift-lm
         # Heaviest of the set: fp32 decode-kernel parity, bitwise
         # batch-composition invariance, and a 200-step greedy token match.
@@ -374,7 +437,7 @@ jobs:
         # both invocations retain the nonempty/no-skips tripwires.
         run: ../../scripts/run-paged-kernel-tests.sh
       - name: Run nested KV-sharing contiguous/paged parity tests
-        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
         working-directory: libs/mlx-swift-lm
         # Two-arm differential over TinyTestModel's KV-sharing variant. The
         # paged arm used to XCTSkip when the backend was unavailable; the
@@ -384,7 +447,7 @@ jobs:
         timeout-minutes: 10
         run: ../../scripts/run-nested-suite.sh CBv2KVSharingParityTests
       - name: Run Nemotron production SDK gates
-        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
         working-directory: libs/mlx-swift-lm
         timeout-minutes: 20
         run: |
@@ -404,18 +467,69 @@ jobs:
             fi
           done
           exit "$onboarding_failed"
-      - name: Run atomic installer artifact tests
-        timeout-minutes: 2
-        run: ./scripts/test-install-atomic.sh
+
+  test-provider-parity:
+    name: Provider Prompt Parity
+    runs-on: blacksmith-12vcpu-macos-27
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+      - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
+        with:
+          go-version-file: go.mod
+      - name: Build prompt parity CI prerequisites
+        id: provider-ci-build
+        uses: ./.github/actions/provider-ci-build
+        with:
+          lane: parity
+      - name: Prepare pinned public MiMo metadata and original corpus
+        id: mimo-fixtures
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
+        run: python3 scripts/prepare-mimo-prompt-fixtures.py --output "$RUNNER_TEMP/mimo-prompt-fixtures" --github-env "$GITHUB_ENV"
+      - name: Verify production prompt parity
+        id: prompt-parity
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
+        run: ./scripts/verify-prompt-parity.sh
+      - name: Save verified prompt parity Cargo dependencies
+        if: ${{ !cancelled() && steps.prompt-parity.outcome == 'success' && steps.provider-ci-build.outputs.rust-cache-hit != 'true' }}
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git/db
+            coordinator/promptsidecar/target
+          key: ${{ steps.provider-ci-build.outputs.rust-key }}
+
+  provider-test-gate:
+    name: Provider Tests
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    needs: [test-provider, test-provider-sdk, test-provider-parity]
+    if: ${{ always() }}
+    steps:
+      - name: Require every provider lane
+        env:
+          UNIT_RESULT: ${{ needs.test-provider.result }}
+          SDK_RESULT: ${{ needs.test-provider-sdk.result }}
+          PARITY_RESULT: ${{ needs.test-provider-parity.result }}
+        run: |
+          test "$UNIT_RESULT" = success
+          test "$SDK_RESULT" = success
+          test "$PARITY_RESULT" = success
 
   cache-swift:
     name: Swift Build + Cache
-    runs-on: blacksmith-12vcpu-macos-latest
+    runs-on: blacksmith-12vcpu-macos-27
     if: github.event_name == 'push'
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
+      - name: Select SDK 27 provider toolchain
+        run: ./scripts/prepare-provider-release-toolchain.sh
       - name: Restore SwiftPM cache
         uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
@@ -424,9 +538,9 @@ jobs:
             ~/Library/org.swift.swiftpm
             provider-swift/.build
             libs/mlx-swift-lm/.build
-          key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
+          key: spm-v4-blacksmith-macos27-native-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
           restore-keys: |
-            spm-v3-${{ runner.os }}-
+            spm-v4-blacksmith-macos27-native-${{ runner.os }}-
       - name: Discard metallibs restored by the generic SwiftPM cache
         run: |
           for root in provider-swift/.build libs/mlx-swift-lm/.build; do
@@ -437,18 +551,6 @@ jobs:
         run: |
           swift build -c release --product darkbloom
           swift build -c release --product darkbloom-fan-helper
-      - name: Build nested mlx-swift-lm tests (warms nested cache)
-        working-directory: libs/mlx-swift-lm
-        # The test-provider job runs the CBv2 paged suites (safety, kernel
-        # parity, backend, eligibility, KV-sharing parity) from this nested
-        # .build; saving it here keeps that lane warm across PRs.
-        timeout-minutes: 35
-        run: |
-          # Keep the warmed nested workspace on the same local MLX source used
-          # by provider builds and scripts/fetch-metallib.sh.
-          swift package unedit --force mlx-swift >/dev/null 2>&1 || true
-          swift package edit --path ../mlx-swift mlx-swift
-          swift build --build-tests
       - name: Save SwiftPM cache
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
@@ -457,7 +559,7 @@ jobs:
             ~/Library/org.swift.swiftpm
             provider-swift/.build
             libs/mlx-swift-lm/.build
-          key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
+          key: spm-v4-blacksmith-macos27-native-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
 
   lint-console:
     name: Console UI Lint & Build

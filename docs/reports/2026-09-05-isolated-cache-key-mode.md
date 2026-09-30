@@ -1,6 +1,6 @@
 # Isolated benchmark cache root and key mode
 
-> Last updated: 2026-09-05 · commit `3aa73029e`
+> Last updated: 2026-09-05
 
 The standalone wrapper now activates its isolated cache root and explicitly
 selects the requested key mode, then checks the actual reported mode. The SPI

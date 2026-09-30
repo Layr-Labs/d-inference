@@ -30,6 +30,9 @@ type CacheRoutingConfig struct {
 	MaxDiscountMs       *float64
 	MaxCostFraction     *float64
 	MasterKey           string
+	// Persist keeps the holder and demand indexes in the store across
+	// restarts (EIGENINFERENCE_CACHE_ROUTING_PERSIST, default on).
+	Persist bool
 }
 
 // QualityCapConfig governs the per-provider admission concurrency cap derived
@@ -194,6 +197,7 @@ func ReadConfig() Config {
 			MaxHolders:          env.EnvInt(env.EnvPrefix+"_CACHE_ROUTING_MAX_HOLDERS", defaultCacheRoutingMaxHolders),
 			MaxDiscountMs:       optionalCacheScoreLimit(env.EnvPrefix + "_CACHE_ROUTING_MAX_DISCOUNT_MS"),
 			MaxCostFraction:     optionalCacheScoreLimit(env.EnvPrefix + "_CACHE_ROUTING_MAX_COST_FRACTION"),
+			Persist:             env.EnvBool(env.EnvPrefix+"_CACHE_ROUTING_PERSIST", true),
 			MasterKey:           strings.TrimSpace(os.Getenv(env.EnvPrefix + "_CACHE_MASTER_KEY")),
 		},
 		QualityCap: QualityCapConfig{

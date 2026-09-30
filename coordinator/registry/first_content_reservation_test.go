@@ -175,7 +175,7 @@ func TestFirstContentQuoteCannotRenewUnknownMeasurementsOrWork(t *testing.T) {
 func TestFirstContentQuoteCannotUndercutCurrentCacheAdjustedWork(t *testing.T) {
 	now := time.Now()
 	r := New(testLogger())
-	pr := &PendingRequest{EstimatedPromptTokens: 4000, RequestedMaxTokens: 128, FirstContentDeadline: now.Add(3 * time.Second), RequireFreshFeasible: true, RequireFreshFeasibleAfter: now.Add(-time.Millisecond)}
+	pr := &PendingRequest{EstimatedPromptTokens: 4000, RequestedMaxTokens: 128, FirstContentDeadline: now.Add(2 * time.Second), RequireFreshFeasible: true, RequireFreshFeasibleAfter: now.Add(-time.Millisecond)}
 	c := measuredFirstContentCandidate(now.Add(-2 * time.Millisecond))
 	c.firstContentCachedTokens, c.firstContentCacheWeight = 2000, 1
 	c.firstContentRestoreMs, c.firstContentCacheExpiresAt = 80, now.Add(time.Minute)

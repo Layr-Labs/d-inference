@@ -68,6 +68,9 @@ func cachePreparationPlanForTest(t testing.TB, reg *registry.Registry, capabilit
 	if result.Outcome != registry.CachePlanPlanned {
 		t.Fatalf("test sidecar plan failed: %s", result.Outcome)
 	}
+	if result.PromptWork == nil || result.PromptWork.PromptTokens != 4097 || !result.PromptWork.IsQualifiedFor(capability.ModelAggregateHash, capability.PromptContractID) {
+		t.Fatal("validated cache plan lost reusable exact prompt accounting")
+	}
 	return result.Plan
 }
 

@@ -1,12 +1,12 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-29 · commit `3c12f9025`
+> Last updated: 2026-09-30
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
 defaults, the environment variables it forwards to the daemon, and its runtime
 constants, as declared in `provider-swift/Sources/darkbloom/` (`Darkbloom`,
-version `ProviderCore.version` = `0.9.11` in
+version `ProviderCore.version` in
 `provider-swift/Sources/ProviderCore/ProviderCore.swift`). For operators; types
 and defaults are the ArgumentParser declarations; `—` means required.
 
@@ -942,7 +942,7 @@ darkbloom beta disable <feature>    # turn off
 |---------|--------|
 | `gemma-prefill-layer18` | Default-on layer-18 prefill submission; disable and restart for legacy submission behavior |
 | `gemma-weighted-r1` | Default-on atomic weighted-unsort + safe-R1 pair; disable and restart to roll back both |
-| `mtp` | MTP policy. Default `auto` drafts automatically for Qwen 3.5-family checkpoints that embed their head (`mtplx_mtp` in `config.json`); auto also enables the catalog `spec_dec` assistant for exact `gemma-4-26b-qat-4bit`; explicit on enables other supported targets; explicit off is the rollback |
+| `mtp` | MTP policy. Default `auto` requests validated embedded Qwen-family, native Qwen4, Nemotron Lightning and native MiMo heads, and the catalog `spec_dec` assistant for exact `gemma-4-26b-qat-4bit`. Actual artifact/owner/budget checks remain required; explicit `off` is the rollback |
 
 `enable`/`disable` read-modify-write the TOML config and report whether a restart
 is required. Restart is the activation boundary for process-wide optimization
@@ -1195,6 +1195,22 @@ see the [scheduler environment reference](../reference/configuration.md#engine-a
 
 ## LaunchAgent environment passthrough
 
+The [MiMo candidate controls](../reference/configuration.md#native-mimo-v26-candidate)
+are process-scoped settings, not new CLI subcommands or release switches. Native
+attention and admitted grouping default on; other experimental kernels remain
+opt-in. The native factory requests larger eligible solo-text chunks without
+changing explicit stripe overrides or memory safeguards. Only the
+standing-residency and complete-prefix controls are included in
+`LaunchAgent.inferencePassthroughEnvKeys`; other MiMo overrides require
+foreground/local serving. The native benchmark uses the managed
+load/retirement route. Exact native MiMo ordinary dispatch is implemented;
+benchmark success alone does not qualify API or catalog availability. `mtp_mode = "auto"` requests genuine inspected MiMo embedded heads by default;
+`mtp_mode = "off"` or `DARKBLOOM_CBV2_MTP=0` disables speculation. Actual native
+assembly and proposal/acceptance metrics—not the setting—prove activation.
+Serial-target verification remains default; the rectangular flag does not
+itself enable MTP. No documented flag enables missing paging,
+media-prefix or coordinator audio capabilities.
+
 Model-cache locations are read from `provider.toml`; Hugging Face/XDG cache
 variables are neither forwarded nor runtime overrides. The optional
 [`--from-env` import](#darkbloom-models-location) saves an absolute path once,
@@ -1227,7 +1243,8 @@ provider plist's `EnvironmentVariables`
 media, SSD-prefix and memory-cap tunables — reaches the engine only under
 `darkbloom start --foreground` or `--local`. The `DARKBLOOM_PREFIX_CACHE` switch
 defaults to enabled for the exact Qwen, Nemotron Lightning and Bonsai 2 artifacts,
-Gemma 4 26B QAT (`gemma-4-26b-qat-4bit`) and GPT-OSS 20B (`gpt-oss-20b`); see
+Gemma 4 26B QAT (`gemma-4-26b-qat-4bit`), GPT-OSS 20B (`gpt-oss-20b`) and the
+exact native MiMo identities; see
 [prefix-cache defaults](../architecture/prefix-cache.md#kv-layouts). Other models need an
 explicit affirmative value for SSD caching. Resident payload retention requires
 `DARKBLOOM_PREFIX_CACHE_MEMORY=1`; both switches are forwarded to the daemon,
@@ -1255,6 +1272,8 @@ must support the checkpoint contract described in
 |---|---|
 | `DARKBLOOM_PREFIX_CACHE_MEMORY` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`memoryEnvironmentFlag`) |
 | `DARKBLOOM_PREFIX_CACHE` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`environmentFlag`) |
+| `DARKBLOOM_MIMO_COMPLETE_PREFIX` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isMiMoCompletePrefixEnabled`); unset/empty uses the model default; `0` disables native MiMo text-prefix caching |
+| `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26WiredResidency.swift` (`isEnabled`) |
 | `DARKBLOOM_MLX_RESOURCE_DEBUG` | forwarded to `mlx-swift-lm` |
 | `DARKBLOOM_CBV2_PAGED_KV` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` |
 | `DARKBLOOM_CBV2_MTP` | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift` |

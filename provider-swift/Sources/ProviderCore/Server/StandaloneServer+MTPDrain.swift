@@ -3,6 +3,7 @@ import Foundation
 extension StandaloneServer {
     func beginMTPUpgradeDrain(_ staged: StagedStandaloneMTPUpgrade) throws {
         try Task.checkCancellation()
+        try requireNativeMiMoNewWorkAllowed()
         guard let original = staged.original,
             slots[staged.modelID]?.bridge === original.bridge,
             pendingMTPUpgradeModels().contains(staged.modelID),
@@ -17,6 +18,7 @@ extension StandaloneServer {
     }
 
     func throwIfMTPUpgradeDraining(_ modelID: String) throws {
+        try requireNativeMiMoNewWorkAllowed()
         guard mtpAdmissionDrains.contains(modelID) else { return }
         throw MultiModelBatchSchedulerEngineError.requestRejected("model temporarily unavailable during assistant upgrade")
     }

@@ -1,6 +1,6 @@
 # Prompt-contract sidecar
 
-> Last updated: 2026-09-27 · commit `1e4f506f2`
+> Last updated: 2026-09-30
 
 The Go `LowerResponsesInferenceBody` serving adapter preserves ordered inline
 media; it does not broaden this sidecar's text-only cache-planning contract.
@@ -561,3 +561,13 @@ gate.
 - [`../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md) — the DBK3 blocks the chain addresses
 - [`../reference/configuration.md#prompt-sidecar-and-media-fetch`](../reference/configuration.md#prompt-sidecar-and-media-fetch) — every `EIGENINFERENCE_PROMPT_SIDECAR_*` variable and default
 - [`../developer/test.md#9-prompt-contract-parity-fixtures-and-vectors`](../developer/test.md#9-prompt-contract-parity-fixtures-and-vectors) — regenerating vectors and running the parity gate
+
+### MiMo thinking alias
+
+For exact `mimo_v2`, `coordinator/promptsidecar/src/mimo_v26.rs`
+(`additional_context`) accepts Boolean `chat_template_kwargs.thinking` as a
+fallback alias for `enable_thinking`. Nested `reasoning.enabled`, top-level
+`enable_thinking`, and kwargs `enable_thinking` retain precedence. Every
+supplied alias is type checked. The provider mirrors this in
+`MiMoV26RawControlEvidence` and `MiMoV26TemplateFix`; existing valid requests
+retain identical normalized content and contract identity.

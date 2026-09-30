@@ -1,6 +1,6 @@
 # Resident prefix cache: serial Qwen measurements
 
-> Last updated: 2026-09-05 · commit `5477b6e32`
+> Last updated: 2026-09-05
 
 The first hybrid-cache prototype reduced median first-token latency for repeated
 5,523-token prompts from 6.50 to 1.75 seconds in the engine, and from 6.56 to

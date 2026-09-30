@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-28 · commit `9b2a28f59`
+> Last updated: 2026-09-30
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -228,6 +228,30 @@ coordinator-pending tokens, in bytes when every budget slot reports
 for a cold model that has no slot yet, and a grant that a re-slice shrank
 below its live use. A cold request is charged against the same pool.
 
+Native MiMo capacity in 0.9.13 also accounts for fixed request workspace.
+`EngineV2Bridge.memoryLimitedConcurrency`
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+MemoryConcurrency.swift`)
+reduces the configured concurrency to what the current admission ceiling can
+hold while retaining `UnifiedMemoryCap.minimumLoadKVBytes`. The provider
+deducts fixed workspace only for the resulting available slots, reports that
+same `MaxConcurrency`, and enforces it before local or remote submission.
+The ceiling includes the real engine watermark and fleet clamp; live native
+reservations remain charged through retirement. A zero budget still means
+unavailable, and raw `kv_bytes_capacity` must not override it.
+
+Before a new model loads or an advertised serving set raises its reserve,
+`resliceMeetsServiceabilityFloor`
+(`provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2Reslice.swift`)
+preserves one native request's fixed workspace, the watermark and minimum KV
+allowance for existing slots. The new native contiguous engine is checked
+against the same floor before publication. Ordinary engines keep their existing
+floor. These are provider-side changes; the coordinator's existing per-model
+concurrency and token-budget checks consume the corrected heartbeat.
+The standalone/local server applies the same per-engine minimum to native and
+ordinary newcomer loads and serving-set reserve raises through
+`StandaloneServer.resliceKeepsSlotsServiceable`
+(`provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift`).
+
 **Memory fallback** for slots without a token budget: a resident model needs
 no weight memory; a non-resident one needs `modelSizeGB` plus the request's
 KV estimate (`tokens × kvCacheBytesPerToken / bytesPerGB`; the fallback
@@ -252,7 +276,12 @@ family declarations retain catalog-based accounting; a model name alone grants
 no reduction (`coordinator/registry/offloaded_weights.go`).
 `reportedFreeForLoadAdmitsWithOffload` is shared by routing, the model-load
 planner and the warm pool, so none independently discounts the same weights.
-This is weight-residency accounting, not prefix-cache credit, a lower activation
+Exact `mimo_v2` may instead advertise a checked full-LOAD supplement with zero
+SSD subtraction. The same shared helper preserves raw catalog/source-size
+floors, adds the supplement once, and rejects malformed/understated declarations.
+All four consumers provide unpadded decimal catalog GB; they do not replace it
+with minimum RAM, GiB or an already padded requirement.
+This is load-admission accounting, not prefix-cache credit, a lower activation
 reserve or proof that a physical RAM tier passes cold load and reload. The
 [native support reference](../reference/qwen4-next-support.md) records those
 separate model/resource qualification boundaries.
@@ -759,3 +788,11 @@ completion signals the dispatcher immediately. Due-row pages start at
 `min(limit, verificationDuePageHint)` with `verificationDuePageHint = 256`
 and grow to the requested limit (`coordinator/store/postgres.go`,
 `ListDueVerificationJobsPage`); the initial allocation does not truncate a page.
+
+Qualified first-content prediction is separate from physical scheduling limits.
+The numeric `deadline_work` snapshot retains pre-submit and retiring owners,
+correlates them with whole-Mac reservations, and requires fresh matching
+measurements before pricing contention. The provider's final atomic check uses
+actual queue/cache state and the original deadline. See
+[first-content routing](first-content-routing.md) for the measured-cell gate and
+fallback behavior; this does not relax activation, KV or context safeguards.

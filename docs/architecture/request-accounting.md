@@ -1,6 +1,6 @@
 # Incoming request accounting
 
-> Last updated: 2026-09-26 · commit `cf7393580`
+> Last updated: 2026-09-26
 
 `request_outcomes` records unsampled observations of incoming inference requests, including early rejections, independently of sampled attempt profiles. Operators use this source to distinguish final request outcomes from internal retries. The public Stats page exposes a narrower, explicitly scoped recorded-request view; it does not establish traffic-wide completeness.
 

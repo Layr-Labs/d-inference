@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-28 · commit `cbf98076b`
+> Last updated: 2026-09-30
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -16,6 +16,8 @@ JSON keys are snake_case and identical in the Go tags and the Swift
 
 Terminal `profile` objects can include optional schema-1
 [`deadline_decision`](prediction-decision-telemetry.md#provider-fields).
+Its optional `unbounded_reason` identifies the first engine guard family that
+prevented an admissible projection; older profiles keep the cause absent.
 This does not add a message type or change the public error code.
 
 The additive [App Attest shadow exchange](app-attest-shadow.md#wire-exchange) uses `register.app_attest_protocol = 3` and `app_attest_shadow` frames; the coordinator serves protocol 3 only, and a registration announcing protocol 1 or 2 gets no frames. Protocol 3 binds the account, status, static hardware and the existing verification key. Shadow alone does not replace authoritative verification. The separately enabled [provider authorization](provider-authorization.md) path consumes qualified protocol 3 evidence and adds coordinator-derived `trust_status.authorization` diagnostics; legacy message meanings remain unchanged.
@@ -204,9 +206,9 @@ Go `ModelInfo` · Swift `ModelInfo` (`Types.swift`).
 | `native_media_tools` | `bool` | `Bool?` | opt | Per-model forced-media/tool-result-media support; absent/false is ineligible. Requires `is_vision` and matching `tool_constraint_protocol`/`tool_constraint_models`. Carried by registration and `models_update`; Swift omits nil and preserves explicit false. See `coordinator/registry/native_media_tools.go` (`providerSupportsNativeMediaToolsLocked`) |
 | `template_render_ok` | `*bool` | `Bool?` | ptr | 0.6.5+; **explicit `false` survives the wire** and excludes the model from tool requests; absent = no opinion |
 | `tool_constraint_template_hash` | `string` | `String?` | opt | binds grammar capability to the loaded template bytes |
-| `estimated_memory_gb` | `float64` | `Double` | Go opt; Swift always encodes | Padded native-weight load estimate in GiB; used for reduced offload admission only with a valid family-matched offload declaration |
+| `estimated_memory_gb` | `float64` | `Double` | Go opt; Swift always encodes | Full load estimate in GiB; explicit native Qwen4 offload or MiMo LOAD declarations require the family-matched supplement and source/catalog consistency checks |
 | `ssd_offloaded_weight_bytes` | `int64` | `UInt64?` | opt | Validated immutable payload excluded from native weight allocation; Swift omits nil/zero. It is not a KV cache byte count or a claim that OS-mapped pages use no RAM |
-| `native_load_transient_bytes` | `int64` | `UInt64?` | opt | Checkpoint-derived loading allowance for eligible native Qwen4 SSD offload; omitted by legacy/other layouts. Coordinator requires at least 1 GiB and checked addition; invalid/missing values retain 1.2 padding. This does not reduce OS, activation or request-KV reserves |
+| `native_load_transient_bytes` | `int64` | `UInt64?` | opt | Checkpoint-derived allowance for eligible native Qwen4 SSD offload, or full-LOAD supplement above all stored payload bytes for validated exact `mimo_v2` with no SSD subtraction. Requires at least 1 GiB and checked addition; invalid/missing declarations retain legacy pricing. OS, activation and request-KV reserves are unchanged |
 | `parameters` | — | `UInt64?` | Swift only | encoded by Swift, dropped by Go |
 
 Both memory fields are defined by `coordinator/protocol/messages.go`
@@ -216,7 +218,11 @@ Qwen4 types, an ID matching the requested model, finite positive memory, and a p
 payload smaller than the artifact; it floors the estimate against padded
 remaining weight bytes (`coordinator/registry/offloaded_weights.go`,
 `advertisedOffloadedMemoryGBLocked`). Missing/invalid declarations retain the
-existing catalog/measurement policy. See [offloaded-weight admission](../architecture/routing.md#ssd-offloaded-model-weights).
+existing catalog/measurement policy. Exact `mimo_v2` additionally requires zero
+SSD offload, positive source bytes, a checked supplement and a full estimate no
+smaller than their sum. Its load floor retains the greater raw catalog/source
+size plus the supplement once; callers supply raw decimal catalog GB, not GiB,
+minimum RAM or a padded estimate. See [offloaded-weight admission](../architecture/routing.md#ssd-offloaded-model-weights).
 
 #### `privacy_capabilities`
 
@@ -336,6 +342,9 @@ routing on them.
 | `num_running`, `num_waiting` | `int` | `UInt32` | req | |
 | `max_concurrency` | `int` | `UInt32` | opt | |
 | `performance_profile` | `*ServingPerformanceProfileReference` | `ServingPerformanceProfileReference?` | opt | Reviewed profile identity; omitted when no exact qualified profile applies |
+| `prompt_work_identity` | `*PromptWorkIdentity` | `PromptWorkIdentity?` | opt | Loaded engine artifact and prompt renderer identity, independent of prefix-cache enablement; missing evidence keeps heuristic count admission |
+| `deadline_profile` | `*DeadlinePerformanceProfileReference` | `DeadlinePerformanceProfileReference?` | opt | Exact scheduler identity for measured first-content cells; grants no concurrency or chunk-policy change |
+| `deadline_work` | `*DeadlineWork` | `DeadlineWork?` | opt | Coherent existing-owner work bounds; [schema below](#slotsdeadline_work) |
 | `performance_measurements` | `*PerformanceMeasurements` | `PerformanceMeasurements?` | opt | Transient routing observations; [schema below](#slotsperformance_measurements) |
 | `active_tokens` | `int64` | `Int64` | req | Σ (prompt + completion) tokens over running requests |
 | `max_tokens_potential` | `int64` | `Int64` | req | Σ `max_tokens` over running requests |
@@ -459,7 +468,11 @@ Clamped by `registry.clampBackendCapacity`; persisted to `fleet_snapshots`
 #### `slots[].performance_measurements`
 
 `slots[].performance_profile` optionally names reviewed release data with `id`,
-`runtime_revision` and `context_tokens`; it carries no self-certified curve.
+`runtime_revision` and `context_tokens`; optional `mtp` binds the actual verified
+assistant artifact and effective decode settings (`enabled`, `artifact_sha256`,
+`max_draft_tokens`, optional `fixed_draft_tokens`, `max_speculative_batch`,
+`verification_mode`, `max_automatic_rectangular_tokens`). Omission means plain
+target execution. The reference carries no self-certified curve or margin.
 The coordinator resolves the reference against its own catalog and registered
 model artifact. Go `coordinator/protocol/performance_profile.go` and Swift
 `provider-swift/Sources/ProviderCore/Protocol/ServingPerformanceProfileReference.swift`
@@ -490,6 +503,72 @@ Go/Swift shape; these are transient capacity fields, not persisted profiler
 telemetry or telemetry-event fields. Numeric work counters remain in
 `slots[].telemetry`; the epoch and bucket list are excluded from persisted
 numeric-only provider telemetry.
+
+#### `slots[].prompt_work_identity`
+
+`PromptWorkIdentity` in `coordinator/protocol/prompt_work.go` mirrors
+`provider-swift/Sources/ProviderCore/Protocol/PromptWork.swift`. The optional
+object contains lowercase SHA-256 `model_artifact_hash` and `prompt_contract_id`
+strings from the loaded engine's verified factory identity. It contains no
+prompt content and does not enable prefix caching. Identity changes are material
+capacity changes (`CapacityHeartbeatMateriality`).
+
+The coordinator requires both values to match before using request count
+provenance or an exact cache-plan count. A malformed or mismatched explicit
+identity stays unqualified; it cannot borrow an older cache capability. Providers
+without this field can establish the same pair through their existing validated
+SSD or memory cache capability. Otherwise counts remain heuristic. These rules
+do not change physical reservations, consumer usage or billing.
+
+#### `slots[].deadline_profile`
+
+Go `DeadlinePerformanceProfileReference` in
+`coordinator/protocol/deadline_profile.go` mirrors
+`provider-swift/Sources/ProviderCore/Protocol/DeadlinePerformanceProfileReference.swift`.
+The coordinator resolves this reference against a separate reviewed deadline
+catalog. It cannot change serving width, mixed-prefill policy or memory limits.
+
+| Key | Meaning |
+|---|---|
+| `id`, `runtime_revision` | Immutable reviewed deadline profile and serving runtime |
+| `configured_context_tokens` | Exact constructed context limit; individual measured cells may cover a smaller domain |
+| `effective_max_concurrency` | Actual constructed scheduler width, not a requested override |
+| `prefill_chunk_size`, `solo_prefill_stripe_tokens`, `max_concurrent_partial_prefills`, `mixed_prefill_token_cap` | Exact scheduler settings; optional fields preserve absence versus explicit values |
+| `mtp` | Optional verified assistant identity/settings, with the same shape as `performance_profile.mtp` |
+| `minimum_whole_mac_quiescence_ms` | Required explicit measured idle prerequisite; zero is distinct from absence |
+| `minimum_nominal_stability_ms` | Required observed nominal/non-Low-Power stability interval |
+| `power_mode` | Required exact measured power policy, currently `automatic` |
+
+Changing any scheduler identity field withdraws the profile. Neither the
+reference nor a heartbeat supplies calibrated rates or claims measured coverage
+for the full configured context. Unsupported cells retain conservative fallback.
+Missing applicability fields invalidate the reference. The provider withdraws
+it during ineligible posture or activity; the coordinator also requires explicit
+nominal thermal state and `backend_capacity.telemetry.low_power_mode=false`.
+
+#### `slots[].deadline_work`
+
+Optional Go `DeadlineWork` / Swift `DeadlineWork`, defined in
+`coordinator/protocol/deadline_work.go` and
+`provider-swift/Sources/ProviderCore/Protocol/DeadlineWork.swift`.
+
+| Key | Meaning |
+|---|---|
+| `version` | `1`; unknown versions cannot qualify |
+| `epoch` | Must match the slot's performance-measurement lifetime |
+| `known` | False means ownership/work is incomplete; zero work must not be inferred |
+| `prefill_tokens`, `decode_tokens` | Conservative work bounds of existing owners, including pre-submit and retiring leases |
+| `request_count`, `context_tokens_max` | Existing owner count and maximum committed context |
+| `service_fraction` | Held whole-Mac service fraction for these owners |
+
+The provider snapshots these fields with aggregate service use and reservation
+IDs under one lock. The coordinator validates freshness, counts and correlated
+ownership before using a qualified contended cell. This optional object cannot
+certify a profile, reduce memory reservations or change the request clock.
+Providers omit it when no resident engine has a resolved deadline profile.
+When any engine has such a profile, all slots retain work evidence, including
+while the profile is temporarily ineligible, so competing work and recovery
+remain observable.
 
 #### `backend_capacity.telemetry`
 
@@ -601,7 +680,7 @@ these fields: [`../architecture/request-outcome-observability.md`](../architectu
 | `request_id` | `string` | `String` | req | |
 | `error` | `string` | computed `String` (`failureCode.message`) | req | Swift never emits raw error text. The coordinator never reads the provider-authored value: `sanitizeProviderInferenceError` (`coordinator/api/inference_error_sanitize.go`) replaces it with the closed message for `failure_code` before anything downstream sees the frame |
 | `status_code` | `int` | `UInt16` | req | |
-| `error_reason` | `string` | `InferenceErrorReason?` | opt | closed, privacy-safe reason (`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceFailure.swift`): `jinja_channel_tags`, `jinja_null_bridge`, `jinja_template`, `model_load`, `capacity_timeout`, `queue_full`, `token_budget_exhausted`, `request_exceeds_context`, `request_exceeds_node`, `request_exceeds_node_budget`, `request_exceeds_batch_token_budget`, `capacity_busy`, `deadline_unreachable`, `draining`, `cancelled`, `client_error`, `tool_noncompliance`. The typed `draining` reason on a 503 marks a transient update drain: no provider-health or capacity penalty, and no capacity retry charge (`coordinator/api/consumer.go`, `noteInferenceError`; `coordinator/api/dispatch.go`, `dispatchState.noteProviderError`). Swift emits it from `rejectIfDrainingForUpdate` (`provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`). |
+| `error_reason` | `string` | `InferenceErrorReason?` | opt | closed, privacy-safe reason (`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceFailure.swift`): `jinja_channel_tags`, `jinja_null_bridge`, `jinja_template`, `model_load`, `capacity_timeout`, `queue_full`, `token_budget_exhausted`, `media_memory_unavailable`, `request_exceeds_context`, `request_exceeds_node`, `request_exceeds_node_budget`, `request_exceeds_batch_token_budget`, `capacity_busy`, `deadline_unreachable`, `draining`, `cancelled`, `client_error`, `tool_noncompliance`. The typed `draining` reason on a 503 marks a transient update drain: no provider-health or capacity penalty, and no capacity retry charge (`coordinator/api/consumer.go`, `noteInferenceError`; `coordinator/api/dispatch.go`, `dispatchState.noteProviderError`). Swift emits it from `rejectIfDrainingForUpdate` (`provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`). |
 | `failure_code` | `InferenceFailureCode` | `InferenceFailureCode?` | opt | closed enum (`coordinator/protocol/inference_failure.go`): `invalid_request`, `invalid_media`, `media_too_large`, `unsupported_media`, `template_render`, `model_unavailable`, `capacity`, `cancelled`, `encryption_failure`, `generation_failure`, `internal_failure`. Swift always sets it (`InferenceFailure.code` is non-optional). A missing or unknown value is drift: `sanitizeProviderInferenceError` fails it closed as `generation_failure` and counts `inference.invalid_failure_code`; status, `error_reason` and `terminal_cause` never reclassify it |
 | `terminal_cause` | `string` | `InferenceTerminalCause?` | opt | closed: `admission_timeout`, `prefill_stall`, `decode_stall`, `safety_deadline`, `backpressure_timeout`, `watchdog`, `cancelled`, `engine_error`. Unknown → treated as absent plus a drift metric (`coordinator/api/terminal_cause.go`); platform-policy terminals never strike health breakers |
 | `attempt_usage` | `*UsageInfo` | `UsageInfo?` | opt | engine-reconciled usage of the failed attempt; observability only, never billing |
@@ -611,6 +690,14 @@ these fields: [`../architecture/request-outcome-observability.md`](../architectu
 | `capacity_seq` | `uint64` | `UInt64?` | opt | the snapshot the gate decided from; Swift omits 0 |
 | `profile` | `json.RawMessage` | `InferenceProfile?` | opt | same contract as `inference_complete`; the sanitizer passes it through as opaque bytes |
 | — (`CoordinatorCause`) | `json:"-"` | — | never on the wire | coordinator-synthetic only (`provider_disconnected`) |
+
+`media_memory_unavailable` is a retryable `capacity`/503 failure for media
+preparation, not a text/KV-budget observation. It carries no capacity enrichment
+fields, does not strike model-wide capacity or health trackers, and still uses
+the bounded failover budget. A contradictory native `terminal_cause` retains
+normal terminal handling instead of this exemption. The provider emits it
+through `MiMoV26EncodedMediaIngress.outwardFailure`; the coordinator enforces
+the contract in `sanitizeProviderInferenceError`.
 
 ### `attestation_response`
 
@@ -854,12 +941,32 @@ Go `InferenceRequestMessage` · Swift `CoordinatorMessage.InferenceRequest`.
 | `service_reservation_id` | `string` | `String?` | opt | Fresh opaque UUID for the committed service reservation, including retries of the same request; omitted by older coordinators. The provider echoes it with the actual held charge in [`whole_mac_service_reservations`](#service-reservation-correlation) until retirement. Distinct from `request_id`; missing or invalid IDs receive no overlap credit but still consume provider allowance |
 | `encrypted_body` | `*EncryptedPayload` | `EncryptedPayload?` | opt | NaCl box; the only request body. There is no plaintext `body` key: the coordinator never sends one and Swift rejects a request without `encrypted_body` |
 | `first_content_budget_ms` | `int64` | `Int64?` | opt | positive time left for this attempt to produce its first content chunk; 0 omitted. The coordinator omits this for accounts outside `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS`; missing means no coordinator first-content SLA, preserving existing Swift decoding |
+| `prompt_work` | `*PromptWork` | `PromptWork?` | opt | Numeric artifact/template-bound count provenance; older peers may omit it. Validated after provider tokenization; never changes billing usage or the inherited deadline |
 | `cache_receipt_nonce` | `string` | `String?` | opt | binds the prefix-cache receipts to this attempt |
 | `cache_scope` | `string` | `String?` | opt | |
 | `prefix_cache_protocol` | `int` | `Int?` | opt | |
 | `cache_receipt_boundary_mode` | `string` | `String?` | opt | `checkpoint` echoes support for the selected SSD capability. A provider emits checkpoint-mode receipts only with this echo; an older coordinator omits it and remains cold for this format. Copied from the prepared attempt and cleared on retry/fallback; `coordinator/api/provider_wire.go`, `snapshotProviderInferenceFrame` / `wireMessage`; `coordinator/registry/cache_receipts.go`, `ForgetCacheAttempt` |
 | `cache_repeated_prefix_tokens` | `*int` | `Int?` | ptr | Coordinator-observed fleet-wide repeat demand: the deepest boundary another plan shared within the routing TTL among those a plan observes (multiples of 1,024 tokens, the final boundary, and a power-of-two ladder for very long prompts), 0 when none. Sent only with a granted scope; absent from older coordinators (providers then write every checkpoint) and cleared on retry/fallback (`CacheAttemptSnapshot.ApplyTo`, `coordinator/registry/cache_attempt_ownership.go`). Integer count only, never a key, hash or boundary. Providers gate complete-checkpoint donations on it (`skipped_novel`; `SSDCheckpointDemand.admitsWrite`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointDemand.swift`). Swift clamps a negative value to 0. The e2e wire relay projects it for `inference_request` (`copyFields`, `e2e/testbed/provider_wire_relay.go`) |
 | `tool_schema_metadata_protocol` | `int` | `Int?` | opt | `1` = the coordinator rejected client-forged reserved keys before normalisation |
+
+`prompt_work` is defined in `coordinator/protocol/prompt_work.go` and
+`provider-swift/Sources/ProviderCore/Protocol/PromptWork.swift`:
+
+| Key | Meaning |
+|---|---|
+| `version` | `1`; unknown versions remain decodable but unqualified |
+| `source` | `exact_contract`, `calibrated_template`, or `heuristic` |
+| `prompt_tokens` | Positive central input count, bounded by 1,048,576 tokens |
+| `upper_bound_tokens` | Exact count for exact provenance; measured upper bound for qualified calibration; `0` denotes unknown heuristic uncertainty |
+| `model_artifact_hash`, `prompt_contract_id` | Lowercase SHA-256 identities required for qualified provenance |
+| `calibration_id` | Required printable reviewed-corpus identity for `calibrated_template`; absent for exact counts |
+
+The fields contain no content, token IDs, cache keys or consumer identity.
+An exact count must equal the provider's actual tokenization; a calibrated
+count must bound it. Invalid identity, unknown source or an exceeded bound
+withdraws calibrated admission and preserves the conservative fallback.
+The provider ignores a malformed optional `prompt_work` object and decodes the
+rest of the inference request normally; required request fields remain strict.
 
 ### `cancel`
 

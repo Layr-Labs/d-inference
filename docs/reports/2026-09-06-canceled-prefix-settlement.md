@@ -1,6 +1,6 @@
 # Native prefix lookup settlement after cancellation
 
-> Last updated: 2026-09-06 · commit `384c321aa`
+> Last updated: 2026-09-06
 
 Partial-output cancellation now waits for the native bridge to finish recording
 actual cache usage and resolve its lookup receipt before the provider sends its

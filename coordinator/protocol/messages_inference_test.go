@@ -466,29 +466,31 @@ func TestDeadlineDecisionMalformedKeepsTerminalEnvelopeAlive(t *testing.T) {
 		`"type":"inference_complete","request_id":"r","usage":{"prompt_tokens":1,"completion_tokens":2}`,
 		`"type":"inference_error","request_id":"r","error":"provider capacity unavailable","status_code":429`,
 	} {
-		in := []byte(`{` + terminal + `,"profile":{"schema":1,"deadline_decision":{"remaining_us":"bad"}}}`)
-		var pm ProviderMessage
-		if err := pm.UnmarshalJSON(in); err != nil {
-			t.Fatalf("diagnostic field cost the terminal: %v", err)
-		}
-		var raw json.RawMessage
-		switch p := pm.Payload.(type) {
-		case *InferenceCompleteMessage:
-			raw = p.Profile
-			if p.RequestID != "r" || p.Usage.CompletionTokens != 2 {
-				t.Fatalf("completion changed: %+v", p)
+		for _, field := range []string{`"remaining_us":"bad"`, `"unbounded_reason":{"untrusted":"text"}`} {
+			in := []byte(`{` + terminal + `,"profile":{"schema":1,"deadline_decision":{` + field + `}}}`)
+			var pm ProviderMessage
+			if err := pm.UnmarshalJSON(in); err != nil {
+				t.Fatalf("diagnostic field cost the terminal: %v", err)
 			}
-		case *InferenceErrorMessage:
-			raw = p.Profile
-			if p.RequestID != "r" || p.StatusCode != 429 {
-				t.Fatalf("error changed: %+v", p)
+			var raw json.RawMessage
+			switch p := pm.Payload.(type) {
+			case *InferenceCompleteMessage:
+				raw = p.Profile
+				if p.RequestID != "r" || p.Usage.CompletionTokens != 2 {
+					t.Fatalf("completion changed: %+v", p)
+				}
+			case *InferenceErrorMessage:
+				raw = p.Profile
+				if p.RequestID != "r" || p.StatusCode != 429 {
+					t.Fatalf("error changed: %+v", p)
+				}
+			default:
+				t.Fatalf("unexpected terminal %T", pm.Payload)
 			}
-		default:
-			t.Fatalf("unexpected terminal %T", pm.Payload)
-		}
-		var profile InferenceProfile
-		if err := json.Unmarshal(raw, &profile); err == nil {
-			t.Fatal("invalid nested numeric survived typed decode")
+			var profile InferenceProfile
+			if err := json.Unmarshal(raw, &profile); err == nil {
+				t.Fatal("invalid nested diagnostic survived typed decode")
+			}
 		}
 	}
 }

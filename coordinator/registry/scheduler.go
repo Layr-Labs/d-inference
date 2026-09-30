@@ -179,6 +179,13 @@ type routingSnapshot struct {
 	kvBytesPerToken    int64
 	fleetMedianTPS     float64
 	hasBackendCapacity bool // provider reports BackendCapacity; TTFT estimates are reliable
+	// fleetMedianPrefillTPS is the fleet median isolated prefill rate for the
+	// model and chip family (tps_prefill.go). 0 means no samples.
+	fleetMedianPrefillTPS float64
+	// explorationPriced is set once per snapshot. It means evidence
+	// exploration can admit this provider, so both resolve functions price it
+	// at the fleet medians (first_content_exploration.go).
+	explorationPriced bool
 
 	// Engine-health (first-token wedge) signals, decoded from the slot's
 	// BackendSlotCapacity (see docs/reports/2026-06-22-cancel-root-cause-and-fix.md
@@ -2206,9 +2213,14 @@ func healthPenaltyMs(m protocol.SystemMetrics, gpuActiveGB, totalMemGB float64) 
 // resolveEffectiveTPS returns the best available decode TPS estimate.
 // Qualified curves use their measured conservative width point; unmatched
 // configurations fall back through observed EWMA, fleet median and benchmark.
+// A provider that evidence exploration can admit uses the fleet median before
+// its own old EWMA.
 func resolveEffectiveTPS(snap *routingSnapshot) float64 {
 	if point, ok := snap.performanceProfile.batchAt(max(1, snapshotOccupancy(snap)+1)); ok {
 		return point.DecodeP10TPS
+	}
+	if snap.explorationPriced && snap.fleetMedianTPS > 0 {
+		return snap.fleetMedianTPS
 	}
 	if snap.observedDecodeTPS > 0 {
 		return snap.observedDecodeTPS
@@ -2223,6 +2235,8 @@ func resolveEffectiveTPS(snap *routingSnapshot) float64 {
 // matching resolveEffectiveTPS. A workload-specific live EWMA cannot replace
 // that reviewed rate. Without a fitting point, prefer observed prefill EWMA,
 // then snap.prefillTPS (registration benchmark or decode×prefillToDecodeRatio).
+// A provider that evidence exploration can admit uses the fleet median
+// isolated prefill rate first, when one exists.
 // The fallback is clamped to maxPrefillTPS; profile validation enforces the same
 // bound for reviewed points.
 func resolvePrefillTPS(snap *routingSnapshot) float64 {
@@ -2230,7 +2244,10 @@ func resolvePrefillTPS(snap *routingSnapshot) float64 {
 		return point.PrefillTPS
 	}
 	tps := snap.prefillTPS
-	if finitePositive(snap.observedPrefillTPS) {
+	switch {
+	case snap.explorationPriced && finitePositive(snap.fleetMedianPrefillTPS):
+		tps = snap.fleetMedianPrefillTPS
+	case finitePositive(snap.observedPrefillTPS):
 		tps = snap.observedPrefillTPS
 	}
 	if !finitePositive(tps) {

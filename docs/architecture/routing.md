@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-29
+> Last updated: 2026-09-30
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -351,6 +351,26 @@ floored at 1 tok/s. The prefill fallback prefers `ObservedPrefillTPS`, else
 the static prefill rate (`resolvedPrefillTPS`: the registered `PrefillTPS`,
 or decode × `prefillToDecodeRatio`), capped at `maxPrefillTPS`. Reviewed prefill
 points satisfy the same ceiling during profile validation.
+
+| Step | Decode (`resolveEffectiveTPS`) | Prefill (`resolvePrefillTPS`) |
+|---|---|---|
+| 1 | Reviewed profile point | Reviewed profile point |
+| 2 | Fleet decode median, if the snapshot is exploration-priced | Fleet isolated-prefill median, if the snapshot is exploration-priced |
+| 3 | `ObservedDecodeTPS` | `ObservedPrefillTPS` |
+| 4 | Fleet decode median | Registration `PrefillTPS`, or decode × `prefillToDecodeRatio` |
+| 5 | Registration decode, derated by load | — |
+
+A snapshot is exploration-priced when [evidence
+exploration](first-content-routing.md#prediction-and-freshness) can admit the
+provider: accepted capacity is fresh, the model is loaded, the Mac is idle, and
+the evidence gap is at least `firstContentEvidenceExplorationAfter` (5 minutes).
+The flag is set once per snapshot (`firstContentExplorationPriced`,
+`coordinator/registry/first_content_exploration.go`), so every cost and forecast
+that reads the snapshot uses the same rates. Step 2 applies only when the median
+exists. Both medians are per model and chip family. The heartbeat records every
+reported decode EWMA and every usable isolated prefill rate into 50-sample rings
+(`TPSRegistry`, `coordinator/registry/tps_registry.go` and
+`coordinator/registry/tps_prefill.go`).
 `SetPrefillToDecodeRatio` changes the ratio process-wide; the coordinator
 binary wires it to `EIGENINFERENCE_PREFILL_DECODE_RATIO`
 (`coordinator/cmd/coordinator/main.go`).

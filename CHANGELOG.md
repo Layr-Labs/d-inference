@@ -11,6 +11,10 @@
 - Correct native MiMo image/video admission to charge all retained RGB plus the largest sequential decode workspace. Release temporary image/frame objects each iteration and convert video BGRA directly to RGB; video no longer reserves a decoded raster for every unsampled source frame. Preserve transport, pixel, native-workspace, KV and OS memory gates.
 - Align `ProviderCore.version` and the coordinator's latest-provider display fallback at `0.9.13`. The coordinator keeps enforcing reported token budgets and per-model concurrency; no admission bypass or production configuration change is included. Publication remains a separate operation.
 
+## Unreleased — explored provider pricing
+
+- Price a provider that evidence exploration admits at the fleet median isolated-prefill and decode rates for its model and chip family. A provider that sent no rates at registration, or whose last measurement was slow, can now enter the 100 ms band beside an idle peer with fresh evidence. A reviewed profile point still comes first, a missing median keeps the ordinary fallback, and the candidate stays `unknown`, so hedge and fresh-feasible requests still exclude it. Selection is still not guaranteed.
+
 ## Unreleased — first-content evidence exploration
 
 - Let an idle, loaded provider compete beside feasible peers after the 5-minute measurement-age threshold, using connection age when measurements are undated. This breaks the evidence-first exclusion of newly connected and long-idle providers without guaranteeing selection or measurement recovery. Hedge and fresh-feasible requests still require feasible evidence.

@@ -49,6 +49,10 @@ final class EnginePrefillReceipt: @unchecked Sendable {
     let activity: EngineMeasurementActivity
     let activityID: UUID
     let deadlineRateEvidence: DeadlineRateEvidence?
+    /// Set only by a native owner-bound submission. This distinguishes its
+    /// target-decoder work from text and legacy vision without trusting input
+    /// JSON or inferring a model capability from its name.
+    let nativeCausalMedia: Bool
     private let lock = NSLock()
     private var sample: Sample?
     private var consumed = false
@@ -56,9 +60,10 @@ final class EnginePrefillReceipt: @unchecked Sendable {
     private var retirementOwned = false
 
     init(activity: EngineMeasurementActivity, model: String,
-        deadlineRateEvidence: DeadlineRateEvidence? = nil) {
+        deadlineRateEvidence: DeadlineRateEvidence? = nil, nativeCausalMedia: Bool = false) {
         self.activity = activity
         self.deadlineRateEvidence = deadlineRateEvidence
+        self.nativeCausalMedia = nativeCausalMedia
         activityID = activity.begin(model: model)
     }
 
@@ -188,8 +193,10 @@ struct EnginePerformanceMeasurements {
             rate.count = rates[name]!.count
             qualifiedRates[name] = QualifiedRate(postureEpoch: deadlinePostureEpoch, rate: rate)
         }
-        guard name == "isolated_prefill" || name == "contended_prefill" || name == "reuse_prefill" || name == "decode" else { return }
-        let key = Key(phase: name == "decode" ? "decode" : "prefill",
+        guard name == "isolated_prefill" || name == "contended_prefill" || name == "reuse_prefill"
+            || name == "decode" || name == "native_media_prefill" else { return }
+        let phase = name == "native_media_prefill" ? name : name == "decode" ? "decode" : "prefill"
+        let key = Key(phase: phase,
             prompt: Self.bucket(prompt), context: Self.bucket(context), cache: cache,
             contended: overlap.contended, otherModel: overlap.otherModel)
         if var rate = buckets[key] { rate.observe(tps, at: now); buckets[key] = rate }

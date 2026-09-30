@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — native media prefill observations
+
+- Retain native MiMo target-decoder prefill rates in dedicated numeric workload buckets, separated by computed suffix, context, reuse and overlap. Encoder preparation remains outside this timer. These observations support media calibration without mixing media into text rates or changing first-content deadlines.
+
 ## Release candidate v0.9.14 — MiMo SSD prefix caching by default (not shipped)
 
 - Enable encrypted text-only COMPLETE-prefix SSD checkpoints by default for exact `mimo-v2.6-flash-mopd` and `EigenLabs/MiMo-V2.6-Flash-MOPD-MLX-4bit-mtp` identities. Keep verified artifact/runtime identity, tenant isolation, native ownership, memory admission, SSD limits and cold fallback.

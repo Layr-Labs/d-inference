@@ -486,7 +486,14 @@ define the mirror.
 |---|---|
 | `epoch` | Per-engine measurement lifetime; replacement resets counter baselines |
 | `isolated_prefill`, `contended_prefill`, `decode`, `delivered_decode`, `end_to_end` | Optional `{tokens_per_second, sample_count, sample_age_ms}` observations; age is elapsed time at snapshot |
-| `workload_buckets` | Bounded numeric buckets with `phase`, `prompt_token_bucket`, `context_token_bucket`, `cache_state`, `contention`, `other_model_activity`, `observation` |
+| `workload_buckets` | Bounded numeric buckets with `phase` (`prefill`, `decode`, `native_media_prefill`), `prompt_token_bucket`, `context_token_bucket`, `cache_state`, `contention`, `other_model_activity`, `observation` |
+
+`native_media_prefill` records the target decoder's actual computed suffix for
+owner-bound native media, after encoder preparation. It retains cache and
+overlap classification but never updates `isolated_prefill` or
+`contended_prefill`, and does not establish deadline or capacity eligibility.
+Older coordinators discard this unknown diagnostic phase; existing scalar
+observations and wire-message shapes remain compatible.
 
 Prompt-completion receipts request a capacity refresh. Changed measurement
 epochs, sample counts or cumulative work counters trigger the existing

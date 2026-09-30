@@ -16,6 +16,7 @@ public struct PerformanceRateObservation: Codable, Sendable, Equatable {
 
 /// Numeric workload shapes only; never prompt text, token IDs or cache keys.
 public struct PerformanceWorkloadBucket: Codable, Sendable, Equatable {
+    /// prefill, decode, or native_media_prefill (target decoder only).
     public var phase: String
     public var promptTokenBucket: Int
     public var contextTokenBucket: Int

@@ -68,6 +68,17 @@ inferred from one engine's occupancy. Engine decode rate ends at the last
 confirmed token, excluding terminal delivery delays; delivered and end-to-end
 rates remain separate.
 
+Owner-bound native MiMo submissions retain target-decoder prefill observations
+in the separate `native_media_prefill` workload phase. Its timer starts at the
+first target prefill launch, after image/video/audio preparation, and ends at
+confirmed prompt computation. The buckets retain computed-suffix size, full
+context size, cache state and same/other-model overlap. They do not train text
+rates or supply deadline calibration: a completed media request is evidence
+to evaluate, not a validated prediction envelope. Generic vision submissions
+remain excluded. The native owner and opaque media seal are checked before a
+submission can produce a completed receipt
+(`EngineV2Bridge+MiMoMedia.swift`, `nativeMediaMeasurementEligible`).
+
 Consuming a valid prompt receipt requests an aggregate capacity rebuild
 independently of generation completion. New measurement epochs, sample counts and cumulative work
 counters are event-heartbeat material; advancing sample age alone is not.

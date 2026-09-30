@@ -24,11 +24,23 @@ extension EngineV2Bridge {
         // Valid computed work is useful even when vision/reuse or the timing
         // window excludes the rate. Publish after all counters and EWMAs agree.
         defer { performanceUpdates?.notify() }
-        guard usage.timing.visionChunks == 0,
+        guard usage.timing.visionChunks == 0 || receipt.nativeCausalMedia,
             saved > 0 ? usage.prefixCacheOutcome == .hit : Self.isColdPrefillSample(usage: usage),
             let seconds = EngineV2NativeBlockTiming.prefillSeconds(usage.timing),
             let tps = Self.classifyPrefillSample(prefilledTokens: work, prefillSeconds: seconds)
         else { return }
+        if receipt.nativeCausalMedia {
+            // Native media features are fully prepared before submission.
+            // This interval measures only the target decoder's computed
+            // suffix. Keep the sample's size, reuse and overlap separate;
+            // a text-only rate must not erase the evidence needed to calibrate
+            // media. These diagnostic buckets do not change admission rates.
+            performanceMeasurements.observe("native_media_prefill", tps: tps,
+                prompt: work, context: usage.promptTokens,
+                cache: saved > 0 ? "reused" : "cold",
+                overlap: sample.overlap, at: sample.at)
+            return
+        }
         let name = saved > 0 ? "reuse_prefill"
             : sample.overlap.contended ? "contended_prefill" : "isolated_prefill"
         performanceMeasurements.observe(name, tps: tps, prompt: work,

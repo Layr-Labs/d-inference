@@ -9,6 +9,8 @@ type PerformanceRateObservation struct {
 }
 
 type PerformanceWorkloadBucket struct {
+	// native_media_prefill describes completed native target-decoder work,
+	// excluding encoder preparation. It is diagnostic, never a text rate.
 	Phase              string                     `json:"phase"`
 	PromptTokenBucket  int                        `json:"prompt_token_bucket"`
 	ContextTokenBucket int                        `json:"context_token_bucket"`

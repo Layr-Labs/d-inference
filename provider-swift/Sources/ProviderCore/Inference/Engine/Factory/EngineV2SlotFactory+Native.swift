@@ -396,7 +396,10 @@ extension EngineV2SlotFactory {
                         processMemoryOwner: prefix.resources?.processOwner,
                         nativeCompletionTracking: true, nativeExecutionContract: resources.contract,
                         automaticMiMoPrefill: EngineV2Factory.nativeMiMoAutomaticPrefill(
-                            environment: environment))
+                            environment: environment),
+                        miMoPrefillMemoryBudget: .init(
+                            minimumKVBytes: Int(UnifiedMemoryCap.minimumLoadKVBytes),
+                            targetFixedBytesPerRequest: geometry.targetWindowLogicalBytes))
                     // Register immediately; every subsequent validation may throw.
                     try transaction.registerEngine(engine, executionContract: resources.contract)
                     if case .unavailable(let reason)? = engine.resolvedMTPAdmission { throw reason }
@@ -416,6 +419,11 @@ extension EngineV2SlotFactory {
                     // MTP/auxiliary fixed term, never another target-ring charge.
                     let sharedFixed = try geometry.sharedFixedRequestBytes(
                         resolvedNonTargetFixedBytes: engine.resolvedFixedBytesPerRequest)
+                    guard kvBytesCapacity >= EngineV2Bridge.minimumNativeGrantBytes(
+                        fixedRequestBytes: sharedFixed) else {
+                        throw InferenceError.modelLoadFailed(
+                            "MiMo memory grant cannot fit one request workspace plus minimum KV")
+                    }
                     let bridge = try EngineV2Factory.makeBridge(modelId: modelId, tokenizer: tokenizer,
                         eosTokenIds: binding.stopTokenIDs, defaultMaxTokens: sizing.defaultMaxTokens,
                         maxConcurrentRequests: scheduler.maxConcurrentRequests,

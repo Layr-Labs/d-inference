@@ -29,8 +29,9 @@ extension EngineV2Bridge {
     }
 
     func effectiveServingConcurrency(allowExpansion: Bool) -> Int {
-        performanceProfile != nil && !allowExpansion
+        let configured = performanceProfile != nil && !allowExpansion
             ? unqualifiedMaxConcurrentRequests : maxConcurrentRequests
+        return memoryLimitedConcurrency(configured: configured)
     }
 
     func acquireServiceAllowance(requestID: String, serviceReservationID: String? = nil,
@@ -42,6 +43,12 @@ extension EngineV2Bridge {
             allowExpansion: allowExpansion ?? ServingPerformanceProfiles.postureAllowsExpansion)
         let effectiveDeadlineProfile = currentDeadlineProfile(
             allowQualifiedPosture: allowExpansion ?? ServingPerformanceProfiles.postureAllowsExpansion)
+        if tracksNativeShutdown,
+            activeRequestCount() >= effectiveServingConcurrency(
+                allowExpansion: allowExpansion ?? ServingPerformanceProfiles.postureAllowsExpansion)
+        {
+            return false
+        }
         if performanceProfile != nil && effectiveProfile == nil,
             active.count + pendingSubmissionIDs.count >= unqualifiedMaxConcurrentRequests {
             return false

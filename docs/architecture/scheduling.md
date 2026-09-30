@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-29
+> Last updated: 2026-09-30 · commit `8b8d1eedc`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -227,6 +227,26 @@ coordinator-pending tokens, in bytes when every budget slot reports
 `KVBytesPerToken`. It rejects what a per-slot check cannot see: pending work
 for a cold model that has no slot yet, and a grant that a re-slice shrank
 below its live use. A cold request is charged against the same pool.
+
+Native MiMo capacity in 0.9.13 also accounts for fixed request workspace.
+`EngineV2Bridge.memoryLimitedConcurrency`
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+MemoryConcurrency.swift`)
+reduces the configured concurrency to what the current admission ceiling can
+hold while retaining `UnifiedMemoryCap.minimumLoadKVBytes`. The provider
+deducts fixed workspace only for the resulting available slots, reports that
+same `MaxConcurrency`, and enforces it before local or remote submission.
+The ceiling includes the real engine watermark and fleet clamp; live native
+reservations remain charged through retirement. A zero budget still means
+unavailable, and raw `kv_bytes_capacity` must not override it.
+
+Before a new model loads or an advertised serving set raises its reserve,
+`resliceMeetsServiceabilityFloor`
+(`provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2Reslice.swift`)
+preserves one native request's fixed workspace, the watermark and minimum KV
+allowance for existing slots. The new native contiguous engine is checked
+against the same floor before publication. Ordinary engines keep their existing
+floor. These are provider-side changes; the coordinator's existing per-model
+concurrency and token-budget checks consume the corrected heartbeat.
 
 **Memory fallback** for slots without a token budget: a resident model needs
 no weight memory; a non-resident one needs `modelSizeGB` plus the request's

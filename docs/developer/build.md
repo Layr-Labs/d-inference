@@ -133,6 +133,9 @@ production prompt parity as three independent macOS jobs. Each job owns a
 separate checkout, build directory, GPU, and unified-memory allocator. No job
 waits for another job's test outcome. The nested SDK job still builds all of its
 test products; a provider test build does not compile a dependency's tests.
+The existing required `Provider Tests` check is a small aggregate gate: it fails
+unless the unit, SDK, and parity lanes all succeed, including skipped/cancelled
+lanes. It does not serialize their work or change branch-protection settings.
 
 `.github/actions/provider-ci-build/action.yml` builds each lane using
 `scripts/provider-ci-cache.py` (`keys`). Provider debug tests, SDK debug tests,

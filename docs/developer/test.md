@@ -951,9 +951,14 @@ It remains subject to the isolated nonempty/no-skips gate.
 
 | Job | Coverage |
 |---|---|
-| Provider Tests | Full provider test products, unchanged serial general suite and fresh-process isolated gates, packaged-resource/authentication/installer checks |
+| Provider Unit Tests | Full provider test products, unchanged serial general suite and fresh-process isolated gates, packaged-resource/authentication/installer checks |
 | Provider SDK Tests | Full nested SDK test products, DiffusionGemma, paged safety/hash/eligibility/backend/kernel/KV-sharing gates, and every required Nemotron/onboarding selector |
 | Provider Prompt Parity | Real pinned tokenizer/template vectors, Swift/Go/Rust comparison, cold-load singleflight, and the release sidecar's sustained load proof |
+
+The existing `Provider Tests` check aggregates all three results and fails unless
+every lane succeeds. This keeps existing required-check coverage intact without
+an out-of-band branch-protection change; the three macOS lanes still start
+independently and run concurrently.
 
 No numerical matrix, exclusive allocator assertion, or internal controlled
 concurrency is removed. Tests sharing MLX globals remain serial within a process.

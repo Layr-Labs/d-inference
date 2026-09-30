@@ -94,7 +94,27 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 self.assertNotRegex(job, re.compile(r"^    (needs|if|strategy):", re.MULTILINE), msg=job)
                 self.assertNotIn("continue-on-error:", job)
                 self.assertNotIn("DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST:", job)
-        self.assertIn("    name: Provider Tests\n", self.jobs["test-provider"])
+        self.assertIn("    name: Provider Unit Tests\n", self.jobs["test-provider"])
+
+    def test_existing_required_check_requires_every_lane_even_after_failures(self):
+        job = self.jobs["provider-test-gate"]
+        self.assertIn("    name: Provider Tests\n", job)
+        self.assertIn("    needs: [test-provider, test-provider-sdk, test-provider-parity]\n", job)
+        self.assertIn("    if: ${{ always() }}\n", job)
+        self.assertNotIn("continue-on-error:", job)
+        step = step_blocks(job)[0]
+        command = run_command(step)
+        for unit, sdk, parity in (("success", "success", "success"),
+                                  ("failure", "success", "success"),
+                                  ("success", "failure", "success"),
+                                  ("success", "success", "failure"),
+                                  ("skipped", "success", "success"),
+                                  ("success", "cancelled", "success")):
+            result = subprocess.run(["bash", "-e", "-c", command],
+                                    env={**os.environ, "UNIT_RESULT": unit,
+                                         "SDK_RESULT": sdk, "PARITY_RESULT": parity},
+                                    capture_output=True, timeout=5)
+            self.assertEqual(result.returncode == 0, unit == sdk == parity == "success")
 
     def test_each_lane_checks_out_recursive_sources_before_its_build(self):
         for job_id, lane in LANES.items():

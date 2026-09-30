@@ -184,7 +184,10 @@ class ProviderFixtureTests(unittest.TestCase):
             self.assertIn("../scripts/run-nested-suite.sh", step)
             self.assertIn("--no-parallel", step)
             self.assertNotIn("continue-on-error", step)
-        self.assertNotIn("MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS:", workflow)
+        general = workflow.split("      - name: Run Swift tests", 1)[1].split("      - name:", 1)[0]
+        self.assertNotIn("MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS:", general)
+        audio = workflow.split("      - name: Run isolated native MiMo audio gate", 1)[1].split("      - name:", 1)[0]
+        self.assertIn("MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS: '1'", audio)
         self.assertNotIn("MIMO_CONSUMER_DIVERGENCE_TESTS:", workflow)
         self.assertNotIn("MIMO_V26_INGRESS_AUDIO_VIDEO_TESTS:", workflow)
 

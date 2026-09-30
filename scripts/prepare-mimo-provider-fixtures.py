@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import math
+import shutil
 from pathlib import Path
 import struct
 
@@ -74,9 +75,9 @@ def tensors(config):
     def add(key, shape, dtype="BF16", file="target.safetensors"):
         result[key] = {"shape": shape, "dtype": dtype, "file": file}
 
-    add("model.embed_tokens.weight", [128, 64])
+    add("model.embed_tokens.weight", [config["vocab_size"], 64])
     add("model.norm.weight", [64])
-    add("lm_head.weight", [128, 64])
+    add("lm_head.weight", [config["vocab_size"], 64])
     value_width = config["v_head_dim"]
     head_width = config["head_dim"]
     for layer in range(2):
@@ -112,7 +113,7 @@ def tensors(config):
             vision[prefix + "attn.sinks"] = [2]
     for key, shape in vision.items():
         add(key, shape, file="vision.safetensors")
-    audio = {f"speech_embeddings.{channel}.weight": [16, 8] for channel in range(20)}
+    audio = {f"speech_embeddings.{channel}.weight": [int(config["audio_config"]["speech_vocab_size"]), 8] for channel in range(20)}
     for layer in range(2):
         prefix = f"audio_encoder.input_local_transformer.layers.{layer}."
         for norm in ("input_layernorm", "post_attention_layernorm"):
@@ -155,8 +156,22 @@ def write_bytes(path, data):
         destination.write(data)
 
 
-def prepare(output, asymmetric=False):
+def prepare(output, asymmetric=False, audio_source=None):
     config = configuration(asymmetric)
+    if audio_source is not None:
+        selected = json.loads((audio_source / "config.json").read_text())
+        config["vocab_size"] = selected["vocab_size"]
+        config["max_position_embeddings"] = 4096
+        for key in ("eos_token_id", "pad_token_id"):
+            config[key] = selected[key]
+        for key, value in selected["processor_config"].items():
+            if key.startswith("audio_") or key.endswith("_token_id"):
+                config["processor_config"][key] = value
+                if key.endswith("_token_id"):
+                    config[key] = value
+        for key in ("audio_segment_size", "speech_vocab_size", "speech_zeroemb_idx"):
+            config["audio_config"][key] = selected["audio_config"][key]
+        config["audio_config"]["rope_theta"] = selected["audio_config"]["rope_theta"]
     inventory = tensors(config)
     if len(inventory) != 193:
         raise ValueError("synthetic tensor inventory changed")
@@ -176,20 +191,23 @@ def prepare(output, asymmetric=False):
             elif dtype == "U8":
                 data = bytes([127]) * count
             else:
-                values = [((index % 13) + 1) / 100 for index in range(count)]
+                values = [(index + 1) / 100 for index in range(13)]
                 if dtype == "BF16":
                     words = [struct.unpack("<I", struct.pack("<f", value))[0] for value in values]
-                    data = b"".join(struct.pack("<H", (word + 0x7FFF + ((word >> 16) & 1)) >> 16)
-                                    for word in words)
+                    pattern = b"".join(struct.pack("<H", (word + 0x7FFF + ((word >> 16) & 1)) >> 16)
+                                       for word in words)
+                    width = 2
                 else:
-                    data = struct.pack("<" + "f" * count, *values)
+                    pattern = struct.pack("<13f", *values)
+                    width = 4
+                data = (pattern * (count // 13 + 1))[:count * width]
             start = len(payload)
             payload.extend(data)
             header[key] = {"shape": entry["shape"], "dtype": dtype,
                            "data_offsets": [start, len(payload)]}
         encoded = json_bytes(header).rstrip(b"\n")
         encoded += b" " * (-len(encoded) % 8)
-        if 8 + len(encoded) + len(payload) >= 1 << 20:
+        if 8 + len(encoded) + len(payload) >= (128 << 20 if audio_source is not None else 1 << 20):
             raise ValueError("synthetic shard exceeds fixture bound")
         write_bytes(root / name, struct.pack("<Q", len(encoded)) + encoded + payload)
         total += len(payload)
@@ -221,6 +239,15 @@ def prepare(output, asymmetric=False):
                 "mtp_embedded": config["omlx_mimo_mtp"]}
     manifest_data = json_bytes(manifest)
     write_bytes(root / "conversion_manifest.json", manifest_data)
+    if audio_source is not None:
+        # The native loader authenticates the real selected codec separately.
+        # No synthetic sidecar, relaxed hash or test-only authentication path.
+        shutil.copytree(audio_source / "audio_tokenizer", root / "audio_tokenizer")
+        for name in ("tokenizer.json", "tokenizer_config.json", "chat_template.jinja", "generation_config.json"):
+            source = audio_source / name
+            if source.exists():
+                shutil.copy2(source, root / name)
+
     write_bytes(output / "provenance.json", json_bytes({
         "artifactID": "synthetic-provider-ci", "sourceRepository": manifest["source_repository"],
         "sourceRevision": manifest["source_revision"],
@@ -233,10 +260,14 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--asymmetric", action="store_true")
     parser.add_argument("--github-env", type=Path)
+    parser.add_argument("--audio-source", type=Path,
+                        help="Verified selected model metadata and genuine audio_tokenizer sidecar")
     args = parser.parse_args()
-    path = prepare(args.output, args.asymmetric)
+    path = prepare(args.output, args.asymmetric, args.audio_source)
     lines = [f"MIMO_V26_SERIAL_LOAD_FIXTURES={path}",
              f"MIMO_V26_WIRED_METADATA_FIXTURE={path / 'tiny-bf16'}"]
+    if args.audio_source is not None:
+        lines.append(f"MIMO_V26_MANAGED_AUDIO_FIXTURE_ROOT={path / 'tiny-bf16'}")
     if any("\n" in line or "\r" in line for line in lines):
         raise ValueError("invalid environment path")
     if args.github_env:

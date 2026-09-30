@@ -11,7 +11,9 @@ adds exact `mimo_v2` ordinary dispatch, not a catalog entry or public alias.
 Normal provider/standalone loading installs bounded visual policies and an
 authenticated audio policy when the required sidecar is present. Invalid
 sidecars refuse; they are not silently treated as absent. Read the actual
-per-model capabilities and format refusals. Speech output, real native paging,
+per-model capabilities and format refusals. The 0.9.13 candidate adds ordinary
+PCM WAV sample rates/widths and stereo input to that audio path; see the
+[encoded-audio contract](../architecture/inference.md#native-mimo-v26-candidate). Speech output, real native paging,
 media-prefix reuse and complete API/numerical/lifecycle qualification are not
 granted by the model name or by a successful benchmark.
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## Release candidate v0.9.13 — MiMo memory admission (not shipped)
+
+- Accept bounded AAC audio in MP4/MOV and mono/stereo PCM8/16/24/32 and Float32 WAV input from 8–192 kHz for MiMo audio. Preserve sample rate and channels for the native resampler, reserve all decoded/resampled samples, and qualify the authenticated path with the genuine audio codec before release.
+- Accept OpenRouter's Boolean `chat_template_kwargs.thinking` alias in the provider and coordinator normalizer, preserving canonical control precedence and reasoning history.
+
+- Budget native MiMo grouped-prefill candidates across the configured concurrency, including fixed target rings, MTP workspace, the engine watermark and minimum useful KV space. Fall back to a smaller or ungrouped profile when the full reservation does not fit.
+- Reduce native MiMo concurrency after memory-grant shrinkage instead of reserving workspace for unavailable slots. Preserve retained engine reservations, enforce the same cap on provider submission, and refuse new loads or reserve raises that would strand an existing native engine below one serveable request.
+- Price native MiMo pixel preparation from actual request geometry rather than the machine-sized configured ceiling. Count video attention scores independently per temporal frame; preserve full lazy-graph, allocator, and native ownership safeguards.
+- Correct native MiMo image/video admission to charge all retained RGB plus the largest sequential decode workspace. Release temporary image/frame objects each iteration and convert video BGRA directly to RGB; video no longer reserves a decoded raster for every unsampled source frame. Preserve transport, pixel, native-workspace, KV and OS memory gates.
+- Align `ProviderCore.version` and the coordinator's latest-provider display fallback at `0.9.13`. The coordinator keeps enforcing reported token budgets and per-model concurrency; no admission bypass or production configuration change is included. Publication remains a separate operation.
+
 ## Unreleased — first-content evidence exploration
 
 - Let an idle, loaded provider compete beside feasible peers after the 5-minute measurement-age threshold, using connection age when measurements are undated. This breaks the evidence-first exclusion of newly connected and long-idle providers without guaranteeing selection or measurement recovery. Hedge and fresh-feasible requests still require feasible evidence.

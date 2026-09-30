@@ -2,6 +2,12 @@
 
 > Last updated: 2026-09-30
 
+The `d-inference` macOS CI lanes pin `blacksmith-12vcpu-macos-27` and select
+Xcode 27 / native SwiftPM before compilation. Unit, SDK, prompt-parity,
+integration and benchmark commands and their existing approval gates are
+preserved. The older-OS signed-artifact smoke alone uses Blacksmith macOS 26.
+See [runner setup and cache isolation](build.md#sdk-27-release-builds-and-caches).
+
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
 lint — and which CI workflow runs what. `make test` runs every unit suite plus
@@ -48,12 +54,31 @@ and speculative padding (the qualified fixture declares 1,024). Set
 `MIMO_V26_SERIAL_LOAD_FIXTURES` to its parent, with the fixture at `tiny-bf16`,
 and `MIMO_V26_SERIAL_NATIVE_TESTS=1`; a symmetric or 128-context fixture does not
 exercise this contract. The default MTP case retains a 512-token prefill chunk
-and 2,048-token maximum work envelope. Its positive local arena is 64 MiB;
+and 2,048-token maximum work envelope. Positive bridge-serving fixtures use
+2 GiB logical contiguous grants to preserve the production minimum KV allowance;
+these grants do not eagerly allocate that amount of device memory. Intentional
+underfunded cases retain their smaller grants:
 a separate 16 MiB case must refuse without executing a native step, creating
 a duplicate bridge reservation or changing process ownership, then retire
-cleanly. The OFF and explicit 128-token interior-publication cases retain their
-16 MiB arenas. Tests assert one target KV/ring charge plus exactly one bounded
+cleanly. The bridge's native concurrency gate now rejects that case before
+SDK submission. Tests assert one target KV/ring charge plus exactly one bounded
 assistant work envelope, not a second legacy per-token assistant charge.
+
+`MiMoMemoryAdmissionTests` covers the production-scale loaded-but-zero-budget
+arithmetic, grant shrink/grow, unknown and overflowing costs, the watermark and
+per-model serviceability floor. It also calls the pinned SDK's
+`MiMoV26PrefillMemoryBudget` with one-versus-four-request workspace cases.
+The isolated native memory-admission CI step runs the real tiny-model
+`MiMoV26ManagedSlotTests.testNativeMemoryAdmission` cases for heartbeat
+shrink/grow, fleet clamping and new-slot refusal, plus
+`MiMoV26NativeLoadTransactionTests.testNativeShutdownActivitySurvivesPendingHostUntilRealQuiescentDrain`
+for pending occupancy and second-request refusal. It reuses the built test
+bundle and generated symmetric fixture; no fake native completion is issued.
+The same step runs
+`MiMoV26StandaloneLifecycleTests.testNativeMemoryAdmissionReserveRaiseUsesWorkspaceFloor`
+against an actual local MiMo owner. It checks that local load/reserve preflights
+retain the engine's fixed workspace floor and leave its live grant unchanged
+when a proposed reserve raise would strand it.
 
 The same native suite holds an actual pre-submit caller while the SDK becomes
 quiescent: whole-Mac forecast invalidation must remain owned until that caller
@@ -329,6 +354,21 @@ versions, existing management, and unavailable enrollment. This checks setup
 routing only; signed Mac App Attest qualification is separate.
 
 Build qualification regressions run in `coordinator/store/app_attest_builds_test.go`, `coordinator/appattest/service/build_qualifications_test.go`, `coordinator/api/app_attest_builds_test.go`, and `coordinator/api/app_attest_builds_auth_test.go`. The route tests validate real ES256 Privy JWTs through the mux, server-attributed audit actors, and rejection of admin-owned inference keys. The real PostgreSQL contract requires a **disposable** `DATABASE_URL` (the harness truncates test tables). Test memory/decorated/Postgres persistence, conflicting identities, publish/revoke races, cache fencing, lease expiry and reload; run the affected Go packages with `-race`. `python3 scripts/test-provider-release-publication.py` tests blocked publication, immutable artifacts, retained-byte R2 staging retries across workflow attempts, literal tag-note preservation and recovery after draft creation, interrupted upload, completed upload and publication failures without credentials or live writes; CI runs it with `scripts/test-provider-release-pipeline.py`. The annotated-tag fixture supplies its own commit/tag identity with global and system Git configuration disabled, so a developer account cannot mask missing CI setup. These checks do not replace final signed-Mac/Apple qualification.
+
+### MiMo encoded audio release regression
+
+The `testNativeAudioRelease` gates
+load the real selected audio codec beside a small synthetic native target,
+use ordinary serving memory policy, send an authenticated streaming WAV request
+with mono/22050 Hz/PCM8/47048 samples and the exact public OpenRouter H.264/AAC
+video (stereo/32000 Hz), require generated tokens and terminal usage, and join
+real ownership before asserting all charges are released.
+Set `MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS=1`, `MIMO_V26_SERIAL_NATIVE_TESTS=1`, and
+`MIMO_V26_MANAGED_AUDIO_FIXTURE_ROOT` to the generated `tiny-bf16` directory.
+Set `MIMO_V26_MANAGED_AAC_VIDEO_FIXTURE` to the verified video file emitted by
+the fixture preparation script.
+Use `prepare-mimo-audio-fixtures.py --cache <cache> --output <new-directory>`;
+its public codec download is about 1.87 GB and is checked against fixed hashes.
 
 ## Provider lifecycle regression checks
 
@@ -2735,3 +2775,10 @@ reviewer coverage, disagreement, attribution, partial failures and deadline
 retention. Release Integrity runs all three suites in normal CI.
 Model findings and live API failures remain non-blocking in the separate
 [advisory review workflow](threat-model-review.md).
+
+### macOS E2E Postgres setup
+
+The integration and benchmark jobs initialize Homebrew before installing
+`postgresql@16` and deriving its binary path with `brew --prefix`. A missing
+Homebrew executable is a runner-setup failure before E2E tests execute. See
+`.github/workflows/integration.yml` and `.github/workflows/benchmarks.yml`.

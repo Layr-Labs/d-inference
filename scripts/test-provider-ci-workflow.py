@@ -28,6 +28,10 @@ MIMO_PROVIDER_PREPARE = ('python3 scripts/prepare-mimo-provider-fixtures.py '
 MIMO_NATIVE_COMMANDS = {
     "Run isolated native MiMo startup gates":
         "../scripts/run-nested-suite.sh 'MiMoV26StandaloneLifecycleTests.test(ActualScannerPreloadStartsListenerWithSameNativeOwner|StartRefusesActualUnpublishedPreloadWithoutReplacingOwner)' --no-parallel",
+    "Run isolated native MiMo memory admission gates":
+        "../scripts/run-nested-suite.sh 'testNativeMemoryAdmission|testNativeShutdownActivitySurvivesPendingHostUntilRealQuiescentDrain' --no-parallel",
+    "Run isolated native MiMo media admission gates":
+        "../scripts/run-nested-suite.sh 'testNativeMediaRelease|testAuthenticatedChatResponsesActuallyRouteEncodedImageThroughNativeBridge|testActualMemoryBackedVideoIndicesAndAuthenticatedNativeRoute|MiMoMediaDecodeMemoryTests' --no-parallel",
     "Run isolated native MiMo complete-prefix gates":
         "../scripts/run-nested-suite.sh 'MiMoV26NativeLoadTransactionTests.testNativeCompletePrefix' --no-parallel",
     "Run isolated native MiMo retained-fault gate":
@@ -41,6 +45,8 @@ LANES = {
 SDK_COMMANDS = {
     "Verify DiffusionGemma artifact and expert reduction":
         "../../scripts/run-nested-suite.sh 'DiffusionGemma(ArtifactFixture|ExpertReduction)Tests' --no-parallel",
+    "Run nested MiMo media decode tests":
+        "../../scripts/run-nested-suite.sh 'MiMoV26(VisualDecodeMemory|EncodedVisualDecoder|EncodedAudioDecoder|EncodedAACAudio|EncodedAudiovisualDecoder)Tests|MiMoV26PixelsTests.test(RGB|Temporal|Invalid|Explicit)' --no-parallel",
     "Run nested paged safety tests":
         "../../scripts/run-nested-suite.sh CBv2PagedSafetyTests",
     "Run nested prompt-hash tests":
@@ -103,7 +109,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         for job_id, lane in LANES.items():
             with self.subTest(lane=lane):
                 job = self.jobs[job_id]
-                self.assertIn("    runs-on: blacksmith-12vcpu-macos-latest", job)
+                self.assertIn("    runs-on: blacksmith-12vcpu-macos-27", job)
                 self.assertNotRegex(job, re.compile(r"^    (needs|if|strategy):", re.MULTILINE), msg=job)
                 self.assertNotIn("continue-on-error:", job)
                 self.assertNotIn("DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST:", job)
@@ -142,7 +148,14 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 self.assertIsNone(field(builds[0], "if"))
                 if lane == "sdk":
                     self.assertEqual(field(builds[0], "timeout-minutes"), "35")
-                self.assertNotIn("actions/cache/restore@", self.jobs[job_id])
+                restores = [step for step in steps if "actions/cache/restore@" in step]
+                if lane == "provider":
+                    self.assertEqual(len(restores), 1)
+                    self.assertEqual(field(restores[0], "id"), "mimo-audio-cache")
+                    self.assertIn("mimo-audio-source-v2-", restores[0])
+                    self.assertGreater(steps.index(restores[0]), steps.index(builds[0]))
+                else:
+                    self.assertEqual(restores, [])
                 self.assertNotIn("spm-v3-", self.jobs[job_id])
 
     def test_provider_entrypoint_and_resource_installer_checks_are_retained(self):
@@ -154,6 +167,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             MIMO_PROVIDER_PREPARE,
             "../scripts/run-provider-tests.sh",
             *MIMO_NATIVE_COMMANDS.values(),
+            'python3 scripts/prepare-mimo-audio-fixtures.py --cache "$RUNNER_TEMP/mimo-audio-source" --output "$RUNNER_TEMP/mimo-audio-fixtures" --github-env "$GITHUB_ENV"',
+            "../scripts/run-nested-suite.sh testNativeAudioRelease --no-parallel",
             "./scripts/test-install-atomic.sh",
         )
         self.assertEqual([run_command(step) for step in steps if field(step, "run")], list(expected))
@@ -273,6 +288,18 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(field(fault, "DARKBLOOM_PREFIX_CACHE", indent=10), "'0'")
         self.assertEqual(field(fault, "DARKBLOOM_PREFIX_CACHE_MEMORY", indent=10), "'0'")
 
+    def test_audio_qualification_uses_real_codec_and_no_skip_gate(self):
+        steps = step_blocks(self.jobs["test-provider"])
+        fixture = next(s for s in steps if field(s, "id") == "mimo-audio-fixtures")
+        self.assertIn("prepare-mimo-audio-fixtures.py", run_command(fixture))
+        self.assertEqual(field(fixture, "if"), READY)
+        gate = next(s for s in steps if field(s, "name", indent=6) == "Run isolated native MiMo audio gate")
+        self.assertIn("testNativeAudioRelease", run_command(gate))
+        self.assertIn("run-nested-suite.sh", run_command(gate))
+        self.assertIn("steps.mimo-audio-fixtures.outcome == 'success'", field(gate, "if"))
+        self.assertEqual(field(gate, "MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS", indent=10), "'1'")
+        self.assertNotIn("continue-on-error:", gate)
+
     def test_rust_cache_is_saved_only_after_successful_parity(self):
         steps = step_blocks(self.jobs["test-provider-parity"])
         parity = next(step for step in steps if run_command(step) == "./scripts/verify-prompt-parity.sh")
@@ -335,7 +362,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         metal_cache = by_id["metallib-cache"]
         self.assertIn("key: ${{ steps.keys.outputs.metallib-key }}", metal_cache)
         self.assertNotIn("restore-keys:", metal_cache)
-        rust_steps = [step for step in steps if "rustup toolchain install" in step
+        rust_steps = [step for step in steps if "install-release-rust.sh" in step
                       or "cargo +1.88.0 clean" in step or field(step, "id", indent=6) == "rust-cache"]
         self.assertEqual(len(rust_steps), 3)
         for step in rust_steps:

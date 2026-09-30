@@ -98,6 +98,7 @@ class NativeGPUTestRouting(unittest.TestCase):
         workflow = workflow.split('  cache-swift:', 1)[0]
         steps = re.findall(r'^      - name: Run isolated native MiMo (\S+) gates?\n(.*?)(?=^      - name:|\Z)',
                            workflow, re.MULTILINE | re.DOTALL)
+        steps = [(name, step) for name, step in steps if name in MIMO_METHODS]
         self.assertEqual(len(steps), 3)
         self.assertEqual({name for name, _ in steps}, set(MIMO_METHODS))
         gates = {}

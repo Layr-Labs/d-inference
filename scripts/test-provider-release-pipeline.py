@@ -24,7 +24,7 @@ class ReleasePipelineTests(unittest.TestCase):
         for name, lane in [('build-provider', 'release'), ('qualify-sdk', 'qualification')]:
             content = job(RELEASE, name)
             self.assertRegex(content, r'(?m)^    needs: resolve-env$')
-            self.assertIn('runs-on: xcode-27-xlarge', content)
+            self.assertIn('runs-on: blacksmith-12vcpu-macos-27', content)
             self.assertIn('lane: ' + lane, content)
             self.assertIn('contents: read', content)
             self.assertNotIn('secrets.', content)
@@ -112,7 +112,7 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn("github.event_name == 'pull_request' || github.ref == 'refs/heads/master'", WARM)
         self.assertIn('lane: [release, qualification]', WARM)
         self.assertIn('max-parallel: 2', WARM)
-        self.assertIn('runs-on: xcode-27-xlarge', WARM)
+        self.assertIn('runs-on: blacksmith-12vcpu-macos-27', WARM)
         self.assertNotRegex(WARM, r'(?m)^  (pull_request_target|workflow_run):')
         for text in [WARM, ACTION]:
             for forbidden in ['secrets.', 'contents: write', 'gh release create', 'aws s3', 'notarytool']:
@@ -129,6 +129,16 @@ class ReleasePipelineTests(unittest.TestCase):
                          'BINARY_HASH=$(shasum -a 256',
                          'Register release with coordinator']:
             self.assertIn(expected, RELEASE)
+
+    def test_audio_native_inference_is_required_in_release_qualification(self):
+        fixture = ACTION.split('- name: Prepare selected MiMo audio fixture\n', 1)[1].split('\n    - name:', 1)[0]
+        self.assertIn("if: inputs.lane == 'qualification'", fixture)
+        self.assertIn("prepare-mimo-audio-fixtures.py", fixture)
+        gate = ACTION.split('- name: Qualify authenticated native MiMo PCM8 audio inference\n', 1)[1].split('\n    - name:', 1)[0]
+        self.assertIn("if: inputs.lane == 'qualification'", gate)
+        self.assertIn("run-nested-suite.sh testNativeAudioRelease --no-parallel", gate)
+        self.assertNotIn("cache-hit", gate)
+        self.assertNotIn("continue-on-error:", gate)
 
     def test_qwen_resource_regression_runs_without_a_cache_hit_bypass(self):
         step = ACTION.split('- name: Test Qwen resources in a relocated app\n', 1)[1].split('\n    - name:', 1)[0]

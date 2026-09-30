@@ -7,6 +7,12 @@ coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
 source-matched `mlx.metallib`), and the console and marketing Next.js UIs.
 `make build` builds those components; the admin UI is built separately below.
 
+The macOS integration and benchmark workflows explicitly initialize Homebrew
+with the pinned `Homebrew/actions/setup-homebrew` action before installing
+`postgresql@16`. The action exposes an existing installation or installs
+Homebrew when the runner image does not provide it; the job no longer depends
+on GitHub-hosted image defaults.
+
 Coordinator CI builds the adversarial-number test once without instrumentation
 for its enforced performance budget, then builds the full suite with race
 detection and atomic coverage. See [numeric parsing tests](test.md#adversarial-numeric-parsing)
@@ -48,6 +54,15 @@ The SDK qualification lane in the shared release-build action provisions the
 same routine fixtures before its watchdog-driven provider tests. Release-only
 builds do not provision test fixtures or enable native qualification.
 
+`scripts/prepare-mimo-audio-fixtures.py` separately downloads hash-pinned public
+metadata, the genuine 1.87 GB MiMo input codec, and the public OpenRouter AAC video fixture. It feeds
+`prepare-mimo-provider-fixtures.py --audio-source` to build a small synthetic
+target with the selected tokenizer/audio IDs. The codec is never synthesized or
+relabelled, and normal native loading verifies it again. CI and SDK release
+qualification cache those immutable inputs and run an isolated authenticated
+PCM8 and AAC-video inference gate. This proves the route with a small target, not the
+full model's output quality or production peak memory.
+
 Production prompt parity compares the generated corpus byte-for-byte with its
 checked-in fixture, including its EOF format with no extra newline.
 
@@ -57,6 +72,12 @@ same checkout before running the [memory and lifecycle gates](test.md).
 See [historical source references](historical-references.md) for local setup.
 
 Native CI test isolation reuses these built test products and their staged
+metallib, including the MiMo memory-admission heartbeat and pending-request gates.
+Those gates use bounded synthetic weights and production memory reserves; their
+2 GiB logical contiguous grants do not preallocate 2 GiB of KV storage. See the
+[memory regression procedure](test.md) for the scope of this evidence.
+
+Other native CI test isolation also reuses the built test products and staged
 metallib; it does not rebuild or download a model. Follow the
 [provider test procedure](test.md) to run GPU-global assertions in separate
 processes with the exclusive opt-in scoped to the named test.
@@ -88,6 +109,29 @@ The [revision runbook](../operations/model-revisions.md) describes its invocatio
 
 ## SDK 27 release builds and caches
 
+All checked-in `d-inference` workflow jobs use Blacksmith runners. macOS build,
+unit/SDK/parity, integration, benchmark, cache, signing and validation jobs pin
+`blacksmith-12vcpu-macos-27` (M4, 12 vCPU, 48 GB); the signed-artifact older-OS
+smoke pins `blacksmith-12vcpu-macos-26`. Linux jobs retain
+`blacksmith-4vcpu-ubuntu-2404`. The macOS 27 image is currently a public beta;
+see [Blacksmith's runner catalog](https://docs.blacksmith.sh/blacksmith-runners/overview).
+This migration is limited to this repository; SDK repository workflows are separate.
+
+`prepare-provider-release-toolchain.sh` resolves the image-selected Xcode via
+`xcode-select`/`xcrun` after checkout and refuses any SDK other than 27.0 or Apple
+Swift other than 6.4. Its repository wrapper forces native SwiftPM and the same
+SDK for build/test invocations. CI fingerprints the selected compiler, SDK and
+wrapper so it cannot reuse incompatible prior-image products. Pinned Python
+3.12.10, checksum-verified Rustup 1.28.2/Rust 1.88.0 (where needed), and CMake
+3.31.12 supply tools missing from the image. Metal caches include the CMake
+recipe/identity; changing generators cannot reuse a stale metallib.
+
+GitHub Actions remains the orchestrator and artifact store. Protected signing
+and publication jobs retain their existing approvals, credential scopes and
+same-run artifact checks. Existing runs keep the workflow from their source
+commit: merging runner changes does not move an already-started release.
+
+
 Serving performance work changes the pinned CBv2 library as well as the
 provider. Initialize the recorded submodules before building, and retain
 source-matched Metal libraries for benchmarks. The
@@ -108,7 +152,7 @@ Archived raw-corpus replay is opt-in; see the
 [local evidence checks](serving-performance-qualification.md#verify-local-evidence).
 
 The release pipeline runs optimized products and SDK qualification on separate
-`xcode-27-xlarge` runners. Both call `.github/actions/provider-release-build/action.yml`;
+`blacksmith-12vcpu-macos-27` runners. Both call `.github/actions/provider-release-build/action.yml`;
 only the optimized lane transfers an unsigned app and its file inventory to
 signing. All binaries, SwiftPM resource bundles and the source-matched Metal
 library travel together. Signing verifies the same-run artifact's source commit,

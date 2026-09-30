@@ -172,6 +172,7 @@ extension ProviderLoop {
     private struct ExistingSlotGrant {
         let slot: EngineV2KVSizing.ResliceSlot
         let previousGrant: Int
+        let minimumGrantBytes: Int
         let bridge: EngineV2Bridge
     }
 
@@ -230,7 +231,9 @@ extension ProviderLoop {
             fleetKVBudgetBytes: fleetKVBudgetBytes(
                 extraWeightBytes: 0, activationReserveBytes: reserveBytes,
                 excludingModelIDs: excludingModelIDs))
-        return EngineV2KVSizing.resliceMeetsServiceabilityFloor(targets, fixedCarveBytes: [:])
+        return EngineV2KVSizing.resliceMeetsServiceabilityFloor(
+            targets, minimumGrantBytes: Dictionary(uniqueKeysWithValues:
+                survivors.map { ($0.slot.modelId, $0.minimumGrantBytes) }))
     }
 
     /// Existing v2 slots eligible for re-slicing: live (not mid-unload)
@@ -256,6 +259,7 @@ extension ProviderLoop {
                         fp16KVBytesPerToken: slot.sizing.fp16KVBytesPerToken,
                         maxContextLength: slot.sizing.maxContextLength),
                     previousGrant: currentGrant,
+                    minimumGrantBytes: await slot.engineV2.minimumServiceableNativeGrantBytes(),
                     bridge: slot.engineV2))
         }
         return existing
@@ -389,13 +393,15 @@ extension ProviderLoop {
             existing: existing.map(\.slot),
             newcomer: newcomer,
             fleetKVBudgetBytes: fleetBudget)
+        let minimumGrants = Dictionary(uniqueKeysWithValues:
+            existing.map { ($0.slot.modelId, $0.minimumGrantBytes) })
 
         // Serviceability floor (fail loud): a slice that would leave ANY
         // slot below the minimum serveable grant is refused outright —
         // thrashing every co-resident model below serviceability serves
         // no one. ERROR telemetry + 503 (the coordinator reroutes).
         if !EngineV2KVSizing.resliceMeetsServiceabilityFloor(
-            targets, fixedCarveBytes: [:]), prepared.assistant != nil
+            targets, minimumGrantBytes: minimumGrants), prepared.assistant != nil
         {
             logger.warning(
                 "mtp: model=\(modelId) fallback reason="
@@ -415,13 +421,13 @@ extension ProviderLoop {
                 fleetKVBudgetBytes: fleetBudget)
         }
         guard EngineV2KVSizing.resliceMeetsServiceabilityFloor(
-            targets, fixedCarveBytes: [:])
+            targets, minimumGrantBytes: minimumGrants)
         else {
             let floorGb = String(
                 format: "%.1f",
                 Double(EngineV2KVSizing.minimumServiceableGrantBytes) / (1024 * 1024 * 1024))
-            let message = "loading '\(modelId)' would re-slice some model's KV grant below "
-                + "the \(floorGb) GB serviceability floor "
+            let message = "loading '\(modelId)' would leave a model without its fixed request "
+                + "workspace, admission watermark and \(floorGb) GB minimum KV allowance "
                 + "(fleet KV budget \(fleetBudget) B across \(existing.count + 1) slots) — refused"
             EngineV2Factory.emitRefusalTelemetry(
                 modelId: modelId,

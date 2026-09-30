@@ -335,6 +335,41 @@ final class MiMoV26StandaloneLifecycleTests: XCTestCase {
         witness.dropTransaction()
     }
 
+    func testNativeMemoryAdmissionReserveRaiseUsesWorkspaceFloor() async throws {
+        let (server, id, registry) = try await makeServer(mtp: .on)
+        do {
+            try await server.ensureModelLoaded(id)
+            let entries = await server.existingSlotGrants(excludingModelId: "")
+            let entry = try XCTUnwrap(entries.first { $0.slot.modelId == id })
+            let minimum = await entry.bridge.minimumServiceableNativeGrantBytes()
+            XCTAssertEqual(entry.minimumGrantBytes, minimum)
+            XCTAssertGreaterThan(minimum, Int(UnifiedMemoryCap.minimumLoadKVBytes))
+            XCTAssertTrue(StandaloneServer.resliceKeepsSlotsServiceable([id: minimum], existing: entries))
+            XCTAssertFalse(StandaloneServer.resliceKeepsSlotsServiceable([id: minimum - 1], existing: entries))
+
+            let before = await entry.bridge.engineKVBytesCapacity()
+            let withoutReserve = await server.fleetKVBudgetBytes(extraWeightBytes: 0, activationReserveBytes: 0)
+            guard withoutReserve > UInt64(minimum) else {
+                XCTFail("fixture host cannot fund the native minimum")
+                await server.stop()
+                return
+            }
+            let fits = await server.reserveKeepsSurvivorsServiceable(
+                reserveBytes: withoutReserve - UInt64(minimum))
+            let strands = await server.reserveKeepsSurvivorsServiceable(
+                reserveBytes: withoutReserve - UInt64(minimum - 1))
+            XCTAssertTrue(fits)
+            XCTAssertFalse(strands, "a grant above 1 GiB can still strand native fixed workspace")
+            let after = await entry.bridge.engineKVBytesCapacity()
+            XCTAssertEqual(after, before, "reserve preflight must not mutate the live grant")
+            await server.stop()
+            XCTAssertTrue(registry.retainedTransactionIDs.isEmpty)
+        } catch {
+            await server.stop()
+            throw error
+        }
+    }
+
     func testActualScannerPreloadStartsListenerWithSameNativeOwner() async throws {
         let witness = NativeStandaloneWitness()
         let (server, id, registry) = try await makeServer(witness: witness, scannerQuoted: true)

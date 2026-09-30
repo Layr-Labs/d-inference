@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-29
+> Last updated: 2026-09-30
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -660,7 +660,7 @@ flowchart LR
 | Media | Explicit decoded visual/audio profiles bind the real processor/codec, load generation and reservation; media requests stay target-only even when a text assistant is installed | `libs/mlx-swift-lm/Libraries/MLXVLM/Models/MiMo/MiMoV26LoadedModel.swift`; `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26ServingLoad.swift` |
 | Prefix | Opt-in text-only COMPLETE checkpoints bind the exact store, observed dtypes, assistant codec, process owner and loaded validator; async store work participates in retirement | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/EngineV2SlotFactory+MiMoPrefix.swift` (`prepareNativeMiMoPrefix`); `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2NativeCompletePrefixWork.swift` |
 | Native paging / generic fast paths | Separate opt-in target-only or explicit serial-MTP paging binds the actual asymmetric pool, bank and process owner. Authenticated text-prefix composition restores target pages and assistant state before publication; rectangular verification and paged media remain refused. Generic prefix reuse, compiled decode and packed-prefill flags remain disabled | `libs/mlx-swift-lm/Libraries/MLXVLM/Models/MiMo/MiMoV26NativePagedProducer.swift` (`makeNativePagedExecutionResources`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift` (`makeNativeMiMoBundle`) |
-| Fast prefill | Native-rounded NAX attention and admitted query-block grouping default on where eligible. The provider requests larger budgeted solo-text stripes, preserving explicit overrides and fallback. Runtime and matched-speed qualification remain separate | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26PrefillProfile.swift`; `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26PrefillPolicy.swift`; [SDK policy](../../libs/mlx-swift-lm/docs/mimo-v26/FAST-PREFILL-POLICY.md) |
+| Fast prefill | Native-rounded NAX attention and admitted query-block grouping default on where eligible. The provider budgets fixed workspace for all configured concurrent requests, target rings, the watermark and minimum KV allowance before choosing a larger solo-text stripe. Unaffordable candidates retain a narrower or ungrouped profile; actual request charges and explicit overrides remain intact. Runtime and matched-speed qualification remain separate | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26PrefillProfile.swift`; `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26PrefillMemoryBudget.swift`; [SDK policy](../../libs/mlx-swift-lm/docs/mimo-v26/FAST-PREFILL-POLICY.md) |
 | Public availability | Exact `mimo_v2` is admitted by the ordinary allowlist; normal callers select bounded visual/audio policies through MiMoV26OrdinaryServingPolicy. This does not create a catalog entry or qualify all endpoints | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2SupportedModels.swift` (`isSupported`); `provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift`; `provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift` |
 
 The native contiguous and paged factories use the same artifact-bound serving
@@ -692,12 +692,65 @@ lifecycle/API qualification are separate gates; a helper or component result
 does not certify them. `input_audio` remains excluded from text-only cache
 planning and is not treated as vision.
 
+MiMo encoded audio accepts RIFF/WAVE integer PCM8/16/24/32 and IEEE Float32,
+mono or stereo, at 8–192 kHz. The transport decoder converts interleaved samples
+to planar Float channels and preserves the source rate; the existing native
+frontend resamples each channel to 24 kHz before averaging channels. PCM8 is
+unsigned and centered at 128. Float32 signed zero and finite values are preserved.
+Byte, frame, channel, sample-rate and working-memory limits are checked before
+allocation. Provider admission counts every channel's decoded samples and
+bounds the possible 8-to-24-kHz expansion; the native plan charges the actual
+resampling geometry. MP3/compressed audio and WAVE_FORMAT_EXTENSIBLE are not
+accepted by this WAV path. A single AAC track in MP4/MOV is decompressed to
+bounded Float PCM at its source rate/channels by `MiMoV26EncodedAACAudio`; the
+native frontend then resamples and mixes. The decoder honors one container trim,
+including AAC priming, and validates contiguous output timing and the complete
+presented sample count. Multiple tracks, gaps and retiming remain refused.
+
+MiMo accepts the Boolean `chat_template_kwargs.thinking` alias used by OpenRouter.
+`reasoning.enabled` takes precedence, followed by top-level `enable_thinking`,
+kwargs `enable_thinking`, then kwargs `thinking`. Every supplied value is type
+checked, including shadowed aliases. `MiMoV26TemplateFix` and the coordinator's
+`mimo_v26::additional_context` implement the same normalization. Existing
+reasoning history remains intact; this alias adds no granular effort or
+reasoning-budget support.
+
 Encoded MiMo visual ingress passes the existing transport ceiling
 `MediaIngest.maxMediaDecodedBytes` to the SDK decoder's `maximumEncodedBytes`.
 `MiMoV26EncodedMediaIngress.decode` enforces the same bounded input contract
 before ImageIO parsing or AVFoundation asset reads; SDK callers without a
 separate ceiling default to their declared working-byte limit. Raster/frame
 and owned-reservation checks remain additional gates.
+
+In 0.9.13, native MiMo's decode charge is **retained owners and RGB results +
+the largest sequential decode transient**. `MiMoV26MediaDecodeMemory` sums
+retained bytes and takes the maximum scratch from the SDK's
+`MiMoV26VisualDecodeMemory`. Images retain 12 bytes/pixel (planar Float RGB) and
+allow 20 bytes/pixel + 1 MiB scratch. Video retains only sampled Float RGB,
+encoded ownership and bounded frame/control metadata; its transient is one
+32 bytes/pixel + 1 MiB allowance, not that amount times every source frame.
+ImageIO and each AVAssetReader iteration drain an autorelease pool. Video BGRA
+is read directly under a read-only buffer lock, with actual row-stride checks,
+into the retained Float output. No extra Data/CGImage/CFData raster chain is made.
+A 300-frame 1080p clip sampled to 20 frames consequently needs about 0.53 GiB
+of visual decode allowance, excluding encoded bytes, rather than about 19 GiB.
+
+Native preparation also uses the actual pixel working-byte calculation shared
+with `MiMoV26Pixels.prepare`, rather than reserving
+`limits.pixels.maximumWorkingBytes` (a ceiling that can approach physical RAM).
+The maximum actual pixel workload remains charged alongside conservative
+retained decoded/patch/feature amounts. Video attention scores are bounded per
+temporal grid (`gridT * (gridH * gridW)^2 * queryHeads * 16`), matching the
+separate frame attention calls. The lazy graph's full depth multiplier and
+allocator node rounding remain charged.
+
+This is application-owned decode accounting, not a claimed bound on private
+AVFoundation codec pools. The same process ledger, system headroom, activation
+reserve, native feature/KV charge, limits and ownership-until-retirement gates
+remain mandatory. Pixel preprocessing separately prices every retained RGB
+input and output patch. Base64 transport size is not used as KV tokens; its
+bounded encoded owners/copies remain charged before decoding. Audio and
+unsupported representation policies are unchanged.
 
 The SDK's `MemoryBackedVideoAsset` derives both its resource-loader type and
 in-memory URL suffix from the validated container. QuickTime uses `.mov`, MP4

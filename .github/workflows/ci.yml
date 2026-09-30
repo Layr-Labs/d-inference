@@ -62,7 +62,7 @@ jobs:
 
   test-coordinator:
     name: Coordinator Tests
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-16vcpu-ubuntu-2404
     services:
       postgres:
         image: postgres:16
@@ -100,6 +100,7 @@ jobs:
           test -n "$packages"
           # shellcheck disable=SC2086
           python3 scripts/run-coordinator-tests.py --race \
+            --jobs 8 \
             --coverprofile "$RUNNER_TEMP/coverage.out" \
             --output-dir "$RUNNER_TEMP/coordinator-tests" \
             $packages

@@ -133,6 +133,7 @@ extension EngineV2Bridge {
             await bridge.completeTransferredPreSubmitRetirement(
                 requestID: requestID,
                 engineID: engineID,
+                prefillReceipt: prefillReceipt,
                 completion: completion,
                 sharedKVReserved: sharedKVReserved,
                 prefixCacheReceiptID: prefixCacheReceiptID,
@@ -155,6 +156,7 @@ extension EngineV2Bridge {
     private func completeTransferredPreSubmitRetirement(
         requestID: String,
         engineID: CBv2RequestID,
+        prefillReceipt: EnginePrefillReceipt,
         completion: Int,
         sharedKVReserved: Bool,
         prefixCacheReceiptID: CBv2RequestID?,
@@ -163,6 +165,7 @@ extension EngineV2Bridge {
         usageSignal: EngineV2RequestUsageSignal?,
         failure: PrefixCacheLookupFailureClass
     ) async {
+        consumePrefillReceipt(id: requestID, receipt: prefillReceipt)
         recordGenerationWork(completion: completion)
         await releasePreSubmitResources(
             requestID: requestID,

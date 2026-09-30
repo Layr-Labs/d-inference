@@ -23,10 +23,12 @@ extension EngineV2Bridge {
         guard nativeMediaBootstrapRequestID == nil,
             nextNativeMediaBootstrapAt.map({ now >= $0 }) ?? true else { return .init() }
         nativeMediaBootstrapRequestID = requestID
+        nativeMediaBootstrapLearned = false
         nextNativeMediaBootstrapAt = now + NativeMediaPrefillRates.maximumAge
         // releaseServiceAllowance clears the in-flight owner only after
         // pre-submit rejection or real engine retirement, including the
-        // transferred cancellation path. The cooldown survives that release.
+        // transferred cancellation path. Failed/ineligible attempts keep the
+        // cooldown; a valid observation clears it only at real retirement.
         return .init(bootstrap: .init(promptTokens: promptTokens,
             validUntil: evidence.validUntil, evidenceGuard: evidence.guardToken))
     }

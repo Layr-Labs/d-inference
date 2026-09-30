@@ -225,8 +225,10 @@ When that table has no applicable observation, one owned native request can
 gather evidence under the same absolute first-content deadline. The SDK checks
 physical capacity, exactly one scheduler row, no in-flight step, no decode or
 mixed work, no adopted prefix, and the live whole-Mac guard. The provider allows
-at most one such request until actual retirement and one attempt per 120 seconds
-per engine. Busy, unowned, stale-posture or cooldown cases keep a capacity refusal;
+at most one such request until actual retirement. Failed or ineligible attempts
+back off for 120 seconds per engine; an eligible target-prefill sample releases
+that backoff only at retirement, so new shapes can build a fresh observed range.
+Busy, unowned, stale-posture or cooldown cases keep a capacity refusal;
 no deadline, memory, cancellation or trust check is disabled. The explicit SDK
 `unmeasuredNativeMedia` result records bounded work with unknown service time,
 not a zero-time prediction. Cancellation transfers retain the bootstrap owner

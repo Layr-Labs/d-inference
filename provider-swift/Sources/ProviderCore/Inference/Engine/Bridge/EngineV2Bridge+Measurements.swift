@@ -44,7 +44,10 @@ extension EngineV2Bridge {
                 usage.timing.packedPrefillChunks == 0,
                 let epoch = sample.nativeMediaRateEpoch,
                 serviceBudget?.currentDeadlineRateEpoch() == epoch {
-                nativeMediaPrefillRates.observe(tokens: work, rate: tps, epoch: epoch, at: sample.at)
+                if nativeMediaPrefillRates.observe(tokens: work, rate: tps, epoch: epoch, at: sample.at),
+                    nativeMediaBootstrapRequestID == id {
+                    nativeMediaBootstrapLearned = true
+                }
             }
             return
         }

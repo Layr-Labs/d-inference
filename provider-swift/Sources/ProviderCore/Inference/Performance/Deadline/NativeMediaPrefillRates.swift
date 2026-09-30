@@ -8,6 +8,9 @@ struct NativeMediaRateEvidence: Sendable {
     let guardToken: CBv2FirstContentEvidenceGuard
     let validUntil: ContinuousClock.Instant
 
+    // validUntil bounds use of the admission snapshot, not sample duration.
+    // A long interval remains measurable only while fresh observations keep
+    // the SAME posture epoch alive and ownership never invalidates its guard.
     func completedEpoch() -> UUID? {
         guard guardToken.isValid else { return nil }
         return rate.currentEpoch()
@@ -28,11 +31,12 @@ struct NativeMediaPrefillRates {
     static let maximumAge: Duration = .seconds(120)
     private static let samplesPerBand = 32
 
+    @discardableResult
     mutating func observe(tokens: Int, rate: Double, epoch: UUID,
-        at observedAt: ContinuousClock.Instant, now: ContinuousClock.Instant = .now) {
+        at observedAt: ContinuousClock.Instant, now: ContinuousClock.Instant = .now) -> Bool {
         guard tokens > 0, rate.isFinite, rate > 0,
             rate <= EngineV2Bridge.maxPlausiblePrefillTps,
-            now >= observedAt, now - observedAt <= Self.maximumAge else { return }
+            now >= observedAt, now - observedAt <= Self.maximumAge else { return false }
         let key = EnginePerformanceMeasurements.bucket(tokens)
         var retained = (samples[key] ?? []).filter {
             $0.epoch == epoch && now >= $0.at && now - $0.at <= Self.maximumAge
@@ -40,6 +44,7 @@ struct NativeMediaPrefillRates {
         retained.append(Sample(epoch: epoch, tokens: tokens, rate: rate, at: observedAt))
         retained.sort { $0.at < $1.at }
         samples[key] = Array(retained.suffix(Self.samplesPerBand))
+        return true
     }
 
     func observation(tokens: Int, evidence: NativeMediaRateEvidence,

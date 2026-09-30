@@ -25,6 +25,10 @@ starting a localhost server. `MutableInputKernelTests` and
 exercise declared Metal writes, alias ownership and export/import. CI runs each
 selected suite through the nonzero/no-skip wrapper
 (`.github/workflows/ci.yml`, `scripts/run-nested-suite.sh`).
+The wrapper passes the complete filter unchanged to Swift and uses a fixed
+temporary-file prefix, so long alternations and suite/test selectors cannot
+exceed filesystem name limits. `scripts/test-provider-ci-workflow.py` exercises
+that path alongside the nonzero-test, no-skip and failure-exit checks.
 
 MiMo source and tests are grouped under their existing modules' `MiMo/`
 folders; Swift target names are unchanged. The SDK's

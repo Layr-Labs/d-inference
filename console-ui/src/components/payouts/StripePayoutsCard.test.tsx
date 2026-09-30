@@ -12,4 +12,12 @@ describe("bank payout migration", () => {
     fireEvent.click(screen.getByRole("button", { name: "Update bank details" }));
     expect(onboard).toHaveBeenCalledOnce();
   });
+  it("keeps an existing confirmation accessible after bank setup is reset", () => {
+    const open = vi.fn();
+    render(<StripePayoutsCard status={{ configured: true, has_account: false, status: "pending", payout_rail: "global", payouts_available: false }} confirmationPending withdrawals={[]} balanceMicroUsd={0} onboardLoading={false} selectedCountry="" onCountryChange={vi.fn()} onOnboard={vi.fn()} onOpenWithdraw={open} title="Bank withdrawals" noun="earnings" icon={null} className="" />);
+    fireEvent.click(screen.getByRole("button", { name: "Check withdrawal" }));
+    expect(open).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("button", { name: "Link bank via Stripe" })).not.toBeInTheDocument();
+  });
+
 });

@@ -98,7 +98,7 @@ export function StripePayoutsCard({
         </p>
       )}
 
-      {!status?.has_account ? (
+      {!status?.has_account && !confirmationPending ? (
         <>
           <p className="text-sm text-text-secondary mb-4 leading-relaxed">
             Set up a bank account to withdraw your {noun}.
@@ -124,11 +124,11 @@ export function StripePayoutsCard({
         </>
       ) : ready ? (
         <>
-          <PayoutDestinationRow
+          {status && <PayoutDestinationRow
             status={status}
             onOpenDashboard={onOpenDashboard}
             dashboardLoading={dashboardLoading}
-          />
+          />}
           <button
             onClick={onOpenWithdraw}
             disabled={!canWithdraw}

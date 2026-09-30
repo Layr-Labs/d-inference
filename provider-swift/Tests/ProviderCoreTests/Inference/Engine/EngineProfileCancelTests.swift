@@ -705,11 +705,10 @@ struct DeadlineDecisionBridgeTests {
                 prefillTokens: 3, decodeTokens: 0, scheduledSteps: 1, mixedSteps: 0),
             serviceDuration: .milliseconds(1)))
         let profile = RequestProfileBuilder()
-        // Leave setup time for the full provider suite's concurrent GPU/model
-        // work. The engine fixture itself waits until this real deadline has
-        // expired; no separate submit task or fixed-count yield loop competes
-        // to observe entry during a one-second window.
-        let deadline = FirstContentDeadline(relativeBudgetMilliseconds: 30_000)
+        // This test runs in a fresh, quiet process. The controlled engine waits
+        // for the real deadline, retaining the accepted-before-expiry ordering
+        // without spending 30 seconds accommodating unrelated suite work.
+        let deadline = FirstContentDeadline(relativeBudgetMilliseconds: 2_000)
         await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
             _ = try await submitControlled(
                 bridge: bridge, requestId: "accepted-expired", profile: profile, deadline: deadline)

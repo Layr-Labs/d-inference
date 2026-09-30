@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-29 · commit `47915a198`
+> Last updated: 2026-09-29 · commit `e351f359c`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -125,6 +125,40 @@ keys or notarized bundles.
 
 See the [release cache procedure](../operations/provider-release.md#prepare-and-check-release-caches)
 for first-run costs and rerun behavior.
+
+## Parallel Provider CI Builds
+
+The ordinary CI workflow runs provider tests, nested SDK correctness gates, and
+production prompt parity as three independent macOS jobs. Each job owns a
+separate checkout, build directory, GPU, and unified-memory allocator. No job
+waits for another job's test outcome. The nested SDK job still builds all of its
+test products; a provider test build does not compile a dependency's tests.
+
+`.github/actions/provider-ci-build/action.yml` builds each lane using
+`scripts/provider-ci-cache.py` (`keys`). Provider debug tests, SDK debug tests,
+and Swift/Rust parity have separate cache prefixes bound to the actual compiler,
+SDK, architecture, checkout path, recursive dependency pins, and CI build recipe.
+Each source commit names a generation. Content-verified timestamp restoration
+reuses only unchanged tracked source files; changed files retain fresh timestamps.
+Every cache hit still runs the full build and runtime-resource staging commands.
+
+The source-matched Metal cache is separate and shared only across compatible
+lanes. Its key binds the native MLX pin, Xcode/SDK identity, helper contract, and
+deployment target. Restored runtime bundles and metallibs are discarded before
+building; `scripts/stage-test-metallib.sh` invokes the validating source builder
+and stages the library beside the actual test runner and inside its resource
+bundle. A cache hit is not permission to skip these checks.
+
+Successful build jobs save their debug objects before assertions run, so an
+unrelated test failure does not force a complete rebuild on the next attempt.
+The parity job cleans local Rust products and saves its Cargo cache only after
+the real tokenizer/vector/load-proof script succeeds. The push-only release
+cache job no longer duplicates the SDK debug-test build. These caches contain
+unsigned build products, not release artifacts or signing material.
+
+Parallel speedup requires capacity for three concurrent macOS runners. More
+jobs queued behind a provider quota do not shorten the critical path. See
+[provider CI tests](test.md#parallel-provider-ci) for execution gates and validation.
 
 ## Prerequisites
 

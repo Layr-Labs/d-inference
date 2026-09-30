@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-29 · commit `f4447e709`
+> Last updated: 2026-09-29 · commit `e351f359c`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -936,6 +936,38 @@ nonempty/no-skips guard.
 A general-suite failure does not silence the isolated gates. Isolation keeps the
 stage-deadline assertion at the production budget without unrelated suite load;
 it does not change an assertion or runtime resource-selection rule.
+
+The accepted-then-expired engine case also runs in a fresh process. Its controlled
+engine admits before a real two-second deadline and returns after that deadline;
+the original accepted/expired profiling and cancellation assertions remain. This
+removes the former 30-second allowance for unrelated suite load, not a production
+deadline. It remains subject to the isolated nonempty/no-skips gate.
+
+### Parallel Provider CI
+
+`.github/workflows/ci.yml` runs three independent jobs on dedicated macOS runners:
+
+| Job | Coverage |
+|---|---|
+| Provider Tests | Full provider test products, unchanged serial general suite and fresh-process isolated gates, packaged-resource/authentication/installer checks |
+| Provider SDK Tests | Full nested SDK test products, DiffusionGemma, paged safety/hash/eligibility/backend/kernel/KV-sharing gates, and every required Nemotron/onboarding selector |
+| Provider Prompt Parity | Real pinned tokenizer/template vectors, Swift/Go/Rust comparison, cold-load singleflight, and the release sidecar's sustained load proof |
+
+No numerical matrix, exclusive allocator assertion, or internal controlled
+concurrency is removed. Tests sharing MLX globals remain serial within a process.
+The jobs parallelize across machines rather than competing for one GPU. SDK gates
+run after earlier assertion failures when their build and Metal setup succeeded;
+missing prerequisites fail the lane instead of silently passing a skipped gate.
+Public MiMo metadata is prepared with the existing checksum-pinned helper before
+provider/parity execution. Native payload fixtures remain a separate prerequisite;
+missing native inputs are not converted into skips or counted as speedups.
+
+Run `python3 scripts/test-provider-ci-workflow.py`,
+`python3 scripts/test-provider-ci-cache.py`, and
+`python3 scripts/test-native-gpu-ci.py` for offline checks of job independence,
+exact gate membership, failure propagation, compatible caching, and exclusivity.
+Use the existing local `make provider-test` command for the full provider suite;
+do not run two Swift builds against one `.build` directory concurrently.
 
 `scripts/run-exclusive-native-gpu-test.sh` accepts only the reviewed allocator
 and batch-composition test functions. It sets
@@ -2021,7 +2053,7 @@ producing 154 token-array and scoped-hash comparisons. The common corpus uses
 histories and reasoning settings accepted by each family; family-specific argument and
 Harmony regressions remain in the provider's focused test suites.
 
-**Run the gate** (what CI's Provider Tests job runs; needs Go, `cargo +1.88.0`,
+**Run the gate** (what CI's Provider Prompt Parity job runs; needs Go, `cargo +1.88.0`,
 Swift and `jq`):
 
 ```bash
@@ -2095,7 +2127,7 @@ token IDs are accepted.
 
 | Workflow | Trigger | Jobs (name → what runs) |
 |---|---|---|
-| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — `scripts/check-release-version.sh`, `scripts/sync-install-embed.sh check`, `scripts/test-prod-env-refresh.sh` · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race -coverprofile=… -covermode=atomic` over every package except the top-level `e2e` integration package (`coordinator/internal/e2e` and `e2e/testbed/...` run) with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence; total statement coverage in the job summary, `coverage.out` kept 14 days as the `coordinator-coverage` artifact · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh`, then `cargo llvm-cov` (0.9.1) line coverage in the job summary · **Provider Tests** (macOS 12-vcpu) — `swift build --build-tests`, metallib staging, `swift test`, `verify-prompt-parity.sh`, six nested suites via `run-nested-suite.sh` (each its own step, `if: !cancelled()`), `test-install-atomic.sh` · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper`, warms the SwiftPM cache · **Console UI Lint & Build** — Node 22, `npm ci`, `npx eslint src/`, `npm test` (vitest run), `npm run build` |
+| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — release/script checks and offline provider CI/cache/routing guards · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race -coverprofile=… -covermode=atomic` over every package except the top-level `e2e` integration package (`coordinator/internal/e2e` and `e2e/testbed/...` run) with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence; total statement coverage in the job summary, `coverage.out` kept 14 days as the `coordinator-coverage` artifact · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh`, then `cargo llvm-cov` (0.9.1) line coverage in the job summary · **Provider Tests** (macOS 12-vcpu) — full debug test build, matched Metal, serial/fresh-process provider tests and installer checks · **Provider SDK Tests** (independent macOS 12-vcpu) — full nested test build and all required numerical/SDK selectors through checked wrappers · **Provider Prompt Parity** (independent macOS 12-vcpu) — `verify-prompt-parity.sh`, pinned Swift/Go/Rust vectors and sustained sidecar load proof · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper` · **Console UI Lint & Build** — Node 22, `npm ci`, lint, vitest, and Next.js build |
 | [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 75 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (expected red, `continue-on-error`) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`) |
 | [`.github/workflows/benchmarks.yml`](../../.github/workflows/benchmarks.yml) | PR, gated by the `benchmarks` environment (manual approval) | **E2E Benchmarks** — `go test ./e2e/ -count=1 -v -timeout 40m -p=1 -run 'TestBenchmark'`, posts `BENCHMARK_MD_PATH` as a PR comment |
 | [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml) | tag `v*`, manual | Provider release; see [`../operations/provider-release.md`](../operations/provider-release.md) |

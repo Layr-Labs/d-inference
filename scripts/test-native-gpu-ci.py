@@ -78,7 +78,8 @@ class NativeGPUTestRouting(unittest.TestCase):
         self.assertEqual([row['filter'] for row in calls], [
             'general', 'emptyNativePoolTeardownUsesActualRetiredAdapter',
             'processLedgerCannotCombineOldUsageWithNewMaterializationCredit',
-            'defaultApplyProjectsSettings', 'stageDelta', 'SpecDecHuggingFaceTests', MEMORY])
+            'defaultApplyProjectsSettings', 'stageDelta', 'SpecDecHuggingFaceTests',
+            'acceptedThenExpired', MEMORY])
         skip = calls[0]['args'][calls[0]['args'].index('--skip') + 1]
         self.assertIn('ProcessMemoryNativeIntegrationTests', skip)
         self.assertIn('SpecDecHuggingFaceTests', skip)
@@ -98,15 +99,16 @@ class NativeGPUTestRouting(unittest.TestCase):
     def test_general_failure_does_not_silence_provider_isolated_gates(self):
         result, calls = self.run_script('run-provider-tests.sh', FAKE_SWIFT_FAIL='general')
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(len(calls), 7)
+        self.assertEqual(len(calls), 8)
         self.assertEqual(calls[-1]['filter'], MEMORY)
 
     def test_huggingface_isolation_failure_does_not_silence_exclusive_gate(self):
         result, calls = self.run_script(
             'run-provider-tests.sh', FAKE_SWIFT_FAIL='SpecDecHuggingFaceTests')
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual([row['filter'] for row in calls[-2:]], ['SpecDecHuggingFaceTests', MEMORY])
-        self.assertIsNone(calls[-2]['exclusive'])
+        self.assertEqual([row['filter'] for row in calls[-3:]],
+                         ['SpecDecHuggingFaceTests', 'acceptedThenExpired', MEMORY])
+        self.assertIsNone(calls[-3]['exclusive'])
         self.assertEqual(calls[-1]['exclusive'], '1')
 
     def test_ordinary_kernel_failure_does_not_silence_composition_gate(self):

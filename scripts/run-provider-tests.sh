@@ -12,6 +12,7 @@ isolated_filters=(
   defaultApplyProjectsSettings
   stageDelta
   SpecDecHuggingFaceTests
+  acceptedThenExpired
 )
 isolated_pattern=$(IFS='|'; printf '%s' "${isolated_filters[*]}")
 isolated_pattern="ProcessMemoryNativeIntegrationTests|${isolated_pattern}"

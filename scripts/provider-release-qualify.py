@@ -68,6 +68,8 @@ IDENTITY_KEYS = [
     'code_directory_hash', 'source_commit', 'ci_run_id',
 ]
 
+ACCOUNTING_DEADLINE_SECONDS = 120
+
 LIVE_REQUIRED_ENV = [
     'DARKBLOOM_QUALIFY_COORDINATOR', 'DARKBLOOM_QUALIFY_PROVIDER_ID',
     'DARKBLOOM_QUALIFY_API_KEY', 'DARKBLOOM_QUALIFY_MODEL',
@@ -243,6 +245,15 @@ def check_metallib_digest(ctx):
     return 'passed', computed
 
 
+def _parse_codesign_d(text):
+    cd_match = re.search(r'CandidateCDHashFull sha256=([0-9a-fA-F]+)', text)
+    team_match = re.search(r'TeamIdentifier=(\S+)', text)
+    exe_match = re.search(r'^Executable=(.+)$', text, re.MULTILINE)
+    return {'cdhash': cd_match.group(1) if cd_match else None,
+            'team_id': team_match.group(1) if team_match else None,
+            'executable': exe_match.group(1).strip() if exe_match else None}
+
+
 def get_codesign_d(ctx):
     if ctx.get('codesign_d') is not None:
         return ctx['codesign_d']
@@ -250,11 +261,7 @@ def get_codesign_d(ctx):
     if proc.returncode != 0:
         result = {'error': f'codesign -d exited {proc.returncode}: {(proc.stderr or "").strip()}'}
     else:
-        text = (proc.stdout or '') + (proc.stderr or '')
-        cd_match = re.search(r'CandidateCDHashFull sha256=([0-9a-fA-F]+)', text)
-        team_match = re.search(r'TeamIdentifier=(\S+)', text)
-        result = {'cdhash': cd_match.group(1) if cd_match else None,
-                  'team_id': team_match.group(1) if team_match else None}
+        result = _parse_codesign_d((proc.stdout or '') + (proc.stderr or ''))
     ctx['codesign_d'] = result
     return result
 
@@ -393,6 +400,11 @@ def _coord_url():
 
 
 def _http_json(method, url, headers=None, body=None, timeout=60):
+    status, data, _ = _http_json_full(method, url, headers, body, timeout)
+    return status, data
+
+
+def _http_json_full(method, url, headers=None, body=None, timeout=60):
     data = json.dumps(body).encode() if body is not None else None
     req_headers = dict(headers or {})
     req_headers.setdefault('User-Agent', USER_AGENT)
@@ -401,24 +413,57 @@ def _http_json(method, url, headers=None, body=None, timeout=60):
     req = urllib.request.Request(url, data=data, method=method, headers=req_headers)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         raw = resp.read().decode() or '{}'
-        return resp.status, json.loads(raw)
+        return resp.status, json.loads(raw), resp.headers
 
 
-def _fetch_requests_served(ctx):
-    _, data = _http_json('GET', f'{_coord_url()}/v1/stats', timeout=60)
-    provider_id = os.environ['DARKBLOOM_QUALIFY_PROVIDER_ID']
-    for p in data.get('providers', []):
-        if p.get('id') == provider_id:
-            return p.get('requests_served', 0)
-    return None
+def _running_binary_problem(ctx):
+    """None when every running `darkbloom` process runs the candidate build
+    (its code directory hash equals code_directory_hash); otherwise the
+    failure detail. Computed once per run."""
+    if 'build_problem' in ctx:
+        return ctx['build_problem']
+    expected = ctx['identity']['code_directory_hash']
+    problem = None
+    try:
+        proc = _checked(run_tool(['ps', '-axo', 'pid=,comm='], timeout=60))
+        if proc.returncode != 0:
+            problem = f'ps exited {proc.returncode}: {(proc.stderr or "").strip()}'
+        else:
+            pids = []
+            for line in (proc.stdout or '').splitlines():
+                parts = line.strip().split(None, 1)
+                if len(parts) == 2 and os.path.basename(parts[1]) == CLI_NAME and parts[0] not in pids:
+                    pids.append(parts[0])
+            if not pids:
+                problem = f'no running {CLI_NAME} process found; cannot bind live checks to the candidate build'
+            else:
+                bad = []
+                for pid in pids:
+                    # '+<pid>' asks the kernel for the running image; a bare pid resolves to
+                    # the executable path and reads whatever file is there now.
+                    cs = _checked(run_tool(['codesign', '-d', '--verbose=4', f'+{pid}'], timeout=60))
+                    info = _parse_codesign_d((cs.stdout or '') + (cs.stderr or ''))
+                    if cs.returncode != 0 or not info['cdhash']:
+                        bad.append(f'pid {pid}: codesign -d +pid failed or reported no CandidateCDHashFull '
+                                   f'(exit {cs.returncode}: {(cs.stderr or "").strip()})')
+                    elif info['cdhash'].lower() != expected.lower():
+                        bad.append(f'pid {pid} ({info["executable"] or "unknown executable"}) '
+                                   f'CandidateCDHashFull sha256={info["cdhash"]} != recorded '
+                                   f'code_directory_hash {expected}')
+                if bad:
+                    problem = 'running process is not the candidate build: ' + '; '.join(bad)
+    except Exception as exc:
+        problem = f'could not inspect running {CLI_NAME} processes: {exc}'
+    ctx['build_problem'] = problem
+    return problem
 
 
 def live_app_attest(ctx):
+    provider_id = os.environ['DARKBLOOM_QUALIFY_PROVIDER_ID']
     try:
         _, data = _http_json('GET', f'{_coord_url()}/v1/providers/attestation', timeout=60)
     except Exception as exc:
         return 'failed', f'GET /v1/providers/attestation error: {exc}'
-    provider_id = os.environ['DARKBLOOM_QUALIFY_PROVIDER_ID']
     entry = next((p for p in data.get('providers', []) if p.get('provider_id') == provider_id), None)
     if entry is None:
         return 'failed', f'provider_id {provider_id} not present in GET /v1/providers/attestation'
@@ -429,27 +474,42 @@ def live_app_attest(ctx):
     return 'failed', f'app_attest_authorized={entry.get("app_attest_authorized")} verification.app_attest.state={state!r}'
 
 
+JOB_ID_HEADER = 'X-Inference-Job-ID'
+
+
+def _record_request_id(ctx, job_id):
+    ctx.setdefault('recorded_request_ids', []).append(str(job_id))
+
+
 def live_inference(ctx):
-    provider_id = os.environ['DARKBLOOM_QUALIFY_PROVIDER_ID']
     api_key = os.environ['DARKBLOOM_QUALIFY_API_KEY']
     model = os.environ['DARKBLOOM_QUALIFY_MODEL']
+    provider_id = os.environ['DARKBLOOM_QUALIFY_PROVIDER_ID']
     body = {'model': model, 'stream': False, 'max_tokens': 8,
             'messages': [{'role': 'user', 'content': 'ok'}]}
     # coordinator/api/self_route.go: X-Darkbloom-Route: self forces EXCLUSIVE
     # self-route to a provider owned by this key's account, with no paid
-    # fallback -- the only forgery-proof way to pin this request to `id`.
+    # fallback: that pins the request to the account, not to one provider.
+    # The X-Provider-Id response header check pins it to the provider under test.
     try:
-        status, data = _http_json('POST', f'{_coord_url()}/v1/chat/completions', body=body,
+        status, data, resp_headers = _http_json_full('POST', f'{_coord_url()}/v1/chat/completions', body=body,
                                    headers={'Authorization': f'Bearer {api_key}',
                                             'X-Darkbloom-Route': 'self'}, timeout=60)
     except Exception as exc:
         return 'failed', f'POST /v1/chat/completions error: {exc}'
     if status != 200:
         return 'failed', f'POST /v1/chat/completions returned {status}'
+    served_by = resp_headers.get('X-Provider-Id')
+    if served_by != provider_id:
+        return 'failed', f'response X-Provider-Id {served_by!r} != provider under test {provider_id}'
     choices = data.get('choices') or [{}]
     content = (choices[0].get('message') or {}).get('content')
     if not content:
         return 'failed', 'response had no choices[0].message.content'
+    job_id = resp_headers.get(JOB_ID_HEADER)
+    if not job_id:
+        return 'failed', f'response had no {JOB_ID_HEADER} header'
+    _record_request_id(ctx, job_id)
     return 'passed', f'self-routed inference on provider {provider_id} returned {len(content)} chars'
 
 
@@ -458,6 +518,7 @@ def live_graceful_drain(ctx):
         return 'not_run', 'blocked by bundle-digest'
     api_key = os.environ['DARKBLOOM_QUALIFY_API_KEY']
     model = os.environ['DARKBLOOM_QUALIFY_MODEL']
+    provider_id = os.environ['DARKBLOOM_QUALIFY_PROVIDER_ID']
     body = {'model': model, 'stream': True, 'max_tokens': 512,
             'messages': [{'role': 'user', 'content': 'Count from 1 to 100, one number per line.'}]}
     result = {}
@@ -470,6 +531,11 @@ def live_graceful_drain(ctx):
                          'Content-Type': 'application/json', 'Accept': 'text/event-stream',
                          'User-Agent': USER_AGENT})
             with urllib.request.urlopen(req, timeout=180) as resp:
+                served_by = resp.headers.get('X-Provider-Id')
+                if served_by != provider_id:
+                    result['error'] = f'stream X-Provider-Id {served_by!r} != provider under test {provider_id}'
+                    return
+                result['request_id'] = resp.headers.get(JOB_ID_HEADER)
                 for raw_line in resp:
                     line = raw_line.decode(errors='replace').strip()
                     if not line.startswith('data:'):
@@ -508,6 +574,9 @@ def live_graceful_drain(ctx):
 
     thread.join(timeout=180)
     stream_ok = bool(result.get('finish_reason_seen')) and bool(result.get('done_seen')) and not result.get('error')
+    missing_job_id = stream_ok and not result.get('request_id')
+    if stream_ok and not missing_job_id:
+        _record_request_id(ctx, result['request_id'])
 
     try:
         start_proc = _checked(run_tool([str(ctx['app_binary']), 'start'], timeout=60))
@@ -515,31 +584,41 @@ def live_graceful_drain(ctx):
     except ToolFailure as exc:
         start_ok, start_detail = False, f'start failed: {exc}'
 
-    status = 'passed' if (stop_ok and stream_ok and start_ok) else 'failed'
+    status = 'passed' if (stop_ok and stream_ok and start_ok and not missing_job_id) else 'failed'
     detail = (f'stream(finish_reason={bool(result.get("finish_reason_seen"))}, '
               f'done={bool(result.get("done_seen"))}); {stop_detail}; restart: {start_detail}')
+    if missing_job_id:
+        detail += f'; stream response had no {JOB_ID_HEADER} header'
     if not start_ok:
         detail += ' (failure to restart = failed)'
     return status, detail
 
 
 def live_accounting(ctx):
-    baseline = ctx.get('accounting_baseline')
-    if baseline is None:
-        return 'failed', f'could not establish accounting baseline for provider {os.environ["DARKBLOOM_QUALIFY_PROVIDER_ID"]}'
-    deadline = time.monotonic() + 120
-    last = baseline
-    while time.monotonic() < deadline:
+    wanted = list(dict.fromkeys(ctx.get('recorded_request_ids', [])))
+    if not wanted:
+        return 'failed', 'no test requests to account for'
+    api_key = os.environ['DARKBLOOM_QUALIFY_API_KEY']
+    deadline = time.monotonic() + ACCOUNTING_DEADLINE_SECONDS
+    last_error = None
+    while True:
         try:
-            current = _fetch_requests_served(ctx)
-        except Exception:
-            current = None
-        if current is not None:
-            last = current
-            if current >= baseline + 2:
-                return 'passed', f'requests_served {current} >= baseline {baseline} + 2'
+            _, data = _http_json('GET', f'{_coord_url()}/v1/payments/usage',
+                                 headers={'Authorization': f'Bearer {api_key}'}, timeout=60)
+            accounted = {e.get('job_id') for e in data.get('usage') or []
+                         if (e.get('completion_tokens') or 0) > 0}
+            last_error = None
+        except Exception as exc:
+            accounted = set()
+            last_error = exc
+        missing = [rid for rid in wanted if rid not in accounted]
+        if not missing:
+            return 'passed', f'all {len(wanted)} test request ids in /v1/payments/usage with completion_tokens > 0'
+        if time.monotonic() >= deadline:
+            return 'failed', (f'test request ids not in /v1/payments/usage with completion_tokens > 0 '
+                              f'within {ACCOUNTING_DEADLINE_SECONDS}s: {", ".join(missing)}'
+                              + (f'; last usage error: {last_error}' if last_error else ''))
         time.sleep(3)
-    return 'failed', f'requests_served stayed at {last} (baseline {baseline}), never reached {baseline + 2} within 120s'
 
 
 def check_live(ctx, name):
@@ -548,11 +627,9 @@ def check_live(ctx, name):
     missing = _missing_live_env()
     if missing:
         return 'failed', f'missing env {missing}'
-    if 'accounting_baseline' not in ctx:
-        try:
-            ctx['accounting_baseline'] = _fetch_requests_served(ctx)
-        except Exception:
-            ctx['accounting_baseline'] = None
+    problem = _running_binary_problem(ctx)
+    if problem:
+        return 'failed', problem
     if name == 'app-attest':
         return live_app_attest(ctx)
     if name == 'inference':

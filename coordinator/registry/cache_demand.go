@@ -3,11 +3,13 @@ package registry
 import (
 	"container/list"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	crs "github.com/eigeninference/d-inference/coordinator/store/cacheroutingstate"
 )
 
 // Demand is advisory, never cache evidence. Only keyed, tenant/build-scoped
@@ -19,6 +21,9 @@ type cacheDemandTracker struct {
 	ttl     time.Duration
 	order   list.List
 	entries map[string]*list.Element
+	// onTouched receives the keys an observe inserted or refreshed, after
+	// d.mu is released. Nil when nothing persists the index.
+	onTouched func(keys []string, now time.Time)
 	// capEvictions counts entries the cap removed while they were still
 	// inside the TTL. Each one is a repeat that may now read as novel.
 	capEvictions uint64
@@ -47,9 +52,24 @@ func newCacheDemandTracker(limit int, ttl time.Duration) *cacheDemandTracker {
 	return &cacheDemandTracker{limit: max(1, limit), ttl: ttl, entries: make(map[string]*list.Element)}
 }
 
+func (d *cacheDemandTracker) setOnTouched(fn func(keys []string, now time.Time)) {
+	d.mu.Lock()
+	d.onTouched = fn
+	d.mu.Unlock()
+}
+
 func (d *cacheDemandTracker) observe(boundaries []cacheDemandBoundary, now time.Time) (int, string) {
+	longest, affinity, touched, onTouched := d.observeLocked(boundaries, now)
+	if onTouched != nil && len(touched) > 0 {
+		onTouched(touched, now)
+	}
+	return longest, affinity
+}
+
+func (d *cacheDemandTracker) observeLocked(boundaries []cacheDemandBoundary, now time.Time) (int, string, []string, func([]string, time.Time)) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	var touched []string
 	for expired := 0; expired < cacheDemandMaxExpiryPerObserve; expired++ {
 		first := d.order.Front()
 		if first == nil || now.Sub(first.Value.(cacheDemandEntry).seen) < d.ttl {
@@ -100,6 +120,9 @@ func (d *cacheDemandTracker) observe(boundaries []cacheDemandBoundary, now time.
 		} else {
 			d.entries[boundary.key] = d.order.PushBack(cacheDemandEntry{boundary.key, now})
 		}
+		if d.onTouched != nil {
+			touched = append(touched, boundary.key)
+		}
 		for len(d.entries) > d.limit {
 			first := d.order.Front()
 			evicted := first.Value.(cacheDemandEntry)
@@ -112,7 +135,60 @@ func (d *cacheDemandTracker) observe(boundaries []cacheDemandBoundary, now time.
 			d.order.Remove(first)
 		}
 	}
-	return longest, affinity
+	return longest, affinity, touched, d.onTouched
+}
+
+// restore seeds the index from the durable copy and returns the entries it
+// accepted (within the TTL, not in the future) and still holds afterwards;
+// the caller treats those as already persisted. The live list may be out of
+// timestamp order (observeLocked samples the clock before taking d.mu), so
+// the merge rebuilds the list from the union sorted by seen time and caps it
+// from the oldest end: a capped merge keeps the newest entries across both
+// sets and never evicts a fresher live observation for an older durable one.
+func (d *cacheDemandTracker) restore(records []crs.DemandRecord, now time.Time) []crs.DemandRecord {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	valid := make([]crs.DemandRecord, 0, len(records))
+	merged := make(map[string]time.Time, len(d.entries)+len(records))
+	for key, el := range d.entries {
+		merged[key] = el.Value.(cacheDemandEntry).seen
+	}
+	for _, rec := range records {
+		if rec.Key == "" || now.Sub(rec.SeenAt) >= d.ttl || rec.SeenAt.After(now) {
+			continue
+		}
+		valid = append(valid, rec)
+		if seen, ok := merged[rec.Key]; !ok || rec.SeenAt.After(seen) {
+			merged[rec.Key] = rec.SeenAt
+		}
+	}
+	all := make([]cacheDemandEntry, 0, len(merged))
+	for key, seen := range merged {
+		all = append(all, cacheDemandEntry{key, seen})
+	}
+	slices.SortFunc(all, func(a, b cacheDemandEntry) int {
+		if c := a.seen.Compare(b.seen); c != 0 {
+			return c
+		}
+		return strings.Compare(a.key, b.key)
+	})
+	if d.limit > 0 && len(all) > d.limit {
+		all = all[len(all)-d.limit:]
+	}
+	d.order.Init()
+	d.entries = make(map[string]*list.Element, len(all))
+	for _, e := range all {
+		d.entries[e.key] = d.order.PushBack(e)
+	}
+	// Only an entry the index still holds counts as persisted; one the cap
+	// evicted must be written again when it is next observed.
+	accepted := valid[:0]
+	for _, rec := range valid {
+		if _, kept := d.entries[rec.Key]; kept {
+			accepted = append(accepted, rec)
+		}
+	}
+	return accepted
 }
 
 // stats reports the entries held, including expired ones the bounded sweep

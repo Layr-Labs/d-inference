@@ -137,7 +137,7 @@ extension EngineV2Bridge {
         } else {
             reportedKVBytesCapacity = boundedKVBytesCapacity
         }
-        let prospectiveRequests = max(0, maxConcurrentRequests - active.count)
+        let prospectiveRequests = max(0, effectiveServingConcurrency - active.count)
         let prospectiveOverheadBytes: Int?
         if let perRequestOverhead = maximumRequestOverheadBytes() {
             let (bytes, overflow) = perRequestOverhead.multipliedReportingOverflow(
@@ -172,6 +172,9 @@ extension EngineV2Bridge {
             queuedPrefillTokens: Int64(queuedPrefillTokens),
             partialPrefillRows: partialPrefillRows,
             prefillTokensTotal: prefillTokensTotal,
+            prefillRequestsTotal: prefillRequestsTotal,
+            generatedTokensTotal: generatedTokensTotal,
+            generationRequestsTotal: generationRequestsTotal,
             isolatedPrefillTps: isolatedPrefillEwmaInitialized ? isolatedPrefillTpsEwma : 0,
             ewmaInitialized: isolatedPrefillEwmaInitialized,
             pumpTasks: Int64(pumpTasks.count),
@@ -207,11 +210,10 @@ extension EngineV2Bridge {
             numWaiting: UInt32(clamping: max(0, snapshot.waitingRequests)),
             activeTokens: Int64(snapshot.activeTokens),
             maxTokensPotential: maxTokensPotential,
-            maxConcurrency: UInt32(clamping: maxConcurrentRequests),
+            maxConcurrency: UInt32(clamping: effectiveServingConcurrency),
             observedDecodeTps: observedDecodeTpsEwma,
-            // Bridge-measured cold-prefill EWMA (submit → first token over
-            // prompt tokens; see EngineV2Bridge.recordPrefillSample). Feeds
-            // the coordinator's prefill-honest TTFT estimation.
+            // Engine-measured cold-prefill EWMA published as soon as prompt
+            // computation completes. Explicit metadata carries age and count.
             observedPrefillTps: observedPrefillTpsEwma,
             activeTokenBudgetUsed: budgetUsed,
             activeTokenBudgetMax: budgetMax,
@@ -220,6 +222,17 @@ extension EngineV2Bridge {
             // Slot-level bookkeeping (recorded by ensureModelLoaded on
             // load completion) — previously the legacy scheduler's field.
             modelLoadTimeMs: modelLoadTimeMs,
+            performanceProfile: currentPerformanceProfile.map { .init(
+                id: $0.id, runtimeRevision: $0.runtimeRevision,
+                contextTokens: advertisedContextTokens ?? $0.contextTokensMax, mtp: $0.mtp) },
+            deadlineProfile: currentDeadlineProfile.map { .init(profile: $0) },
+            promptWorkIdentity: promptWorkIdentity,
+            performanceMeasurements: performanceMeasurementSnapshot(now: now),
+            // A resolved profile retains work evidence through temporary
+            // posture withdrawal. Unprofiled slots need no timing-only wire
+            // changes unless aggregate capacity includes a profiled peer.
+            deadlineWork: deadlineProfile == nil ? nil
+                : serviceBudget?.deadlineWork(modelID: modelId, epoch: performanceMeasurements.epoch),
             // Per-slot KV-backend discriminator. This is the RESOLVED kind
             // the engine was built with (post-veto, post-fallback), not the
             // operator's request, and it is reported on EVERY heartbeat —

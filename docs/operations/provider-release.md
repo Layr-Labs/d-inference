@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-27 · commit `2b714c427`
+> Last updated: 2026-09-30
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -31,12 +31,16 @@ Keep `ProviderCore.version` in
 identity. Record release history in `CHANGELOG.md`;
 `scripts/check-release-version.sh` checks parity with the coordinator display
 fallback before packaging.
+The release Metal cache namespace also binds the prepared downloadable compiler's
+binary SHA, so an exact outer-cache hit cannot prevent publishing a library built
+with a newly installed Metal component.
 
 Production publication requires independent [durable App Attest build qualification](app-attest-build-qualification.md). Signing retains immutable bytes and a qualification template; a separate Linux staging job uploads those retained bytes to R2, and the Linux publication job verifies approval before release registration, R2 latest aliases and GitHub publication. Retry only the failed publication job after approval, preserving the original signed artifact. Deploy the matching coordinator first; the existing release key cannot approve builds.
 
 ### 0.9.10 rollout order
 
 1. Merge the version bump, then verify Release Integrity, Provider Tests,
+   Provider SDK Tests, Provider Prompt Parity,
    Coordinator Tests, E2E Integration Tests, and both SDK 27 release-preparation
    lanes on the final source. Build-cache success and a source version bump are
    neither signed-bundle qualification nor publication.
@@ -333,6 +337,7 @@ message** (step 4), so write the tag message from this entry.
 ### 3. Merge to `master` and wait for CI
 
 Open a PR with the bump + changelog; "Release Integrity", "Provider Tests",
+"Provider SDK Tests", "Provider Prompt Parity",
 "Coordinator Tests", and "E2E Integration Tests" must be green. The release
 workflow re-runs `scripts/verify-prompt-parity.sh` itself, so a prompt-contract
 change that is not fixture-synced will fail the release, not just CI.

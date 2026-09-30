@@ -1,6 +1,6 @@
 # 0.9.0 implementation and validation readiness
 
-> Last updated: 2026-09-07 · commit `32a756317`
+> Last updated: 2026-09-07
 
 The Paged Attention migration, three-Qwen SSD defaults and cache-routing implementation are ready for code review. The model and functional validation described below is complete. This does not authorize or claim a published release: production-key cache reuse across restart still requires the signed candidate from the separate signing work, followed by normal review, merge and release checks.
 

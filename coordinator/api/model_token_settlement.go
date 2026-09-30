@@ -4,6 +4,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -18,12 +19,12 @@ func stampModelTokenReservation(pr *registry.PendingRequest, reservation *store.
 	pr.PromotionFreeTokens = reservation.FreeTokens
 }
 
-func (s *Server) settleModelTokenPromotion(pr *registry.PendingRequest, provider *registry.Provider, usage protocol.UsageInfo, in, out int64, custom bool, feePercent *int64, freeSelf bool, onSettled func(int64)) (bool, int64, int64, error) {
+func (s *Server) settleModelTokenPromotion(pr *registry.PendingRequest, provider *registry.Provider, usage protocol.UsageInfo, rates payments.Rates, feePercent *int64, freeSelf bool, onSettled func(int64)) (bool, int64, int64, error) {
 	backend, ok := store.As[store.ModelTokenPromotionStore](s.store)
 	if !ok {
 		return false, 0, 0, errors.New("promotion store unavailable")
 	}
-	quote := modelTokenQuote(pr.Model, usage.PromptTokens, usage.CompletionTokens, in, out, custom, nil)
+	quote := modelTokenQuote(usage.PromptTokens, usage.CompletionTokens, rates, nil)
 	actual := int64(usage.PromptTokens) + int64(usage.CompletionTokens)
 	var earning *store.ModelTokenEarning
 	if !freeSelf && provider != nil {
@@ -31,7 +32,7 @@ func (s *Server) settleModelTokenPromotion(pr *registry.PendingRequest, provider
 		account, key, id := provider.AccountID, provider.PublicKey, provider.ID
 		provider.Mu().Unlock()
 		if account != "" {
-			price, err := priceModelTokens(pr.Model, usage.PromptTokens, usage.CompletionTokens, in, out, custom, pr.PromotionFreeTokens, feePercent)
+			price, err := priceModelTokens(usage.PromptTokens, usage.CompletionTokens, rates, pr.PromotionFreeTokens, feePercent)
 			if err != nil {
 				pr.MarkReservationFinalized()
 				return false, 0, 0, errors.Join(store.ErrPromotionInvalidSettlement, err, s.abandonModelTokenSettlement(pr.ModelTokenReservationID))

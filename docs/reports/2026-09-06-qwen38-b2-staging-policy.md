@@ -1,6 +1,6 @@
 # Qwen3.8 B2 backend parity passes; one warm SSD restore is skipped
 
-> Last updated: 2026-09-06 · commit `56fa39501`
+> Last updated: 2026-09-06
 
 The three-cell Qwen3.8 B2 pilot completes, but its strict cache gate remains **failed**. Contiguous/cache-off and paged/cache-off produce identical measured outputs. The cache-on arm also matches each measured row's own cache-off output, but one repeated request falls back cold with `skipped_policy` instead of consuming an authenticated checkpoint. The other repeated request restores 5,120 tokens. No output mismatch, tolerance change, or accepted cache-performance claim is implied.
 

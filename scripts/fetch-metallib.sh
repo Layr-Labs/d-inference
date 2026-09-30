@@ -129,12 +129,20 @@ fi
 XCODE_VERSION="$(xcodebuild -version | tr '\n' ';')"
 SDK_VERSION="$(xcrun --sdk macosx --show-sdk-version)"
 SDK_BUILD_VERSION="$(xcrun --sdk macosx --show-sdk-build-version)"
+# Apple distributes this compiler separately from Xcode. Its component can
+# change without changing the Xcode/SDK labels, including its temporary mount.
+METAL_VERSION="$(xcrun --no-cache --sdk macosx metal --version)"
+METAL_VERSION="${METAL_VERSION%%$'\n'*}"
+METAL_COMPILER="$(xcrun --no-cache --sdk macosx --find metal)"
+METAL_COMPILER_HASH="$(shasum -a 256 "$METAL_COMPILER" | cut -d' ' -f1)"
 HELPER_CONTRACT_HASH="$(shasum -a 256 "$0" | cut -d' ' -f1)"
 TOOLCHAIN_HASH="$(
     printf '%s\n' \
         "$XCODE_VERSION" \
         "$SDK_VERSION" \
         "$SDK_BUILD_VERSION" \
+        "$METAL_VERSION" \
+        "metal=$METAL_COMPILER_HASH" \
         "deployment=$DEPLOYMENT_TARGET" \
         "jit=$JIT_MODE" \
         "helper=$HELPER_CONTRACT_HASH" \

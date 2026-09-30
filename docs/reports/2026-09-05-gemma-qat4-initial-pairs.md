@@ -1,6 +1,6 @@
 # Gemma QAT4bit native KV observations and initial paged SSD pairs
 
-> Last updated: 2026-09-05 · commit `12e941bb1`
+> Last updated: 2026-09-05
 
 The exact production `gemma-4-26b-qat-4bit` artifact passes its target KV observer
 and two normal-MTP paged B1 cache-off/SSD comparisons on M5 Max, 128 GiB.

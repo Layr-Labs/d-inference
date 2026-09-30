@@ -36,11 +36,36 @@ func decodeCacheMasterKey(raw string) ([]byte, error) {
 	return nil, errors.New("key must encode exactly 32 bytes as base64url, base64, or hex")
 }
 
+// Derivation labels. Every persisted holder and demand key is a function of
+// the master key and of these versions, so all of them feed the persistence
+// fingerprint below: bumping any one resets the durable copy on the next boot
+// instead of restoring keys no request can derive.
+const (
+	cacheRouteKeyLabel         = "darkbloom/cache-routing/route/v3"
+	cacheScopeKeyLabel         = "darkbloom/cache-routing/scope/v3"
+	cacheActivationKeyLabel    = "darkbloom/cache-routing/activation/v1"
+	cacheScopeSerialization    = "scope-v3"
+	cacheBoundarySerialization = "prefix-v4"
+	// cachePersistenceGeneration names the persisted row schema and the key
+	// serialization as a whole; bump it with any change to either that the
+	// labels above do not already capture.
+	cachePersistenceGeneration = "persist/v1"
+)
+
 func deriveCacheKeys(master []byte) cacheRouteKeys {
 	return cacheRouteKeys{
-		route:      hmacBytes(master, []byte("darkbloom/cache-routing/route/v3")),
-		scope:      hmacBytes(master, []byte("darkbloom/cache-routing/scope/v3")),
-		activation: hmacBytes(master, []byte("darkbloom/cache-routing/activation/v1")),
+		route:      hmacBytes(master, []byte(cacheRouteKeyLabel)),
+		scope:      hmacBytes(master, []byte(cacheScopeKeyLabel)),
+		activation: hmacBytes(master, []byte(cacheActivationKeyLabel)),
+		// A non-secret marker of this key generation (cachepersist.Restore):
+		// the master key plus every derivation version and the block
+		// contract the keys are serialized under.
+		persistFingerprint: hex.EncodeToString(hmacBytes(master,
+			[]byte("darkbloom/cache-routing/persistence-fingerprint/v1"),
+			[]byte(cacheRouteKeyLabel), []byte(cacheScopeKeyLabel), []byte(cacheActivationKeyLabel),
+			[]byte(cacheScopeSerialization), []byte(cacheBoundarySerialization),
+			[]byte(promptcontract.BlockHashVersion), []byte(strconv.FormatUint(uint64(promptcontract.BlockSize), 10)),
+			[]byte(cachePersistenceGeneration)))[:24],
 	}
 }
 
@@ -92,6 +117,8 @@ const (
 )
 
 type CachePlanResult struct {
+	// PromptWork is valid tokenizer accounting even when there are no reusable boundaries.
+	PromptWork    *protocol.PromptWork
 	Plan          CachePlan
 	Outcome       CachePlanOutcome
 	PlanLatency   time.Duration
@@ -208,10 +235,16 @@ func (r *Registry) PlanCacheRouteWithResult(
 			Outcome: CachePlanInvalid, PlanLatency: latency, SidecarCalled: true,
 		}
 	}
+	work := &protocol.PromptWork{Version: protocol.PromptWorkVersion, Source: protocol.PromptWorkExact,
+		PromptTokens: int(sidecarPlan.PromptTokenCount), UpperBoundTokens: int(sidecarPlan.PromptTokenCount),
+		PromptContractID: input.PromptContractID, ModelArtifactHash: aggregateHash}
+	if !work.IsQualifiedFor(aggregateHash, input.PromptContractID) {
+		work = nil
+	}
 	if len(sidecarPlan.BlockBoundaries) == 0 {
 		activation.recordPlan(CachePlanNoBoundaries)
 		return CachePlanResult{
-			Outcome: CachePlanNoBoundaries, PlanLatency: latency, SidecarCalled: true,
+			PromptWork: work, Outcome: CachePlanNoBoundaries, PlanLatency: latency, SidecarCalled: true,
 		}
 	}
 	boundaries := make([]protocol.PrefixCacheAnchor, 0, len(sidecarPlan.BlockBoundaries))
@@ -238,7 +271,7 @@ func (r *Registry) PlanCacheRouteWithResult(
 	}
 	tracker.observeCacheDemand(&plan, keys.route, time.Now())
 	activation.recordPlan(CachePlanPlanned)
-	return CachePlanResult{Plan: plan, Outcome: CachePlanPlanned, PlanLatency: latency, SidecarCalled: true}
+	return CachePlanResult{Plan: plan, PromptWork: work, Outcome: CachePlanPlanned, PlanLatency: latency, SidecarCalled: true}
 }
 
 // providerCacheScope is the only provider-visible routing value. It binds the
@@ -255,7 +288,7 @@ func providerCacheScope(
 	}
 	return opaqueHMAC(
 		scopeKey,
-		"scope-v3",
+		cacheScopeSerialization,
 		account,
 		model,
 		strings.ToLower(aggregateHash),
@@ -279,7 +312,7 @@ func cacheBoundaryKey(
 	}
 	return opaqueHMAC(
 		routeKey,
-		"prefix-v4",
+		cacheBoundarySerialization,
 		plan.CacheScope,
 		plan.ModelAggregateHash,
 		plan.PromptContractID,

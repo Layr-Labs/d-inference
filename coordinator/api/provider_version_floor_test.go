@@ -31,6 +31,7 @@ func TestProviderVersionFloorExcludesMissingVersionFromRouting(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			srv, reg, _, ts := setupTestServer(t)
+			defer srv.Close()
 			defer ts.Close()
 			srv.SetMinProviderVersion("0.9.5")
 
@@ -61,8 +62,12 @@ func TestProviderVersionFloorExcludesMissingVersionFromRouting(t *testing.T) {
 			}
 			// The challenge loop starts only after registration processing
 			// (including the version floor) has finished, so the first
-			// challenge is the barrier for asserting registration state.
-			waitForChallenge(t, ctx, conn, pubKey)
+			// challenge is the barrier for asserting registration state. Do not
+			// reply here: asynchronous challenge revalidation writes runtime
+			// policy before applying the version floor again, which races this
+			// test's manual trust/challenge grants. Challenge floor policy has
+			// separate coverage below.
+			readAttestationChallenge(t, ctx, conn)
 
 			if got := reg.OnlineCount(); got != 1 {
 				t.Fatalf("online providers = %d, want 1: the floor deroutes, it does not disconnect", got)

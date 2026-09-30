@@ -64,6 +64,7 @@ provider: provider-build provider-test ## Build + test provider
 
 benchmark-wrapper-test: ## Unit-test the Gemma benchmark wrapper (no GPU or weights)
 	cd scripts && python3 -m unittest discover -s gemma_contbatch/tests -t .
+	cd scripts && python3 -m unittest discover -s serving_performance -t . -p 'test_*.py'
 
 benchmark-gemma-contbatch: ## Build and benchmark Gemma 4 26B continuous batching
 	python3 scripts/benchmark-gemma-contbatch.py $(GEMMA_BENCHMARK_ARGS)

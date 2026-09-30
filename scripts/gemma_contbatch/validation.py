@@ -12,9 +12,9 @@ from .checks import assert_finite, require_positive
 RAW_SCHEMA_VERSIONS = {
     # New versions add raw event/memory evidence; the legacy metrics this
     # runner compares retain their definitions. Accept only reviewed versions.
-    "throughput sweep": (5, 6, 7),
+    "throughput sweep": (5, 6, 7, 8),
     "scheduler prefill": (3, 4),
-    "arrival invariance": (4, 5),
+    "arrival invariance": (4, 5, 6),
 }
 
 
@@ -60,6 +60,10 @@ def validate_decode(args: argparse.Namespace, sweep: dict) -> None:
         )
     for index, sample in enumerate(decode_samples):
         batch_size = int(sample["batchSize"])
+        if sweep.get("schemaVersion", 0) >= 8:
+            cap = sample.get("effectiveMaxConcurrentRequests")
+            if type(cap) is not int or cap != batch_size:
+                raise RuntimeError(f"decode[{index}] built scheduler cap does not match requested width")
         if sample.get("decodeTokensPerSequence") != args.decode_tokens:
             raise RuntimeError(f"decode[{index}] reported the wrong token budget")
         for key in (

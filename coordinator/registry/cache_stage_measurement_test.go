@@ -78,11 +78,10 @@ func TestSSDMeasuredStageSurvivesReadyAndChangesRouting(t *testing.T) {
 		winner             string
 		path               SelectionPath
 	}{
-		// The slow read is a restore penalty: it competes on strict cost and
-		// leaves the cheaper cold peer alone in the band.
-		{"slow_read_not_erased", 900, 100, "cold", SelectionUniqueMin},
-		// The fast read is credited; the cold peer inside the band loses to it.
-		{"fast_read_not_overpriced", 100, 900, "ssd", SelectionCacheCredit},
+		// The slow read puts expected first content outside the 100 ms band.
+		{"slow_read_not_erased", 1200, 100, "cold", SelectionUniqueMin},
+		// The fast read makes the holder the unique earliest provider.
+		{"fast_read_not_overpriced", 100, 900, "ssd", SelectionUniqueMin},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newStageMeasurementFixture(t)

@@ -109,7 +109,7 @@ func (t *cacheRoutingTracker) matchingHolders(
 			for providerID := range t.holders[key] {
 				holder, live := t.activeHolderLocked(key, providerID, now)
 				if !live || holder.ModelAggregateHash != plan.ModelAggregateHash ||
-					holder.PromptContractID != plan.PromptContractID || holder.Anchor != anchor ||
+					holder.PromptContractID != plan.PromptContractID || !anchorMatches(holder.Anchor, anchor) ||
 					anchor.TokenCount <= holder.RequiredRecomputeTokens {
 					continue
 				}
@@ -167,6 +167,7 @@ func cacheHintsForMatches(plan CachePlan, matches []cacheRoutingMatch,
 		// the provider does not accept a coordinator-selected endpoint today.
 		out[holder.ProviderID] = cacheRoutingHint{
 			generation:         plan.generation,
+			ExpiresAt:          holder.ExpiresAt,
 			PrefillTokensSaved: holder.Anchor.TokenCount - holder.RequiredRecomputeTokens,
 			CachedTokens:       holder.Anchor.TokenCount,
 			StageMs:            stageMs,

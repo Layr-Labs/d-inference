@@ -20,9 +20,10 @@ import (
 // always-on dispatch-time deterministic stop (dispatch.go shouldStopFailover) is
 // the exact backstop for everything the estimate still misses.
 //
-// Applied ONLY to the servability context check (see shedIfUnservable). Billing
-// (estimateBillingPromptTokens upper-bounds independently) and the capacity/TTFT
-// estimate are intentionally left on the raw value.
+// Applied to the servability context check and first-content prompt-work
+// estimate. Billing and physical token reservations retain their existing inputs.
+// This is family-level evidence, not a per-template tokenizer guarantee; exact
+// cache-planner token counts supersede it, and uncertain forecasts remain unknown.
 
 var (
 	calibrationMu sync.RWMutex

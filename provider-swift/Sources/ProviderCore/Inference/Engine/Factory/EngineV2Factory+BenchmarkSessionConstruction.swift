@@ -52,8 +52,61 @@ extension EngineV2Factory {
         requirePersistentKey: Bool = true,
         persistentTestNamespace: SSDPersistentTestKeyNamespace? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        memorySnapshotForTesting: @Sendable () -> (physical: UInt64, active: UInt64)
+        nativeMiMoLoad: MiMoV26ServingLoad? = nil,
+        nativeMiMoBudget: GlobalKVCacheBudget? = nil,
+        nativeMiMoOperatorReserveBytes: UInt64? = nil,
+        nativeMiMoOwnership: MiMoV26BenchmarkOwnership? = nil,
+        memorySnapshotForTesting: @escaping @Sendable () -> (physical: UInt64, active: UInt64)
     ) async throws -> EngineV2BenchmarkSession {
+        let prepare: @Sendable () async throws -> BenchmarkSessionCandidate = {
+            try await prepareBenchmarkSession(
+                modelId: modelId, modelDirectory: modelDirectory, isVLM: isVLM,
+                container: container, tokenizer: tokenizer, verifiedWeightHash: verifiedWeightHash,
+                kvBytesCapacity: kvBytesCapacity, maxConcurrentRequests: maxConcurrentRequests,
+                mtpEnabled: mtpEnabled, assistantDirectory: assistantDirectory,
+                gemmaMTPVerification: gemmaMTPVerification, useProductionKVGrant: useProductionKVGrant,
+                kvBudget: kvBudget, kvBackendConfig: kvBackendConfig, requirePersistentKey: requirePersistentKey,
+                persistentTestNamespace: persistentTestNamespace, environment: environment,
+                nativeMiMoLoad: nativeMiMoLoad, nativeMiMoBudget: nativeMiMoBudget,
+                nativeMiMoOperatorReserveBytes: nativeMiMoOperatorReserveBytes,
+                memorySnapshotForTesting: memorySnapshotForTesting)
+        }
+        if let nativeMiMoLoad {
+            guard let ownership = nativeMiMoOwnership,
+                nativeMiMoLoad.transaction === ownership.transaction else {
+                throw MiMoV26ServingLoadError.nativeOwnerMismatch
+            }
+            // Track the ENTIRE awaited setup, not just its initial model load.
+            // Seal only after that operation has actually unwound; construct
+            // the returned session inside the final lifecycle-gated commit.
+            let candidate = try await ownership.transaction.performSetup(prepare)
+            _ = try await nativeMiMoLoad.sealConstructionForPublication()
+            return try nativeMiMoLoad.commitPublication { candidate.makeSession(ownership) }
+        }
+        guard nativeMiMoOwnership == nil else { throw MiMoV26ServingLoadError.nativeOwnerMismatch }
+        let candidate = try await prepare()
+        return candidate.makeSession(nil)
+    }
+
+    /// The final allocation is synchronous and nonthrowing so the native
+    /// transaction can publish it atomically with its lifecycle/permit checks.
+    private struct BenchmarkSessionCandidate: Sendable {
+        let makeSession: @Sendable (MiMoV26BenchmarkOwnership?) -> EngineV2BenchmarkSession
+    }
+
+    private static func prepareBenchmarkSession(
+        modelId: String, modelDirectory: URL, isVLM: Bool,
+        container: ModelContainer, tokenizer: TokenizerHandle,
+        verifiedWeightHash: String, kvBytesCapacity: Int,
+        maxConcurrentRequests: Int, mtpEnabled: Bool,
+        assistantDirectory: URL?, gemmaMTPVerification: EngineV2BenchmarkMTPVerification?,
+        useProductionKVGrant: Bool, kvBudget: GlobalKVCacheBudget?,
+        kvBackendConfig: String, requirePersistentKey: Bool,
+        persistentTestNamespace: SSDPersistentTestKeyNamespace?, environment: [String: String],
+        nativeMiMoLoad: MiMoV26ServingLoad?, nativeMiMoBudget: GlobalKVCacheBudget?,
+        nativeMiMoOperatorReserveBytes: UInt64?,
+        memorySnapshotForTesting: @Sendable () -> (physical: UInt64, active: UInt64)
+    ) async throws -> BenchmarkSessionCandidate {
         try gemmaMTPVerification?.validateScope(
             mtpEnabled: mtpEnabled, concurrency: maxConcurrentRequests,
             productionGrant: useProductionKVGrant, backend: kvBackendConfig, environment: environment)
@@ -82,25 +135,50 @@ extension EngineV2Factory {
         }
         let declaration = try JSONDecoder().decode(Declaration.self,
             from: Data(contentsOf: modelDirectory.appendingPathComponent("config.json")))
-        let preparation = try await benchmarkAssistantPreparation(
-            modelId: modelId, modelType: declaration.modelType, modelDirectory: modelDirectory,
-            enabled: mtpEnabled, assistantDirectory: assistantDirectory, environment: effectiveEnvironment)
+        let servingContainer: ProviderModelContainer
+        let preparation: SpecDecPreparation
+        if let nativeMiMoLoad {
+            guard declaration.modelType == "mimo_v2", !isVLM, nativeMiMoBudget != nil,
+                nativeMiMoOperatorReserveBytes != nil,
+                useProductionKVGrant, kvBudget == nil, assistantDirectory == nil,
+                gemmaMTPVerification == nil, persistentTestNamespace == nil,
+                !PrefixCachePolicy.isEnabled(modelId: modelId, environment: effectiveEnvironment),
+                !PrefixCachePolicy.isMemoryEnabled(environment: effectiveEnvironment) else {
+                throw MiMoV26ServingLoadError.nativeOwnerMismatch
+            }
+            try nativeMiMoLoad.recheck()
+            servingContainer = .nativeMiMo(container, nativeMiMoLoad)
+            preparation = try MiMoV26ServingLoad.preparation(mode: mtpEnabled ? .on : .off,
+                externalPath: nil, environment: effectiveEnvironment,
+                embeddedArtifactDeclared: nativeMiMoLoad.hasEmbeddedMTP)
+        } else {
+            guard declaration.modelType != "mimo_v2", nativeMiMoBudget == nil,
+                nativeMiMoOperatorReserveBytes == nil else {
+                throw MiMoV26ServingLoadError.managedLoadRequired
+            }
+            servingContainer = .autoregressive(container)
+            preparation = try await benchmarkAssistantPreparation(
+                modelId: modelId, modelType: declaration.modelType, modelDirectory: modelDirectory,
+                enabled: mtpEnabled, assistantDirectory: assistantDirectory, environment: effectiveEnvironment)
+        }
         let prepared = try await EngineV2SlotFactory.prepareProductionModel(
             modelId: modelId, isVLM: isVLM, modelDirectory: modelDirectory,
-            container: container, specDecPreparation: preparation)
-        guard !mtpEnabled || prepared.mtpStatus.active else {
+            container: servingContainer, specDecPreparation: preparation)
+        // Native preparation is metadata-only. Its actual assistant is created
+        // once inside protected slot construction and checked on the bundle.
+        guard nativeMiMoLoad != nil || !mtpEnabled || prepared.mtpStatus.active else {
             prepared.assistant?.release()
             throw EngineV2BenchmarkSession.Failure.mtpUnavailable
         }
-        let sizing = await SlotSizingSnapshot.build(
-            container: container, modelPath: modelDirectory, fallbackDefaultMaxTokens: 8192)
+        let sizing = await servingContainer.sizing(modelPath: modelDirectory, defaultMaxTokens: 8192)
             .replacingAuxiliaryWeightBytes(prepared.assistantBytes)
         let reserve = UnifiedMemoryCap.resolvedActivationReserveBytes(
             env: effectiveEnvironment, modelIDs: [modelId])
         let productionGrant: EngineV2BenchmarkProductionGrant?
         do {
             productionGrant = useProductionKVGrant ? try benchmarkProductionGrant(
-                modelId: modelId, sizing: sizing, environment: effectiveEnvironment) : nil
+                modelId: modelId, sizing: sizing, environment: effectiveEnvironment,
+                operatorReserveBytes: nativeMiMoOperatorReserveBytes) : nil
         } catch {
             prepared.assistant?.release()
             throw error
@@ -121,16 +199,17 @@ extension EngineV2Factory {
         }
         // The default authority belongs to this isolated single session. Explicit
         // multi-session callers inject the complete serving-set policy authority.
-        let budget = kvBudget ?? GlobalKVCacheBudget(
+        let budget = nativeMiMoBudget ?? kvBudget ?? GlobalKVCacheBudget(
             capFraction: productionGrant?.capFraction, activationReserveBytes: reserve,
             configReserveBytes: productionGrant?.operatorReserveBytes ?? 0)
         let bundle: ProviderEngineBundle
         do {
             bundle = try await EngineV2SlotFactory.makeProductionBundle(
                 modelId: modelId, modelType: declaration.modelType, isVLM: isVLM,
-                modelDirectory: modelDirectory, container: container, tokenizer: tokenizer,
+                modelDirectory: modelDirectory, container: servingContainer, tokenizer: tokenizer,
                 sizing: sizing, kvBytesCapacity: selectedGrant,
-                maxConcurrentRequests: maxConcurrentRequests, kvBudget: budget,
+                maxConcurrentRequests: maxConcurrentRequests, constructionPurpose: .benchmark,
+                kvBudget: budget,
                 activationReserveBytes: reserve, kvBackendConfig: kvBackendConfig,
                 weightHash: verifiedWeightHash, specDecPreparation: preparation,
                 preparedModel: prepared,
@@ -185,16 +264,28 @@ extension EngineV2Factory {
             }
             let backend = await bundle.bridge.kvBackendKind.rawValue
             let fallback = await bundle.bridge.kvBackendFallbackReason
-            return EngineV2BenchmarkSession(
-                bundle: bundle, engine: engine,
-                backend: backend, fallback: fallback,
-                memoryEnabled: PrefixCachePolicy.isMemoryEnabled(environment: effectiveEnvironment),
-                activationReserveBytes: reserve, postLoadMaximumKVBytes: maximumKVBytes,
-                budget: budget, assistantIdentity: benchmarkAssistantIdentity(preparation.artifact),
-                productionGrant: productionGrant, postBuildHeadroomBytes: postBuildHeadroom)
+            let effectiveMaxConcurrentRequests = await bundle.bridge.maxConcurrentRequests
+            let memoryEnabled = PrefixCachePolicy.isMemoryEnabled(environment: effectiveEnvironment)
+            let finalHeadroom = postBuildHeadroom
+            let assistantIdentity = benchmarkAssistantIdentity(preparation.artifact)
+            return BenchmarkSessionCandidate { ownership in
+                EngineV2BenchmarkSession(
+                    bundle: bundle, engine: engine,
+                    backend: backend, fallback: fallback,
+                    effectiveMaxConcurrentRequests: effectiveMaxConcurrentRequests,
+                    memoryEnabled: memoryEnabled,
+                    activationReserveBytes: reserve, postLoadMaximumKVBytes: maximumKVBytes,
+                    budget: budget, assistantIdentity: assistantIdentity,
+                    productionGrant: productionGrant, postBuildHeadroomBytes: finalHeadroom,
+                    nativeMiMoOwnership: ownership)
+            }
         } catch {
-            await bundle.bridge.shutdown()
-            bundle.releaseAssistant()
+            // A native failure is retired by its strong transaction after the
+            // encompassing setup task unwinds. Void shutdown is not proof.
+            if nativeMiMoLoad == nil {
+                await bundle.bridge.shutdown()
+                bundle.releaseAssistant()
+            }
             throw error
         }
     }

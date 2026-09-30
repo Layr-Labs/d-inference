@@ -95,8 +95,10 @@ public struct ModelInfo: Codable, Sendable, Equatable {
     /// Omitted for ordinary models; mapped OS pages still consume real memory.
     public var ssdOffloadedWeightBytes: UInt64?
     /// Explicit native load-copy allowance derived from validated checkpoint
-    /// headers. Only eligible Qwen4 SSD-offload loads declare this; nil retains
-    /// the legacy padded estimate. Not an activation/KV reserve or cache credit.
+    /// headers. Eligible Qwen4 declares copies above SSD-reduced resident bytes;
+    /// canonical MiMo declares full root + installed-sidecar LOAD minus ALL
+    /// sizeBytes, with no SSD discount. Both are bytes, while estimatedMemoryGb
+    /// is GiB. nil retains legacy padding. Not activation/KV or cache credit.
     public var nativeLoadTransientBytes: UInt64?
     public var weightHash: String?
     /// True when this build can serve image/video (VLM) input. Encoded only when
@@ -514,6 +516,12 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
     public var kvBytesPerToken: Int64
     public var maxConcurrency: UInt32
     public var modelLoadTimeMs: Int64
+    public var performanceProfile: ServingPerformanceProfileReference?
+    public var deadlineProfile: DeadlinePerformanceProfileReference?
+    public var promptWorkIdentity: PromptWorkIdentity?
+    /// Transient routing observations; excluded from persisted numeric telemetry.
+    public var performanceMeasurements: PerformanceMeasurements?
+    public var deadlineWork: DeadlineWork?
 
     /// The KV-cache backend this slot's engine was actually built with:
     /// `EngineV2Bridge.kvBackendKind.rawValue` — "paged" | "contiguous",
@@ -622,6 +630,11 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         case kvBytesPerToken = "kv_bytes_per_token"
         case maxConcurrency = "max_concurrency"
         case modelLoadTimeMs = "model_load_time_ms"
+        case performanceProfile = "performance_profile"
+        case deadlineProfile = "deadline_profile"
+        case promptWorkIdentity = "prompt_work_identity"
+        case performanceMeasurements = "performance_measurements"
+        case deadlineWork = "deadline_work"
         case kvBackend = "kv_backend"
         case kvBackendFallbackReason = "kv_backend_fallback_reason"
         case stepsExecuted = "steps_executed"
@@ -652,6 +665,11 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         queuedTokenBudget: Int64 = 0,
         kvBytesPerToken: Int64 = 0,
         modelLoadTimeMs: Int64 = 0,
+        performanceProfile: ServingPerformanceProfileReference? = nil,
+        deadlineProfile: DeadlinePerformanceProfileReference? = nil,
+        promptWorkIdentity: PromptWorkIdentity? = nil,
+        performanceMeasurements: PerformanceMeasurements? = nil,
+        deadlineWork: DeadlineWork? = nil,
         kvBackend: String? = nil,
         kvBackendFallbackReason: String? = nil,
         stepsExecuted: Int64 = 0,
@@ -680,6 +698,11 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         self.queuedTokenBudget = queuedTokenBudget
         self.kvBytesPerToken = kvBytesPerToken
         self.modelLoadTimeMs = modelLoadTimeMs
+        self.performanceProfile = performanceProfile
+        self.deadlineProfile = deadlineProfile
+        self.promptWorkIdentity = promptWorkIdentity
+        self.performanceMeasurements = performanceMeasurements
+        self.deadlineWork = deadlineWork
         self.kvBackend = kvBackend
         self.kvBackendFallbackReason = kvBackendFallbackReason
         self.stepsExecuted = stepsExecuted
@@ -711,6 +734,11 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         queuedTokenBudget = try container.decodeIfPresent(Int64.self, forKey: .queuedTokenBudget) ?? 0
         kvBytesPerToken = try container.decodeIfPresent(Int64.self, forKey: .kvBytesPerToken) ?? 0
         modelLoadTimeMs = try container.decodeIfPresent(Int64.self, forKey: .modelLoadTimeMs) ?? 0
+        performanceProfile = try container.decodeIfPresent(ServingPerformanceProfileReference.self, forKey: .performanceProfile)
+        deadlineProfile = try container.decodeIfPresent(DeadlinePerformanceProfileReference.self, forKey: .deadlineProfile)
+        promptWorkIdentity = try container.decodeIfPresent(PromptWorkIdentity.self, forKey: .promptWorkIdentity)
+        performanceMeasurements = try container.decodeIfPresent(PerformanceMeasurements.self, forKey: .performanceMeasurements)
+        deadlineWork = try container.decodeIfPresent(DeadlineWork.self, forKey: .deadlineWork)
         // No `?? ""` fallback: absent must stay absent, or the coordinator
         // cannot tell a pre-0.8.0 provider from one reporting an empty kind.
         kvBackend = try container.decodeIfPresent(String.self, forKey: .kvBackend)
@@ -737,6 +765,11 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(model, forKey: .model)
+        try container.encodeIfPresent(performanceProfile, forKey: .performanceProfile)
+        try container.encodeIfPresent(deadlineProfile, forKey: .deadlineProfile)
+        try container.encodeIfPresent(promptWorkIdentity, forKey: .promptWorkIdentity)
+        try container.encodeIfPresent(performanceMeasurements, forKey: .performanceMeasurements)
+        try container.encodeIfPresent(deadlineWork, forKey: .deadlineWork)
         try container.encode(state, forKey: .state)
         try container.encode(numRunning, forKey: .numRunning)
         try container.encode(numWaiting, forKey: .numWaiting)
@@ -830,6 +863,12 @@ public struct MLXCacheReclaimerTelemetry: Codable, Sendable, Equatable {
 
 public struct BackendCapacity: Codable, Sendable, Equatable {
     public var slots: [BackendSlotCapacity]
+    /// Fraction of the shared whole-Mac service allowance currently leased.
+    public var wholeMacServiceUsed: Double?
+    /// Version 1 explicitly acknowledges pipeline and service-lease retirement.
+    public var wholeMacServiceRetirementProtocol: Int?
+    /// Exact coordinator attempts included in the total, omitted for local work.
+    public var wholeMacServiceReservations: [WholeMacServiceReservation]
     public var gpuMemoryActiveGb: Double
     public var gpuMemoryPeakGb: Double
     public var gpuMemoryCacheGb: Double
@@ -872,6 +911,9 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case slots
+        case wholeMacServiceUsed = "whole_mac_service_used"
+        case wholeMacServiceRetirementProtocol = "whole_mac_service_retirement_protocol"
+        case wholeMacServiceReservations = "whole_mac_service_reservations"
         case gpuMemoryActiveGb = "gpu_memory_active_gb"
         case gpuMemoryPeakGb = "gpu_memory_peak_gb"
         case gpuMemoryCacheGb = "gpu_memory_cache_gb"
@@ -888,6 +930,9 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
 
     public init(
         slots: [BackendSlotCapacity],
+        wholeMacServiceUsed: Double? = nil,
+        wholeMacServiceRetirementProtocol: Int? = nil,
+        wholeMacServiceReservations: [WholeMacServiceReservation] = [],
         gpuMemoryActiveGb: Double,
         gpuMemoryPeakGb: Double,
         gpuMemoryCacheGb: Double,
@@ -902,6 +947,9 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         prefixCacheMaintenance: PrefixCacheMaintenanceTelemetry? = nil
     ) {
         self.slots = slots
+        self.wholeMacServiceUsed = wholeMacServiceUsed
+        self.wholeMacServiceRetirementProtocol = wholeMacServiceRetirementProtocol
+        self.wholeMacServiceReservations = wholeMacServiceReservations
         self.gpuMemoryActiveGb = gpuMemoryActiveGb
         self.gpuMemoryPeakGb = gpuMemoryPeakGb
         self.gpuMemoryCacheGb = gpuMemoryCacheGb
@@ -921,6 +969,10 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.slots = try c.decode([BackendSlotCapacity].self, forKey: .slots)
+        self.wholeMacServiceUsed = try c.decodeIfPresent(Double.self, forKey: .wholeMacServiceUsed)
+        self.wholeMacServiceRetirementProtocol = try c.decodeIfPresent(Int.self, forKey: .wholeMacServiceRetirementProtocol)
+        self.wholeMacServiceReservations = try c.decodeIfPresent(
+            [WholeMacServiceReservation].self, forKey: .wholeMacServiceReservations) ?? []
         self.gpuMemoryActiveGb = try c.decode(Double.self, forKey: .gpuMemoryActiveGb)
         self.gpuMemoryPeakGb = try c.decode(Double.self, forKey: .gpuMemoryPeakGb)
         self.gpuMemoryCacheGb = try c.decode(Double.self, forKey: .gpuMemoryCacheGb)
@@ -942,6 +994,11 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(slots, forKey: .slots)
+        try c.encodeIfPresent(wholeMacServiceUsed, forKey: .wholeMacServiceUsed)
+        try c.encodeIfPresent(wholeMacServiceRetirementProtocol, forKey: .wholeMacServiceRetirementProtocol)
+        if !wholeMacServiceReservations.isEmpty {
+            try c.encode(wholeMacServiceReservations, forKey: .wholeMacServiceReservations)
+        }
         try c.encode(gpuMemoryActiveGb, forKey: .gpuMemoryActiveGb)
         try c.encode(gpuMemoryPeakGb, forKey: .gpuMemoryPeakGb)
         try c.encode(gpuMemoryCacheGb, forKey: .gpuMemoryCacheGb)

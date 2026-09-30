@@ -1467,6 +1467,7 @@ private func fullInferenceProfile() -> InferenceProfile {
     d.continuation = .cancelled
     d.projection = .notAttempted
     d.projectionReason = .unsupportedScheduler
+    d.unboundedReason = .invalidProjectionTransition
     d.observedUs = maxUs
     d.remainingUs = maxUs
     d.submitRemainingUs = maxUs
@@ -1942,6 +1943,9 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
     #expect(capacity.telemetry?.inflightTasks == 3)
     #expect(capacity.slots.first?.telemetry?.prefillTokensTotal == 1_237_904)
     #expect(capacity.slots.first?.telemetry?.isolatedPrefillTps == 1655.2)
+    #expect(capacity.slots.first?.telemetry?.prefillRequestsTotal == 512)
+    #expect(capacity.slots.first?.performanceMeasurements?.isolatedPrefill?.sampleCount == 20)
+    #expect(capacity.slots.first?.performanceMeasurements?.workloadBuckets.first?.otherModelActivity == true)
     #expect(capacity.slots.first?.evalInFlightMs == 0)  // top-level field absent in fixture
     #expect(h.stats.cancelStageDecodeTotal == 20)
     #expect(h.stats.cancelAbortNsSum == 1_284_000_000)

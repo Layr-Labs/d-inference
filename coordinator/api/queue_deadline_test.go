@@ -26,14 +26,14 @@ import (
 // TestQueuedRequestExpiresAsQueueDeadlineLive drives the REAL HTTP path: the
 // single slot is saturated, the request queues, nothing drains it, and the
 // 400ms first-content deadline fires inside the queue wait.
-func TestQueuedRequestExpiresAsQueueDeadlineLive(t *testing.T) {
+func TestOwnerPreferredQueuedRequestExpiresAsQueueDeadlineLive(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	const model = "queue-deadline-live-model"
 	_, st, reg, ts := queuedFleetHarness(t, ctx, ServerConfig{FirstContentDeadlineBase: 400 * time.Millisecond}, model)
 
 	start := time.Now()
-	res := chatRequestWithID(ctx, ts.URL, model, "queue-deadline-live")
+	res := chatRequestWithID(ctx, ts.URL, model, "queue-deadline-live", "prefer")
 	elapsed := time.Since(start)
 	if res.err != nil {
 		t.Fatalf("chat request: %v", res.err)
@@ -186,7 +186,7 @@ type chatResult struct {
 	err        error
 }
 
-func chatRequestWithID(ctx context.Context, baseURL, model, requestID string) chatResult {
+func chatRequestWithID(ctx context.Context, baseURL, model, requestID string, route ...string) chatResult {
 	body := `{"model":"` + model + `","messages":[{"role":"user","content":"hello"}],"stream":true,"max_tokens":64}`
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/v1/chat/completions", strings.NewReader(body))
 	if err != nil {
@@ -194,6 +194,9 @@ func chatRequestWithID(ctx context.Context, baseURL, model, requestID string) ch
 	}
 	req.Header.Set("Authorization", "Bearer test-key")
 	req.Header.Set("Content-Type", "application/json")
+	if len(route) > 0 {
+		req.Header.Set("X-Darkbloom-Route", route[0])
+	}
 	if requestID != "" {
 		req.Header.Set("X-Request-ID", requestID)
 	}

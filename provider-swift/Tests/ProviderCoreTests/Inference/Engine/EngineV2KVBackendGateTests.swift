@@ -195,6 +195,24 @@ struct EngineV2KVBackendGateTests {
         _ = LiveInferenceFixtures.ensureMetallibColocated()
     }
 
+    @Test("qualification constructs width 16 while unknown serving stays at 8")
+    func qualificationConstructionPreservesRequestedWidth() async throws {
+        for purpose in [EngineV2Factory.ConstructionPurpose.serving, .benchmark] {
+            let build = try EngineV2Factory.makeProductionBuild(
+                model: tinyGemma4Text(), modelID: "unreviewed-gemma",
+                tokenizer: StubBridgeTokenizer(), kvBytesCapacity: gateTestCapacity,
+                maxConcurrentRequests: 16, constructionPurpose: purpose,
+                kvBackend: .contiguous, maxContextLength: 2048,
+                environment: gateEnvironment())
+            let expected = purpose == .benchmark ? 16 : 8
+            #expect(build.effectiveMaxConcurrentRequests == expected)
+            await build.engine.shutdown()
+        }
+        // Benchmark intent never removes the native architecture guard.
+        #expect(EngineV2Factory.nativeConcurrentRequestLimit(
+            requested: 16, qwen4: true, environment: [:]) == 1)
+    }
+
     @Test(arguments: candidateQwenIDs)
     func candidateAutoBuild(modelID: String) async throws {
         let build = try makeBuild(model: tinyQwen(), modelID: modelID, kvBackend: .auto)

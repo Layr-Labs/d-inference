@@ -28,6 +28,9 @@ enum ChatTemplateFixes {
         _ messages: [[String: any Sendable]],
         context: ChatTemplateFixContext
     ) throws -> [[String: any Sendable]] {
+        if MiMoV26TemplateFix.applies(to: context) {
+            return try MiMoV26TemplateFix.normalizeMessages(messages)
+        }
         let sanitized = sanitizeJinjaMessages(messages)
         var normalized = Qwen35TemplateFix.applies(to: context)
             ? Qwen35TemplateFix.normalizeMessages(sanitized)
@@ -59,6 +62,9 @@ enum ChatTemplateFixes {
         _ tools: [[String: any Sendable]]?,
         context: ChatTemplateFixContext
     ) -> [[String: any Sendable]]? {
+        if MiMoV26TemplateFix.applies(to: context) {
+            return MiMoV26TemplateFix.normalizeTools(tools)
+        }
         guard let sanitized = sanitizeTools(tools) else { return nil }
         if GPTOSSHarmonyTemplateFix.applies(to: context) {
             return GPTOSSHarmonyTemplateFix.normalizeTools(sanitized)

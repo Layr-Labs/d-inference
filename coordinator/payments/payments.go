@@ -20,11 +20,14 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-// UsageEntry records a single inference charge for usage history.
+// UsageEntry records a single inference charge for usage history. CachedTokens
+// is the subset of PromptTokens billed at the cache-read rate; without it the
+// cost of a cache hit could not be reconciled against the published prices.
 type UsageEntry struct {
 	JobID            string    `json:"job_id"`
 	Model            string    `json:"model"`
 	PromptTokens     int       `json:"prompt_tokens"`
+	CachedTokens     int       `json:"cached_tokens,omitempty"`
 	CompletionTokens int       `json:"completion_tokens"`
 	CostMicroUSD     int64     `json:"cost_micro_usd"`
 	Timestamp        time.Time `json:"timestamp"`

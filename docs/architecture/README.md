@@ -1,6 +1,6 @@
 # Architecture — how Darkbloom works
 
-> Last updated: 2026-09-27 · commit `ca4eb0b16`
+> Last updated: 2026-09-28
 
 Explanation pages: context, mechanism, invariants, failure modes, and a code
 map for each part of the system. The code in `coordinator/`,
@@ -42,6 +42,7 @@ how-to and runbook directories listed in [`../README.md`](../README.md).
 
 | Page | Concern |
 |---|---|
+| [first-content-routing.md](first-content-routing.md) | Expected and conservative delivery forecasts, measurement freshness, 100-ms selection and atomic retry policy |
 | [routing.md](routing.md) | How a request becomes a provider choice: eligibility gates, cost model, selection, hedged dispatch, servability, breakers |
 | [scheduling.md](scheduling.md) | Per-model queue, slot states, token-budget admission, concurrency caps, model swaps, warm pool, heartbeat and eviction |
 | [cache-aware-routing.md](cache-aware-routing.md) | Provider-confirmed exact prefix-cache routing: proof, holders, cost discount, kill switch |
@@ -55,6 +56,7 @@ how-to and runbook directories listed in [`../README.md`](../README.md).
 | [native-block-inference.md](native-block-inference.md) | Native diffusion block execution, commit boundaries, memory-estimator reuse and honest first-block timing; separate from model advertisement |
 | [prefix-cache.md](prefix-cache.md) | KV layouts (contiguous default, paged), block hashing, prefix-reuse plan per family, RAM staging and the encrypted SSD tier; why a default box builds no SSD cache |
 | [hardware-support.md](hardware-support.md) | Memory model: unified-memory cap, activation floors, load gate, KV budget and re-slice; platform and hardware gates |
+| [model-revisions.md](model-revisions.md) | Immutable weight revisions, automatic provider convergence, draining and rollback |
 | [model-registry.md](model-registry.md) | Model manifests, aliases, publishing to R2, registration, provider downloads |
 
 ## Data, money, and observability

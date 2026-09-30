@@ -1,6 +1,6 @@
 # Request-owned date and GPT-OSS prompt parity
 
-> Last updated: 2026-09-05 · commit `7190d3bbf`
+> Last updated: 2026-09-05
 
 The exact GPT-OSS template can now participate in prompt-contract planning with a date captured once per request. Four manifest entries pass positive provider identity checks and all 56 Rust-versus-Swift token comparisons. This milestone establishes prompt parity for GPT-OSS and the three existing Gemma entries; Qwen tool-template parity and paged model execution remain separate gates.
 

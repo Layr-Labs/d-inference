@@ -744,7 +744,7 @@ struct SSDPrefixCacheModeTests {
                 environment: ["DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS": "0"]) == 1_800)
         #expect(
             SSDPrefixCachePolicy.maxWriteBytesPerDay(environment: [:])
-                == 150 * 1_000_000_000)
+                == 750 * 1_000_000_000)
         #expect(
             SSDPrefixCachePolicy.maxWriteBytesPerDay(
                 environment: ["DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY": "0"]) == 0)
@@ -2160,6 +2160,12 @@ private final class SSDDeadlineRejectEngine: CBv2Engine, @unchecked Sendable {
     func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
         let (stream, continuation) = AsyncStream<CBv2Event>.makeStream()
         lock.withLock { _continuations.append(continuation) }
+        var usage = CBv2Usage(promptTokens: request.promptTokens.count, completionTokens: 0)
+        var timing = CBv2RequestTiming()
+        timing.prefillFirstLaunchNanos = 1_000_000
+        timing.promptComputedNanos = 1_001_000_000
+        usage.timing = timing
+        request.onPrefillCompleted?(usage)
         return stream
     }
 
@@ -2168,7 +2174,7 @@ private final class SSDDeadlineRejectEngine: CBv2Engine, @unchecked Sendable {
         firstTokenDeadline: CBv2FirstTokenDeadlineAdmission
     ) async throws -> CBv2FirstTokenDeadlineResult {
         lock.withLock { _deadlineSubmissions += 1 }
-        return .deadlineUnreachable(projectedWork: .unbounded)
+        return .deadlineUnreachable(projectedWork: .unbounded())
     }
 
     func cancel(_ id: CBv2RequestID) {}

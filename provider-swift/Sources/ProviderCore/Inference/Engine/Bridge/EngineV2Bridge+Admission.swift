@@ -34,9 +34,39 @@ extension EngineV2Bridge {
         isMultimodal: Bool,
         requestID: String? = nil, promptTokens: Int = 0, promptWork: PromptWork? = nil
     ) -> CBv2FirstTokenDeadlineAdmission? {
+        guard !isMultimodal else { return nil }
+        return targetFirstTokenDeadlineAdmission(
+            deadline: deadline, requestID: requestID,
+            promptTokens: promptTokens, promptWork: promptWork)
+    }
+
+    /// Only the opaque SDK seal plus this bridge's real published native
+    /// profile can make already-prepared causal media target-projectable.
+    /// Raw/other media retain the legacy refusal/bypass policy. The SDK still
+    /// revalidates the seal's exact engine, generation, owner and one-shot use.
+    func firstTokenDeadlineAdmission(
+        deadline: FirstContentDeadline?,
+        multimodal: CBv2MultimodalInput?,
+        requestID: String? = nil, promptTokens: Int = 0, promptWork: PromptWork? = nil
+    ) throws -> CBv2FirstTokenDeadlineAdmission? {
+        guard let admission = targetFirstTokenDeadlineAdmission(
+            deadline: deadline, requestID: requestID,
+            promptTokens: promptTokens, promptWork: promptWork) else { return nil }
+        guard let multimodal else { return admission }
+        guard multimodal.nativeMediaToken != nil, multimodal.attention == .causal,
+              multimodal.positionState == nil, multimodal.deepstackEmbeddings == nil else { return nil }
+        // A stale/foreign/missing capability is an actual veto, never a nil
+        // fallback to ordinary submission after identifying a native seal.
+        _ = try nativeMiMoDecodedMediaBinding()
+        return admission
+    }
+
+    private func targetFirstTokenDeadlineAdmission(
+        deadline: FirstContentDeadline?,
+        requestID: String?, promptTokens: Int, promptWork: PromptWork?
+    ) -> CBv2FirstTokenDeadlineAdmission? {
         guard prefillDeadlineMode == .enforce,
             prefillDeadlineProjectionEnabled,
-            !isMultimodal,
             let deadline
         else {
             return nil
@@ -86,7 +116,8 @@ extension EngineV2Bridge {
         guard transfer.claim() else { return }
         prefillReceipt.retainUntilRetirement()
         let bridge = self
-        Task {
+        let nativeTaskID = tracksNativeShutdown ? UUID() : nil
+        let task = Task {
             // Admission can commit and generate tokens before submit resumes.
             // No active row or client pump exists on this path, so this owner
             // reconciles work without publishing output or billable usage.
@@ -104,7 +135,16 @@ extension EngineV2Bridge {
                 readyReceiptRegistered: readyReceiptRegistered,
                 usageSignal: usageSignal,
                 failure: failure)
+            if let nativeTaskID { await bridge.clearNativeTransferredRetirement(nativeTaskID) }
         }
+        if let nativeTaskID {
+            nativeTransferredRetirementTasks[nativeTaskID] = task
+            if nativeShutdownClosed { nativeShutdownTasks.append(task) }
+        }
+    }
+
+    private func clearNativeTransferredRetirement(_ id: UUID) {
+        nativeTransferredRetirementTasks.removeValue(forKey: id)
     }
 
     private func completeTransferredPreSubmitRetirement(

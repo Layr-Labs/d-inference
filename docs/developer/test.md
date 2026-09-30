@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-29 · commit `a8aa6bb33`
+> Last updated: 2026-09-30
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -17,6 +17,85 @@ starting a localhost server. `MutableInputKernelTests` and
 exercise declared Metal writes, alias ownership and export/import. CI runs each
 selected suite through the nonzero/no-skip wrapper
 (`.github/workflows/ci.yml`, `scripts/run-nested-suite.sh`).
+
+MiMo source and tests are grouped under their existing modules' `MiMo/`
+folders; Swift target names are unchanged. The SDK's
+`MiMoV26EncodedVisualDecoderTests` covers rounded sampling bounds and compressed
+payload ceilings before real platform decoder entry. Normal provider
+`swift build --build-tests` does not compile a dependency's SDK test targets;
+compile and run the SDK package tests separately as CI does. Small selected
+native runners do not replace these whole-target compile checks.
+
+The retained-fence case in `ProviderLoopNativeMiMoLifetimeTests` also installs a
+weight-free non-native peer with a counted engine. A real native fixture fault
+in the shared registry must leave that peer's capacity/admission intact and
+permit its real bridge submission before and after the fault, while blocking
+the native owner, every cold load and reclamation. This is bridge-admission
+evidence, not peer-model generation. Keep its fresh-process selector and lane guard;
+the deliberately retained native owner must live until that test process exits.
+The audiovisual ingress cancellation test returns `Void` from its child task:
+it still checks real decode cancellation and host-reservation settlement, without
+transferring an unused non-Sendable decoded-media result across `Task.value`.
+Inside that task, call the concrete test type rather than dynamic `Self`:
+Swift 6.3's region-based isolation checker can reject the latter form. Keep
+the same plan, cancellation order, real decode and reservation assertions;
+do not add unchecked sendability or suppress cancellation to compile the test.
+
+The complete-prefix methods in `MiMoV26NativeLoadTransactionTests` require a
+strict generated **asymmetric** tiny BF16 fixture with three synthetic MTP
+heads and enough context for the unchanged 257-token prompt, eight output tokens
+and speculative padding (the qualified fixture declares 1,024). Set
+`MIMO_V26_SERIAL_LOAD_FIXTURES` to its parent, with the fixture at `tiny-bf16`,
+and `MIMO_V26_SERIAL_NATIVE_TESTS=1`; a symmetric or 128-context fixture does not
+exercise this contract. The default MTP case retains a 512-token prefill chunk
+and 2,048-token maximum work envelope. Its positive local arena is 64 MiB;
+a separate 16 MiB case must refuse without executing a native step, creating
+a duplicate bridge reservation or changing process ownership, then retire
+cleanly. The OFF and explicit 128-token interior-publication cases retain their
+16 MiB arenas. Tests assert one target KV/ring charge plus exactly one bounded
+assistant work envelope, not a second legacy per-token assistant charge.
+
+The same native suite holds an actual pre-submit caller while the SDK becomes
+quiescent: whole-Mac forecast invalidation must remain owned until that caller
+unwinds and the matching bridge drain succeeds. The retained-fence test keeps
+that activity across a repeated failed retirement and unrelated peer drain.
+Neither forecast invalidation nor these tiny-model tests certify full-checkpoint
+memory release, production cache composition or selected-model generation.
+
+`AudioInputRejectionTests` preserves early no-acquisition/no-decode refusals for
+generic or unknown models, and checks that a MiMo-looking request name grants
+nothing. A metadata-only native dispatch probe may enter normal cold acquisition;
+an actual acquired generic model must still refuse and release its lease.
+`MiMoV26ManagedAudioProviderTests` also routes typed Chat and Responses WAV input
+through the normal scheduler with a genuinely published synthetic target and
+owned audio sidecar, checking native work, host joins and retirement. Direct
+decoder or `submitDecodedAudioMedia` tests alone do not cover these ingress guards.
+
+`MiMoV26DiscoveryLoadFootprintTests` checks metadata-only quote revalidation,
+including foreign-family, SSD-discount, underpricing and changed-inventory
+refusals. The native `MiMoV26StandaloneLifecycleTests` scanner-quoted regression
+uses real `ModelScanner.parseModelInfo` output with a positive transient allowance
+and no SSD discount through ordinary loading, publication and retirement; a
+handwritten `ModelInfo` without that field does not cover this boundary.
+The same suite exercises actual preload → listener bind → same-owner stop, and
+refuses listener startup while a real native preload is held before publication.
+
+The nested SDK's `MiMoV26AudioTokenizerEncoderTests` also exercises real strict
+checkpoint installation into the indexed downsampling module array, exact
+transpose values, and missing/extra/shape/dtype refusals. Run these tests in the
+SDK package; a sidecar header audit or a provider test build does not run them.
+
+`TestReserveProviderWithPlanPrimarySelectionUnchanged` compares selection and
+costs exactly while normalizing only wall-clock profiling ages, including
+first-content capacity/performance sample ages. Two independently constructed
+fleets need not have identical elapsed milliseconds; forecast and freshness
+behavior remain covered by the separate first-content tests.
+
+`ModelScannerSnapshotSymlinkTests` covers ordinary/linked snapshot resolution
+and explicit revision selection. Missing refs retain the legacy path; existing
+bad refs cannot switch a hidden managed selection to a different visible
+snapshot. The fixtures exercise real denied reads, symlinks and a nonblocking
+FIFO refusal without reading model weights.
 
 For HF artifact downloads, `HuggingFaceDownloadTests` covers source preference,
 checksum rejection, fallback, and cancellation. Native Nemotron CI also runs
@@ -680,6 +759,15 @@ The CI formatting step checks tracked Go files with `gofmt`. It excludes
 `docs/reports/evidence/`, whose captured source bytes are immutable and bound
 by evidence manifests. Live Go source remains subject to the formatting gate.
 
+`TestCacheIndexConcurrentTrackerOperations` in
+`coordinator/registry/cache_index_invariant_test.go` races tracker operations
+with a bounded fake-clock advance while new lookup/ready transactions finish,
+then expires the late holders while the workers remain active. The initial
+advance already expires the old holders. Deferred worker shutdown also runs on
+fatal assertions, preventing leaked background allocations from contaminating
+`TestReserveProviderExAllocBudget`. The production TTLs, receipt acceptance,
+index invariants and allocation ceiling are unchanged.
+
 ```bash
 make coordinator-test                      # cd coordinator && go test ./...
 # what CI runs (repo root, race detector, Postgres-backed store tests included):
@@ -787,6 +875,82 @@ A number measured on macOS can differ from the Linux number in CI.
 CI also applies the [restored-resource cleanup](build.md#restored-swiftpm-runtime-resources)
 before building the debug test product.
 
+#### MiMo provider CI fixtures
+
+Provider Tests provisions the pinned public prompt metadata and original corpus
+with `scripts/prepare-mimo-prompt-fixtures.py`, exporting
+`MIMO_PROMPT_ARTIFACT_DIRECTORY` and `MIMO_PROMPT_REFERENCE_VECTORS` in that job.
+These remain required for the routine tokenizer/prompt/consumer tests; a skip or
+a fabricated recorded-divergence corpus is not a replacement.
+
+`scripts/prepare-mimo-provider-fixtures.py` creates the separate synthetic
+193-tensor, four-shard inventory offline. Its default is symmetric K32/V32,
+128-context BF16; `--asymmetric` creates K64/V128 with 1,024 context for the
+complete-prefix selectors. Both have three synthetic MTP heads and each shard is
+below 1 MiB. No selected codec, model-quality oracle or payload-verification
+receipt is generated. Prepare fresh directories before a local run:
+
+```bash
+python3 scripts/prepare-mimo-prompt-fixtures.py --output /absolute/fresh/mimo-prompt
+python3 scripts/prepare-mimo-provider-fixtures.py --output /absolute/fresh/mimo-provider
+python3 scripts/prepare-mimo-provider-fixtures.py --output /absolute/fresh/mimo-prefix --asymmetric
+export MIMO_PROMPT_ARTIFACT_DIRECTORY=/absolute/fresh/mimo-prompt
+export MIMO_PROMPT_REFERENCE_VECTORS="$PWD/fixtures/prompt-contract/mimo-v26-additional20.json"
+export MIMO_V26_SERIAL_LOAD_FIXTURES=/absolute/fresh/mimo-provider
+export MIMO_V26_WIRED_METADATA_FIXTURE=/absolute/fresh/mimo-provider/tiny-bf16
+export MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS=1
+```
+
+After rebuilding tests and staging the source-matched metallib, the general
+`scripts/run-provider-tests.sh` invocation runs metadata, prompt and non-native
+unit tests with `MIMO_V26_SERIAL_NATIVE_TESTS` unset. Its existing invocation
+and isolated-test behavior remain unchanged. CI separately runs the following
+small native gates in fresh serial processes; each uses
+`scripts/run-nested-suite.sh` to reject zero executed tests and every skip:
+
+```bash
+cd provider-swift
+MIMO_V26_SERIAL_NATIVE_TESTS=1 ../scripts/run-nested-suite.sh \
+  'MiMoV26StandaloneLifecycleTests.test(ActualScannerPreloadStartsListenerWithSameNativeOwner|StartRefusesActualUnpublishedPreloadWithoutReplacingOwner)' --no-parallel
+MIMO_V26_SERIAL_NATIVE_TESTS=1 MIMO_V26_SERIAL_LOAD_FIXTURES=/absolute/fresh/mimo-prefix \
+  ../scripts/run-nested-suite.sh 'MiMoV26NativeLoadTransactionTests.testNativeCompletePrefix' --no-parallel
+MIMO_V26_SERIAL_NATIVE_TESTS=1 MIMO_V26_PROVIDER_LIFETIME_NATIVE_TESTS=1 \
+  MIMO_V26_PROVIDER_LIFETIME_FAULT_CASE=testNativeFenceRefusalKeepsActualBundlePermitAndBlocksOtherOwnerReclaim \
+  DARKBLOOM_PREFIX_CACHE=0 DARKBLOOM_PREFIX_CACHE_MEMORY=0 \
+  ../scripts/run-nested-suite.sh testNativeFenceRefusalKeepsActualBundlePermitAndBlocksOtherOwnerReclaim --no-parallel
+```
+
+Reserve the native lane before these commands. The retained-fault selector must
+run alone and preserve its actual native owner until process exit. CI runs these
+gates even after an unrelated test failure, provided fixture/build/metallib
+prerequisites succeeded. Tiny-model control-flow passes do not qualify the full
+selected checkpoint, paging composition or audio generation.
+
+Native and selected-evidence tests skip only when their required opt-in is absent;
+an invalid opt-in value or missing/malformed enabled fixture fails. Fault selectors
+still deliberately isolate incompatible cases. `MiMoTestPrerequisitesTests`
+pins absent/enabled/malformed opt-ins. Selected tests remain additional explicit
+gates, not routine CI downloads:
+
+| Gate | Opt-In And Required Inputs |
+|---|---|
+| Managed selected audio and combined prefix/media | `MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS=1`, `MIMO_V26_MANAGED_AUDIO_FIXTURE_ROOT`; native methods also require `MIMO_V26_SERIAL_NATIVE_TESTS=1`. The fixture must meet their own target/context constraints and retain the actual selected ~1.8 GB codec. |
+| Selected discovery load quote | `MIMO_V26_DISCOVERY_AUDIO_TESTS=1`, `MIMO_V26_DISCOVERY_AUDIO_FIXTURE_ROOT`; actual selected target/sidecar metadata and inventory, not synthetic sizes. |
+| Recorded normalization divergence | `MIMO_CONSUMER_DIVERGENCE_TESTS=1`, `MIMO_CONSUMER_DIVERGENCE_VECTORS`; the original external/private recorded corpus plus pinned prompt metadata. |
+| Recorded audiovisual ingress | `MIMO_V26_INGRESS_AUDIO_VIDEO_TESTS=1`, `MIMO_V26_INGRESS_AUDIO_VIDEO_FIXTURE`; a bounded valid MP4 with an actual audio track, not synthetic track flags. |
+
+The managed-audio retained-fault method additionally requires
+`MIMO_V26_MANAGED_AUDIO_PROVIDER_FAULT_TEST=1` in its own process. Do not replace
+missing selected files or recorded cases with synthetic evidence, download large
+weights in routine CI, or loosen production admission/reserve defaults.
+`python3 scripts/test-prepare-mimo-provider-fixtures.py` checks complete inventory,
+offsets, bounded deterministic bytes, geometry, provenance and CI prerequisite
+wiring offline; `python3 scripts/test-native-gpu-ci.py` checks runner isolation
+without executing Swift or a GPU.
+SDK 27 qualification uses the same prompt and symmetric metadata fixtures
+before its watchdog-driven general provider pass; the shared action exports
+them for that step without enabling native opt-ins.
+
 `BetaCommandTests` and `IdleCommandTests` drive `setBetaFeature` and
 `setIdleUnloadMinutes` with an explicit `configPath` in a unique temporary
 directory. That directory is the only mutation and cleanup target; the tests
@@ -848,6 +1012,45 @@ nonempty/no-skips guard.
 A general-suite failure does not silence the isolated gates. Isolation keeps the
 stage-deadline assertion at the production budget without unrelated suite load;
 it does not change an assertion or runtime resource-selection rule.
+
+The accepted-then-expired engine case also runs in a fresh process. Its controlled
+engine admits before a real two-second deadline and returns after that deadline;
+the original accepted/expired profiling and cancellation assertions remain. This
+removes the former 30-second allowance for unrelated suite load, not a production
+deadline. The shell runner sets `DARKBLOOM_ISOLATED_DEADLINE_TEST=1` only for that
+isolated invocation. Direct/IDE runs retain the original 30-second setup margin.
+It remains subject to the isolated nonempty/no-skips gate.
+
+### Parallel Provider CI
+
+`.github/workflows/ci.yml` runs three independent jobs on dedicated macOS runners:
+
+| Job | Coverage |
+|---|---|
+| Provider Unit Tests | Full provider test products, serial general suite, fresh-process isolated gates, MiMo metadata and synthetic fixtures plus all three native selections, packaged-resource/authentication/installer checks |
+| Provider SDK Tests | Full nested SDK test products, DiffusionGemma, paged safety/hash/eligibility/backend/kernel/KV-sharing gates, and every required Nemotron/onboarding selector |
+| Provider Prompt Parity | Real pinned tokenizer/template vectors, Swift/Go/Rust comparison, cold-load singleflight, and the release sidecar's sustained load proof |
+
+The existing `Provider Tests` check aggregates all three results and fails unless
+every lane succeeds. This keeps existing required-check coverage intact without
+an out-of-band branch-protection change; the three macOS lanes still start
+independently and run concurrently.
+
+No numerical matrix, exclusive allocator assertion, or internal controlled
+concurrency is removed. Tests sharing MLX globals remain serial within a process.
+The jobs parallelize across machines rather than competing for one GPU. SDK gates
+run after earlier assertion failures when their build and Metal setup succeeded;
+missing prerequisites fail the lane instead of silently passing a skipped gate.
+Public MiMo metadata is prepared with the existing checksum-pinned helper before
+provider/parity execution. Native payload fixtures remain a separate prerequisite;
+missing native inputs are not converted into skips or counted as speedups.
+
+Run `python3 scripts/test-provider-ci-workflow.py`,
+`python3 scripts/test-provider-ci-cache.py`, and
+`python3 scripts/test-native-gpu-ci.py` for offline checks of job independence,
+exact gate membership, failure propagation, compatible caching, and exclusivity.
+Use the existing local `make provider-test` command for the full provider suite;
+do not run two Swift builds against one `.build` directory concurrently.
 
 `scripts/run-exclusive-native-gpu-test.sh` accepts only the reviewed allocator
 and batch-composition test functions. It sets
@@ -1810,20 +2013,27 @@ apply `docs-not-needed` when a mapped source change does not alter documented
 behavior; the PR must explain the exception in its Documentation impact
 section.
 
-The historical-link regression checks run in isolated temporary Git repositories:
+The historical-link and freshness-stamping regression checks run in isolated
+temporary Git repositories:
 
 ```bash
 python3 scripts/test-docs-check-historical-links.py
+python3 scripts/test-docs-stamp.py
 ```
 
 Docs Lint also runs these checks before validating the documentation tree.
-Frozen source references resolve against the exact stamped commit when the
-file has moved; current missing links still fail. See
+Frozen source references resolve against the exact legacy commit recovered from
+document history, or the particular link's introduction commit for new date-only
+records, when the file has moved. Shallow history, invalid or missing provenance,
+copied-record backdating, and current missing links still fail. Freshness dates
+never select commits. Stamping tests check date preservation, unchanged body
+evidence, tracked-file scope, and idempotence. See
 [historical source references](historical-references.md).
 
 ```bash
 make docs-check          # scripts/docs-check.sh — stamps, relative links, cited paths, orphans
 make docs-stamp FILES="docs/developer/test.md"   # refresh a stamp after editing
+scripts/docs-stamp.sh --from-git docs/reports/example.md   # preserve an existing date
 ```
 
 ### 8. End-to-end suite
@@ -1884,6 +2094,18 @@ binary that already has `mlx.metallib` beside it.
 
 ### 9. Prompt-contract parity fixtures and vectors
 
+The `prompt-fixtures` generator writes pretty JSON without an extra final newline,
+matching the checked-in production corpus. `verify-prompt-parity.sh` compares
+bytes before cross-language tests; different EOF formatting fails even when parsed
+tokens and contracts agree.
+
+Before the MiMo Rust cases, use the [pinned metadata setup](mimo-prompt-fixtures.md).
+`scripts/test-prepare-mimo-prompt-fixtures.py` tests its allowlist, exact hashes,
+size limits and non-overwriting/no-symlink behavior without network access.
+The actual setup fetches only four public metadata files and uses the unchanged
+checked-in synthetic20-case corpus. It neither loads weights nor qualifies the
+selected serving artifact's model generation or native API path.
+
 For the registry-ID/native-context follow-up, run `Qwen4SupportPolicyTests`,
 `Qwen4OwnedVLMRoutingTests`, `Qwen4ToolChoicePromptPolicyTests`,
 `Qwen4ReasoningEffortValidationTests` and `PromptContractIdentityTests` against
@@ -1926,7 +2148,7 @@ producing 154 token-array and scoped-hash comparisons. The common corpus uses
 histories and reasoning settings accepted by each family; family-specific argument and
 Harmony regressions remain in the provider's focused test suites.
 
-**Run the gate** (what CI's Provider Tests job runs; needs Go, `cargo +1.88.0`,
+**Run the gate** (what CI's Provider Prompt Parity job runs; needs Go, `cargo +1.88.0`,
 Swift and `jq`):
 
 ```bash
@@ -2000,7 +2222,7 @@ token IDs are accepted.
 
 | Workflow | Trigger | Jobs (name → what runs) |
 |---|---|---|
-| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — `scripts/check-release-version.sh`, `scripts/sync-install-embed.sh check`, `scripts/test-prod-env-refresh.sh` · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race -coverprofile=… -covermode=atomic` over every package except the top-level `e2e` integration package (`coordinator/internal/e2e` and `e2e/testbed/...` run) with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence; total statement coverage in the job summary, `coverage.out` kept 14 days as the `coordinator-coverage` artifact · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh`, then `cargo llvm-cov` (0.9.1) line coverage in the job summary · **Provider Tests** (macOS 12-vcpu) — `swift build --build-tests`, metallib staging, `swift test`, `verify-prompt-parity.sh`, six nested suites via `run-nested-suite.sh` (each its own step, `if: !cancelled()`), `test-install-atomic.sh` · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper`, warms the SwiftPM cache · **Console UI Lint & Build** — Node 22, `npm ci`, `npx eslint src/`, `npm test` (vitest run), `npm run build` |
+| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — release/script checks and offline provider CI/cache/routing guards · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race -coverprofile=… -covermode=atomic` over every package except the top-level `e2e` integration package (`coordinator/internal/e2e` and `e2e/testbed/...` run) with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence; total statement coverage in the job summary, `coverage.out` kept 14 days as the `coordinator-coverage` artifact · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh`, then `cargo llvm-cov` (0.9.1) line coverage in the job summary · **Provider Unit Tests** (macOS 12-vcpu) — full debug test build, matched Metal, serial/fresh-process provider tests and installer checks · **Provider SDK Tests** (independent macOS 12-vcpu) — full nested test build and all required numerical/SDK selectors through checked wrappers · **Provider Prompt Parity** (independent macOS 12-vcpu) — `verify-prompt-parity.sh`, pinned Swift/Go/Rust vectors and sustained sidecar load proof · **Provider Tests** (Linux aggregate) — requires all three provider lanes to succeed · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper` · **Console UI Lint & Build** — Node 22, `npm ci`, lint, vitest, and Next.js build |
 | [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 75 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (expected red, `continue-on-error`) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`) |
 | [`.github/workflows/benchmarks.yml`](../../.github/workflows/benchmarks.yml) | PR, gated by the `benchmarks` environment (manual approval) | **E2E Benchmarks** — `go test ./e2e/ -count=1 -v -timeout 40m -p=1 -run 'TestBenchmark'`, posts `BENCHMARK_MD_PATH` as a PR comment |
 | [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml) | tag `v*`, manual | Provider release; see [`../operations/provider-release.md`](../operations/provider-release.md) |

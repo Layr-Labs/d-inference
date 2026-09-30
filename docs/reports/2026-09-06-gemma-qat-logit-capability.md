@@ -1,6 +1,6 @@
 # Gemma QAT diagnostic capability refusal
 
-> Last updated: 2026-09-06 · commit `1be058a6b`
+> Last updated: 2026-09-06
 
 The exact Gemma QAT4 artifact reproduces its 61-token contiguous control with
 normal MTP. Installing the selected-logit diagnostic then fails with

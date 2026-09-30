@@ -95,8 +95,10 @@ public struct ModelInfo: Codable, Sendable, Equatable {
     /// Omitted for ordinary models; mapped OS pages still consume real memory.
     public var ssdOffloadedWeightBytes: UInt64?
     /// Explicit native load-copy allowance derived from validated checkpoint
-    /// headers. Only eligible Qwen4 SSD-offload loads declare this; nil retains
-    /// the legacy padded estimate. Not an activation/KV reserve or cache credit.
+    /// headers. Eligible Qwen4 declares copies above SSD-reduced resident bytes;
+    /// canonical MiMo declares full root + installed-sidecar LOAD minus ALL
+    /// sizeBytes, with no SSD discount. Both are bytes, while estimatedMemoryGb
+    /// is GiB. nil retains legacy padding. Not activation/KV or cache credit.
     public var nativeLoadTransientBytes: UInt64?
     public var weightHash: String?
     /// True when this build can serve image/video (VLM) input. Encoded only when

@@ -1,6 +1,6 @@
 # Identity binding
 
-> Last updated: 2026-09-28 · commit `58424f171`
+> Last updated: 2026-09-28
 
 How the coordinator binds a provider's process encryption key, account and
 verification credentials. Legacy MDM/APNs evidence and App Attest credentials

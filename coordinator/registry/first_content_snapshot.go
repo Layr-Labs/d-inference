@@ -18,13 +18,18 @@ func (r *Registry) fillFirstContentSnapshot(s *routingSnapshot, p *Provider, now
 	if sample, ok := p.firstContentMeasurements[s.model]; ok && !sample.observedAfter.IsZero() && !sample.decodeObservedAfter.IsZero() {
 		s.performanceAgeMs = max(heartbeatAgeMs(now, sample.observedAfter), heartbeatAgeMs(now, sample.decodeObservedAfter))
 	}
+	s.evidenceGapAgeMs = firstContentEvidenceGapAgeMs(s, p.registeredAt, now)
 	capacity := p.BackendCapacity
 	if capacity == nil {
 		return
 	}
-	// Weight loading can execute before the new model appears in Slots. It
-	// cannot establish an idle, fully observed workload for either predictor.
-	s.wholeMacBusy = capacity.LoadTransitionActive != nil && *capacity.LoadTransitionActive
+	// Idle slot counters do not prove retirement: service leases can outlive
+	// consumer terminals, and model loading can start before a slot appears.
+	// Legacy providers may omit service fields; their slot evidence still applies.
+	s.wholeMacBusy = len(p.serviceRetirementShadows) > 0 ||
+		(capacity.WholeMacServiceUsed != nil && *capacity.WholeMacServiceUsed != 0) ||
+		len(capacity.WholeMacServiceReservations) > 0 ||
+		(capacity.LoadTransitionActive != nil && *capacity.LoadTransitionActive)
 	fillCalibratedWorkSnapshot(s, p, now)
 	s.wholeMacWorkKnown = len(capacity.Slots) > 0
 	for i := range capacity.Slots {

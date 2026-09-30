@@ -1,6 +1,6 @@
 # App Attest enforcement receipt-renewal capacity review
 
-> Last updated: 2026-09-15 · commit `605651bb9`
+> Last updated: 2026-09-15
 
 The v0.9.4 receipt-renewal path has a fixed per-coordinator throughput ceiling
 that enforcement does not repair. This review assumes every provider has moved

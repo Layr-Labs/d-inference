@@ -174,6 +174,9 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	// Persist provider record to store (async).
 	r.persistProviderNow(p)
 
+	// Registration carries the provider's cache capabilities; bind any rows
+	// restored from the durable copy for its epochs (cache_persistence.go).
+	r.bindRegisteredProvider(p)
 	return p
 }
 

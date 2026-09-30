@@ -150,9 +150,10 @@ type Hardware struct {
 
 // ModelInfo describes a model available on a provider.
 type ModelInfo struct {
-	// Only providers declaring validated SSD-offloaded weight payload use the
-	// padded resident estimate for cold routing. Ordinary models retain the
-	// catalog/measured-weight policy of their current engine release.
+	// Full native LOAD estimate in GiB. Eligible Qwen4 declares a supplement
+	// over SSD-reduced resident bytes; canonical MiMo declares root + installed
+	// sidecar LOAD minus all SizeBytes, with no SSD discount. Size/supplement
+	// fields are bytes. Missing or invalid declarations retain legacy routing.
 	EstimatedMemoryGB        float64 `json:"estimated_memory_gb,omitempty"`
 	SSDOffloadedWeightBytes  int64   `json:"ssd_offloaded_weight_bytes,omitempty"`
 	NativeLoadTransientBytes int64   `json:"native_load_transient_bytes,omitempty"`

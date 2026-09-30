@@ -45,6 +45,33 @@ func TestPromptWorkPreflightAndWriterRetainCountAndOriginalClock(t *testing.T) {
 	}
 }
 
+func TestPromptWorkPlanningMemoPreservesAudioIneligibility(t *testing.T) {
+	bodies := append(audioCacheBodies(), `{"messages":[{"role":"user","content":"plain input_audio word"}]}`)
+	for index, body := range bodies {
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+			t.Fatal(err)
+		}
+		wantMedia := index < len(bodies)-1
+		calls := 0
+		memo := newRequestPromptWorkPlans(
+			func(string) ([]byte, error) { return []byte(body), nil },
+			func(_ string, _ []byte, hasMedia bool) promptwork.Result {
+				calls++
+				if hasMedia != wantMedia {
+					t.Fatalf("case %d: audio cache eligibility changed: got %v want %v", index, hasMedia, wantMedia)
+				}
+				return promptwork.Result{Work: promptwork.Heuristic(37)}
+			}, detectMediaRequirement(parsed), parsed)
+		_ = memo.forModel("model")
+		_ = memo.forBody("model", []byte(body))
+		work := memo.workForModel("model")
+		if calls != 1 || work == nil || work.PromptTokens != 37 || work.Source != protocol.PromptWorkHeuristic {
+			t.Fatalf("case %d: unified planning lost media gating, original heuristic or memoization", index)
+		}
+	}
+}
+
 func TestPromptWorkQuoteCoversCalibratedUpperBoundAcrossRetries(t *testing.T) {
 	var memo promptwork.Memo
 	body := []byte(`{"messages":[{"role":"user","content":"synthetic"}]}`)

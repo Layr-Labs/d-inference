@@ -305,7 +305,8 @@ struct Benchmark: AsyncParsableCommand {
             iterations: iterations,
             maxTokens: maxTokens,
             hardware: hardware,
-            kvBackend: kvBackend
+            kvBackend: kvBackend,
+            configuredMemoryReserveGB: snapshot.config.provider.memoryReserveGB
         )
 
         report.printTable()

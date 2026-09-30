@@ -16,13 +16,14 @@ var (
 var (
 	chatMediaTypes = map[string]struct{}{
 		"image": {}, "image_url": {}, "video": {}, "video_url": {},
+		"input_audio": {}, "audio_url": {},
 	}
 	responsesMediaTypes = map[string]struct{}{
 		"input_image": {}, "input_file": {}, "input_video": {}, "image": {}, "image_url": {},
-		"video": {}, "video_url": {},
+		"video": {}, "video_url": {}, "input_audio": {}, "audio_url": {},
 	}
 	messagesMediaTypes = map[string]struct{}{
-		"image": {}, "document": {},
+		"image": {}, "document": {}, "input_audio": {}, "audio_url": {},
 	}
 )
 

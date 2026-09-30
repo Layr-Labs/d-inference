@@ -1,6 +1,6 @@
 # Hybrid provider trust model review
 
-> Last updated: 2026-09-27 · commit `0bd16a9fa`
+> Last updated: 2026-09-27
 
 This review records the September 27 coexistence of legacy MDM/APNs and App Attest in source and focused tests. It updates the [canonical threat model](../threat-model.yaml) and [provider trust explanation](../architecture/security/provider-trust.md). It does not reassess unrelated historical findings or claim that the live fleet has adopted particular settings.
 

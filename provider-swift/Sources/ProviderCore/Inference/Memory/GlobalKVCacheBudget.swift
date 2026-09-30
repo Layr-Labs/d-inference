@@ -108,7 +108,11 @@ public actor GlobalKVCacheBudget {
             prepareUsage: { _ = Self.allocatorReady }, snapshot: snapshot)
         self.reclaimer = KVPoolReclaimer(
             clearCache: clearCache,
-            reclaimableBytes: { snapshot().cache })
+            reclaimableBytes: { snapshot().cache },
+            isReclaimAllowed: {
+                let registry = MiMoV26NativeLoadRegistry.shared
+                return !registry.hasRetainedFault && !registry.hasUnretiredClosingTransactions
+            })
     }
 
     init(

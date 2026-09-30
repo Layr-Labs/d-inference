@@ -74,11 +74,13 @@ extension ProviderLoop {
     }
 
     func pendingMTPUpgradeModels() -> [String] {
-        guard !isShuttingDown, !state.refusingNewWork, modelRevisionActivationID == nil,
+        guard nativeMiMoAllowsReclamation(), !isShuttingDown, !state.refusingNewWork,
+            modelRevisionActivationID == nil,
             SpecDecArtifactFunnel.killSwitchEnabled(environment: ProcessInfo.processInfo.environment)
         else { return [] }
         return modelSlots.compactMap { modelID, slot in
-            guard slot.container != nil, modelID == "gemma-4-26b-qat-4bit", !slot.engineBundle.mtpStatus.active,
+            guard Self.nativeMiMoLoad(in: slot.modelContainer) == nil,
+                slot.container != nil, modelID == "gemma-4-26b-qat-4bit", !slot.engineBundle.mtpStatus.active,
                 loopConfig.config.backend.mtpMode.enablesMTP(
                     forModelType: slot.modelType, embeddedArtifactDeclared: false, modelID: modelID),
                 !modelsUnloading.contains(modelID), !revisionUpdatesInProgress.contains(modelID), !isRefusedByRetirement(modelID)
@@ -185,7 +187,7 @@ extension ProviderLoop {
             if let replacement { await replacement.bridge.shutdown(); replacement.releaseAssistant() }
             prepared?.assistant?.release()
             prepared = nil
-            MLX.Memory.clearCache()
+            clearCacheAfterConfirmedNativeOwnership()
             await releaseMTPStagingAndRegrow(lease)
             logger.warning("mtp: model=\(modelID) optional preparation failed: \(error); retaining target engine")
             throw error
@@ -236,7 +238,7 @@ extension ProviderLoop {
         await staged.replacement.bridge.startSSDPrefixCacheStatsLogger()
         await staged.replacement.bridge.configureMTPStatus(staged.replacement.mtpStatus)
         staged.original = nil
-        MLX.Memory.clearCache()
+        clearCacheAfterConfirmedNativeOwnership()
         mtpStagingReservations.release(staged.lease)
         await kvBudget.finishPendingLoad(staged.lease)
         await resliceGrowSurvivorsLocked()
@@ -252,7 +254,7 @@ extension ProviderLoop {
         await staged.replacement.bridge.shutdown()
         staged.replacement.releaseAssistant()
         staged.original = nil
-        MLX.Memory.clearCache()
+        clearCacheAfterConfirmedNativeOwnership()
         await releaseMTPStagingAndRegrow(staged.lease)
     }
 

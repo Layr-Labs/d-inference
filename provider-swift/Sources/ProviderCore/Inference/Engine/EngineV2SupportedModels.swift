@@ -20,6 +20,10 @@
 //   * `qwen4_exp`, `qwen4_exp_text` — native Flash-Next target architecture;
 //                       automatic paging/cache policy is separately scoped
 //
+//   * `mimo_v2`      — strict native MiMo root bundle and owned media load;
+//                       artifact/sidecar validity and per-request bounds remain
+//                       mandatory; this does not activate automatic MTP.
+//
 // Everything else (gemma3, dense/other qwen families, llama, …) is
 // dropped from the advertised set at startup and at prefetch-verify time
 // (WARN log), so the coordinator never routes to it. A load request for an
@@ -82,6 +86,9 @@ public enum EngineV2SupportedModels {
     /// nil/unknown types are unsupported — fail closed.
     public static func isSupported(modelType: String?) -> Bool {
         guard let raw = normalized(modelType) else { return false }
+        // MiMo has an explicit strict native loader, not generic registry
+        // fallback. Its dispatch requires the exact canonical declaration.
+        if raw == "mimo_v2" { return modelType == "mimo_v2" }
         if raw == "gpt_oss" { return true }
         if raw == "diffusion_gemma" { return true }
         if raw == "qwen3_5" || raw == "qwen3_5_moe" || raw == "prism_hadamard_qwen35" { return true }

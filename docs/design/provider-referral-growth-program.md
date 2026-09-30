@@ -1,6 +1,6 @@
 # Provider referral growth program — fixed acquisition rewards plus interim payout share
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-03
 
 Status: **Proposed** — 2026-08-21 — none of the `provider_referral_*` tables or acquisition-reward code in §9 exists; `coordinator/billing/referral.go` (`ReferralService`) still implements only the consumer platform-fee share this memo builds on, see [`../architecture/billing.md`](../architecture/billing.md#consumer-referral).
 

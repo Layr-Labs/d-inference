@@ -1,4 +1,5 @@
 import Crypto
+import Darwin
 import Foundation
 import Testing
 @testable import ProviderCore
@@ -107,7 +108,10 @@ struct ModelArtifactPublicationTests {
         try ModelDownloader.publishRevision(stagingDir: oldStaging, directory: oldDirectory,
             manifest: oldManifest, activationRequested: true)
         let previous = try #require(ModelScanner.resolveLocalPath(modelID: f.modelID))
-        #expect(previous == oldDirectory.resolvingSymlinksInPath())
+        // Foundation may preserve /var while POSIX resolves it to /private/var.
+        let canonicalPath = try #require(realpath(oldDirectory.path, nil))
+        defer { free(canonicalPath) }
+        #expect(previous == URL(fileURLWithPath: String(cString: canonicalPath), isDirectory: true))
         #expect(previous != oldDirectory)
         #expect(ModelDownloader.selectedRevisionMatches(modelID: f.modelID,
             version: oldManifest.version, aggregateSHA256: oldManifest.aggregateSHA256))

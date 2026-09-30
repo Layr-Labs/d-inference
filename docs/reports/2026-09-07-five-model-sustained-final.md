@@ -1,6 +1,6 @@
 # Final five-model sustained generation checks
 
-> Last updated: 2026-09-07 · commit `f8086ef1e`
+> Last updated: 2026-09-07
 
 The three Qwen models and GPT-OSS meet the required long-context and sustained decode scope on the verified 0.9.0 runtime. Gemma QAT refuses the long checklist request and stops after 70 and 62 tokens, so the five-model run fails its complete-workload gate.
 

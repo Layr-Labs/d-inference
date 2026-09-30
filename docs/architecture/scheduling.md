@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-28 · commit `d89ef42be`
+> Last updated: 2026-09-29
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -252,7 +252,12 @@ family declarations retain catalog-based accounting; a model name alone grants
 no reduction (`coordinator/registry/offloaded_weights.go`).
 `reportedFreeForLoadAdmitsWithOffload` is shared by routing, the model-load
 planner and the warm pool, so none independently discounts the same weights.
-This is weight-residency accounting, not prefix-cache credit, a lower activation
+Exact `mimo_v2` may instead advertise a checked full-LOAD supplement with zero
+SSD subtraction. The same shared helper preserves raw catalog/source-size
+floors, adds the supplement once, and rejects malformed/understated declarations.
+All four consumers provide unpadded decimal catalog GB; they do not replace it
+with minimum RAM, GiB or an already padded requirement.
+This is load-admission accounting, not prefix-cache credit, a lower activation
 reserve or proof that a physical RAM tier passes cold load and reload. The
 [native support reference](../reference/qwen4-next-support.md) records those
 separate model/resource qualification boundaries.

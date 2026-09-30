@@ -1,6 +1,6 @@
 # Model artifact revisions
 
-> Last updated: 2026-09-28 · commit `fb33ea84e`
+> Last updated: 2026-09-28
 
 An existing model can acquire new weights without changing its model ID or
 releasing another provider binary. Publishers upload an immutable revision and

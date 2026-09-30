@@ -1,6 +1,6 @@
 # Provider integration of complete paged SSD checkpoints
 
-> Last updated: 2026-09-05 · commit `169b342e6`
+> Last updated: 2026-09-05
 
 The provider now binds segmented paged storage to shared process admission and
 constructs complete SSD stores from loaded recurrent or historical-attention

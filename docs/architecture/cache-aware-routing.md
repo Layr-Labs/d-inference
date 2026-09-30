@@ -360,6 +360,25 @@ watermark. Slot unload,
 replacement, shutdown, and connection changes invalidate resident evidence.
 There is no targeted resident-eviction wire message in this extension.
 
+The file and its in-memory index commit are coordinated through
+`SSDCheckpointFileCoordinator` in
+`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointFileCoordinator.swift`.
+Complete-checkpoint `performWrite` and attention `SSDWriteBehind.consume` hold
+cancellable per-file access through durable rename (or duplicate authentication)
+and index insertion. They release it before whole-root/disk-budget maintenance,
+so a committed new file can still be evicted under pressure. Startup scans use
+the same file-access boundary for index insertion. Under its epoch barrier,
+`SSDOwnedEntryRetirement.remove` uses nonblocking `tryAcquire` and skips busy
+files rather than waiting for a writer that may need the epoch lock. Unrelated
+victims remain eligible. Complete-checkpoint donation and `publishReady` also
+require a regular no-follow file before announcing a new anchor
+(`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+Write.swift`,
+`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+Maintenance.swift`,
+`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWriteBehind.swift`,
+`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDOwnedEntryRetirement.swift`).
+This prevents owned retirement from deleting a renamed-but-not-yet-indexed
+checkpoint without reintroducing generation-wide invalidation for routine LRU.
+
 Attempts remain briefly after inference terminal state because encrypted SSD
 write-behind can finish later. Routing uses in-memory attempt and holder maps;
 SSD holders also have a [write-behind copy](#persistence-across-restarts). Each

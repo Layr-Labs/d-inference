@@ -32,7 +32,7 @@ struct SSDHybridCheckpointRecencyTests {
     }
 
     @Test("complete TTL characterization: expired indexed files refuse reads without waiting for a sweep",
-          arguments: [899, 900, 901])
+          arguments: [1799, 1800, 1801])
     func ttlReadBoundaryWithoutSweep(age: Int) async throws {
         try await Device.withDefaultDevice(.cpu) {
             #expect(Device.defaultDevice().deviceType == .cpu)
@@ -42,7 +42,7 @@ struct SSDHybridCheckpointRecencyTests {
                 catch { Issue.record("complete expiry fixture cleanup failed: \(error)") }
             }
             let clock = Clock()
-            let store = try makeStore(fixture, clock: clock, ttlSeconds: 900)
+            let store = try makeStore(fixture, clock: clock, ttlSeconds: SSDPrefixCachePolicy.defaultTTLSeconds)
             do {
                 let donated = try await fixture.donate(store)
                 try #require(donated == [256], "donation setup must publish the fixture checkpoint")
@@ -55,7 +55,7 @@ struct SSDHybridCheckpointRecencyTests {
                 clock.advance(to: 1000 + Int64(age))
                 let result = await store.stage(requestID: .init(510), request: fixture.request(),
                     reserveReadScratch: fixture.reserveReadScratch, makeImportPlan: fixture.plan)
-                let expectedStage = age < 900
+                let expectedStage = Int64(age) < SSDPrefixCachePolicy.defaultTTLSeconds
                 #expect(result.staged == expectedStage)
                 #expect(store.stats().filesRead == (expectedStage ? 2 : 0))
                 if expectedStage {

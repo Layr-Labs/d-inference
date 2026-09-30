@@ -199,7 +199,7 @@ protocol SSDEvictableStore: AnyObject, Sendable {
     func performExternalDestructiveChange(_ body: () -> Void) -> Bool
     /// Retire only the named owned files, preserving the generation of survivors.
     /// Return paths actually unlinked; arbitrary external destruction uses the
-    /// separate epoch-rotating method above.
+    /// separate index-reconciliation method above.
     func retireOwnedEntries(_ urls: [URL]) -> Set<String>
 }
 
@@ -262,6 +262,7 @@ final class SSDDiskBudget: @unchecked Sendable {
         return lock.withLock {
             guard let store = stores.values.first(where: {
                 $0.evictionRoot.standardizedFileURL.resolvingSymlinksInPath().path == key
+                    && $0.ownsEvictionRoot
             }) else { return nil }
             return store.retireOwnedEntries(urls)
         }

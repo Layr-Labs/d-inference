@@ -68,7 +68,7 @@ extension SSDHybridCheckpointStore {
             }
             do { try check() } catch { staged.close(); throw error }
             let installed = lock.withLock {
-                guard !Task.isCancelled, !closed, !destructiveChange, reading[requestID] === access,
+                guard !Task.isCancelled, !closed, reading[requestID] === access,
                     epochMatches(epoch) else { return false }
                 stages[requestID] = staged
                 if !loaded.usesProcessMemoryOwner { stageReservations[requestID] = lease }
@@ -95,7 +95,13 @@ extension SSDHybridCheckpointStore {
         } catch CBv2CompleteCheckpointError.allocationFailed {
             return .init(.skippedCapacity)
         } catch {
-            removeCorrupt(Data(candidate.tag.prefix(16)))
+            let short = Data(candidate.tag.prefix(16))
+            if SSDBlockStore.isAbsentBlockFailure(error, at: url, under: config.root) {
+                forgetMissing(short)
+                statsBox.update { $0.misses += 1 }
+                return .init(.missAbsent)
+            }
+            removeCorrupt(short)
             return .init(.missCorrupt)
         }
     }

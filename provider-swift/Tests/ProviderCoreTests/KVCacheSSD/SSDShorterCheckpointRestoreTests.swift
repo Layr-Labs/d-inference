@@ -193,7 +193,7 @@ struct SSDShorterCheckpointRestoreTests {
                         switch action {
                         case "complete": store.completeStaging(requestID: .init(905))
                         case "close": store.close()
-                        case "epoch": #expect(store.performExternalDestructiveChange {})
+                        case "epoch": #expect(store.config.epochStore?.rotate() != nil)
                         default: withUnsafeCurrentTask { $0?.cancel() }
                         }
                         throw CBv2KVError.capacityExhausted(needed: 2, available: 1)
@@ -220,7 +220,7 @@ struct SSDShorterCheckpointRestoreTests {
                         switch action {
                         case "complete": store.completeStaging(requestID: .init(910))
                         case "close": store.close()
-                        case "epoch": #expect(store.performExternalDestructiveChange {})
+                        case "epoch": #expect(store.config.epochStore?.rotate() != nil)
                         default: withUnsafeCurrentTask { $0?.cancel() }
                         }
                     })
@@ -313,7 +313,7 @@ struct SSDShorterCheckpointRestoreTests {
             switch action {
             case "complete": store.completeStaging(requestID: .init(909))
             case "close": store.close()
-            case "epoch": #expect(store.performExternalDestructiveChange {})
+            case "epoch": #expect(store.config.epochStore?.rotate() != nil)
             default: task.cancel()
             }
             if !settled { task.cancel(); store.close() }

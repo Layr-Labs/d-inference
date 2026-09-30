@@ -76,6 +76,8 @@ swift test --skip-build --disable-xctest --enable-swift-testing --no-parallel \
   --filter 'SSDCheckpointCPUAcceptanceTests|SSDCheckpointCommitRetirementTests|SSDOwnedEntryRetirementTests|SSDCheckpointFileCoordinatorTests|SSDCheckpointFileCoordinatorPathTests|SSDCacheEpochStoreTests|SSDCheckpointPublicationCPUTests|SSDNoFollowIOSpecialFileTests|SSDTestDirectoryTests'
 ```
 
+Owned eviction defers while an authenticated reader holds its exact-file lease and retires after the lease drains. External unlink remains an absent miss; epoch-invalidation fixtures explicitly rotate the durable epoch because ordinary per-file maintenance preserves it.
+
 The complete-checkpoint, epoch, owned-retirement and FIFO fixtures accept
 `DARKBLOOM_SSD_TEST_TMPDIR` as an explicit test-only parent directory. It must
 already exist, be absolute, writable and canonical, without symlink components.
@@ -129,7 +131,9 @@ swift test --skip-build --disable-xctest --enable-swift-testing --no-parallel \
   --filter 'SSDPrefixCacheLifecycleTests/ttlStageBeforeSweepCharacterization|SSDHybridCheckpointRecencyTests/ttlReadBoundaryWithoutSweep'
 ```
 
-These characterize ages 899, 900 and 901 seconds. Attention eligibility is
+The complete-checkpoint read boundary uses the current default TTL at ages
+1799, 1800 and 1801 seconds; explicit 900-second attention fixtures retain their
+configured-policy characterization. Attention eligibility is
 sweep-enforced; complete-checkpoint reads reject expiry without awaiting a sweep.
 The tests do not extend retention or assert immediate physical erasure. They
 require real donation, exact restored values, unchanged retained ciphertext and

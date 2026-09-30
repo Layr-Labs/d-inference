@@ -1,6 +1,6 @@
 # Connected cache qualification
 
-> Last updated: 2026-09-27 · commit `d621f9772`
+> Last updated: 2026-09-27
 
 The cache-reliability integration preserves response correctness while restoring
 usable state through real local provider/API requests. This report separates

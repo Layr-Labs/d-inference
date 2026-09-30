@@ -1767,31 +1767,30 @@ public final class SSDPrefixCache:
         // skipped so a newer victim can still satisfy the box-wide budget.
         let victims = index.oldestEntries()
         guard !victims.isEmpty else { return 0 }
-        return performIndexedRemoval {
-            for victim in victims {
-                let url = SSDBlockStore.fileURL(
-                    root: config.root, tag16Hex: SSDLookupKeys.hex(victim.tag16))
-                switch SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) {
-                case .missing, .invalid:
-                    index.remove(tag16: victim.tag16)
-                case .regular:
-                    if SSDBlockStore.removeItemIfSafe(at: url, under: config.root) {
-                        let bytes = index.remove(tag16: victim.tag16)
-                        statsBox.add(evictions: 1)
-                        return bytes
-                    }
-                    // The entry may have changed between classification and unlink.
-                    // Drop only when a second no-follow check proves it is no longer
-                    // an owned regular file.
-                    if SSDBlockStore.indexedBlockFileStatus(
-                        at: url, under: config.root) != .regular
-                    {
-                        index.remove(tag16: victim.tag16)
-                    }
-                }
+        for victim in victims {
+            let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: SSDLookupKeys.hex(victim.tag16))
+            let retired = retireIndexedEntries([url])
+            if retired.indexedBytesFreed > 0 {
+                statsBox.add(evictions: 1)
+                return retired.indexedBytesFreed
             }
-            return 0
-        } ?? 0
+        }
+        return 0
+    }
+
+    func retireOwnedEntries(_ urls: [URL]) -> Set<String> {
+        retireIndexedEntries(urls).removed
+    }
+
+    private func retireIndexedEntries(_ urls: [URL]) -> SSDOwnedEntryRetirement.Result {
+        let result: SSDOwnedEntryRetirement.Result? = removalLock.withLock {
+            guard hasSafeRoot, ownsEvictionRoot else { return nil }
+            return SSDOwnedEntryRetirement.remove(
+                urls: urls, root: config.root, index: index, epochStore: config.epochStore)
+        }
+        guard let result else { return .init() }
+        if result.externalChange { reconcileExternalRemovals() }
+        return result
     }
 
     func reconcileExternalRemovals() {
@@ -1846,28 +1845,9 @@ public final class SSDPrefixCache:
         guard hasSafeRoot else { return }
         let expired = index.expired(now: config.nowSeconds(), ttlSeconds: config.ttlSeconds)
         guard !expired.isEmpty else { return }
-        _ = performIndexedRemoval {
-            var removed = 0
-            for tag16 in expired {
-                let url = SSDBlockStore.fileURL(
-                    root: config.root, tag16Hex: SSDLookupKeys.hex(tag16))
-                let status = SSDBlockStore.indexedBlockFileStatus(
-                    at: url, under: config.root)
-                if status == .regular,
-                    SSDBlockStore.removeItemIfSafe(at: url, under: config.root)
-                {
-                    index.remove(tag16: tag16)
-                    removed += 1
-                } else if status != .regular {
-                    // Missing/replaced paths are no longer owned cache bytes. Drop
-                    // the stale RAM entry, but do not report a durable TTL removal.
-                    index.remove(tag16: tag16)
-                }
-            }
-            if removed > 0 {
-                statsBox.add(ttlExpired: removed)
-            }
-        }
+        let urls = expired.map { SSDBlockStore.fileURL(root: config.root, tag16Hex: SSDLookupKeys.hex($0)) }
+        let removed = retireIndexedEntries(urls).removed.count
+        if removed > 0 { statsBox.add(ttlExpired: removed) }
     }
 
     // MARK: - Startup scan (the recovery protocol — no index sidecar)
@@ -1928,6 +1908,8 @@ public final class SSDPrefixCache:
             }
             for url in files where url.pathExtension == SSDBlockStore.fileExtension {
                 if isClosed { return }
+                guard let access = SSDCheckpointFileCoordinator.shared.tryAcquire(to: url) else { continue }
+                defer { access.release() }
                 guard let fileValues = try? url.resourceValues(
                     forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
                     fileValues.isRegularFile == true, fileValues.isSymbolicLink != true,

@@ -1,6 +1,6 @@
 # SSD eviction can preserve bytes while losing cache discovery
 
-> Last updated: 2026-09-25 · commit `2a2efa341`
+> Last updated: 2026-09-25
 
 ## Status and scope
 

@@ -1,0 +1,53 @@
+# Report-only mutation testing for the registry routing and scheduler files.
+#
+# It runs `make mutation-registry` and reports how many small code changes
+# (mutants) the registry tests catch. It runs only on demand and once a week.
+# It never runs on a pull request or a push, so it cannot block a merge. The
+# score never fails the job; only a broken setup or a spent time budget does.
+
+name: Mutation Report
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation-report
+  cancel-in-progress: false
+
+jobs:
+  registry:
+    name: Registry Mutation Report
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
+        with:
+          go-version-file: go.mod
+      - name: Run mutation testing
+        run: make mutation-registry MUTATION_OUT="$RUNNER_TEMP/mutation" MUTATION_BUDGET=270m
+      - name: Write score to the job summary
+        if: always()
+        run: |
+          summary="$RUNNER_TEMP/mutation/registry-summary.md"
+          if [ -s "$summary" ]; then
+            cat "$summary" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No mutation report. Read the Run mutation testing step log." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload mutation report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: registry-mutation-report
+          path: |
+            ${{ runner.temp }}/mutation/registry.json
+            ${{ runner.temp }}/mutation/registry.txt
+            ${{ runner.temp }}/mutation/registry-summary.md
+          if-no-files-found: warn
+          retention-days: 30

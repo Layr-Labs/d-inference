@@ -23,6 +23,7 @@
 - Pin the production prompt fixture's EOF format during regeneration; parity still compares the complete corpus bytes and unchanged token/contract expectations.
 - Keep documentation freshness stamps date-only, preserving existing dates, immutable source links and historical evidence. Historical source validation reads committed provenance rather than requiring a hash in the stamp.
 - Document topic-local changelog updates and conflict resolution that preserves other PRs' entries, keeping release assignment separate from ordinary contributions.
+- Add a report-only mutation test run for the registry routing and scheduler files (`make mutation-registry`, weekly and manual workflow). It never blocks a PR.
 
 ## Unreleased — cache routing state persistence
 

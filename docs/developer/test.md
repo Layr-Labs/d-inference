@@ -2269,6 +2269,7 @@ token IDs are accepted.
 | [`.github/workflows/provider-signing-validation.yml`](../../.github/workflows/provider-signing-validation.yml) | manual only | Build an exact signed source revision, validate Developer ID signing/provisioning/notarization in a separate job, and retain an Actions artifact; no GitHub environment, deployment, release registration or model execution |
 | [`.github/workflows/register-model.yml`](../../.github/workflows/register-model.yml) | manual | `POST /v1/admin/models/register`; see [`../operations/model-migration.md`](../operations/model-migration.md) |
 | `.github/workflows/claude.yml`, `.github/workflows/codex.yml` | PR / comment | Review automation; not test gates |
+| [`.github/workflows/mutation.yml`](../../.github/workflows/mutation.yml) | manual, weekly schedule | **Registry Mutation Report** — `make mutation-registry`; report only, never on a PR or push; see [Registry mutation report](#registry-mutation-report) |
 
 ## Verify
 
@@ -2756,6 +2757,59 @@ against a mock WebSocket coordinator while accepted work is held open.
 `ProcessLifecycleTests` verifies that lock acquisition cannot kill a live PID owner.
 `TestRestartStatusReportsOwnerAuthorizationWithoutPublicGrant` checks explicit
 owner authorization while retaining runtime/security denials.
+
+## Registry mutation report
+
+Mutation testing makes small changes (mutants) in the code and runs the tests
+again. A good test fails on the change and "kills" the mutant. A mutant that
+"lives" shows code that no assertion checks.
+
+`make mutation-registry` runs [gremlins](https://github.com/go-gremlins/gremlins)
+at a pinned version (`GREMLINS_VERSION`, default `v0.6.0`) on these files in
+`coordinator/registry`: `scheduler.go`, `candidate_selection.go` and the
+non-test `first_content_*.go` files. All other registry files and subpackages
+are excluded. Each mutant runs `go test` on the registry package. The target
+calls `scripts/mutation-registry.sh`. The script installs the tool with
+`go install tool@version` into `$(MUTATION_OUT)/bin`, so the tool does not
+enter `go.mod` or `go.sum`. Each mutant build adds tens of MB to the Go build
+cache (about 50 GB for a full run), so the script uses a private cache in
+`$(MUTATION_OUT)/gocache`, deletes entries that the run made more than 5
+minutes ago, and removes the cache at the end. Keep at least 15 GB of disk
+free for a run with 8 workers. Each worker also copies the repository into a
+temporary directory (`TMPDIR`).
+
+```sh
+make mutation-registry                       # report in artifacts/mutation (gitignored)
+make mutation-registry MUTATION_OUT=/tmp/mut MUTATION_WORKERS=8
+```
+
+A full run makes about 900 mutants. With 8 workers on an Apple Silicon laptop
+it took about 1 hour.
+
+Variables:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MUTATION_OUT` | `artifacts/mutation` | Output directory |
+| `MUTATION_BUDGET` | `240m` | `timeout` limit for the whole tool run |
+| `MUTATION_WORKERS` | `0` (one per CPU) | Mutants tested in parallel |
+| `MUTATION_TIMEOUT_COEFFICIENT` | `5` | Per-mutant limit, as a multiple of the first coverage run time |
+
+The target writes `registry.json` (gremlins report), `registry.txt` (tool log)
+and `registry-summary.md` (from `scripts/mutation-summary.py`). The score is
+killed / (killed + lived). Timed-out, not-viable and not-covered mutants are
+not in the score. Each line under "Surviving mutants" gives `file:line:column`
+and the mutation type, for example `CONDITIONALS_BOUNDARY` (`<` became `<=`).
+To fix a survivor, add an assertion that fails on that change. Some survivors
+are equivalent mutants: the change does not alter behavior, so no test can
+kill them.
+
+The run is report-only. It is not part of `make test`. The score never fails
+the target; only a broken setup or a spent `MUTATION_BUDGET` does. The
+**Mutation Report** workflow runs the target on manual dispatch and every
+Monday (06:00 UTC). It writes the summary to the job summary and uploads the three files
+as the `registry-mutation-report` artifact for 30 days. It never runs on a
+pull request or push and is not a required check.
 
 ## Advisory threat-model review checks
 

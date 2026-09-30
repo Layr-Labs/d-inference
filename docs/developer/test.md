@@ -37,6 +37,9 @@ native runners do not replace these whole-target compile checks.
 `MiMoV26OpenRouterMediaTests` uses checked-in JPEG, MP4 and MOV bytes from the
 OpenRouter conformance cases. It verifies full-size decoding, production
 geometry and frame-working-set bounds, plus tiny native vision equivalence.
+`MiMoV26VisionWorkingSetTests` checks the fused-kernel selection and conservative
+CPU/custom-stream/geometry fallback. `MiMoV26AudioWorkingSetTests` checks actual
+tile accounting and lazy/bounded numerical equivalence across mixed clips.
 The SDK CI lane also creates a fresh tiny MiMo fixture and runs
 `MiMoV26NativeMediaDeadlineTests.testMediaReservationRefusalLeavesTextEngineUsable`
 with explicit native-lane flags. Both steps use the nonzero/no-skip wrapper.

@@ -10,6 +10,7 @@
 ## Unreleased — MiMo media memory and text isolation
 
 - Complete native MiMo vision work one frame and transformer block at a time, reserving the largest live working set instead of every layer and video frame together. Preserve retained media/features, KV, codec and OS/activation safeguards.
+- Match vision scratch to the selected fused Metal kernel and complete audio encoder/RVQ stages before reusing their workspace. Reserve actual audio tiles rather than charging a maximum tile and every layer simultaneously.
 - Report media-preparation memory refusals as `media_memory_unavailable`. Keep bounded failover while leaving text-capacity clamps, health breakers and reputation unchanged. Genuine native completion faults retain their existing quarantine behavior.
 - Add exact OpenRouter JPEG/MP4/MOV fixture coverage and media-refusal-to-text-serving regressions.
 

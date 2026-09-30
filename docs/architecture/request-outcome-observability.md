@@ -1,6 +1,6 @@
 # Request Outcome Observability
 
-> Last updated: 2026-09-13
+> Last updated: 2026-09-30
 
 Every provider dispatch attempt ends in one claimed terminal outcome, and that outcome is recorded three ways: a closed `final_status` / `error_class` / `error_reason` triple on the `inference_routes` row, a per-attempt `request_profiles` row with separate `client_outcome` and `provider_outcome` columns, and a small set of low-cardinality Datadog counters. Requests refused before dispatch land in the `request_rejections` ledger instead. This page explains the existing attempt taxonomy and protected counters. The unsampled incoming-request ledger, its coverage limits, and separate egress/completion evidence are defined in [incoming request accounting](request-accounting.md).
 
@@ -87,6 +87,7 @@ Two pairings deserve a note. `dispatchErrorClass` maps the dispatch loop's own f
 | `jinja_channel_tags`, `jinja_null_bridge`, `jinja_template` | provider chat-template render failure (deterministic; classed `client_error`, reason preserved) |
 | `model_load` | provider load failure; also starts the load-failure cool-down (`registry.RecordDispatchLoadFailure`) |
 | `capacity_timeout`, `queue_full`, `capacity_busy` | provider capacity/queue terminals; `queue_timeout` and `queue full` messages fold to these |
+| `media_memory_unavailable` | request-specific media preparation memory refusal; transient capacity without changing text/KV budget or provider health |
 | `token_budget_exhausted`, `request_exceeds_context`, `request_exceeds_node`, `request_exceeds_node_budget`, `request_exceeds_batch_token_budget` | provider servability terminals (the dispatch backstop reclassifies these `5xx` to `429`) |
 | `deadline_unreachable` | provider pre-content deadline refusal |
 | `cancelled` | any `cancelled` status, `error_code = 499`, or a `client_gone*` class |
@@ -154,7 +155,7 @@ All counters go through `ddIncr`/`ddHistogram`, which are no-ops when Datadog is
 Queued exits carry the transient `QueueExit` marker and instead increment
 `inference.queue_outcome{model,class}`; queue deadline expiry uses
 `queue_deadline`, while a provider silent after dispatch uses
-`first_chunk_timeout`. Typed drain refusals count as capacity, never faults
+`first_chunk_timeout`. Typed drain and media-memory refusals count as capacity, never faults
 (`coordinator/api/attempt_outcome_metrics.go`, `emitAttemptOutcomeMetric`;
 `coordinator/api/dispatch.go`, `queuedExitOutcome`).
 
@@ -198,7 +199,7 @@ All admin reads require the admin key (`requireAdminKey`).
 - **Closed vocabularies.** `final_status`, `error_class`, `error_reason`, `client_outcome`, `provider_outcome`, rejection `stage`/`reason_code`, and every metric tag value are Go constants or allowlisted strings. `normalizeInferenceErrorReason` turns any provider value outside `validInferenceErrorReasons` into `unknown`.
 - **Commit is not success.** `committedRouteOutcome` writes telemetry fields only; `final_status = success` is written by `completeRouteOutcome` at the provider's `inference_complete`, and only when the consumer is still connected.
 - **One terminal per attempt.** `MarkRouteOutcomeFinalized` and the attempt profile's `sync.Once` halves make provider, relay, disconnect and grace paths idempotent; a late terminal after a grace-expiry refund is a no-op on money and outcome (`coordinator/api/settlement_clientgone_test.go`).
-- **Fault attribution is separate from outcome.** `isProviderHealthNeutralErrorReason` exempts `jinja_*`, `tool_noncompliance` and `deadline_unreachable` from reputation, breakers and capacity trackers; `client_gone*` classes never count as provider failures (`RecordJobSuccess` with `FailedJobs == 0` for a completed-after-disconnect request).
+- **Fault attribution is separate from outcome.** `isProviderHealthNeutralErrorReason` exempts `jinja_*`, `tool_noncompliance`, `deadline_unreachable` and `media_memory_unavailable` from reputation, breakers and capacity trackers; `client_gone*` classes never count as provider failures (`RecordJobSuccess` with `FailedJobs == 0` for a completed-after-disconnect request).
 - **Metadata only.** Route rows, profiles, rejections and tags carry no prompt or completion text, raw IP, raw user agent, media bytes or raw API keys; client identity is `store.HashKey` output and key/account ids already used for billing. Provider error text is sanitized before it reaches a client and never persisted on a row.
 - **Observability never steers.** Nothing reads `inference_routes` outcomes, `request_profiles`, `request_rejections` or the `kv_backend` tags to make a routing, admission or billing decision.
 

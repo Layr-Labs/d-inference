@@ -357,7 +357,7 @@ jobs:
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
         working-directory: libs/mlx-swift-lm
         timeout-minutes: 5
-        run: ../../scripts/run-nested-suite.sh 'MiMoV26(OpenRouterMedia|VisualDecodeMemory|EncodedVisualDecoder|EncodedAudioDecoder|EncodedAACAudio|EncodedAudiovisualDecoder)Tests|MiMoV26PixelsTests.test(RGB|Temporal|Invalid|Explicit)' --no-parallel
+        run: ../../scripts/run-nested-suite.sh 'MiMoV26(OpenRouterMedia|VisionWorkingSet|AudioWorkingSet|VisualDecodeMemory|EncodedVisualDecoder|EncodedAudioDecoder|EncodedAACAudio|EncodedAudiovisualDecoder)Tests|MiMoV26PixelsTests.test(RGB|Temporal|Invalid|Explicit)' --no-parallel
       - name: Prepare tiny MiMo fixture for media-to-text isolation
         id: sdk-mimo-isolation-fixture
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}

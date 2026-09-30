@@ -179,7 +179,7 @@ For App Attest coexistence, both signing workflows prepare optional profile-auth
 1. After merging release inputs, let **SDK 27 release preparation** complete on
    `master`, or dispatch `.github/workflows/provider-release-cache.yml` on
    `master`. It runs optimized compilation and SDK qualification on separate
-   `xcode-27-xlarge` runners, with no signing secrets or publication steps. This seeds
+   `blacksmith-12vcpu-macos-27` runners, with no signing secrets or publication steps. This seeds
    caches in the default branch's scope, which release tags can restore. PR
    validation caches stay isolated to their PR and do not seed `master`.
    Pipeline shutdown changes run these lanes on their PR as well; the
@@ -399,11 +399,15 @@ R2 uploads, release registration and GitHub Release creation. The default remain
 The Actions artifact contains the final signed tarball and
 `darkbloom-validation-identity.json`, with source/submodule revisions and final
 bundle, executable and metallib hashes plus the full SHA-256 CodeDirectory digest and build SDK version.
-The release build uses GitHub’s `xcode-27` runner with Apple Command Line Tools
-27.0 / Swift 6.4 preinstalled. The ordinary Blacksmith runner was observed on
-macOS 26.3, below the SDK 27 installer’s 26.4 minimum; it remains the general
-PR CI environment. The selector refuses an older SDK/compiler instead of
-installing software or falling back.
+The release build, SDK qualification, signing and signing-validation jobs use
+Blacksmith's pinned `blacksmith-12vcpu-macos-27` image (currently public beta)
+with Xcode 27. The selector resolves the image's default Xcode after checkout,
+requires SDK 27.0 / Apple Swift 6.4, and scopes native SwiftPM through the existing
+wrapper. Python 3.12.10 and checksum-verified Rust/CMake bootstraps are explicit;
+the older-OS validation job pins `blacksmith-12vcpu-macos-26` so it cannot drift
+to macOS 27. Blacksmith hosts the protected signing jobs and receives their
+existing signing credentials after environment approval. Publication remains a
+separate protected Linux job. See the [runner and cache contract](../developer/build.md#sdk-27-release-builds-and-caches).
 The workflow obtains Xcode's matching Metal compiler through
 `xcodebuild -downloadComponent MetalToolchain` when the image omits it, and
 checks availability before computing the source-matched metallib cache key.
@@ -427,7 +431,7 @@ durability or authorize rollout.
 
 After `build-provider` and `qualify-sdk` both succeed, approve the pending
 `prod` (or `dev`) deployment for **Sign, notarize and retain exact artifact**
-(`build-and-release`, `xcode-27`). Compilation and SDK tests have already run
+(`build-and-release`, `blacksmith-12vcpu-macos-27`). Compilation and SDK tests have already run
 in the parallel jobs; the signing job consumes their source-bound artifact.
 The relevant signing steps run in this order:
 

@@ -109,7 +109,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         for job_id, lane in LANES.items():
             with self.subTest(lane=lane):
                 job = self.jobs[job_id]
-                self.assertIn("    runs-on: blacksmith-12vcpu-macos-latest", job)
+                self.assertIn("    runs-on: blacksmith-12vcpu-macos-27", job)
                 self.assertNotRegex(job, re.compile(r"^    (needs|if|strategy):", re.MULTILINE), msg=job)
                 self.assertNotIn("continue-on-error:", job)
                 self.assertNotIn("DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST:", job)
@@ -341,7 +341,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         metal_cache = by_id["metallib-cache"]
         self.assertIn("key: ${{ steps.keys.outputs.metallib-key }}", metal_cache)
         self.assertNotIn("restore-keys:", metal_cache)
-        rust_steps = [step for step in steps if "rustup toolchain install" in step
+        rust_steps = [step for step in steps if "install-release-rust.sh" in step
                       or "cargo +1.88.0 clean" in step or field(step, "id", indent=6) == "rust-cache"]
         self.assertEqual(len(rust_steps), 3)
         for step in rust_steps:

@@ -94,6 +94,29 @@ The [revision runbook](../operations/model-revisions.md) describes its invocatio
 
 ## SDK 27 release builds and caches
 
+All checked-in `d-inference` workflow jobs use Blacksmith runners. macOS build,
+unit/SDK/parity, integration, benchmark, cache, signing and validation jobs pin
+`blacksmith-12vcpu-macos-27` (M4, 12 vCPU, 48 GB); the signed-artifact older-OS
+smoke pins `blacksmith-12vcpu-macos-26`. Linux jobs retain
+`blacksmith-4vcpu-ubuntu-2404`. The macOS 27 image is currently a public beta;
+see [Blacksmith's runner catalog](https://docs.blacksmith.sh/blacksmith-runners/overview).
+This migration is limited to this repository; SDK repository workflows are separate.
+
+`prepare-provider-release-toolchain.sh` resolves the image-selected Xcode via
+`xcode-select`/`xcrun` after checkout and refuses any SDK other than 27.0 or Apple
+Swift other than 6.4. Its repository wrapper forces native SwiftPM and the same
+SDK for build/test invocations. CI fingerprints the selected compiler, SDK and
+wrapper so it cannot reuse incompatible prior-image products. Pinned Python
+3.12.10, checksum-verified Rustup 1.28.2/Rust 1.88.0 (where needed), and CMake
+3.31.12 supply tools missing from the image. Metal caches include the CMake
+recipe/identity; changing generators cannot reuse a stale metallib.
+
+GitHub Actions remains the orchestrator and artifact store. Protected signing
+and publication jobs retain their existing approvals, credential scopes and
+same-run artifact checks. Existing runs keep the workflow from their source
+commit: merging runner changes does not move an already-started release.
+
+
 Serving performance work changes the pinned CBv2 library as well as the
 provider. Initialize the recorded submodules before building, and retain
 source-matched Metal libraries for benchmarks. The
@@ -114,7 +137,7 @@ Archived raw-corpus replay is opt-in; see the
 [local evidence checks](serving-performance-qualification.md#verify-local-evidence).
 
 The release pipeline runs optimized products and SDK qualification on separate
-`xcode-27-xlarge` runners. Both call `.github/actions/provider-release-build/action.yml`;
+`blacksmith-12vcpu-macos-27` runners. Both call `.github/actions/provider-release-build/action.yml`;
 only the optimized lane transfers an unsigned app and its file inventory to
 signing. All binaries, SwiftPM resource bundles and the source-matched Metal
 library travel together. Signing verifies the same-run artifact's source commit,

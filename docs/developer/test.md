@@ -2,6 +2,12 @@
 
 > Last updated: 2026-09-30
 
+The `d-inference` macOS CI lanes pin `blacksmith-12vcpu-macos-27` and select
+Xcode 27 / native SwiftPM before compilation. Unit, SDK, prompt-parity,
+integration and benchmark commands and their existing approval gates are
+preserved. The older-OS signed-artifact smoke alone uses Blacksmith macOS 26.
+See [runner setup and cache isolation](build.md#sdk-27-release-builds-and-caches).
+
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
 lint — and which CI workflow runs what. `make test` runs every unit suite plus

@@ -814,14 +814,22 @@ make coordinator-test                      # cd coordinator && go test ./...
 DATABASE_URL='postgres://testbed:testbed@127.0.0.1:5432/testbed?sslmode=disable' \
   go test -race -coverprofile=coverage.out -covermode=atomic \
     $(go list ./... | grep -vx 'github.com/eigeninference/d-inference/e2e')
-go tool cover -func=coverage.out | tail -n 1   # total statement coverage
+# coordinator packages only, as CI reports it:
+{ head -n 1 coverage.out; grep '^github.com/eigeninference/d-inference/coordinator/' coverage.out; } > coverage-coordinator.out
+go tool cover -func=coverage-coordinator.out | tail -n 1   # total statement coverage
 gofmt -l .                                 # must print nothing
 golangci-lint run                          # .golangci.yml
 ```
 
-CI writes the total statement coverage to the job summary and keeps
-`coverage.out` for 14 days as the `coordinator-coverage` artifact. The number
-is for information only. A low number does not fail the job.
+CI writes a coverage table to the job summary and keeps the full
+`coverage.out` for 14 days as the `coordinator-coverage` artifact. The table
+has the columns Component, Statements or Lines, Regions or Branches, Functions
+and Target. The target is 80% and is for information only: a low number does
+not fail the job. The step fails only when the profile has no coordinator data
+or no total. The denominator is the statements in the `coordinator/...`
+packages. The profile also holds `e2e/testbed/...` and a frozen docs evidence
+package; the step leaves them out. `_test.go` files never count. `go test` has
+no branch counters, so the table reports statements only.
 
 `TestProfile_RequestProfilesRecorded` checks that the stored transport estimate
 matches the difference of coordinator and provider spans. Negative values remain
@@ -895,16 +903,21 @@ checks `file` reports `statically linked|static-pie linked`, and replays the
 production prompt vectors against it with
 `scripts/verify-prompt-sidecar-linux.sh <binary>`.
 
-CI then measures coverage with `cargo-llvm-cov` 0.9.1 and writes the line
-coverage from its `TOTAL` row to the job summary. A low number does not fail
-the job. `cargo llvm-cov` runs the sidecar tests a second time, with coverage
-instrumentation, so a test failure can first appear in the Report coverage
-step. To measure it locally:
+CI then measures coverage with `cargo-llvm-cov` 0.9.1. It writes the same
+table shape as the coordinator job: lines, regions and functions, with an 80%
+report-only target. The step reads each value by its field name from the JSON
+report and fails if one is missing. A low number does not fail the job. The
+denominator is `coordinator/promptsidecar/src`. The tests under `tests/`,
+every `tests.rs` test module under `src/` and dependencies are left out;
+inline unit-test modules inside other `src` files are counted. Branch counters
+need a nightly toolchain, so branches are not reported. `cargo llvm-cov` runs
+the sidecar tests a second time, with coverage instrumentation, so a test
+failure can first appear in the Report coverage step. To measure it locally:
 
 ```bash
 rustup component add llvm-tools-preview --toolchain 1.88.0
 cargo install cargo-llvm-cov --version 0.9.1 --locked
-cd coordinator/promptsidecar && cargo +1.88.0 llvm-cov --locked --all-targets --summary-only
+cd coordinator/promptsidecar && cargo +1.88.0 llvm-cov --locked --all-targets --summary-only   # lines, regions, functions
 ```
 
 A number measured on macOS can differ from the Linux number in CI.
@@ -2099,6 +2112,46 @@ make e2e-integration     # go test ./e2e/... -run TestIntegration -v   (no postu
 make e2e-benchmark       # go test ./e2e/... -run TestBenchmark -v
 ```
 
+#### E2E coverage in CI
+
+The testbed runs the coordinator inside the test process
+(`e2e/testbed/suite.go`, `startCoordinator` calls `api.NewServer`). There is no
+coordinator binary to build with `go build -cover`. So CI adds coverage flags to
+the `go test ./e2e/` command of each of the three lanes:
+`-cover -covermode=set -coverpkg=github.com/eigeninference/d-inference/coordinator/...`
+and `-args -test.gocoverdir=<dir>`, one directory per lane. `set` mode stores 1
+per block and is the cheapest mode, so the latency checks in the `TestProfile`
+tests see the least extra work. The `-run`, `-skip`, `-timeout` and `-p` flags
+do not change.
+
+The "Report e2e coverage" step merges the lane directories with
+`go tool covdata textfmt`, keeps the `coordinator/...` rows and writes one row
+to the job summary: `Coordinator (Go), e2e`, statements only, no target. The
+denominator is the statements in the `coordinator/...` packages that the e2e
+test binary links; packages it does not link, such as `cmd/...`, are not
+counted. A lane that fails or is skipped is left out and named in the summary;
+the expected-red exact-cache lane is kept when it writes data. A low number
+never fails the job. The step fails only when a lane passed but wrote no data.
+The raw lane directories and the merged `e2e-coverage.out` are kept for 14 days
+as the `coordinator-e2e-coverage` artifact.
+
+The row is not merged with the unit number from the Coordinator Tests job. That
+job runs in another workflow (`ci.yml`) on Linux, and both workflows start on
+the same push with no order between them. To get a combined figure, download
+both artifacts and take the union of covered blocks. To measure one lane
+locally:
+
+```bash
+mkdir -p /tmp/e2e-cov
+go test ./e2e/ -count=1 -v -timeout 10m -p=1 \
+  -cover -covermode=set -coverpkg=github.com/eigeninference/d-inference/coordinator/... \
+  -run '^TestIntegration_(NonStreaming|Streaming)Inference$' \
+  -args -test.gocoverdir=/tmp/e2e-cov
+go tool covdata textfmt -i=/tmp/e2e-cov -o e2e-coverage.out
+{ head -n 1 e2e-coverage.out; grep '^github.com/eigeninference/d-inference/coordinator/' e2e-coverage.out; } > e2e-coverage-coordinator.out
+go tool cover -func=e2e-coverage-coordinator.out | tail -n 1
+```
+
 The harness builds the provider itself (`e2e/testbed/provider.go`,
 `BuildProvider`): `swift build -c release` (or `TESTBED_PROVIDER_CONFIG=debug`)
 and stages `mlx.metallib`, unless `DARKBLOOM_PROVIDER_BINARY` points at a
@@ -2262,8 +2315,8 @@ token IDs are accepted.
 
 | Workflow | Trigger | Jobs (name → what runs) |
 |---|---|---|
-| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — release/script checks and offline provider CI/cache/routing guards · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race -coverprofile=… -covermode=atomic` over every package except the top-level `e2e` integration package (`coordinator/internal/e2e` and `e2e/testbed/...` run) with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence; total statement coverage in the job summary, `coverage.out` kept 14 days as the `coordinator-coverage` artifact · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh`, then `cargo llvm-cov` (0.9.1) line coverage in the job summary · **Provider Unit Tests** (macOS 12-vcpu) — full debug test build, matched Metal, serial/fresh-process provider tests and installer checks · **Provider SDK Tests** (independent macOS 12-vcpu) — full nested test build and all required numerical/SDK selectors through checked wrappers · **Provider Prompt Parity** (independent macOS 12-vcpu) — `verify-prompt-parity.sh`, pinned Swift/Go/Rust vectors and sustained sidecar load proof · **Provider Tests** (Linux aggregate) — requires all three provider lanes to succeed · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper` · **Console UI Lint & Build** — Node 22, `npm ci`, lint, vitest, and Next.js build |
-| [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 75 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (expected red, `continue-on-error`) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`) |
+| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — release/script checks and offline provider CI/cache/routing guards · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race -coverprofile=… -covermode=atomic` over every package except the top-level `e2e` integration package (`coordinator/internal/e2e` and `e2e/testbed/...` run) with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence; job-summary coverage table (statements over `coordinator/...` only, 80% report-only target, no branch counters), full `coverage.out` kept 14 days as the `coordinator-coverage` artifact · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh`, then `cargo llvm-cov` (0.9.1) job-summary coverage table (lines, regions and functions over `coordinator/promptsidecar/src`, 80% report-only target, no branch counters) · **Provider Unit Tests** (macOS 12-vcpu) — full debug test build, matched Metal, serial/fresh-process provider tests and installer checks · **Provider SDK Tests** (independent macOS 12-vcpu) — full nested test build and all required numerical/SDK selectors through checked wrappers · **Provider Prompt Parity** (independent macOS 12-vcpu) — `verify-prompt-parity.sh`, pinned Swift/Go/Rust vectors and sustained sidecar load proof · **Provider Tests** (Linux aggregate) — requires all three provider lanes to succeed · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper` · **Console UI Lint & Build** — Node 22, `npm ci`, lint, vitest, and Next.js build |
+| [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 75 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (expected red, `continue-on-error`) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`); each lane runs with `-coverpkg=…/coordinator/...` and `-test.gocoverdir`, then a job-summary row of e2e statement coverage (report-only), lane data kept 14 days as the `coordinator-e2e-coverage` artifact |
 | [`.github/workflows/benchmarks.yml`](../../.github/workflows/benchmarks.yml) | PR, gated by the `benchmarks` environment (manual approval) | **E2E Benchmarks** — `go test ./e2e/ -count=1 -v -timeout 40m -p=1 -run 'TestBenchmark'`, posts `BENCHMARK_MD_PATH` as a PR comment |
 | [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml) | tag `v*`, manual | Provider release; see [`../operations/provider-release.md`](../operations/provider-release.md) |
 | [`.github/workflows/provider-signing-validation.yml`](../../.github/workflows/provider-signing-validation.yml) | manual only | Build an exact signed source revision, validate Developer ID signing/provisioning/notarization in a separate job, and retain an Actions artifact; no GitHub environment, deployment, release registration or model execution |

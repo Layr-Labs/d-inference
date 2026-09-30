@@ -18,6 +18,7 @@
 
 ## Unreleased — CI and contributor workflow
 
+- Report coordinator statement coverage from the e2e tests as its own job-summary row, and keep the lane data as the `coordinator-e2e-coverage` artifact. The tests and their pass/fail rules do not change.
 - Run provider unit, SDK and prompt-parity checks on independent workers with compatible build caches, retaining MiMo fixture preparation and isolated native gates.
 - Separate prerequisite-dependent MiMo qualification from ordinary provider tests, retaining required prepared-fixture checks and explicit qualification gaps. Normalize the rollback test's filesystem identity and synchronize the zombie-stream timing test with the initial cancellation.
 - Pin the production prompt fixture's EOF format during regeneration; parity still compares the complete corpus bytes and unchanged token/contract expectations.

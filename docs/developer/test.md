@@ -1904,6 +1904,15 @@ a test webhook rather than sending test submissions to the production inbox.
 
 ### 6. Scripts and release integrity
 
+The release workflow runs `scripts/provider-release-qualify.py` against the
+retained signed bundle on macOS 27 and older macOS. CI requests static and smoke
+checks; live App Attest, inference, drain, and accounting checks require an
+explicitly selected enrolled qualification provider. Results record passed,
+failed, and unrun checks separately. `scripts/provider_release_ops/evidence.py`
+refuses failed checks and requires explicit operator attribution for each unrun
+check accepted by exception. The [qualification runbook](../operations/app-attest-build-qualification.md)
+documents the commands and remaining physical security checks.
+
 `python3 scripts/test_operations_scripts.py` checks admin JSON fields, fleet
 partial-failure exit status and smoke-file ownership using stub transports. It
 makes no network request, writes no login token and updates no host.

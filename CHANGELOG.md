@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased — explicit provider release qualification
+
+- Show retained signed-artifact identity and operator qualification steps after R2 staging; wait for durable approval before release registration, and report revoked or mismatched builds explicitly.
+- Validate the same signed bytes on macOS 27 and older macOS, retain per-check evidence and explicit unrun exceptions, resume from the original signed artifact, and verify registered metadata, R2 aliases, and the GitHub asset after publication.
+
 ## Unreleased — first-content evidence exploration
 
 - Let an idle, loaded provider compete beside feasible peers after the 5-minute measurement-age threshold, using connection age when measurements are undated. This breaks the evidence-first exclusion of newly connected and long-idle providers without guaranteeing selection or measurement recovery. Hedge and fresh-feasible requests still require feasible evidence.

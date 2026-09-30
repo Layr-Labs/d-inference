@@ -12,7 +12,7 @@ import (
 )
 
 // releaseQualificationStatusResponse is the POST /v1/releases/qualification
-// response body (CONTRACT.md #1177 C1). Timestamps are RFC3339 UTC; empty
+// response body. Timestamps are RFC3339 UTC; empty
 // fields are omitted. approved_by/approved_at/evidence and revoked_*/
 // mismatched_fields are populated only for the statuses that carry them.
 type releaseQualificationStatusResponse struct {
@@ -31,10 +31,7 @@ type releaseQualificationStatusResponse struct {
 // It never writes the build qualification store or the release catalog and
 // never registers a release. Like registration, it refreshes the in-memory
 // qualification snapshot from the durable store before answering. Auth and body
-// decoding intentionally mirror handleRegisterRelease (release_handlers.go,
-// owned by a different #1177 track) byte for byte; the ~15 line decode block
-// is duplicated rather than shared to keep that handler's behavior untouched
-// and avoid cross-track edits.
+// decoding mirror handleRegisterRelease without changing registration behavior.
 func (s *Server) handleReleaseQualificationStatus(w http.ResponseWriter, r *http.Request) {
 	token := extractBearerToken(r)
 	if !s.releaseKeyAuthorized(token) {
@@ -67,8 +64,7 @@ func (s *Server) handleReleaseQualificationStatus(w http.ResponseWriter, r *http
 
 	// RefreshBuildQualifications itself fails when the store does not
 	// implement store.AppAttestBuildStore, so a single error path covers both
-	// "no such capability" and "read failed" (CONTRACT.md C1: both are 503
-	// qualification_unavailable).
+	// "no such capability" and "read failed" as 503 qualification_unavailable.
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	if err := s.appAttestFeature().RefreshBuildQualifications(ctx); err != nil {
@@ -120,7 +116,7 @@ func (s *Server) handleReleaseQualificationStatus(w http.ResponseWriter, r *http
 }
 
 // mismatchedFields compares the stored qualification row's identity against
-// the requested identity, field by field, per CONTRACT.md C1: version,
+// the requested identity, field by field: version,
 // platform, backend, bundle_hash, metallib_hash, url, code_directory_hash,
 // source_commit, ci_run_id (sorted). binary_hash is excluded because the row
 // is looked up BY binary_hash, so it can never differ here. PythonHash/

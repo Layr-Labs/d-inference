@@ -1,6 +1,6 @@
 # Qualify and publish a signed App Attest build
 
-> Last updated: 2026-09-29
+> Last updated: 2026-09-30
 
 Use this runbook to approve an exact signed provider artifact before users can update to it. Approval persists across coordinator restarts and refreshes without a hotswap. The [authorization reference](../reference/provider-authorization.md) owns serving controls and freshness deadlines.
 
@@ -10,7 +10,7 @@ Every production provider publication, including a retry after missing qualifica
 
 ## Prerequisites
 
-- Human authorization for the release and build qualification; administrator access to the coordinator through a verified Privy session (including `scripts/admin.sh login`) or admin-session key. The CI release key cannot approve builds.
+- Human authorization for the release and build qualification; administrator access to the coordinator through a verified Privy session (including `scripts/admin.sh login`) or admin key. The CI release key and admin-owned inference/provider credentials cannot approve builds.
 - Deploy the coordinator implementing `coordinator/api/app_attest_publication.go` and the `app_attest_build_qualifications` table. All serving coordinators and rollback images must understand durable qualification and revocation.
 - Complete the signed-artifact, actual Apple proof, hardware-security transition, supported older-macOS, and inference checks in [MDM-optional rollout](mdm-optional-rollout.md#prerequisites). Record actual test evidence; a hash mapping is not evidence that those tests ran.
 
@@ -18,18 +18,18 @@ Every production provider publication, including a retry after missing qualifica
 
 1. Start the source-matching tagged [provider release](provider-release.md). Build and qualification jobs run in parallel on CI. After signing succeeds, the independent `stage-release` job (Linux) downloads the retained signed artifact, verifies its digest, and uploads to `releases/v<VERSION>/artifacts/<BUNDLE_SHA256>/darkbloom-bundle-macos-arm64.tar.gz`. Do not rerun successful signing; a new signature timestamp changes the artifact identity and requires new approval.
 
-2. After R2 staging succeeds, the workflow runs independent qualification validators on the retained bytes. Two jobs run in parallel:
+2. After signing succeeds, the workflow runs independent qualification validators on the retained bytes alongside R2 staging. Two jobs run in parallel:
    - `validate-macos-27` (xcode-27 runner)
    - `validate-older-macos` (blacksmith-12vcpu-macos-latest runner)
 
-   Each runs the qualification validator:
+   CI runs the qualification validator with `--level static,smoke`. On an enrolled qualification Mac, the operator can also request live checks:
 
    ```bash
    python3 scripts/provider-release-qualify.py --directory <dir> \
      --lane macos-27 --level static,smoke,live --output qualification-result-macos-27.json
    ```
 
-   Replace `macos-27` with `older-macos` for the older-macOS lane. Static and smoke checks run on both lanes. Live checks (`app-attest`, `inference`, `graceful-drain`, `accounting`) require `DARKBLOOM_QUALIFY_LIVE=1` plus `DARKBLOOM_QUALIFY_COORDINATOR`, `DARKBLOOM_QUALIFY_PROVIDER_ID`, and `DARKBLOOM_QUALIFY_API_KEY` (enrolled provider credentials only). CI also runs static and smoke checks and uploads `provider-qualification-<lane>-<source_sha>-<run_attempt>` artifacts.
+   Replace `macos-27` with `older-macos` for the older-macOS lane. Live checks (`app-attest`, `inference`, `graceful-drain`, `accounting`) require `DARKBLOOM_QUALIFY_LIVE=1` plus `DARKBLOOM_QUALIFY_COORDINATOR`, `DARKBLOOM_QUALIFY_PROVIDER_ID`, `DARKBLOOM_QUALIFY_MODEL`, and `DARKBLOOM_QUALIFY_API_KEY` (enrolled provider credentials only). CI uploads `provider-qualification-<lane>-<source_sha>-<run_attempt>` artifacts. Physical security-transition checks from the prerequisites remain separate operator evidence.
 
 3. After staging and validation jobs complete, download the `provider-publication-<SOURCE_SHA>-<SIGNING_ATTEMPT>` artifact from the signing job. Review `release-payload.json`, `qualification-request.json`, and the signed bundle. Confirm source commit, CI run, binary/bundle/metallib hashes and full CodeDirectory SHA-256. Use `codesign -d --verbose=4` to extract `CandidateCDHashFull sha256` from the final executable, not the truncated `CDHash`.
 
@@ -40,12 +40,10 @@ Every production provider publication, including a retry after missing qualifica
      --directory <dir> \
      --result qualification-result-macos-27.json \
      --result qualification-result-older-macos.json \
-     --operator '<your name>' \
-     --exception macos-27:live='prod integration not available' \
-     --exception older-macos:live='prod integration not available'
+     --operator '<your name>'
    ```
 
-   Only failed checks cannot be excepted; exceptions render as `EXCEPTION ... NOT RUN` in the evidence string. The tool generates `qualification-evidence.json` alongside an updated `qualification-request.json`.
+   An unrun required check stops evidence generation. An explicitly authorized operator exception names the exact lane and check, for example `--exception macos-27:app-attest='owner-authorized expedited release; real Apple proof not run'`. Supply one reason for every unrun check; there is no aggregate `live` check. Failed checks cannot be excepted. Exceptions render as `EXCEPTION ... NOT RUN` in the evidence string. The tool generates `qualification-evidence.json` alongside an updated `qualification-request.json`.
 
 5. Approve the build using admin credentials:
 

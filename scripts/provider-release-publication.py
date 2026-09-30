@@ -5,7 +5,6 @@ Signing and publication are separate jobs. Rerunning publication never signs or
 rebuilds. The release key can request promotion, but cannot grant qualification.
 """
 import argparse
-from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -13,12 +12,15 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
-import tempfile
 import time
 import urllib.error
 import urllib.request
 
 from provider_release_github import publish_github_release
+from provider_release_ops.evidence import evidence
+from provider_release_ops.resume import resume_source
+from provider_release_ops.summary import summary as qualification_summary
+from provider_release_ops.verification import verify_publication
 
 BUNDLE = 'darkbloom-bundle-macos-arm64.tar.gz'
 # Cloudflare in front of r2.dev answers the default Python-urllib User-Agent
@@ -150,7 +152,7 @@ def coordinator(env, path, payload=None):
 def qualification_status(env, payload):
     """POST /v1/releases/qualification and classify the response.
 
-    A dedicated request path (CONTRACT.md #1177 C2), not a reuse/loosening of
+    A dedicated request path, separate from
     coordinator(): coordinator()'s 503-means-retry mapping only applies when
     payload is None (a GET), so registration (POST /v1/releases, always a
     payload) never gets treated as retryable there. 404/405 (coordinator build
@@ -203,7 +205,7 @@ _GATE_BLOCKING_STATUSES = {'pending', 'revoked', 'mismatched'}
 
 
 def qualification_gate(env, payload):
-    """One status check, no waiting (CONTRACT.md C2 `publish`). Blocks only on
+    """One status check without waiting. Blocks only on
     a status the coordinator explicitly reports as not-ready or refused;
     approved/unsupported/anything else this client cannot classify defers to
     registration's own enforcement."""
@@ -343,214 +345,6 @@ def publish(root, env):
                                 qualification_evidence=note or 'Qualification record unavailable from coordinator')
 
 
-# --- evidence (CONTRACT.md C4) ----------------------------------------------
-
-LANES = ('macos-27', 'older-macos')
-CHECK_STATES = ('passed', 'failed', 'not_run')
-CONTROL_CHARS = re.compile(r'[\x00-\x1f\x7f]')
-REQUIRED_STATIC = ['bundle-digest', 'binary-digest', 'metallib-digest', 'code-directory',
-                   'codesign', 'notarization', 'team-id', 'minimum-macos', 'lane-host']
-REQUIRED_SMOKE = ['version', 'runtime-smoke']
-REQUIRED_LIVE = {'macos-27': ['app-attest', 'inference', 'graceful-drain', 'accounting'],
-                  'older-macos': ['inference', 'graceful-drain', 'accounting']}
-IDENTITY_KEYS = ('version', 'binary_hash', 'bundle_hash', 'metallib_hash',
-                  'code_directory_hash', 'source_commit', 'ci_run_id')
-
-
-def required_checks(lane):
-    return REQUIRED_STATIC + REQUIRED_SMOKE + REQUIRED_LIVE[lane]
-
-
-def _expected_identity(root):
-    payload = json.loads((root / 'release-payload.json').read_text())
-    request = json.loads((root / 'qualification-request.json').read_text())
-    identity = {key: payload[key] for key in IDENTITY_KEYS}
-    request_identity = {
-        'version': request['release']['version'], 'binary_hash': request['release']['binary_hash'],
-        'bundle_hash': request['release']['bundle_hash'], 'metallib_hash': request['release']['metallib_hash'],
-        'code_directory_hash': request['code_directory_hash'], 'source_commit': request['source_commit'],
-        'ci_run_id': request['ci_run_id'],
-    }
-    if request_identity != identity:
-        raise ValueError('evidence: release-payload.json and qualification-request.json identity disagree')
-    return identity
-
-
-def _byte_truncate(text, limit):
-    if limit <= 0:
-        return ''
-    data = text.encode()
-    if len(data) <= limit:
-        return text
-    return data[:limit].decode('utf-8', 'ignore')
-
-
-def _render_evidence(header, passed_lines, exceptions, results_line):
-    fixed_bytes = sum(len(line.encode()) + 1 for line in [header] + passed_lines + [results_line])
-    templates = [f"EXCEPTION {exc['lane']}:{exc['check']} NOT RUN by {exc['operator']}: " for exc in exceptions]
-    overhead = fixed_bytes + sum(len(t.encode()) + 1 for t in templates)
-    budget = max(0, 4096 - overhead)
-    per_exception = budget // len(exceptions) if exceptions else 0
-    exception_lines = [template + _byte_truncate(exc['reason'], per_exception)
-                        for exc, template in zip(exceptions, templates)]
-    text = '\n'.join([header] + passed_lines + exception_lines + [results_line])
-    # Defensive final clamp: the budget split above should already fit: this
-    # only guards an edge case in the arithmetic, never the normal path.
-    return _byte_truncate(text, 4096)
-
-
-def evidence(root, result_paths, exception_specs, operator):
-    if exception_specs and not operator:
-        raise ValueError('evidence: --operator is required when any --exception is given')
-    identity = _expected_identity(root)
-
-    results_by_lane = {}
-    for path in result_paths:
-        result = json.loads(Path(path).read_text())
-        lane = result.get('lane')
-        if lane not in LANES:
-            raise ValueError(f'evidence: unknown lane in result: {lane!r}')
-        if lane in results_by_lane:
-            raise ValueError(f'evidence: duplicate result for lane {lane}')
-        if result.get('identity') != identity:
-            raise ValueError(f'evidence: identity mismatch in result for lane {lane}')
-        # One entry per check, and only the three recorded states: a duplicate
-        # could hide a failure behind a later pass, and an unknown state is
-        # neither a pass nor something an operator excepted.
-        names = [c.get('name') for c in result.get('checks', [])]
-        if len(names) != len(set(names)):
-            raise ValueError(f'evidence: duplicate check names in result for lane {lane}')
-        for check in result.get('checks', []):
-            if check.get('status') not in CHECK_STATES:
-                raise ValueError(f"evidence: unknown status {check.get('status')!r} for {lane}:{check.get('name')}")
-        results_by_lane[lane] = result
-
-    exceptions = []
-    for spec in exception_specs:
-        key, sep, reason = spec.partition('=')
-        if sep == '' or ':' not in key:
-            raise ValueError(f'evidence: --exception must be lane:check=reason, got {spec!r}')
-        lane, check = key.split(':', 1)
-        # Evidence is line-oriented: a control character in operator text
-        # could forge a PASSED line for a check that never ran.
-        if (not reason.strip() or CONTROL_CHARS.search(reason) or CONTROL_CHARS.search(operator or '')
-                or 'passed' in (reason + ' ' + (operator or '')).lower()):
-            raise ValueError(f'evidence: exception reason and operator must be non-empty single-line text: {key}')
-        exceptions.append({'lane': lane, 'check': check, 'reason': reason, 'operator': operator})
-    exceptions_by_key = {(exc['lane'], exc['check']): exc for exc in exceptions}
-    used_exceptions = set()
-
-    for lane in LANES:
-        result = results_by_lane.get(lane)
-        statuses = {c['name']: c for c in result['checks']} if result else {}
-        for check in required_checks(lane):
-            entry = statuses.get(check)
-            check_status = entry['status'] if entry else 'missing'
-            if check_status == 'failed':
-                # An exception cannot override a failure (C4): checked first,
-                # unconditionally, before any exception lookup.
-                raise ValueError(f'evidence: required check failed: {lane}:{check}')
-            if check_status in ('not_run', 'missing'):
-                exc_key = (lane, check)
-                if exc_key not in exceptions_by_key:
-                    raise ValueError(
-                        f'evidence: required check {lane}:{check} is {check_status} and has no --exception')
-                used_exceptions.add(exc_key)
-
-    for exc in exceptions:
-        exc_key = (exc['lane'], exc['check'])
-        if exc_key in used_exceptions:
-            continue
-        if exc['lane'] not in results_by_lane or exc['check'] not in required_checks(exc['lane']):
-            raise ValueError(f"evidence: exception names a check that is not required: {exc['lane']}:{exc['check']}")
-        raise ValueError(f"evidence: exception names a check that passed: {exc['lane']}:{exc['check']}")
-
-    payload = json.loads((root / 'release-payload.json').read_text())
-    header = (f"darkbloom qualification v1 {payload['version']} "
-              f"binary={payload['binary_hash'][:12]} cd={payload['code_directory_hash'][:12]} "
-              f"run={payload['ci_run_id']}")
-    passed_lines = []
-    for lane in LANES:
-        result = results_by_lane.get(lane)
-        if result is None:
-            continue
-        statuses = {c['name']: c for c in result['checks']}
-        passed = [c for c in required_checks(lane) if statuses.get(c, {}).get('status') == 'passed']
-        host = result['host']
-        passed_lines.append(f"PASSED {lane}: {','.join(passed)} (host {host['macos']} {host['model']})")
-
-    evidence_doc = {
-        'schema': 'darkbloom.provider-qualification-evidence/v1',
-        'identity': identity,
-        'results': [results_by_lane[lane] for lane in LANES if lane in results_by_lane],
-        'exceptions': exceptions,
-        'operator': operator,
-        'generated_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-    }
-    # RESULTS sha256 is computed over exactly the bytes written to
-    # qualification-evidence.json: the file content IS this canonical
-    # (sort_keys, minimal-separator) rendering, nothing excluded, so there is
-    # no separate "canonical form" that could drift from what got hashed.
-    canonical = json.dumps(evidence_doc, sort_keys=True, separators=(',', ':')).encode()
-    results_line = 'RESULTS sha256=' + hashlib.sha256(canonical).hexdigest()
-    text = _render_evidence(header, passed_lines, exceptions, results_line)
-
-    request_path = root / 'qualification-request.json'
-    request = json.loads(request_path.read_text())
-    request['evidence'] = text
-
-    # Only mutate once every refusal above has had the chance to raise, and
-    # only via tmp+os.replace, so a crash mid-write cannot leave a torn file
-    # and a refusal leaves qualification-request.json byte-identical.
-    def atomic_write(path, data):
-        tmp = path.with_name(path.name + '.tmp')
-        tmp.write_bytes(data)
-        os.replace(tmp, path)
-
-    atomic_write(root / 'qualification-evidence.json', canonical)
-    atomic_write(request_path, (json.dumps(request, indent=2) + '\n').encode())
-
-
-# --- resume-source (CONTRACT.md C2) -----------------------------------------
-
-def resume_source(env, run_id):
-    repo = env['GITHUB_REPOSITORY']
-    run_result = subprocess.run(['gh', 'api', f'repos/{repo}/actions/runs/{run_id}'],
-                                 capture_output=True, text=True, check=True)
-    run_info = json.loads(run_result.stdout)
-    if run_info.get('path') != '.github/workflows/release-swift.yml':
-        raise ValueError('resume-source: run does not belong to release-swift.yml')
-    sha = env['GITHUB_SHA']
-    if run_info.get('head_sha') != sha:
-        raise ValueError('resume-source: run head_sha does not match GITHUB_SHA')
-
-    # The repository is already pinned by the API path above, so a match here
-    # implies the same repository; nothing else to cross-check on that axis.
-    artifacts_result = subprocess.run(
-        ['gh', 'api', f'repos/{repo}/actions/runs/{run_id}/artifacts', '--paginate'],
-        capture_output=True, text=True, check=True)
-    artifacts = json.loads(artifacts_result.stdout).get('artifacts', [])
-    prefix = f'provider-publication-{sha}-'
-    candidates = []
-    for artifact in artifacts:
-        name = artifact.get('name', '')
-        if artifact.get('expired') or not name.startswith(prefix):
-            continue
-        suffix = name[len(prefix):]
-        if suffix.isdigit():
-            candidates.append((int(suffix), name))
-    if not candidates:
-        raise ValueError(f'resume-source: no non-expired publication artifact found for {sha}')
-    _, artifact_name = max(candidates)
-
-    with open(env['GITHUB_OUTPUT'], 'a') as fh:
-        fh.write(f'source_run_id={run_id}\n')
-        fh.write(f'source_sha={sha}\n')
-        fh.write(f'publication_artifact={artifact_name}\n')
-
-
-# --- verify (CONTRACT.md C2) -------------------------------------------------
-
 def _download_sha256(url):
     hasher = hashlib.sha256()
     request = urllib.request.Request(url, headers={'User-Agent': USER_AGENT})
@@ -564,125 +358,13 @@ def _download_sha256(url):
 
 
 def verify(root, env):
-    payload = json.loads((root / 'release-payload.json').read_text())
-    latest = coordinator(env, '/v1/releases/latest?platform=macos-arm64')
-    is_latest = latest.get('version') == payload['version']
-    # Only a strictly newer latest excuses the alias checks. An older latest is
-    # the #1177 failure itself: the coordinator kept the previous release.
-    superseded = not is_latest and core(latest.get('version') or '0.0.0') > core(payload['version'])
+    return verify_publication(root, env, coordinator=coordinator, core=core,
+                              object_key=object_key, download_sha256=_download_sha256,
+                              bundle_name=BUNDLE)
 
-    surfaces = []
-
-    def probe(name, fn):
-        # A download or API error is reported as the error, never as a digest mismatch.
-        try:
-            ok = 'ok' if fn() else 'MISMATCH'
-        except Exception as exc:
-            ok = f'ERROR ({type(exc).__name__}: {exc})'
-        surfaces.append((name, ok))
-
-    if is_latest:
-        probe('registration (latest points at this version)',
-              lambda: latest.get('bundle_hash') == payload['bundle_hash'])
-    elif not superseded:
-        probe(f"registration (latest is {latest.get('version')}, not {payload['version']})", lambda: False)
-    else:
-        print(f"note: latest is {latest.get('version')} (newer than {payload['version']}); "
-              f"skipping releases/latest/* alias checks for this release")
-
-    r2_base = env['R2_PUBLIC_URL'].rstrip('/')
-    probe('immutable object', lambda: _download_sha256(r2_base + '/' + object_key(payload)) == payload['bundle_hash'])
-
-    if is_latest:
-        for name in [BUNDLE, 'eigeninference-bundle-macos-arm64.tar.gz']:
-            surface = 'releases/latest/' + name
-            probe(surface, lambda name=name: _download_sha256(r2_base + '/releases/latest/' + name) == payload['bundle_hash'])
-
-    if env['ENV_PREFIX'] == 'prod':
-        # publish creates the release under the pushed tag (provider_release_github.py).
-        tag = env['GITHUB_REF_NAME'] if env.get('GITHUB_REF_TYPE') == 'tag' else 'v' + payload['version']
-        repo = env['GITHUB_REPOSITORY']
-        state = {}
-
-        def not_a_draft():
-            result = subprocess.run(['gh', 'release', 'view', tag, '--repo', repo,
-                                      '--json', 'isDraft,assets'], capture_output=True, text=True, check=True)
-            state['release'] = json.loads(result.stdout)
-            return not state['release']['isDraft']
-
-        probe('github release not a draft', not_a_draft)
-
-        def asset_matches():
-            with tempfile.TemporaryDirectory(prefix='verify-release-') as directory:
-                subprocess.run(['gh', 'release', 'download', tag, '--repo', repo,
-                                 '--pattern', BUNDLE, '--dir', directory], check=True)
-                with (Path(directory) / BUNDLE).open('rb') as stream:
-                    digest = hashlib.file_digest(stream, 'sha256').hexdigest()
-            return digest == payload['bundle_hash']
-
-        probe('github release asset', asset_matches)
-
-    print('surface -> ok')
-    for name, ok in surfaces:
-        print(f'{name} -> {ok}')
-    failed = [f'{name} ({ok})' for name, ok in surfaces if ok != 'ok']
-    if failed:
-        raise RuntimeError('verify: surface mismatch: ' + ', '.join(failed))
-
-
-# --- summary (CONTRACT.md C2) ------------------------------------------------
 
 def summary(root, env):
-    payload = json.loads((root / 'release-payload.json').read_text())
-    request_text = (root / 'qualification-request.json').read_text().strip()
-    artifact_name = env.get('PUBLICATION_ARTIFACT') or BUNDLE
-    # A resume run describes the run that signed these bytes, not itself.
-    source_run = env.get('SOURCE_RUN_ID') or env['GITHUB_RUN_ID']
-    source_sha = env.get('SOURCE_SHA') or env['GITHUB_SHA']
-    run_url = f"https://github.com/{env['GITHUB_REPOSITORY']}/actions/runs/{source_run}"
-
-    lines = [
-        '## Waiting for independent build qualification', '',
-        f"Artifact `{artifact_name}` from source commit `{source_sha}`, "
-        f"run [{source_run}]({run_url})"
-        + ('' if env.get('SOURCE_RUN_ID', env['GITHUB_RUN_ID']) != env['GITHUB_RUN_ID']
-           else f" attempt {env['GITHUB_RUN_ATTEMPT']}") + '.', '',
-        '| digest | value |', '| --- | --- |',
-        f"| binary | `{payload['binary_hash']}` |",
-        f"| bundle | `{payload['bundle_hash']}` |",
-        f"| metallib | `{payload['metallib_hash']}` |",
-        f"| code directory | `{payload['code_directory_hash']}` |", '',
-        '`qualification-request.json`:', '', '```json', request_text, '```', '',
-        'Required checks (recorded once each lane validator uploads its result JSON):',
-    ]
-    for lane in LANES:
-        for check in required_checks(lane):
-            lines.append(f'- {lane}: `{check}` — not yet run')
-    lines += [
-        '', 'Run each lane validator against the retained publication directory:', '', '```bash',
-        'python3 scripts/provider-release-qualify.py --directory <dir> --lane macos-27 '
-        '--level static,smoke,live --output qualification-result-macos-27.json',
-        'python3 scripts/provider-release-qualify.py --directory <dir> --lane older-macos '
-        '--level static,smoke,live --output qualification-result-older-macos.json',
-        '```', '', 'Render the operator evidence from both result files:', '', '```bash',
-        'python3 scripts/provider-release-publication.py evidence --directory <dir> '
-        '--result qualification-result-macos-27.json --result qualification-result-older-macos.json',
-        '```', '', 'Submit the completed template for durable review recording (see '
-        'docs/operations/app-attest-build-qualification.md step 3):', '', '```bash',
-        'curl --fail-with-body --request POST "$COORDINATOR_URL/v1/admin/app-attest/builds" \\',
-        '  --header "Authorization: Bearer $DARKBLOOM_ADMIN_TOKEN" \\',
-        "  --header 'Content-Type: application/json' \\",
-        '  --data-binary @qualification-request.json', '```',
-    ]
-    text = '\n'.join(lines) + '\n'
-
-    step_summary = env.get('GITHUB_STEP_SUMMARY')
-    if step_summary:
-        with open(step_summary, 'a') as fh:
-            fh.write(text)
-    else:
-        print(text)
-    print('::notice::Publication staged; awaiting independent build qualification before registration')
+    return qualification_summary(root, env, BUNDLE)
 
 
 OPERATIONS = {'stage': stage, 'publish': publish, 'summary': summary, 'await': await_qualification, 'verify': verify}

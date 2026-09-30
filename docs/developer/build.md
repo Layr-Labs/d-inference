@@ -771,6 +771,15 @@ ls console-ui/.next
 
 ## App Attest release qualification
 
+Release publication retains the signed bytes, validates their static identity and
+runtime smoke on macOS 27 and older macOS, and waits for independent build approval
+before registration. `scripts/provider-release-qualify.py` produces lane results;
+`scripts/provider-release-publication.py` handles the wait, evidence summary,
+same-source resume, and public-surface verification. Focused helpers live under
+`scripts/provider_release_ops/`. Follow the
+[qualification runbook](../operations/app-attest-build-qualification.md) for
+operator evidence and the admin submission. Reuse retained bytes when resuming.
+
 Use the macOS 27 SDK for a candidate that needs Apple code-measurement extensions. The release workflow explicitly selects Command Line Tools 27.0 / Swift 6.4, then runs provider tests under that same SDK; ordinary development retains the Swift 6.3 minimum. Set `SDKROOT` to that SDK for both compilation and linking: a CLT 27 beta 6 Swift probe compiled with `--sdk` alone embedded the deployment target as its SDK; setting `SDKROOT` produced the correct linked SDK. Verify `LC_BUILD_VERSION` with `xcrun vtool -show-build` on the final executable. Confirm the final signed executable produces the current launch category and full CodeDirectory digest on physical macOS 27; SDK 26 builds can collect ordinary shadow proofs but cannot qualify replacement readiness. See the [observed SDK and measurement contract](../reference/app-attest-shadow.md#macos-sdk-and-signed-code-measurements).
 
 Run `go test ./appattest ./api ./store -run 'TestAppAttest|TestAuthorization|TestApple|TestMacCodeMeasurement'`

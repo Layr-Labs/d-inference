@@ -364,8 +364,9 @@ class ToolchainSelectionTests(unittest.TestCase):
             self.assertEqual(before["metal"], {"version": "Apple metal version 32023.42",
                                                "compiler": {"sha256": "tool-bytes"}})
             self.commands[find] = "/different-random-mount/Metal.xctoolchain/usr/bin/metal"
+            self.commands[version] += "\nInstalledDir: /different-random-mount/Metal.xctoolchain/usr/bin"
             self.assertEqual(before, cache.toolchain_metadata("provider"))
-            self.commands[version] += " updated"
+            self.commands[version] = before["metal"]["version"] + " updated\nInstalledDir: /mount"
             self.assertNotEqual(identity.digest(before), identity.digest(cache.toolchain_metadata("provider")))
             self.commands[version] = before["metal"]["version"]
             self.external.side_effect = lambda path: {"path": str(path), "sha256":

@@ -76,7 +76,7 @@ def toolchain_metadata(lane: str) -> dict:
         # Downloaded Metal components can mount at different paths on each
         # runner. Their version and bytes, not mount location, identify codegen.
         metadata["metal"] = {
-            "version": identity.command("xcrun", "--no-cache", "--sdk", "macosx", "metal", "--version"),
+            "version": identity.command("xcrun", "--no-cache", "--sdk", "macosx", "metal", "--version").splitlines()[0],
             "compiler": {"sha256": identity.external_file(metal)["sha256"]},
         }
         return metadata

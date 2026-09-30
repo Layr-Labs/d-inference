@@ -60,6 +60,7 @@ class StageTestMetallibTests(unittest.TestCase):
         self.assertIn('"metal=$METAL_COMPILER_HASH"', identity)
         self.assertIn('xcrun --no-cache --sdk macosx metal --version', source)
         self.assertIn('shasum -a 256 "$METAL_COMPILER"', source)
+        self.assertIn("METAL_VERSION=\"${METAL_VERSION%%$'\\n'*}\"", source)
 
 
 if __name__ == "__main__":

@@ -346,7 +346,8 @@ struct NativeToolStreamRouterTests {
     @Test func reasoningMarkersInsideArgumentsRemainArgumentData() throws {
         for format: ToolCallFormat in [.nemotron, .qwen35] {
             let handler = BatchedToolStreamHandler(format: format, tools: nil)
-            var router = NativeToolStreamRouter(handler: handler, requiresToolCall: true, nativePrefix: "<think></think>")
+            var router = NativeToolStreamRouter(handler: handler, requiresToolCall: true,
+                nativePrefix: "<think></think>", absorbStrayThinkClose: format == .nemotron)
             let frame = "<tool_call><function=write><parameter=text>literal <think>code</think> end</parameter></function></tool_call>"
             for character in frame { _ = try router.process(String(character)) }
             _ = try router.finishText()

@@ -9,9 +9,8 @@
 // legacy greedy defaults (`temperature 0`, `top_p 1`, `top_k 0`,
 // `repetition_penalty 1`). For Nemotron 3.5 Lightning that difference is
 // observable: the artifact declares `temperature 1.0, top_p 0.95,
-// do_sample true`, and its reasoning-off tool selection at greedy is a
-// deterministic refusal on prompts that call the tool under the declared
-// sampling on every other host.
+// do_sample true`. Applying those defaults aligns omitted-field requests
+// with that configuration; tool-selection quality needs separate validation.
 //
 // Rules:
 // * Applied ONLY to fields the request omits. Explicit request values

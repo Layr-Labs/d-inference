@@ -72,6 +72,12 @@ Swift 6.3's region-based isolation checker can reject the latter form. Keep
 the same plan, cancellation order, real decode and reservation assertions;
 do not add unchecked sendability or suppress cancellation to compile the test.
 
+`NativeLocalConsumerOwnershipTests` waits for the parent cancellation handler
+to be installed before asserting that cancellation closes its native lease.
+The preparation task entering its own barrier does not establish that ordering.
+The fixture still requires cancellation-insensitive cleanup to finish before
+the lease is released.
+
 The complete-prefix methods in `MiMoV26NativeLoadTransactionTests` require a
 strict generated **asymmetric** tiny BF16 fixture with three synthetic MTP
 heads and enough context for the unchanged 257-token prompt, eight output tokens

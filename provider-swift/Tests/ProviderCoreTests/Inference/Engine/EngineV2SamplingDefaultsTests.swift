@@ -56,6 +56,10 @@ struct EngineV2SamplingDefaultsTests {
             ("google/gemma-3-27b-it", "gemma3"),
             ("openai/gpt-oss-20b", "gpt_oss"),
             ("mlx-community/Qwen3.5-397B", "qwen3_5"),
+            ("mimo-v2.6-flash-mopd", "mimo_v2"),
+            ("ternary-bonsai-2-27b", "prism_hadamard_qwen35"),
+            ("qwen3.8-flash-next", "qwen4_exp"),
+            ("diffusion-gemma", "diffusion_gemma"),
         ] {
             #expect(!EngineV2SamplingDefaults.honorsArtifactDefaults(modelId: id, modelType: type))
         }

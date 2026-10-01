@@ -133,7 +133,7 @@ Code: `coordinator/api/me_handlers.go` (`buildMyProvider`).
 | `admin-session` | `requireAuth` verifies the Privy JWT or admin key; the handler requires an allowlisted admin and rejects inference API keys/provider tokens even when owned by an admin. Missing/invalid credentials → 401; authenticated non-admin or non-interactive account credentials → 403 | `isBuildAdminAuthorized` (`coordinator/api/app_attest_builds.go`) |
 | `publishing` | `X-Darkbloom-Publishing-Key` header or Bearer equal to the bootstrap `MODEL_REGISTRY_PUBLISHING_KEY`, the admin key, or a publishing key stored in the DB | `requirePublishingAPIKey` (`coordinator/api/model_registry_handlers.go`) |
 | `release` | Bearer equal to `EIGENINFERENCE_RELEASE_KEY`; otherwise 401 `unauthorized` | `handleRegisterRelease` (`coordinator/api/release_handlers.go`) |
-| `stripe-sig` | Stripe webhook signature | `handleStripeWebhook` (`coordinator/api/billing_handlers.go`), `handleStripeConnectWebhook` (`coordinator/api/stripe_payouts_webhooks.go`) |
+| `stripe-sig` | Stripe webhook signature | `handleStripeWebhook` (`coordinator/api/stripe_checkout_webhook.go`), `handleStripeConnectWebhook` (`coordinator/api/stripe_payouts_webhooks.go`) |
 | `mdm-secret` | Webhook secret via `X-Webhook-Token` header or `?token=`; body capped at [`maxMDMWebhookBodyBytes`](#limits-and-validation) | `HandleMDMWebhook` |
 | `ws` | Provider WebSocket handshake (enrollment credentials + attestation); see [`protocol-messages.md`](protocol-messages.md) | `handleProviderWS` (`coordinator/api/provider.go`) |
 
@@ -231,19 +231,20 @@ Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInter
 
 All six `/v1/me/*` routes are wrapped in `requirePrivyAuth`, so they are Privy-JWT only.
 
-### Stripe, payouts and MDM (13)
+### Stripe, payouts and MDM (14)
 
 | Method | Path | Handler | Auth | Limiter | Notes |
 |---|---|---|---|---|---|
 | POST | `/v1/billing/stripe/create-session` | `handleStripeCreateSession` (`coordinator/api/billing_handlers.go`) | `key` | `fin` | 502 `stripe_error` when Stripe rejects |
-| POST | `/v1/billing/stripe/webhook` | `handleStripeWebhook` (`coordinator/api/billing_handlers.go`) | `stripe-sig` | — | Checkout events |
+| POST | `/v1/billing/stripe/webhook` | `handleStripeWebhook` (`coordinator/api/stripe_checkout_webhook.go`) | `stripe-sig` | — | Checkout events |
 | GET | `/v1/billing/stripe/session` | `handleStripeSessionStatus` (`coordinator/api/billing_handlers.go`) | `key` | — | Poll a checkout session |
 | POST | `/v1/billing/stripe/onboard` | `handleStripeOnboard` (`coordinator/api/stripe_payouts.go`) | `user` (Privy-only wrapper) | `fin` | Country-aware Connect or Global Payouts onboarding link |
-| GET | `/v1/billing/stripe/status` | `handleStripeStatus` (`coordinator/api/stripe_payouts.go`) | `user` | — | Payout readiness; additive `account_id` scopes browser confirmation recovery, plus `payout_rail`, `payout_currency`, `countries`, `payouts_available`, `recipient_limits` (currency, exponent, published minimum/maximum minor units) |
+| GET | `/v1/billing/stripe/status` | `handleStripeStatus` (`coordinator/api/stripe_payouts.go`) | `user` | — | Payout readiness; additive `account_id` scopes browser confirmation recovery, plus `migration_required` (self-service bank setup needed), `payout_rail`, `payout_currency`, `countries`, `payouts_available`, `recipient_limits` (currency, exponent, published minimum/maximum minor units) |
 | POST | `/v1/billing/withdraw/stripe` | `handleStripeWithdraw` (`coordinator/api/stripe_withdraw.go`) | `user` (Privy-only wrapper) | `fin` | Global Payouts confirms a persisted `quote_id`; 409 `stripe_account_gone` / `stripe_account_recreate_required`; 502 `stripe_error` |
 | GET | `/v1/billing/stripe/withdrawals` | `handleStripeWithdrawals` (`coordinator/api/stripe_payouts.go`) | `user` | — | Withdrawal history |
 | POST | `/v1/billing/stripe/dashboard` | `handleStripeDashboardLink` (`coordinator/api/stripe_payouts.go`) | `user` (Privy-only wrapper) | `fin` | Express dashboard link |
-| DELETE | `/v1/billing/stripe/account` | `handleStripeUnlink` (`coordinator/api/stripe_payouts.go`) | `user` (Privy-only wrapper) | — | Removes the Global Payouts mapping when present; otherwise removes the stored Connect mapping. Does not close Stripe accounts or cancel withdrawals. |
+| DELETE | `/v1/billing/stripe/account` | `handleStripeUnlink` (`coordinator/api/stripe_payouts.go`) | `user` (Privy-only wrapper) | — | Resets Global Payouts to a fresh empty generation while retaining its routing fence. During cutover, preserves the legacy Connect mapping; before cutover, an unmigrated Connect user can still unlink it. Does not close Stripe accounts or cancel withdrawals. |
+| POST | `/v1/billing/stripe/connect/accounts/webhook` | `handleStripeConnectAccountsWebhook` (`coordinator/api/stripe_payouts_webhooks.go`) | `stripe-sig` (accounts secret) | — | Requires a connected-account envelope; account updates and payout events. |
 | POST | `/v1/billing/stripe/connect/webhook` | `handleStripeConnectWebhook` (`coordinator/api/stripe_payouts_webhooks.go`) | `stripe-sig` | — | Connect events |
 | POST | `/v1/billing/stripe/quote` | `handleGlobalPayoutQuote` (`coordinator/api/global_payouts_withdraw.go`) | `user` (Privy-only wrapper) | `fin` | `{amount_usd}` returns quote ID, local amount/currency/exponent, expiry and fee; no ledger debit. |
 | POST | `/v1/billing/stripe/global/webhook` | `handleGlobalPayoutWebhook` (`coordinator/api/global_payouts_reconcile.go`) | `stripe-sig` (separate secret) | — | Reconciles the current outbound-payment state; does not consume Connect sweep events. |
@@ -913,3 +914,23 @@ Inference returns `402 free_tokens_exhausted` when the claimed allowance is exha
 
 See [MiMo prompt fixture reproduction](../developer/mimo-prompt-fixtures.md)
 for the independent pinned corpus and metadata required by the Rust parity gate.
+
+### Bank payout cutover contract
+
+With `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ONLY=true`, legacy clients attempting
+an amount-only withdrawal receive 409 `bank_setup_required` before any debit.
+All returned countries use `rail=global`; users enter their own bank details via
+`/v1/billing/stripe/onboard`. A missing country returns 400 `country_required`,
+an unsupported destination returns 400 `country_unavailable`, and paused bank
+setup returns 503 `payouts_paused`. No error falls through to Connect.
+
+Before first confirmation, unavailable funding (including estimated fees) returns
+503 `payout_funding_unavailable` without debit. Already-confirmed quote retries
+remain available while paused. Bank reset never re-enables Connect or mutates
+historical payouts (`coordinator/api/global_payouts_withdraw.go`,
+`maybeGlobalWithdraw`; `coordinator/api/global_payouts_status.go`, `maybeGlobalStatus`).
+
+Checkout amounts require at most two decimal places and the supported integer
+cent range (`coordinator/api/stripe_checkout_webhook.go`, `checkoutUSDCents`).
+Current and legacy Checkout signatures share exact local-session validation and
+atomic, non-withdrawable credit (`handleStripeWebhook`, `CompleteStripeCheckout`).

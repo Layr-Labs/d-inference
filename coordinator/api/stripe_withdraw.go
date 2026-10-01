@@ -37,11 +37,15 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 	if user == nil {
 		return
 	}
-	if s.billing == nil || s.billing.StripeConnect() == nil {
+	if s.billing == nil {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "Stripe Payouts not configured"))
 		return
 	}
 	if s.maybeGlobalWithdraw(w, r, user) {
+		return
+	}
+	if s.billing.StripeConnect() == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "Stripe Payouts not configured"))
 		return
 	}
 	if user.StripeAccountID == "" || user.StripeAccountStatus != stripeStatusReady {
@@ -219,21 +223,22 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// markFailedRefund refunds the ledger and marks the row failed
-	// (best-effort — neither store call has rollback). Returns whether the
-	// refund credit is durably applied; the Refunded flag prevents webhook
-	// replay from double-crediting.
+	// Persist a definitive rejection before refunding. Recovery can retry the
+	// atomic credit/flag update without ever resending a rejected transfer.
 	markFailedRefund := func(reason string) bool {
-		refunded := s.creditRefundOnceWithRetry(user.AccountID, grossMicroUSD, debitRef, withdrawalID)
-		if refunded {
-			wd.Refunded = true
+		repo, ok := store.As[store.StripeSettlementStore](s.billing.Store())
+		if !ok {
+			return false
 		}
-		wd.Status = "failed"
-		wd.FailureReason = reason
-		if uerr := s.persistWithdrawalUpdate(wd, "failure"); uerr != nil {
-			s.logger.Error("stripe payout: mark failed failed", "error", uerr, "withdrawal_id", withdrawalID)
+		if err := repo.RecordStripeTransferRejection(withdrawalID, reason); err != nil {
+			s.logger.Error("stripe payout: persist rejection failed; manual reconciliation required", "withdrawal_id", withdrawalID, "error", err)
+			return false
 		}
-		return refunded
+		_, err := repo.RefundRejectedStripeWithdrawal(withdrawalID)
+		if err != nil {
+			s.logger.Error("stripe payout: refund pending recovery", "withdrawal_id", withdrawalID, "error", err)
+		}
+		return err == nil
 	}
 
 	// Step 2: transfer USD from platform balance to the connected account.
@@ -268,7 +273,7 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		refunded := markFailedRefund("transfer_create_failed: " + err.Error())
+		refunded := markFailedRefund(err.Error())
 		s.logger.Error("stripe payout: transfer failed", "error", err, "withdrawal_id", withdrawalID)
 		refundNote := "your balance was refunded"
 		if !refunded {
@@ -466,9 +471,15 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 // (0/200/400ms backoff), same budget as the other in-request retries.
 func retryAmbiguousStripe[T any](fn func() (T, error)) (T, error) {
 	out, err := fn()
+	ambiguous := err != nil && !billing.IsDefinitiveAPIErr(err)
 	for attempt := 1; attempt <= 2 && err != nil && !billing.IsDefinitiveAPIErr(err); attempt++ {
 		time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
 		out, err = fn()
+	}
+	if ambiguous && err != nil && billing.IsDefinitiveAPIErr(err) {
+		// A later authorization/validation failure cannot disprove an earlier
+		// accepted request whose response was lost. Deliberately don't unwrap.
+		err = fmt.Errorf("earlier Stripe attempt unconfirmed; subsequent response: %v", err)
 	}
 	return out, err
 }

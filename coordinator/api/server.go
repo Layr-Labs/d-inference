@@ -2779,6 +2779,7 @@ func (s *Server) routes() {
 	// keys on the account ID the auth middleware puts in the request context.
 	s.mux.HandleFunc("POST /v1/billing/stripe/dashboard", s.requirePrivyAuth(s.rateLimitFinancial(s.handleStripeDashboardLink)))
 	s.mux.HandleFunc("DELETE /v1/billing/stripe/account", s.requirePrivyAuth(s.handleStripeUnlink))
+	s.mux.HandleFunc("POST /v1/billing/stripe/connect/accounts/webhook", s.handleStripeConnectAccountsWebhook)
 	s.mux.HandleFunc("POST /v1/billing/stripe/connect/webhook", s.handleStripeConnectWebhook) // no auth — Stripe signs it
 
 	// Pricing — GET is public, PUT/DELETE require auth

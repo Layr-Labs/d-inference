@@ -914,10 +914,8 @@ final class MiMoV26NativeLoadTransaction: @unchecked Sendable {
         let rateActivity = budget.serviceBudget.beginUnboundedActivity()
         defer {
             let nativeFault = selected.2.nativeCompletionFault != nil
-            let reservations = lock.withLock { Array(mediaReservations.values) }
-            let failedCompletion = reservations.contains { $0.hasFailedCompletion }
             let retained = lock.withLock { () -> Bool in
-                guard faultCode != nil || nativeFault || failedCompletion else { return false }
+                guard faultCode != nil || nativeFault else { return false }
                 retainedMediaRateActivities.append(rateActivity)
                 return true
             }
@@ -961,7 +959,8 @@ final class MiMoV26NativeLoadTransaction: @unchecked Sendable {
                             let reservation = try MiMoV26ManagedMediaReservation(plan: plan, bytes: bytes,
                                 maximumBytes: policy.maximumReservationBytes,
                                 additionalSystemReserveBytes: policy.additionalSystemReserveBytes,
-                                ledger: self.budget.processLedger,audioBinding:audio)
+                                ledger: self.budget.processLedger,
+                                serviceBudget: self.budget.serviceBudget,audioBinding:audio)
                             // Retain the real charged owner before returning it
                             // to the SDK or crossing any further veto.
                             self.lock.withLock { self.mediaReservations[reservation.id] = reservation }
@@ -1070,7 +1069,8 @@ final class MiMoV26NativeLoadTransaction: @unchecked Sendable {
         try requireServingWorkAllowed()
         let reservation = try MiMoV26ManagedMediaReservation(initialBytes:initialBytes,hostBytes:hostBytes,
             maximumBytes:policy.maximumReservationBytes,
-            additionalSystemReserveBytes:policy.additionalSystemReserveBytes,ledger:budget.processLedger)
+            additionalSystemReserveBytes:policy.additionalSystemReserveBytes,ledger:budget.processLedger,
+            serviceBudget:budget.serviceBudget)
         lock.withLock { mediaReservations[reservation.id] = reservation }
         do {
             try lease.installMediaHostCompletion(id:reservation.id) { [weak self, reservation] in

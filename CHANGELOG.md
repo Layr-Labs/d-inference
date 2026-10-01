@@ -5,6 +5,7 @@
 - Retain native MiMo target-decoder prefill rates in dedicated numeric workload buckets, separated by computed suffix, context, reuse and overlap. Encoder preparation remains outside this timer. These observations support media calibration without mixing media into text rates or changing first-content deadlines.
 - Price prepared native media from fresh observations of the same engine and observed prompt range. Keep queued text at its own conservative rate. A single idle native request can gather missing evidence under the original deadline, retaining ownership through real retirement. Failed or ineligible attempts back off for two minutes; an eligible sample opens the next shape after retirement.
 - Pin the provider SDK to merged `mlx-swift-lm` main commit `e31a173` (#208) for native-media deadline evidence.
+- Keep deadline-rate evidence invalidated when native media fails during later retirement, even after successful preparation; preserve the qualified text policy's separate recovery requirements.
 
 ## Unreleased — native media prompt accounting
 

@@ -1,6 +1,6 @@
 # First-content routing
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-01
 
 The coordinator selects providers by expected time to delivered content, with a
 separate conservative forecast for deadline feasibility. The selection policy applies by
@@ -214,6 +214,13 @@ observations do not refresh older samples. Engine replacement resets the table.
 Only cold, unpacked, non-preempted target-prefill intervals with exclusive
 whole-Mac ownership and an unchanged nominal AC/Automatic posture enter it.
 Media encoder preparation and failed native drains invalidate isolated evidence.
+Native online observations require five seconds of stable nominal posture and
+actual retirement of earlier device work. They may start immediately after
+successful media preparation; they carry no 20-second recovery proof and never
+enter the reviewed text-calibration catalog. The text catalog retains its full
+20-second quiescence requirement. A late prepared/request drain failure marks
+the shared service budget unbounded at the failure transition, even when the
+earlier preparation activity has already finished.
 
 Submission captures one whole-Mac/posture snapshot shared by the prefill receipt
 and `EngineV2Bridge+MiMoDeadline.swift`; a missing snapshot cannot be upgraded

@@ -78,9 +78,7 @@ final class WholeMacServiceBudget: @unchecked Sendable {
             guard charges.count == 1, charges[ownerID]?.work?.modelID == modelID,
                 unboundedActivities.isEmpty else { return nil }
             let now = clockNow()
-            let requirement = DeadlineApplicability(minimumWholeMacQuiescenceMs: 20_000,
-                minimumNominalStabilityMs: 5_000, powerMode: "automatic")
-            guard let snapshot = posture.snapshot(requirement: requirement, at: now,
+            guard let snapshot = posture.nativeMediaSnapshot(at: now,
                 registering: evidenceGuard),
                 let rate = posture.captureRateEvidence(at: now), rate.epoch == snapshot.epoch
             else { return nil }

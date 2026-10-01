@@ -99,6 +99,25 @@ private func nativeRateEvidence(at now: ContinuousClock.Instant) throws -> Nativ
     service.release(ownerID: "target")
 }
 
+@Test func nativeMediaRetiredWorkDoesNotBorrowReviewedTextQuiescence() throws {
+    let now = ContinuousClock.now
+    let posture = nativeRatePosture(at: now)
+    let service = WholeMacServiceBudget(clockNow: { now }, posture: posture)
+    let textRequirement = DeadlineApplicability(minimumWholeMacQuiescenceMs: 20_000,
+        minimumNominalStabilityMs: 5_000, powerMode: "automatic")
+    let preparation = service.beginUnboundedActivity()
+    #expect(service.acquire(ownerID: "target", concurrency: 1,
+        work: .init(modelID: "native", profileID: "reviewed", promptTokens: 1_100, maxOutputTokens: 1),
+        deadlineApplicability: textRequirement))
+    #expect(service.captureNativeMediaRateEvidence(ownerID: "target", modelID: "native") == nil)
+    preparation.finish() // actual completion, not a timer or request terminal
+    #expect(service.captureNativeMediaRateEvidence(ownerID: "target", modelID: "native") != nil)
+    #expect(service.calibrationSnapshot(ownerID: "target", modelID: "native", profileID: "reviewed",
+        applicability: textRequirement) == nil)
+    service.release(ownerID: "target")
+    #expect(!service.deadlineEligibleForAdvertisement(textRequirement))
+}
+
 @Test func nativeMediaBootstrapIsOneAtATimeAndRetainsCooldownAfterRelease() async throws {
     let posture = nativeRatePosture(at: .now)
     let service = WholeMacServiceBudget(posture: posture)

@@ -3,7 +3,7 @@ import Foundation
 import MLXLMCommon
 import Testing
 
-@testable import ProviderCore
+@_spi(Benchmarking) @testable import ProviderCore
 
 /// Records every construction failure that the factory reports.
 private final class ConstructionFailureRecorder: @unchecked Sendable {

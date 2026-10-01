@@ -20,6 +20,7 @@ from threat_review.budget_scan import Scanner
 from threat_review.client import APIError, GitHub, ReviewUnavailable, request_json
 from threat_review.context import ThreatContext, SONNET, OPUS, SOL
 from threat_review.paid import PaidCalls, microdollars
+from threat_review.preflight import check as preflight
 from threat_review.report import COMMENT_LIMIT, plain
 from threat_review.source import complete_files
 from threat_review.state import State, BudgetStopped, fresh
@@ -35,6 +36,7 @@ class LocalService:
         self.reply = self.completion
         self.fail_write = False
         self.conflicts = 0
+        self.verified = True
         service = self
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args):
@@ -46,10 +48,12 @@ class LocalService:
                 self.wfile.write(json.dumps(value).encode())
 
             def do_GET(self):
+                if "/commits/" in self.path:
+                    return self.send(200, {"commit": {"verification": {"verified": service.verified}}})
                 path = urlsplit(self.path).path.split("/contents/", 1)[-1]
                 with service.lock:
                     value = copy.deepcopy(service.files.get(path))
-                self.send(200 if value else 404, value or {})
+                return self.send(200 if value else 404, value or {})
 
             def do_PUT(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -88,7 +92,7 @@ class LocalService:
 
     def transport(self, url, token, payload=None, method=None):
         route = urlsplit(url).path
-        if "/contents/" not in route:
+        if "/contents/" not in route and "/commits/" not in route:
             route = "/model"
         return request_json(self.url + route, "synthetic", payload, method)
 
@@ -192,6 +196,59 @@ class BudgetTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises((ValueError, ArithmeticError)):
                 microdollars(value)
         self.assertEqual(microdollars("0.0000001"), 1)
+
+
+class PreflightTests(unittest.TestCase):
+    def setUp(self):
+        self.service = LocalService()
+        self.addCleanup(self.service.close)
+        self.limit = 25
+        self.credit = {"total_credits": 25, "total_usage": 0}
+        self.reads = []
+
+    def funding(self, url, key):
+        self.assertEqual(key, "synthetic")
+        self.assertIn(url, ("https://openrouter.ai/api/v1/key", "https://openrouter.ai/api/v1/credits"))
+        self.reads.append(url)
+        return {"data": {"limit_remaining": self.limit} if url.endswith("/key") else self.credit}
+
+    def test_preflight_verifies_real_state_io_without_changing_spend(self):
+        before = self.service.state.read("ledger.json")
+        preflight(self.service.state, "synthetic", self.funding)
+        self.assertEqual(self.service.state.read("ledger.json"), before)
+        self.assertEqual(self.service.state.read("preflight.json")[0]["paid_requests"], 0)
+        self.assertFalse(self.service.calls)
+        self.assertEqual(len(self.reads), 2)
+
+    def test_exhausted_key_and_account_are_distinct_failures(self):
+        self.limit = 0
+        with self.assertRaisesRegex(ReviewUnavailable, "key spending limit is exhausted"):
+            preflight(self.service.state, "synthetic", self.funding)
+        self.limit = None
+        self.credit["total_usage"] = 25
+        with self.assertRaisesRegex(ReviewUnavailable, "account has no remaining credits"):
+            preflight(self.service.state, "synthetic", self.funding)
+        self.assertFalse(self.service.calls)
+
+    def test_funding_checked_even_when_state_writer_is_rejected(self):
+        self.service.fail_write = True
+        self.limit = 0
+        with self.assertRaisesRegex(ReviewUnavailable, "Storage:.*403.*Funding:.*exhausted"):
+            preflight(self.service.state, "synthetic", self.funding)
+
+    def test_unsigned_writer_and_missing_ledger_fail_preflight(self):
+        self.service.verified = False
+        with self.assertRaisesRegex(ReviewUnavailable, "signature is not verified"):
+            preflight(self.service.state, "synthetic", self.funding)
+        self.service.files.pop("ledger.json")
+        with self.assertRaisesRegex(ReviewUnavailable, "ledger is not initialized"):
+            preflight(self.service.state, "synthetic", self.funding)
+
+    def test_invalid_funding_never_claims_readiness(self):
+        for value in (True, "NaN", "Infinity", "invalid"):
+            self.limit = value
+            with self.subTest(value=value), self.assertRaisesRegex(ReviewUnavailable, "funding response is invalid"):
+                preflight(self.service.state, "synthetic", self.funding)
 
 
 class ScanTests(unittest.TestCase):

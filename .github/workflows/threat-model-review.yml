@@ -8,14 +8,36 @@ on:
     inputs:
       pr_number:
         description: 'PR number for a maintainer-requested deeper review (normal caps still apply)'
-        required: true
+        required: false
         type: string
+      preflight:
+        description: 'Verify state writes and provider funding without paid model calls'
+        type: boolean
+        default: false
 
 permissions:
   contents: write # atomic budget ledger and report checkpoints on a dedicated branch
   pull-requests: write
 
 jobs:
+  preflight:
+    name: Threat review activation preflight
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.preflight }}
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the maintainer-selected workflow revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify activation without paid calls
+        env:
+          GH_TOKEN: ${{ secrets.THREAT_REVIEW_STATE_TOKEN || github.token }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: python3 .github/scripts/threat-review-preflight.py
   review:
     name: Threat Model Review (advisory)
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -23,7 +45,7 @@ jobs:
     # Operational failures as well as findings must never become merge gates.
     continue-on-error: true
     if: >-
-      ${{ github.event_name == 'workflow_dispatch' || (!github.event.pull_request.draft &&
+      ${{ (github.event_name == 'workflow_dispatch' && !inputs.preflight) || (github.event_name == 'pull_request_target' && !github.event.pull_request.draft &&
           (github.event.action != 'edited' || github.event.changes.base.ref.from != '')) }}
     # Skipped title/body edits never enter the review job's cancellation group.
     concurrency:

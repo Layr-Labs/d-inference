@@ -34,18 +34,29 @@ is **disabled by default**, including when legacy model variables remain set.
    ```
 
    This creates the dedicated branch and `ledger.json`; it never resets an
-   existing ledger. Verify the Contents API commits satisfy signature rules.
+   existing ledger. Verify the Contents API commits satisfy signature rules. If
+   the initializer cannot sign with the chosen identity, seed the empty ledger
+   with a maintainer-signed Git commit; never weaken the signature rule or
+   overwrite an existing ledger.
 4. Confirm the workflow writer can update the state branch. If the built-in
    Actions token is excluded by repository rules, supply Actions secret
    `THREAT_REVIEW_STATE_TOKEN` using an authorized identity limited to this
    repository with **Contents: read/write**. It is used only for state storage;
    PR comments still use the built-in token. Do not weaken default-branch
-   protections. Missing state or permission errors stop paid calls. The code
-   never mints credentials or changes repository rules.
-5. Run the offline checks below. Review the rollout and billing limit, then set
-   `THREAT_REVIEW_ENABLED=true` only when authorized to start the pilot. It admits
+   protections. For the built-in Actions writer, a separately approved rule can
+   permit GitHub Actions only on the state branch while retaining signed-commit
+   and default-branch protections. Missing state or permission errors stop paid
+   calls. The code never mints credentials or changes repository rules.
+5. Run the offline checks below. Run **Actions → Threat Model Review (advisory)
+   → Run workflow** with `preflight=true` on the reviewed branch. The preflight
+   verifies a signed state write/read and available OpenRouter key/account funds
+   without admitting a PR, changing the ledger, or calling a paid model. A failed
+   preflight reports storage and funding failures separately.
+6. When authorized to start the pilot, set `THREAT_REVIEW_ENABLED=true`. This
+   repository variable can be set before merge so activation takes effect as
+   soon as the workflow lands on the default branch. It admits
    at most **ten distinct PRs** and **$25 total**, with no automatic renewal.
-6. Keep **Threat Model Review (advisory)** out of required checks. Opening,
+7. Keep **Threat Model Review (advisory)** out of required checks. Opening,
    reopening, marking ready or retargeting a PR starts immediately. Follow-up
    pushes wait 75 seconds; another push cancels the older job. Drafts and
    title/body-only edits are skipped before entering the cancellation group.
@@ -158,7 +169,8 @@ public like the PR. OpenRouter and its provider receive source and threat contex
 
 Implementation: `.github/workflows/threat-model-review.yml`,
 `.github/scripts/threat-model-review.py`, and `.github/scripts/threat_review/`:
-`budget_runner.py`, `budget_scan.py`, `context.py`, `paid.py`, `state.py`, plus shared
+`budget_runner.py`, `budget_scan.py`, `context.py`, `paid.py`, `state.py`,
+`preflight.py`, plus shared
 source, validation, transport and rendering helpers. The scan deadline is 15
 minutes inside a 20-minute workflow timeout.
 

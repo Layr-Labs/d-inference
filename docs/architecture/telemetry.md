@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-09-29
+> Last updated: 2026-10-01
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is
@@ -314,6 +314,11 @@ and the `inference.timing.*` histograms are built from the same
    full sink and unreachable intake are all silent no-ops or counted drops.
    Engine-health, `kv_backend` and `telemetry` heartbeat fields are
    measurement only; the scheduler does not gate on them.
+   After request handoff, dispatch reads KV-backend attribution from its
+   selected provider, including the captured backup on failover, rather than
+   looking it up under the registry lock. `noteServingSlotFor`
+   (`coordinator/api/kv_backend_metrics.go`) keeps this bookkeeping from
+   delaying first content behind a registry writer.
 4. **Tags come from the accepted snapshot and closed folds.** `SlotStateFold`,
    `ThermalStateFold`, `ProviderVersionFold` (`coordinator/registry/gate_reason.go`)
    and `KVBackendFallbackTag` (`coordinator/registry/kv_backend.go`) bound

@@ -817,6 +817,12 @@ Postgres tests require an explicitly disposable `DATABASE_URL` and include an
 upgrade from the old profile schema. See
 [prediction telemetry](../reference/prediction-decision-telemetry.md).
 
+`first_byte_attribution_test.go` holds the registry write lock while primary
+and backup dispatches capture their serving-slot metrics. The encrypted
+WebSocket test in `first_byte_lock_test.go` separately requires the first
+content to reach the HTTP client while that lock stays held. Run both with
+`go test -race ./coordinator/api -run 'TestServingSlotAttribution|TestFirstByteReachesClient' -count=25`.
+
 The [admission calibration baseline](../reports/2026-09-06-admission-calibration-baseline.md)
 gives the focused `TestTTFTPendingPrompt` comparison command. Its registry
 cases exercise preflight, reservation, retained-plan revalidation and retained

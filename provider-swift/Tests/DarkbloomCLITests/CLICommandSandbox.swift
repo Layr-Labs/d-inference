@@ -31,7 +31,8 @@ struct CLICommandSandbox {
 
     static func enter(
         enabledModels: [String] = [],
-        autoUpdate: Bool = true
+        autoUpdate: Bool = true,
+        autoRestart: Bool = true
     ) throws -> CLICommandSandbox {
         let sandbox = try CLICommandSandbox()
         setenv("DARKBLOOM_STATE_FILE", sandbox.stateFile.path, 1)
@@ -42,7 +43,7 @@ struct CLICommandSandbox {
         setenv("NO_COLOR", "1", 1)
         unsetenv("SUDO_USER")
         CoordinatorStub.install([:])
-        try sandbox.writeConfig(enabledModels: enabledModels, autoUpdate: autoUpdate)
+        try sandbox.writeConfig(enabledModels: enabledModels, autoUpdate: autoUpdate, autoRestart: autoRestart)
         return sandbox
     }
 
@@ -70,9 +71,10 @@ struct CLICommandSandbox {
         try? FileManager.default.removeItem(at: root)
     }
 
-    func writeConfig(enabledModels: [String] = [], autoUpdate: Bool = true) throws {
+    func writeConfig(enabledModels: [String] = [], autoUpdate: Bool = true, autoRestart: Bool = true) throws {
         let value = ProviderConfig(
-            provider: ProviderSettings(name: "cli-sandbox", memoryReserveGB: 1, autoUpdate: autoUpdate),
+            provider: ProviderSettings(
+                name: "cli-sandbox", memoryReserveGB: 1, autoUpdate: autoUpdate, autoRestart: autoRestart),
             backend: BackendSettings(modelCacheDirectory: cache.path, enabledModels: enabledModels),
             coordinator: CoordinatorSettings(url: Self.coordinatorURL, heartbeatIntervalSecs: 5))
         try ConfigManager.save(value, to: config)

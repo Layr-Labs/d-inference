@@ -24,7 +24,7 @@ struct LogsCommandOptionsTests {
     @Test("short and long options set the history window, follow, debug and line count")
     func options() throws {
         let logs = try #require(try Darkbloom.parseAsRoot([
-            "logs", "--last", "30m", "-f", "--debug", "-n", "200", "--file",
+            "logs", "--last", "30m", "-f", "--debug", "-l", "200", "--file",
         ]) as? Logs)
         #expect(logs.last == "30m")
         #expect(logs.follow)

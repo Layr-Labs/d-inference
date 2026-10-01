@@ -44,6 +44,7 @@ func testPostgresStore(t testing.TB) *PostgresStore {
 		"balances",
 		"ledger_entries",
 		"billing_sessions",
+		"small_models_interest",
 		"users",
 		"device_codes",
 		"provider_tokens",

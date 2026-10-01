@@ -67,6 +67,7 @@ extension ProviderLoop {
         if nativeMiMoAllowsReclamation() { kvBudget.proactiveReclaimSweep() }
         await updateAggregateCapacity()
         await recoverWedgedEngineV2Slots()
+        await refreshMimoCalibration()
         writeDaemonState()
     }
 

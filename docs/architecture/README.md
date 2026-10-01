@@ -34,6 +34,7 @@ how-to and runbook directories listed in [`../README.md`](../README.md).
 | Page | Concern |
 |---|---|
 | [security/encryption.md](security/encryption.md) | The privacy model: NaCl Box on each hop, what the coordinator decrypts and does not retain, key lifetimes. The only page that states it |
+| [security/provider-trust.md](security/provider-trust.md) | Independent legacy MDM/APNs and App Attest authorization, common gates and residual trust limits |
 | [security/attestation.md](security/attestation.md) | Trust levels and the exact condition for each: Secure Enclave signature, MDM cross-check, MDA, APNs code identity |
 | [security/enrollment.md](security/enrollment.md) | Device enrollment: MDM profile generation and signing, SCEP, webhook |
 | [security/identity-binding.md](security/identity-binding.md) | How APNs, X25519, SE P-256, and MDA identities bind to one provider |

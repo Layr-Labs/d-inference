@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-09-28
+> Last updated: 2026-09-30
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -102,7 +102,7 @@ production-key restart checks remain subject to the
 [acceptance criteria](../design/release-090-acceptance.md).
 This selection change is not a release or deployment claim. SSD prefix reuse
 defaults on for the exact Qwen, Nemotron Lightning and Bonsai 2 IDs above,
-`gemma-4-26b-qat-4bit` and `gpt-oss-20b`.
+`gemma-4-26b-qat-4bit`, `gpt-oss-20b` and the exact MiMo identities below.
 GPT-OSS 20B and Gemma QAT use the paged historical-attention complete checkpoint.
 Gemma automatic MTP resolves its catalog assistant through `SpecDecArtifactFunnel`, and a
 contiguous fallback does not reuse that checkpoint. An explicit affirmative
@@ -113,6 +113,30 @@ local/connected load hashing and benchmark expectations use the model-scoped
 `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift`.
 Resident retention remains off unless explicitly enabled through the separate
 memory flag (`PrefixCachePolicy.isMemoryEnabled`).
+
+### MiMo complete state
+
+SSD eligibility defaults on only for `mimo-v2.6-flash-mopd` and
+`EigenLabs/MiMo-V2.6-Flash-MOPD-MLX-4bit-mtp`, matched exactly by
+`PrefixCachePolicy.isMiMoDefaultModel` in
+`provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift`.
+The normal native MiMo path stays contiguous and uses encrypted text-only
+COMPLETE checkpoints, including native assistant state when MTP is active.
+The factory retains verified artifact/runtime identity, tenant, dtype, store,
+loaded-owner and memory-budget checks. Missing reusable state serves cold.
+The native connected loader and standalone load-hash policy use the same
+MiMo-specific activation decision, so an opt-out does not request fresh hash
+reads solely for cache construction. Independent attestation, artifact and
+fingerprint-change verification still apply.
+
+`DARKBLOOM_MIMO_COMPLETE_PREFIX=0` disables this path;
+`DARKBLOOM_PREFIX_CACHE=0` disables all prefix caching. The MiMo switch's exact
+parsing and launchd passthrough are in the
+[configuration reference](../reference/configuration.md#native-mimo-v26-candidate).
+Image, audio and video requests keep the joint contiguous media profile and
+remain uncached. This default does not enable RAM retention, native paging or
+rectangular verification. Enabling source policy is not evidence of cache hits
+or full-artifact qualification; use the [release acceptance steps](../operations/provider-release.md).
 
 ### Bonsai complete state
 

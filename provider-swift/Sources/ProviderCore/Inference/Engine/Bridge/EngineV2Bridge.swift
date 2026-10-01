@@ -287,6 +287,8 @@ public actor EngineV2Bridge {
     var measurementActivity = EngineMeasurementActivity()
     var performanceUpdates: EnginePerformanceUpdates?
     var performanceMeasurements = EnginePerformanceMeasurements()
+    var prefillEvidenceRecovery = PrefillEvidenceRecovery()
+    var mimoCalibration = MimoCalibrationState()
     var prefillRequestsTotal: Int64 = 0
     var generatedTokensTotal: Int64 = 0
     var generationRequestsTotal: Int64 = 0
@@ -304,6 +306,10 @@ public actor EngineV2Bridge {
     /// hidden inside this prefill denominator.
     var isolatedPrefillTpsEwma: Double = 0
     var isolatedPrefillEwmaInitialized = false
+    var nativeMediaPrefillRates = NativeMediaPrefillRates()
+    var nativeMediaBootstrapRequestID: String?
+    var nativeMediaLearnedRequestIDs: Set<String> = []
+    var nextNativeMediaBootstrapAt: ContinuousClock.Instant?
     /// Cold-start model load time (ms) for this slot, recorded by
     /// `ProviderLoop.ensureModelLoaded` once the load completes (the
     /// bridge exists before the load finishes, so this arrives post-init).

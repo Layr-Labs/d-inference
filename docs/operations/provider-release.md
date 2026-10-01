@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-01
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -18,8 +18,35 @@ retry of that old workflow still uses its original source. For an unchanged
 candidate with successful build and SDK qualification, merge the tooling fix
 and use the retained unsigned recovery path below.
 
-The prepared version is **0.9.13**. Its MiMo memory-admission changes are
-collected in [`CHANGELOG.md`](../../CHANGELOG.md). Qualify the signed build
+The prepared version is **0.9.15**. It adds automatic idle native MiMo
+calibration through the actual serving engine; see
+[calibration behavior](../architecture/first-content-routing.md#automatic-mimo-calibration).
+On the exact signed artifact, verify short/4k phase observations reach capacity
+heartbeats, customer requests on any model preempt calibration until real
+retirement, original deadlines remain anchored, and probe work is excluded from
+served-request/token counters. Compare utilization and capacity/deadline
+refusals under real traffic without expanding memory or concurrency limits.
+
+It retains native MiMo text-prefix SSD caching enabled by default since the
+0.9.14 candidate; the exact model identities and rollback controls are in
+[prefix-cache policy](../architecture/prefix-cache.md#mimo-complete-state).
+Qualify the exact signed build with an ordinary launchd configuration: record a
+cold text request, a useful repeated-prefix donation and an authenticated SSD
+restore, including target/assistant output correctness and memory headroom.
+Verify image, audio and video requests still complete through the joint native
+path without reporting media-prefix reuse. Set `DARKBLOOM_MIMO_COMPLETE_PREFIX=0`
+and rerun the replacement `darkbloom start` flow, preserving the selected models
+and existing start options, then repeat with `DARKBLOOM_PREFIX_CACHE=0`.
+Replacement start drains the old process, rewrites its plist from the current
+shell environment and starts the provider; `darkbloom restart` reuses the saved
+plist and does not apply newly exported variables. Verify each replacement
+provider serves cold, then unset both overrides and repeat replacement start
+to restore the model default. RAM
+retention and experimental paging/rectangular verification stay off for this
+qualification. The source change does not qualify those runtime results.
+
+The MiMo memory/media fixes carried forward from 0.9.13 are collected in
+[`CHANGELOG.md`](../../CHANGELOG.md). Qualify the signed build
 on a 256 GiB host both with MiMo alone and with another model resident:
 confirm a positive usable token budget, successful inference, bounded memory
 pressure, and correct concurrency reduction or load refusal when grants shrink.
@@ -362,8 +389,8 @@ Coordinator deploys are a separate runbook:
 
 The provider and coordinator versions must be identical strings:
 
-- `provider-swift/Sources/ProviderCore/ProviderCore.swift` — `public static let version = "0.9.10"`
-- `coordinator/api/server.go` — `var LatestProviderVersion = "0.9.10"`
+- `provider-swift/Sources/ProviderCore/ProviderCore.swift` — `public static let version = "0.9.15"`
+- `coordinator/api/server.go` — `var LatestProviderVersion = "0.9.15"`
 
 ```bash
 ./scripts/check-release-version.sh          # provider == coordinator, semver
@@ -371,8 +398,8 @@ The provider and coordinator versions must be identical strings:
 ```
 
 `check-release-version.sh` accepts an optional expected version
-(`check-release-version.sh v0.9.10`) and an optional reported string from a
-built binary (`darkbloom 0.9.10` or `0.9.10`); the workflow calls it in all
+(`check-release-version.sh v0.9.15`) and an optional reported string from a
+built binary (`darkbloom 0.9.15` or `0.9.15`); the workflow calls it in all
 three forms. CI job "Release Integrity" runs the two commands above on every
 push.
 

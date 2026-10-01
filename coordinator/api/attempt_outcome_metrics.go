@@ -113,7 +113,7 @@ func isCapacityClassErrorReason(reason string) bool {
 		errorReasonTokenBudgetExhaust, errorReasonRequestExceedsContext,
 		errorReasonRequestExceedsNode, errorReasonRequestExceedsNodeBudget,
 		errorReasonRequestExceedsBatchBudget, errorReasonModelLoad,
-		errorReasonDraining:
+		errorReasonDraining, errorReasonMediaMemoryUnavailable:
 		return true
 	default:
 		return false

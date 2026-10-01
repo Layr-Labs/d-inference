@@ -1,6 +1,6 @@
 # First-content routing
 
-> Last updated: 2026-09-29
+> Last updated: 2026-10-01
 
 The coordinator selects providers by expected time to delivered content, with a
 separate conservative forecast for deadline feasibility. The selection policy applies by
@@ -141,6 +141,112 @@ both measurements: cache reuse can leave isolated-prefill evidence unchanged, as
 can an unchanged legacy EWMA. Exploration offers an opportunity, not guaranteed
 selection or recovery.
 
+### Automatic MiMo calibration
+
+After native MiMo slot publication and on provider capacity ticks,
+`refreshMimoCalibration` asks the loaded bridge to measure its actual serving
+configuration. Calibration runs only on an idle Mac in nominal thermal state
+outside Low Power Mode, with no reviewed deadline profile. The existing engine,
+MTP configuration, context limit, memory gates and concurrency ceiling are used;
+calibration never certifies a higher concurrency or changes a memory floor.
+
+`MimoCalibrationPolicy.bootstrap` excludes one warmup, measures two short and
+two longer text cells, sweeps the supported concurrent widths, and finishes with
+a solo cell. Prompts contain built-in prose and code, not customer content; the
+complete chat template is rendered to at most 128 warmup, 512 short or 4,096
+longer prepared tokens. Measured cells request at most 32 output tokens, with
+prefix caching disabled. Longer/batched cells require recent phase rates whose
+serialized-work estimate fits `maximumGroupSeconds` (`15.0`); otherwise they
+are skipped. Context/KV refusals remain authoritative. The group timer cancels
+actual requests rather than fabricating retirement. Solo short/long/short probes
+refresh an idle engine when either phase is older than `refreshAge` (`.seconds(90)`),
+with the same affordability gate on the longer cell. Failed
+attempts back off `failureBackoff` (`.seconds(120)`), interruptions
+`interruptionBackoff` (`.seconds(30)`). Engine replacement starts a new epoch.
+
+`IdleCalibrationCoordinator` prevents another calibration while a foreground
+request prepares or admits. A request on any loaded model cancels the existing
+probe and waits for its native retirement before acquiring service/KV. The
+request's original first-content clock continues during that wait. Expiry or
+cancellation at retirement records the ordinary deadline verdict before any
+service/KV admission. Unload and
+shutdown stop the calibration; no background task can retain retired weights.
+
+Only completed, uncached, isolated calibration receipts seed ordinary phase
+rates. They replace the previous estimate while preserving monotonic producer
+counts and the engine epoch; subsequent serving observations resume EWMA smoothing.
+Warmup is excluded; batched observations populate workload buckets with
+measured `concurrent_requests` and do not overwrite solo admission rates.
+Peak overlap is not proof of fused GPU batch width. Fresh cold isolated
+measurements in the matching prompt-size bucket cap the aggregate prefill
+projection in both coordinator and provider; they do not grant independent
+freshness or extrapolate short prompts into longer domains.
+Calibration output, requests and prefill tokens are excluded from served-work
+counters and delivered/end-to-end observations. Physical in-flight work stays
+visible in capacity until real retirement. This does not remove deadline or
+actual-capacity 429s: it supplies fresh evidence through the existing event
+heartbeats so idle machines can be selected before receiving customer traffic.
+
+```mermaid
+flowchart TD
+    A["Native MiMo published / capacity tick"] --> B["startMimoCalibrationIfNeeded"]
+    B --> C{"Mac idle and evidence needs refresh?"}
+    C -->|Yes| D["Loaded engine: warmup, cold text, bounded batches"]
+    D --> E["Real phase receipts and workload buckets"]
+    E --> F["Performance refresh → heartbeat → routing"]
+    G["Customer request on any model"] --> H["IdleCalibrationCoordinator.beginForeground"]
+    H --> I["Cancel probe and await actual retirement"]
+    I --> J["Ordinary admission on original deadline"]
+```
+
+### Provider recovery of expired text prefill evidence
+
+Native engines with generation-bound retirement support can renew an expired
+isolated-prefill estimate through one short text request. The evidence expires
+after `EnginePerformanceMeasurements.freshness` (`.seconds(120)`). A recovery
+request must have a live first-content deadline, no media, no reviewed deadline
+profile, and at most `PrefillEvidenceRecovery.maximumPromptTokens` (`1_024`)
+actual prepared tokens with a positive output limit. This is a bounded exploration policy, not a throughput
+guarantee (`canRecoverPrefillEvidence`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+PrefillRecovery.swift`).
+
+The provider atomically acquires the entire `WholeMacServiceBudget` only when
+there are no service owners or unbounded device activities. That exclusive
+lease prevents another model or request from claiming inference service until
+prompt completion. The final idle check and synchronous native registration
+share the budget lock, so device activity cannot start between those operations.
+Loading or device work after that admission boundary invalidates the evidence guard;
+an interrupted receipt cannot train an isolated rate. Short recovery uses the
+existing unmeasured-prefill submission path, with no invented service rate or
+predicted duration. Original-clock expiry checks run before and after submission;
+the coordinator's first-content timeout still bounds waiting for content.
+Physical KV, memory, cache, trust and cancellation checks remain in force.
+
+The SDK prompt-completion receipt reduces the full-Mac allowance to the ordinary
+configured serving fraction, including cache-only or contended receipts. The same
+service reservation, its lifetime and all memory/cache ownership remain held until
+actual retirement. Long completions therefore retain ordinary concurrency instead
+of monopolizing the Mac. If prefill never completes, exclusivity remains held
+through retirement (`reduceExclusiveAllowance`,
+`provider-swift/Sources/ProviderCore/Inference/Performance/WholeMacServiceBudget.swift`).
+
+Outside this exclusive recovery path, native requests retain ordinary predictive
+admission using their observed rates. Expiration alone does not remove a healthy
+idle provider's ability to serve a larger prompt. Engines without generation-bound
+retirement retain their legacy policy. A failed
+or cache-only recovery waits `PrefillEvidenceRecovery.failureBackoff`
+(`.seconds(120)`) after actual retirement before another recovery can start.
+A successful cold isolated sample releases the recovery permission at retirement;
+receipt publication alone never releases device ownership.
+Refusals before engine admission commits do not start the recovery backoff.
+
+The first new sample after an evidence gap reseeds its phase EWMA rather than
+blending with the expired rate. Producer epoch and sample counts remain monotonic,
+and heartbeats alone do not renew measurements. A cache hit, incomplete prefill,
+contended sample or invalid timing cannot replace isolated-prefill evidence.
+Coordinator exploration still controls whether an unknown provider gets a request;
+provider recovery supplies a measurement opportunity once it is selected.
+
 Even a feasible forecast is advisory. The ordinary forecast uses resolved
 prefill and decode rates directly: it no longer multiplies either rate by 0.5.
 The conservative prefill rate is still capped by a valid isolated-prefill
@@ -202,6 +308,47 @@ lease work is bounded with a maximum rather than counted twice.
 An unrelated `idle_shutdown` slot with no activity does not compete for work or
 require active-engine telemetry. Positive activity and local reservations still
 count; loading, crashed and unknown slot states remain conservative.
+
+### Native media target observations
+
+Native MiMo preparation expands media into its actual target-decoder prompt
+before deadline admission. A short text sample is not a measured media rate.
+`NativeMediaPrefillRates` retains at most 32 samples in each existing prompt
+size band, using the slowest unexpired rate only within the smallest-to-largest
+actually observed prompt range. Each sample expires after 120 seconds; new
+observations do not refresh older samples. Engine replacement resets the table.
+Only cold, unpacked, non-preempted target-prefill intervals with exclusive
+whole-Mac ownership and an unchanged nominal AC/Automatic posture enter it.
+Media encoder preparation and failed native drains invalidate isolated evidence.
+Native online observations require five seconds of stable nominal posture and
+actual retirement of earlier device work. They may start immediately after
+successful media preparation; they carry no 20-second recovery proof and never
+enter the reviewed text-calibration catalog. The text catalog retains its full
+20-second quiescence requirement. A late prepared/request drain failure marks
+the shared service budget unbounded at the failure transition, even when the
+earlier preparation activity has already finished.
+
+Submission captures one whole-Mac/posture snapshot shared by the prefill receipt
+and `EngineV2Bridge+MiMoDeadline.swift`; a missing snapshot cannot be upgraded
+between those consumers. The latter passes the incoming target's observation
+to the SDK. The SDK prices any pre-existing
+prefill at its original rate and any decode at its own rate. Missing, expired,
+out-of-range or invalidated media evidence is not replaced by a text prediction.
+These runtime observations do not populate the reviewed calibration catalog.
+
+When that table has no applicable observation, one owned native request can
+gather evidence under the same absolute first-content deadline. The SDK checks
+physical capacity, exactly one scheduler row, no in-flight step, no decode or
+mixed work, no adopted prefix, and the live whole-Mac guard. The provider allows
+at most one such request until actual retirement. Failed or ineligible attempts
+back off for 120 seconds per engine; an eligible target-prefill sample releases
+that backoff only at its owner's retirement, including an eligible ordinary
+request with no first-content deadline, so new shapes can build a fresh range.
+Busy, unowned, stale-posture or cooldown cases keep a capacity refusal;
+no deadline, memory, cancellation or trust check is disabled. The explicit SDK
+`unmeasuredNativeMedia` result records bounded work with unknown service time,
+not a zero-time prediction. Cancellation transfers retain the bootstrap owner
+until the existing retirement path releases the service allowance.
 
 ### Selection and reservations
 
@@ -296,6 +443,9 @@ does not represent a random sample of all outcomes.
 | Quote correlation | `coordinator/registry/capacity_quotes.go` — `ProbePlanCandidates` |
 | Request retry and terminal ownership | `coordinator/api/dispatch.go` — `dispatchState` |
 | Persisted forecast evidence | `coordinator/api/profiler_record.go` — `decisionJSON` |
+| Native text measurement recovery | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+PrefillRecovery.swift` — `canRecoverPrefillEvidence`; `provider-swift/Sources/ProviderCore/Inference/Performance/PrefillEvidenceRecovery.swift` — `PrefillEvidenceRecovery` |
+| Automatic MiMo calibration and customer preemption | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+MimoCalibration.swift` — `startMimoCalibrationIfNeeded`; `provider-swift/Sources/ProviderCore/Inference/Performance/IdleCalibrationCoordinator.swift` — `beginForeground` |
+| Conservative prompt-size evidence | `coordinator/registry/prefill_workload_rates.go` — `capPrefillByWorkload`; `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EnginePerformanceMeasurements.swift` — `freshIsolatedPrefillRate` |
 
 ## Related
 

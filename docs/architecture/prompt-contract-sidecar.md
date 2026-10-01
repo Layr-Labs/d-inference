@@ -341,7 +341,10 @@ Nemotron's Rust filters mirror the provider's `String(Double)` spelling rather
 than Rust's decimal display or serde's exponent spelling. The normalizer applies
 the SDK's Int-before-Double conversion to Nemotron tool values before rendering;
 numeric enum/default/minimum fields therefore produce identical token counts
-and cache blocks. The shared 526-value finite-number oracle exercises both
+and cache blocks. Decimal/exponent tool values at or above the `2^53` exact
+integer boundary stay cold: serde's Double may already have lost a digit that
+Swift's typed Int decoder preserves. Plain signed integer spellings remain
+eligible. The shared 526-value finite-number oracle exercises both
 Swift and Rust filters, and the pinned reference/edge corpora exercise the real
 provider tokenizer and Rust planner. See the
 [Nemotron parity gate](../developer/test.md#9-prompt-contract-parity-fixtures-and-vectors).

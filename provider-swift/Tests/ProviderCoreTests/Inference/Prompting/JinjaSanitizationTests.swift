@@ -541,4 +541,15 @@ final class JinjaSanitizationTests: XCTestCase {
         XCTAssertTrue((values[0] as? Jinja.Value)?.isNull == true)
         XCTAssertEqual(values[1] as? String, "sunny")
     }
+
+    func testNemotronTypedDecimalIntegerRetainsPrecisionBeyondDoubleRange() throws {
+        let tool = try JSONDecoder().decode(OpenAITool.self, from: Data(#"""
+            {"type":"function","function":{"name":"number","parameters":{
+                "type":"object","enum":[9007199254740993.0]}}}
+            """#.utf8))
+        let function = try XCTUnwrap(tool.toolSpec()["function"] as? [String: any Sendable])
+        let parameters = try XCTUnwrap(function["parameters"] as? [String: any Sendable])
+        let values = try XCTUnwrap(parameters["enum"] as? [any Sendable])
+        XCTAssertEqual(values.first as? Int, 9_007_199_254_740_993)
+    }
 }

@@ -54,6 +54,15 @@ pub fn normalize(
     if model_type.is_some_and(|value| value.trim().eq_ignore_ascii_case("nemotron_h")) {
         // JSONValue decodes integral JSON doubles as Int before toolSpec reaches
         // Jinja. Nemotron's numeric filters must see that same typed value.
+        // Above f64's exact-integer range, serde has already lost digits that
+        // Swift's direct Int decoder can preserve (9007199254740993.0). Keep
+        // these decimal/exponent spellings cold; signed integer inputs are exact.
+        if tools
+            .as_ref()
+            .is_some_and(|tools| tools.iter().any(ambiguous_nemotron_number))
+        {
+            return Err(NormalizeError::InvalidTools);
+        }
         tools = tools.map(|tools| tools.into_iter().map(provider_bridged_value).collect());
     } else {
         tools = tools.map(drop_nemotron_only_tool_metadata);
@@ -173,6 +182,17 @@ pub fn normalize(
         body: Value::Object(normalized_body),
         prompt_date,
     })
+}
+
+fn ambiguous_nemotron_number(value: &Value) -> bool {
+    match value {
+        Value::Number(number) if number.is_f64() => number
+            .as_f64()
+            .is_some_and(|number| number.abs() >= 9_007_199_254_740_992.0),
+        Value::Array(values) => values.iter().any(ambiguous_nemotron_number),
+        Value::Object(values) => values.values().any(ambiguous_nemotron_number),
+        _ => false,
+    }
 }
 
 fn drop_nemotron_only_tool_metadata(mut tools: Vec<Value>) -> Vec<Value> {

@@ -76,4 +76,25 @@ async fn nemotron_edge_corpus_matches_real_planner() {
             case["prompt"].as_str().unwrap()
         );
     }
+
+    // Swift's typed Int decoder preserves the final digit of the decimal
+    // spelling, while serde f64 rounds it down. Do not certify a false plan.
+    let body: Value = serde_json::from_str(r#"{"model":"nvidia-nemotron-3.5-lightning",
+        "messages":[{"role":"user","content":"number"}],
+        "tools":[{"type":"function","function":{"name":"number","parameters":{
+            "type":"object","properties":{"value":{"type":"number","enum":[9007199254740993.0]}}}}}]}"#).unwrap();
+    let request = PlanRequest {
+        prompt_contract_id: id,
+        scope_id: "numeric-boundary".into(),
+        endpoint: Endpoint::ChatCompletions,
+        body,
+    };
+    assert!(matches!(
+        planner.fixture_plan(request.clone()).await,
+        Err(promptsidecar::planner::PlanError::Normalize)
+    ));
+    let mut exact = request;
+    exact.body["tools"][0]["function"]["parameters"]["properties"]["value"]["enum"][0] =
+        Value::from(9_007_199_254_740_993_i64);
+    assert!(planner.fixture_plan(exact).await.is_ok());
 }

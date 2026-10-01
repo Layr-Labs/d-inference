@@ -9,6 +9,21 @@ import Darwin
 
 enum LaunchctlControl {
 
+    /// Test seam: when a test binds this for its task, no launchctl process
+    /// is spawned and the closure answers each call instead. Production never
+    /// binds it. A task-local value cannot leak into other parallel tests.
+    @TaskLocal static var runnerForTesting: (@Sendable ([String]) throws -> Output)?
+
+    /// Test seam: the home folder that `LaunchAgent` derives its plist and
+    /// log paths from. Production never binds it.
+    @TaskLocal static var homeDirectoryForTesting: URL?
+
+    /// The home folder for agent paths: the real one unless a test bound
+    /// `homeDirectoryForTesting` for its task.
+    static func homeDirectory() -> URL {
+        homeDirectoryForTesting ?? FileManager.default.homeDirectoryForCurrentUser
+    }
+
     static func guiDomain(uid: uid_t = getuid()) -> String { "gui/\(uid)" }
     static func target(label: String, uid: uid_t = getuid()) -> String { "gui/\(uid)/\(label)" }
 
@@ -35,6 +50,9 @@ enum LaunchctlControl {
         _ arguments: [String], captureStdout: Bool = false, captureStderr: Bool = false
     ) throws -> Output {
         precondition(!(captureStdout && captureStderr), "capture at most one stream")
+        if let runner = runnerForTesting {
+            return try runner(arguments)
+        }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
         process.arguments = arguments

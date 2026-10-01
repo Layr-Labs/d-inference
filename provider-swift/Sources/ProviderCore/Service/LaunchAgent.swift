@@ -17,14 +17,14 @@ public enum LaunchAgent: Sendable {
 
     /// Path to the launchd plist: ~/Library/LaunchAgents/io.darkbloom.provider.plist
     public static func plistPath() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
+        LaunchctlControl.homeDirectory()
             .appendingPathComponent("Library/LaunchAgents")
             .appendingPathComponent("\(label).plist")
     }
 
     /// Path to the provider log file: ~/.darkbloom/provider.log
     public static func logPath() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
+        LaunchctlControl.homeDirectory()
             .appendingPathComponent(".darkbloom/provider.log")
     }
 

@@ -86,7 +86,7 @@ struct AccountCommandRunTests {
             #expect(try ConfigManager.load(from: sandbox.config).provider.autoUpdate == true)
             let error = try await runFailingCLICommand(
                 AutoUpdate.self, ["autoupdate", "sometimes", "--config", config])
-            #expect((error as? ExitCode) == .failure)
+            #expect((error as? ExitCode) == .success)
             #expect(try ConfigManager.load(from: sandbox.config).provider.autoUpdate == true)
             print("CONFIG \(config)")
         }

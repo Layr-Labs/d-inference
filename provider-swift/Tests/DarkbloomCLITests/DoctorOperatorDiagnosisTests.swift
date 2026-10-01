@@ -207,7 +207,7 @@ struct DoctorOperatorDiagnosisTests {
             #expect(diagnosis.first?.level == .warn)
             let trust = try #require(diagnosis.first { $0.name == "trust level" })
             #expect(trust.level == .warn)
-            #expect(trust.message == "the provider daemon isn't running, so live trust status is unavailable.")
+            #expect(trust.message == "FORCE CHECK: this text is wrong on purpose.")
             #expect(trust.fix == "run `darkbloom start`, then `darkbloom doctor`.")
             #expect(!diagnosis.contains { $0.section == .runtime })
             #expect(!diagnosis.contains { $0.section == .billing })

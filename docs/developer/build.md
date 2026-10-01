@@ -146,7 +146,8 @@ The [revision runbook](../operations/model-revisions.md) describes its invocatio
 All checked-in `d-inference` workflow jobs use Blacksmith runners. macOS build,
 unit/SDK/parity, integration, benchmark, cache, signing and validation jobs pin
 `blacksmith-12vcpu-macos-27` (M4, 12 vCPU, 48 GB); the signed-artifact older-OS
-smoke pins `blacksmith-12vcpu-macos-26`. Linux jobs retain
+smoke pins `blacksmith-12vcpu-macos-26`. Coordinator Tests uses
+`blacksmith-16vcpu-ubuntu-2404`; other Linux jobs retain
 `blacksmith-4vcpu-ubuntu-2404`. The macOS 27 image is currently a public beta;
 see [Blacksmith's runner catalog](https://docs.blacksmith.sh/blacksmith-runners/overview).
 This migration is limited to this repository; SDK repository workflows are separate.
@@ -785,7 +786,7 @@ local stub servers; its default observation mode sends only public GETs.
 | Target | What it runs |
 |---|---|
 | `help` | List targets (default goal) |
-| `coordinator-test` | Runner self-tests, then `python3 scripts/run-coordinator-tests.py` (complete coordinator suite; process-isolated API shards, see [test](test.md)) |
+| `coordinator-test` | Runner self-tests, then `python3 scripts/run-coordinator-tests.py` (complete coordinator suite; process-isolated API shards, also registry under `--race`, see [test](test.md)) |
 | `coordinator-build` | `go build ./cmd/coordinator` → `./coordinator/coordinator` |
 | `coordinator-build-linux` | `GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o coordinator-linux ./cmd/coordinator` |
 | `coordinator` | `coordinator-test` + `coordinator-build` |

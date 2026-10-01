@@ -860,29 +860,34 @@ CI writes the total statement coverage to the job summary and keeps
 is for information only. A low number does not fail the job.
 
 The runner compiles `coordinator/api` once and discovers its tests, examples,
-and fuzz seed tests from that binary. It partitions the complete list across
-eight process-isolated shards with four workers by default. The other selected
-packages run through ordinary `go test` alongside those shards. No API test
+and fuzz seed tests from that binary. Race-enabled runs also compile and shard
+`coordinator/registry`; ordinary runs leave registry in one package process to
+preserve its host-throughput guards. Each sharded package's complete list runs
+in eight process-isolated shards with four workers by default. Other selected
+packages run through ordinary `go test` while shard binaries compile, and
+registry shards enter the worker queue before API compilation. No test
 allowlist, test-result cache, shortened production timeout, or disabled race
 detector is used. Shared environment and package-global fixtures remain isolated
 between shards; tests within each shard keep Go's normal parallelism.
 
-Use `--jobs 1` for one unsharded API process, or use ordinary focused Go commands
+Use `--jobs 1` for one process per sharded package, or use ordinary focused Go commands
 such as `go test -race ./coordinator/api -run '^TestRequestOutcome' -count=1`.
 Keep an unsharded race/shuffle run when changing shared fixtures or the runner;
 shards do not preserve cross-test process state. `GOMAXPROCS` is inherited rather
 than forced to one. Store tests are never partitioned within their package.
 
 `--output-dir <directory>` retains a unique run directory containing the exact
-API membership, per-task JSON events, stderr, timings, and optional coverage.
-Every API test must produce exactly one terminal result; a missing, duplicate,
+shard membership, per-task JSON events, stderr, compilation/listing timings,
+and optional coverage. Every discovered test must produce exactly one terminal
+result; a missing, duplicate,
 unexpected, or failing result fails the run. Coverage merges atomic counters by
 source block, retaining zero-hit blocks and counting their statements once.
 Malformed or missing coverage fails the run rather than publishing a partial
 success. CI uploads test evidence as `coordinator-test-timings` for 14 days.
 The separate uninstrumented adversarial-number parser check still runs in CI.
-CI uses a 16-vCPU Linux runner with eight workers (sixteen API shards), leaving
-the CPU-heavy race-instrumented packages room to progress alongside the API.
+CI uses a 16-vCPU Linux runner with eight workers (sixteen shards per package),
+sharing the worker pool with the ordinary package task. Compilation and Go's
+internal package parallelism are separate from this task limit.
 The local default remains four workers; use `--jobs` to choose process concurrency.
 
 Fixture speedups must retain the event being tested. Synchronous request-outcome
@@ -2353,7 +2358,7 @@ token IDs are accepted.
 
 | Workflow | Trigger | Jobs (name → what runs) |
 |---|---|---|
-| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — release/script checks and offline provider CI/cache/routing guards · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race -coverprofile=… -covermode=atomic` over every package except the top-level `e2e` integration package (`coordinator/internal/e2e` and `e2e/testbed/...` run) with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence; total statement coverage in the job summary, `coverage.out` kept 14 days as the `coordinator-coverage` artifact · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh`, then `cargo llvm-cov` (0.9.1) line coverage in the job summary · **Provider Unit Tests** (macOS 12-vcpu) — full debug test build, matched Metal, serial/fresh-process provider tests and installer checks · **Provider SDK Tests** (independent macOS 12-vcpu) — full nested test build and all required numerical/SDK selectors through checked wrappers · **Provider Prompt Parity** (independent macOS 12-vcpu) — `verify-prompt-parity.sh`, pinned Swift/Go/Rust vectors and sustained sidecar load proof · **Provider Tests** (Linux aggregate) — requires all three provider lanes to succeed · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper` · **Console UI Lint & Build** — Node 22, `npm ci`, lint, vitest, and Next.js build |
+| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — release/script checks and offline provider CI/cache/routing guards · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `scripts/run-coordinator-tests.py --race --coverprofile` over every package except the top-level `e2e` integration package (`coordinator/internal/e2e` and `e2e/testbed/...` run), isolated API/registry shards and runner guards, with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence; total statement coverage in the job summary, merged `coverage.out` and timing evidence kept 14 days · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh`, then `cargo llvm-cov` (0.9.1) line coverage in the job summary · **Provider Unit Tests** (macOS 12-vcpu) — full debug test build, matched Metal, serial/fresh-process provider tests and installer checks · **Provider SDK Tests** (independent macOS 12-vcpu) — full nested test build and all required numerical/SDK selectors through checked wrappers · **Provider Prompt Parity** (independent macOS 12-vcpu) — `verify-prompt-parity.sh`, pinned Swift/Go/Rust vectors and sustained sidecar load proof · **Provider Tests** (Linux aggregate) — requires all three provider lanes to succeed · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper` · **Console UI Lint & Build** — Node 22, `npm ci`, lint, vitest, and Next.js build |
 | [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 75 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (blocking; explicit SSD opt-in and repeat demand) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`) |
 | [`.github/workflows/benchmarks.yml`](../../.github/workflows/benchmarks.yml) | PR, gated by the `benchmarks` environment (manual approval) | **E2E Benchmarks** — `go test ./e2e/ -count=1 -v -timeout 40m -p=1 -run 'TestBenchmark'`, posts `BENCHMARK_MD_PATH` as a PR comment |
 | [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml) | tag `v*`, manual | Provider release; see [`../operations/provider-release.md`](../operations/provider-release.md) |

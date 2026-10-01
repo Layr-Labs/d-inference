@@ -1,4 +1,4 @@
-"""Run API shards alongside the remaining, unsharded Go packages."""
+"""Run isolated test shards alongside the remaining, unsharded Go packages."""
 
 import argparse
 import concurrent.futures
@@ -16,6 +16,7 @@ from .results import merge_coverage, partition, test_names, verify_events
 
 ROOT = Path(__file__).resolve().parents[2]
 API = "github.com/eigeninference/d-inference/coordinator/api"
+REGISTRY = "github.com/eigeninference/d-inference/coordinator/registry"
 
 
 class Processes:
@@ -112,43 +113,50 @@ def run(args, output, processes):
     flags = ["-race"] if args.race else []
     if args.coverprofile:
         flags += ["-cover", "-covermode=atomic"]
-    tasks, profiles = [], []
-    other = [package for package in packages if package != API]
-    if other:
-        command = ["go", "test", "-json", "-count=1", "-timeout=10m", *flags]
-        if args.coverprofile:
-            profiles.append(output / "packages.cover")
-            command.append(f"-coverprofile={profiles[-1]}")
-        tasks.append(("packages", [*command, *other], ROOT, None, other))
-    if API in packages:
-        binary = output / "api.test"
-        checked_output(["go", "test", "-c", *flags, "-o", str(binary), API], ROOT, processes)
-        listing_env = os.environ.copy()
-        if args.coverprofile:
-            # Listing runs package initializers, but it is not test coverage.
-            # Keep its raw counters separate from the profiles we merge.
-            listing_coverage = output / "listing-coverage"
-            listing_coverage.mkdir()
-            listing_env["GOCOVERDIR"] = str(listing_coverage)
-        listing = checked_output([str(binary), "-test.list=."], ROOT / "coordinator/api", processes, listing_env)
-        names = test_names(listing)
-        shards = partition(names, 2 * args.jobs if args.jobs > 1 else 1)
-        (output / "api-tests.json").write_text(json.dumps(shards, indent=2) + "\n")
-        print(f"Discovered {len(names)} API tests; {len(shards)} isolated shards, {args.jobs} workers", flush=True)
-        for i, shard in enumerate(shards):
-            label = f"api-{i + 1}"
-            command = ["go", "tool", "test2json", "-t", "-p", API, str(binary),
-                       "-test.v=test2json", "-test.paniconexit0", "-test.count=1", "-test.timeout=10m",
-                       "-test.run=^(" + "|".join(re.escape(name) for name in shard) + ")$"]
-            if args.coverprofile:
-                profiles.append(output / f"{label}.cover")
-                command.append(f"-test.coverprofile={profiles[-1]}")
-            tasks.append((label, command, ROOT / "coordinator/api", shard, [API]))
-    results = []
+    # Registry has process-wide allocation/throughput guards. The throughput
+    # guard already excludes race builds; retain ordinary execution otherwise.
+    sharded = [REGISTRY, API] if args.race else [API]
+    other = [package for package in packages if package not in sharded]
+    profiles, results, preparation = [], [], []
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as executor:
-        futures = [executor.submit(run_task, label, command, cwd, output, expected, processes, packages)
-                   for label, command, cwd, expected, packages in tasks]
+        futures = []
         try:
+            if other:
+                command = ["go", "test", "-json", "-count=1", "-timeout=10m", *flags]
+                if args.coverprofile:
+                    profiles.append(output / "packages.cover")
+                    command.append(f"-coverprofile={profiles[-1]}")
+                futures.append(executor.submit(run_task, "packages", [*command, *other], ROOT,
+                                               output, None, processes, other))
+            for package in sharded:
+                if package not in packages:
+                    continue
+                name = package.rsplit("/", 1)[-1]
+                cwd = ROOT / "coordinator" / name
+                binary = output / f"{name}.test"
+                started = time.monotonic()
+                checked_output(["go", "test", "-c", *flags, "-o", str(binary), package], ROOT, processes)
+                listing_env = os.environ.copy()
+                if args.coverprofile:
+                    # Initializers run during listing, but it is not test coverage.
+                    listing_coverage = output / f"{name}-listing-coverage"
+                    listing_coverage.mkdir()
+                    listing_env["GOCOVERDIR"] = str(listing_coverage)
+                listing = checked_output([str(binary), "-test.list=."], cwd, processes, listing_env)
+                names = test_names(listing)
+                shards = partition(names, 2 * args.jobs if args.jobs > 1 else 1)
+                preparation.append({"package": package, "seconds": round(time.monotonic() - started, 3)})
+                (output / f"{name}-tests.json").write_text(json.dumps(shards, indent=2) + "\n")
+                print(f"Discovered {len(names)} {name} tests; {len(shards)} isolated shards, {args.jobs} workers", flush=True)
+                for i, shard in enumerate(shards):
+                    label = f"{name}-{i + 1}"
+                    command = ["go", "tool", "test2json", "-t", "-p", package, str(binary),
+                               "-test.v=test2json", "-test.paniconexit0", "-test.count=1", "-test.timeout=10m",
+                               "-test.run=^(" + "|".join(re.escape(test) for test in shard) + ")$"]
+                    if args.coverprofile:
+                        profiles.append(output / f"{label}.cover")
+                        command.append(f"-test.coverprofile={profiles[-1]}")
+                    futures.append(executor.submit(run_task, label, command, cwd, output, shard, processes, [package]))
             for future in concurrent.futures.as_completed(futures):
                 result = future.result()
                 results.append(result)
@@ -161,7 +169,9 @@ def run(args, output, processes):
         except BaseException:
             processes.cancel()
             raise
-    (output / "summary.json").write_text(json.dumps(results, indent=2) + "\n")
+        finally:
+            (output / "summary.json").write_text(json.dumps(results, indent=2) + "\n")
+            (output / "preparation.json").write_text(json.dumps(preparation, indent=2) + "\n")
     if not all(result["passed"] for result in results):
         return 1
     if args.coverprofile:

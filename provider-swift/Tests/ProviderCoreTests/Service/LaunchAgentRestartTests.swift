@@ -1,4 +1,5 @@
 import Foundation
+import MLXLMCommon
 import Testing
 
 @testable import ProviderCore
@@ -139,6 +140,26 @@ struct LaunchAgentEnvironmentTests {
             environment: [MiMoV26WiredResidency.environmentFlag: "0"])
         let vars = plist["EnvironmentVariables"] as? [String: String]
         #expect(vars?[MiMoV26WiredResidency.environmentFlag] == "0")
+    }
+
+    @Test func forwardsMiMoDecodeKernelRollbacksToProviderJob() {
+        // The short-forward decode kernels are on by default in the SDK; each
+        // rollback only works if it reaches the launchd-managed provider job.
+        let keys = MiMoV26DecodeDefaults.environmentKeys
+        #expect(keys.count == 3)
+        #expect(keys.allSatisfy { LaunchAgent.inferencePassthroughEnvKeys.contains($0) })
+        let rollback = Dictionary(uniqueKeysWithValues: keys.map { ($0, "0") })
+        let out = LaunchAgent.passthroughEnvironment(
+            from: rollback.merging(["UNRELATED_SECRET": "excluded"]) { a, _ in a })
+        #expect(out == rollback)
+        #expect(keys.allSatisfy { !MiMoV26DecodeDefaults.isEnabled($0, environment: out) })
+        let plist = LaunchAgent.makeServicePlist(
+            label: "io.darkbloom.provider",
+            programArguments: ["/usr/local/bin/darkbloom", "start", "--foreground"],
+            logPath: "/tmp/p.log",
+            environment: out)
+        #expect(plist["EnvironmentVariables"] as? [String: String] == rollback)
+        #expect(WatchdogAgent.passthroughEnvKeys.allSatisfy { !keys.contains($0) })
     }
 
     @Test func preservesMalformedNonEmptyControlsForRuntimeSecureDefault() {

@@ -548,21 +548,22 @@ These controls affect the dedicated [native MiMo path](../architecture/inference
 They do not add a catalog entry, bypass the advertised-model allowlist, grant
 media/audio capabilities or qualify a performance route. Except for the
 `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY` and
-`DARKBLOOM_MIMO_COMPLETE_PREFIX` controls, none of the
-`DARKBLOOM_MIMO_*` names below is a LaunchAgent passthrough entry; install
-process-scoped settings before first use and restart for latched kernel flags.
+`DARKBLOOM_MIMO_COMPLETE_PREFIX` controls and the three short-forward
+decode-kernel rollbacks, none of the `DARKBLOOM_MIMO_*` names below is a
+LaunchAgent passthrough entry; install process-scoped settings before first use
+and restart for latched kernel flags.
 
 | Control | Accepted enabling value | Default | Read in / effect |
 |---|---|---|---|
-| `backend.mtp_mode` for `mimo_v2` | `auto` or `on`, subject to genuine native head inspection and existing kill switch | `auto` requests embedded MTP by default; `off` disables it | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`MTPMode.enablesMTP`); `MiMoV26ServingLoad.hasEmbeddedMTP` derives intent from the validated native inventory; actual native assembly proves activation. No external assistant download |
+| `backend.mtp_mode` for `mimo_v2` | `auto` or `on`, subject to genuine native head inspection and existing kill switch | `auto` requests embedded MTP by default; `off` disables it | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`MTPMode.enablesMTP`); `MiMoV26ServingLoad.hasEmbeddedMTP` derives intent from the validated native inventory; actual native assembly proves activation. No external assistant download. Under the default serial-target verification the adaptive controller keeps plans target-only (`EngineV2SlotFactory.nativeMiMoMTPConfig`, `allowsAdaptiveSerialRounds: false`): each serial draft column costs one ordinary target forward, so serial drafting cannot outpace target-only decode. MTP stays active with live assistant history; the rectangular opt-in keeps adaptive depth |
 | `DARKBLOOM_MIMO_RECTANGULAR_VERIFY` | exact `1` | off; serial target when MTP is enabled | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift` (`nativeMiMoVerificationMode`); does not itself enable MTP and remains subject to exact greedy/state qualification |
 | `DARKBLOOM_MIMO_RECTANGULAR_SCALAR_DENSE` | exact `1` | off | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26RectangularDense.swift` (`enabledByEnvironment`); separately charged scalar-shape projections only in genuine admitted rectangular verification; full target/head-state qualification remains required |
 | `DARKBLOOM_MIMO_NATIVE_PAGED_TARGET` | exact `1` with an explicit paged backend | off | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift`; separately issued asymmetric target-only or explicit serial-MTP paging, including authenticated complete-prefix composition; rectangular verification and managed media remain refused in this profile |
 | `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY` | rollback: trimmed, case-insensitive `0`, `false`, `no`, `off` | on (standing residency for the native weight payload, bounded by the safe ceiling) | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26WiredResidency.swift` (`isEnabled`, `Bounds`, `Policy`); shared-manager, owned-lifetime acceleration only, never load admission or physical-page coverage proof. Without it a 256 GiB M3 Ultra measured ~0.4 tok/s decode versus ~38 tok/s. Forwarded to the launchd provider job so the rollback reaches installed providers |
 | `DARKBLOOM_MIMO_COMPLETE_PREFIX` | unset or trimmed-empty uses the model default; exact `1` enables this gate; any other nonempty value disables; unlisted IDs also require affirmative `DARKBLOOM_PREFIX_CACHE`; global cache disable wins | on only for the [exact MiMo identities](../architecture/prefix-cache.md#mimo-complete-state) | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isMiMoCompletePrefixEnabled`); `EngineV2SlotFactory.nativeMiMoPrefixRefusal` gates text-only COMPLETE checkpoints with exact store/process/loaded-owner binding. Forwarded to the launchd provider job. Media requests remain uncached; native paging still needs its separate explicit opt-in |
 
-Only NAX attention and admitted block grouping below default on; the other
-kernel controls remain off. A requested flag is not effective
+NAX attention, admitted block grouping and the three short-forward decode
+kernels below default on; the other kernel controls remain off. A requested flag is not effective
 dispatch: module ownership, actual device/stream, native dtype, shape,
 quantization, mask and admission checks still apply. Unsupported cases retain
 the existing implementation; required execution failures are not silently
@@ -570,9 +571,9 @@ converted into successful fallback.
 
 | Variable | Values / type | Reader / scoped candidate |
 |---|---|---|
-| `DARKBLOOM_MIMO_FUSED_DECODE_NORMS` | exact `1` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26Text.swift` (`useFusedDecodeNorms`); native residual/norm tail |
-| `DARKBLOOM_MIMO_DECODE_ROUTER_GEMV` | exact `1` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26DecodeRouter.swift` (`enabledByEnvironment`); eligible short-forward router |
-| `DARKBLOOM_MIMO_DECODE_EXPERTS` | exact `1` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26DecodeExperts.swift` (`requested`); distinct-expert short-forward reuse |
+| `DARKBLOOM_MIMO_FUSED_DECODE_NORMS` | unset enables; rollback: trimmed, case-insensitive `0`, `false`, `no`, `off` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26Text.swift` (`fusedDecodeNormsEnabled`); native residual/norm tail. While unset, `DARKBLOOM_MIMO_RECTANGULAR_SCALAR_DENSE=1` keeps unfused norms because its eligibility requires them. Forwarded to the launchd provider job |
+| `DARKBLOOM_MIMO_DECODE_ROUTER_GEMV` | unset enables; same rollback values | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26DecodeRouter.swift` (`enabledByEnvironment`); eligible short-forward router. Forwarded to the launchd provider job |
+| `DARKBLOOM_MIMO_DECODE_EXPERTS` | unset enables; same rollback values | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26DecodeExperts.swift` (`requested`); distinct-expert short-forward reuse. Forwarded to the launchd provider job |
 | `DARKBLOOM_MIMO_FP32_WEIGHTED_REDUCE` | trimmed, case-insensitive `1`, `true`, `on` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26FP32WeightedReduction.swift` (`isEnabled`); native FP32 weighted combine |
 | `DARKBLOOM_MIMO_V26_DECODE_ROWS` | exact `1` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26DecodeRows.swift` (`requested`); eligible singleton full-attention verification rows |
 

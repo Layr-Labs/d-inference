@@ -383,6 +383,11 @@ func (q *RequestQueue) PopNextFresh(model string) *QueuedRequest {
 		if len(queue) == 0 {
 			delete(q.queues, model)
 		}
+		select {
+		case <-req.DoneCh:
+			continue
+		default:
+		}
 		if now.Sub(req.EnqueuedAt) > q.maxWait {
 			req.markDone()
 			select {
@@ -403,6 +408,13 @@ func (q *RequestQueue) RequeueFront(req *QueuedRequest) {
 
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	// Cancellation removes the waiter under this same lock. Check here so a
+	// skipped waiter cannot return after cancellation's Remove missed it.
+	select {
+	case <-req.DoneCh:
+		return
+	default:
+	}
 	queue := q.queues[req.Model]
 	queue = append([]*QueuedRequest{req}, queue...)
 	q.queues[req.Model] = queue
@@ -641,6 +653,11 @@ func (q *RequestQueue) cleanStaleLocked(model string) {
 	now := time.Now()
 	var fresh []*QueuedRequest
 	for _, req := range queue {
+		select {
+		case <-req.DoneCh:
+			continue
+		default:
+		}
 		if now.Sub(req.EnqueuedAt) > q.maxWait {
 			// Close the response channel to signal timeout
 			req.markDone()

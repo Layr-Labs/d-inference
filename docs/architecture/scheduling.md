@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-01
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -84,7 +84,7 @@ bounded by `defaultQueueMaxDepth` queued requests per model (`maxSize`) and
 overrides and their defaults are in
 [configuration.md → Routing, admission and TTFT](../reference/configuration.md#routing-admission-and-ttft).
 
-`Enqueue` sweeps the model's stale entries, then returns `ErrQueueFull` when
+`Enqueue` sweeps the model's completed and stale entries, then returns `ErrQueueFull` when
 the queue already holds `maxSize` requests. Each waiter blocks in
 `WaitForProviderContext` on its own `maxWait` timer and on the request's
 absolute first-content clock. Public deadline-bound dispatch only waits when
@@ -146,15 +146,19 @@ active update or shutdown barrier remains authoritative
 (`provider-swift/Sources/ProviderCore/ProviderLoop+DrainState.swift`,
 `setRetirementReconnectBarrier`).
 
-`PopNextFresh` skips stale entries as it pops; `RequeueFront` returns a
-waiter that could not be placed; `PreferWaiterOwners` lets a drain favour
+`PopNextFresh` skips completed and stale entries as it pops; `RequeueFront`
+returns a waiter that could not be placed only while its `DoneCh` is open.
+It checks completion under the queue lock shared with `Remove`, so a
+cancellation that misses a waiter held in the scheduler's skipped list cannot
+restore that waiter as queued demand. `PreferWaiterOwners` lets a drain favour
 waiters that own the provider that just freed. `FailQueuedRequestsForModel`
 fails every waiter for a model with a specific error (used for
 capability-unavailable and disconnect outcomes).
 
 **Lazy stale sweep.** There is no background timer. `cleanStaleLocked` runs
-inside `Enqueue` and `QueuedModels`, dropping entries older than `maxWait`
-and signalling their waiters; `PopNextFresh` rejects stale entries as it
+inside `Enqueue` and `QueuedModels`, dropping completed entries without another
+terminal notification, and entries older than `maxWait` while signalling their
+waiters; `PopNextFresh` rejects completed and stale entries as it
 pops; and every waiter enforces its own `maxWait` timer. A model key is
 deleted from the map when nothing survives the sweep.
 

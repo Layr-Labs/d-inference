@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — canceled queue waiters
+
+- Stop canceled waiters held by a scheduling pass from returning as queued demand and occupying slots needed by fresh requests. Drop completed entries during queue pop and stale cleanup while preserving live FIFO order, timeout notifications, and reservation cleanup.
+
 ## Release candidate v0.9.15 — automatic MiMo calibration (not shipped)
 
 - Calibrate idle native MiMo engines after model loading and refresh stale phase evidence with uncached built-in prompts. Measure short and 4k text plus affordable batches within the existing concurrency cap; retain the production MTP and memory configuration.

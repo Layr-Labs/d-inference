@@ -149,6 +149,20 @@ extension EngineV2Bridge {
             continuation.finish()
             return stream
         }
+        // Foreground work on any model preempts the shared idle calibration.
+        // The original deadline keeps running while native retirement completes.
+        let foreground = mimoCalibration.requests[id] == nil
+            ? await serviceBudget?.idleCalibration.beginForeground() : nil
+        defer { foreground?.finish() }
+        // Waiting for a probe is an actor suspension: revalidate request and
+        // engine ownership before creating any service/KV reservations.
+        guard canSubmitWithNativeOwner(), active[id] == nil, !pendingSubmissionIDs.contains(id) else {
+            continuation.yield(.error("token_budget_exhausted: request ownership changed during calibration retirement"))
+            continuation.finish()
+            return stream
+        }
+        try Task.checkCancellation()
+        try firstContentDeadline?.check()
         let retirementTransfer = EngineV2RetirementTransfer()
         guard acquireServiceAllowance(requestID: id, serviceReservationID: serviceReservationID,
             serviceReservation: serviceReservation, promptTokens: promptTokens.count,
@@ -531,9 +545,19 @@ extension EngineV2Bridge {
             prefillEvidenceRecovery.bindEvidenceGuard(
                 serviceBudget?.exclusiveEvidenceGuard(ownerID: serviceOwnerPrefix + ":" + id), ownerID: id)
         }
+        let calibrationGuard: CBv2FirstContentEvidenceGuard?
+        if mimoCalibration.requests[id]?.width == 1 {
+            if let captured = serviceBudget?.calibrationEvidenceGuard(ownerID: serviceOwnerPrefix + ":" + id) {
+                calibrationGuard = captured
+            } else {
+                let invalid = CBv2FirstContentEvidenceGuard()
+                invalid.invalidate()
+                calibrationGuard = invalid
+            }
+        } else { calibrationGuard = nil }
         let prefillReceipt = EnginePrefillReceipt(activity: measurementActivity, model: modelId,
             deadlineRateEvidence: deadlineProfile == nil ? nil : serviceBudget?.captureDeadlineRateEvidence(),
-            isolationGuard: prefillEvidenceRecovery.owner == id ? prefillEvidenceRecovery.evidenceGuard : nil)
+            isolationGuard: prefillEvidenceRecovery.owner == id ? prefillEvidenceRecovery.evidenceGuard : calibrationGuard)
         cbv2Request.onPrefillCompleted = { [weak self, prefillReceipt] usage in
             prefillReceipt.complete(usage)
             Task { await self?.consumePrefillReceipt(id: id, receipt: prefillReceipt) }

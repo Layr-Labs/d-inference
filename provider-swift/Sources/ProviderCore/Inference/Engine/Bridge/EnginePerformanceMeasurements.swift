@@ -8,6 +8,7 @@ final class EngineMeasurementActivity: @unchecked Sendable {
     struct Overlap: Sendable {
         var contended = false
         var otherModel = false
+        var peakRequests = 1
     }
     private struct Entry {
         let model: String
@@ -20,9 +21,12 @@ final class EngineMeasurementActivity: @unchecked Sendable {
         lock.withLock {
             let id = UUID()
             var entry = Entry(model: model)
+            let concurrentRequests = entries.count + 1
+            entry.overlap.peakRequests = concurrentRequests
             for (key, old) in entries {
                 entry.overlap.contended = true
                 entry.overlap.otherModel = entry.overlap.otherModel || old.model != model
+                entries[key]?.overlap.peakRequests = max(old.overlap.peakRequests, concurrentRequests)
                 entries[key]?.overlap.contended = true
                 entries[key]?.overlap.otherModel = old.overlap.otherModel || old.model != model
             }
@@ -83,7 +87,11 @@ final class EnginePrefillReceipt: @unchecked Sendable {
         }
     }
 
-    var overlap: EngineMeasurementActivity.Overlap { activity.snapshot(activityID) }
+    var overlap: EngineMeasurementActivity.Overlap {
+        var result = activity.snapshot(activityID)
+        if isolationGuard?.isValid == false { result.contended = true }
+        return result
+    }
 
     /// A consumer terminal can precede engine cleanup. The retirement owner
     /// keeps this interval visible after active-state accounting ends.
@@ -121,10 +129,10 @@ struct EnginePerformanceMeasurements {
         var value: Double
         var count: Int64 = 1
         var at: ContinuousClock.Instant
-        mutating func observe(_ tps: Double, at now: ContinuousClock.Instant) {
+        mutating func observe(_ tps: Double, at now: ContinuousClock.Instant, restart: Bool = false) {
             // A new observation starts a new estimate after an evidence gap;
             // one slow old sample must not poison the next serving window.
-            value = now - at > EnginePerformanceMeasurements.freshness
+            value = restart || now - at > EnginePerformanceMeasurements.freshness
                 ? tps : 0.3 * tps + 0.7 * value
             count = count == .max ? .max : count + 1
             at = now
@@ -142,6 +150,7 @@ struct EnginePerformanceMeasurements {
         let cache: String
         let contended: Bool
         let otherModel: Bool
+        let concurrency: Int
     }
     let epoch = UUID().uuidString
     private var rates: [String: Rate] = [:]
@@ -161,6 +170,18 @@ struct EnginePerformanceMeasurements {
         rates[name]?.at.advanced(by: maximumAge)
     }
 
+    /// Only a fresh, uncached, isolated cell in this prompt-size domain can
+    /// tighten the aggregate projection. Short cells never certify long work.
+    func freshIsolatedPrefillRate(promptTokens: Int, now: ContinuousClock.Instant = .now) -> Double? {
+        let bucket = Self.bucket(promptTokens)
+        return buckets.compactMap { key, rate -> Double? in
+            guard key.phase == "prefill", key.prompt == bucket, key.cache == "cold",
+                !key.contended, !key.otherModel, now >= rate.at, now - rate.at <= Self.freshness,
+                rate.value.isFinite, rate.value > 0 else { return nil }
+            return rate.value
+        }.min()
+    }
+
     func freshDeadlineRate(_ name: String, postureEpoch: UUID,
         now: ContinuousClock.Instant = .now, maximumAge: Duration = Self.freshness) -> Double? {
         guard let qualified = qualifiedRates[name], qualified.postureEpoch == postureEpoch,
@@ -177,17 +198,20 @@ struct EnginePerformanceMeasurements {
     mutating func observe(
         _ name: String, tps: Double, prompt: Int, context: Int,
         cache: String, overlap: EngineMeasurementActivity.Overlap,
-        at now: ContinuousClock.Instant = .now, deadlinePostureEpoch: UUID? = nil
+        at now: ContinuousClock.Instant = .now, deadlinePostureEpoch: UUID? = nil,
+        recordAggregate: Bool = true, restartEstimate: Bool = false
     ) {
         guard tps.isFinite, tps > 0 else { return }
-        if var rate = rates[name] { rate.observe(tps, at: now); rates[name] = rate }
-        else { rates[name] = Rate(value: tps, at: now) }
-        if let deadlinePostureEpoch,
+        if recordAggregate {
+            if var rate = rates[name] { rate.observe(tps, at: now, restart: restartEstimate); rates[name] = rate }
+            else { rates[name] = Rate(value: tps, at: now) }
+        }
+        if recordAggregate, let deadlinePostureEpoch,
             ["isolated_prefill", "contended_prefill", "decode"].contains(name) {
             var rate: Rate
             if let previous = qualifiedRates[name], previous.postureEpoch == deadlinePostureEpoch {
                 rate = previous.rate
-                rate.observe(tps, at: now)
+                rate.observe(tps, at: now, restart: restartEstimate)
             } else {
                 rate = Rate(value: tps, at: now)
             }
@@ -199,8 +223,8 @@ struct EnginePerformanceMeasurements {
         guard name == "isolated_prefill" || name == "contended_prefill" || name == "reuse_prefill" || name == "decode" else { return }
         let key = Key(phase: name == "decode" ? "decode" : "prefill",
             prompt: Self.bucket(prompt), context: Self.bucket(context), cache: cache,
-            contended: overlap.contended, otherModel: overlap.otherModel)
-        if var rate = buckets[key] { rate.observe(tps, at: now); buckets[key] = rate }
+            contended: overlap.contended, otherModel: overlap.otherModel, concurrency: min(64, max(1, overlap.peakRequests)))
+        if var rate = buckets[key] { rate.observe(tps, at: now, restart: restartEstimate); buckets[key] = rate }
         else {
             if buckets.count >= Self.maxBuckets,
                 let oldest = buckets.min(by: { $0.value.at < $1.value.at })?.key {
@@ -220,9 +244,12 @@ struct EnginePerformanceMeasurements {
             PerformanceWorkloadBucket(phase: key.phase, promptTokenBucket: key.prompt,
                 contextTokenBucket: key.context, cacheState: key.cache,
                 contention: key.contended ? "contended" : "isolated",
-                otherModelActivity: key.otherModel, observation: rate.wire(now: now))
+                otherModelActivity: key.otherModel, observation: rate.wire(now: now), concurrentRequests: key.concurrency)
         }.sorted {
-            ($0.phase, $0.promptTokenBucket, $0.contextTokenBucket, $0.cacheState, $0.contention, $0.otherModelActivity ? 1 : 0)
+            if $0.concurrentRequests != $1.concurrentRequests {
+                return ($0.concurrentRequests ?? 0) < ($1.concurrentRequests ?? 0)
+            }
+            return ($0.phase, $0.promptTokenBucket, $0.contextTokenBucket, $0.cacheState, $0.contention, $0.otherModelActivity ? 1 : 0)
                 < ($1.phase, $1.promptTokenBucket, $1.contextTokenBucket, $1.cacheState, $1.contention, $1.otherModelActivity ? 1 : 0)
         }
         return PerformanceMeasurements(epoch: epoch,

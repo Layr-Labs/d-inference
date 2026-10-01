@@ -83,9 +83,12 @@ extension EngineV2Bridge {
             // Never present a fabricated hardware/fleet rate as local evidence.
             return nil
         }
-        let prefillRate = isolatedPrefillEwmaInitialized
+        var prefillRate = isolatedPrefillEwmaInitialized
             && isolatedPrefillTpsEwma.isFinite && isolatedPrefillTpsEwma > 0
             ? isolatedPrefillTpsEwma : nil
+        if promptTokens > 0, let shapeRate = performanceMeasurements.freshIsolatedPrefillRate(promptTokens: promptTokens) {
+            prefillRate = prefillRate.map { min($0, shapeRate) } ?? shapeRate
+        }
         let decodeRate =
             ewmaInitialized && observedDecodeTpsEwma.isFinite && observedDecodeTpsEwma > 0
             ? observedDecodeTpsEwma
@@ -169,7 +172,7 @@ extension EngineV2Bridge {
         failure: PrefixCacheLookupFailureClass
     ) async {
         consumePrefillReceipt(id: requestID, receipt: prefillReceipt)
-        recordGenerationWork(completion: completion)
+        recordGenerationWork(completion: completion, requestID: requestID)
         await releasePreSubmitResources(
             requestID: requestID,
             sharedKVReserved: sharedKVReserved,

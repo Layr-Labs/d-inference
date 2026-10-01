@@ -6,6 +6,7 @@ import MLXLMCommon
 /// Leases have no timeout: cancellation releases only after engine retirement.
 final class WholeMacServiceBudget: @unchecked Sendable {
     private let lock = NSLock()
+    let idleCalibration = IdleCalibrationCoordinator()
     struct Work: Sendable {
         let modelID: String
         let profileID: String?
@@ -44,6 +45,7 @@ final class WholeMacServiceBudget: @unchecked Sendable {
     private var activityEpoch: UInt64 = 0
     private var advertisedEligibility: [DeadlineApplicability: Bool] = [:]
     private var charges: [String: Charge] = [:]
+    private var retirementWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
     private var unboundedActivities: Set<UUID> = []
     private var evidenceGuard = CBv2FirstContentEvidenceGuard()
     private var observerID: UUID?
@@ -136,14 +138,28 @@ final class WholeMacServiceBudget: @unchecked Sendable {
     }
 
     func release(ownerID: String) {
-        let (charge, notification) = lock.withLock { () -> (Charge?, AsyncStream<Void>.Continuation?) in
-            guard let charge = charges.removeValue(forKey: ownerID) else { return (nil, nil) }
+        let (charge, notification, waiters) = lock.withLock { () -> (Charge?, AsyncStream<Void>.Continuation?, [CheckedContinuation<Void, Never>]) in
+            guard let charge = charges.removeValue(forKey: ownerID) else { return (nil, nil, []) }
             if charges.isEmpty && unboundedActivities.isEmpty { idleSince = clockNow() }
             invalidateEvidenceLocked()
-            return (charge, observer)
+            return (charge, observer, retirementWaiters.removeValue(forKey: ownerID) ?? [])
         }
         charge?.lifetime?.releaseLease()
+        for waiter in waiters { waiter.resume() }
         notification?.yield()
+    }
+
+    /// Also covers a committed submission transferred before a pump exists.
+    /// Owners release only on refusal or actual native/resource retirement.
+    func waitForRelease(ownerID: String) async {
+        await withCheckedContinuation { continuation in
+            let released = lock.withLock {
+                guard charges[ownerID] != nil else { return true }
+                retirementWaiters[ownerID, default: []].append(continuation)
+                return false
+            }
+            if released { continuation.resume() }
+        }
     }
 
     /// One provider-loop observer sees changes from all shared model bridges.
@@ -190,6 +206,14 @@ final class WholeMacServiceBudget: @unchecked Sendable {
 
     var usedFraction: Double { lock.withLock { charges.values.reduce(0, { $0 + $1.fraction }) } }
     var count: Int { lock.withLock { charges.count } }
+    var isIdle: Bool { lock.withLock { charges.isEmpty && unboundedActivities.isEmpty } }
+
+    func calibrationEvidenceGuard(ownerID: String) -> CBv2FirstContentEvidenceGuard? {
+        lock.withLock {
+            guard charges.count == 1, charges[ownerID] != nil, unboundedActivities.isEmpty else { return nil }
+            return evidenceGuard
+        }
+    }
 
     func exclusiveEvidenceGuard(ownerID: String) -> CBv2FirstContentEvidenceGuard? {
         lock.withLock {
@@ -234,6 +258,7 @@ final class WholeMacServiceBudget: @unchecked Sendable {
             invalidateEvidenceLocked()
             return observer
         }
+        idleCalibration.cancel()
         notification?.yield()
         return WholeMacUnboundedActivity { [self] in endUnboundedActivity(id) }
     }

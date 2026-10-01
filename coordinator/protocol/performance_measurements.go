@@ -9,6 +9,7 @@ type PerformanceRateObservation struct {
 }
 
 type PerformanceWorkloadBucket struct {
+	ConcurrentRequests int                        `json:"concurrent_requests,omitempty"`
 	Phase              string                     `json:"phase"`
 	PromptTokenBucket  int                        `json:"prompt_token_bucket"`
 	ContextTokenBucket int                        `json:"context_token_bucket"`

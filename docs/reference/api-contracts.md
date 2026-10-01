@@ -794,6 +794,7 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consu
 |---|---|---|
 | Global request body | 64 MiB ceiling on every request (`maxRequestBodyBytes`, `bodyLimitMiddleware`) | `coordinator/api/server.go` |
 | Inference body | 16 MiB (`maxInferenceBodyBytes`) → 413 `invalid_request_error`; sealed bodies are read with the same cap (400 `invalid_request_error` when exceeded) | `parseInferencePrelude` (`coordinator/api/inference_preprocess.go`), `sealedTransport` (`coordinator/api/sender_encryption.go`) |
+| Console chat preflight | `MAX_CHAT_REQUEST_BYTES = 16 * 1024 * 1024`; send and retry measure the complete serialized UTF-8 body and, when encryption is enabled, the actual sealed envelope before `POST /api/chat`. Exactly at the cap is allowed. Oversized requests produce a local error and retain the user message/images in current chat state. Uploads still allow four images, each up to 10 MiB; base64, history and envelope overhead can make an accepted upload too large to send. Coordinator rewrite and final-forwarding checks remain authoritative | `assertChatRequestBudget` (`console-ui/src/lib/chat/request-budget.ts`), `streamChat` (`console-ui/src/lib/chat/stream.ts`), `useChatStream` (`console-ui/src/hooks/useChatStream.ts`) |
 | Control-plane bodies | 64 KiB (`maxControlPlaneBodyBytes`) for enroll, device token, admin auth | `coordinator/api/server.go` |
 | MDM webhook body | 1 MiB (`maxMDMWebhookBodyBytes`) | `HandleMDMWebhook` (`coordinator/api/server.go`) |
 | `n` | Must be 1 | `handleChatCompletions` |

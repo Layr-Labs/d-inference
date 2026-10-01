@@ -191,6 +191,8 @@ type releaseTrustPolicySnapshot struct {
 // Server is the main HTTP/WS server for the coordinator. It ties together
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.
 type Server struct {
+	nonStreamingResponseMaxBytes   int
+	nonStreamingResponseMaxChunks  int
 	appAttestRuntimeRefreshPending atomic.Bool
 	// providerHandlers counts running provider socket handlers so shutdown can
 	// join them after closing their sockets. providerAdmit serializes a
@@ -835,6 +837,9 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	}
 
 	s := &Server{
+		nonStreamingResponseMaxBytes:  cfg.NonStreamingResponseMaxBytes,
+		nonStreamingResponseMaxChunks: cfg.NonStreamingResponseMaxChunks,
+
 		registry:                 reg,
 		store:                    st,
 		ledger:                   payments.NewLedger(st),

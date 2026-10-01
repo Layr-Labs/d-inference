@@ -26,6 +26,12 @@ App Attest error replies optionally carry `apple_error: {domain, code, underlyin
 
 `ready` replies may also carry optional deep diagnostics (`process_started_at`, `previous_exit`, `start_reason`, `console_user_active`, `sip_enabled`, `authenticated_root`, `preflight`, `key_history`, `push_history`), and failed `attestation`/`assertion` replies with result `apple_error` or `apple_invalid_key` may carry `native_error_chain`; `coordinator/protocol/app_attest_deep_diagnostic.go` strips each invalid or misplaced member without rejecting the frame. See [Provider diagnostics](app-attest-shadow.md#provider-diagnostics).
 
+Non-streaming response limits are enforced by the coordinator after decryption.
+An over-limit attempt uses the existing `cancel` frame; no provider wire field
+or failure-code vocabulary changes. The internal `response_limit` cause has
+`json:"-"` and cannot be claimed by provider JSON. See the
+[API limits](api-contracts.md#limits-and-validation).
+
 ## Provider lifecycle drain
 
 | Direction | Type | Required fields | Behavior / source |

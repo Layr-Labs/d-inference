@@ -1379,6 +1379,8 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		// No idle provider — try queueing.
 		d.requestID = uuid.New().String()
 		queuePR := &registry.PendingRequest{
+			NonStreamingResponseBudget: s.newNonStreamingResponseBudget(d.stream),
+
 			RequestID:                d.requestID,
 			Attempt:                  d.attempt,
 			Model:                    d.model,

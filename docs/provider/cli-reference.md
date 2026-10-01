@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-01
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -105,6 +105,18 @@ waiting (`ProviderModelSelection.withReplacement`,
 `provider-swift/Sources/ProviderCore/Service/ProviderModelSelection.swift`).
 Missing custom files are seeded from this invocation's resolved configuration,
 not from the separate canonical config file.
+
+After a successful provider `bootout`, the lifecycle waits for `launchctl print`
+to confirm that the exact service label is absent before replacing its plist or
+bootstrapping it. It polls at 100 ms intervals with a 10-second monotonic budget
+and at most 101 probes. Unknown or permission errors fail the operation; an
+unconfirmed removal leaves replacement unstarted. This also applies to stop,
+uninstall and restart after drain. The budget includes returning probe calls;
+the shared launchctl subprocess has no command timeout, so a hung subprocess
+can exceed that wall time. Bootstrap error 37 (operation in progress) is a
+failure, not confirmation that the replacement started.
+Source: `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`
+(`unloadService`, `waitForServiceRemoval`, `loadService`).
 
 ### `darkbloom switch`
 

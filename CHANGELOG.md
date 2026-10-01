@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased — provider prefill evidence recovery
+
+- Let an idle native text provider renew expired isolated-prefill measurements through one short request under its original first-content deadline. Serialize the final idle check and native registration, then restore ordinary concurrency after prompt completion while retaining service and memory ownership until actual engine retirement. Back off failed or cache-only recovery; busy, loading, media and large requests retain predictive admission.
+- Reseed measured phase EWMAs after an evidence gap while preserving sample identity/counts. Unchanged heartbeats cannot manufacture current prefill evidence.
+
 ## Unreleased — native media prefill observations
 
 - Retain native MiMo target-decoder prefill rates in dedicated numeric workload buckets, separated by computed suffix, context, reuse and overlap. Encoder preparation remains outside this timer. These observations support media calibration without mixing media into text rates or changing first-content deadlines.
@@ -52,7 +57,6 @@
 ## Unreleased — CI and contributor workflow
 
 - Set up Homebrew in the macOS integration and benchmark workflows with `scripts/setup-macos-homebrew.sh` instead of the `Homebrew/actions/setup-homebrew` action. The organization Actions policy does not allow that action, so both workflows stopped at startup. The script uses an installed `brew` or installs Homebrew from a pinned, checksum-verified installer.
-- Fix the Homebrew setup script failing at exit after a successful install (`installer: unbound variable`), and test the install path through to script exit.
 - Run provider unit, SDK and prompt-parity checks on independent workers with compatible build caches, retaining MiMo fixture preparation and isolated native gates.
 - Separate prerequisite-dependent MiMo qualification from ordinary provider tests, retaining required prepared-fixture checks and explicit qualification gaps. Normalize the rollback test's filesystem identity and synchronize the zombie-stream timing test with the initial cancellation.
 - Pin the production prompt fixture's EOF format during regeneration; parity still compares the complete corpus bytes and unchanged token/contract expectations.

@@ -13,6 +13,13 @@ extension EngineV2Bridge {
     /// publish a second observation.
     func consumePrefillReceipt(id: String, receipt: EnginePrefillReceipt) {
         guard let sample = receipt.take() else { return }
+        if prefillEvidenceRecovery.owner == id {
+            // The SDK callback proves prompt completion even if cache reuse or
+            // contention prevents a new cold rate. Keep the ordinary lease and
+            // all KV/cache resources through generation-bound retirement.
+            serviceBudget?.reduceExclusiveAllowance(ownerID: serviceOwnerPrefix + ":" + id,
+                concurrency: prefillEvidenceRecovery.servingConcurrency)
+        }
         let usage = sample.usage
         let saved = max(usage.prefixCachePrefillTokensSaved, usage.prefixCacheHitTokens)
         guard usage.promptTokens > 0, saved >= 0, saved <= usage.promptTokens,
@@ -54,12 +61,19 @@ extension EngineV2Bridge {
         }
         let name = saved > 0 ? "reuse_prefill"
             : sample.overlap.contended ? "contended_prefill" : "isolated_prefill"
+        let resetIsolated = name == "isolated_prefill" && isolatedPrefillEvidenceExpired(at: sample.at)
+        let resetPrefill = saved == 0
+            && performanceMeasurements.freshRate("isolated_prefill", now: sample.at) == nil
+            && performanceMeasurements.freshRate("contended_prefill", now: sample.at) == nil
         performanceMeasurements.observe(name, tps: tps, prompt: work,
             context: usage.promptTokens, cache: saved > 0 ? "reused" : "cold",
             overlap: sample.overlap, at: sample.at,
             deadlinePostureEpoch: sample.deadlineRateEvidence?.currentEpoch())
         guard saved == 0 else { return }
+        if resetIsolated { isolatedPrefillEwmaInitialized = false }
+        if resetPrefill { prefillEwmaInitialized = false }
         updatePrefillTpsEwma(tps, isolated: !sample.overlap.contended)
+        if name == "isolated_prefill" { prefillEvidenceRecovery.observe(id) }
     }
 
     func updatePrefillTpsEwma(_ tps: Double, isolated: Bool) {
@@ -112,6 +126,9 @@ extension EngineV2Bridge {
         let cached = max(usage.prefixCachePrefillTokensSaved, usage.prefixCacheHitTokens) > 0
         if let tps = Self.engineDecodeRate(usage: usage, nativeBlock: usesNativeBlockTiming),
             let observedAt = Self.engineObservationInstant(timing: usage.timing, now: now) {
+            if let expiration = performanceMeasurements.rateExpiration("decode"), observedAt > expiration {
+                ewmaInitialized = false
+            }
             updateDecodeTpsEwma(tps)
             performanceMeasurements.observe("decode", tps: tps, prompt: state.promptTokens,
                 context: state.promptTokens + completion, cache: cached ? "reused" : "cold",

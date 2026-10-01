@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-01
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -351,6 +351,11 @@ floored at 1 tok/s. The prefill fallback prefers `ObservedPrefillTPS`, else
 the static prefill rate (`resolvedPrefillTPS`: the registered `PrefillTPS`,
 or decode × `prefillToDecodeRatio`), capped at `maxPrefillTPS`. Reviewed prefill
 points satisfy the same ceiling during profile validation.
+Native providers can renew an expired isolated-prefill estimate with one
+exclusive, short text request; the original deadline, physical admission and
+retirement ownership remain enforced. See
+[provider prefill evidence recovery](first-content-routing.md#provider-recovery-of-expired-text-prefill-evidence)
+for the age, prompt and failure-backoff bounds.
 `SetPrefillToDecodeRatio` changes the ratio process-wide; the coordinator
 binary wires it to `EIGENINFERENCE_PREFILL_DECODE_RATIO`
 (`coordinator/cmd/coordinator/main.go`).

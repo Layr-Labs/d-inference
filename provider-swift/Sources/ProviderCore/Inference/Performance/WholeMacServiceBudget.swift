@@ -19,7 +19,7 @@ final class WholeMacServiceBudget: @unchecked Sendable {
         let activityEpoch: UInt64
     }
     private struct Charge {
-        let fraction: Double
+        var fraction: Double
         let reservationID: String?
         let lifetime: ServiceReservationLifetime?
         let work: Work?
@@ -119,13 +119,14 @@ final class WholeMacServiceBudget: @unchecked Sendable {
 
     func acquire(ownerID: String, concurrency: Int, serviceReservationID: String? = nil,
         serviceReservation: ServiceReservationLifetime? = nil, work: Work? = nil,
-        deadlineApplicability: DeadlineApplicability? = nil) -> Bool {
+        deadlineApplicability: DeadlineApplicability? = nil, requiresIdle: Bool = false) -> Bool {
         // Correlation is optional. Malformed input gets no overlap credit; it
         // never bypasses the actual provider-side service allowance.
         let reservationID = serviceReservation?.id
             ?? ServiceReservationLifetime.normalizedID(serviceReservationID)
         let (acquired, notification) = lock.withLock { () -> (Bool, AsyncStream<Void>.Continuation?) in
             guard charges[ownerID] == nil, concurrency > 0 else { return (false, nil) }
+            if requiresIdle, !charges.isEmpty || !unboundedActivities.isEmpty { return (false, nil) }
             if let reservationID, charges.values.contains(where: { $0.reservationID == reservationID }) {
                 return (false, nil)
             }
@@ -206,6 +207,39 @@ final class WholeMacServiceBudget: @unchecked Sendable {
 
     var usedFraction: Double { lock.withLock { charges.values.reduce(0, { $0 + $1.fraction }) } }
     var count: Int { lock.withLock { charges.count } }
+
+    func exclusiveEvidenceGuard(ownerID: String) -> CBv2FirstContentEvidenceGuard? {
+        lock.withLock {
+            guard charges.count == 1 && charges[ownerID]?.fraction == 1 && unboundedActivities.isEmpty
+            else { return nil }
+            return evidenceGuard
+        }
+    }
+
+    /// Serialize the last idle check and synchronous native registration with
+    /// device-activity starts. The body must not reenter this service budget.
+    func withExclusiveEvidence<T>(ownerID: String, guardValue: CBv2FirstContentEvidenceGuard,
+        submit: () throws -> T) rethrows -> T? {
+        try lock.withLock {
+            guard charges.count == 1 && charges[ownerID]?.fraction == 1,
+                unboundedActivities.isEmpty, evidenceGuard === guardValue, guardValue.isValid
+            else { return nil }
+            return try submit()
+        }
+    }
+
+    /// Prompt completion ends the isolation interval, not device ownership.
+    /// Keep the same reservation/lifetime at the ordinary serving fraction.
+    func reduceExclusiveAllowance(ownerID: String, concurrency: Int) {
+        let notification = lock.withLock { () -> AsyncStream<Void>.Continuation? in
+            guard concurrency > 1, var charge = charges[ownerID], charge.fraction == 1 else { return nil }
+            charge.fraction = 1 / Double(concurrency)
+            charges[ownerID] = charge
+            invalidateEvidenceLocked()
+            return observer
+        }
+        notification?.yield()
+    }
 
     /// Preparation, model loading and cache device transfers cannot borrow a
     /// token-work calibration. Each independent owner invalidates old guards;

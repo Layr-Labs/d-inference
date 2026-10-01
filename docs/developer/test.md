@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-01
+> Last updated: 2026-09-30
 
 The `d-inference` macOS CI lanes pin `blacksmith-12vcpu-macos-27` and select
 Xcode 27 / native SwiftPM before compilation. Unit, SDK, prompt-parity,
@@ -1979,7 +1979,7 @@ make benchmark-wrapper-test        # python3 -m unittest discover -s gemma_contb
 python3 scripts/test-provider-release-resolution.py # signed-validation and publication routing before credentials
 ./scripts/sync-install-embed.sh check   # coordinator/api/install.sh byte-identical to scripts/install.sh
 ./scripts/test-prod-env-refresh.sh      # deploy/gcp/prod/refresh-env.sh contract
-./scripts/test-setup-macos-homebrew.sh  # scripts/setup-macos-homebrew.sh, brew present and brew installed
+./scripts/test-setup-macos-homebrew.sh  # scripts/setup-macos-homebrew.sh with brew already installed
 ./scripts/test-publish-model.sh         # scripts/publish-model.sh dry-run contract
 ```
 
@@ -2805,13 +2805,9 @@ before they install `postgresql@16` and get its binary path with
 checksum-verified installer. If Homebrew is still missing, the step fails
 before E2E tests run. See `.github/workflows/integration.yml` and
 `.github/workflows/benchmarks.yml`.
-`./scripts/test-setup-macos-homebrew.sh` tests two paths. In the first, `brew`
-is already installed: the script uses a fake `brew` and downloads nothing. In
-the second, `brew` is missing: the script runs a local fake installer through
-to script exit, so the exit trap that deletes the installer also runs. A wrong
-checksum must stop the installer. The test sets `SETUP_MACOS_HOMEBREW_TEST=1`
-to point the script at the fake installer; CI workflows never set it. The test
-runs in the "Release Integrity" CI job.
+`./scripts/test-setup-macos-homebrew.sh` tests the path where `brew` is
+already installed. It uses a fake `brew` in a temporary directory, makes no
+download, and runs in the "Release Integrity" CI job.
 
 ### Retained unsigned release recovery checks
 

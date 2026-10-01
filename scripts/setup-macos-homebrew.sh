@@ -10,16 +10,6 @@ set -euo pipefail
 # Homebrew/install commit and the SHA-256 of its install.sh. Change both together.
 installer_commit=f6632bc2e9afc0ba20cdee1f2d28bcd7672b3245
 installer_sha256=fa4ed743b4ca38316c8f32fd6623baa5bbb928fd4a47ad9f49c2be78ea833449
-installer_url="https://raw.githubusercontent.com/Homebrew/install/$installer_commit/install.sh"
-brew_locations=(/opt/homebrew/bin/brew /usr/local/bin/brew)
-
-# Test-only overrides for scripts/test-setup-macos-homebrew.sh. CI never sets
-# SETUP_MACOS_HOMEBREW_TEST, so the pinned values above always apply there.
-if [ "${SETUP_MACOS_HOMEBREW_TEST:-}" = 1 ]; then
-  installer_url="${SETUP_MACOS_HOMEBREW_INSTALLER_URL:-$installer_url}"
-  installer_sha256="${SETUP_MACOS_HOMEBREW_INSTALLER_SHA256:-$installer_sha256}"
-  read -r -a brew_locations <<< "${SETUP_MACOS_HOMEBREW_LOCATIONS:-${brew_locations[*]}}"
-fi
 
 find_brew() {
   local candidate
@@ -27,7 +17,7 @@ find_brew() {
     printf '%s\n' "$candidate"
     return 0
   fi
-  for candidate in "${brew_locations[@]}"; do
+  for candidate in /opt/homebrew/bin/brew /usr/local/bin/brew; do
     if [ -x "$candidate" ]; then
       printf '%s\n' "$candidate"
       return 0
@@ -42,11 +32,12 @@ install_brew() {
     exit 2
   fi
   : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
-  # Global, not local: the EXIT trap runs after this function returns.
+  local installer cleanup
   installer="$(mktemp "$RUNNER_TEMP/homebrew-install.XXXXXX")"
-  trap 'rm -f "$installer"' EXIT
+  printf -v cleanup 'rm -f -- %q' "$installer"
+  trap "$cleanup" EXIT
   curl --fail --silent --show-error --location --retry 3 --max-time 180 \
-    "$installer_url" \
+    "https://raw.githubusercontent.com/Homebrew/install/$installer_commit/install.sh" \
     --output "$installer"
   # Verify before executing.
   printf '%s  %s\n' "$installer_sha256" "$installer" | shasum -a 256 --check

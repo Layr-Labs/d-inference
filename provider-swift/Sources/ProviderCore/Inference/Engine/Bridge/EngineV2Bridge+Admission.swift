@@ -81,6 +81,14 @@ extension EngineV2Bridge {
         // Use observed phase rates directly. The engine still prices its
         // actual queue/cache work against the original absolute deadline;
         // optional reviewed calibration supplies only measured error bounds.
+        let expired = supportsPrefillRecoveryRetirement && isolatedPrefillEvidenceExpired()
+        if expired, let requestID, prefillEvidenceRecovery.owner == requestID,
+            prefillEvidenceRecovery.evidenceGuard?.isValid == true {
+            // One bounded idle exploration uses the existing unmeasured-rate
+            // path, retaining absolute expiry, physical capacity and retirement.
+            // Never present a fabricated hardware/fleet rate as local evidence.
+            return nil
+        }
         let prefillRate = isolatedPrefillEwmaInitialized
             && isolatedPrefillTpsEwma.isFinite && isolatedPrefillTpsEwma > 0
             ? isolatedPrefillTpsEwma : nil

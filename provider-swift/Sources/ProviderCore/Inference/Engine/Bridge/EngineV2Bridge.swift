@@ -287,6 +287,7 @@ public actor EngineV2Bridge {
     var measurementActivity = EngineMeasurementActivity()
     var performanceUpdates: EnginePerformanceUpdates?
     var performanceMeasurements = EnginePerformanceMeasurements()
+    var prefillEvidenceRecovery = PrefillEvidenceRecovery()
     var prefillRequestsTotal: Int64 = 0
     var generatedTokensTotal: Int64 = 0
     var generationRequestsTotal: Int64 = 0

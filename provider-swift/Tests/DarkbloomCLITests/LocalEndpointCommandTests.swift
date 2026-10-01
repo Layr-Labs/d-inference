@@ -29,7 +29,6 @@ struct LocalEndpointCommandTests {
             processExitsWith: .success, observing: [\.standardOutputContent, \.standardErrorContent]
         ) {
             let directory = try makeTemporaryDirectory("local-endpoint")
-            defer { try? FileManager.default.removeItem(at: directory) }
             setenv("DARKBLOOM_LOCAL_DIR", directory.path, 1)
 
             func run(_ arguments: [String]) async throws -> Bool {
@@ -62,6 +61,7 @@ struct LocalEndpointCommandTests {
             try LocalEndpoint.writeInfo(LocalEndpoint.Info(
                 host: "127.0.0.1", port: 8123, apiKey: "", version: "9.9.9", pid: 0, updatedAt: ""))
             outcomes.append(try await run([]))
+            try? FileManager.default.removeItem(at: directory)
             exit(outcomes == [false, false, true, true, true, false] ? 0 : 1)
         }
         let stdout = text(result?.standardOutputContent)

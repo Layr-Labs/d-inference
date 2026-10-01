@@ -42,13 +42,19 @@ private func makeTemporaryDirectory(_ label: String) throws -> URL {
 }
 
 /// Exits the child with the command's exit code, or 0 when it returned.
-private func exitWithResult(_ body: () async throws -> Void) async throws -> Never {
+/// `exit` skips `defer`, so `cleanup` runs first.
+private func exitWithResult(
+    cleanup: () -> Void = {},
+    _ body: () async throws -> Void
+) async throws -> Never {
+    var status: Int32 = 0
     do {
         try await body()
     } catch let code as ExitCode {
-        exit(code.rawValue)
+        status = code.rawValue
     }
-    exit(0)
+    cleanup()
+    exit(status)
 }
 
 private func text(_ bytes: [UInt8]?) -> String {
@@ -68,10 +74,11 @@ struct StartServingGuardTests {
             }
         }
         let stdout = text(result?.standardOutputContent)
+        let stderr = text(result?.standardErrorContent)
         #expect(stdout.contains(
             "By starting the provider, you agree to the Darkbloom Terms of Service:\n"
                 + "  https://darkbloom.dev/terms.html\n"))
-        #expect(text(result?.standardErrorContent).contains(
+        #expect(stderr.contains(
             "--local and --local-endpoint are mutually exclusive: use --local for a coordinator-less "
                 + "local server, or --local-endpoint to serve a local endpoint alongside the coordinator."))
     }
@@ -82,20 +89,21 @@ struct StartServingGuardTests {
             processExitsWith: .failure, observing: [\.standardOutputContent, \.standardErrorContent]
         ) {
             let directory = try makeTemporaryDirectory("start-idle")
-            defer { try? FileManager.default.removeItem(at: directory) }
             var config = ProviderConfig(provider: ProviderSettings(name: "start-idle-fixture"))
             config.backend.modelCacheDirectory = directory.appendingPathComponent("hub").path
             let configPath = directory.appendingPathComponent("provider.toml")
             try ConfigManager.save(config, to: configPath)
-            try await exitWithResult {
+            try await exitWithResult(cleanup: { try? FileManager.default.removeItem(at: directory) }) {
                 var command = try Start.parse([
                     "--foreground", "--idle-timeout", "10081", "--config", configPath.path,
                 ])
                 try await command.run()
             }
         }
-        #expect(!text(result?.standardOutputContent).contains("Terms of Service"))
-        #expect(text(result?.standardErrorContent).contains(
+        let stdout = text(result?.standardOutputContent)
+        let stderr = text(result?.standardErrorContent)
+        #expect(!stdout.contains("Terms of Service"))
+        #expect(stderr.contains(
             "--idle-timeout: idle window must be between 1 and 10080 minutes (7 days), "
                 + "or 0 to keep models loaded."))
     }
@@ -177,7 +185,6 @@ struct StartServingGuardTests {
         let result = await #expect(processExitsWith: .success, observing: [\.standardErrorContent]) {
             // A saved account token means the inline login offer returns at once.
             let directory = try makeTemporaryDirectory("start-daemon")
-            defer { try? FileManager.default.removeItem(at: directory) }
             let tokenPath = directory.appendingPathComponent("auth_token")
             try Data("fixture-token".utf8).write(to: tokenPath)
             setenv("DARKBLOOM_AUTH_TOKEN_PATH", tokenPath.path, 1)
@@ -209,6 +216,7 @@ struct StartServingGuardTests {
                     refused += 1
                 }
             }
+            try? FileManager.default.removeItem(at: directory)
             exit(refused == cases.count ? 0 : 1)
         }
         let stderr = text(result?.standardErrorContent)

@@ -32,9 +32,10 @@ install_brew() {
     exit 2
   fi
   : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
-  local installer
+  local installer cleanup
   installer="$(mktemp "$RUNNER_TEMP/homebrew-install.XXXXXX")"
-  trap 'rm -f "$installer"' EXIT
+  printf -v cleanup 'rm -f -- %q' "$installer"
+  trap "$cleanup" EXIT
   curl --fail --silent --show-error --location --retry 3 --max-time 180 \
     "https://raw.githubusercontent.com/Homebrew/install/$installer_commit/install.sh" \
     --output "$installer"

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor, cleanup } from "@testing-library/react";
+import { render, screen, waitFor, cleanup, within } from "@testing-library/react";
 import { useEffect, type ReactNode } from "react";
 
 vi.mock("@/hooks/useAuth", () => ({
@@ -98,6 +98,10 @@ function mockEarnings(body: unknown) {
   return fetchMock;
 }
 
+function statsGrid(): HTMLElement {
+  return screen.getByText("Total Earned").closest(".grid") as HTMLElement;
+}
+
 async function renderLoaded(body: unknown) {
   const fetchMock = mockEarnings(body);
   render(<EarningsContent />);
@@ -118,6 +122,8 @@ describe("EarningsContent", () => {
     await renderLoaded(response());
     expect(screen.getByText("Total Earned")).toBeInTheDocument();
     expect(screen.queryByText(AVG)).toBeNull();
+    expect(statsGrid().className).toContain("grid-cols-2");
+    expect(statsGrid().className).not.toContain("grid-cols-3");
   });
 
   it("hides Avg per Job when work_usd is empty", async () => {
@@ -146,6 +152,7 @@ describe("EarningsContent", () => {
   it("shows Avg per Job as work_usd / count to 6 decimals", async () => {
     // total includes base rewards; the average must use work_usd only.
     await renderLoaded(response({ work_usd: "2.000000", count: 3 }));
+    expect(statsGrid().className).toContain("grid-cols-3");
     expect(screen.getByText(AVG)).toBeInTheDocument();
     expect(screen.getByText("$0.666667")).toBeInTheDocument();
   });
@@ -164,7 +171,8 @@ describe("EarningsContent", () => {
     expect(screen.queryByRole("columnheader", { name: "Model" })).toBeNull();
     expect(screen.getByText("Base reward")).toBeInTheDocument();
     expect(screen.queryByText("base_reward")).toBeNull();
-    expect(screen.getByText("-")).toBeInTheDocument();
+    const rewardRow = screen.getByText("Base reward").closest("tr") as HTMLElement;
+    expect(within(rewardRow).getByText("-")).toBeInTheDocument();
     expect(screen.getByText("Qwen3-8B")).toBeInTheDocument();
   });
 

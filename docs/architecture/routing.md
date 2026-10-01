@@ -738,7 +738,7 @@ prefill-adjusted first-content latency EWMA (`RecordLatency`,
 `ttftEWMAAlpha = 0.2`). These values are persisted and exposed as raw metrics
 in the owner provider API. There is no composite reputation score.
 
-The dashboard presents job counts; low historical success rate is an
+The dashboard presents request counts; low historical success rate is an
 informational warning, not a reduced-routing-priority signal
 (`console-ui/src/app/providers/warnings.ts`, `computeWarnings`). Routing uses
 the cost function and live gates described above, not these historical

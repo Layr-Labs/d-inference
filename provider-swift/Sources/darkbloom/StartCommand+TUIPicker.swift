@@ -12,7 +12,13 @@ extension Start {
     /// Interactive multi-select model picker using raw terminal mode.
     /// Arrow keys navigate, Space toggles selection, Enter confirms, Esc/q cancels.
     /// Enforces memory budget and shows two sections: downloaded and available.
-    internal func runModelPicker(entries: [PickerEntry], memoryGb: Double) throws -> [Int] {
+    /// `inputFD` and `outputFD` default to the terminal; tests pass other descriptors.
+    internal func runModelPicker(
+        entries: [PickerEntry],
+        memoryGb: Double,
+        inputFD: Int32 = STDIN_FILENO,
+        outputFD: Int32 = STDOUT_FILENO
+    ) throws -> [Int] {
         let budget = memoryGb - Start.pickerOSReserveGb
 
         var cursorPos = 0
@@ -23,22 +29,22 @@ extension Start {
 
         // Enable raw terminal mode.
         var oldTermios = termios()
-        tcgetattr(STDIN_FILENO, &oldTermios)
+        tcgetattr(inputFD, &oldTermios)
         var raw = oldTermios
         raw.c_lflag &= ~UInt(ECHO | ICANON | ISIG)
         raw.c_cc.16 = 1  // VMIN = 1 byte minimum
         raw.c_cc.17 = 0  // VTIME = no timeout
-        tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw)
+        tcsetattr(inputFD, TCSAFLUSH, &raw)
 
         // Ensure terminal is restored on any exit path.
         defer {
             // Show cursor, restore terminal.
-            write(STDOUT_FILENO, "\u{1B}[?25h", 6)
-            tcsetattr(STDIN_FILENO, TCSAFLUSH, &oldTermios)
+            write(outputFD, "\u{1B}[?25h", 6)
+            tcsetattr(inputFD, TCSAFLUSH, &oldTermios)
         }
 
         // Hide cursor.
-        write(STDOUT_FILENO, "\u{1B}[?25l", 6)
+        write(outputFD, "\u{1B}[?25l", 6)
 
         var lastLineCount: Int = 0
 
@@ -143,7 +149,7 @@ extension Start {
 
             // Write the full frame in one syscall.
             output.withCString { ptr in
-                _ = write(STDOUT_FILENO, ptr, strlen(ptr))
+                _ = write(outputFD, ptr, strlen(ptr))
             }
 
             return lines
@@ -155,7 +161,7 @@ extension Start {
         // Input loop.
         var buf = [UInt8](repeating: 0, count: 3)
         while true {
-            let n = read(STDIN_FILENO, &buf, 3)
+            let n = read(inputFD, &buf, 3)
             guard n > 0 else { continue }
 
             if n == 1 {

@@ -28,6 +28,20 @@ struct AutopilotInventoryTests {
         #expect(result == ["a", "z"])
     }
 
+    @Test func progressIdentifiesTheModelBeforeVerificationWaitsOrFails() async throws {
+        var events: [String] = []
+        let result = try await Start.verifiedAutopilotInventory(
+            local: [local("z"), local("a"), local("local-only")],
+            catalog: [catalog("a"), catalog("z")], memoryGb: 64, runtimeCapabilities: [],
+            verifying: { events.append("checking \($0)") },
+            verify: { model in
+                events.append("verify \(model.id)")
+                if model.id == "a" { throw CocoaError(.fileReadNoPermission) }
+            }, excluded: { id, _ in events.append("excluded \(id)") })
+        #expect(result == ["z"])
+        #expect(events == ["checking a", "verify a", "excluded a", "checking z", "verify z"])
+    }
+
     @Test func unverifiedDownloadedBuildsAreExcludedWithoutDownloading() async throws {
         var excluded: [String] = []
         let result = try await Start.verifiedAutopilotInventory(

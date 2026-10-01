@@ -328,6 +328,11 @@ Throughput anomaly detector:
 
 ### Model autopilot
 
+Cached-inventory verification reports a busy model update/verification lock
+immediately. A normal start with saved consent preserves the configuration and
+running provider when any selected model cannot be verified. This introduces no
+new configuration setting (`ModelDownloader.verifySelectedModel`).
+
 All coordinator variables below are startup-only and read by
 `coordinator/registry/autopilot_config.go` (`autopilotConfigFromEnv`); defaults and
 validation live in `coordinator/registry/autopilot/config.go` (`DefaultConfig`, `Config.Check`).
@@ -364,11 +369,12 @@ change; programmatic configuration fields are validated by `autopilot.Config.Che
 | Demand retention | `10s` buckets, at most `256` models; partial boundary bucket retains < `10s` | `coordinator/registry/autopilot/demand.go`, `DemandTracker.Record`, `DemandTracker.Snapshot` |
 
 Enrollment records interest/consent and verified downloaded network inventory;
-it is not activation. It does not rewrite `enabled_models`, `preload_models`,
-idle settings or any other saved preferences. The larger advertised inventory
-does not change implicit startup preload selection. Recorded `selected_models`
-is static across ordinary restarts; only explicit inventory refresh expands it,
-without picker or downloads. See [CLI enrollment](../provider/cli-reference.md#darkbloom-autopilot).
+it is not activation. Both answers retain the normal model and memory selector,
+which saves the operator’s explicit choices. Enrollment itself preserves other
+preferences, and a larger advertised inventory does not change implicit startup
+preload selection. Ordinary restarts retain recorded `selected_models`; explicit
+startup choices can extend it, and explicit inventory refresh can replace it.
+Inventory verification adds no downloads. See [CLI enrollment](../provider/cli-reference.md#darkbloom-autopilot).
 Only active live control, or an explicit provider pause, transfers residency
 ownership away from ordinary cold loading and the saved idle policy. The default
 shadow lease reports `observe_only=true`, `active=false` and an acknowledged

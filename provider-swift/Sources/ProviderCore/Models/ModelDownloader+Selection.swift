@@ -52,7 +52,10 @@ extension ModelDownloader {
         } else {
             manifest = nil
         }
-        let lease = try await ModelArtifactWriteLease.acquire(modelID: model.id)
+        // An existing daemon may retain this lease while its prepared update
+        // waits for rollout jitter. Do not silently block a foreground start.
+        try Task.checkCancellation()
+        let lease = try ModelArtifactWriteLease.acquireIfAvailable(modelID: model.id, operation: "verification")
         defer { lease.release() }
         guard let path = ModelScanner.resolveLocalPath(modelID: model.id) else {
             throw ModelCatalogError.downloadFailed("Selected model is missing: \(model.id)")

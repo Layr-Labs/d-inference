@@ -1155,6 +1155,14 @@ are app measurements, not Apple-certified hardware. See
 
 ### `model_autopilot` state
 
+Swift also embeds `ModelAutopilotSnapshot` in the local daemon-state file.
+From 0.9.16 the local file uses `autopilot_state` so the old 0.9.15 watchdog
+ignores this optional detail and can still validate heartbeat health. New readers
+also accept the old local `autopilot` key (`DaemonState+Coding.swift`). Its
+decoder accepts both explicit wire keys and the state reader’s converted keys,
+including nested residents and load history. Wire field names and requiredness
+are unchanged (`ModelAutopilotSnapshot+Decoding.swift`).
+
 Go `ModelAutopilotState` · Swift `ModelAutopilotSnapshot`, declared in the
 `model_autopilot.go` / `ModelAutopilot.swift` files cited above. It appears on
 registration and heartbeat, and in command status. The negotiated `protocol`

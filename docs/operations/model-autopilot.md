@@ -28,9 +28,10 @@ Use with compatible protocol-2 coordinator and provider releases. See the
 1. Keep `EIGENINFERENCE_AUTOPILOT_ENABLED=true` and
    `EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY=true` (the defaults) for observation.
    Run `darkbloom start` and answer Yes to the experimental shadow-interest prompt
-   to discover/verify all eligible downloaded active network models. There is no
-   model picker or download, and saved model, preload, idle and other preferences
-   remain unchanged. Empty eligible inventory fails before persistence or drain.
+   then use the normal model and memory selector. Explicitly chosen missing
+   models may download through that selector. Autopilot subsequently verifies
+   cached network models without adding downloads. Empty inventory or an
+   unverified startup choice fails before persistence or drain.
    Setup does not activate Autopilot, and unattended upgrades or missing settings
    do not enroll automatically.
 2. Run `darkbloom autopilot status`. Confirm enrollment, the verified cached set and
@@ -59,7 +60,8 @@ Use with compatible protocol-2 coordinator and provider releases. See the
    current mode, never promotes shadow to live. Retired unadvertised models may
    still unload once unpinned and unused. `autopilot models` explicitly refreshes
    eligible downloaded network inventory through verification and safe drain/restart,
-   without picker or downloads. Ordinary restarts retain the recorded set.
+   after the normal startup selector. Verification adds no downloads. Ordinary
+   restarts retain the recorded set; explicitly chosen startup models can extend it.
    Refresh/`enable` preserves an existing pause; use explicit `resume` to resume.
    An ordinary start fails before persistence/drain if any recorded build is
    missing, ineligible or cannot verify, including a transient manifest failure.
@@ -76,6 +78,15 @@ The action and operation bounds are in
 [configuration](../reference/configuration.md#model-autopilot). Shadow control
 leases report mode without granting residency ownership; shadow sends no
 residency commands and creates no Autopilot routing reservations or fences.
+
+If cached-inventory verification reports a model as busy, allow the existing
+download, verification or revision update to finish before retrying. An ordinary
+start preserves the recorded inventory and running provider on this failure.
+The 0.9.16 reader fixes the 0.9.15 enrolled-state decode failure, which also
+prevented graceful lifecycle control and could trigger false failed-start
+rollback. Its state layout remains readable by a pre-update watchdog.
+Use `darkbloom status` and `darkbloom autopilot status` to distinguish process
+liveness, loaded models, authorization and shadow/live mode.
 
 ## Verification
 

@@ -71,11 +71,11 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | Flag | Type | Default | Effect |
 |---|---|---|---|
 | `--coordinator-url <url>` | `String?` | `coordinator.url` (`wss://api.darkbloom.dev/ws/provider`) | Override the coordinator WebSocket URL |
-| `--model <id>` | `[String]`, repeatable | `[]` | Ordinary serving of exactly these models; skips the picker. Incompatible with explicit or saved Autopilot enrollment; use `--no-autopilot` |
+| `--model <id>` | `[String]`, repeatable | `[]` | Select these startup models and skip the picker; compatible with Autopilot enrollment |
 | `--all` | flag | `false` | Ordinary serving of every runtime-supported local model; skips the picker. Compatible with `--autopilot`, where only verified eligible downloaded network builds enroll |
 | `--idle-timeout <mins>` | `UInt64?` | `backend.idle_timeout_mins` (`60`) | Override the idle unload timeout for this run |
 | `--schedule` | flag | `false` | Open the interactive availability/loading wizard before background startup; rejects `--foreground` and standalone `--local` (`Start.run`, `StartCommand.swift`) |
-| `--autopilot` | flag | `false` | Discover/verify the eligible downloaded network inventory and save experimental enrollment, without picker or downloads; default rollout is shadow, not activation |
+| `--autopilot` | flag | `false` | Keep the normal startup selector, verify cached network inventory and save experimental enrollment; verification adds no downloads and the default rollout is shadow |
 | `--no-autopilot` | flag | `false` | Save opt-out and retain ordinary idle-policy mode |
 | `--foreground` / `--no-foreground` | flag, **hidden** | `false` | Serve in this process instead of installing the LaunchAgent; launchd passes it |
 | `--local` | flag | `false` | Coordinator-less OpenAI-compatible server ([direct mode](./direct-mode.md)) |
@@ -91,12 +91,20 @@ a debugger is attached, RAM is below 8 GB, Metal is unavailable, hardware
 detection fails, no model is selected, or the local server does not bind within
 5 s (`StartCommand+Preflight.swift`, `StartCommand+Modes.swift`).
 
-A non-enrolled replacement start completes the picker/preflight and saves the selected IDs
+Autopilot inventory verification names each cached model before checking its bytes.
+If another process holds that model’s update/verification lock, the check reports
+the busy model immediately. An ordinary start with saved consent then fails before
+changing enrollment or draining the running provider; retry after the update finishes.
+`status` and `autopilot status` read the same daemon snapshot, including nested
+Autopilot residents and load history. Enrollment does not make a live daemon disappear
+from status.
+
+A replacement start, with or without Autopilot, completes the picker/preflight and saves the selected IDs
 under `backend.enabled_models` while holding the lifecycle lease, before it
 disables recovery or drains/stops the current provider. Failure of this initial
-selection write leaves the current service unchanged. Autopilot enrollment instead
-discovers/verifies cached inventory and preserves every saved preference; empty
-or invalid inventory fails before persistence or drain. After drain acknowledgement,
+selection write leaves the current service unchanged. Autopilot additionally
+verifies cached inventory before persistence or drain; selected startup models
+must be in that verified inventory. Enrollment itself preserves other preferences. After drain acknowledgement,
 Autopilot consent is saved before stopping the daemon and installing the chosen
 configuration. If this later write fails, a gracefully drained daemon is left
 running and drained, with recovery disabled; correct the configuration and retry
@@ -531,8 +539,8 @@ Every subcommand accepts `--config`.
 | Command / option | Effect |
 |---|---|
 | `status`, `status --json` | Configured consent and fresh daemon state, including selected/ready models and transition result |
-| `enable` | Discover/verify all eligible downloaded network builds and safely save experimental enrollment; no picker/downloads, default shadow mode is inactive, and an already-enrolled provider's pause is preserved |
-| `models` | Explicitly refresh the recorded cached network inventory through discovery, verification and safe drain/restart; no picker/downloads and no implicit resume |
+| `enable` | Discover/verify all eligible downloaded network builds and safely save experimental enrollment; normal startup selector, verification adds no downloads, default shadow mode is inactive, and an already-enrolled provider's pause is preserved |
+| `models` | Explicitly refresh the recorded cached network inventory through discovery, verification and safe drain/restart; normal startup selector and no implicit resume |
 | `pause`, `resume` | Runtime participation update; pause preserves ready models and blocks new demand-based changes. Resume follows the coordinator's current mode and never promotes shadow to live. Retired, unadvertised residents may still unload when unpinned and unused |
 | `pin MODEL_ID...`, `unpin MODEL_ID...` | Live unload protection during active control, explicit pause or an accepted operation; pins must belong to the selected set |
 | `disable` | Revoke new commands and restore the saved idle policy after any accepted operation finishes |
@@ -541,15 +549,16 @@ Every subcommand accepts `--config`.
 
 The normal interactive `start` asks for interest in experimental Autopilot with
 `[y/N]`, explicitly naming shadow mode as not activated and a later live rollout.
-A blank response means No and follows the ordinary picker/start path. Yes records
-consent, not activation, and skips both the model picker and idle-policy prompt.
+A blank response means No. Both answers follow the ordinary model picker and
+idle-policy prompt. Yes records consent, not activation; the normal selector may
+download models the operator explicitly chooses.
 It discovers all already-downloaded active network-supported catalog models and
 verifies their manifest or matching registry weight hash. Arbitrary local,
 off-catalog, retired, ineligible, malformed, stale or unverified builds are excluded;
 verification failures warn and skip the build. Empty eligible inventory fails
-before persistence, drain or restart; no models are downloaded.
-Saved `enabled_models`, `preload_models`, idle policy and
-all other preferences remain unchanged; explicit `--idle-timeout` is still a
+before persistence, drain or restart; verification adds no downloads.
+The normal selector saves the chosen startup models and idle policy. Enrollment
+itself leaves other preferences unchanged; explicit `--idle-timeout` remains a
 requested override. Autopilot does not change residency in the current shadow
 rollout. Live rollout can later choose cached models for utilization, not an
 earnings guarantee.

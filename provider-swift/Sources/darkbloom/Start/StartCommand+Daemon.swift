@@ -25,36 +25,15 @@ extension Start {
         await offerInlineLogin(coordinatorURL: coordinatorURL)
 
         let enableAutopilot = try resolveAutopilotChoice(config)
-        let selectedModelIDs: [String]
-
-        if enableAutopilot {
-            selectedModelIDs = try await downloadedAutopilotInventory(snapshot: snapshot,
-                coordinatorURL: coordinatorURL, runtimeCapabilities: runtimeCapabilities)
-        } else if !model.isEmpty {
-            let known = Set(snapshot.models.map(\.id))
-            selectedModelIDs = model.filter {
-                known.contains($0)
-                    && ModelRuntimeRequirements.isEligible(
-                        modelID: $0, available: runtimeCapabilities)
-            }
-        } else if all {
-            selectedModelIDs = snapshot.models.compactMap {
-                ModelRuntimeRequirements.isEligible(
-                    modelID: $0.id, available: runtimeCapabilities) ? $0.id : nil
-            }
-        } else {
-            selectedModelIDs = try await interactiveCatalogPicker(
-                snapshot: snapshot,
-                config: config,
-                coordinatorURL: coordinatorURL,
-                runtimeCapabilities: runtimeCapabilities
-            )
-        }
-
-        guard !selectedModelIDs.isEmpty else {
-            printError("No models selected.")
-            throw ExitCode.failure
-        }
+        let selection = try await Self.prepareModelSelection(autopilot: enableAutopilot,
+            select: {
+                try await selectStartupModels(snapshot: snapshot, config: config,
+                    coordinatorURL: coordinatorURL, runtimeCapabilities: runtimeCapabilities)
+            }, inventory: { selected in
+                try await downloadedAutopilotInventory(snapshot: snapshot, coordinatorURL: coordinatorURL,
+                    runtimeCapabilities: runtimeCapabilities, selectedStartupModels: selected)
+            })
+        let selectedModelIDs = selection.hostedModels
 
         // Do not persist the schedule until model selection has succeeded.
         // Reload under the config lock so unrelated edits survive the wizard.
@@ -66,7 +45,7 @@ extension Start {
         // picker (never for --model/--all/relaunch), with the CURRENT policy as
         // the Enter default. `--idle-timeout` already answered it in `run()`.
         var idleMinutes = config.backend.idleTimeoutMins
-        if !enableAutopilot, model.isEmpty, !all, idleTimeout == nil {
+        if model.isEmpty, !all, idleTimeout == nil {
             idleMinutes = try promptIdleUnloadPolicy(
                 current: idleMinutes,
                 selectedModelIDs: selectedModelIDs,
@@ -77,15 +56,12 @@ extension Start {
         // disturbs the existing provider. Keep the update lease through install.
         try Task.checkCancellation()
         let replacement = try await ServiceDrain.prepare(options: drain, withConfigurationChange: { setup in
-            if enableAutopilot {
-                try setup()
-            } else {
-                try ProviderModelSelection.withReplacement(selectedModelIDs, configPath: snapshot.configPath,
-                    fallbackConfig: config, body: setup)
-            }
+            try ProviderModelSelection.withReplacement(selectedModelIDs, configPath: snapshot.configPath,
+                fallbackConfig: config, body: setup)
         })
         defer { replacement.release() }
-        try await Self.completeDaemonReplacement(autopilot: enableAutopilot, models: selectedModelIDs,
+        try await Self.completeDaemonReplacement(autopilot: enableAutopilot,
+            models: selection.autopilotModels ?? selectedModelIDs,
             configPath: configOptions.config) {
             try LaunchAgent.installAndStart(
                 coordinatorURL: coordinatorURL,
@@ -129,7 +105,7 @@ extension Start {
         }
         if enableAutopilot {
             print("  Autopilot: enrolled (Experimental; shadow rollout by default)")
-            print("  Reporting downloaded network models; saved preferences are unchanged.")
+            print("  Reporting downloaded network models; your selected startup and memory preferences apply.")
             print("  Enrollment is not activation. Run `darkbloom autopilot status` for the current mode.")
             print("  Manage: darkbloom autopilot status | pause | disable")
         }

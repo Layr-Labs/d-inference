@@ -20,8 +20,8 @@ remain separate operator actions, never part of Autopilot enrollment or refresh.
 ```mermaid
 flowchart TD
   A["Start: shadow interest, default No"] --> B["Discover downloaded active network models"]
-  B --> C["Verify cached inventory; no picker or downloads"]
-  C --> D["Save consent; preserve all existing preferences"]
+  B --> C["Normal model and memory selector; verify cached inventory"]
+  C --> D["Save consent and explicit startup preferences"]
   D --> E{"Coordinator ObserveOnly?"}
   D --> G["Capacity planner"]
   F["Logical arrivals by request shape"] --> G["Capacity planner"]
@@ -44,21 +44,21 @@ flowchart TD
 Blank/EOF means No. Answering Yes records interest/consent for shadow observation;
 it does not activate automatic residency changes. `--autopilot` records explicit
 scripted consent for the same cached-inventory flow; `--all` is compatible but
-cannot bypass network eligibility. Enrollment rejects `--model`; use
-`--no-autopilot` for ordinary explicit selection.
+cannot bypass network eligibility. `--model` still selects the initial hosted
+models and is compatible with enrollment.
 
-Yes skips the normal model picker and idle-policy prompt. Discovery includes all
-already-downloaded active catalog builds supported for network serving on this
-Mac, then verifies their manifest or matching registry weight hash. Arbitrary
-local/off-catalog, retired, ineligible, malformed, stale or unverified builds are
-excluded; verification failures warn and skip the build. No eligible inventory
-fails clearly before persistence, drain or restart; nothing is downloaded.
-No continues the ordinary picker/start
-flow (`Start.downloadedAutopilotInventory`, `Start.verifiedAutopilotInventory`,
-`verifySelectedModel`).
+Both answers retain the ordinary model picker and idle-policy prompt; explicit
+`--model` and `--all` keep their normal selection behavior. The picker may download
+models the operator explicitly selects. Autopilot then discovers already-cached
+active network builds and verifies their manifest or matching registry weight
+hash, without adding downloads itself. Arbitrary local/off-catalog, retired,
+ineligible, malformed, stale or unverified builds are excluded. Empty inventory,
+or failure to verify any selected startup model, fails before persistence or drain
+(`Start.prepareModelSelection`, `Start.downloadedAutopilotInventory`).
 
 `saveAutopilotEnrollment` records verified exact IDs after an existing provider
-has drained, without rewriting saved model, preload, idle or other preferences.
+has drained. The ordinary selector separately saves the operator’s chosen
+startup models and idle policy; enrollment itself does not rewrite those preferences.
 An explicit `--idle-timeout` remains an operator-requested override, not an
 enrollment side effect. Restarts retain the recorded choice and inventory.
 Existing consent also retains `paused` through ordinary start, `enable` and
@@ -69,14 +69,23 @@ starts unpaused (`saveAutopilotEnrollment`).
 cannot enroll, and another model appearing on disk cannot expand permission.
 The provider advertises this verified network inventory even when it is broader
 than saved `enabled_models`, and rechecks the allowlist before loads, prefetches
-and network acceptance. The set remains static: discovering or downloading
-another build does not expand consent. Ordinary starts with saved consent
-validate every recorded ID or fail before persistence/drain if any is missing,
+and network acceptance. Discovering another build alone does not expand consent. An explicit startup
+selection may add its chosen IDs to the recorded set. Ordinary starts with saved
+consent validate every recorded ID plus those chosen startup models or fail before persistence/drain if any is missing,
 ineligible or unverified, including a transient manifest error. They never save
 a partial subset. Explicit `--autopilot`, `autopilot enable` and
-`autopilot models` re-inventory eligible downloaded builds and verify them without
-a picker or downloads and may prune excluded builds. Inventory refresh uses the
-existing safe drain/restart.
+`autopilot models` re-inventory eligible downloaded builds after the normal
+startup selector and may prune excluded builds. Verification adds no downloads. Inventory refresh uses the
+existing safe drain/restart. Verification reports each model and refuses a busy
+artifact writer lease instead of waiting behind an update’s rollout delay. It
+continues to verify the selected bytes under exclusive ownership; a receipt is
+not a substitute for integrity verification.
+
+The daemon-state reader accepts the snapshot’s explicit wire keys after the
+state decoder’s snake-case conversion, including residents and load history.
+The 0.9.16 local file writes `autopilot_state` so a 0.9.15 watchdog can ignore
+the optional detail while reading heartbeat health; new readers also accept old
+`autopilot` files. WebSocket encoding and required-field validation remain unchanged.
 Desired-build updates outside the recorded set are ignored. While enrolled,
 `darkbloom switch` directs the operator to `darkbloom autopilot models` or opt-out
 so a manual hosted-model transaction cannot bypass the approved selection.

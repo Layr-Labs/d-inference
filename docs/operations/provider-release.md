@@ -18,7 +18,18 @@ retry of that old workflow still uses its original source. For an unchanged
 candidate with successful build and SDK qualification, merge the tooling fix
 and use the retained unsigned recovery path below.
 
-The prepared version is **0.9.15**. It adds automatic idle native MiMo
+The **0.9.16** hotfix candidate repairs enrolled-daemon status, graceful lifecycle
+control and watchdog health observation. Its schema-1 state files write detailed
+Autopilot data under `autopilot_state`, leaving the old optional `autopilot` key
+absent so a still-running 0.9.15 watchdog can read the candidate heartbeat. New
+readers accept both layouts. Qualify the upgrade with consent already recorded:
+confirm status, graceful restart and promotion after the full stabilization
+window, including when the watchdog process predates the update. A newer release
+can recover machines that quarantined 0.9.15 without overriding quarantine.
+Also verify a busy model update produces a prompt retry message during inventory
+verification and preserves the running daemon and recorded selection.
+
+The released version is **0.9.15**. It adds automatic idle native MiMo
 calibration through the actual serving engine; see
 [calibration behavior](../architecture/first-content-routing.md#automatic-mimo-calibration).
 On the exact signed artifact, verify short/4k phase observations reach capacity

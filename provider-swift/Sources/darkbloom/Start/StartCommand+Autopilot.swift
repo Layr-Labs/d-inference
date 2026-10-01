@@ -15,9 +15,6 @@ extension Start {
             if autopilot == true { throw ValidationError("Autopilot requires a network provider.") }
             return false
         }
-        if !model.isEmpty && (autopilot ?? config.backend.modelAutopilot.hasConsent) {
-            throw ValidationError("Autopilot advertises downloaded network models; use --no-autopilot with --model for a manual selection.")
-        }
         if let autopilot {
             return autopilot
         }
@@ -35,7 +32,7 @@ extension Start {
         emit("Autopilot - Experimental, shadow-first rollout\n")
         emit("Shadow mode is the default: proposed model changes are recorded, not activated.\n")
         emit("Saying yes reports all downloaded models supported by our network; it does not activate live control.\n")
-        emit("No extra model selection or downloads. Your saved model, preload and idle preferences stay unchanged.\n")
+        emit("Choose your startup models and memory preferences in the usual selector next.\n")
         emit("When we turn Autopilot on, it will choose among those cached models to improve network utilization.\n")
         emit("Downloaded files stay on disk. You can pause or disable Autopilot at any time.\n")
         emit("Interested in joining the Autopilot rollout? [y/N]: ")
@@ -72,23 +69,25 @@ func validatedAutopilotSelection(_ models: [String]) throws -> [String] {
 
 extension Start {
     func downloadedAutopilotInventory(snapshot: RuntimeSnapshot, coordinatorURL: String,
-                                     runtimeCapabilities: Set<ProviderRuntimeCapability>) async throws -> [String] {
+                                     runtimeCapabilities: Set<ProviderRuntimeCapability>,
+                                     selectedStartupModels: [String] = []) async throws -> [String] {
         let client = ModelCatalogClient(coordinatorURL: coordinatorURL)
         let catalog = try await client.fetchCatalogSnapshot(typeFilter: "text", includeAliases: true)
         let local = snapshot.hardware.map { ModelScanner.scanAllModels(hardwareInfo: $0) } ?? []
         let verifier = ModelDownloader(catalogClient: client,runtimeCapabilities: runtimeCapabilities)
         let approved = autopilot == true || !snapshot.config.backend.modelAutopilot.hasConsent
-            ? nil : Set(snapshot.config.backend.modelAutopilot.selectedModels)
+            ? nil : Set(snapshot.config.backend.modelAutopilot.selectedModels).union(selectedStartupModels)
         print("  Checking downloaded network models (no model downloads)...")
         return try await Self.verifiedAutopilotInventory(local: local, catalog: catalog.models,
             memoryGb: Double(snapshot.hardware?.memoryGb ?? 0), runtimeCapabilities: runtimeCapabilities,
-            approved: approved, verify: { try await verifier.verifySelectedModel($0) },
+            approved: approved, verifying: { print("    Verifying \($0)...") }, verify: { try await verifier.verifySelectedModel($0) },
             excluded: { printError("Not reporting \($0): downloaded build could not be verified (\($1)).") })
     }
 
     static func verifiedAutopilotInventory(
         local: [ModelInfo], catalog: [CatalogModel], memoryGb: Double,
         runtimeCapabilities: Set<ProviderRuntimeCapability>, approved: Set<String>? = nil,
+        verifying: (String) -> Void = { _ in },
         verify: (CatalogModel) async throws -> Void,
         excluded: (String, any Error) -> Void = { _, _ in }
     ) async throws -> [String] {
@@ -106,6 +105,7 @@ extension Start {
                   Self.modelFitsBudget(sizeGb: model.estimatedMemoryGb, memoryGb: memoryGb) else { continue }
             do {
                 try Task.checkCancellation()
+                verifying(model.id)
                 try await verify(entry)
                 try Task.checkCancellation()
                 verified.append(model.id)

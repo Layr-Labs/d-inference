@@ -46,8 +46,7 @@ extension AutopilotCommandTests {
             #expect(output.contains("proposed model changes are recorded, not activated"))
             #expect(output.contains("does not activate live control"))
             #expect(output.contains("all downloaded models supported by our network"))
-            #expect(output.contains("No extra model selection or downloads"))
-            #expect(output.contains("preferences stay unchanged"))
+            #expect(output.contains("Choose your startup models and memory preferences in the usual selector next"))
             #expect(output.contains("improve network utilization"))
             #expect(output.hasSuffix("[y/N]: "))
             return answer
@@ -129,13 +128,13 @@ extension AutopilotCommandTests {
 }
 
 extension AutopilotCommandTests {
-    @Test func enrollmentAcceptsAllButRejectsManualModelOverrides() throws {
+    @Test func enrollmentAcceptsAllAndExplicitStartupModels() throws {
         var config = ProviderConfig(provider:ProviderSettings(name:"choice"))
         config.backend.modelAutopilot = .init(enabled:true,consentRecorded:true,selectedModels:["chosen"],revision:"selection")
         var start = try Start.parse(["--all"])
         #expect(try start.resolveAutopilotChoice(config))
         start.model = ["chosen"]
-        #expect(throws:(any Error).self) { try start.resolveAutopilotChoice(config) }
+        #expect(try start.resolveAutopilotChoice(config))
         start.autopilot = false
         #expect(try start.resolveAutopilotChoice(config) == false)
         start.all = false; start.autopilot = nil; start.local = true

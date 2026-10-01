@@ -47,23 +47,29 @@ extension EngineV2Bridge {
     func firstTokenDeadlineAdmission(
         deadline: FirstContentDeadline?,
         multimodal: CBv2MultimodalInput?,
-        requestID: String? = nil, promptTokens: Int = 0, promptWork: PromptWork? = nil
+        requestID: String? = nil, promptTokens: Int = 0, promptWork: PromptWork? = nil,
+        nativeMediaEvidence: NativeMediaRateEvidence? = nil
     ) throws -> CBv2FirstTokenDeadlineAdmission? {
-        guard let admission = targetFirstTokenDeadlineAdmission(
-            deadline: deadline, requestID: requestID,
-            promptTokens: promptTokens, promptWork: promptWork) else { return nil }
-        guard let multimodal else { return admission }
+        guard prefillDeadlineMode == .enforce, prefillDeadlineProjectionEnabled,
+            deadline != nil else { return nil }
+        guard let multimodal else {
+            return targetFirstTokenDeadlineAdmission(deadline: deadline, requestID: requestID,
+                promptTokens: promptTokens, promptWork: promptWork)
+        }
         guard multimodal.nativeMediaToken != nil, multimodal.attention == .causal,
               multimodal.positionState == nil, multimodal.deepstackEmbeddings == nil else { return nil }
         // A stale/foreign/missing capability is an actual veto, never a nil
         // fallback to ordinary submission after identifying a native seal.
         _ = try nativeMiMoDecodedMediaBinding()
-        return admission
+        return targetFirstTokenDeadlineAdmission(deadline: deadline, requestID: requestID,
+            promptTokens: promptTokens, promptWork: promptWork, nativeMedia: true,
+            nativeMediaEvidence: nativeMediaEvidence)
     }
 
     private func targetFirstTokenDeadlineAdmission(
         deadline: FirstContentDeadline?,
-        requestID: String?, promptTokens: Int, promptWork: PromptWork?
+        requestID: String?, promptTokens: Int, promptWork: PromptWork?, nativeMedia: Bool = false,
+        nativeMediaEvidence: NativeMediaRateEvidence? = nil
     ) -> CBv2FirstTokenDeadlineAdmission? {
         guard prefillDeadlineMode == .enforce,
             prefillDeadlineProjectionEnabled,
@@ -96,13 +102,16 @@ extension EngineV2Bridge {
         let calibration = requestID.flatMap {
             calibratedDeadlinePolicy(requestID: $0, promptTokens: promptTokens, promptWork: promptWork)
         }
-        guard prefillRate != nil || calibration != nil else { return nil }
+        guard prefillRate != nil || calibration != nil || nativeMedia else { return nil }
 
         return CBv2FirstTokenDeadlineAdmission(
             deadline: deadline.instant,
             conservativePrefillTokensPerSecond: prefillRate,
             conservativeDecodeTokensPerSecond: decodeRate,
-            calibration: calibration)
+            calibration: calibration,
+            nativeTargetPrefill: nativeMedia
+                ? nativeMediaDeadlinePolicy(requestID: requestID, promptTokens: promptTokens,
+                    evidence: nativeMediaEvidence) : nil)
     }
 
     /// Move post-commit cancellation cleanup out of the cancelling task. The
@@ -139,12 +148,12 @@ extension EngineV2Bridge {
             await bridge.completeTransferredPreSubmitRetirement(
                 requestID: requestID,
                 engineID: engineID,
+                prefillReceipt: prefillReceipt,
                 completion: completion,
                 sharedKVReserved: sharedKVReserved,
                 prefixCacheReceiptID: prefixCacheReceiptID,
                 ssdStaged: ssdStaged,
                 readyReceiptRegistered: readyReceiptRegistered,
-                prefillReceipt: prefillReceipt,
                 usageSignal: usageSignal,
                 failure: failure)
             if let nativeTaskID { await bridge.clearNativeTransferredRetirement(nativeTaskID) }
@@ -162,12 +171,12 @@ extension EngineV2Bridge {
     private func completeTransferredPreSubmitRetirement(
         requestID: String,
         engineID: CBv2RequestID,
+        prefillReceipt: EnginePrefillReceipt,
         completion: Int,
         sharedKVReserved: Bool,
         prefixCacheReceiptID: CBv2RequestID?,
         ssdStaged: Bool,
         readyReceiptRegistered: Bool,
-        prefillReceipt: EnginePrefillReceipt,
         usageSignal: EngineV2RequestUsageSignal?,
         failure: PrefixCacheLookupFailureClass
     ) async {

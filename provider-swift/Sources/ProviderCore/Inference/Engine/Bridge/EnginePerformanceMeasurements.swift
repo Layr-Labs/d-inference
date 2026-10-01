@@ -49,11 +49,17 @@ final class EnginePrefillReceipt: @unchecked Sendable {
         let at: ContinuousClock.Instant
         let overlap: EngineMeasurementActivity.Overlap
         let deadlineRateEvidence: DeadlineRateEvidence?
+        let nativeMediaRateEpoch: UUID?
     }
     let activity: EngineMeasurementActivity
     let activityID: UUID
     let deadlineRateEvidence: DeadlineRateEvidence?
     private let isolationGuard: CBv2FirstContentEvidenceGuard?
+    /// Set only by a native owner-bound submission. This distinguishes its
+    /// target-decoder work from text and legacy vision without trusting input
+    /// JSON or inferring a model capability from its name.
+    let nativeCausalMedia: Bool
+    let nativeRateEvidence: NativeMediaRateEvidence?
     private let lock = NSLock()
     private var sample: Sample?
     private var consumed = false
@@ -62,10 +68,13 @@ final class EnginePrefillReceipt: @unchecked Sendable {
 
     init(activity: EngineMeasurementActivity, model: String,
         deadlineRateEvidence: DeadlineRateEvidence? = nil,
-        isolationGuard: CBv2FirstContentEvidenceGuard? = nil) {
+        isolationGuard: CBv2FirstContentEvidenceGuard? = nil,
+        nativeCausalMedia: Bool = false, nativeRateEvidence: NativeMediaRateEvidence? = nil) {
         self.activity = activity
         self.deadlineRateEvidence = deadlineRateEvidence
         self.isolationGuard = isolationGuard
+        self.nativeCausalMedia = nativeCausalMedia
+        self.nativeRateEvidence = nativeRateEvidence
         activityID = activity.begin(model: model)
     }
 
@@ -75,7 +84,8 @@ final class EnginePrefillReceipt: @unchecked Sendable {
         lock.withLock {
             guard sample == nil else { return }
             sample = Sample(usage: usage, at: .now, overlap: overlap,
-                deadlineRateEvidence: deadlineRateEvidence?.currentEpoch() == nil ? nil : deadlineRateEvidence)
+                deadlineRateEvidence: deadlineRateEvidence?.currentEpoch() == nil ? nil : deadlineRateEvidence,
+                nativeMediaRateEpoch: nativeRateEvidence?.completedEpoch())
         }
     }
 
@@ -220,8 +230,10 @@ struct EnginePerformanceMeasurements {
             rate.count = rates[name]!.count
             qualifiedRates[name] = QualifiedRate(postureEpoch: deadlinePostureEpoch, rate: rate)
         }
-        guard name == "isolated_prefill" || name == "contended_prefill" || name == "reuse_prefill" || name == "decode" else { return }
-        let key = Key(phase: name == "decode" ? "decode" : "prefill",
+        guard name == "isolated_prefill" || name == "contended_prefill" || name == "reuse_prefill"
+            || name == "decode" || name == "native_media_prefill" else { return }
+        let phase = name == "native_media_prefill" ? name : name == "decode" ? "decode" : "prefill"
+        let key = Key(phase: phase,
             prompt: Self.bucket(prompt), context: Self.bucket(context), cache: cache,
             contended: overlap.contended, otherModel: overlap.otherModel, concurrency: min(64, max(1, overlap.peakRequests)))
         if var rate = buckets[key] { rate.observe(tps, at: now, restart: restartEstimate); buckets[key] = rate }

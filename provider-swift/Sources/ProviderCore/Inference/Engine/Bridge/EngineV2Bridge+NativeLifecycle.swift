@@ -39,6 +39,7 @@ extension EngineV2Bridge {
         try transaction.validateRegisteredBridge(self)
         nativeTransactionID = transaction.id
         nativeTransaction = transaction
+        retainDeadlinePostureMonitoring()
     }
 
     /// Request admission only; not native completion or reclamation proof.

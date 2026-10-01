@@ -307,6 +307,47 @@ An unrelated `idle_shutdown` slot with no activity does not compete for work or
 require active-engine telemetry. Positive activity and local reservations still
 count; loading, crashed and unknown slot states remain conservative.
 
+### Native media target observations
+
+Native MiMo preparation expands media into its actual target-decoder prompt
+before deadline admission. A short text sample is not a measured media rate.
+`NativeMediaPrefillRates` retains at most 32 samples in each existing prompt
+size band, using the slowest unexpired rate only within the smallest-to-largest
+actually observed prompt range. Each sample expires after 120 seconds; new
+observations do not refresh older samples. Engine replacement resets the table.
+Only cold, unpacked, non-preempted target-prefill intervals with exclusive
+whole-Mac ownership and an unchanged nominal AC/Automatic posture enter it.
+Media encoder preparation and failed native drains invalidate isolated evidence.
+Native online observations require five seconds of stable nominal posture and
+actual retirement of earlier device work. They may start immediately after
+successful media preparation; they carry no 20-second recovery proof and never
+enter the reviewed text-calibration catalog. The text catalog retains its full
+20-second quiescence requirement. A late prepared/request drain failure marks
+the shared service budget unbounded at the failure transition, even when the
+earlier preparation activity has already finished.
+
+Submission captures one whole-Mac/posture snapshot shared by the prefill receipt
+and `EngineV2Bridge+MiMoDeadline.swift`; a missing snapshot cannot be upgraded
+between those consumers. The latter passes the incoming target's observation
+to the SDK. The SDK prices any pre-existing
+prefill at its original rate and any decode at its own rate. Missing, expired,
+out-of-range or invalidated media evidence is not replaced by a text prediction.
+These runtime observations do not populate the reviewed calibration catalog.
+
+When that table has no applicable observation, one owned native request can
+gather evidence under the same absolute first-content deadline. The SDK checks
+physical capacity, exactly one scheduler row, no in-flight step, no decode or
+mixed work, no adopted prefix, and the live whole-Mac guard. The provider allows
+at most one such request until actual retirement. Failed or ineligible attempts
+back off for 120 seconds per engine; an eligible target-prefill sample releases
+that backoff only at its owner's retirement, including an eligible ordinary
+request with no first-content deadline, so new shapes can build a fresh range.
+Busy, unowned, stale-posture or cooldown cases keep a capacity refusal;
+no deadline, memory, cancellation or trust check is disabled. The explicit SDK
+`unmeasuredNativeMedia` result records bounded work with unknown service time,
+not a zero-time prediction. Cancellation transfers retain the bootstrap owner
+until the existing retirement path releases the service allowance.
+
 ### Selection and reservations
 
 `selectRoutingCandidateWithAffinity`

@@ -2797,7 +2797,8 @@ retention. Run `python3 .github/scripts/test-threat-budget.py` for atomic spendi
 reservations over local HTTP, cache invalidation, selective escalation, cost
 reconciliation, partial-result persistence, split-diff citations on both sides,
 Sol 6.1 request parameters, compact delivery of oversized reports, and a
-zero-spend activation preflight covering signed storage and provider funding. Release
+zero-spend activation preflight covering signed storage, provider funding, and
+redaction of private funding details from public output. Release
 Integrity runs all four suites in normal CI, without real provider calls.
 Model findings and live API failures remain non-blocking in the separate
 [advisory review workflow](threat-model-review.md).

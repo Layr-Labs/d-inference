@@ -6,7 +6,7 @@
 - Reserve shared spending before every provider request; cap normal/deep attempts, PR/day, repository/day and the ten-PR pilot. Preserve partial findings and unknown-cost reservations after failures. Paid scanning defaults to disabled; maintainers can preconfigure activation before merge after state-writer and funding verification.
 - Keep findings citable across large diff fragments and publish a compact history link when the full report exceeds comment capacity.
 
-- Add a manual activation preflight that verifies signed state writes and provider funding without paid model calls or changes to the spending ledger.
+- Add a manual activation preflight that verifies signed state writes and provider funding without paid model calls or changes to the spending ledger. Support a repository-scoped App writer with short-lived tokens; keep private funding details out of public preflight logs.
 
 ## Unreleased — self-service bank payout migration
 

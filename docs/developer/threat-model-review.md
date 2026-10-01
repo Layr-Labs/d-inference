@@ -39,19 +39,24 @@ is **disabled by default**, including when legacy model variables remain set.
    with a maintainer-signed Git commit; never weaken the signature rule or
    overwrite an existing ledger.
 4. Confirm the workflow writer can update the state branch. If the built-in
-   Actions token is excluded by repository rules, supply Actions secret
-   `THREAT_REVIEW_STATE_TOKEN` using an authorized identity limited to this
-   repository with **Contents: read/write**. It is used only for state storage;
-   PR comments still use the built-in token. Do not weaken default-branch
-   protections. For the built-in Actions writer, a separately approved rule can
-   permit GitHub Actions only on the state branch while retaining signed-commit
-   and default-branch protections. Missing state or permission errors stop paid
-   calls. The code never mints credentials or changes repository rules.
+   Actions token is excluded by repository rules, use a dedicated GitHub App
+   installed only on this repository with **Contents: read/write**. Set its ID
+   in `THREAT_REVIEW_APP_ID` and its private key in Actions secret
+   `THREAT_REVIEW_APP_PRIVATE_KEY`. The pinned token action requests only this
+   repository and Contents write, then revokes the token when the job finishes.
+   With separate approval, allow that App through a rule restricted to the state
+   branch; preserve signed-commit and all other branch protections. GitHub does
+   not accept its built-in Actions integration as an installed bypass App.
+   An existing authorized writer can alternatively use
+   `THREAT_REVIEW_STATE_TOKEN`. The writer token is used only for state storage;
+   PR comments use the built-in token. Missing state or permission errors stop
+   paid calls. The workflow never creates Apps or changes repository rules.
 5. Run the offline checks below. Run **Actions → Threat Model Review (advisory)
    → Run workflow** with `preflight=true` on the reviewed branch. The preflight
    verifies a signed state write/read and available OpenRouter key/account funds
    without admitting a PR, changing the ledger, or calling a paid model. A failed
-   preflight reports storage and funding failures separately.
+   preflight prints a generic public failure; maintainers inspect branch-rule
+   insights and the provider console for private access/funding details.
 6. When authorized to start the pilot, set `THREAT_REVIEW_ENABLED=true`. This
    repository variable can be set before merge so activation takes effect as
    soon as the workflow lands on the default branch. It admits

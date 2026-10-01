@@ -903,7 +903,8 @@ tests against local HTTP fixtures; the live workflow uses a repository Actions
 secret and the trusted base checkout. Full PR scans read immutable Git blobs as
 data and batch complete changed-file text; they never build or execute PR code.
 Set the activation variable before merge after verifying the state writer with
-the manual, zero-spend `preflight` option.
+the manual, zero-spend `preflight` option. Repositories that restrict branch
+updates can configure a dedicated App writer with short-lived tokens.
 Sonnet 5.5 handles the first pass; selected Opus 5.5 and GPT-6.1 Sol reviews use
 the same OpenRouter key. Atomic budget reservations, cached analysis and durable
 reports live on a dedicated state branch. Paid scanning defaults to disabled;

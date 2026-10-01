@@ -2,14 +2,17 @@
 """Offline HTTP integration tests for budgets, reuse, escalation and delivery."""
 import base64
 import copy
+from contextlib import redirect_stdout
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
+import io
 import json
 from pathlib import Path
 import tempfile
+import runpy
 import threading
 import unittest
 from unittest.mock import patch
@@ -249,6 +252,17 @@ class PreflightTests(unittest.TestCase):
             self.limit = value
             with self.subTest(value=value), self.assertRaisesRegex(ReviewUnavailable, "funding response is invalid"):
                 preflight(self.service.state, "synthetic", self.funding)
+
+    def test_public_preflight_output_omits_funding_details(self):
+        output = io.StringIO()
+        with patch.dict("os.environ", {"GITHUB_REPOSITORY": "example/repo", "GH_TOKEN": "synthetic",
+                                       "OPENROUTER_API_KEY": "synthetic"}), redirect_stdout(output):
+            with patch("threat_review.preflight.check", side_effect=ReviewUnavailable("private funding detail")):
+                with self.assertRaises(SystemExit) as caught:
+                    runpy.run_path(str(Path(__file__).with_name("threat-review-preflight.py")), run_name="__main__")
+        self.assertEqual(caught.exception.code, 1)
+        self.assertIn("Preflight failed", output.getvalue())
+        self.assertNotIn("private funding detail", output.getvalue())
 
 
 class ScanTests(unittest.TestCase):

@@ -2819,6 +2819,31 @@ against a mock WebSocket coordinator while accepted work is held open.
 `TestRestartStatusReportsOwnerAuthorizationWithoutPublicGrant` checks explicit
 owner authorization while retaining runtime/security denials.
 
+## Experimental Autopilot integration
+
+Autopilot testbed suites explicitly set `ObserveOnly=false` for isolated live
+execution and start their controller before KV-backend verification
+(`e2e/testbed/suite.go`, `Suite.Start`). This is not the production default.
+That verification observes Autopilot-created slots and keeps the same strict
+backend check; it does not send a competing legacy `load_model` to an enrolled
+provider. This also covers CI lanes with `DARKBLOOM_TESTBED_EXPECT_KV_BACKEND` set.
+
+`e2e/autopilot_test.go` (`TestIntegration_AutopilotCachedBootstrapAndPause`)
+starts an isolated PostgreSQL coordinator and a real local Swift provider with
+explicit consent in its temporary test config. It verifies a durable intent,
+actual cached-model load, terminal heartbeat, inference, and operator pause.
+It never enrolls the operator's production provider. The normal testbed model
+must already be downloaded and the provider must have its source-matched Metal
+library. Run:
+
+```bash
+go test ./e2e -run TestIntegration_AutopilotCachedBootstrapAndPause -count=1 -timeout 10m
+```
+
+The request-shape, selected-model, revision/session, ledger-failure and donor-floor
+regressions also run in the coordinator/provider unit and race suites. Real
+production improvement remains a separate measured rollout result.
+
 ## Advisory threat-model review checks
 
 Run `python3 .github/scripts/test-threat-model-review.py` for the review input,

@@ -23,6 +23,9 @@ struct Start: AsyncParsableCommand {
     @Option(help: "Model ID to serve (repeatable, skips interactive picker).")
     var model: [String] = []
 
+    @Flag(inversion: .prefixedNo, help: "Enroll selected models in experimental Autopilot (shadow rollout by default; enrollment is not live activation).")
+    var autopilot: Bool?
+
     @Flag(help: "Serve all local models (skips interactive picker).")
     var all = false
 
@@ -107,6 +110,12 @@ struct Start: AsyncParsableCommand {
         var effectiveConfig = snapshot.config
         scheduleEdit?.draft.apply(to: &effectiveConfig)
         if !local { try effectiveConfig.schedule?.validate() }
+        if local {
+            if autopilot == true { throw ValidationError("Autopilot requires a network provider.") }
+            // A standalone local invocation does not inherit network residency
+            // restrictions or change the saved network enrollment.
+            effectiveConfig.backend.modelAutopilot.enabled = false
+        }
         if let idleTimeout {
             if let problem = IdleUnloadPolicy.validate(minutes: idleTimeout) {
                 printError("--idle-timeout: \(problem)")

@@ -171,6 +171,7 @@ and tests both historical-link handling and date-preserving, idempotent stamping
 | Coordinator env var or config default | `reference/configuration.md`; `operations/coordinator-deploy.md` if prod sets it |
 | Provider CLI command, flag, env var | `provider/cli-reference.md`; `reference/configuration.md` |
 | Routing / admission / scheduling constant or gate | `architecture/routing.md` or `architecture/scheduling.md` |
+| Experimental model Autopilot policy, rollout or enrollment (`coordinator/registry/autopilot*`, `coordinator/api/autopilot*`, provider runtime/CLI `Autopilot/`) | `architecture/model-autopilot.md`, `operations/model-autopilot.md`; apply the configuration, CLI, protocol and API rows for those surfaces too |
 | Trust level, attestation, enrollment, encryption | `architecture/security/*.md`; `provider/attestation.md`; `consumer/verification.md`; `threat-model.yaml` |
 | Pricing, ledger, payouts, referral | `architecture/billing.md`, `reference/pricing-model.md`, `consumer/billing.md` |
 | Store schema / migration | `architecture/storage.md` |

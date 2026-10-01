@@ -24,6 +24,7 @@ extension Start {
         // Offer account linking before the model picker.
         await offerInlineLogin(coordinatorURL: coordinatorURL)
 
+        let enableAutopilot = try resolveAutopilotChoice(config)
         let selectedModelIDs: [String]
 
         if !model.isEmpty {
@@ -43,13 +44,19 @@ extension Start {
                 snapshot: snapshot,
                 config: config,
                 coordinatorURL: coordinatorURL,
-                runtimeCapabilities: runtimeCapabilities
+                runtimeCapabilities: runtimeCapabilities,
+                autopilotSelection: enableAutopilot
             )
         }
 
         guard !selectedModelIDs.isEmpty else {
             printError("No models selected.")
             throw ExitCode.failure
+        }
+
+        if enableAutopilot {
+            try await verifyAutopilotSelection(selectedModelIDs, snapshot:snapshot,
+                coordinatorURL:coordinatorURL, runtimeCapabilities:runtimeCapabilities)
         }
 
         // Do not persist the schedule until model selection has succeeded.
@@ -76,15 +83,17 @@ extension Start {
                 fallbackConfig: config, body: setup)
         })
         defer { replacement.release() }
-        try await ServiceDrain.stopDrainedProvider()
-        try LaunchAgent.installAndStart(
-            coordinatorURL: coordinatorURL,
-            models: selectedModelIDs,
-            configPath: configPath,
-            localEndpoint: LaunchAgent.LocalEndpointOptions(
-                enabled: localEndpoint, port: port, bind: bind, noAuth: noAuth
+        try await Self.completeDaemonReplacement(autopilot: enableAutopilot, models: selectedModelIDs,
+            configPath: configOptions.config) {
+            try LaunchAgent.installAndStart(
+                coordinatorURL: coordinatorURL,
+                models: selectedModelIDs,
+                configPath: configPath,
+                localEndpoint: LaunchAgent.LocalEndpointOptions(
+                    enabled: localEndpoint, port: port, bind: bind, noAuth: noAuth
+                )
             )
-        )
+        }
 
         // Arm the crash-recovery watchdog (relaunches ~5 min after a crash;
         // `stop` disarms, `auto_restart = false` opts out — including
@@ -116,7 +125,12 @@ extension Start {
         for id in selectedModelIDs {
             print("    \(id)")
         }
-        print("  Memory:  \(IdleUnloadPolicy.describe(minutes: idleMinutes)) — `darkbloom idle` to change")
+        if enableAutopilot {
+            print("  Autopilot: enrolled (Experimental; shadow rollout by default)")
+            print("  Enrollment is not activation. Run `darkbloom autopilot status` for the current mode.")
+            print("  Manage: darkbloom autopilot status | pause | disable")
+        }
+        print("  Memory:  \(IdleUnloadPolicy.describe(minutes: idleMinutes)) - `darkbloom idle` to change")
         if localEndpoint {
             let shownURL = "http://\(bind == "0.0.0.0" ? "127.0.0.1" : bind):\(port)/v1"
             print("  Local:   \(shownURL) (unified mode — run `darkbloom local` for the API key)")

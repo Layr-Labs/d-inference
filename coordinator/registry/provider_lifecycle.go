@@ -7,9 +7,13 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/autopilot"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"nhooyr.io/websocket"
 )
+
+// DefaultProviderHeartbeatTimeout is the normal serving liveness window.
+const DefaultProviderHeartbeatTimeout = 90 * time.Second
 
 // Register adds a new provider to the registry, returning its assigned ID.
 // Provider-reported model inventory is preserved even when the current catalog
@@ -81,6 +85,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	}
 
 	p := &Provider{
+		ModelAutopilot:              autopilot.CloneState(msg.ModelAutopilot),
 		ID:                          id,
 		stateRestorePending:         r.store != nil,
 		Hardware:                    msg.Hardware,

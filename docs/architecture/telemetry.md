@@ -385,3 +385,19 @@ for populations, labels and reset semantics (`coordinator/api/cache_model_teleme
 - [`system-profiler.md`](system-profiler.md) — per-attempt `profile`, `request_profiles`, `fleet_snapshots`
 - [`request-outcome-observability.md`](request-outcome-observability.md) — outcome taxonomy behind the request metrics
 - [`scheduling.md`](scheduling.md), [`routing.md`](routing.md) — what the heartbeat fields decide
+
+## Autopilot observations
+
+`coordinator/api/autopilot_demand.go` (`beginAutopilotDemand`, `finishAutopilotDemand`)
+tracks one validated public logical request across attempts. Bounded model/shape
+buckets exclude account and intrinsically invalid failures while preserving
+capacity-related supply refusals. No prompt or consumer identity enters them.
+`coordinator/store/autopilot.go` (`AutopilotRecord`) defines durable command phase
+records. Shadow `proposed` records remain hypothetical and deduplicate unchanged
+decisions ([ledger semantics](storage.md#autopilot-operation-ledger)); they are
+not a per-tick time series. Controller summaries and
+tick logs report `observe_only` and distinguish `proposed` from `issued`
+(`coordinator/registry/autopilot_controller.go`, `modelAutopilotController.tick`).
+Live records capture intended/actual residents and transition timing; use the
+request-outcome ledger to evaluate completion and first-content effects. See
+[Autopilot](model-autopilot.md).

@@ -371,3 +371,31 @@ country-policy rollback and invalidates old unconfirmed quotes. Historical
 withdrawals retain their immutable destination and source data. Legacy Connect
 user IDs remain available for old payout events. The maintenance tool uses an
 existing pool through `StripeSettlementForMaintenance` without startup migrations.
+
+## Autopilot operation ledger
+
+`coordinator/store/postgres_autopilot.go` (`autopilotDDL`, `RecordAutopilot`)
+creates `autopilot_events`, keyed by `(command_id, phase)` with an indexed `at`
+timestamp and a bounded typed JSON record. Insert retries are idempotent. The
+ledger stores model/control metadata without prompts or free-form provider
+errors. A command intent is persisted before dispatch; failed writes prevent new
+changes and terminal observations remain queued for retry. Incomplete historical
+phases remain unresolved evidence, not an inferred rollback. Reads use bounded
+windows. Records currently have no automatic deletion; preservation and archive
+policy can be added independently. `MemoryStore` provides equivalent test/dev
+semantics without restart durability. See [Autopilot](model-autopilot.md).
+
+Shadow `proposed` phases form a decision ledger, not a per-tick time series. Their
+stable SHA-256 identity covers the provider session, consent revision,
+workload, reason, target, unload set and prior actual resident/selected state.
+Capacity sequence, time and predicted benefit are excluded, so unchanged
+decisions reuse the same key. Store idempotency retains the first record, including
+its timestamp and benefit; distinct state, session or revision decisions remain
+retained. Live command UUIDs are unchanged (`coordinator/registry/autopilot_events.go`,
+`autopilotProposalID`; `RecordAutopilot`). This deduplication is not an
+absolute database retention cap.
+
+An unchanged decision can age outside the admin endpoint's recent-events window
+while the current tick summary remains fresh. Proposals are not dispatched
+commands, residency changes or live capacity evidence; see the
+[API contract](../reference/api-contracts.md#experimental-model-autopilot).

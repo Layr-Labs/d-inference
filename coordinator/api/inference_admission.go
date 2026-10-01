@@ -260,6 +260,16 @@ func preflightScanWait(deadline time.Duration) time.Duration {
 	return wait
 }
 
+func (p inferenceAdmissionParams) requestTraitsForModel(model string) registry.RequestTraits {
+	if p.traitsForModel != nil {
+		return p.traitsForModel(model)
+	}
+	if p.traits != nil {
+		return *p.traits
+	}
+	return registry.RequestTraits{HasTools: p.hasTools}
+}
+
 // runInferenceAdmission performs the shared routing/capacity preflight for both
 // inference handlers. On a rejection it writes the exact terminal response
 // (refunding the reservation) and returns handled=true; on success it returns
@@ -268,6 +278,8 @@ func preflightScanWait(deadline time.Duration) time.Duration {
 func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, parsed map[string]any, p inferenceAdmissionParams) (string, bool) {
 	markPublicModelDemand(r, p)
 	model := p.model
+	armAutopilotDemand(r, p)
+	defer func() { setAutopilotDemandModel(r, model, p.requestTraitsForModel(model)) }()
 	publicModel := p.publicModel
 	refundReservation := p.refundReservation
 	requestTraits := func() registry.RequestTraits {
@@ -277,10 +289,7 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 		return registry.RequestTraits{HasTools: p.hasTools}
 	}
 	modelTraits := func(candidateModel string) registry.RequestTraits {
-		if p.traitsForModel != nil {
-			return p.traitsForModel(candidateModel)
-		}
-		return requestTraits()
+		return p.requestTraitsForModel(candidateModel)
 	}
 	fallbackTraits := func(currentModel string) registry.RequestTraits {
 		target, ok := s.registry.AliasTarget(publicModel)

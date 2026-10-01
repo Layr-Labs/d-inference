@@ -2880,6 +2880,8 @@ func (s *Server) routes() {
 	// as a pseudo-account; handleAdminDrain then authorizes via isAdminAuthorized
 	// (admin key OR Privy admin). Registered before the /v1/ catch-all. Note:
 	// /readyz stays unauthenticated. See drain.go (DAR-327 Phase 1).
+	s.mux.HandleFunc("GET /v1/admin/autopilot", s.requireAuth(s.handleAdminAutopilot))
+	s.mux.HandleFunc("POST /v1/admin/autopilot", s.requireAuth(s.handleAdminAutopilot))
 	s.mux.HandleFunc("POST /v1/admin/drain", s.requireAuth(s.handleAdminDrain))
 
 	// Routing telemetry (admin-gated; metadata only — no prompt/response content).
@@ -3518,8 +3520,10 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 			ctx = context.WithValue(ctx, requestMetaKey{}, meta)
 		}
 		r = r.WithContext(ctx)
+		r, autopilotDemand := s.beginAutopilotDemand(r, start)
 
 		next.ServeHTTP(sw, r)
+		s.finishAutopilotDemand(r, autopilotDemand, sw.status)
 
 		dur := time.Since(start)
 

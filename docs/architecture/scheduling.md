@@ -860,3 +860,16 @@ measurements before pricing contention. The provider's final atomic check uses
 actual queue/cache state and the original deadline. See
 [first-content routing](first-content-routing.md) for the measured-cell gate and
 fallback behavior; this does not relax activation, KV or context safeguards.
+
+## Experimental selected-model residency
+
+`coordinator/registry/autopilot/planner.go` (`Plan`) adds guarded
+capacity moves for explicitly enrolled providers. The controller splits logical
+work by request shape, prefers positive-benefit additions, protects all donor
+contributions during whole-device transitions, and revalidates at reservation.
+The default shadow rollout computes hypothetical plans without reservations,
+fences or residency commands. Startup opt-in records consent, not active control;
+shadow/waiting consent retains ordinary policy. Only an explicit live rollout
+can activate control. Active/paused providers accept network work only on
+confirmed residents. See [Autopilot](model-autopilot.md) for the
+session/selection lease, floors, quiet unloading and recovery invariants.

@@ -40,6 +40,7 @@ const keySpendRetentionDays = 40
 
 // MemoryStore manages API keys, usage records, payments, and balances in memory.
 type MemoryStore struct {
+	autopilotRecords          map[string]AutopilotRecord
 	modelTokenProviderCarries map[string]int64
 	modelTokenPromotions      map[string]ModelTokenPromotion
 	modelTokenGrants          map[string]map[string]ModelTokenGrant

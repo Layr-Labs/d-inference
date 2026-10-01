@@ -96,15 +96,22 @@ struct ThroughputSweepNotesTests {
         #expect(outcome.constructionFailure == nil)
         #expect(outcome.requestedBatchSizes.isEmpty)
 
-        #expect(!outcome.record(nil))
-        #expect(outcome.record("paged"))
-        #expect(!outcome.record("paged"))
-        #expect(outcome.record("contiguous (fallback: preflight)"))
+        // `#expect` cannot call a mutating method, so record first.
+        let recorded = [
+            outcome.record(nil),
+            outcome.record("paged"),
+            outcome.record("paged"),
+            outcome.record("contiguous (fallback: preflight)"),
+        ]
+        #expect(recorded == [false, true, false, true])
         #expect(outcome.resolvedBackends == ["paged", "contiguous (fallback: preflight)"])
 
-        #expect(outcome.recordUnmeasured(batchSize: 2, reason: "first"))
-        #expect(!outcome.recordUnmeasured(batchSize: 2, reason: "second"))
-        #expect(outcome.recordUnmeasured(batchSize: 4, reason: "third"))
+        let unmeasured = [
+            outcome.recordUnmeasured(batchSize: 2, reason: "first"),
+            outcome.recordUnmeasured(batchSize: 2, reason: "second"),
+            outcome.recordUnmeasured(batchSize: 4, reason: "third"),
+        ]
+        #expect(unmeasured == [true, false, true])
         #expect(outcome.unmeasuredCells.map(\.batchSize) == [2, 4])
         #expect(outcome.unmeasuredCells.map(\.reason) == ["first", "third"])
     }

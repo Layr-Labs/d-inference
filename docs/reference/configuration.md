@@ -527,7 +527,7 @@ in `provider-swift/Sources/darkbloom/Scheduling/ScheduleSettings.swift`).
 Both `schedule` and `start --schedule` support `--config`. Edits require the
 next start/restart; they are not a live daemon update. Availability applies to
 coordinator serving and attached `--local-endpoint`, not standalone `--local`
-(`Start.run` in `provider-swift/Sources/darkbloom/StartCommand.swift`).
+(`Start.run` in `provider-swift/Sources/darkbloom/Start/StartCommand.swift`).
 There is no saved timezone or wake-up setting: keep the Mac awake and use its
 local timezone. [Scheduling architecture](../architecture/scheduling.md#provider-availability-windows)
 defines DST adjustment, merged windows, full-week coverage and fail-closed parsing.

@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Offline test: when brew is already on PATH, setup-macos-homebrew.sh exports
-# its environment and downloads nothing.
+# Offline tests for existing Homebrew and installer cleanup after success/failure.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -46,5 +45,41 @@ if env -u GITHUB_ENV PATH="$prefix/bin:$TEST_ROOT/tools:$PATH" GITHUB_PATH="$git
   echo 'setup accepted a missing GITHUB_ENV' >&2
   exit 1
 fi
+
+# Exercise the real install function without touching system Homebrew. The
+# installer exits in its own shell; cleanup runs after the function's locals
+# have left scope. Include spaces and a quote in RUNNER_TEMP to pin escaping.
+awk '/^if ! brew_bin=/{exit} {print}' "$ROOT/scripts/setup-macos-homebrew.sh" > "$TEST_ROOT/install-functions.sh"
+printf '#!/usr/bin/env bash\necho Darwin\n' > "$TEST_ROOT/tools/uname"
+printf '#!/usr/bin/env bash\ncat >/dev/null\n' > "$TEST_ROOT/tools/shasum"
+cat > "$TEST_ROOT/tools/curl" <<'FAKE'
+#!/usr/bin/env bash
+set -eu
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = --output ]; then
+    printf '#!/usr/bin/env bash\nexit %s\n' "$INSTALLER_EXIT" > "$2"
+    printf '%s\n' "$2" > "$INSTALLER_RECORD"
+    exit 0
+  fi
+  shift
+done
+exit 2
+FAKE
+chmod +x "$TEST_ROOT/tools/"{uname,shasum,curl}
+for installer_exit in 0 23; do
+  runner_temp="$TEST_ROOT/install '$installer_exit"
+  mkdir -p "$runner_temp"
+  installer_record="$TEST_ROOT/installer-$installer_exit"
+  if PATH="$TEST_ROOT/tools:$PATH" RUNNER_TEMP="$runner_temp" \
+    GITHUB_PATH="$github_path" GITHUB_ENV="$github_env" \
+    INSTALLER_EXIT="$installer_exit" INSTALLER_RECORD="$installer_record" \
+    bash -c 'source "$1"; install_brew' _ "$TEST_ROOT/install-functions.sh"; then
+    actual_status=0
+  else
+    actual_status=$?
+  fi
+  test "$actual_status" -eq "$installer_exit"
+  test ! -e "$(cat "$installer_record")"
+done
 
 echo 'setup-macos-homebrew: ok'

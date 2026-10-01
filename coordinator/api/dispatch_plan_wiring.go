@@ -86,6 +86,7 @@ func (d *dispatchState) dispatchProviderWith(
 		d.isResponsesAPI, d.policy, timing, d.serviceReservation, d.cachePlan,
 		exclude, d.attempt, d.profile, backupOf, recordRoute, d.noteProviderDispatched, fullScan,
 		func(pr *registry.PendingRequest, ids []string) (*registry.Provider, registry.RoutingDecision, *registry.DispatchPlan) {
+			pr.NonStreamingResponseBudget = d.s.newNonStreamingResponseBudget(d.stream)
 			d.configureFirstContentReservation(pr, backupOf != "")
 			return reserve(pr, ids)
 		},

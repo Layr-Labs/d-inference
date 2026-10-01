@@ -12,6 +12,10 @@ import (
 // ServerConfig holds coordinator HTTP server and URL configuration applied
 // when NewServer constructs an instance.
 type ServerConfig struct {
+	// Non-positive values retain the safe defaults; limits cannot be disabled.
+	NonStreamingResponseMaxBytes  int
+	NonStreamingResponseMaxChunks int
+
 	AppAttestShadow     AppAttestShadowConfig
 	Port                string
 	ConsoleURL          string
@@ -74,6 +78,9 @@ type BaseRewardsConfig struct {
 // ReadServerConfig reads server configuration from environment variables.
 func ReadServerConfig() ServerConfig {
 	return ServerConfig{
+		NonStreamingResponseMaxBytes:  env.EnvInt(env.EnvPrefix+"_NONSTREAM_RESPONSE_MAX_BYTES", defaultNonStreamingResponseMaxBytes),
+		NonStreamingResponseMaxChunks: env.EnvInt(env.EnvPrefix+"_NONSTREAM_RESPONSE_MAX_CHUNKS", defaultNonStreamingResponseMaxChunks),
+
 		AppAttestShadow:         readAppAttestShadowConfig(),
 		Port:                    env.EnvOr(env.EnvPrefix+"_PORT", "8080"),
 		ConsoleURL:              os.Getenv(env.EnvPrefix + "_CONSOLE_URL"),

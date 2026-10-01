@@ -17,10 +17,15 @@ func (s *MemoryStore) AccountEarningsWindows(accountID string, now time.Time) (A
 		if e.AccountID != accountID || e.CreatedAt.Before(cutoff7d) {
 			continue
 		}
-		w.Last7dJobs++
+		isJob := e.Model != "base_reward"
+		if isJob {
+			w.Last7dJobs++
+		}
 		w.Last7dMicroUSD += e.AmountMicroUSD
 		if !e.CreatedAt.Before(cutoff24h) {
-			w.Last24hJobs++
+			if isJob {
+				w.Last24hJobs++
+			}
 			w.Last24hMicroUSD += e.AmountMicroUSD
 		}
 	}

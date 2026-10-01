@@ -26,9 +26,9 @@ describe("CardEarningsRow", () => {
     expect(screen.getByText("—")).toBeInTheDocument();
   });
 
-  it("keeps the operational per-box stats (Jobs, Tokens, Avg TTFT)", () => {
+  it("keeps the operational per-box stats (Requests, Tokens, Avg TTFT)", () => {
     render(<CardEarningsRow provider={makeProvider()} />);
-    expect(screen.getByText("Jobs")).toBeInTheDocument();
+    expect(screen.getByText("Requests")).toBeInTheDocument();
     expect(screen.getByText("120")).toBeInTheDocument();
     expect(screen.getByText("118 succeeded · 2 failed")).toBeInTheDocument();
     expect(screen.queryByRole("meter")).toBeNull();

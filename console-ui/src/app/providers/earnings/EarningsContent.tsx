@@ -41,7 +41,8 @@ interface EarningsResponse {
   total_usd: string;
   count: number;
   recent_count: number;
-  history_limit: number;
+  history_limit?: number;
+  work_usd?: string;
   available_balance_micro_usd: number;
   available_balance_usd: string;
   withdrawable_balance_micro_usd: number;
@@ -144,6 +145,9 @@ export default function EarningsContent() {
   const creditsBalance = totalBalance - withdrawableBalanceMicro;
   const totalJobs = data?.count || 0;
   const recentCount = data?.recent_count ?? data?.earnings.length ?? 0;
+  const workUsd = data?.work_usd ?? "";
+  const hasWork = data?.work_usd !== undefined && data?.work_usd !== null;
+  const historyLimit = data?.history_limit ?? 100;
 
   const minWithdrawUsd = (payouts.status?.min_withdraw_micro_usd ?? 1_000_000) / 1_000_000;
   const availableUsd = withdrawableBalanceMicro / 1_000_000;
@@ -158,7 +162,7 @@ export default function EarningsContent() {
       </div>
 
       {/* Stats cards */}
-      <div className="grid grid-cols-3 gap-4">
+      <div className={`grid ${hasWork ? "grid-cols-3" : "grid-cols-2"} gap-4`}>
         <div className="rounded-xl bg-bg-secondary shadow-sm p-5">
           <div className="flex items-center gap-2 mb-2">
             <DollarSign size={16} className="text-accent-green" />
@@ -177,15 +181,17 @@ export default function EarningsContent() {
             {totalJobs}
           </p>
         </div>
+        {hasWork && (
         <div className="rounded-xl bg-bg-secondary shadow-sm p-5">
           <div className="flex items-center gap-2 mb-2">
             <TrendingUp size={16} className="text-accent-brand" />
             <p className="text-xs text-text-tertiary">Avg per Job</p>
           </div>
           <p className="text-2xl font-bold text-text-primary">
-            ${totalJobs > 0 ? (parseFloat(totalEarned) / totalJobs).toFixed(6) : "0.00"}
+            ${totalJobs > 0 ? (parseFloat(workUsd) / totalJobs).toFixed(6) : "0.00"}
           </p>
         </div>
+        )}
       </div>
 
       {/* Payout coverage caveat — set expectations before bank linking */}
@@ -231,9 +237,9 @@ export default function EarningsContent() {
       {/* Earnings history */}
       <div>
         <h3 className="text-sm font-semibold text-text-primary mb-3">Recent Activity</h3>
-        {totalJobs > recentCount && (
+        {recentCount > 0 && recentCount >= historyLimit && (
           <p className="text-xs text-text-tertiary mb-3">
-            Showing the latest {recentCount} of {totalJobs} payouts.
+            Showing the latest {recentCount} payouts.
           </p>
         )}
         <div className="rounded-xl bg-bg-secondary shadow-sm overflow-hidden">
@@ -241,7 +247,7 @@ export default function EarningsContent() {
             <table className="w-full">
               <thead>
                 <tr className="border-b border-border-dim">
-                  <th className="text-left text-xs text-text-tertiary font-medium px-4 py-3">Model</th>
+                  <th className="text-left text-xs text-text-tertiary font-medium px-4 py-3">Source</th>
                   <th className="text-left text-xs text-text-tertiary font-medium px-4 py-3">Earned</th>
                   <th className="text-left text-xs text-text-tertiary font-medium px-4 py-3">Tokens</th>
                   <th className="text-left text-xs text-text-tertiary font-medium px-4 py-3">Time</th>
@@ -251,7 +257,7 @@ export default function EarningsContent() {
                 {data.earnings.map((e) => (
                   <tr key={e.id} className="border-b border-border-dim/50 last:border-0">
                     <td className="px-4 py-3 text-sm font-mono text-text-primary">
-                      {e.model.split("/").pop()}
+                      {e.model === "base_reward" ? "Base reward" : e.model.split("/").pop()}
                     </td>
                     <td className="px-4 py-3 text-sm font-mono text-accent-green">
                       +${(e.amount_micro_usd / 1_000_000).toFixed(6)}

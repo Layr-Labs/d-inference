@@ -521,9 +521,9 @@ type ProviderEarningsStore interface {
 	GetAccountEarningsSummary(accountID string) (ProviderEarningsSummary, error)
 
 	// AccountEarningsWindows returns the account's last-24h and last-7d row
-	// count and micro-USD sum as of now, aggregated by the store over the
-	// 7 d window only. Every provider_earnings row counts (base_reward rows
-	// included), matching the dashboard header's historical semantics.
+	// job count and micro-USD sum as of now, aggregated by the store over the
+	// 7 d window only. Job counts exclude base_reward rows (inference jobs
+	// only, matching the lifetime count); the micro-USD sums include them.
 	AccountEarningsWindows(accountID string, now time.Time) (AccountEarningsWindows, error)
 
 	// CreditProviderAccount atomically credits a linked provider account and

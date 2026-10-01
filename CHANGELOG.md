@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — one meaning of jobs on the provider console
+
+- The 24 h and 7 d job counts in the earnings summary now exclude `base_reward` rows, matching the lifetime count; micro-USD sums still include them. The machine card stat that shows the reputation counter is labelled "Requests". The earnings page hides "Avg per Job" until the response carries `work_usd`, labels the activity column "Source" with base rewards shown as "Base reward", and no longer prints the inference-only count in its "latest payouts" caption.
+
 ## Unreleased — MiMo SSD prefix-cache hits reuse the prefix
 
 - Fix: every native MiMo V2.6 SSD prefix-cache hit was discarded. The bridge stages a checkpoint under a placeholder engine request ID and mints the real ID just before submit, and the SDK's native import check compared engine IDs, so each staged checkpoint was refused (`unsupportedConsumer`) and the request prefilled its whole prompt again. The pinned mlx-swift-lm binds a stage to its submission receipt instead. On a 256 GiB M3 Ultra, a repeated 6K-token prompt now reaches its first token in 4.5 s instead of 13.1 s, and a 12K-token prompt in 4.6 s instead of 27.3 s, with byte-identical output (MTP off and auto).

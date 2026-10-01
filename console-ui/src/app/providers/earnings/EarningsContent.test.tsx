@@ -73,6 +73,8 @@ function earning(id: number, model: string, micro: number) {
   };
 }
 
+const AVG = "Avg per Job";
+
 function response(overrides: Record<string, unknown> = {}) {
   return {
     account_id: "acct",
@@ -115,25 +117,25 @@ describe("EarningsContent", () => {
   it("hides Avg per Job when the response has no work_usd", async () => {
     await renderLoaded(response());
     expect(screen.getByText("Total Earned")).toBeInTheDocument();
-    expect(screen.queryByText("Avg per Job")).toBeNull();
+    expect(screen.queryByText(AVG)).toBeNull();
   });
 
   it("hides Avg per Job when work_usd is empty or not a number", async () => {
     await renderLoaded(response({ work_usd: "", count: 3 }));
-    expect(screen.queryByText("Avg per Job")).toBeNull();
+    expect(screen.queryByText(AVG)).toBeNull();
     expect(screen.queryByText(/NaN/)).toBeNull();
   });
 
   it("shows Avg per Job as $0.000000 when there are no jobs", async () => {
     await renderLoaded(response({ work_usd: "0.000000", count: 0 }));
-    expect(screen.getByText("Avg per Job")).toBeTruthy();
+    expect(screen.getByText(AVG)).toBeTruthy();
     expect(screen.getByText("$0.000000")).toBeTruthy();
   });
 
   it("shows Avg per Job as work_usd / count to 6 decimals", async () => {
     // total includes base rewards; the average must use work_usd only.
     await renderLoaded(response({ work_usd: "2.000000", count: 3 }));
-    expect(screen.getByText("Avg per Job")).toBeInTheDocument();
+    expect(screen.getByText(AVG)).toBeInTheDocument();
     expect(screen.getByText("$0.666667")).toBeInTheDocument();
   });
 

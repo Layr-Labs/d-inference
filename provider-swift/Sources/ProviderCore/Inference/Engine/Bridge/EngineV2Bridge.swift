@@ -288,6 +288,7 @@ public actor EngineV2Bridge {
     var performanceUpdates: EnginePerformanceUpdates?
     var performanceMeasurements = EnginePerformanceMeasurements()
     var prefillEvidenceRecovery = PrefillEvidenceRecovery()
+    var mimoCalibration = MimoCalibrationState()
     var prefillRequestsTotal: Int64 = 0
     var generatedTokensTotal: Int64 = 0
     var generationRequestsTotal: Int64 = 0

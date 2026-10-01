@@ -141,6 +141,64 @@ both measurements: cache reuse can leave isolated-prefill evidence unchanged, as
 can an unchanged legacy EWMA. Exploration offers an opportunity, not guaranteed
 selection or recovery.
 
+### Automatic MiMo calibration
+
+After native MiMo slot publication and on provider capacity ticks,
+`refreshMimoCalibration` asks the loaded bridge to measure its actual serving
+configuration. Calibration runs only on an idle Mac in nominal thermal state
+outside Low Power Mode, with no reviewed deadline profile. The existing engine,
+MTP configuration, context limit, memory gates and concurrency ceiling are used;
+calibration never certifies a higher concurrency or changes a memory floor.
+
+`MimoCalibrationPolicy.bootstrap` excludes one warmup, measures two short and
+two longer text cells, sweeps the supported concurrent widths, and finishes with
+a solo cell. Prompts contain built-in prose and code, not customer content; the
+complete chat template is rendered to at most 128 warmup, 512 short or 4,096
+longer prepared tokens. Measured cells request at most 32 output tokens, with
+prefix caching disabled. Longer/batched cells require recent phase rates whose
+serialized-work estimate fits `maximumGroupSeconds` (`15.0`); otherwise they
+are skipped. Context/KV refusals remain authoritative. The group timer cancels
+actual requests rather than fabricating retirement. Solo short/long/short probes
+refresh an idle engine when either phase is older than `refreshAge` (`.seconds(90)`),
+with the same affordability gate on the longer cell. Failed
+attempts back off `failureBackoff` (`.seconds(120)`), interruptions
+`interruptionBackoff` (`.seconds(30)`). Engine replacement starts a new epoch.
+
+`IdleCalibrationCoordinator` prevents another calibration while a foreground
+request prepares or admits. A request on any loaded model cancels the existing
+probe and waits for its native retirement before acquiring service/KV. The
+request's original first-content clock continues during that wait. Expiry or
+cancellation at retirement records the ordinary deadline verdict before any
+service/KV admission. Unload and
+shutdown stop the calibration; no background task can retain retired weights.
+
+Only completed, uncached, isolated calibration receipts seed ordinary phase
+rates. They replace the previous estimate while preserving monotonic producer
+counts and the engine epoch; subsequent serving observations resume EWMA smoothing.
+Warmup is excluded; batched observations populate workload buckets with
+measured `concurrent_requests` and do not overwrite solo admission rates.
+Peak overlap is not proof of fused GPU batch width. Fresh cold isolated
+measurements in the matching prompt-size bucket cap the aggregate prefill
+projection in both coordinator and provider; they do not grant independent
+freshness or extrapolate short prompts into longer domains.
+Calibration output, requests and prefill tokens are excluded from served-work
+counters and delivered/end-to-end observations. Physical in-flight work stays
+visible in capacity until real retirement. This does not remove deadline or
+actual-capacity 429s: it supplies fresh evidence through the existing event
+heartbeats so idle machines can be selected before receiving customer traffic.
+
+```mermaid
+flowchart TD
+    A["Native MiMo published / capacity tick"] --> B["startMimoCalibrationIfNeeded"]
+    B --> C{"Mac idle and evidence needs refresh?"}
+    C -->|Yes| D["Loaded engine: warmup, cold text, bounded batches"]
+    D --> E["Real phase receipts and workload buckets"]
+    E --> F["Performance refresh → heartbeat → routing"]
+    G["Customer request on any model"] --> H["IdleCalibrationCoordinator.beginForeground"]
+    H --> I["Cancel probe and await actual retirement"]
+    I --> J["Ordinary admission on original deadline"]
+```
+
 ### Provider recovery of expired text prefill evidence
 
 Native engines with generation-bound retirement support can renew an expired
@@ -386,6 +444,8 @@ does not represent a random sample of all outcomes.
 | Request retry and terminal ownership | `coordinator/api/dispatch.go` — `dispatchState` |
 | Persisted forecast evidence | `coordinator/api/profiler_record.go` — `decisionJSON` |
 | Native text measurement recovery | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+PrefillRecovery.swift` — `canRecoverPrefillEvidence`; `provider-swift/Sources/ProviderCore/Inference/Performance/PrefillEvidenceRecovery.swift` — `PrefillEvidenceRecovery` |
+| Automatic MiMo calibration and customer preemption | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+MimoCalibration.swift` — `startMimoCalibrationIfNeeded`; `provider-swift/Sources/ProviderCore/Inference/Performance/IdleCalibrationCoordinator.swift` — `beginForeground` |
+| Conservative prompt-size evidence | `coordinator/registry/prefill_workload_rates.go` — `capPrefillByWorkload`; `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EnginePerformanceMeasurements.swift` — `freshIsolatedPrefillRate` |
 
 ## Related
 

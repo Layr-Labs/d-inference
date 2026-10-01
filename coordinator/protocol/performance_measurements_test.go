@@ -38,3 +38,18 @@ func TestPerformanceMeasurementsOptionalWire(t *testing.T) {
 		t.Fatal("metadata omitted")
 	}
 }
+
+func TestMimoCalibrationConcurrencyWireIsOptional(t *testing.T) {
+	legacy, err := json.Marshal(PerformanceWorkloadBucket{})
+	if err != nil || strings.Contains(string(legacy), "concurrent_requests") {
+		t.Fatalf("legacy bucket invented concurrency: %s (%v)", legacy, err)
+	}
+	var bucket PerformanceWorkloadBucket
+	if err := json.Unmarshal([]byte(`{"phase":"decode","concurrent_requests":4}`), &bucket); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(bucket)
+	if err != nil || bucket.ConcurrentRequests != 4 || !strings.Contains(string(encoded), `"concurrent_requests":4`) {
+		t.Fatalf("measured concurrency lost in round trip: %s (%v)", encoded, err)
+	}
+}

@@ -9,6 +9,7 @@ type PerformanceRateObservation struct {
 }
 
 type PerformanceWorkloadBucket struct {
+	ConcurrentRequests int `json:"concurrent_requests,omitempty"`
 	// native_media_prefill describes completed native target-decoder work,
 	// excluding encoder preparation. It is diagnostic, never a text rate.
 	Phase              string                     `json:"phase"`

@@ -100,7 +100,7 @@ extension EngineV2Bridge {
         let deliveredSeconds = state.firstTokenAt.map { WedgeMonitor.seconds(now - $0) } ?? 0
         let deliveredTokens = max(0, completion - state.firstEmissionTokens)
         let deliveredTps = deliveredSeconds > 0 ? Double(deliveredTokens) / deliveredSeconds : 0
-        recordPerformanceFinish(state: state, usage: usage, completion: completion,
+        recordPerformanceFinish(id: id, state: state, usage: usage, completion: completion,
             deliveredTps: deliveredTps, now: now)
         return (prompt, completion, tps)
     }
@@ -150,7 +150,7 @@ extension EngineV2Bridge {
             receipt.end()
         }
         if let state = active.removeValue(forKey: id) {
-            recordGenerationWork(completion: state.completionTokens)
+            recordGenerationWork(completion: state.completionTokens, requestID: id)
         }
         idMap.removeValue(forKey: id)
     }

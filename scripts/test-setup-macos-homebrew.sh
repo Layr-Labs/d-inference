@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Offline test: when brew is already on PATH, setup-macos-homebrew.sh exports
-# its environment and downloads nothing.
+# Offline tests for setup-macos-homebrew.sh:
+# 1. brew is already on PATH: export its environment and download nothing.
+# 2. brew is missing: run a local fake installer through to script exit, so the
+#    EXIT trap runs after install_brew has returned.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -46,5 +48,54 @@ if env -u GITHUB_ENV PATH="$prefix/bin:$TEST_ROOT/tools:$PATH" GITHUB_PATH="$git
   echo 'setup accepted a missing GITHUB_ENV' >&2
   exit 1
 fi
+
+# Install path. PATH holds only system tools and stubs, so no real brew is found.
+install_prefix="$TEST_ROOT/installed"
+runner_temp="$TEST_ROOT/runner-temp"
+mkdir -p "$TEST_ROOT/stubs" "$runner_temp"
+# The install path runs only on macOS; let it run on the Linux CI runner too.
+printf '#!/bin/sh\necho Darwin\n' > "$TEST_ROOT/stubs/uname"
+chmod +x "$TEST_ROOT/stubs/uname"
+
+fake_installer="$TEST_ROOT/install.sh"
+cat > "$fake_installer" <<FAKE
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'NONINTERACTIVE=%s HOMEBREW_NO_ANALYTICS=%s\n' "\$NONINTERACTIVE" "\$HOMEBREW_NO_ANALYTICS" > "$TEST_ROOT/installer-ran"
+mkdir -p "$install_prefix/bin"
+cp "$prefix/bin/brew" "$install_prefix/bin/brew"
+sed -i.bak "s|$prefix|$install_prefix|g" "$install_prefix/bin/brew"
+rm -f "$install_prefix/bin/brew.bak"
+FAKE
+fake_sha256=$(shasum -a 256 "$fake_installer" | cut -d' ' -f1)
+
+run_install() {
+  env PATH="$TEST_ROOT/stubs:/usr/bin:/bin" \
+    GITHUB_PATH="$github_path" GITHUB_ENV="$github_env" RUNNER_TEMP="$runner_temp" \
+    SETUP_MACOS_HOMEBREW_TEST=1 \
+    SETUP_MACOS_HOMEBREW_INSTALLER_URL="file://$fake_installer" \
+    SETUP_MACOS_HOMEBREW_INSTALLER_SHA256="$1" \
+    SETUP_MACOS_HOMEBREW_LOCATIONS="$install_prefix/bin/brew" \
+    "$ROOT/scripts/setup-macos-homebrew.sh"
+}
+
+# A wrong checksum must stop the step before the installer runs.
+if run_install "$(printf '0%.0s' {1..64})" >/dev/null 2>&1; then
+  echo 'setup accepted an installer with the wrong SHA-256' >&2
+  exit 1
+fi
+[ ! -e "$TEST_ROOT/installer-ran" ]
+
+: > "$github_path"
+: > "$github_env"
+if ! install_out=$(run_install "$fake_sha256" 2>&1); then
+  printf 'install path failed:\n%s\n' "$install_out" >&2
+  exit 1
+fi
+grep -Fxq 'NONINTERACTIVE=1 HOMEBREW_NO_ANALYTICS=1' "$TEST_ROOT/installer-ran"
+grep -Fxq "HOMEBREW_PREFIX=$install_prefix" "$github_env"
+grep -Fxq "$install_prefix/bin" "$github_path"
+# The EXIT trap removed the downloaded installer.
+[ -z "$(ls -A "$runner_temp")" ]
 
 echo 'setup-macos-homebrew: ok'

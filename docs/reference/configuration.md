@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-01
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -427,17 +427,54 @@ narrower architecture and physical memory constraints. `darkbloom status` and
 
 Startup loading is independent of the idle-unload policy. The default
 preloads selected models on coordinator-connected and standalone `--local`
-starts; an explicit list takes precedence. All loads retain the normal memory
-and slot admission checks, and a failed preload remains request-loadable.
+starts and at each scheduled window opening, never before that opening; an
+explicit list takes precedence within the selected serving set. All loads retain
+the normal memory and slot admission checks, and a failed preload remains
+request-loadable. The [availability wizard](../provider/cli-reference.md#darkbloom-schedule)
+sets the existing `startup_preload` key, not a separate scheduling preload key.
 
 | `provider.toml` key | Default | Effect and reader |
 |---|---|---|
-| `[backend] startup_preload` | `true` | Enable startup loading in `ProviderLoop.runStartupPreloadGate` and `Start.runLocalStandalone`; `false` disables it in both modes (`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `BackendSettings`). |
+| `[backend] startup_preload` | `true` | Enable startup/window-opening loading in `ProviderLoop.runStartupPreloadGate` and `Start.runLocalStandalone`; wizard on-demand mode sets `false`, skipping preload but not coordinator load commands or request-triggered loads (`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `BackendSettings`). |
 | `[backend] preload_models` | `[]` | Explicit startup order when nonempty; otherwise selected models, with the previously loaded set first on coordinator starts (`ProviderLoop.startupPreloadPlan`, `StandaloneServer.startupPreloadPlan`). |
 | `[backend] startup_preload_timeout_secs` | `120` | Maximum delay before coordinator registration; remaining loads continue in the background. Standalone `--local` finishes its preload before opening the listener (`ProviderLoop.runStartupPreloadGate`, `Start.runLocalStandalone`). |
 | `[backend] startup_selftest` | `true` | Coordinator-connected startup runs a one-token serving-path decode after each load; standalone `--local` loads weights and the engine but does not run this decode (`ProviderLoop.runStartupPreloadGate`, `StandaloneServer.preloadSelectedModels`). |
 | `[backend] startup_selftest_fail_closed` | `false` | Coordinator-connected self-test failures can retire the model when enabled; there is no synthetic self-test or fail-closed retirement in standalone `--local` (`ProviderLoop.runStartupPreloadGate`, `StandaloneServer.preloadSelectedModels`). |
 | `[backend] idle_timeout_mins` | `60` | Controls later idle unloading for coordinator serving, not whether models load at startup (`provider-swift/Sources/ProviderCore/ProviderLoop+IdleTimeout.swift`, `ProviderLoop.startupPreloadPlan`). |
+
+### Provider availability
+
+Weekly availability lives in `provider.toml`; command behavior and presets are
+in the [schedule CLI reference](../provider/cli-reference.md#darkbloom-schedule).
+
+| `provider.toml` key | Default / accepted values | Effect and reader |
+|---|---|---|
+| `[schedule] enabled` | Schedule absent by default; `ScheduleConfig.enabled = false` | Disabled/absent means available while running. Enabled requires valid windows; disabled schedules retain windows without validating them (`provider-swift/Sources/ProviderCore/Scheduling/ScheduleConfig.swift`, `ScheduleConfig.validate`; `provider-swift/Sources/ProviderCore/Scheduling/Schedule.swift`, `Schedule.from`) |
+| `[[schedule.windows]] days` | Nonempty array of case-insensitive short/full day names, `mon`/`monday` through `sun`/`sunday` | Days when the window starts; wizard shorthands/ranges are expanded before saving (`provider-swift/Sources/ProviderCore/Scheduling/Schedule.swift`, `DayOfWeek.parse`; `provider-swift/Sources/darkbloom/Scheduling/ScheduleWizard.swift`, `ScheduleWizard.parseDays`) |
+| `[[schedule.windows]] start` | Required `HH:MM`, `00:00`-`23:59` | Inclusive opening in this Mac's local time (`provider-swift/Sources/ProviderCore/Scheduling/ScheduleConfig.swift`, `ScheduleWindow`; `provider-swift/Sources/ProviderCore/Scheduling/Schedule.swift`, `TimeOfDay.parse`, `Schedule.isActive`) |
+| `[[schedule.windows]] end` | Required `HH:MM`, `00:00`-`23:59` | Exclusive close; earlier end crosses midnight, equal start/end spans a local-calendar day (`provider-swift/Sources/ProviderCore/Scheduling/Schedule.swift`, `Schedule.from`; `provider-swift/Sources/ProviderCore/Scheduling/ScheduleIntervals.swift`, `Schedule.intervals`) |
+
+```toml
+[schedule]
+enabled = true
+
+[[schedule.windows]]
+days = ["mon", "tue", "wed", "thu", "fri"]
+start = "22:00"
+end = "08:00"
+```
+
+`darkbloom schedule --disable` preserves windows and `startup_preload`.
+The editor changes only availability and `startup_preload`, retaining
+`preload_models`, selected models and idle timeout (`ScheduleSettings.apply`
+in `provider-swift/Sources/darkbloom/Scheduling/ScheduleSettings.swift`).
+Both `schedule` and `start --schedule` support `--config`. Edits require the
+next start/restart; they are not a live daemon update. Availability applies to
+coordinator serving and attached `--local-endpoint`, not standalone `--local`
+(`Start.run` in `provider-swift/Sources/darkbloom/StartCommand.swift`).
+There is no saved timezone or wake-up setting: keep the Mac awake and use its
+local timezone. [Scheduling architecture](../architecture/scheduling.md#provider-availability-windows)
+defines DST adjustment, merged windows, full-week coverage and fail-closed parsing.
 
 ### Model cache location
 

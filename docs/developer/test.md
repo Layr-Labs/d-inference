@@ -2795,7 +2795,8 @@ coverage. Run `python3 .github/scripts/test-threat-ensemble.py` for independent
 reviewer coverage, disagreement, attribution, partial failures and deadline
 retention. Run `python3 .github/scripts/test-threat-budget.py` for atomic spending
 reservations over local HTTP, cache invalidation, selective escalation, cost
-reconciliation, partial-result persistence and explicit PR status. Release
+reconciliation, partial-result persistence, split-diff citations on both sides,
+Sol 6.1 request parameters, and compact delivery of oversized reports. Release
 Integrity runs all four suites in normal CI, without real provider calls.
 Model findings and live API failures remain non-blocking in the separate
 [advisory review workflow](threat-model-review.md).

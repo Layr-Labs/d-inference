@@ -2,8 +2,9 @@
 
 ## Unreleased — budgeted advisory PR review
 
-- Give PR authors Sonnet feedback before selective Opus/Astra depth, reuse unchanged analysis, and debounce follow-up pushes. Show clean results, coverage, cost and saved historical findings in the advisory comment.
+- Give PR authors Sonnet feedback before selective Opus/Sol 6.1 depth, reuse unchanged analysis, and debounce follow-up pushes. Show clean results, coverage, cost and saved historical findings in the advisory comment.
 - Reserve shared spending before every provider request; cap normal/deep attempts, PR/day, repository/day and the ten-PR pilot. Preserve partial findings and unknown-cost reservations after failures. Paid scanning defaults to disabled pending state-writer and billing verification.
+- Keep findings citable across large diff fragments and publish a compact history link when the full report exceeds comment capacity.
 
 ## Unreleased — self-service bank payout migration
 

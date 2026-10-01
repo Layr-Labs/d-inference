@@ -5,10 +5,10 @@ import re
 from .client import ReviewUnavailable
 from .review import ID_DEFINITION, MAX_THREAT_MODEL
 
-VERSION = "budgeted-v1"
+VERSION = "budgeted-v2"
 SONNET = "anthropic/claude-sonnet-5.5"
 OPUS = "anthropic/claude-opus-5.5"
-ASTRA = "openai/gpt-6-astra"
+SOL = "openai/gpt-6.1-sol"
 RISK = re.compile(r"auth|attest|encrypt|crypt|billing|payment|ledger|mdm|enroll|secret|token|permission|\.github/", re.I)
 CRITICAL = re.compile(r"attest|encrypt|crypt|\.github/workflows/", re.I)
 

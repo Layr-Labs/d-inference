@@ -11,7 +11,7 @@ from .source import complete_files
 from .state import State
 
 
-def status_body(repository, head, base, diff_base, snapshot, evidence, history=None):
+def status_body(repository, head, base, diff_base, snapshot, evidence, history=None, compact=False):
     errors = snapshot.get("errors", [])
     complete = (snapshot.get("integration_completed", False)
                 and snapshot.get("covered_units") == snapshot.get("total_units")
@@ -20,9 +20,11 @@ def status_body(repository, head, base, diff_base, snapshot, evidence, history=N
     progress = ("First pass completed; selected deeper review is pending" if snapshot.get("integration_completed")
                 else "Review in progress; coverage is not complete")
     error = None if complete else "; ".join(errors) or progress
-    body = render(repository, head, base, "budgeted Sonnet / selective Opus / selective Astra",
-                  snapshot.get("findings", []), evidence, snapshot.get("limited_files", []),
-                  error, diff_base, snapshot.get("outcomes", []))
+    body = render(repository, head, base, "budgeted Sonnet / selective Opus / selective Sol 6.1",
+                  [] if compact else snapshot.get("findings", []), evidence,
+                  [] if compact else snapshot.get("limited_files", []),
+                  "Report exceeds comment capacity; see saved findings" if compact else error,
+                  diff_base, [] if compact else snapshot.get("outcomes", []))
     # The legacy renderer's full-text-model claim does not describe this engine.
     body = re.sub(r"(?m)^Coverage: .*", "", body)
     body += (f"\n\nCoverage: {snapshot.get('covered_units', 0)}/{snapshot.get('total_units', 0)} source units; "
@@ -35,6 +37,9 @@ def status_body(repository, head, base, diff_base, snapshot, evidence, history=N
              f"{snapshot.get('provider_cached_tokens', 0)} provider cache-hit tokens.")
     if history:
         body += f"\n\n[Saved findings and earlier report]({history}) · Historical findings are not confirmed resolved."
+    if compact:
+        body += (f"\n\nSaved report contains {len(snapshot.get('findings', []))} finding(s) and "
+                 f"{len(snapshot.get('limited_files', []))} file(s) requiring manual review.")
     return body
 
 
@@ -85,9 +90,9 @@ def run(event, root, env, github=None, state=None, paid_factory=PaidCalls):
         if len(body) > COMMENT_LIMIT:
             if not history:
                 return  # retain the old comment; the Actions summary has status
-            body = status_body(repository, head, base, diff_base,
-                               dict(snapshot, findings=[], errors=["Report exceeds comment capacity; see saved findings"]),
-                               evidence, history)
+            body = status_body(repository, head, base, diff_base, snapshot, evidence, history, compact=True)
+            if len(body) > COMMENT_LIMIT:
+                raise ReviewUnavailable("Compact report exceeds comment capacity")
         publication_uncertain = True
         result = github.publish(existing, body)
         publication_uncertain = False

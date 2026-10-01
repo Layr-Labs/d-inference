@@ -3,7 +3,7 @@
 > Last updated: 2026-10-01
 
 The reviewer gives PR authors early Sonnet feedback, escalates selected changes to
-Opus and Astra, and saves completed findings before continuing. Public comments
+Opus and Sol 6.1, and saves completed findings before continuing. Public comments
 show coverage, cost, reuse and failures. Reviews never block merges. Paid scanning
 is **disabled by default**, including when legacy model variables remain set.
 
@@ -11,7 +11,7 @@ is **disabled by default**, including when legacy model variables remain set.
 
 - Actions administration and a reviewed workflow on the default branch.
 - An OpenRouter key with access to `anthropic/claude-sonnet-5.5`,
-  `anthropic/claude-opus-5.5` and `openai/gpt-6-astra`. Retain a provider-side key
+  `anthropic/claude-opus-5.5` and `openai/gpt-6.1-sol`. Retain a provider-side key
   spending limit as an independent backstop. This change does not add credits,
   raise a limit or enable paid scanning.
 - A writer permitted to update `codex/threat-review-state` under branch
@@ -75,7 +75,7 @@ protect immutable-source collection, validation and legacy report helpers.
 |---|---|
 | First feedback | Progress, then Sonnet findings or clean first-pass feedback before deeper work. |
 | Risky or uncertain changes | Selected Opus review for auth, attestation, encryption, billing, workflows, findings or model uncertainty. |
-| Critical or disputed changes | Independent Astra source review for cryptography, attestation, workflows, high-severity findings, disagreement with Opus or maintainer request. |
+| Critical or disputed changes | Independent Sol 6.1 source review for cryptography, attestation, workflows, high-severity findings, disagreement with Opus or maintainer request. |
 | Repeat push | Identical analysis reused; changed inputs invalidate source and integration results. |
 | Failure or budget exhaustion | Completed findings retained; unfinished coverage explicit; no automatic paid retries. |
 | Head changes during a call | Original-head results saved; stale findings not posted as current. |
@@ -91,7 +91,7 @@ green workflow is not evidence that scanning completed.
 | Limit | Amount |
 |---|---:|
 | Sonnet per workflow attempt | $1 |
-| Opus and Astra combined per attempt | $3 |
+| Opus and Sol 6.1 combined per attempt | $3 |
 | PR per UTC day across attempts and pushes | $5 |
 | Repository per UTC day across PRs | $25 |
 | Entire pilot, no automatic reset | $25 and ten distinct PRs |
@@ -108,6 +108,8 @@ allowance. Reservations assume cold cache and allow two times the input price fo
 cache writes. Oversized requests are deferred. Response `usage.cost` settles the
 reservation; missing or invalid usage saves valid findings but stops more calls
 in that run. Charges above the reservation open a persistent circuit breaker.
+Sol 6.1 uses price ceilings of $2 input and $10 output per million tokens,
+verified against the [OpenRouter model catalog](https://openrouter.ai/api/v1/models).
 Price/provider behavior changes require review; retain the independent key cap.
 Never delete or reset the ledger to work around a limit.
 
@@ -126,7 +128,9 @@ acknowledge all submitted units; source findings must cite visible evidence.
 Large changes may exhaust a budget: the comment shows reviewed unit counts and
 pending integration instead of claiming full coverage. Existing limits remain:
 3,000 files, 8 MB aggregate source, 32,000-character line-aligned units and
-80,000-character batches. Binary, LFS and submodule changes need manual review.
+80,000-character batches. Split patches carry continuation hunk headers so
+each fragment retains its original base/head citation lines. Binary, LFS and
+submodule changes need manual review.
 
 Each request receives an index of **all** canonical definition entries, the
 preamble, and up to eight lexically relevant complete definition blocks within
@@ -146,8 +150,9 @@ Validated findings are checkpointed after every batch before caching or more
 spend. Reports include exact head/base, progress and the previous public comment,
 and link to immutable state-branch commits. Later heads and incomplete retries
 cannot erase historical advice. One updatable comment links to the saved report;
-oversized reports use that link. If storage fails, old findings stay inline when
-they fit, and local results remain in the Actions summary. Raw responses, keys
+oversized reports use a bounded summary with finding/manual-review counts
+and that link, retaining full details in the saved report. If storage fails, old
+findings stay inline when they fit, and local results remain in the Actions summary. Raw responses, keys
 and prompts are not stored in ledger/reports. Cached analyses and findings are
 public like the PR. OpenRouter and its provider receive source and threat context.
 

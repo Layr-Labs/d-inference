@@ -2,9 +2,9 @@
 import copy
 import json
 from .client import APIError, ReviewUnavailable, ScanTimeout
-from .context import VERSION, SONNET, OPUS, ASTRA, RISK, CRITICAL, digest
+from .context import VERSION, SONNET, OPUS, SOL, RISK, CRITICAL, digest
 from .review import SYSTEM, FindingCapacityReached, model_call, patch_lines, prepare, validate_findings
-from .scan import SCAN_SCHEMA, INSTRUCTION, units, batches
+from .scan import SCAN_SCHEMA, INSTRUCTION, units, batches, patch_context
 from .state import BudgetStopped
 
 SCHEMA = copy.deepcopy(SCAN_SCHEMA)
@@ -40,7 +40,7 @@ class Scanner:
         # Stable per-file IDs let unchanged batches survive insertions elsewhere.
         source = []
         for record in records:
-            for unit in units([record]):
+            for unit in patch_context(units([record])):
                 unit["id"] = digest(record["file"])[:16] + ":" + unit["id"]
                 source.append(unit)
         self.source = list(batches(source))
@@ -165,7 +165,7 @@ class Scanner:
             self.outcomes.append({"model": SONNET, "status": "first pass completed"})
             # Deliver cheap feedback before beginning any deeper model work.
             self.checkpoint(self.snapshot())
-            for model, selected in ((OPUS, deepen), (ASTRA, critical)):
+            for model, selected in ((OPUS, deepen), (SOL, critical)):
                 if not selected:
                     self.outcomes.append({"model": model, "status": "not needed by escalation policy"})
                     continue

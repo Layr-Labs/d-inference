@@ -18,9 +18,9 @@ from urllib.parse import urlsplit
 from threat_review.budget_runner import run
 from threat_review.budget_scan import Scanner
 from threat_review.client import APIError, GitHub, ReviewUnavailable, request_json
-from threat_review.context import ThreatContext, SONNET, OPUS, ASTRA
+from threat_review.context import ThreatContext, SONNET, OPUS, SOL
 from threat_review.paid import PaidCalls, microdollars
-from threat_review.report import plain
+from threat_review.report import COMMENT_LIMIT, plain
 from threat_review.source import complete_files
 from threat_review.state import State, BudgetStopped, fresh
 
@@ -274,7 +274,35 @@ class ScanTests(unittest.TestCase):
         self.assertFalse(result["findings"])
         self.assertTrue(result["errors"])
 
-    def test_uncertain_low_risk_change_escalates_and_disagreement_gets_astra(self):
+    def test_split_patch_preserves_citations_on_both_sides_and_later_hunks(self):
+        old = [f"-old {i}: " + "x" * 180 + "\n" for i in range(1, 1001)]
+        new = [f"+new {i}: " + "y" * 180 + "\n" for i in range(1, 1001)]
+        diff = "@@ -101,1000 +201,1000 @@\n" + "".join(old + new)
+        diff += "@@ -2001,1 +3001,1 @@\n-old 1901: last\n+new 2801: last\n\\ No newline at end of file\n"
+        files = [{"filename": "ordinary.go", "status": "modified", "patch": diff,
+                  "additions": 1001, "deletions": 1001}]
+        paid = PaidCalls(self.service.state, 12, "1-1", "synthetic", self.context.prefix(), self.service.transport)
+        scanner = Scanner(self.context, files, self.service.state, paid, lambda _: None, fixtures.BASE)
+        patches = [u for batch in scanner.source for u in batch if u.get("kind") == "patch"]
+        self.assertGreater(len(patches), 2)
+        for unit in patches:
+            self.assertTrue(unit["text"].startswith("@@"))
+            visible = scanner.batch_evidence("source", [unit])["ordinary.go"]["lines"]
+            expected = {"base": set(), "head": set()}
+            for line in unit["text"].splitlines():
+                if line.startswith(("-old ", "+new ")):
+                    number = int(line.split()[1].rstrip(":"))
+                    expected["base" if line[0] == "-" else "head"].add(number + (100 if line[0] == "-" else 200))
+            self.assertEqual(visible, expected)
+        # A real response citing a continuation must survive validation/cache.
+        unit = patches[1]
+        finding = dict(fixtures.FINDING, file="ordinary.go", side="base",
+                       line=min(scanner.batch_evidence("source", [unit])["ordinary.go"]["lines"]["base"]))
+        self.service.reply = lambda body: self.service.completion(body, [finding])
+        scanner.call(SONNET, "source", [unit])
+        self.assertEqual(scanner.findings[0]["line"], finding["line"])
+
+    def test_uncertain_low_risk_change_escalates_and_disagreement_gets_sol(self):
         self.files[0]["filename"] = "ordinary.go"
         finding = dict(fixtures.FINDING, file="ordinary.go", severity="medium")
         def reply(body):
@@ -282,7 +310,7 @@ class ScanTests(unittest.TestCase):
             return self.service.completion(body, [finding] if model == SONNET else [], uncertain=model == SONNET)
         self.service.reply = reply
         result, _ = self.scan()
-        self.assertEqual([b["model"] for b in self.service.calls], [SONNET, SONNET, OPUS, ASTRA])
+        self.assertEqual([b["model"] for b in self.service.calls], [SONNET, SONNET, OPUS, SOL])
         self.assertEqual(result["findings"][0]["models"], [SONNET])
 
     def test_actual_cost_overrun_preserves_findings_but_halts_spending(self):
@@ -336,11 +364,14 @@ class ScanTests(unittest.TestCase):
             self.service.calls.clear()
             self.files[0]["filename"] = "crypto.go" if not force else "ordinary.go"
             result, _ = self.scan(force=force)
-            self.assertIn(ASTRA, [b["model"] for b in self.service.calls])
+            self.assertIn(SOL, [b["model"] for b in self.service.calls])
             self.assertFalse(result["errors"])
-            astra = next(b for b in self.service.calls if b["model"] == ASTRA)
-            self.assertNotIn("cache_control", astra["messages"][0]["content"][0])
-            self.assertNotIn("temperature", astra)
+            sol = next(b for b in self.service.calls if b["model"] == SOL)
+            self.assertEqual(sol["model"], "openai/gpt-6.1-sol")
+            self.assertEqual(sol["provider"]["max_price"], {"prompt": 2, "completion": 10, "request": 0})
+            self.assertTrue(sol["response_format"]["json_schema"]["strict"])
+            self.assertNotIn("cache_control", sol["messages"][0]["content"][0])
+            self.assertNotIn("temperature", sol)
 
     def test_invalid_citations_are_never_saved_as_findings(self):
         self.service.reply = lambda body: self.service.completion(body, [dict(fixtures.FINDING, line=999)])
@@ -407,6 +438,26 @@ class LifecycleTests(unittest.TestCase):
             return files(count)
         self.github.files = collect
         self.run_review()
+
+    def test_oversized_file_list_posts_compact_status_and_preserves_full_report(self):
+        files = [{"filename": f"assets/{i:04d}/" + "x" * 100 + ".bin",
+                  "status": "added", "source_complete": False} for i in range(1000)]
+        publish = self.github.publish
+        def bounded_publish(existing, body):
+            if len(body) > COMMENT_LIMIT:
+                raise APIError(422)
+            return publish(existing, body)
+        self.github.publish = bounded_publish
+        self.service.reply = lambda body: 403
+        with patch("threat_review.budget_runner.complete_files", return_value=files):
+            self.run_review()
+        body = self.github.posts[-1][1]
+        self.assertLessEqual(len(body), COMMENT_LIMIT)
+        self.assertIn("1000 file(s) requiring manual review", body)
+        self.assertIn("Saved findings and earlier report", body)
+        self.assertNotIn("No actionable findings", body)
+        saved = self.service.state.read("reports/123-1.json")[0]["review"]
+        self.assertEqual(saved["limited_files"], [f["filename"] for f in files])
 
     def test_uncertain_comment_creation_is_looked_up_before_retry(self):
         original = self.github.publish

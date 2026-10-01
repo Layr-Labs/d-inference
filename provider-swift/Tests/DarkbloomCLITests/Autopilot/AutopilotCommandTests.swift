@@ -54,6 +54,35 @@ extension AutopilotCommandTests {
         #expect(interested == (answer == "Y"))
     }
 
+    @Test(arguments: [false, true])
+    func repeatedInteractiveStartAsksAgainWithSavedDefault(enabled: Bool) throws {
+        var config = ProviderConfig(provider: .init(name: "repeat-start"))
+        config.backend.modelAutopilot = .init(enabled: enabled, consentRecorded: true,
+            selectedModels: ["chosen"], revision: "saved")
+        let start = try Start.parse([])
+        var asked = false
+        let choice = try start.resolveAutopilotChoice(config, interactive: true) { previous in
+            asked = true
+            #expect(previous == enabled)
+            return !previous
+        }
+        #expect(asked)
+        #expect(choice == !enabled)
+        #expect(try start.resolveAutopilotChoice(config, interactive: false) { _ in
+            Issue.record("Automatic starts must not prompt")
+            return false
+        } == enabled)
+    }
+
+    @Test(arguments: [false, true])
+    func blankRepeatedAnswerKeepsSavedChoice(enabled: Bool) {
+        var output = ""
+        #expect(Start.promptAutopilotChoice(defaultEnabled: enabled,
+            readInput: { "" }, emit: { output += $0 }) == enabled)
+        #expect(output.hasSuffix(enabled ? "[Y/n]: " : "[y/N]: "))
+        #expect(Start.autopilotAnswer("n", defaultEnabled: true) == false)
+    }
+
     @Test func statusDistinguishesEnrollmentFromLiveActivation() {
         #expect(Autopilot.Status.phaseDescription("shadow") == "shadow (not activated; no automatic model changes)")
         #expect(Autopilot.Status.phaseDescription("waiting").contains("not activated"))

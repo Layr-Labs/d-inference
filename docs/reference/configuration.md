@@ -368,6 +368,8 @@ change; programmatic configuration fields are validated by `autopilot.Config.Che
 | Standalone unload | Quiet, dwell, work and floor guards apply; no memory-pressure threshold | `coordinator/registry/autopilot/planner.go`, `Plan` |
 | Demand retention | `10s` buckets, at most `256` models; partial boundary bucket retains < `10s` | `coordinator/registry/autopilot/demand.go`, `DemandTracker.Record`, `DemandTracker.Snapshot` |
 
+Each normal interactive start offers Yes/No again, defaulting to saved consent
+(or No initially); automatic restarts reuse the saved setting without prompting.
 Enrollment records interest/consent and verified downloaded network inventory;
 it is not activation. Both answers retain the normal model and memory selector,
 which saves the operator’s explicit choices. Enrollment itself preserves other

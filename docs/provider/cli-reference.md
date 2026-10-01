@@ -547,9 +547,11 @@ Every subcommand accepts `--config`.
 | `start --autopilot`, `start --autopilot --all` | Explicit scripted enrollment of all verified eligible downloaded network builds; `--all` cannot include arbitrary local/off-catalog models |
 | `start --no-autopilot` | Explicitly save the ordinary idle-policy mode |
 
-The normal interactive `start` asks for interest in experimental Autopilot with
-`[y/N]`, explicitly naming shadow mode as not activated and a later live rollout.
-A blank response means No. Both answers follow the ordinary model picker and
+Every normal interactive `start` asks about experimental Autopilot again,
+explicitly naming shadow mode as not activated and a later live rollout. The
+first default is No (`[y/N]`); later prompts use the saved choice (`[Y/n]` when
+enrolled). Enter keeps that default. Explicit enrollment flags and automatic
+restarts do not prompt. Both answers follow the ordinary model picker and
 idle-policy prompt. Yes records consent, not activation; the normal selector may
 download models the operator explicitly chooses.
 It discovers all already-downloaded active network-supported catalog models and

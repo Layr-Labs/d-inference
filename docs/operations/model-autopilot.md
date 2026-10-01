@@ -32,6 +32,7 @@ Use with compatible protocol-2 coordinator and provider releases. See the
    models may download through that selector. Autopilot subsequently verifies
    cached network models without adding downloads. Empty inventory or an
    unverified startup choice fails before persistence or drain.
+   Interactive starts ask Yes/No again with the saved choice as default.
    Setup does not activate Autopilot, and unattended upgrades or missing settings
    do not enroll automatically.
 2. Run `darkbloom autopilot status`. Confirm enrollment, the verified cached set and

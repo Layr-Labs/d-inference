@@ -2,6 +2,10 @@
 
 > Last updated: 2026-10-01
 
+The provider test runner isolates daemon-state and loaded-model snapshots in a
+temporary directory for each run. Unit-test providers must not overwrite the
+operator’s live status or recovery evidence (`scripts/run-provider-tests.sh`).
+
 The `d-inference` macOS CI lanes pin `blacksmith-12vcpu-macos-27` and select
 Xcode 27 / native SwiftPM before compilation. Unit, SDK, prompt-parity,
 integration and benchmark commands and their existing approval gates are

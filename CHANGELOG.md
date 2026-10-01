@@ -2,7 +2,7 @@
 
 ## Unreleased — provider 0.9.16
 
-- Keep Autopilot as a yes/no enrollment choice while retaining the normal startup model and memory selector, including explicit `--model` selection.
+- Offer the Autopilot yes/no choice on every normal interactive start, using the saved choice as default and retaining the normal startup model and memory selector, including explicit `--model` selection.
 
 - Fix enrolled providers appearing stopped, rejecting graceful stop/restart, and accumulating false failed-start rollbacks because their Autopilot snapshot could not be decoded. Preserve heartbeat readability for a watchdog still running 0.9.15 during upgrade.
 - Name each model during cached-inventory verification and report a busy model immediately instead of silently waiting behind a background revision update. Saved enrollment and the running provider remain intact when ordinary startup verification fails.

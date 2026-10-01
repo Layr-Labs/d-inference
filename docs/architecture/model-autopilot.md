@@ -47,6 +47,8 @@ scripted consent for the same cached-inventory flow; `--all` is compatible but
 cannot bypass network eligibility. `--model` still selects the initial hosted
 models and is compatible with enrollment.
 
+Every normal interactive start asks Yes/No again with the saved enrollment as
+the default; the first default is No. Automatic restarts retain the saved choice.
 Both answers retain the ordinary model picker and idle-policy prompt; explicit
 `--model` and `--all` keep their normal selection behavior. The picker may download
 models the operator explicitly selects. Autopilot then discovers already-cached

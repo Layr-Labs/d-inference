@@ -6,11 +6,16 @@ import Darwin
 #endif
 
 extension Start {
-    static func autopilotAnswer(_ input: String?) -> Bool {
-        ["y", "yes"].contains(input?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "")
+    static func autopilotAnswer(_ input: String?, defaultEnabled: Bool = false) -> Bool {
+        let answer = input?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        return answer.isEmpty ? defaultEnabled : ["y", "yes"].contains(answer)
     }
 
-    func resolveAutopilotChoice(_ config: ProviderConfig) throws -> Bool {
+    func resolveAutopilotChoice(
+        _ config: ProviderConfig,
+        interactive: Bool = isatty(STDIN_FILENO) != 0,
+        ask: (Bool) -> Bool = { Start.promptAutopilotChoice(defaultEnabled: $0) }
+    ) throws -> Bool {
         if local || config.coordinator.privateOnly {
             if autopilot == true { throw ValidationError("Autopilot requires a network provider.") }
             return false
@@ -19,13 +24,12 @@ extension Start {
             return autopilot
         }
         let settings = config.backend.modelAutopilot
-        if settings.consentRecorded { return settings.hasConsent }
-        guard isatty(STDIN_FILENO) != 0, !foreground, !local, !config.coordinator.privateOnly,
-              model.isEmpty, !all else { return false }
-        return Self.promptAutopilotChoice()
+        guard interactive, !foreground, model.isEmpty, !all else { return settings.hasConsent }
+        return ask(settings.hasConsent)
     }
 
     static func promptAutopilotChoice(
+        defaultEnabled: Bool = false,
         readInput: () -> String? = { readLine() },
         emit: (String) -> Void = { print($0, terminator: "") }
     ) -> Bool {
@@ -35,8 +39,8 @@ extension Start {
         emit("Choose your startup models and memory preferences in the usual selector next.\n")
         emit("When we turn Autopilot on, it will choose among those cached models to improve network utilization.\n")
         emit("Downloaded files stay on disk. You can pause or disable Autopilot at any time.\n")
-        emit("Interested in joining the Autopilot rollout? [y/N]: ")
-        return autopilotAnswer(readInput())
+        emit("Enable experimental Autopilot? \(defaultEnabled ? "[Y/n]" : "[y/N]"): ")
+        return autopilotAnswer(readInput(), defaultEnabled: defaultEnabled)
     }
 }
 

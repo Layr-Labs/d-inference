@@ -6,6 +6,42 @@ import Testing
 
 @Suite("Native reasoning before tool parsing")
 struct NativeToolStreamRouterTests {
+    @Test func strayCloseAbsorptionIsExplicitAndNemotronScoped() throws {
+        for (modelID, modelType, expectedAbsorption) in [
+            ("nvidia-nemotron-3.5-lightning", "nemotron_h", true),
+            ("nvidia-nemotron-3.5-lightning-hybrid8", "nemotron_h", true),
+            ("nvidia-nemotron-3.5-lightning-4bit-r1", "nemotron_h", true),
+            ("nvidia-nemotron-3.5-lightning", "qwen4_exp", false),
+            ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B", "nemotron_h", false),
+            ("qwen3.8-flash-next", "qwen4_exp", false),
+            ("mimo-v2.6-flash", "mimo_v2", false),
+            ("ternary-bonsai-2-27b", "prism_hadamard_qwen35", false),
+        ] {
+            let absorbs = ToolChoiceEnforcementPolicy.absorbsStrayThinkClose(
+                .init(modelId: modelID, modelType: modelType))
+            #expect(absorbs == expectedAbsorption)
+            for width in [1, 3, 64] {
+                var router = NativeToolStreamRouter(handler: nil, requiresToolCall: false,
+                    nativePrefix: "<think></think>", absorbStrayThinkClose: absorbs)
+                let chars = Array("before</think>after")
+                var events: [MLXServerGenerationEvent] = []
+                for start in stride(from: 0, to: chars.count, by: width) {
+                    events += try router.process(String(chars[start..<min(start + width, chars.count)]))
+                }
+                events += try router.finishText()
+                var content = ""
+                for event in events {
+                    guard case .parsed(let piece) = event else {
+                        Issue.record("Expected native content event"); continue
+                    }
+                    #expect(piece.reasoningContent == nil)
+                    content += piece.content
+                }
+                #expect(content == (expectedAbsorption ? "beforeafter" : "before</think>after"))
+            }
+        }
+    }
+
     @Test func diffusionFourCompleteCallsRemainDistinct() throws {
         let cities = ["Paris", "Tokyo", "Lima", "Oslo"]
         let text = "<|channel>thought<channel|>" + cities.map {

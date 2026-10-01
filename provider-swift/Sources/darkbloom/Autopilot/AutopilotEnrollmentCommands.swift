@@ -4,7 +4,7 @@ import ProviderCore
 
 extension Autopilot {
     struct Enable: AsyncParsableCommand {
-        static let configuration = CommandConfiguration(abstract: "Choose models and enroll in experimental Autopilot (shadow rollout by default).")
+        static let configuration = CommandConfiguration(abstract: "Enroll downloaded network models in experimental Autopilot (shadow mode; no downloads).")
         @OptionGroup var configOptions: ConfigOptions
         mutating func run() async throws {
             var start = try Start.parse(["--autopilot"]); start.configOptions = configOptions
@@ -12,7 +12,7 @@ extension Autopilot {
         }
     }
     struct Models: AsyncParsableCommand {
-        static let configuration = CommandConfiguration(abstract: "Choose the Autopilot model set; safely restart after downloads finish.")
+        static let configuration = CommandConfiguration(abstract: "Refresh the downloaded network-model inventory; preserve preferences and safely restart.")
         @OptionGroup var configOptions: ConfigOptions
         mutating func run() async throws {
             var start = try Start.parse(["--autopilot"]); start.configOptions = configOptions

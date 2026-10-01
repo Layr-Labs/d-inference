@@ -1,8 +1,8 @@
 # Experimental model Autopilot
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-01
 
-Autopilot observes demand for an explicitly selected set of provider models and
+Autopilot observes demand for an explicitly approved cached model inventory and
 can manage their memory residency during a separately enabled live rollout.
 Provider enrollment defaults to off; startup opt-in records interest/consent for
 the default shadow rollout, not active control. Files remain on disk.
@@ -10,17 +10,18 @@ the default shadow rollout, not active control. Files remain on disk.
 ## Context
 
 Cached models are not necessarily loaded, and loaded models on one Mac share
-its GPU and KV budget. Autopilot moves useful capacity toward qualified demand
-while preserving active requests, local reservations, pins and donor coverage.
-Initial downloads are a separate, user-authorized setup action.
+its GPU and KV budget. Live Autopilot chooses among cached models to improve
+utilization while preserving active requests, local reservations, pins and donor
+coverage. It does not guarantee utilization gains or higher earnings. Downloads
+remain separate operator actions, never part of Autopilot enrollment or refresh.
 
 ## Mechanism
 
 ```mermaid
 flowchart TD
-  A["Start: shadow interest, default No"] --> B["Select supported models"]
-  B --> C["Download and verify; choose ordinary idle policy"]
-  C --> D["Save consent and exact approved build IDs"]
+  A["Start: shadow interest, default No"] --> B["Discover downloaded active network models"]
+  B --> C["Verify cached inventory; no picker or downloads"]
+  C --> D["Save consent; preserve all existing preferences"]
   D --> E{"Coordinator ObserveOnly?"}
   D --> G["Capacity planner"]
   F["Logical arrivals by request shape"] --> G["Capacity planner"]
@@ -42,18 +43,35 @@ flowchart TD
 `Start.resolveAutopilotChoice` asks once on the normal interactive start path.
 Blank/EOF means No. Answering Yes records interest/consent for shadow observation;
 it does not activate automatic residency changes. `--autopilot` records explicit
-scripted consent and requires model selection; `--all` cannot enable it.
-`saveAutopilotEnrollment` runs after selected
-builds are verified and an existing provider has drained. A cancelled picker or
-failed download never saves enrollment. Restarts use the saved choice. Interactive
-setup still asks for the ordinary idle-memory policy while enrolled in shadow.
+scripted consent for the same cached-inventory flow; `--all` is compatible but
+cannot bypass network eligibility. Enrollment rejects `--model`; use
+`--no-autopilot` for ordinary explicit selection.
+
+Yes skips the normal model picker and idle-policy prompt. Discovery includes all
+already-downloaded active catalog builds supported for network serving on this
+Mac, then verifies their manifest or matching registry weight hash. Arbitrary
+local/off-catalog, retired, ineligible, malformed, stale or unverified builds are
+excluded; verification failures warn and skip the build. No eligible inventory
+fails clearly before persistence, drain or restart; nothing is downloaded.
+No continues the ordinary picker/start
+flow (`Start.downloadedAutopilotInventory`, `Start.verifiedAutopilotInventory`,
+`verifySelectedModel`).
+
+`saveAutopilotEnrollment` records verified exact IDs after an existing provider
+has drained, without rewriting saved model, preload, idle or other preferences.
+An explicit `--idle-timeout` remains an operator-requested override, not an
+enrollment side effect. Restarts retain the recorded choice and inventory.
 
 `ModelAutopilotSettings.selectedModels` is an exact-build allowlist. An empty list
 cannot enroll, and another model appearing on disk cannot expand permission.
-The provider rechecks this list before loads, prefetches, advertisements and
-network acceptance. Desired-build release updates outside the selection are
-ignored; use `darkbloom autopilot models` to approve/download a replacement build.
-Selection changes use the existing safe service restart. While enrolled,
+The provider advertises this verified network inventory even when it is broader
+than saved `enabled_models`, and rechecks the allowlist before loads, prefetches
+and network acceptance. The set remains static: discovering or downloading
+another build does not expand consent. Ordinary starts with saved consent
+validate/reuse the recorded IDs. Explicit `--autopilot`, `autopilot enable` and
+`autopilot models` re-inventory eligible downloaded builds and verify them without
+a picker or downloads. Inventory refresh uses the existing safe drain/restart.
+Desired-build updates outside the recorded set are ignored. While enrolled,
 `darkbloom switch` directs the operator to `darkbloom autopilot models` or opt-out
 so a manual hosted-model transaction cannot bypass the approved selection.
 Both operation owners reject overlap, including model-switch validation. Pause, resume, pins and
@@ -85,8 +103,10 @@ interval plus ten seconds of delivery grace (at most seventy seconds).
 Providers outside active control contribute donor capacity through the normal
 ninety-second serving heartbeat window, including ordinary, shadow, waiting and paused
 providers. A fresh liveness-only frame never refreshes an old capacity sample.
-Before coordinator activation, the ordinary startup preloader warms selected
-models within the slot and memory limits. Autopilot rejects commands while that
+Before coordinator activation, the ordinary startup preloader retains the saved
+explicit or implicit model preference, including `preload_models`, within slot
+and memory limits. Advertising a broader enrolled inventory does not turn it
+into a preload-all request. Autopilot rejects commands while that
 preloader is still running; it takes over only after the startup owner finishes.
 Absent or expired control restores ordinary serving policy. Pins apply while live
 control, explicit pause or an accepted operation owns residency.
@@ -237,7 +257,7 @@ its own `Start/` folder.
 | Concern | Source |
 |---|---|
 | Startup consent and verification | `provider-swift/Sources/darkbloom/Start/StartCommand+Autopilot.swift` |
-| Selection and download plan | `provider-swift/Sources/darkbloom/Start/StartCommand+Picker.swift`; `provider-swift/Sources/ProviderCore/Models/ModelDownloader+Selection.swift` |
+| Cached inventory discovery and verification | `provider-swift/Sources/darkbloom/Start/StartCommand+Autopilot.swift`; `provider-swift/Sources/ProviderCore/Models/ModelDownloader+Selection.swift` (`verifySelectedModel`) |
 | Live local controls | `provider-swift/Sources/darkbloom/Autopilot/AutopilotCommand.swift`; `provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+AutopilotControl.swift` |
 | Protocol | `coordinator/protocol/model_autopilot.go`; `provider-swift/Sources/ProviderCore/Protocol/Autopilot/ModelAutopilot.swift` |
 | Shapes and planning | `coordinator/registry/autopilot/shapes.go`; `coordinator/registry/autopilot/coverage.go`; `coordinator/registry/autopilot/planner.go` |

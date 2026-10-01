@@ -246,8 +246,7 @@ extension Start {
         snapshot: RuntimeSnapshot,
         config: ProviderConfig,
         coordinatorURL: String,
-        runtimeCapabilities: Set<ProviderRuntimeCapability>,
-        autopilotSelection: Bool = false
+        runtimeCapabilities: Set<ProviderRuntimeCapability>
     ) async throws -> [String] {
         let client = ModelCatalogClient(coordinatorURL: coordinatorURL)
 
@@ -288,19 +287,13 @@ extension Start {
             return ModelDownloader.hasResumableStaging(modelID: row.model.id, r2Prefix: prefix) ? row.model.id : nil
         })
 
-        var entries = Start.buildPickerEntries(
+        let entries = Start.buildPickerEntries(
             rows: catalog,
             downloadedIDs: downloadedIDs,
             localMemoryByID: localMemoryByID,
             resumableIDs: resumableIDs,
             memoryGb: memoryGb
         )
-
-        if autopilotSelection {
-            entries = entries.filter { ($0.minRamGb ?? 0) <= Int(memoryGb) && Self.modelFitsBudget(sizeGb: $0.sizeGb, memoryGb: memoryGb) }
-            print("Select models for the shadow-first Autopilot rollout. Missing models will be downloaded now.")
-            print("Live control, when activated, uses only these models. Select at least one to continue.")
-        }
 
         guard !entries.isEmpty else {
             printError("No supported models fit in \(Int(memoryGb)) GB RAM.")
@@ -317,7 +310,7 @@ extension Start {
         }
 
         // Run the interactive TUI picker.
-        let selectedIndices = try runModelPicker(entries: entries, memoryGb: memoryGb, preselectDownloaded: !autopilotSelection)
+        let selectedIndices = try runModelPicker(entries: entries, memoryGb: memoryGb)
 
         guard !selectedIndices.isEmpty else {
             return []

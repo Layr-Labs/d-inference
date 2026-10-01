@@ -71,11 +71,11 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | Flag | Type | Default | Effect |
 |---|---|---|---|
 | `--coordinator-url <url>` | `String?` | `coordinator.url` (`wss://api.darkbloom.dev/ws/provider`) | Override the coordinator WebSocket URL |
-| `--model <id>` | `[String]`, repeatable | `[]` | Serve exactly these models; skips the picker |
-| `--all` | flag | `false` | Serve every local model the runtime supports; skips the picker |
+| `--model <id>` | `[String]`, repeatable | `[]` | Ordinary serving of exactly these models; skips the picker. Incompatible with explicit or saved Autopilot enrollment; use `--no-autopilot` |
+| `--all` | flag | `false` | Ordinary serving of every runtime-supported local model; skips the picker. Compatible with `--autopilot`, where only verified eligible downloaded network builds enroll |
 | `--idle-timeout <mins>` | `UInt64?` | `backend.idle_timeout_mins` (`60`) | Override the idle unload timeout for this run |
 | `--schedule` | flag | `false` | Open the interactive availability/loading wizard before background startup; rejects `--foreground` and standalone `--local` (`Start.run`, `StartCommand.swift`) |
-| `--autopilot` | flag | `false` | Record explicit experimental enrollment for selected models; default rollout is shadow, not activation |
+| `--autopilot` | flag | `false` | Discover/verify the eligible downloaded network inventory and save experimental enrollment, without picker or downloads; default rollout is shadow, not activation |
 | `--no-autopilot` | flag | `false` | Save opt-out and retain ordinary idle-policy mode |
 | `--foreground` / `--no-foreground` | flag, **hidden** | `false` | Serve in this process instead of installing the LaunchAgent; launchd passes it |
 | `--local` | flag | `false` | Coordinator-less OpenAI-compatible server ([direct mode](./direct-mode.md)) |
@@ -91,16 +91,18 @@ a debugger is attached, RAM is below 8 GB, Metal is unavailable, hardware
 detection fails, no model is selected, or the local server does not bind within
 5 s (`StartCommand+Preflight.swift`, `StartCommand+Modes.swift`).
 
-A replacement start completes the picker/preflight and saves the selected IDs
+A non-enrolled replacement start completes the picker/preflight and saves the selected IDs
 under `backend.enabled_models` while holding the lifecycle lease, before it
 disables recovery or drains/stops the current provider. Failure of this initial
-selection write leaves the current service unchanged. After drain acknowledgement,
+selection write leaves the current service unchanged. Autopilot enrollment instead
+discovers/verifies cached inventory and preserves every saved preference; empty
+or invalid inventory fails before persistence or drain. After drain acknowledgement,
 Autopilot consent is saved before stopping the daemon and installing the chosen
 configuration. If this later write fails, a gracefully drained daemon is left
 running and drained, with recovery disabled; correct the configuration and retry
 `start`. No replacement is installed (`Start.completeDaemonReplacement`). Foreground/local starts also require a drained handoff;
 the process-lifetime kernel lock never silently sends SIGKILL after a short grace period.
-On launchd-managed foreground starts (including restart and watchdog recovery),
+On ordinary non-enrolled launchd-managed foreground starts (including restart and watchdog recovery),
 an explicitly pinned `enabled_models` takes precedence over old `--model` plist
 arguments. A directly invoked foreground `--model` still overrides config
 (`Start.usesPinnedModelSelection`, `Start.launchDaemon`).
@@ -119,7 +121,7 @@ not from the separate canonical config file.
 stays in memory until model selection succeeds; cancellation or an empty/failed
 selection does not save the schedule or replace the running service
 (`Start.run`, `Start.launchDaemon` in
-`provider-swift/Sources/darkbloom/StartCommand+Daemon.swift`). Ordinary `start`
+`provider-swift/Sources/darkbloom/Start/StartCommand+Daemon.swift`). Ordinary `start`
 does not add a schedule prompt; it uses saved settings. Saved availability also
 controls an attached `--local-endpoint`, but standalone `--local` ignores it.
 
@@ -478,9 +480,10 @@ Memory when idle
 ```
 
 Enter keeps the policy already in force (`Free when idle` on a fresh install).
-The answer is written to `[backend] idle_timeout_mins` for coordinator-connected
+The answer is written to `[backend] idle_timeout_mins` for ordinary coordinator-connected
 idle unloading; `--model`/`--all`, `--idle-timeout`, non-interactive runs and the
-launchd relaunch never prompt. See [`darkbloom idle`](#darkbloom-idle).
+launchd relaunch never prompt. Autopilot enrollment also skips this prompt and
+preserves the saved policy. See [`darkbloom idle`](#darkbloom-idle).
 Every `darkbloom start` mode preloads selected models with the default
 `startup_preload = true`, regardless of the idle-memory policy. A scheduled
 provider begins this loading at the window opening, not beforehand.
@@ -492,6 +495,12 @@ can leave models to load on a later request. `startup_preload = false`
 disables preloading in either mode. The one-token `startup_selftest` and
 `startup_selftest_fail_closed` settings apply only to coordinator-connected
 startup; `--local` does not run a synthetic decode.
+
+Enrolled Autopilot can advertise more cached models than the saved serving
+selection. `startupPreloadPlan` preserves saved explicit or implicit preferences;
+that larger inventory does not replace `enabled_models`/`preload_models` or ask
+startup to load every advertised model
+(`provider-swift/Sources/ProviderCore/ProviderLoop+StartupPreload.swift`, `startupPreloadPlan`).
 
 Examples:
 
@@ -507,7 +516,7 @@ is retained.
 
 ### `darkbloom autopilot`
 
-Experimental enrollment for explicitly selected models; off by default.
+Experimental enrollment for the verified downloaded network inventory; off by default.
 Opt-in records interest/consent for the default shadow rollout, not active
 memory-residency control.
 Source: `provider-swift/Sources/darkbloom/Autopilot/AutopilotCommand.swift` (`Autopilot`) and
@@ -517,32 +526,42 @@ Every subcommand accepts `--config`.
 | Command / option | Effect |
 |---|---|
 | `status`, `status --json` | Configured consent and fresh daemon state, including selected/ready models and transition result |
-| `enable` | Start the model picker, download/verify selections, and safely save experimental enrollment; default shadow mode is not activated |
-| `models` | Change the selected set through the same download/verify/drain/restart flow |
+| `enable` | Discover/verify all eligible downloaded network builds and safely save experimental enrollment; no picker/downloads, and default shadow mode is inactive |
+| `models` | Explicitly refresh the recorded cached network inventory through discovery, verification and safe drain/restart; no picker/downloads |
 | `pause`, `resume` | Runtime participation update; pause preserves ready models and blocks new demand-based changes. Resume follows the coordinator's current mode and never promotes shadow to live. Retired, unadvertised residents may still unload when unpinned and unused |
 | `pin MODEL_ID...`, `unpin MODEL_ID...` | Live unload protection during active control, explicit pause or an accepted operation; pins must belong to the selected set |
 | `disable` | Revoke new commands and restore the saved idle policy after any accepted operation finishes |
-| `start --autopilot --model ID` | Explicit scripted enrollment for the specified local model(s); repeat `--model` for multiple |
+| `start --autopilot`, `start --autopilot --all` | Explicit scripted enrollment of all verified eligible downloaded network builds; `--all` cannot include arbitrary local/off-catalog models |
 | `start --no-autopilot` | Explicitly save the ordinary idle-policy mode |
 
 The normal interactive `start` asks for interest in experimental Autopilot with
 `[y/N]`, explicitly naming shadow mode as not activated and a later live rollout.
-A blank response means No. Yes records consent, not activation.
-Enrollment requires a nonempty supported selection;
-`--all` cannot grant Autopilot permission. Downloads and verification finish
-before enrollment is saved. Enrolled interactive setup still asks for the ordinary
-idle-memory policy. Repeat starts/restarts preserve the saved decision.
+A blank response means No and follows the ordinary picker/start path. Yes records
+consent, not activation, and skips both the model picker and idle-policy prompt.
+It discovers all already-downloaded active network-supported catalog models and
+verifies their manifest or matching registry weight hash. Arbitrary local,
+off-catalog, retired, ineligible, malformed, stale or unverified builds are excluded;
+verification failures warn and skip the build. Empty eligible inventory fails
+before persistence, drain or restart; no models are downloaded.
+Saved `enabled_models`, `preload_models`, idle policy and
+all other preferences remain unchanged; explicit `--idle-timeout` is still a
+requested override. Autopilot does not change residency in the current shadow
+rollout. Live rollout can later choose cached models for utilization, not an
+earnings guarantee.
 
-Selection validation deduplicates and sorts IDs, then requires `1...256` selected
-IDs, each nonempty and at most `256` UTF-8 bytes. The shared
-`ModelAutopilotSettings.hasConsent` predicate is checked before persistence and
-build verification (`validatedAutopilotSelection`, `verifyAutopilotSelection` in
+Discovery filters empty or over-`256`-UTF-8-byte IDs before verifying builds.
+Inventory validation deduplicates and sorts the verified result, then requires
+`1...256` approved IDs through the shared `ModelAutopilotSettings.hasConsent`
+predicate before persistence or drain (`validatedAutopilotSelection`,
+`verifiedAutopilotInventory` in
 `provider-swift/Sources/darkbloom/Start/StartCommand+Autopilot.swift`). Invalid
 bounds fail without stopping the existing daemon or installing a replacement.
 
-The selection is an exact-build allowlist; newly discovered models and
-coordinator-desired replacement builds outside it do not enroll automatically.
-Use `autopilot models` to approve a replacement. While enrolled, `darkbloom switch`
+The recorded inventory is an exact-build allowlist. Saved enrollment validates
+and reuses those IDs on ordinary starts/restarts; newly discovered/downloaded
+models and coordinator-desired replacement builds do not enroll automatically.
+Explicit `--autopilot`, `enable` or `models` refreshes eligible cached inventory
+without downloading. While enrolled, `darkbloom switch`
 returns a busy receipt with that guidance; disable Autopilot to use manual switching. Optional MTP may fall back to
 target-only serving without an Autopilot download. Files stay on disk.
 
@@ -1285,7 +1304,7 @@ override `provider.toml` for one process, are in
 | `[backend] engine_v2_max_concurrent_by_model` | `{}` | Exact model ID → operator cap; overrides the default for that model under the same qualification, architecture and memory bounds. `status` and `doctor` show the default policy and all configured model overrides, with unknown-profile bounds when different from the requested cap (`provider-swift/Sources/ProviderCore/Inference/Performance/ServingPerformanceProfile.swift`, `ServingPerformanceProfiles.summary`) |
 | `[backend] engine_v2_kv_backend` | `"auto"` | `auto` / `paged` / `contiguous`; per-model table `engine_v2_kv_backend_by_model` takes precedence. Candidate `auto` tries paged only for the [exact qualified-artifact allowlist](../architecture/prefix-cache.md#kv-layouts), with contiguous fallback; all other IDs remain contiguous (`EngineV2KVBackendPolicy.parseSelection`, `preferredBackend`) |
 | `[backend] mtp_mode` | `auto` | Written by `darkbloom beta enable|disable mtp` |
-| `[backend.model_autopilot] enabled` | `false` | Experimental enrollment/consent, not activation; nonempty selected models are required, and only a live lease enables residency control (`provider-swift/Sources/ProviderCore/Autopilot/ModelAutopilotSettings.swift`) |
+| `[backend.model_autopilot] enabled` | `false` | Experimental cached-inventory enrollment/consent, not activation; nonempty verified inventory is required, and only a live lease enables residency control (`provider-swift/Sources/ProviderCore/Autopilot/ModelAutopilotSettings.swift`) |
 | `[backend.model_autopilot] min_dwell_seconds` | `1800` | Minimum residence before Autopilot replacement; runtime clamps to `60...86400` (`ModelAutopilotSettings.effectiveMinDwellSeconds`) |
 | `[backend.model_autopilot] pinned_models` | `[]` | Models autopilot must retain; configured `[backend] model` is additionally pinned (`provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+Autopilot.swift`, `autopilotPinnedModels`) |
 | `[backend] startup_preload` | `true` | Preload `preload_models` when set, otherwise selected models (previously loaded first on coordinator starts), within slot and memory limits |
@@ -1440,7 +1459,7 @@ Source: `provider-swift/Sources/ProviderCore/Autopilot/ModelAutopilotSettings.sw
 | `[backend.model_autopilot]` key | Default | Meaning |
 |---|---|---|
 | `consent_recorded` | `false` | An explicit startup decision was saved |
-| `selected_models` | `[]` | Exact approved build IDs; empty cannot enroll |
+| `selected_models` | `[]` | Exact approved cached network build IDs; explicit inventory refresh updates this set, ordinary restarts do not expand it; empty cannot enroll |
 | `revision` | empty string | CLI-generated identity for the approved configuration |
 | `paused` | `false` | Suspend new automatic changes while retaining ready models |
 | `min_idle_seconds` | `60` | Inactivity guard, independent from minimum residence |

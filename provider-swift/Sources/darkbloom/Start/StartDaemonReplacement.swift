@@ -10,6 +10,7 @@ extension Start {
         stop: () async throws -> Void = { try await ServiceDrain.stopDrainedProvider() },
         install: () throws -> Void
     ) async throws {
+        try Task.checkCancellation()
         do {
             try saveAutopilotEnrollment(enabled: autopilot, models: models, configPath: configPath)
         } catch {

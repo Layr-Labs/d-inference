@@ -45,7 +45,10 @@ extension AutopilotCommandTests {
         let interested = Start.promptAutopilotChoice(readInput: {
             #expect(output.contains("proposed model changes are recorded, not activated"))
             #expect(output.contains("does not activate live control"))
-            #expect(output.contains("later live rollout"))
+            #expect(output.contains("all downloaded models supported by our network"))
+            #expect(output.contains("No extra model selection or downloads"))
+            #expect(output.contains("preferences stay unchanged"))
+            #expect(output.contains("improve network utilization"))
             #expect(output.hasSuffix("[y/N]: "))
             return answer
         }, emit: { output += $0 })
@@ -126,10 +129,12 @@ extension AutopilotCommandTests {
 }
 
 extension AutopilotCommandTests {
-    @Test func savedEnrollmentCannotSilentlyExpandThroughAll() throws {
+    @Test func enrollmentAcceptsAllButRejectsManualModelOverrides() throws {
         var config = ProviderConfig(provider:ProviderSettings(name:"choice"))
         config.backend.modelAutopilot = .init(enabled:true,consentRecorded:true,selectedModels:["chosen"],revision:"selection")
         var start = try Start.parse(["--all"])
+        #expect(try start.resolveAutopilotChoice(config))
+        start.model = ["chosen"]
         #expect(throws:(any Error).self) { try start.resolveAutopilotChoice(config) }
         start.autopilot = false
         #expect(try start.resolveAutopilotChoice(config) == false)
@@ -137,6 +142,28 @@ extension AutopilotCommandTests {
         #expect(try start.resolveAutopilotChoice(config) == false)
         start.autopilot = true
         #expect(throws:(any Error).self) { try start.resolveAutopilotChoice(config) }
+    }
+
+    @Test func inventoryEnrollmentPreservesEveryServingPreference() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("provider.toml")
+        var config = ProviderConfig(provider: ProviderSettings(name: "inventory"))
+        config.backend.enabledModels = ["preferred"]
+        config.backend.model = "preferred"
+        config.backend.preloadModels = ["preferred"]
+        config.backend.startupPreload = false
+        config.backend.idleTimeoutMins = 17
+        try ConfigManager.save(config, to: path)
+        let before = try ConfigManager.load(from: path)
+        try saveAutopilotEnrollment(enabled: true, models: ["other", "preferred"], configPath: path.path)
+        var after = try ConfigManager.load(from: path)
+        #expect(after.backend.modelAutopilot.selectedModels == ["other", "preferred"])
+        after.backend.modelAutopilot = before.backend.modelAutopilot
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        #expect(try encoder.encode(after) == encoder.encode(before))
     }
 
     @Test func statusFreshnessFollowsConfiguredHeartbeatCadence() {

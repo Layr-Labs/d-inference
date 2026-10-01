@@ -23,7 +23,7 @@ struct Start: AsyncParsableCommand {
     @Option(help: "Model ID to serve (repeatable, skips interactive picker).")
     var model: [String] = []
 
-    @Flag(inversion: .prefixedNo, help: "Enroll selected models in experimental Autopilot (shadow rollout by default; enrollment is not live activation).")
+    @Flag(inversion: .prefixedNo, help: "Report downloaded network models to experimental Autopilot (shadow mode, no downloads; preserve saved preferences).")
     var autopilot: Bool?
 
     @Flag(help: "Serve all local models (skips interactive picker).")

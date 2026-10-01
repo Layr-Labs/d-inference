@@ -40,10 +40,17 @@ struct ScheduledWindowSelection {
         guard usesSavedSelection else { return startup }
         // Empty enabled_models means every eligible local model at normal start.
         // Re-resolve that set for each scheduled window as local artifacts change.
-        let selectedIDs = saved.isEmpty
-            ? try Switch.selectModels(requested: [], local: scanLocalModels(startup.hardware),
-                capabilities: startup.runtimeCapabilities)
-            : saved
+        let selectedIDs: [String]
+        if startup.config.backend.modelAutopilot.hasConsent {
+            // Saved enabled_models remains a preload preference, not permission
+            // to shrink or expand the enrolled network inventory between windows.
+            selectedIDs = startup.config.backend.modelAutopilot.selectedModels
+        } else {
+            selectedIDs = saved.isEmpty
+                ? try Switch.selectModels(requested: [], local: scanLocalModels(startup.hardware),
+                    capabilities: startup.runtimeCapabilities)
+                : saved
+        }
 
         // Capture BEFORE scan's weight hashing, as in attachWeightHashes. A
         // concurrent file change must force re-hashing, never bless stale bytes.

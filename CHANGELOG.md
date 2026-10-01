@@ -29,11 +29,12 @@
 
 ## Unreleased - experimental model Autopilot
 
-- Add default-off experimental Autopilot enrollment at provider startup. Opt-in records interest/consent for a shadow rollout, not active residency control; explicitly selected models still download and verify during setup. Shadow mode retains ordinary startup loading and the configurable idle policy.
+- Add default-off experimental Autopilot enrollment at provider startup. Yes or `--autopilot` skips the picker, discovers/verifies all eligible already-downloaded active network models, and records shadow consent without activation or downloads. Exclude arbitrary local/off-catalog, retired, ineligible and unverified builds; empty inventory fails before restarting. Preserve all saved serving, preload, idle and other preferences.
 - Default coordinator Autopilot to observation only. It records hypothetical plans without residency reservations, fences or commands; explicit `EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY=false` enables a separately approved live rollout. Preserve the enable switch and runtime admin pause.
 - Add Autopilot status, pause/resume, pins and disable; session-bound live control, selected-model boundaries, request-shape planning, retained load timings and durable operation records. Active control preserves files, local work and donor capacity.
+- Keep approved cached inventory static across ordinary restarts. Explicit `--autopilot`, `autopilot enable` or `autopilot models` refreshes verified eligible cached models without picker/downloads; `--all` remains network-gated and enrollment with `--model` requires opt-out. A later live rollout chooses cached models to improve utilization, not guaranteed earnings.
 - Deduplicate unchanged shadow proposals as first-write decision records, not a per-tick time series; the current summary stays fresh even when an unchanged decision ages out of recent history. Distinct state/session/revision decisions remain retained; live command IDs are unchanged.
-- Reject coordinator unload victims outside the approved model selection while preserving guarded local superseded-model cleanup. Validate normalized selection count and UTF-8 ID bounds before saving consent or verifying builds; invalid selections cannot stop the existing daemon or install a replacement.
+- Reject coordinator unload victims outside the approved cached inventory while preserving guarded local superseded-model cleanup. Filter invalid UTF-8 ID bounds before verification, then validate the normalized verified inventory count before saving consent or draining; invalid inventory cannot stop the existing daemon or install a replacement.
 
 ## Release candidate v0.9.15 — automatic MiMo calibration (not shipped)
 

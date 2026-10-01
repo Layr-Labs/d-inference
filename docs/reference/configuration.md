@@ -39,7 +39,7 @@ time; they are not network control endpoints or serving credentials.
 | direct manual `start --foreground --model` | Explicit command-line IDs still override the saved selection | `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift` (`runForeground`) |
 | later scheduled serving windows | Keep the initial foreground selection until a live switch or saved `enabled_models` change; then resolve an empty list to all eligible local models, validating and hashing the selected set before each window. Hashing consumes the original window duration; an expired window does not start serving | `provider-swift/Sources/darkbloom/ScheduledWindowSelection.swift` (`ScheduledWindowSelection`); `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift` (`runScheduled`) |
 
-`start` saves its selected models under the lifecycle lease before disabling
+Ordinary non-enrolled `start` saves its selected models under the lifecycle lease before disabling
 recovery or draining/stopping the current daemon; persistence failure leaves it
 running. Live [`switch`](../provider/cli-reference.md#darkbloom-switch) uses the running
 daemon's resolved config path and does not optimistically write from the CLI.
@@ -363,7 +363,12 @@ change; programmatic configuration fields are validated by `autopilot.Config.Che
 | Standalone unload | Quiet, dwell, work and floor guards apply; no memory-pressure threshold | `coordinator/registry/autopilot/planner.go`, `Plan` |
 | Demand retention | `10s` buckets, at most `256` models; partial boundary bucket retains < `10s` | `coordinator/registry/autopilot/demand.go`, `DemandTracker.Record`, `DemandTracker.Snapshot` |
 
-Enrollment records interest/consent and selected builds; it is not activation.
+Enrollment records interest/consent and verified downloaded network inventory;
+it is not activation. It does not rewrite `enabled_models`, `preload_models`,
+idle settings or any other saved preferences. The larger advertised inventory
+does not change implicit startup preload selection. Recorded `selected_models`
+is static across ordinary restarts; only explicit inventory refresh expands it,
+without picker or downloads. See [CLI enrollment](../provider/cli-reference.md#darkbloom-autopilot).
 Only active live control, or an explicit provider pause, transfers residency
 ownership away from ordinary cold loading and the saved idle policy. The default
 shadow lease reports `observe_only=true`, `active=false` and an acknowledged

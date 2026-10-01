@@ -27,7 +27,10 @@ extension Start {
         let enableAutopilot = try resolveAutopilotChoice(config)
         let selectedModelIDs: [String]
 
-        if !model.isEmpty {
+        if enableAutopilot {
+            selectedModelIDs = try await downloadedAutopilotInventory(snapshot: snapshot,
+                coordinatorURL: coordinatorURL, runtimeCapabilities: runtimeCapabilities)
+        } else if !model.isEmpty {
             let known = Set(snapshot.models.map(\.id))
             selectedModelIDs = model.filter {
                 known.contains($0)
@@ -44,19 +47,13 @@ extension Start {
                 snapshot: snapshot,
                 config: config,
                 coordinatorURL: coordinatorURL,
-                runtimeCapabilities: runtimeCapabilities,
-                autopilotSelection: enableAutopilot
+                runtimeCapabilities: runtimeCapabilities
             )
         }
 
         guard !selectedModelIDs.isEmpty else {
             printError("No models selected.")
             throw ExitCode.failure
-        }
-
-        if enableAutopilot {
-            try await verifyAutopilotSelection(selectedModelIDs, snapshot:snapshot,
-                coordinatorURL:coordinatorURL, runtimeCapabilities:runtimeCapabilities)
         }
 
         // Do not persist the schedule until model selection has succeeded.
@@ -69,7 +66,7 @@ extension Start {
         // picker (never for --model/--all/relaunch), with the CURRENT policy as
         // the Enter default. `--idle-timeout` already answered it in `run()`.
         var idleMinutes = config.backend.idleTimeoutMins
-        if model.isEmpty, !all, idleTimeout == nil {
+        if !enableAutopilot, model.isEmpty, !all, idleTimeout == nil {
             idleMinutes = try promptIdleUnloadPolicy(
                 current: idleMinutes,
                 selectedModelIDs: selectedModelIDs,
@@ -78,9 +75,14 @@ extension Start {
 
         // Resolve selection before closing admission; a cancelled picker never
         // disturbs the existing provider. Keep the update lease through install.
+        try Task.checkCancellation()
         let replacement = try await ServiceDrain.prepare(options: drain, withConfigurationChange: { setup in
-            try ProviderModelSelection.withReplacement(selectedModelIDs, configPath: snapshot.configPath,
-                fallbackConfig: config, body: setup)
+            if enableAutopilot {
+                try setup()
+            } else {
+                try ProviderModelSelection.withReplacement(selectedModelIDs, configPath: snapshot.configPath,
+                    fallbackConfig: config, body: setup)
+            }
         })
         defer { replacement.release() }
         try await Self.completeDaemonReplacement(autopilot: enableAutopilot, models: selectedModelIDs,
@@ -127,6 +129,7 @@ extension Start {
         }
         if enableAutopilot {
             print("  Autopilot: enrolled (Experimental; shadow rollout by default)")
+            print("  Reporting downloaded network models; saved preferences are unchanged.")
             print("  Enrollment is not activation. Run `darkbloom autopilot status` for the current mode.")
             print("  Manage: darkbloom autopilot status | pause | disable")
         }

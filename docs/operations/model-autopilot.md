@@ -1,6 +1,6 @@
 # Experimental Autopilot operation and recovery
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-01
 
 Use this runbook to observe explicitly enrolled providers in shadow and prepare
 a separately approved live rollout. Startup opt-in records interest/consent, not
@@ -14,6 +14,8 @@ Use with compatible protocol-2 coordinator and provider releases. See the
 ## Prerequisites
 
 - Complete coordinator/provider validation and the normal release process.
+- Already have eligible active network models downloaded. Enrollment verifies
+  cached inventory but never downloads; see [provider setup](../provider/quickstart.md).
 - Production deployment, configuration, traffic changes and fleet restarts
   require the specific approval described in [coordinator deployment](coordinator-deploy.md).
 - Establish a comparable non-enrolled holdout and observation window. Compare
@@ -25,12 +27,13 @@ Use with compatible protocol-2 coordinator and provider releases. See the
 
 1. Keep `EIGENINFERENCE_AUTOPILOT_ENABLED=true` and
    `EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY=true` (the defaults) for observation.
-   Run `darkbloom start`, answer Yes to the experimental shadow-interest prompt,
-   and select at least one eligible model. Missing builds download and verify
-   before enrollment is saved; cached selections are verified too. Choose the
-   ordinary idle-memory policy. Setup does not activate Autopilot, and unattended
-   upgrades or missing settings do not enroll automatically.
-2. Run `darkbloom autopilot status`. Confirm enrollment, the selected set and
+   Run `darkbloom start` and answer Yes to the experimental shadow-interest prompt
+   to discover/verify all eligible downloaded active network models. There is no
+   model picker or download, and saved model, preload, idle and other preferences
+   remain unchanged. Empty eligible inventory fails before persistence or drain.
+   Setup does not activate Autopilot, and unattended upgrades or missing settings
+   do not enroll automatically.
+2. Run `darkbloom autopilot status`. Confirm enrollment, the verified cached set and
    `shadow` (not activated) after a valid shadow lease. `waiting` means consent
    exists but no valid coordinator lease is acknowledged. In shadow, ordinary
    startup loading, cold loading and the configured idle policy remain in force.
@@ -54,11 +57,16 @@ Use with compatible protocol-2 coordinator and provider releases. See the
    selected-model protection. Use `pause` to retain ready models and stop new
    demand-based changes; `resume` resumes participation in the coordinator's
    current mode, never promotes shadow to live. Retired unadvertised models may
-   still unload once unpinned and unused. `autopilot models` changes the approved
-   selection through picker, download, verification, drain and restart.
+   still unload once unpinned and unused. `autopilot models` explicitly refreshes
+   eligible downloaded network inventory through verification and safe drain/restart,
+   without picker or downloads. Ordinary restarts retain the recorded set.
 6. Compare live intent and terminal residency with request outcomes, not just
    predicted benefit or issued counts. Provider status includes local resident
    models and the latest transition result.
+
+The live planner chooses cached models for utilization; enrollment and rollout
+are not an earnings guarantee. Newly downloaded catalog builds do not expand
+consent until an explicit inventory refresh.
 
 The action and operation bounds are in
 [configuration](../reference/configuration.md#model-autopilot). Shadow control

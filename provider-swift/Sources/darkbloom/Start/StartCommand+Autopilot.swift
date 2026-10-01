@@ -15,8 +15,8 @@ extension Start {
             if autopilot == true { throw ValidationError("Autopilot requires a network provider.") }
             return false
         }
-        if all && (autopilot ?? config.backend.modelAutopilot.hasConsent) {
-            throw ValidationError("Autopilot requires explicit model selection; use the picker or repeat --model.")
+        if !model.isEmpty && (autopilot ?? config.backend.modelAutopilot.hasConsent) {
+            throw ValidationError("Autopilot advertises downloaded network models; use --no-autopilot with --model for a manual selection.")
         }
         if let autopilot {
             return autopilot
@@ -34,8 +34,9 @@ extension Start {
     ) -> Bool {
         emit("Autopilot - Experimental, shadow-first rollout\n")
         emit("Shadow mode is the default: proposed model changes are recorded, not activated.\n")
-        emit("Saying yes records your interest and selected models; it does not activate live control.\n")
-        emit("A later live rollout can load and unload only those selected models based on network demand.\n")
+        emit("Saying yes reports all downloaded models supported by our network; it does not activate live control.\n")
+        emit("No extra model selection or downloads. Your saved model, preload and idle preferences stay unchanged.\n")
+        emit("When we turn Autopilot on, it will choose among those cached models to improve network utilization.\n")
         emit("Downloaded files stay on disk. You can pause or disable Autopilot at any time.\n")
         emit("Interested in joining the Autopilot rollout? [y/N]: ")
         return autopilotAnswer(readInput())
@@ -54,7 +55,6 @@ func saveAutopilotEnrollment(enabled: Bool, models: [String], configPath: String
         settings.pinnedModels = settings.pinnedModels.filter { settings.selectedModels.contains($0) }
         settings.revision = UUID().uuidString
         config.backend.modelAutopilot = settings
-        if enabled { config.backend.enabledModels = settings.selectedModels }
         try ConfigManager.save(config, to: path)
         return path
     }
@@ -71,26 +71,55 @@ func validatedAutopilotSelection(_ models: [String]) throws -> [String] {
 }
 
 extension Start {
-    func verifyAutopilotSelection(_ ids: [String], snapshot: RuntimeSnapshot,
-                                  coordinatorURL: String, runtimeCapabilities: Set<ProviderRuntimeCapability>) async throws {
-        _ = try validatedAutopilotSelection(ids)
-        if !model.isEmpty && Set(ids) != Set(model) { throw ValidationError("Every requested Autopilot model must be downloaded and supported by this Mac.") }
+    func downloadedAutopilotInventory(snapshot: RuntimeSnapshot, coordinatorURL: String,
+                                     runtimeCapabilities: Set<ProviderRuntimeCapability>) async throws -> [String] {
         let client = ModelCatalogClient(coordinatorURL: coordinatorURL)
         let catalog = try await client.fetchCatalogSnapshot(typeFilter: "text", includeAliases: true)
-        let byID = Dictionary(catalog.models.map { ($0.id,$0) }, uniquingKeysWith: { first,_ in first })
         let local = snapshot.hardware.map { ModelScanner.scanAllModels(hardwareInfo: $0) } ?? []
-        let byLocalID = Dictionary(local.map { ($0.id,$0) }, uniquingKeysWith: { first,_ in first })
         let verifier = ModelDownloader(catalogClient: client,runtimeCapabilities: runtimeCapabilities)
-        print("  Verifying selected builds before recording Autopilot enrollment...")
-        for id in ids {
-            guard let entry = byID[id], entry.active != false,
-                  (entry.minRamGb ?? 0) <= Int(snapshot.hardware?.memoryGb ?? 0),
-                  ModelRuntimeRequirements.isEligible(modelID:id,catalogRequirements:entry.requiredProviderCapabilities,available:runtimeCapabilities),
-                  let localModel = byLocalID[id],
-                  Self.modelFitsBudget(sizeGb:localModel.estimatedMemoryGb,memoryGb:Double(snapshot.hardware?.memoryGb ?? 0)) else {
-                throw ValidationError("Selected model is not eligible on this Mac: \(id)")
+        let approved = autopilot == true || !snapshot.config.backend.modelAutopilot.hasConsent
+            ? nil : Set(snapshot.config.backend.modelAutopilot.selectedModels)
+        print("  Checking downloaded network models (no model downloads)...")
+        return try await Self.verifiedAutopilotInventory(local: local, catalog: catalog.models,
+            memoryGb: Double(snapshot.hardware?.memoryGb ?? 0), runtimeCapabilities: runtimeCapabilities,
+            approved: approved, verify: { try await verifier.verifySelectedModel($0) },
+            excluded: { printError("Not reporting \($0): downloaded build could not be verified (\($1)).") })
+    }
+
+    static func verifiedAutopilotInventory(
+        local: [ModelInfo], catalog: [CatalogModel], memoryGb: Double,
+        runtimeCapabilities: Set<ProviderRuntimeCapability>, approved: Set<String>? = nil,
+        verify: (CatalogModel) async throws -> Void,
+        excluded: (String, any Error) -> Void = { _, _ in }
+    ) async throws -> [String] {
+        let byID = Dictionary(catalog.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var verified: [String] = []
+        var seen = Set<String>()
+        for model in local.sorted(by: { $0.id < $1.id }) {
+            guard seen.insert(model.id).inserted, approved?.contains(model.id) ?? true,
+                  let entry = byID[model.id], entry.active != false,
+                  (entry.minRamGb ?? 0) <= Int(memoryGb),
+                  model.id.utf8.count <= 256, !model.id.isEmpty,
+                  EngineV2SupportedModels.isSupported(model: model),
+                  ModelRuntimeRequirements.isEligible(modelID: model.id,
+                      catalogRequirements: entry.requiredProviderCapabilities, available: runtimeCapabilities),
+                  Self.modelFitsBudget(sizeGb: model.estimatedMemoryGb, memoryGb: memoryGb) else { continue }
+            do {
+                try Task.checkCancellation()
+                try await verify(entry)
+                try Task.checkCancellation()
+                verified.append(model.id)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                try Task.checkCancellation()
+                excluded(model.id, error)
             }
-            try await verifier.verifySelectedModel(entry)
         }
+        try Task.checkCancellation()
+        guard !verified.isEmpty else {
+            throw ValidationError("No verified downloaded models supported by the network are available. Autopilot was not enrolled; download a supported model separately or use --no-autopilot.")
+        }
+        return try validatedAutopilotSelection(verified)
     }
 }

@@ -212,4 +212,31 @@ struct ScheduledWindowSelectionTests {
         #expect(try selection.nextWindowConfiguration().models.map(\.id) == ["fixture/a"])
         #expect(throws: (any Error).self) { _ = try selection.nextWindowConfiguration() }
     }
+
+    @Test(arguments: [["fixture/b"], []])
+    func enrolledInventoryRemainsAdvertisedWhenPreloadPreferenceChanges(saved: [String]) throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("provider.toml")
+        let paths = ["fixture/a": try snapshot(in: directory, id: "fixture/a"),
+                     "fixture/b": try snapshot(in: directory, id: "fixture/b")]
+        _ = try snapshot(in: directory, id: "fixture/local-only")
+        var config = ProviderConfig(provider: ProviderSettings(name: "enrolled"))
+        config.backend.enabledModels = ["fixture/a"]
+        config.backend.modelAutopilot = .init(enabled: true, consentRecorded: true,
+            selectedModels: ["fixture/a", "fixture/b"], revision: "inventory")
+        try ConfigManager.save(config, to: path)
+        var selection = ScheduledWindowSelection(startup: startup(config: config, path: path), configFileExists: true)
+        _ = try selection.nextWindowConfiguration()
+        try ProviderModelSelection.save(saved, configPath: path, fallbackConfig: config)
+        let next = try selection.nextWindowConfiguration(
+            resolveModels: { ids, _ in try resolve(ids, cache: directory, paths: paths) },
+            resolveLocalPath: { paths[$0] }, scanLocalModels: { _ in
+                Issue.record("Enrolled scheduled windows must not rescan unapproved local models")
+                return []
+            })
+        #expect(next.models.map(\.id) == ["fixture/a", "fixture/b"])
+        #expect(next.config.backend.enabledModels == saved)
+        #expect(next.config.backend.modelAutopilot == config.backend.modelAutopilot)
+    }
 }

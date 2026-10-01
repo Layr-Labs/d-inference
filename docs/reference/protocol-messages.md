@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-01
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -1169,7 +1169,7 @@ support.
 | `observe_only` | `bool` / `Bool` | req; always emitted | Acknowledged shadow mode; a valid shadow lease reports `true` with `active=false` and the matching session |
 | `session_id` | `string` / `String?` | opt | Acknowledged control connection; shadow acknowledgement is not live ownership |
 | `revision` | `string` / `String` | req | Approved consent configuration |
-| `selected_models` | `[]string` / `[String]` | req | Consent requires `1...256` exact allowed build IDs, each nonempty and at most `256` UTF-8 bytes; empty never grants permission |
+| `selected_models` | `[]string` / `[String]` | req | Consent requires `1...256` exact verified cached network build IDs, each nonempty and at most `256` UTF-8 bytes; static until explicit inventory refresh, empty never grants permission |
 | `min_idle_seconds` | `int` / `Int` | req | Inactivity guard separate from minimum residence |
 | `load_history` | `[]ModelAutopilotLoadTiming` / `[ModelAutopilotLoadTiming]?` | opt | At most64 `{model_id, weight_hash, load_ms, measured_at_ms}` measurements; only recent matching bytes influence estimates |
 | `last_elapsed_ms`, `last_release_ms`, `last_load_ms` | `int64` / `Int64?` | opt | Measured last operation phases; no ETA guarantee |
@@ -1200,6 +1200,12 @@ Provider `enabled` is configured consent, not activation. It does not itself
 activate warm-only network admission. The default shadow rollout sends leases for
 explicit mode/status but no residency commands. Shadow lease acknowledgement is
 not live ownership or actual capacity credit.
+
+The `selected_models` allowlist is populated by verified active downloaded network
+inventory, not a model picker, arbitrary local/off-catalog discovery or a download
+request. It can be broader than saved `enabled_models`; advertising it does not
+rewrite serving/preload/idle preferences. Ordinary restarts reuse it rather than
+automatically consenting to new catalog builds.
 
 ### `EncryptedPayload`
 

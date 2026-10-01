@@ -2,7 +2,8 @@ import Foundation
 import ProviderCore
 
 /// Keeps manual startup overrides until the durable selection changes. Only
-/// model selection is live across scheduled windows; all other inputs stay frozen.
+/// model selection and Autopilot policy are live across scheduled windows;
+/// all other inputs stay frozen.
 struct ScheduledWindowSelection {
     private let startup: ProviderLoopConfig
     private var hasOpenedWindow = false
@@ -34,17 +35,19 @@ struct ScheduledWindowSelection {
         if !hasSeenConfigFile, !FileManager.default.fileExists(atPath: path.path) {
             return startup
         }
-        let saved = try ConfigManager.load(from: path).backend.enabledModels
+        let savedBackend = try ConfigManager.load(from: path).backend
+        let saved = savedBackend.enabledModels
         hasSeenConfigFile = true
         usesSavedSelection = usesSavedSelection || saved != startup.config.backend.enabledModels
+            || savedBackend.modelAutopilot != startup.config.backend.modelAutopilot
         guard usesSavedSelection else { return startup }
         // Empty enabled_models means every eligible local model at normal start.
         // Re-resolve that set for each scheduled window as local artifacts change.
         let selectedIDs: [String]
-        if startup.config.backend.modelAutopilot.hasConsent {
+        if savedBackend.modelAutopilot.hasConsent {
             // Saved enabled_models remains a preload preference, not permission
             // to shrink or expand the enrolled network inventory between windows.
-            selectedIDs = startup.config.backend.modelAutopilot.selectedModels
+            selectedIDs = savedBackend.modelAutopilot.selectedModels
         } else {
             selectedIDs = saved.isEmpty
                 ? try Switch.selectModels(requested: [], local: scanLocalModels(startup.hardware),
@@ -67,6 +70,7 @@ struct ScheduledWindowSelection {
         })
         var config = startup.config
         config.backend.enabledModels = saved
+        config.backend.modelAutopilot = savedBackend.modelAutopilot
         return ProviderLoopConfig(
             coordinatorURL: startup.coordinatorURL,
             hardware: startup.hardware,

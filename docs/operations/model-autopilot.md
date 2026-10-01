@@ -60,6 +60,10 @@ Use with compatible protocol-2 coordinator and provider releases. See the
    still unload once unpinned and unused. `autopilot models` explicitly refreshes
    eligible downloaded network inventory through verification and safe drain/restart,
    without picker or downloads. Ordinary restarts retain the recorded set.
+   Refresh/`enable` preserves an existing pause; use explicit `resume` to resume.
+   An ordinary start fails before persistence/drain if any recorded build is
+   missing, ineligible or cannot verify, including a transient manifest failure.
+   Use an explicit inventory refresh only when pruning exclusions is intended.
 6. Compare live intent and terminal residency with request outcomes, not just
    predicted benefit or issued counts. Provider status includes local resident
    models and the latest transition result.

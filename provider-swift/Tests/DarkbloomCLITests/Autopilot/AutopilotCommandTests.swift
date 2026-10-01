@@ -166,6 +166,27 @@ extension AutopilotCommandTests {
         #expect(try encoder.encode(after) == encoder.encode(before))
     }
 
+    @Test func refreshingEnrolledInventoryPreservesExplicitPauseAndPins() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("provider.toml")
+        var config = ProviderConfig(provider: ProviderSettings(name: "paused-inventory"))
+        config.backend.modelAutopilot = .init(enabled: true, pinnedModels: ["a"],
+            consentRecorded: true, paused: true, selectedModels: ["a"], revision: "old")
+        try ConfigManager.save(config, to: path)
+        try await Start.completeDaemonReplacement(autopilot: true, models: ["a", "b"], configPath: path.path,
+            stop: {
+                let saved = try ConfigManager.load(from: path)
+                #expect(saved.backend.modelAutopilot.paused)
+                #expect(saved.backend.modelAutopilot.pinnedModels == ["a"])
+                #expect(saved.backend.modelAutopilot.selectedModels == ["a", "b"])
+                #expect(saved.backend.modelAutopilot.revision != "old")
+            }, install: {})
+        try setModelAutopilot(enabled: true, configPath: path.path)
+        #expect(try ConfigManager.load(from: path).backend.modelAutopilot.paused)
+    }
+
     @Test func statusFreshnessFollowsConfiguredHeartbeatCadence() {
         let state = DaemonState(pid: 1, version: "test", writtenAt: 1_000, startedAt: 900)
         #expect(Autopilot.Status.snapshotIsFresh(state, heartbeatIntervalSecs: 60, now: 1_030.5))

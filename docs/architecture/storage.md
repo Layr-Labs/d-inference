@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-01
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -384,6 +384,13 @@ phases remain unresolved evidence, not an inferred rollback. Reads use bounded
 windows. Records currently have no automatic deletion; preservation and archive
 policy can be added independently. `MemoryStore` provides equivalent test/dev
 semantics without restart durability. See [Autopilot](model-autopilot.md).
+
+`coordinator/registry/provider_lifecycle.go` (`disconnectProvider`) queues an
+`uncertain` record for a pending operation before removing its provider state.
+The normal ledger flush persists it outside registry/provider
+locks and retains it for retry on database failure. A dropped connection is not
+a confirmed failure, success or rollback; intended and actual residency must not
+be conflated (`coordinator/registry/autopilot_events.go`, `flushAutopilotEvents`).
 
 Shadow `proposed` phases form a decision ledger, not a per-tick time series. Their
 stable SHA-256 identity covers the provider session, consent revision,

@@ -61,6 +61,9 @@ flow (`Start.downloadedAutopilotInventory`, `Start.verifiedAutopilotInventory`,
 has drained, without rewriting saved model, preload, idle or other preferences.
 An explicit `--idle-timeout` remains an operator-requested override, not an
 enrollment side effect. Restarts retain the recorded choice and inventory.
+Existing consent also retains `paused` through ordinary start, `enable` and
+inventory refresh; only explicit `resume` resumes it. New/default-off enrollment
+starts unpaused (`saveAutopilotEnrollment`).
 
 `ModelAutopilotSettings.selectedModels` is an exact-build allowlist. An empty list
 cannot enroll, and another model appearing on disk cannot expand permission.
@@ -68,9 +71,12 @@ The provider advertises this verified network inventory even when it is broader
 than saved `enabled_models`, and rechecks the allowlist before loads, prefetches
 and network acceptance. The set remains static: discovering or downloading
 another build does not expand consent. Ordinary starts with saved consent
-validate/reuse the recorded IDs. Explicit `--autopilot`, `autopilot enable` and
+validate every recorded ID or fail before persistence/drain if any is missing,
+ineligible or unverified, including a transient manifest error. They never save
+a partial subset. Explicit `--autopilot`, `autopilot enable` and
 `autopilot models` re-inventory eligible downloaded builds and verify them without
-a picker or downloads. Inventory refresh uses the existing safe drain/restart.
+a picker or downloads and may prune excluded builds. Inventory refresh uses the
+existing safe drain/restart.
 Desired-build updates outside the recorded set are ignored. While enrolled,
 `darkbloom switch` directs the operator to `darkbloom autopilot models` or opt-out
 so a manual hosted-model transaction cannot bypass the approved selection.
@@ -234,6 +240,10 @@ a corrected `start` retry; it does not install a replacement. A lost
 controller lease restores ordinary policy after any accepted operation finishes.
 Disconnect and expired-control revocation re-arm the saved idle monitor; its
 ticks continue to defer to accepted commands and an explicit provider pause.
+A disconnect with a pending operation queues an `uncertain` ledger record before
+removing the provider. Persistence runs outside registry/provider locks; delivery
+loss proves neither rollback nor actual terminal residency. See the
+[ledger contract](storage.md#autopilot-operation-ledger).
 A failed target load may leave fewer residents; the terminal heartbeat reports
 that actual state. An ambiguous operation stays fenced until reconciled.
 After a coordinator restart, provider registration and paired capacity rebuild

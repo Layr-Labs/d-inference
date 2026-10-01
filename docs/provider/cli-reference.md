@@ -244,12 +244,17 @@ waits for the matching sequence and ready frame before routing queued work.
 Scheduled serving keeps the initial foreground selection, including manual
 `--model` overrides, until a live switch or a change to `backend.enabled_models`
 on disk. Each later window reads that selection from the same resolved config path.
+It also reads the full current `backend.model_autopilot` settings and consent.
+Disabling Autopilot between windows restores ordinary saved `enabled_models`
+selection even when that list has not changed; an enrolled window uses its
+current recorded inventory instead of stale startup consent.
 An empty saved list selects all eligible local models found for that window;
 explicit IDs select only those models. The provider validates and hashes the
 result before reopening; an invalid selection fails instead of reverting to
 startup models. The scheduled loop keeps the original window end while hashing
 and skips startup if that window has closed. A late start serves only for the
-remaining window time. Other provider settings, runtime
+remaining window time. Other provider settings outside model selection and
+Autopilot settings, runtime
 identity/capabilities and local endpoint options remain frozen for the process
 (`ScheduledWindowSelection` in `provider-swift/Sources/darkbloom/ScheduledWindowSelection.swift`;
 `Start.runScheduled` in `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift`).
@@ -526,8 +531,8 @@ Every subcommand accepts `--config`.
 | Command / option | Effect |
 |---|---|
 | `status`, `status --json` | Configured consent and fresh daemon state, including selected/ready models and transition result |
-| `enable` | Discover/verify all eligible downloaded network builds and safely save experimental enrollment; no picker/downloads, and default shadow mode is inactive |
-| `models` | Explicitly refresh the recorded cached network inventory through discovery, verification and safe drain/restart; no picker/downloads |
+| `enable` | Discover/verify all eligible downloaded network builds and safely save experimental enrollment; no picker/downloads, default shadow mode is inactive, and an already-enrolled provider's pause is preserved |
+| `models` | Explicitly refresh the recorded cached network inventory through discovery, verification and safe drain/restart; no picker/downloads and no implicit resume |
 | `pause`, `resume` | Runtime participation update; pause preserves ready models and blocks new demand-based changes. Resume follows the coordinator's current mode and never promotes shadow to live. Retired, unadvertised residents may still unload when unpinned and unused |
 | `pin MODEL_ID...`, `unpin MODEL_ID...` | Live unload protection during active control, explicit pause or an accepted operation; pins must belong to the selected set |
 | `disable` | Revoke new commands and restore the saved idle policy after any accepted operation finishes |
@@ -557,11 +562,17 @@ predicate before persistence or drain (`validatedAutopilotSelection`,
 `provider-swift/Sources/darkbloom/Start/StartCommand+Autopilot.swift`). Invalid
 bounds fail without stopping the existing daemon or installing a replacement.
 
-The recorded inventory is an exact-build allowlist. Saved enrollment validates
-and reuses those IDs on ordinary starts/restarts; newly discovered/downloaded
-models and coordinator-desired replacement builds do not enroll automatically.
+The recorded inventory is an exact-build allowlist. Ordinary starts with saved
+enrollment validate all recorded IDs or fail before persistence or drain: a
+missing, ineligible or unverified build, including a transient manifest error,
+cannot silently shrink consent. Newly discovered/downloaded models and
+coordinator-desired replacement builds do not enroll automatically.
 Explicit `--autopilot`, `enable` or `models` refreshes eligible cached inventory
-without downloading. While enrolled, `darkbloom switch`
+without downloading and may exclude/prune failed or ineligible builds.
+`saveAutopilotEnrollment` retains `paused` when consent already exists, including
+ordinary starts and explicit refresh/`enable`; only `resume` resumes that
+enrollment. New or previously disabled enrollment starts unpaused.
+While enrolled, `darkbloom switch`
 returns a busy receipt with that guidance; disable Autopilot to use manual switching. Optional MTP may fall back to
 target-only serving without an Autopilot download. Files stay on disk.
 

@@ -35,6 +35,9 @@
 - Keep approved cached inventory static across ordinary restarts. Explicit `--autopilot`, `autopilot enable` or `autopilot models` refreshes verified eligible cached models without picker/downloads; `--all` remains network-gated and enrollment with `--model` requires opt-out. A later live rollout chooses cached models to improve utilization, not guaranteed earnings.
 - Deduplicate unchanged shadow proposals as first-write decision records, not a per-tick time series; the current summary stays fresh even when an unchanged decision ages out of recent history. Distinct state/session/revision decisions remain retained; live command IDs are unchanged.
 - Reject coordinator unload victims outside the approved cached inventory while preserving guarded local superseded-model cleanup. Filter invalid UTF-8 ID bounds before verification, then validate the normalized verified inventory count before saving consent or draining; invalid inventory cannot stop the existing daemon or install a replacement.
+- Preserve an enrolled provider's pause during ordinary start, `enable` and inventory refresh; resumption requires explicit `resume`. Validate saved inventory all-or-nothing before persistence/drain, including transient verification failures; only explicit refresh may prune excluded builds.
+- Apply current full Autopilot settings at each new scheduled window. Disabling between windows restores ordinary saved model selection even if unchanged; other runtime inputs remain frozen.
+- Queue pending-operation uncertainty before removing a disconnected provider, persisting outside registry/provider locks. Connection loss never implies rollback or a confirmed terminal resident set.
 
 ## Release candidate v0.9.15 — automatic MiMo calibration (not shipped)
 

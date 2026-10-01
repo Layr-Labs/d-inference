@@ -50,6 +50,35 @@ struct AutopilotInventoryTests {
         #expect(refreshed == ["newly-downloaded", "previous"])
     }
 
+    @Test(arguments: ["transient-verification", "missing-local", "removed-catalog", "ineligible"])
+    func ordinaryStartCannotPersistPartialRecordedInventory(failure: String) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("provider.toml")
+        var config = ProviderConfig(provider: ProviderSettings(name: "fixed-inventory"))
+        config.backend.modelAutopilot = .init(enabled: true, consentRecorded: true,
+            paused: true, selectedModels: ["a", "b"], revision: "recorded")
+        try ConfigManager.save(config, to: path)
+        let before = try Data(contentsOf: path)
+        let models = failure == "missing-local" ? [local("a")] : [local("a"), local("b")]
+        let entries = failure == "removed-catalog" ? [catalog("a")]
+            : [catalog("a"), catalog("b", capabilities: failure == "ineligible" ? [.mlxNAX] : nil)]
+        await #expect(throws: (any Error).self) {
+            let inventory = try await Start.verifiedAutopilotInventory(local: models, catalog: entries,
+                memoryGb: 64, runtimeCapabilities: [], approved: ["a", "b"], verify: { entry in
+                    if failure == "transient-verification" && entry.id == "b" {
+                        throw URLError(.timedOut)
+                    }
+                })
+            try await Start.completeDaemonReplacement(autopilot: true, models: inventory,
+                configPath: path.path, stop: { Issue.record("Partial validation must not stop the daemon") },
+                install: { Issue.record("Partial validation must not install a replacement") })
+        }
+        #expect(try Data(contentsOf: path) == before)
+        #expect(try ConfigManager.load(from: path).backend.modelAutopilot.selectedModels == ["a", "b"])
+    }
+
     @Test func emptyOrFailedInventoryRefusesBeforeEnrollment() async {
         await #expect(throws: (any Error).self) {
             try await Start.verifiedAutopilotInventory(local: [], catalog: [catalog("remote-only")],

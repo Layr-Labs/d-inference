@@ -11,10 +11,11 @@ struct ScheduledWindowSelectionTests {
         cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4),
         gpuCores: 40, memoryBandwidthGbs: 546)
 
-    private func startup(config: ProviderConfig, path: URL, model: String = "fixture/a") -> ProviderLoopConfig {
+    private func startup(config: ProviderConfig, path: URL, model: String = "fixture/a",
+                         models: [String]? = nil) -> ProviderLoopConfig {
         ProviderLoopConfig(
             coordinatorURL: "wss://startup.invalid/ws/provider", hardware: hardware,
-            models: [ModelInfo(id: model, modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1)],
+            models: (models ?? [model]).map { ModelInfo(id: $0, modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1) },
             config: config, authToken: "startup-auth",
             runtimeHashes: RuntimeHashes(templateHashes: ["a": "template"]),
             runtimeCapabilities: [.appleM5, .mlxNAX],
@@ -238,5 +239,108 @@ struct ScheduledWindowSelectionTests {
         #expect(next.models.map(\.id) == ["fixture/a", "fixture/b"])
         #expect(next.config.backend.enabledModels == saved)
         #expect(next.config.backend.modelAutopilot == config.backend.modelAutopilot)
+    }
+
+    @Test func disablingBetweenWindowsRestoresSavedOrdinarySelectionWithoutPreferenceChange() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("provider.toml")
+        let paths = ["fixture/a": try snapshot(in: directory, id: "fixture/a"),
+                     "fixture/b": try snapshot(in: directory, id: "fixture/b")]
+        var config = ProviderConfig(provider: ProviderSettings(name: "enrolled"))
+        config.backend.enabledModels = ["fixture/a"]
+        config.backend.idleTimeoutMins = 17
+        config.backend.modelAutopilot = .init(enabled: true, consentRecorded: true,
+            selectedModels: ["fixture/a", "fixture/b"], revision: "inventory")
+        try ConfigManager.save(config, to: path)
+        var selection = ScheduledWindowSelection(startup: startup(config: config, path: path,
+            models: config.backend.modelAutopilot.selectedModels), configFileExists: true)
+        #expect(try selection.nextWindowConfiguration().models.map(\.id) == ["fixture/a", "fixture/b"])
+        var disabled = config
+        disabled.backend.modelAutopilot.enabled = false
+        disabled.backend.modelAutopilot.revision = "disabled"
+        disabled.backend.idleTimeoutMins = 99
+        try ConfigManager.save(disabled, to: path)
+        let next = try selection.nextWindowConfiguration(
+            resolveModels: { ids, _ in try resolve(ids, cache: directory, paths: paths) },
+            resolveLocalPath: { paths[$0] }, scanLocalModels: { _ in
+                Issue.record("A nonempty ordinary preference must not scan other local models")
+                return []
+            })
+        #expect(next.models.map(\.id) == ["fixture/a"])
+        #expect(next.config.backend.enabledModels == config.backend.enabledModels)
+        #expect(next.config.backend.modelAutopilot == disabled.backend.modelAutopilot)
+        #expect(next.config.backend.modelAutopilot.hasConsent == false)
+        #expect(next.config.backend.idleTimeoutMins == 17)
+    }
+
+    @Test(arguments: [["fixture/b"], ["fixture/b", "fixture/c"]])
+    func refreshedConsentSelectsOnlyCurrentApprovedInventory(approved: [String]) throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("provider.toml")
+        let paths = ["fixture/a": try snapshot(in: directory, id: "fixture/a"),
+                     "fixture/b": try snapshot(in: directory, id: "fixture/b"),
+                     "fixture/c": try snapshot(in: directory, id: "fixture/c")]
+        _ = try snapshot(in: directory, id: "fixture/local-only")
+        var config = ProviderConfig(provider: ProviderSettings(name: "startup-provider"))
+        config.backend.enabledModels = ["fixture/a"]
+        config.backend.preloadModels = ["fixture/a"]
+        config.backend.modelAutopilot = .init(enabled: true, consentRecorded: true,
+            selectedModels: ["fixture/a", "fixture/b"], revision: "initial")
+        try ConfigManager.save(config, to: path)
+        var selection = ScheduledWindowSelection(startup: startup(config: config, path: path,
+            models: config.backend.modelAutopilot.selectedModels), configFileExists: true)
+        _ = try selection.nextWindowConfiguration()
+        var refreshed = config
+        refreshed.backend.modelAutopilot.selectedModels = approved
+        refreshed.backend.modelAutopilot.revision = "refreshed"
+        refreshed.backend.modelAutopilot.paused = true
+        refreshed.backend.modelAutopilot.pinnedModels = ["fixture/b"]
+        refreshed.backend.preloadModels = ["fixture/c"]
+        refreshed.provider.name = "not-live"
+        try ConfigManager.save(refreshed, to: path)
+        let next = try selection.nextWindowConfiguration(
+            resolveModels: { ids, _ in try resolve(ids, cache: directory, paths: paths) },
+            resolveLocalPath: { paths[$0] }, scanLocalModels: { _ in
+                Issue.record("Refreshed consent must not discover arbitrary local models")
+                return []
+            })
+        #expect(next.models.map(\.id) == approved)
+        #expect(Set(next.modelHashes.keys) == Set(approved))
+        #expect(next.config.backend.modelAutopilot == refreshed.backend.modelAutopilot)
+        #expect(next.config.backend.enabledModels == config.backend.enabledModels)
+        #expect(next.config.backend.preloadModels == config.backend.preloadModels)
+        #expect(next.config.provider.name == config.provider.name)
+    }
+
+    @Test(arguments: ["paused", "pins", "revision", "idle", "dwell"])
+    func policyOnlyChangesTriggerCurrentWindowConfiguration(field: String) throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("provider.toml")
+        let a = try snapshot(in: directory, id: "fixture/a")
+        var config = ProviderConfig(provider: ProviderSettings(name: "policy"))
+        config.backend.enabledModels = ["fixture/a"]
+        config.backend.modelAutopilot = .init(enabled: true, consentRecorded: true,
+            selectedModels: ["fixture/a"], revision: "initial")
+        try ConfigManager.save(config, to: path)
+        var selection = ScheduledWindowSelection(startup: startup(config: config, path: path), configFileExists: true)
+        _ = try selection.nextWindowConfiguration()
+        var changed = config
+        switch field {
+        case "paused": changed.backend.modelAutopilot.paused = true
+        case "pins": changed.backend.modelAutopilot.pinnedModels = ["fixture/a"]
+        case "revision": changed.backend.modelAutopilot.revision = "next"
+        case "idle": changed.backend.modelAutopilot.minIdleSeconds = 120
+        default: changed.backend.modelAutopilot.minDwellSeconds = 3_600
+        }
+        try ConfigManager.save(changed, to: path)
+        let next = try selection.nextWindowConfiguration(
+            resolveModels: { ids, _ in try resolve(ids, cache: directory, paths: ["fixture/a": a]) },
+            resolveLocalPath: { $0 == "fixture/a" ? a : nil })
+        #expect(next.config.backend.enabledModels == config.backend.enabledModels)
+        #expect(next.config.backend.modelAutopilot == changed.backend.modelAutopilot)
+        #expect(next.modelHashes["fixture/a"] != "stale-startup-hash")
     }
 }

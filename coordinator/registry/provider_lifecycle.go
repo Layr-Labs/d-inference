@@ -9,6 +9,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry/autopilot"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
+	"github.com/eigeninference/d-inference/coordinator/store"
 	"nhooyr.io/websocket"
 )
 
@@ -310,6 +311,16 @@ func (r *Registry) disconnectProvider(id string, expected *Provider, timeout tim
 			p.mu.Unlock()
 			r.mu.Unlock()
 			return false
+		}
+		if pending := p.autopilotPending; pending != nil {
+			// Losing the session cannot prove delivery, final residency or rollback.
+			// Queue only; the controller persists outside registry/provider locks.
+			now := time.Now()
+			r.queueAutopilotEvent(store.AutopilotRecord{CommandID: pending.Command.CommandID, At: now, ProviderID: p.ID,
+				Phase: "uncertain", Reason: pending.Command.Reason, Load: pending.Command.LoadModelID,
+				Unload: append([]string{}, pending.Command.UnloadModelIDs...), Before: append([]string{}, pending.Command.ExpectedResidentModels...),
+				ElapsedMS: max(0, now.Sub(pending.SentAt).Milliseconds())})
+			pending.Uncertain = true
 		}
 		delete(r.providers, id)
 		p.transport = transportMeasurement{}

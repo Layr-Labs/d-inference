@@ -23,7 +23,8 @@ func setModelAutopilot(enabled: Bool, dwell: UInt64? = nil, pins: [String]? = ni
             guard Set(pins).isSubset(of: Set(settings.selectedModels)) else { throw ValidationError("Pins must be selected models.") }
             settings.pinnedModels = Array(Set(pins)).sorted()
         }
-        settings.enabled = enabled; settings.consentRecorded = true; settings.paused = false
+        if !enabled || !settings.hasConsent { settings.paused = false }
+        settings.enabled = enabled; settings.consentRecorded = true
         settings.revision = UUID().uuidString
         if let dwell { settings.minDwellSeconds = dwell }
         config.backend.modelAutopilot = settings

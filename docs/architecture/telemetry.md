@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-09-29
+> Last updated: 2026-10-01
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is
@@ -314,6 +314,11 @@ and the `inference.timing.*` histograms are built from the same
    full sink and unreachable intake are all silent no-ops or counted drops.
    Engine-health, `kv_backend` and `telemetry` heartbeat fields are
    measurement only; the scheduler does not gate on them.
+   After request handoff, dispatch reads KV-backend attribution from its
+   selected provider, including the captured backup on failover, rather than
+   looking it up under the registry lock. `noteServingSlotFor`
+   (`coordinator/api/kv_backend_metrics.go`) keeps this bookkeeping from
+   delaying first content behind a registry writer.
 4. **Tags come from the accepted snapshot and closed folds.** `SlotStateFold`,
    `ThermalStateFold`, `ProviderVersionFold` (`coordinator/registry/gate_reason.go`)
    and `KVBackendFallbackTag` (`coordinator/registry/kv_backend.go`) bound
@@ -380,3 +385,19 @@ for populations, labels and reset semantics (`coordinator/api/cache_model_teleme
 - [`system-profiler.md`](system-profiler.md) — per-attempt `profile`, `request_profiles`, `fleet_snapshots`
 - [`request-outcome-observability.md`](request-outcome-observability.md) — outcome taxonomy behind the request metrics
 - [`scheduling.md`](scheduling.md), [`routing.md`](routing.md) — what the heartbeat fields decide
+
+## Autopilot observations
+
+`coordinator/api/autopilot_demand.go` (`beginAutopilotDemand`, `finishAutopilotDemand`)
+tracks one validated public logical request across attempts. Bounded model/shape
+buckets exclude account and intrinsically invalid failures while preserving
+capacity-related supply refusals. No prompt or consumer identity enters them.
+`coordinator/store/autopilot.go` (`AutopilotRecord`) defines durable command phase
+records. Shadow `proposed` records remain hypothetical and deduplicate unchanged
+decisions ([ledger semantics](storage.md#autopilot-operation-ledger)); they are
+not a per-tick time series. Controller summaries and
+tick logs report `observe_only` and distinguish `proposed` from `issued`
+(`coordinator/registry/autopilot_controller.go`, `modelAutopilotController.tick`).
+Live records capture intended/actual residents and transition timing; use the
+request-outcome ledger to evaluate completion and first-content effects. See
+[Autopilot](model-autopilot.md).

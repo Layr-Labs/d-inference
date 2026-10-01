@@ -1,6 +1,16 @@
+import MLXLMCommon
 import MLXVLM
 
 extension EngineV2Bridge {
+    /// Classification only: the engine still checks the seal's generation,
+    /// ownership and one-shot use before accepting work. A failed submission
+    /// cannot emit a completed-prefill receipt.
+    func nativeMediaMeasurementEligible(_ media: CBv2MultimodalInput?) -> Bool {
+        guard let media, media.nativeMediaToken != nil, media.attention == .causal,
+              media.positionState == nil, media.deepstackEmbeddings == nil else { return false }
+        return (try? nativeMiMoDecodedMediaBinding()) != nil
+    }
+
     /// Real published owner only. A request/model-name string or isVLM bit
     /// cannot manufacture this opt-in profile. No raw model/asset is exported.
     func nativeMiMoDecodedMediaBinding() throws

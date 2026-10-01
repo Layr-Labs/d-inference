@@ -42,6 +42,8 @@ func (w *terminalOutcomeWriter) Write(p []byte) (int, error) {
 	}
 }
 
+// Synchronous fixtures can close the sink after their handler and attempt
+// finalizers return, draining all revisions without waiting for a periodic flush.
 func terminalOutcomeServer(t *testing.T) (*Server, *store.MemoryStore) {
 	t.Helper()
 	st := store.NewMemory(store.Config{})
@@ -103,6 +105,7 @@ func TestRequestOutcomeStreamTerminalRequiresAcceptedWrite(t *testing.T) {
 						}
 						w := &terminalOutcomeWriter{header: make(http.Header), mode: mode}
 						srv.observeRequestOutcome(handler)(w, req)
+						srv.requestOutcomes.close()
 						row := awaitRequestOutcomes(t, st, 1)[0]
 						accepted := mode == "full"
 						wantTerminal := "unknown"
@@ -138,6 +141,7 @@ func TestRequestOutcomeErrorTerminalPreservesEarlierWriteFailure(t *testing.T) {
 				snapshotChatCompletionMetadata(pr, committedProviderInfo{ProviderID: "provider-id"})
 				emitOutcomeTerminalError(r.URL.Path, w, pr)
 			})(w, httptest.NewRequest("POST", "/v1/chat/completions", nil))
+			srv.requestOutcomes.close()
 			row := awaitRequestOutcomes(t, st, 1)[0]
 			if w.writes != 2 || row.ResponseTerminal != "error" || !row.ClientWriteError || row.EgressCompleted || row.ContentWriteCompleted || row.Termination != "interrupted_response" {
 				t.Fatalf("accepted error erased preceding failed metadata write: %+v", row)
@@ -177,6 +181,7 @@ func TestRequestOutcomeNativeResponseTerminalConflicts(t *testing.T) {
 						}
 						relay.flush()
 					})(w, httptest.NewRequest("POST", "/v1/chat/completions", nil))
+					srv.requestOutcomes.close()
 					row := awaitRequestOutcomes(t, st, 1)[0]
 					conflict := order[0] != order[1]
 					first := order[0]
@@ -217,6 +222,7 @@ func TestRequestOutcomeUnknownBodiesDoNotConfirmCompletion(t *testing.T) {
 				w.Header().Set("Content-Type", "application/json")
 				w.Write([]byte(body))
 			})(httptest.NewRecorder(), httptest.NewRequest("POST", "/v1/chat/completions", nil))
+			srv.requestOutcomes.close()
 			row := awaitRequestOutcomes(t, st, 1)[0]
 			if row.ResponseTerminal != "unknown" || row.EgressCompleted || row.Termination != "unknown" {
 				t.Fatalf("unknown body confirmed completion: %+v", row)
@@ -239,6 +245,7 @@ func TestRequestOutcomeTerminalAndContentSurviveLaterFailedWrite(t *testing.T) {
 				relay.flush()
 				emitOutcomeTerminalError(r.URL.Path, w, pr)
 			})(w, httptest.NewRequest("POST", "/v1/chat/completions", nil))
+			srv.requestOutcomes.close()
 			row := awaitRequestOutcomes(t, st, 1)[0]
 			if row.ResponseTerminal != "completed" || !row.ContentWriteCompleted || !row.ClientWriteError || row.EgressCompleted || row.EvidenceConflict || row.Termination != "interrupted_response" {
 				t.Fatalf("failed later terminal changed earlier accepted evidence: %+v", row)
@@ -279,6 +286,7 @@ func TestRequestOutcomeSSETerminalsParseCompleteEventData(t *testing.T) {
 					handler = srv.sealedTransport(handler)
 				}
 				srv.observeRequestOutcome(handler)(httptest.NewRecorder(), req)
+				srv.requestOutcomes.close()
 				row := awaitRequestOutcomes(t, st, 1)[0]
 				if row.ResponseTerminal != tc.want || row.EgressCompleted != (tc.want == "completed") {
 					t.Fatalf("SSE event parsed differently from client: %+v", row)
@@ -296,6 +304,7 @@ func TestRequestOutcomeFullBodyTerminalConflict(t *testing.T) {
 		defer pr.Profile.CompleteTerminal()
 		writeNonStreamBody(w, pr.Profile.Parent(), map[string]any{"object": "response", "status": "completed", "error": map[string]any{"code": "server_error"}})
 	})(httptest.NewRecorder(), httptest.NewRequest("POST", "/v1/responses", nil))
+	srv.requestOutcomes.close()
 	row := awaitRequestOutcomes(t, st, 1)[0]
 	if !row.EvidenceConflict || row.ResponseTerminal != "error" || !row.EgressCompleted || row.Termination != "unknown" {
 		t.Fatalf("full body contradiction dropped: %+v", row)
@@ -317,6 +326,7 @@ func TestRequestOutcomeNativeFailureWithoutSnapshotIsNotFulfilled(t *testing.T) 
 				relay.writeFrame("data: [DONE]")
 				relay.flush()
 			})(httptest.NewRecorder(), httptest.NewRequest("POST", "/v1/chat/completions", nil))
+			srv.requestOutcomes.close()
 			row := awaitRequestOutcomes(t, st, 1)[0]
 			first := status
 			if first == "failed" {

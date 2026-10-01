@@ -36,8 +36,9 @@ func (s *Server) accountHasFirstContentSLA(accountID string) (bool, error) {
 	return ok, nil
 }
 
-// Zero explicitly disables the SLA. Resolve once, before admission/media, and
-// carry the result through the entire retry/alias/queue lifecycle.
+// Zero explicitly disables the SLA. Resolve enforcement before admission/media.
+// A concrete native-media post-fetch recount may correct the token term once,
+// still anchored to the original receive instant. Retries never restart it.
 func (s *Server) requestFirstContentDeadline(r *http.Request, publicModel, model string, tokens int) (time.Duration, error) {
 	enabled, err := s.accountHasFirstContentSLA(consumerKeyFromContext(r.Context()))
 	if err != nil || !enabled {

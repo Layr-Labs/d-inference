@@ -51,7 +51,11 @@ pub fn normalize(
     let mut messages = template_messages(&body, mimo)?;
     crate::response_format::prepare(&body, &mut messages)?;
     let mut tools = template_tools(&body)?;
-    if !model_type.is_some_and(|value| value.trim().eq_ignore_ascii_case("nemotron_h")) {
+    if model_type.is_some_and(|value| value.trim().eq_ignore_ascii_case("nemotron_h")) {
+        // JSONValue decodes integral JSON doubles as Int before toolSpec reaches
+        // Jinja. Nemotron's numeric filters must see that same typed value.
+        tools = tools.map(|tools| tools.into_iter().map(provider_bridged_value).collect());
+    } else {
         tools = tools.map(drop_nemotron_only_tool_metadata);
     }
     if mimo {
@@ -2610,6 +2614,26 @@ mod tests {
                     .get("strict")
                     .is_none()
             );
+        }
+    }
+
+    #[test]
+    fn nemotron_tool_numbers_follow_typed_sdk_decoding_without_changing_other_families() {
+        let body = json!({"model":"fixture","messages":[{"role":"user","content":"number"}],
+            "tools":[{"type":"function","function":{"name":"number","parameters":{
+                "type":"object","properties":{"value":{"type":"number","enum":[1.0,1e-7]}}}}}]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        for (model_type, integral_is_float) in [("nemotron_h", false), ("qwen3_5", true)] {
+            let normalized = normalize(body.clone(), Some(model_type)).unwrap();
+            let tools = normalized.tools.unwrap();
+            let values = tools[0]["function"]["parameters"]["properties"]["value"]["enum"]
+                .as_array()
+                .unwrap();
+            assert_eq!(values[0].is_f64(), integral_is_float);
+            assert_eq!(values[1].as_f64(), Some(1e-7));
         }
     }
 

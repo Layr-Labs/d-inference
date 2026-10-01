@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-01
 
 The `d-inference` macOS CI lanes pin `blacksmith-12vcpu-macos-27` and select
 Xcode 27 / native SwiftPM before compilation. Unit, SDK, prompt-parity,
@@ -2159,6 +2159,25 @@ binary that already has `mlx.metallib` beside it.
 | `e2e/benchmark_test.go` | `TestBenchmark_SingleProviderStreaming`, `_SingleProviderNonStreaming`, `_MultiModelMultiProvider`, `_HighConcurrency`, `_QueueSaturation`, `_ManyUsers`, `_SingleModelScaling`, `_HeavyLoad_100Concurrent_10KB`; config tests `TestBenchmarkSuiteConfig*`, `TestBenchmarkControlSuiteIsIsolatedAndMatchesPosture`, `TestBenchmarkCapacitySaturationPolicy` |
 
 ### 9. Prompt-contract parity fixtures and vectors
+
+After building provider tests, run `./scripts/verify-nemotron-prompt-parity.sh`
+for the separate Nemotron contract. CI runs this even if the general parity
+step fails. It provisions only prompt metadata through the existing Go artifact
+cache using `fixtures/prompt-contract/nemotron/manifests`, then requires the
+Swift reference suite to execute without skips and explicitly runs the Rust
+artifact-dependent reference and planner tests. The 25 original cases plus
+seven numeric edge cases cover exact prompt bytes/tokens, including numeric
+enum/minimum/default values, nested numbers and integral decoding. No weights,
+generation, or GPU model qualification is involved.
+
+`nemotron_number_vectors.json` contains 526 finite Double spellings captured by
+`swift scripts/generate-nemotron-number-vectors.swift`; offline Swift and Rust
+filter tests consume the same oracle. The edge corpus can be regenerated with
+`python3 scripts/generate-nemotron-prompt-edges.py <pinned-model-directory>`;
+it uses local-only Transformers after checking the template hash and mirrors
+the SDK's typed numeric conversion before reference rendering.
+`MediaToolMetadataTests` separately preserves non-Nemotron text/media metadata
+policy without loading a model.
 
 The `prompt-fixtures` generator writes pretty JSON without an extra final newline,
 matching the checked-in production corpus. `verify-prompt-parity.sh` compares

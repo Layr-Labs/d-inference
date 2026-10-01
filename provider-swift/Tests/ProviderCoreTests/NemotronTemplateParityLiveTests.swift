@@ -12,21 +12,23 @@ final class NemotronTemplateParityLiveTests: XCTestCase {
             throw XCTSkip("set NEMOTRON_TEMPLATE_MODEL_DIR for the local artifact parity gate")
         }
         let modelDirectory = URL(fileURLWithPath: path, isDirectory: true)
-        let fixtureURL = try XCTUnwrap(Bundle.module.url(
-            forResource: "nemotron-reference-corpus", withExtension: "json", subdirectory: "Fixtures"))
-        let corpus = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL)) as? [String: Any])
-        let cases = try XCTUnwrap(corpus["cases"] as? [[String: Any]])
-        XCTAssertGreaterThanOrEqual(cases.count, 25)
         let tokenizer = try await LocalTokenizerLoader().load(from: modelDirectory)
-        for fixture in cases {
-            let name = try XCTUnwrap(fixture["name"] as? String)
-            let body = try XCTUnwrap(fixture["body"] as? [String: Any])
-            let expectedPrompt = try XCTUnwrap(fixture["prompt"] as? String)
-            let expectedTokens = try XCTUnwrap(fixture["token_ids"] as? [NSNumber]).map(\.intValue)
-            let tokens = try ProviderPromptContractPipeline.tokenizeProviderBody(
-                JSONSerialization.data(withJSONObject: body), tokenizer: tokenizer, modelType: "nemotron_h")
-            XCTAssertEqual(tokens, expectedTokens, name)
-            XCTAssertEqual(tokenizer.decode(tokenIds: tokens, skipSpecialTokens: false), expectedPrompt, name)
+        for (resource, minimum) in [("nemotron-reference-corpus", 25), ("nemotron-prompt-edge-corpus", 7)] {
+            let fixtureURL = try XCTUnwrap(Bundle.module.url(
+                forResource: resource, withExtension: "json", subdirectory: "Fixtures"))
+            let corpus = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL)) as? [String: Any])
+            let cases = try XCTUnwrap(corpus["cases"] as? [[String: Any]])
+            XCTAssertGreaterThanOrEqual(cases.count, minimum)
+            for fixture in cases {
+                let name = try XCTUnwrap(fixture["name"] as? String)
+                let body = try XCTUnwrap(fixture["body"] as? [String: Any])
+                let expectedPrompt = try XCTUnwrap(fixture["prompt"] as? String)
+                let expectedTokens = try XCTUnwrap(fixture["token_ids"] as? [NSNumber]).map(\.intValue)
+                let tokens = try ProviderPromptContractPipeline.tokenizeProviderBody(
+                    JSONSerialization.data(withJSONObject: body), tokenizer: tokenizer, modelType: "nemotron_h")
+                XCTAssertEqual(tokens, expectedTokens, name)
+                XCTAssertEqual(tokenizer.decode(tokenIds: tokens, skipSpecialTokens: false), expectedPrompt, name)
+            }
         }
     }
 

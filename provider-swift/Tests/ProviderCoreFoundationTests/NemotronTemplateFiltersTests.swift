@@ -1,10 +1,39 @@
 // Copyright © 2026 Eigen Labs.
 
+import Foundation
 import Jinja
 import Testing
 @testable import ProviderCoreFoundation
 
 struct NemotronTemplateFiltersTests {
+    @Test func sharedNumberSpellingsMatchActualSwiftFilters() throws {
+        struct Vector: Decodable { let bits: String; let rendered: String }
+        struct Corpus: Decodable { let vectors: [Vector] }
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<4 { root.deleteLastPathComponent() }
+        let corpus = try JSONDecoder().decode(Corpus.self, from: Data(contentsOf:
+            root.appendingPathComponent("fixtures/prompt-contract/v1/nemotron_number_vectors.json")))
+        #expect(corpus.vectors.count >= 512)
+        let environment = Environment()
+        NemotronTemplateFilters.install(in: environment, modelType: "nemotron_h")
+        let template = try Template(NemotronTemplateFilters.bindingFilters(
+            in: "{{ value|string }}|{{ value|tojson }}", modelType: "nemotron_h"))
+        for vector in corpus.vectors {
+            let value = Double(bitPattern: try #require(UInt64(vector.bits, radix: 16)))
+            #expect(try template.render(["value": .double(value)], environment: environment)
+                == vector.rendered + "|" + vector.rendered)
+        }
+    }
+
+    @Test func nullableTypeArrayUsesStringDescription() throws {
+        let environment = Environment()
+        NemotronTemplateFilters.install(in: environment, modelType: "nemotron_h")
+        let template = try Template(NemotronTemplateFilters.bindingFilters(
+            in: "{{ value|string }}", modelType: "nemotron_h"))
+        #expect(try template.render(["value": .array([.string("number"), .string("null")])],
+            environment: environment) == "['number', 'null']")
+    }
+
     @Test func matchesTransformersDefaultsUsedByNemotron() throws {
         let environment = Environment()
         NemotronTemplateFilters.install(in: environment, modelType: "nemotron_h")

@@ -1,6 +1,6 @@
 # Prompt-contract sidecar
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-01
 
 The Go `LowerResponsesInferenceBody` serving adapter preserves ordered inline
 media; it does not broaden this sidecar's text-only cache-planning contract.
@@ -179,9 +179,11 @@ Five provider-side transformations that precede every template are mirrored in
 2. **Tool-call arguments.** Decoded `arguments` take the value bridge's
    shape: sorted members and integral JSON doubles as integers, because
    `Jinja.Value(any:)` matches `Int` before `Double` (`provider_bridged_value`).
-3. **Tool definitions.** A tool's `function` object keeps only `name`,
-   `description` and `parameters`, because `OpenAITool.toolSpec()` renders
-   nothing else (`typed_function_definition`).
+3. **Tool definitions.** A tool's `function` object keeps `name`,
+   `description` and `parameters`, plus optional `strict` for Nemotron
+   (`typed_function_definition`). `ChatTemplateFixes.normalizeToolMetadata`
+   removes that SDK metadata for other families in both text and native media
+   inputs. It preserves the media producer's existing schema/history handling.
 4. **Harmony framing.** Assistant `content` and `reasoning_content` lose raw
    Harmony channel framing for every model family
    (`strip_harmony_channel_framing`, the mirror of `sanitizeJinjaMessages`).
@@ -334,6 +336,15 @@ no Nemotron model; its identity-only transformation cannot establish Nemotron
 prompt parity. Nemotron's reference corpus separately verifies the changed
 tool metadata and filter bytes. Model weights and floating-point behavior are
 unchanged.
+
+Nemotron's Rust filters mirror the provider's `String(Double)` spelling rather
+than Rust's decimal display or serde's exponent spelling. The normalizer applies
+the SDK's Int-before-Double conversion to Nemotron tool values before rendering;
+numeric enum/default/minimum fields therefore produce identical token counts
+and cache blocks. The shared 526-value finite-number oracle exercises both
+Swift and Rust filters, and the pinned reference/edge corpora exercise the real
+provider tokenizer and Rust planner. See the
+[Nemotron parity gate](../developer/test.md#9-prompt-contract-parity-fixtures-and-vectors).
 
 The artifact loader records the pinned `swift-transformers` precedence:
 `chat_template.jinja`, then `chat_template.json`, then the tokenizer-config

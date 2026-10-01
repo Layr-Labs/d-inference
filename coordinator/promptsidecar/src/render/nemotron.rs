@@ -8,6 +8,9 @@ use minijinja::{Error, ErrorKind, Value};
 use serde::Serialize;
 use std::io::{self, Write};
 
+mod number;
+mod string;
+
 pub(super) fn tojson(value: Value, args: Rest<Value>) -> Result<Value, Error> {
     require_defaults(&args)?;
     let mut output = BoundedWriter::new(MAX_RENDERED_BYTES);
@@ -32,12 +35,7 @@ pub(super) fn tojson(value: Value, args: Rest<Value>) -> Result<Value, Error> {
 
 pub(super) fn string(value: Value, args: Rest<Value>) -> Result<Value, Error> {
     require_defaults(&args)?;
-    Ok(Value::from(match value.kind() {
-        ValueKind::Bool => if value.is_true() { "True" } else { "False" }.to_owned(),
-        ValueKind::None => "None".to_owned(),
-        ValueKind::Undefined => String::new(),
-        _ => value.to_string(),
-    }))
+    string::render(&value).map(Value::from)
 }
 
 fn require_defaults(args: &[Value]) -> Result<(), Error> {
@@ -53,6 +51,10 @@ fn require_defaults(args: &[Value]) -> Result<(), Error> {
 struct PythonFormatter;
 
 impl serde_json::ser::Formatter for PythonFormatter {
+    fn write_f64<W: ?Sized + Write>(&mut self, writer: &mut W, value: f64) -> io::Result<()> {
+        writer.write_all(number::swift_float(value).as_bytes())
+    }
+
     fn begin_array_value<W: ?Sized + Write>(
         &mut self,
         writer: &mut W,
@@ -87,6 +89,43 @@ mod tests {
     use super::*;
     use minijinja::Environment;
     use serde_json::json;
+
+    #[test]
+    fn number_filters_match_actual_swift_double_oracle() {
+        let corpus: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../fixtures/prompt-contract/v1/nemotron_number_vectors.json"
+        ))
+        .unwrap();
+        let rows = corpus["vectors"].as_array().unwrap();
+        assert!(rows.len() >= 512);
+        let mut environment = Environment::new();
+        environment.add_filter("string", string);
+        environment.add_filter("tojson", tojson);
+        for row in rows {
+            let bits = u64::from_str_radix(row["bits"].as_str().unwrap(), 16).unwrap();
+            let value = Value::from(f64::from_bits(bits));
+            let expected = row["rendered"].as_str().unwrap();
+            let actual = environment
+                .render_str(
+                    "{{ value|string }}|{{ value|tojson }}",
+                    minijinja::context! { value => value },
+                )
+                .unwrap();
+            assert_eq!(actual, format!("{expected}|{expected}"), "bits {bits:016x}");
+        }
+    }
+
+    #[test]
+    fn nullable_schema_types_keep_swift_string_description() {
+        let mut environment = Environment::new();
+        environment.add_filter("string", string);
+        assert_eq!(
+            environment
+                .render_str("{{ value|string }}", json!({"value":["number","null"]}))
+                .unwrap(),
+            "['number', 'null']"
+        );
+    }
 
     #[test]
     fn matches_transformers_defaults_used_by_the_pinned_template() {

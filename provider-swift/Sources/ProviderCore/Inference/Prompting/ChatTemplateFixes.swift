@@ -62,9 +62,7 @@ enum ChatTemplateFixes {
         _ tools: [[String: any Sendable]]?,
         context: ChatTemplateFixContext
     ) -> [[String: any Sendable]]? {
-        let metadataScoped = NemotronTemplateFilters.applies(modelType: context.modelType)
-            ? tools
-            : tools?.map(droppingNemotronOnlyMetadata)
+        let metadataScoped = normalizeToolMetadata(tools, context: context)
         if MiMoV26TemplateFix.applies(to: context) {
             return MiMoV26TemplateFix.normalizeTools(metadataScoped)
         }
@@ -76,6 +74,17 @@ enum ChatTemplateFixes {
             return Gemma4TemplateFix.normalizeTools(sanitized)
         }
         return sanitized
+    }
+
+    /// Native media producers preserve their own message/schema representation,
+    /// but must apply the same model-scoped SDK metadata policy as text requests.
+    static func normalizeToolMetadata(
+        _ tools: [[String: any Sendable]]?,
+        context: ChatTemplateFixContext
+    ) -> [[String: any Sendable]]? {
+        NemotronTemplateFilters.applies(modelType: context.modelType)
+            ? tools
+            : tools?.map(droppingNemotronOnlyMetadata)
     }
 
     /// Sanitize a chat-template `tools` array (or `nil`), dropping null /

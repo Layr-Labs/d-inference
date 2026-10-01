@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-01
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -58,6 +58,12 @@ metadata, not model weights. The sidecar, provider-unit and prompt-parity jobs r
 `scripts/prepare-mimo-prompt-fixtures.py`; follow the
 [pinned fixture procedure](mimo-prompt-fixtures.md) for local runs. Missing
 inputs fail rather than silently skipping assertions.
+
+The prompt-parity lane also runs `scripts/verify-nemotron-prompt-parity.sh`
+after the provider test product has been built. The existing Go artifact
+provisioner fetches only hash-verified prompt metadata from the committed
+Nemotron manifest; the gate uses no model weights or GPU generation. See the
+[parity test procedure](test.md#9-prompt-contract-parity-fixtures-and-vectors).
 
 Provider CI also runs `scripts/prepare-mimo-provider-fixtures.py` offline. It
 writes a deterministic, bounded synthetic BF16 target/vision/audio-patch/three-head

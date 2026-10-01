@@ -1,5 +1,6 @@
 import XCTest
 
+import Jinja
 import MLXLMCommon
 import MLXLMServer
 import ProviderCoreFoundation
@@ -497,5 +498,47 @@ final class JinjaSanitizationTests: XCTestCase {
         let properties = try XCTUnwrap(parameters["properties"] as? [String: any Sendable])
         let bad = try XCTUnwrap(properties["bad"] as? [String: any Sendable])
         XCTAssertEqual(bad["properties"] as? String, "not an object")
+    }
+
+    func testStrictMetadataIsScopedToNemotron() throws {
+        let raw: [[String: any Sendable]] = [[
+            "type": "function",
+            "function": [
+                "name": "get_weather",
+                "strict": true,
+                "parameters": ["type": "object"],
+            ] as [String: any Sendable],
+        ]]
+        let nemotron = try XCTUnwrap(ChatTemplateFixes.normalizeTools(
+            raw, context: .init(modelType: "nemotron_h"))?.first)
+        let nemotronFunction = try XCTUnwrap(
+            nemotron["function"] as? [String: any Sendable])
+        XCTAssertEqual(nemotronFunction["strict"] as? Bool, true)
+
+        for modelType in ["qwen3_5", "qwen4_exp", "gemma4_text", "diffusion_gemma", "gpt_oss", "mimo_v2"] {
+            let other = try XCTUnwrap(ChatTemplateFixes.normalizeTools(
+                raw, context: .init(modelType: modelType))?.first)
+            let otherFunction = try XCTUnwrap(
+                other["function"] as? [String: any Sendable])
+            XCTAssertNil(otherFunction["strict"])
+        }
+    }
+
+    func testStrippingFunctionStrictPreservesMiMoSchemaNulls() throws {
+        let tool = try JSONDecoder().decode(OpenAITool.self, from: Data(#"""
+            {"type":"function","function":{"name":"get_weather","strict":false,
+            "parameters":{"type":"object","default":null,"strict":true,"enum":[null,"sunny"]}}}
+            """#.utf8))
+        let normalized = try XCTUnwrap(ChatTemplateFixes.normalizeTools(
+            [tool.toolSpec()], context: .init(modelType: "mimo_v2"))?.first)
+        let function = try XCTUnwrap(normalized["function"] as? [String: any Sendable])
+        XCTAssertNil(function["strict"])
+        let parameters = try XCTUnwrap(function["parameters"] as? [String: any Sendable])
+        XCTAssertTrue((parameters["default"] as? Jinja.Value)?.isNull == true)
+        XCTAssertEqual(parameters["strict"] as? Bool, true)
+        let values = try XCTUnwrap(parameters["enum"] as? [any Sendable])
+        XCTAssertEqual(values.count, 2)
+        XCTAssertTrue((values[0] as? Jinja.Value)?.isNull == true)
+        XCTAssertEqual(values[1] as? String, "sunny")
     }
 }

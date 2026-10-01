@@ -51,6 +51,9 @@ pub fn normalize(
     let mut messages = template_messages(&body, mimo)?;
     crate::response_format::prepare(&body, &mut messages)?;
     let mut tools = template_tools(&body)?;
+    if !model_type.is_some_and(|value| value.trim().eq_ignore_ascii_case("nemotron_h")) {
+        tools = tools.map(drop_nemotron_only_tool_metadata);
+    }
     if mimo {
         // Do not qualify a MiMo cache prompt by silently discarding malformed
         // or unsupported declarations in the generic compatibility translator.
@@ -166,6 +169,19 @@ pub fn normalize(
         body: Value::Object(normalized_body),
         prompt_date,
     })
+}
+
+fn drop_nemotron_only_tool_metadata(mut tools: Vec<Value>) -> Vec<Value> {
+    for tool in &mut tools {
+        if let Some(function) = tool
+            .as_object_mut()
+            .and_then(|tool| tool.get_mut("function"))
+            .and_then(Value::as_object_mut)
+        {
+            function.remove("strict");
+        }
+    }
+    tools
 }
 
 fn native_structured_target(model_id: &str, model_type: Option<&str>) -> bool {
@@ -371,13 +387,12 @@ fn template_tool_call(value: &Value, mimo: bool) -> Result<Value, NormalizeError
     }))
 }
 
-/// OpenAIFunctionDefinition decodes only `name`, `description` and
-/// `parameters`; `OpenAITool.toolSpec()` renders exactly those. Any other
-/// member of a caller's `function` object (`strict`, `response`, `examples`,
-/// vendor extensions) never reaches the provider's template.
+/// Mirror OpenAIFunctionDefinition's typed fields. Function-level `strict`
+/// reaches only Nemotron after the model-scoped projection in `normalize`;
+/// unknown metadata never reaches the provider's template.
 fn typed_function_definition(function: Map<String, Value>) -> Map<String, Value> {
     let mut typed = Map::new();
-    for key in ["name", "description", "parameters"] {
+    for key in ["name", "description", "parameters", "strict"] {
         if let Some(value) = function.get(key) {
             typed.insert(key.into(), value.clone());
         }
@@ -580,8 +595,19 @@ fn top_level_function_definition(
         }
         Some(_) => return Err(NormalizeError::InvalidTools),
     }
-    if let Some(parameters) = tool.get("parameters").or_else(|| tool.get("input_schema")) {
+    if let Some(parameters) = tool
+        .get("parameters")
+        .filter(|value| !value.is_null())
+        .or_else(|| tool.get("input_schema"))
+    {
         function.insert("parameters".into(), parameters.clone());
+    }
+    match tool.get("strict") {
+        None | Some(Value::Null) => {}
+        Some(Value::Bool(value)) => {
+            function.insert("strict".into(), Value::Bool(*value));
+        }
+        Some(_) => return Err(NormalizeError::InvalidTools),
     }
     Ok(function)
 }
@@ -595,6 +621,10 @@ fn validate_function_definition(
         .ok_or(NormalizeError::InvalidTools)?;
     match function.get("description") {
         None | Some(Value::Null | Value::String(_)) => {}
+        Some(_) => return Err(NormalizeError::InvalidTools),
+    }
+    match function.get("strict") {
+        None | Some(Value::Null | Value::Bool(_)) => {}
         Some(_) => return Err(NormalizeError::InvalidTools),
     }
     Ok(function.clone())
@@ -2549,6 +2579,63 @@ mod tests {
             "parallel_tool_calls":"false"
         });
         assert!(normalize(malformed.as_object().unwrap().clone(), Some("gemma4_text")).is_err());
+    }
+
+    #[test]
+    fn strict_tool_metadata_is_scoped_to_nemotron() {
+        let body = json!({
+            "model":"fixture",
+            "messages":[{"role":"user","content":"weather"}],
+            "tools":[{"type":"function","function":{
+                "name":"get_weather", "strict":true,
+                "parameters":{"type":"object"}
+            }}]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let nemotron = normalize(body.clone(), Some("nemotron_h")).unwrap();
+        assert_eq!(nemotron.tools.unwrap()[0]["function"]["strict"], true);
+        for model_type in [
+            "qwen3_5",
+            "qwen4_exp",
+            "gemma4_text",
+            "diffusion_gemma",
+            "gpt_oss",
+            "mimo_v2",
+        ] {
+            let normalized = normalize(body.clone(), Some(model_type)).unwrap();
+            assert!(
+                normalized.tools.unwrap()[0]["function"]
+                    .get("strict")
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn stripping_function_strict_preserves_mimo_schema_nulls() {
+        let body = json!({
+            "model":"fixture",
+            "messages":[{"role":"user","content":"weather"}],
+            "tools":[{"type":"function","function":{
+                "name":"get_weather", "strict":false,
+                "parameters":{"type":"object","properties":{},"default":null,"strict":true,
+                    "enum":[null,"sunny"]}
+            }}]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let normalized = normalize(body.clone(), Some("mimo_v2")).unwrap();
+        let tools = normalized.tools.unwrap();
+        assert!(tools[0]["function"].get("strict").is_none());
+        assert_eq!(
+            tools[0]["function"]["parameters"],
+            body["tools"][0]["function"]["parameters"]
+        );
+        let nemotron = normalize(body, Some("nemotron_h")).unwrap();
+        assert_eq!(nemotron.tools.unwrap()[0]["function"]["strict"], false);
     }
 
     #[test]

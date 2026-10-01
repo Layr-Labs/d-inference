@@ -62,10 +62,13 @@ enum ChatTemplateFixes {
         _ tools: [[String: any Sendable]]?,
         context: ChatTemplateFixContext
     ) -> [[String: any Sendable]]? {
+        let metadataScoped = NemotronTemplateFilters.applies(modelType: context.modelType)
+            ? tools
+            : tools?.map(droppingNemotronOnlyMetadata)
         if MiMoV26TemplateFix.applies(to: context) {
-            return MiMoV26TemplateFix.normalizeTools(tools)
+            return MiMoV26TemplateFix.normalizeTools(metadataScoped)
         }
-        guard let sanitized = sanitizeTools(tools) else { return nil }
+        guard let sanitized = sanitizeTools(metadataScoped) else { return nil }
         if GPTOSSHarmonyTemplateFix.applies(to: context) {
             return GPTOSSHarmonyTemplateFix.normalizeTools(sanitized)
         }
@@ -83,6 +86,18 @@ enum ChatTemplateFixes {
     ) -> [[String: any Sendable]]? {
         guard let tools else { return nil }
         return tools.map(sanitizeJinjaObject)
+    }
+
+    private static func droppingNemotronOnlyMetadata(
+        _ tool: [String: any Sendable]
+    ) -> [String: any Sendable] {
+        var tool = tool
+        guard var function = tool["function"] as? [String: any Sendable] else {
+            return tool
+        }
+        function.removeValue(forKey: "strict")
+        tool["function"] = function
+        return tool
     }
 
     static func extraEOSTokenIds(

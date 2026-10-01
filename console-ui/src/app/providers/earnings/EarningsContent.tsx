@@ -145,8 +145,10 @@ export default function EarningsContent() {
   const creditsBalance = totalBalance - withdrawableBalanceMicro;
   const totalJobs = data?.count || 0;
   const recentCount = data?.recent_count ?? data?.earnings.length ?? 0;
-  const workUsd = data?.work_usd ?? "";
-  const hasWork = data?.work_usd !== undefined && data?.work_usd !== null;
+  // work_usd is income from inference jobs only (base rewards excluded); the
+  // average is shown only when the API sends a usable value.
+  const workUsd = Number(data?.work_usd);
+  const hasWork = typeof data?.work_usd === "string" && data.work_usd.trim() !== "" && Number.isFinite(workUsd);
   const historyLimit = data?.history_limit ?? 100;
 
   const minWithdrawUsd = (payouts.status?.min_withdraw_micro_usd ?? 1_000_000) / 1_000_000;
@@ -188,7 +190,7 @@ export default function EarningsContent() {
             <p className="text-xs text-text-tertiary">Avg per Job</p>
           </div>
           <p className="text-2xl font-bold text-text-primary">
-            ${totalJobs > 0 ? (parseFloat(workUsd) / totalJobs).toFixed(6) : "0.00"}
+            ${(totalJobs > 0 ? workUsd / totalJobs : 0).toFixed(6)}
           </p>
         </div>
         )}

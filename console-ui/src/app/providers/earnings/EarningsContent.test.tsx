@@ -112,20 +112,32 @@ describe("EarningsContent", () => {
     vi.unstubAllGlobals();
   });
 
-  it("J5: hides Avg per Job when the response has no work_usd", async () => {
+  it("hides Avg per Job when the response has no work_usd", async () => {
     await renderLoaded(response());
     expect(screen.getByText("Total Earned")).toBeInTheDocument();
     expect(screen.queryByText("Avg per Job")).toBeNull();
   });
 
-  it("J6: shows Avg per Job as work_usd / count to 6 decimals", async () => {
+  it("hides Avg per Job when work_usd is empty or not a number", async () => {
+    await renderLoaded(response({ work_usd: "", count: 3 }));
+    expect(screen.queryByText("Avg per Job")).toBeNull();
+    expect(screen.queryByText(/NaN/)).toBeNull();
+  });
+
+  it("shows Avg per Job as $0.000000 when there are no jobs", async () => {
+    await renderLoaded(response({ work_usd: "0.000000", count: 0 }));
+    expect(screen.getByText("Avg per Job")).toBeTruthy();
+    expect(screen.getByText("$0.000000")).toBeTruthy();
+  });
+
+  it("shows Avg per Job as work_usd / count to 6 decimals", async () => {
     // total includes base rewards; the average must use work_usd only.
     await renderLoaded(response({ work_usd: "2.000000", count: 3 }));
     expect(screen.getByText("Avg per Job")).toBeInTheDocument();
     expect(screen.getByText("$0.666667")).toBeInTheDocument();
   });
 
-  it("J7: activity header is Source; base_reward renders as Base reward; models show short name", async () => {
+  it("activity header is Source; base_reward renders as Base reward; models show short name", async () => {
     await renderLoaded(
       response({
         earnings: [
@@ -142,13 +154,13 @@ describe("EarningsContent", () => {
     expect(screen.getByText("Qwen3-8B")).toBeInTheDocument();
   });
 
-  it("J8: caption reads 'Showing the latest N payouts.' once recent_count reaches history_limit", async () => {
+  it("caption reads 'Showing the latest N payouts.' once recent_count reaches history_limit", async () => {
     await renderLoaded(response({ recent_count: 100, history_limit: 100, count: 40 }));
     await waitFor(() => expect(screen.getByText("Showing the latest 100 payouts.")).toBeInTheDocument());
     expect(screen.queryByText(/ of /)).toBeNull();
   });
 
-  it("J8: no caption below the history limit", async () => {
+  it("no caption below the history limit", async () => {
     await renderLoaded(response({ recent_count: 1, history_limit: 100, count: 400 }));
     expect(screen.queryByText(/Showing the latest/)).toBeNull();
   });

@@ -116,7 +116,7 @@ const FIX_TABLE: Record<string, FixAction> = {
   },
   low_success_rate: {
     kind: "link",
-    label: "Inspect failed jobs",
+    label: "Inspect failed requests",
     href: "/providers/earnings",
     note: "Check the provider logs for failure details.",
   },

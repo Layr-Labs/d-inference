@@ -1,9 +1,10 @@
 # Changelog
 
-## Unreleased — automatic MiMo calibration
+## Release candidate v0.9.15 — automatic MiMo calibration (not shipped)
 
 - Calibrate idle native MiMo engines after model loading and refresh stale phase evidence with uncached built-in prompts. Measure short and 4k text plus affordable batches within the existing concurrency cap; retain the production MTP and memory configuration.
 - Give customer requests priority across models: cancel calibration and wait for real native retirement before admission. Keep probe work out of served-request/token counters; publish actual phase measurements and optional peak-concurrency workload buckets through existing heartbeats.
+- Align `ProviderCore.version` and the coordinator latest-provider display fallback at `0.9.15`. Publication, signed-artifact qualification and coordinator rollout remain separate operations.
 
 ## Unreleased — provider prefill evidence recovery
 

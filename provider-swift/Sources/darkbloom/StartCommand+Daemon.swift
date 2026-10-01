@@ -15,7 +15,8 @@ extension Start {
         config: ProviderConfig,
         coordinatorURL: String,
         configPath: URL?,
-        runtimeCapabilities: Set<ProviderRuntimeCapability>
+        runtimeCapabilities: Set<ProviderRuntimeCapability>,
+        scheduleEdit: (current: ScheduleSettings, draft: ScheduleSettings)? = nil
     ) async throws {
         // Run critical checks before downloading models or prompting.
         try runPreflightChecks(snapshot: snapshot)
@@ -49,6 +50,12 @@ extension Start {
         guard !selectedModelIDs.isEmpty else {
             printError("No models selected.")
             throw ExitCode.failure
+        }
+
+        // Do not persist the schedule until model selection has succeeded.
+        // Reload under the config lock so unrelated edits survive the wizard.
+        if let scheduleEdit {
+            try scheduleEdit.draft.save(configPath: snapshot.configPath.path, expected: scheduleEdit.current)
         }
 
         // Idle-memory policy: asked on the same interactive path as the model
@@ -104,6 +111,7 @@ extension Start {
 
         let logPath = LaunchAgent.logPath().path
         print("Provider started as background service.")
+        print(ScheduleSettings(config: config).summary())
         print("  Models:  \(selectedModelIDs.count)")
         for id in selectedModelIDs {
             print("    \(id)")

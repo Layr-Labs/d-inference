@@ -59,6 +59,12 @@ metadata, not model weights. The sidecar, provider-unit and prompt-parity jobs r
 [pinned fixture procedure](mimo-prompt-fixtures.md) for local runs. Missing
 inputs fail rather than silently skipping assertions.
 
+The prompt-parity lane also runs `scripts/verify-nemotron-prompt-parity.sh`
+after the provider test product has been built. The existing Go artifact
+provisioner fetches only hash-verified prompt metadata from the committed
+Nemotron manifest; the gate uses no model weights or GPU generation. See the
+[parity test procedure](test.md#9-prompt-contract-parity-fixtures-and-vectors).
+
 Provider CI also runs `scripts/prepare-mimo-provider-fixtures.py` offline. It
 writes a deterministic, bounded synthetic BF16 target/vision/audio-patch/three-head
 inventory, not the selected model or its audio codec. Routine metadata tests use
@@ -105,6 +111,10 @@ Other native CI test isolation also reuses the built test products and staged
 metallib; it does not rebuild or download a model. Follow the
 [provider test procedure](test.md) to run GPU-global assertions in separate
 processes with the exclusive opt-in scoped to the named test.
+
+The exact-cache E2E fixture uses the built provider and pinned Gemma checkpoint
+with an explicit SSD-cache opt-in. Its ephemeral storage setting alone does not
+enable caching; see the [E2E prerequisites](test.md#prerequisites).
 
 The [Bonsai performance qualification](test.md#bonsai-performance-qualification)
 uses a separate optimized test build with `-enable-testing` and `-DDEBUG` for

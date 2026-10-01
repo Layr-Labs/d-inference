@@ -403,23 +403,29 @@ extension Start {
             }
 
             let windowStart = Date()
-            let windowEnd = windowStart.addingTimeInterval(schedule.durationUntilInactive(from: windowStart) ?? 3600)
+            guard let timing = ScheduledWindowTiming(schedule: schedule, at: windowStart) else { continue }
+            let windowEnd = timing.end
             let windowConfig = try selection.nextWindowConfiguration()
             // Selection validation may hash several large models. Keep the
             // original window end rather than starting a full timer afterward.
-            guard schedule.isActiveNow(), windowEnd.timeIntervalSinceNow > 0 else { continue }
+            guard schedule.isActiveNow(), windowEnd.map({ $0.timeIntervalSinceNow > 0 }) ?? true else { continue }
             let loop = try ProviderLoop(config: windowConfig)
-            let remaining = windowEnd.timeIntervalSinceNow
-            guard schedule.isActiveNow(), remaining > 0 else { continue }
-            print("Availability window active for \(formatDuration(remaining)).")
+            guard schedule.isActiveNow(), windowEnd.map({ $0.timeIntervalSinceNow > 0 }) ?? true else { continue }
+            if let windowEnd {
+                print("Availability window active for \(formatDuration(windowEnd.timeIntervalSinceNow)).")
+            } else {
+                print("Availability windows cover the full week; serving continuously.")
+            }
             try await withThrowingTaskGroup(of: ScheduledLoopResult.self) { group in
                 group.addTask {
                     try await runProviderLoopWithFanLease(loop)
                     return .loopEnded
                 }
-                group.addTask {
-                    try await Task.sleep(nanoseconds: sleepNanoseconds(for: windowEnd.timeIntervalSinceNow))
-                    return .windowClosed
+                if let windowEnd {
+                    group.addTask {
+                        try await Task.sleep(nanoseconds: sleepNanoseconds(for: windowEnd.timeIntervalSinceNow))
+                        return .windowClosed
+                    }
                 }
 
                 guard let result = try await group.next() else { return }

@@ -85,6 +85,7 @@
 
 ## Unreleased — CI and contributor workflow
 
+- Explicitly enable SSD caching for the exact-cache E2E development checkpoint and establish repeat demand before expecting a donation. The gate now requires exact cached output, account isolation and recovery to pass; CI no longer ignores its failure.
 - Set up Homebrew in the macOS integration and benchmark workflows with `scripts/setup-macos-homebrew.sh` instead of the `Homebrew/actions/setup-homebrew` action. The organization Actions policy does not allow that action, so both workflows stopped at startup. The script uses an installed `brew` or installs Homebrew from a pinned, checksum-verified installer.
 - Run provider unit, SDK and prompt-parity checks on independent workers with compatible build caches, retaining MiMo fixture preparation and isolated native gates.
 - Separate prerequisite-dependent MiMo qualification from ordinary provider tests, retaining required prepared-fixture checks and explicit qualification gaps. Normalize the rollback test's filesystem identity and synchronize the zombie-stream timing test with the initial cancellation.

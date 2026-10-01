@@ -112,6 +112,10 @@ metallib; it does not rebuild or download a model. Follow the
 [provider test procedure](test.md) to run GPU-global assertions in separate
 processes with the exclusive opt-in scoped to the named test.
 
+The exact-cache E2E fixture uses the built provider and pinned Gemma checkpoint
+with an explicit SSD-cache opt-in. Its ephemeral storage setting alone does not
+enable caching; see the [E2E prerequisites](test.md#prerequisites).
+
 The [Bonsai performance qualification](test.md#bonsai-performance-qualification)
 uses a separate optimized test build with `-enable-testing` and `-DDEBUG` for
 test-only ownership/scheduler seams. Do not add these switches to the ordinary

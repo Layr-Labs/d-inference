@@ -43,7 +43,7 @@ func clampPerformanceMeasurements(p *protocol.PerformanceMeasurements) {
 		if len(out) == 32 {
 			break
 		}
-		if (b.Phase != "prefill" && b.Phase != "decode") ||
+		if (b.Phase != "prefill" && b.Phase != "decode" && b.Phase != "native_media_prefill") ||
 			(b.CacheState != "cold" && b.CacheState != "reused") ||
 			(b.Contention != "isolated" && b.Contention != "contended") ||
 			!validWorkloadBucket(b.PromptTokenBucket) || !validWorkloadBucket(b.ContextTokenBucket) ||

@@ -25,6 +25,10 @@ starting a localhost server. `MutableInputKernelTests` and
 exercise declared Metal writes, alias ownership and export/import. CI runs each
 selected suite through the nonzero/no-skip wrapper
 (`.github/workflows/ci.yml`, `scripts/run-nested-suite.sh`).
+The wrapper passes the complete filter unchanged to Swift and uses a fixed
+temporary-file prefix, so long alternations and suite/test selectors cannot
+exceed filesystem name limits. `scripts/test-provider-ci-workflow.py` exercises
+that path alongside the nonzero-test, no-skip and failure-exit checks.
 
 MiMo source and tests are grouped under their existing modules' `MiMo/`
 folders; Swift target names are unchanged. The SDK's
@@ -40,9 +44,14 @@ geometry and frame-working-set bounds, plus tiny native vision equivalence.
 `MiMoV26VisionWorkingSetTests` checks the fused-kernel selection and conservative
 CPU/custom-stream/geometry fallback. `MiMoV26AudioWorkingSetTests` checks actual
 tile accounting and lazy/bounded numerical equivalence across mixed clips.
-The SDK CI lane also creates a fresh tiny MiMo fixture and runs
-`MiMoV26NativeMediaDeadlineTests.testMediaReservationRefusalLeavesTextEngineUsable`
-with explicit native-lane flags. Both steps use the nonzero/no-skip wrapper.
+The SDK CI lane also creates a fresh tiny MiMo fixture and runs the complete
+`MiMoV26NativeMediaDeadlineTests` suite with explicit native-lane flags. It
+covers target-only rates, queued text, idle bootstrap, evidence expiry, capacity
+refusal and actual cancellation/retirement. The provider media-admission gate
+also selects its native bootstrap/learning sequence and sealed deadline
+refusal/compatibility cases. Both lanes use the nonzero/no-skip wrapper.
+The tiny learning fixture uses short prompts so warmed kernels stay within the
+unchanged production rate plausibility checks; its speed is not model evidence.
 `TestMediaMemoryRefusalPreservesTextOnSameProvider` separately exercises actual
 coordinator HTTP/WebSocket dispatch with scripted provider refusals followed
 by successful text. These gates do not replace full-size signed-provider
@@ -1970,6 +1979,7 @@ make benchmark-wrapper-test        # python3 -m unittest discover -s gemma_contb
 python3 scripts/test-provider-release-resolution.py # signed-validation and publication routing before credentials
 ./scripts/sync-install-embed.sh check   # coordinator/api/install.sh byte-identical to scripts/install.sh
 ./scripts/test-prod-env-refresh.sh      # deploy/gcp/prod/refresh-env.sh contract
+./scripts/test-setup-macos-homebrew.sh  # scripts/setup-macos-homebrew.sh with brew already installed
 ./scripts/test-publish-model.sh         # scripts/publish-model.sh dry-run contract
 ```
 
@@ -2789,10 +2799,15 @@ Model findings and live API failures remain non-blocking in the separate
 
 ### macOS E2E Postgres setup
 
-The integration and benchmark jobs initialize Homebrew before installing
-`postgresql@16` and deriving its binary path with `brew --prefix`. A missing
-Homebrew executable is a runner-setup failure before E2E tests execute. See
-`.github/workflows/integration.yml` and `.github/workflows/benchmarks.yml`.
+The integration and benchmark jobs run `scripts/setup-macos-homebrew.sh`
+before they install `postgresql@16` and get its binary path with
+`brew --prefix`. The script finds Homebrew or installs it from a pinned,
+checksum-verified installer. If Homebrew is still missing, the step fails
+before E2E tests run. See `.github/workflows/integration.yml` and
+`.github/workflows/benchmarks.yml`.
+`./scripts/test-setup-macos-homebrew.sh` tests the path where `brew` is
+already installed. It uses a fake `brew` in a temporary directory, makes no
+download, and runs in the "Release Integrity" CI job.
 
 ### Retained unsigned release recovery checks
 

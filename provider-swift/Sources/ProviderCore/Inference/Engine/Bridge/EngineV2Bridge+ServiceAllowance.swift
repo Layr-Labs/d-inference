@@ -2,7 +2,8 @@ import Foundation
 
 extension EngineV2Bridge {
     func retainDeadlinePostureMonitoring() {
-        guard deadlineProfile != nil, deadlinePostureMonitoring == nil else { return }
+        guard deadlineProfile != nil || nativeTransactionID != nil,
+            deadlinePostureMonitoring == nil else { return }
         deadlinePostureMonitoring = DeadlinePostureMonitor.shared.acquire()
     }
 
@@ -94,6 +95,12 @@ extension EngineV2Bridge {
     /// The stream's terminal alone does not prove device resources retired.
     func releaseServiceAllowance(requestID: String) {
         prefillEvidenceRecovery.retire(requestID)
+        if nativeMediaLearnedRequestIDs.remove(requestID) != nil {
+            nextNativeMediaBootstrapAt = nil
+        }
+        if nativeMediaBootstrapRequestID == requestID {
+            nativeMediaBootstrapRequestID = nil
+        }
         serviceBudget?.release(ownerID: serviceOwnerPrefix + ":" + requestID)
     }
 }

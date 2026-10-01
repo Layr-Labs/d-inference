@@ -531,9 +531,13 @@ extension EngineV2Bridge {
             prefillEvidenceRecovery.bindEvidenceGuard(
                 serviceBudget?.exclusiveEvidenceGuard(ownerID: serviceOwnerPrefix + ":" + id), ownerID: id)
         }
+        let nativeCausalMedia = nativeMediaMeasurementEligible(multimodal)
+        let nativeMediaEvidence = nativeCausalMedia ? captureNativeMediaRateEvidence(requestID: id) : nil
         let prefillReceipt = EnginePrefillReceipt(activity: measurementActivity, model: modelId,
             deadlineRateEvidence: deadlineProfile == nil ? nil : serviceBudget?.captureDeadlineRateEvidence(),
-            isolationGuard: prefillEvidenceRecovery.owner == id ? prefillEvidenceRecovery.evidenceGuard : nil)
+            isolationGuard: prefillEvidenceRecovery.owner == id ? prefillEvidenceRecovery.evidenceGuard : nil,
+            nativeCausalMedia: nativeCausalMedia,
+            nativeRateEvidence: nativeMediaEvidence)
         cbv2Request.onPrefillCompleted = { [weak self, prefillReceipt] usage in
             prefillReceipt.complete(usage)
             Task { await self?.consumePrefillReceipt(id: id, receipt: prefillReceipt) }
@@ -562,7 +566,8 @@ extension EngineV2Bridge {
         do {
             deadlineAdmission = try firstTokenDeadlineAdmission(
                 deadline: firstContentDeadline, multimodal: multimodal,
-                requestID: id, promptTokens: promptTokens.count, promptWork: promptWork)
+                requestID: id, promptTokens: promptTokens.count, promptWork: promptWork,
+                nativeMediaEvidence: nativeMediaEvidence)
         } catch {
             // The capability check is after shared-KV/prefix preparation.
             // Preserve the existing cold-refusal unwind before returning.

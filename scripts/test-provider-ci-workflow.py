@@ -2,6 +2,7 @@
 """Offline CI lane/gate checks; actionlint validates the complete YAML syntax."""
 
 from collections import Counter
+import json
 import os
 from pathlib import Path
 import re
@@ -34,7 +35,7 @@ MIMO_NATIVE_COMMANDS = {
     "Run isolated native MiMo memory admission gates":
         "../scripts/run-nested-suite.sh 'testNativeMemoryAdmission|testNativeShutdownActivitySurvivesPendingHostUntilRealQuiescentDrain' --no-parallel",
     "Run isolated native MiMo media admission gates":
-        "../scripts/run-nested-suite.sh 'testNativeMediaRelease|testAuthenticatedChatResponsesActuallyRouteEncodedImageThroughNativeBridge|testActualMemoryBackedVideoIndicesAndAuthenticatedNativeRoute|MiMoMediaDecodeMemoryTests' --no-parallel",
+        "../scripts/run-nested-suite.sh 'testNativeMediaRelease|testAuthenticatedChatResponsesActuallyRouteEncodedImageThroughNativeBridge|testActualMemoryBackedVideoIndicesAndAuthenticatedNativeRoute|testNativeIdleBootstrapLearnsRealTargetRateAndKeepsTextRateIsolated|testNativePreparedSealReachesRealAtomicDeadlineRejectionWithoutLosingCharge|testTypedDeadlineGatePreservesRawTextAndOffPolicyAndRefusesForeignCapability|MiMoMediaDecodeMemoryTests' --no-parallel",
     "Run isolated native MiMo complete-prefix gates":
         "../scripts/run-nested-suite.sh 'MiMoV26NativeLoadTransactionTests.testNativeCompletePrefix' --no-parallel",
     "Run isolated native MiMo retained-fault gate":
@@ -53,7 +54,7 @@ SDK_COMMANDS = {
     SDK_MIMO_PREPARE_NAME:
         'python3 scripts/prepare-mimo-provider-fixtures.py --output "$RUNNER_TEMP/mimo-media-isolation"',
     SDK_MIMO_GATE_NAME:
-        "../../scripts/run-nested-suite.sh MiMoV26NativeMediaDeadlineTests.testMediaReservationRefusalLeavesTextEngineUsable --no-parallel",
+        "../../scripts/run-nested-suite.sh MiMoV26NativeMediaDeadlineTests --no-parallel",
     "Run nested paged safety tests":
         "../../scripts/run-nested-suite.sh CBv2PagedSafetyTests",
     "Run nested prompt-hash tests":
@@ -111,6 +112,41 @@ class ProviderCIWorkflowTests(unittest.TestCase):
     def setUp(self):
         self.workflow = WORKFLOW.read_text()
         self.jobs = job_blocks(self.workflow)
+
+    def test_nested_wrapper_preserves_long_filters_and_failure_gates(self):
+        selector = "NativeSuite/" + "VeryLongTestName" * 30 + "|OtherSuite/testCase"
+        cases = (
+            ("Executed 1 test, with 0 failures", 0, 0),
+            ("Test run with 1 test passed", 0, 0),
+            ("Test run with 0 tests passed", 0, 1),
+            ("Executed 1 test, with 1 test skipped and 0 failures", 0, 1),
+            ("➜ Test unavailable skipped: missing fixture\nTest run with 1 test passed", 0, 1),
+            ("Executed 1 test, with 1 failure", 7, 7),
+        )
+        with tempfile.TemporaryDirectory(prefix="nested-wrapper-") as temporary:
+            root = Path(temporary)
+            recorded = root / "arguments.json"
+            swift = root / "swift"
+            swift.write_text(textwrap.dedent("""\
+                #!/usr/bin/env python3
+                import json, os, sys
+                from pathlib import Path
+                Path(os.environ["STUB_ARGUMENTS"]).write_text(json.dumps(sys.argv[1:]))
+                print(os.environ["STUB_OUTPUT"])
+                raise SystemExit(int(os.environ["STUB_EXIT"]))
+                """))
+            swift.chmod(0o755)
+            for output, swift_exit, expected_exit in cases:
+                with self.subTest(output=output):
+                    environment = dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"],
+                                       TMPDIR=str(root), STUB_ARGUMENTS=str(recorded),
+                                       STUB_OUTPUT=output, STUB_EXIT=str(swift_exit))
+                    result = subprocess.run(
+                        ["bash", str(ROOT / "scripts/run-nested-suite.sh"), selector, "--no-parallel"],
+                        env=environment, text=True, capture_output=True, timeout=10)
+                    self.assertEqual(result.returncode, expected_exit, result.stdout + result.stderr)
+                    self.assertEqual(json.loads(recorded.read_text()),
+                                     ["test", "--skip-build", "--filter", selector, "--no-parallel"])
 
     def test_lanes_are_independent_on_dedicated_supported_mac_runners(self):
         for job_id, lane in LANES.items():

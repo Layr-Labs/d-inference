@@ -27,7 +27,9 @@ fi
 filter="$1"
 shift
 
-log="$(mktemp -t "nested-suite-${filter}.XXXXXX")"
+# Swift filters can contain long alternatives and path separators. Keep the
+# temporary filename independent of the selector; pass the full filter below.
+log="$(mktemp -t "nested-suite.XXXXXX")"
 
 # `tee` so the suite's own output still reaches the job log; pipefail so a
 # non-zero `swift test` is not swallowed by the pipe.

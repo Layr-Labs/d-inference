@@ -55,10 +55,9 @@ func (s *Server) servabilityGateEnabled() bool {
 	return on
 }
 
-// shedIfUnservable returns true when it has fully handled the request by writing
-// an early 429 (the caller must then return). It is a no-op (returns false) when
-// the gate is disabled or the request is servable. refundReservation releases any
-// pre-flight balance reservation; it is invoked only on the reject path.
+// shedIfUnservable evaluates the structural gate and returns an early-429
+// action, or nil when disabled/servable. The caller releases its scan permit
+// before applying the action, including the pre-flight balance refund.
 func (s *Server) shedIfUnservable(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -71,9 +70,9 @@ func (s *Server) shedIfUnservable(
 	traits registry.RequestTraits,
 	allowedProviderSerials []string,
 	refundReservation func(),
-) bool {
+) func() {
 	if s == nil || s.registry == nil || !s.servabilityGateEnabled() {
-		return false
+		return nil
 	}
 
 	// The context tier gets a CALIBRATED prompt estimate; the token-budget tier
@@ -98,54 +97,55 @@ func (s *Server) shedIfUnservable(
 		allowedProviderSerials...,
 	)
 	if verdict.Servable {
-		return false
+		return nil
 	}
 
-	retryAfter := s.estimateRetryAfter(model)
-	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-	refundReservation()
+	return func() {
+		retryAfter := s.estimateRetryAfter(model)
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		refundReservation()
 
-	s.ddIncr("routing.decisions", []string{
-		"model:" + model,
-		"model_type:" + s.registry.ModelType(model),
-		"outcome:unservable_429",
-	})
-	// Oversized-request observability (DAR-347): counts the preflight catch so it
-	// can be compared against stage:dispatch (the deterministic dispatch-time stop)
-	// to measure how much the estimate calibration catches before any dispatch. The
-	// rejection ledger row below carries estimated_prompt_tokens / requested_max_tokens
-	// for the prompt/max histograms-by-outcome.
-	s.ddIncr("routing.oversized_request_rejected", []string{
-		"model:" + model,
-		"stage:preflight",
-		"reason:" + verdict.Reason,
-	})
-	s.recordRejection(rejectionInfo{
-		r:                     r,
-		stage:                 "preflight_capacity",
-		reasonCode:            verdict.Reason, // "context_exceeded" | "prompt_too_long"
-		httpStatus:            http.StatusTooManyRequests,
-		keyID:                 keyIDFromContext(r.Context()),
-		consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-		requestedModel:        publicModel,
-		resolvedModel:         model,
-		stream:                stream,
-		estimatedPromptTokens: estimatedPromptTokens,
-		requestedMaxTokens:    requestedMaxTokens,
-		requiresVision:        requiresVision,
-		hasTools:              traits.HasTools,
-		retryAfterMs:          retryAfter * 1000,
-		params:                rejectionSamplingParams(parsed),
-		// Structurally unservable: no provider could have served it. Setting
-		// servabilityComputed avoids the off-path recompute, and candidateCount 0
-		// makes recordRejection mark CouldHaveServed=false.
-		servabilityComputed: true,
-		candidateCount:      0,
-	})
+		s.ddIncr("routing.decisions", []string{
+			"model:" + model,
+			"model_type:" + s.registry.ModelType(model),
+			"outcome:unservable_429",
+		})
+		// Oversized-request observability (DAR-347): counts the preflight catch so it
+		// can be compared against stage:dispatch (the deterministic dispatch-time stop)
+		// to measure how much the estimate calibration catches before any dispatch. The
+		// rejection ledger row below carries estimated_prompt_tokens / requested_max_tokens
+		// for the prompt/max histograms-by-outcome.
+		s.ddIncr("routing.oversized_request_rejected", []string{
+			"model:" + model,
+			"stage:preflight",
+			"reason:" + verdict.Reason,
+		})
+		s.recordRejection(rejectionInfo{
+			r:                     r,
+			stage:                 "preflight_capacity",
+			reasonCode:            verdict.Reason, // "context_exceeded" | "prompt_too_long"
+			httpStatus:            http.StatusTooManyRequests,
+			keyID:                 keyIDFromContext(r.Context()),
+			consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+			requestedModel:        publicModel,
+			resolvedModel:         model,
+			stream:                stream,
+			estimatedPromptTokens: estimatedPromptTokens,
+			requestedMaxTokens:    requestedMaxTokens,
+			requiresVision:        requiresVision,
+			hasTools:              traits.HasTools,
+			retryAfterMs:          retryAfter * 1000,
+			params:                rejectionSamplingParams(parsed),
+			// Structurally unservable: no provider could have served it. Setting
+			// servabilityComputed avoids the off-path recompute, and candidateCount 0
+			// makes recordRejection mark CouldHaveServed=false.
+			servabilityComputed: true,
+			candidateCount:      0,
+		})
 
-	writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-		unservableMessage(publicModel, verdict, retryAfter), withCode("rate_limit_exceeded")))
-	return true
+		writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+			unservableMessage(publicModel, verdict, retryAfter), withCode("rate_limit_exceeded")))
+	}
 }
 
 // unservableMessage builds the client-facing 429 body for an unservable request.

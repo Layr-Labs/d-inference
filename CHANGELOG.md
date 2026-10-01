@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — preflight routing permits
+
+- Release shared routing scan capacity once rejection evaluation finishes, before refunds, self-route store lookups and response writes. Preserve admission gates, rejection responses and billing behavior.
+
 ## Release candidate v0.9.15 — automatic MiMo calibration (not shipped)
 
 - Calibrate idle native MiMo engines after model loading and refresh stale phase evidence with uncached built-in prompts. Measure short and 4k text plus affordable batches within the existing concurrency cap; retain the production MTP and memory configuration.

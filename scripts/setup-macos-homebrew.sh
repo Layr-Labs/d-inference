@@ -32,7 +32,7 @@ install_brew() {
     exit 2
   fi
   : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
-  local installer
+  # Global, not local: the EXIT trap runs after this function returns.
   installer="$(mktemp "$RUNNER_TEMP/homebrew-install.XXXXXX")"
   trap 'rm -f "$installer"' EXIT
   curl --fail --silent --show-error --location --retry 3 --max-time 180 \

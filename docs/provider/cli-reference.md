@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-01
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -41,6 +41,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | Command | Purpose | `--config` | Source (`provider-swift/Sources/darkbloom/…`) |
 |---|---|---|---|
 | `start` | Serve. Default: install and start the LaunchAgent; `--local` for a coordinator-less server | ✓ | `StartCommand.swift` (`Start`) |
+| `schedule` | Edit, show or disable saved weekly availability and startup loading; never start/stop the service | ✓ | `Scheduling/ScheduleCommand.swift` (`AvailabilitySchedule`) |
 | `switch` | Gracefully replace hosted models in the running coordinator-connected provider, without restart or reconnect | | `SwitchCommand.swift` (`Switch`) |
 | `stop` | Drain accepted requests, then stop the LaunchAgent; `--uninstall` removes both plists | | `StopCommand.swift` (`Stop`) |
 | `restart` | Drain, restart with recorded configuration, and confirm fresh authorization | ✓ | `RestartCommand.swift` (`Restart`) |
@@ -71,6 +72,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `--model <id>` | `[String]`, repeatable | `[]` | Serve exactly these models; skips the picker |
 | `--all` | flag | `false` | Serve every local model the runtime supports; skips the picker |
 | `--idle-timeout <mins>` | `UInt64?` | `backend.idle_timeout_mins` (`60`) | Override the idle unload timeout for this run |
+| `--schedule` | flag | `false` | Open the interactive availability/loading wizard before background startup; rejects `--foreground` and standalone `--local` (`Start.run`, `StartCommand.swift`) |
 | `--foreground` / `--no-foreground` | flag, **hidden** | `false` | Serve in this process instead of installing the LaunchAgent; launchd passes it |
 | `--local` | flag | `false` | Coordinator-less OpenAI-compatible server ([direct mode](./direct-mode.md)) |
 | `--local-endpoint` | flag | `false` | Local endpoint alongside the coordinator; mutually exclusive with `--local` |
@@ -105,6 +107,53 @@ waiting (`ProviderModelSelection.withReplacement`,
 `provider-swift/Sources/ProviderCore/Service/ProviderModelSelection.swift`).
 Missing custom files are seeded from this invocation's resolved configuration,
 not from the separate canonical config file.
+
+`start --schedule` requires interactive stdin and stdout. Its confirmed draft
+stays in memory until model selection succeeds; cancellation or an empty/failed
+selection does not save the schedule or replace the running service
+(`Start.run`, `Start.launchDaemon` in
+`provider-swift/Sources/darkbloom/StartCommand+Daemon.swift`). Ordinary `start`
+does not add a schedule prompt; it uses saved settings. Saved availability also
+controls an attached `--local-endpoint`, but standalone `--local` ignores it.
+
+### `darkbloom schedule`
+
+| Flag | Type | Default | Effect | Source |
+|---|---|---|---|---|
+| No flags | interactive editor | saved settings | Edit weekly availability and startup loading; requires interactive stdin/stdout | `provider-swift/Sources/darkbloom/Scheduling/ScheduleCommand.swift` (`AvailabilitySchedule.run`, `requireInteractiveTerminal`) |
+| `--show` | flag | `false` | Read saved settings and local time zone, not live daemon state; no edits | Same file (`AvailabilitySchedule.run`) |
+| `--disable` | flag | `false` | Disable scheduling while retaining windows and preload policy; mutually exclusive with `--show` | Same file (`AvailabilitySchedule.disabled`, `validate`) |
+| `-c`, `--config <path>` | `String?` | default provider TOML path | Read/write this configuration; use the same path when starting it | Same file (`AvailabilitySchedule.configOptions`, `run`) |
+
+The wizard offers these modes in `provider-swift/Sources/darkbloom/Scheduling/ScheduleWizard.swift`
+(`ScheduleWizard.run`):
+
+| Mode | Saved availability |
+|---|---|
+| Use saved windows | Re-enable existing windows; requires a saved window |
+| Always available / disable scheduling | Serve whenever the provider runs; retain existing windows |
+| Overnight | Mon-Fri starts, `22:00` to `08:00` the following day |
+| Weekends | Full Saturday and Sunday, `00:00` to `00:00` the following day |
+| Custom weekly windows | Start from saved windows and add, edit or remove windows |
+
+Enabled modes open the add/edit/remove editor before confirmation. Days accept
+comma-separated names, `weekdays`, `weekends`, `daily`, or ranges such as
+`fri-mon`; days identify the window's start day. Enter keeps the displayed
+default; `q`, `cancel`, EOF or declining confirmation discards the draft
+(`ScheduleWizard.editWindows`, `editWindow`, `parseDays`, `ask`).
+
+The loading choice edits only [`backend.startup_preload`](../reference/configuration.md#startup-model-preload):
+preload at startup/window opening, or skip preload and load on demand. Coordinator
+load commands can still load models in on-demand mode. The editor preserves
+`backend.preload_models`, `backend.enabled_models` and `backend.idle_timeout_mins`
+(`ScheduleSettings.apply`, `save` in
+`provider-swift/Sources/darkbloom/Scheduling/ScheduleSettings.swift`). It reloads
+under the config lock and refuses to overwrite concurrent schedule/preload edits.
+
+`schedule` never starts or stops the provider. Saved edits apply on the next
+start/restart, not live; use `darkbloom restart` for a running provider. The Mac
+must stay awake. See [availability configuration](../reference/configuration.md#provider-availability)
+and [calendar/window semantics](../architecture/scheduling.md#provider-availability-windows).
 
 ### `darkbloom switch`
 
@@ -426,8 +475,9 @@ The answer is written to `[backend] idle_timeout_mins` for coordinator-connected
 idle unloading; `--model`/`--all`, `--idle-timeout`, non-interactive runs and the
 launchd relaunch never prompt. See [`darkbloom idle`](#darkbloom-idle).
 Every `darkbloom start` mode preloads selected models with the default
-`startup_preload = true`, regardless of the idle-memory policy. A
-coordinator-connected provider prioritizes previously loaded models and
+`startup_preload = true`, regardless of the idle-memory policy. A scheduled
+provider begins this loading at the window opening, not beforehand.
+A coordinator-connected provider prioritizes previously loaded models and
 defers registration for up to `startup_preload_timeout_secs`; standalone
 `--local` finishes preloading before it listens. An explicit `[backend]
 preload_models` list takes precedence. The slot limit and available memory

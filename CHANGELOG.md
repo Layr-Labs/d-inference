@@ -1,10 +1,20 @@
 # Changelog
 
+## Unreleased - provider availability wizard
+
+- Add `darkbloom start --schedule` for optional interactive background setup and `darkbloom schedule` for editing saved settings without starting or stopping the provider. Support saved windows, overnight/weekend presets, custom add/edit/remove, inspection, disabling and custom config paths.
+- Offer preloading at window opening or on-demand loading using the existing startup-preload setting, preserving model selections and idle policy. Reject invalid enabled schedules before serving, merge overlapping/adjacent windows, honor local-calendar DST boundaries and keep full-week availability connected continuously.
+
 ## Unreleased — self-service bank payout migration
 
 - Add an explicit Global Payouts cutover for all supported bank destinations. Existing Connect users complete their own bank setup; history, earned balances and legacy account references are retained. US bank setup uses local transfers.
 - Separate legacy Connect credentials and connected-account webhook verification from Checkout. Current and legacy Checkout events settle atomically without duplicate deposits.
 - Recover verified rejected-transfer refunds atomically, require exact Stripe payout evidence during cutover, and check financial-account funding plus fees before new payout debits. Add a bounded audit tool and explicit, operator-verified historical refund repair.
+
+## Unreleased — Nemotron parser and artifact defaults
+
+- Absorb stray `</think>` markers in Nemotron Lightning content without changing other native-channel families or interpreting markers inside tool arguments.
+- Apply Nemotron's artifact-declared sampling defaults only to omitted request fields; explicit values still win. Admit the hybrid8 and rollback concrete build IDs without changing the catalog or activating either build.
 
 ## Unreleased — Nemotron prompt fidelity
 

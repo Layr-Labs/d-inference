@@ -41,12 +41,18 @@ interface EarningsResponse {
   total_usd: string;
   count: number;
   recent_count: number;
-  history_limit?: number;
-  work_usd?: string;
+  history_limit: number;
+  work_usd?: string | number;
   available_balance_micro_usd: number;
   available_balance_usd: string;
   withdrawable_balance_micro_usd: number;
   withdrawable_balance_usd: string;
+}
+
+function parseUsd(v: string | number | undefined): number {
+  if (typeof v === "number") return v;
+  if (typeof v === "string" && v.trim() !== "") return Number(v);
+  return Number.NaN;
 }
 
 export default function EarningsContent() {
@@ -147,9 +153,8 @@ export default function EarningsContent() {
   const recentCount = data?.recent_count ?? data?.earnings.length ?? 0;
   // work_usd is income from inference jobs only (base rewards excluded); the
   // average is shown only when the API sends a usable value.
-  const workUsd = Number(data?.work_usd);
-  const hasWork = typeof data?.work_usd === "string" && data.work_usd.trim() !== "" && Number.isFinite(workUsd);
-  const historyLimit = data?.history_limit ?? 100;
+  const workUsd = parseUsd(data?.work_usd);
+  const hasWork = Number.isFinite(workUsd);
 
   const minWithdrawUsd = (payouts.status?.min_withdraw_micro_usd ?? 1_000_000) / 1_000_000;
   const availableUsd = withdrawableBalanceMicro / 1_000_000;
@@ -184,15 +189,15 @@ export default function EarningsContent() {
           </p>
         </div>
         {hasWork && (
-        <div className="rounded-xl bg-bg-secondary shadow-sm p-5">
-          <div className="flex items-center gap-2 mb-2">
-            <TrendingUp size={16} className="text-accent-brand" />
-            <p className="text-xs text-text-tertiary">Avg per Job</p>
+          <div className="rounded-xl bg-bg-secondary shadow-sm p-5">
+            <div className="flex items-center gap-2 mb-2">
+              <TrendingUp size={16} className="text-accent-brand" />
+              <p className="text-xs text-text-tertiary">Avg per Job</p>
+            </div>
+            <p className="text-2xl font-bold text-text-primary">
+              ${(totalJobs > 0 ? workUsd / totalJobs : 0).toFixed(6)}
+            </p>
           </div>
-          <p className="text-2xl font-bold text-text-primary">
-            ${(totalJobs > 0 ? workUsd / totalJobs : 0).toFixed(6)}
-          </p>
-        </div>
         )}
       </div>
 
@@ -239,7 +244,7 @@ export default function EarningsContent() {
       {/* Earnings history */}
       <div>
         <h3 className="text-sm font-semibold text-text-primary mb-3">Recent Activity</h3>
-        {recentCount > 0 && recentCount >= historyLimit && (
+        {data && recentCount > 0 && recentCount >= data.history_limit && (
           <p className="text-xs text-text-tertiary mb-3">
             Showing the latest {recentCount} payouts.
           </p>
@@ -265,7 +270,7 @@ export default function EarningsContent() {
                       +${(e.amount_micro_usd / 1_000_000).toFixed(6)}
                     </td>
                     <td className="px-4 py-3 text-sm text-text-tertiary">
-                      {e.prompt_tokens + e.completion_tokens} ({e.completion_tokens} out)
+                      {e.model === "base_reward" ? "-" : `${e.prompt_tokens + e.completion_tokens} (${e.completion_tokens} out)`}
                     </td>
                     <td className="px-4 py-3 text-sm text-text-tertiary">
                       {new Date(e.created_at).toLocaleString()}

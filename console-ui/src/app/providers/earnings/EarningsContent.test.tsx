@@ -120,10 +120,21 @@ describe("EarningsContent", () => {
     expect(screen.queryByText(AVG)).toBeNull();
   });
 
-  it("hides Avg per Job when work_usd is empty or not a number", async () => {
+  it("hides Avg per Job when work_usd is empty", async () => {
     await renderLoaded(response({ work_usd: "", count: 3 }));
     expect(screen.queryByText(AVG)).toBeNull();
     expect(screen.queryByText(/NaN/)).toBeNull();
+  });
+
+  it("hides Avg per Job when work_usd is not a number", async () => {
+    await renderLoaded(response({ work_usd: "abc", count: 3 }));
+    expect(screen.queryByText(AVG)).toBeNull();
+    expect(screen.queryByText(/NaN/)).toBeNull();
+  });
+
+  it("accepts work_usd sent as a JSON number", async () => {
+    await renderLoaded(response({ work_usd: 2, count: 4 }));
+    expect(screen.getByText("$0.500000")).toBeTruthy();
   });
 
   it("shows Avg per Job as $0.000000 when there are no jobs", async () => {
@@ -153,13 +164,14 @@ describe("EarningsContent", () => {
     expect(screen.queryByRole("columnheader", { name: "Model" })).toBeNull();
     expect(screen.getByText("Base reward")).toBeInTheDocument();
     expect(screen.queryByText("base_reward")).toBeNull();
+    expect(screen.getByText("-")).toBeInTheDocument();
     expect(screen.getByText("Qwen3-8B")).toBeInTheDocument();
   });
 
   it("caption reads 'Showing the latest N payouts.' once recent_count reaches history_limit", async () => {
     await renderLoaded(response({ recent_count: 100, history_limit: 100, count: 40 }));
     await waitFor(() => expect(screen.getByText("Showing the latest 100 payouts.")).toBeInTheDocument());
-    expect(screen.queryByText(/ of /)).toBeNull();
+    expect(screen.queryByText(/of 40 payouts/)).toBeNull();
   });
 
   it("no caption below the history limit", async () => {

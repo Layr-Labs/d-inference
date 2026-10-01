@@ -2,7 +2,7 @@
 
 ## Unreleased — one meaning of jobs on the provider console
 
-- The 24 h and 7 d job counts in the earnings summary now exclude `base_reward` rows, matching the lifetime count; micro-USD sums still include them. The machine card stat that shows the reputation counter is labelled "Requests". The earnings page hides "Avg per Job" until the response carries `work_usd`, labels the activity column "Source" with base rewards shown as "Base reward", and no longer prints the inference-only count in its "latest payouts" caption.
+- The 24 h and 7 d job counts in the earnings summary now exclude `base_reward` rows, matching the lifetime count; micro-USD sums still include them. The machine card stat that shows the reputation counter is labelled "Requests", and its low-success-rate warning and fix link say "requests" too. The earnings page hides "Avg per Job" until the response carries a numeric `work_usd`, labels the activity column "Source" with base rewards shown as "Base reward" and no token count, and no longer prints the inference-only count in its "latest payouts" caption.
 
 ## Unreleased — MiMo SSD prefix-cache hits reuse the prefix
 

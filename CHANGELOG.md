@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased — budgeted advisory PR review
+
+- Give PR authors Sonnet feedback before selective Opus/Astra depth, reuse unchanged analysis, and debounce follow-up pushes. Show clean results, coverage, cost and saved historical findings in the advisory comment.
+- Reserve shared spending before every provider request; cap normal/deep attempts, PR/day, repository/day and the ten-PR pilot. Preserve partial findings and unknown-cost reservations after failures. Paid scanning defaults to disabled pending state-writer and billing verification.
+
 ## Release candidate v0.9.15 — automatic MiMo calibration (not shipped)
 
 - Calibrate idle native MiMo engines after model loading and refresh stale phase evidence with uncached built-in prompts. Measure short and 4k text plus affordable batches within the existing concurrency cap; retain the production MTP and memory configuration.

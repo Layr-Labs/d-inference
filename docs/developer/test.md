@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-01
 
 The `d-inference` macOS CI lanes pin `blacksmith-12vcpu-macos-27` and select
 Xcode 27 / native SwiftPM before compilation. Unit, SDK, prompt-parity,
@@ -2793,7 +2793,10 @@ uses no external service or real key. Also run
 batching beyond the former cutoffs, cross-file review, and explicit incomplete
 coverage. Run `python3 .github/scripts/test-threat-ensemble.py` for independent
 reviewer coverage, disagreement, attribution, partial failures and deadline
-retention. Release Integrity runs all three suites in normal CI.
+retention. Run `python3 .github/scripts/test-threat-budget.py` for atomic spending
+reservations over local HTTP, cache invalidation, selective escalation, cost
+reconciliation, partial-result persistence and explicit PR status. Release
+Integrity runs all four suites in normal CI, without real provider calls.
 Model findings and live API failures remain non-blocking in the separate
 [advisory review workflow](threat-model-review.md).
 

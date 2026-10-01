@@ -1,169 +1,166 @@
-# Configure advisory threat-model review
+# Configure budgeted advisory threat-model review
 
-> Last updated: 2026-09-29
+> Last updated: 2026-10-01
 
-The OpenRouter reviewer scans every PR change against the entire canonical threat
-model and posts actionable findings in one updatable public PR comment. It includes
-complete before/after text for changed files and a separate cross-file integration
-pass independently with Opus 5.5 and GPT-6 Astra, then combines their advice with
-model attribution. Findings and incomplete scans never block merging or request changes.
+The reviewer gives PR authors early Sonnet feedback, escalates selected changes to
+Opus and Astra, and saves completed findings before continuing. Public comments
+show coverage, cost, reuse and failures. Reviews never block merges. Paid scanning
+is **disabled by default**, including when legacy model variables remain set.
 
 ## Prerequisites
 
-- Repository access to Actions secrets and variables.
-- An OpenRouter key with credit and a spend limit suitable for automatic reviews.
-- Access through that key to `anthropic/claude-opus-5.5` and `openai/gpt-6-astra`,
-  both supporting structured outputs.
+- Actions administration and a reviewed workflow on the default branch.
+- An OpenRouter key with access to `anthropic/claude-sonnet-5.5`,
+  `anthropic/claude-opus-5.5` and `openai/gpt-6-astra`. Retain a provider-side key
+  spending limit as an independent backstop. This change does not add credits,
+  raise a limit or enable paid scanning.
+- A writer permitted to update `codex/threat-review-state` under branch
+  restrictions and signed-commit rules. Contents write permission alone does
+  not bypass repository rules.
 
-## Steps
+## Set up and activate
 
-1. Add repository Actions secret `OPENROUTER_API_KEY` through **Settings → Secrets
-   and variables → Actions**, or use `gh secret set OPENROUTER_API_KEY --repo
-   Layr-Labs/d-inference` and enter the key interactively. Never commit it.
-2. Set repository variable `THREAT_REVIEW_MODELS` to
-   `anthropic/claude-opus-5.5,openai/gpt-6-astra`. It accepts one or two distinct,
-   comma-separated OpenRouter IDs supporting `response_format: json_schema`.
-   This overrides legacy `THREAT_REVIEW_MODEL`, which still selects a single
-   reviewer when the plural variable is absent. With neither variable set, the
-   default is Opus 5.5 plus Astra. No separate OpenAI key is needed.
-3. Land the workflow through the reviewed PR process. Opening, updating, reopening,
-   marking a PR ready, or retargeting it into `master`/`main` triggers a scan.
-   The `edited` event runs only when `changes.base.ref.from` is present; title/body
-   edits and drafts are skipped before entering the job's cancellation group.
-   The workflow must be present on the base branch before it can run.
-4. Keep **Threat Model Review (advisory)** out of required status checks. No separate
-   GitHub PAT is needed: the built-in token has contents read and PR write access.
-5. Set an OpenRouter key spend limit and monitor usage. Full scans make multiple
-   paid requests per model, each containing the full threat model. Two reviewers
-   run two full scans, so budget for both models. Every new PR revision,
-   including a fork update, can trigger another scan.
+1. Keep repository variable `THREAT_REVIEW_ENABLED` absent or `false` while
+   validating. Legacy `THREAT_REVIEW_MODEL` and `THREAT_REVIEW_MODELS` are ignored;
+   models and price ceilings are reviewed code in `context.py` and `paid.py`.
+2. Configure Actions secret `OPENROUTER_API_KEY`. Never put a key in source, a PR
+   or a shell argument. An exhausted key needs a separate billing decision.
+3. Initialize state once from a trusted checkout, with an authorized maintainer's
+   `GH_TOKEN` already in the environment:
+
+   ```sh
+   python3 .github/scripts/threat-review-state.py \
+     --repository Layr-Labs/d-inference --base <full-trusted-base-commit-sha>
+   ```
+
+   This creates the dedicated branch and `ledger.json`; it never resets an
+   existing ledger. Verify the Contents API commits satisfy signature rules.
+4. Confirm the workflow writer can update the state branch. If the built-in
+   Actions token is excluded by repository rules, supply Actions secret
+   `THREAT_REVIEW_STATE_TOKEN` using an authorized identity limited to this
+   repository with **Contents: read/write**. It is used only for state storage;
+   PR comments still use the built-in token. Do not weaken default-branch
+   protections. Missing state or permission errors stop paid calls. The code
+   never mints credentials or changes repository rules.
+5. Run the offline checks below. Review the rollout and billing limit, then set
+   `THREAT_REVIEW_ENABLED=true` only when authorized to start the pilot. It admits
+   at most **ten distinct PRs** and **$25 total**, with no automatic renewal.
+6. Keep **Threat Model Review (advisory)** out of required checks. Opening,
+   reopening, marking ready or retargeting a PR starts immediately. Follow-up
+   pushes wait 75 seconds; another push cancels the older job. Drafts and
+   title/body-only edits are skipped before entering the cancellation group.
+
+Maintainers can request depth through **Actions → Threat Model Review (advisory)
+→ Run workflow**, supplying a PR number targeting the default branch. Current
+GitHub write/maintain/admin permission is checked before spending, and all caps
+still apply. PR text and labels cannot request extra spend. Only trusted
+base/default-branch code runs; PR blobs are data, never checked out or executed.
 
 ## Verify
-
-Run the cloud-free suites:
 
 ```sh
 python3 .github/scripts/test-threat-model-review.py
 python3 .github/scripts/test-threat-full-scan.py
 python3 .github/scripts/test-threat-ensemble.py
+python3 .github/scripts/test-threat-budget.py
 ```
 
-They cover immutable Git sources, large changes beyond the former cutoffs,
-complete source segmentation, missing-patch reconstruction, cross-file findings,
-incomplete batches, binary/submodule coverage, and the comment lifecycle. A real
-loopback HTTP test exercises source retrieval, OpenRouter requests, and PR delivery
-with synthetic credentials. Ensemble tests verify independent full scans,
-disagreement, exact duplicate attribution, per-model failures, deadline handling,
-and Astra-compatible request parameters. Release Integrity runs all three suites
-in ordinary CI.
+Release Integrity runs all four suites using Python 3.9+ and loopback sockets,
+without external services, real keys or paid calls. The budget suite exercises
+real local HTTP, conflicting SHA writes, reconciliation, permissions, cache
+invalidation, escalation, partial failures and comment delivery. Earlier suites
+protect immutable-source collection, validation and legacy report helpers.
 
-After activation, inspect **Actions → Threat Model Review (advisory)** and the PR:
-
-| Outcome | Author feedback |
+| Pilot check | Expected behavior |
 |---|---|
-| Findings | One public bot comment with severity, source links, threat references, trigger, impact, suggested fix, and which model raised each finding. |
-| Complete clean first scan | Actions summary only. |
-| Complete clean follow-up | Existing comment updated to clear old findings. |
-| Incomplete scan | Public comment explicitly says the scan is incomplete; it never presents missing coverage as clean. |
-| One model fails | Findings from the completed reviewer remain visible; the comment names the incomplete reviewer. A clean surviving review does not clear the incomplete status. |
-| Incomplete retry of the same head and diff merge base | Earlier findings for that verified comparison remain visible, followed by the incomplete retry report and any new partial findings. Identical retry reports do not accumulate. If both reports exceed the comment budget, the existing comment is preserved and the retry report appears in the Actions summary. A complete rerun can replace earlier findings. |
-| PR head changed, target branch changed, or PR closed during scan | Stale output is suppressed. |
-| Target branch tip advances, with the same PR head and merge base | The review still publishes against its recorded immutable base snapshot; unrelated merges do not silently discard feedback. The merge base is checked before and after live file enumeration and before publication. A changed or unverifiable comparison produces incomplete coverage; new findings from that scan are discarded, and findings from an older or unverified comparison are superseded. Retention requires both the full head SHA and a matching verified diff merge base; unrelated target-tip changes can still retain findings. |
+| First feedback | Progress, then Sonnet findings or clean first-pass feedback before deeper work. |
+| Risky or uncertain changes | Selected Opus review for auth, attestation, encryption, billing, workflows, findings or model uncertainty. |
+| Critical or disputed changes | Independent Astra source review for cryptography, attestation, workflows, high-severity findings, disagreement with Opus or maintainer request. |
+| Repeat push | Identical analysis reused; changed inputs invalidate source and integration results. |
+| Failure or budget exhaustion | Completed findings retained; unfinished coverage explicit; no automatic paid retries. |
+| Head changes during a call | Original-head results saved; stale findings not posted as current. |
+| Clean review | Explicit comment, never a security approval. |
+| Cost | Reported dollars separated from unknown-cost reservations, plus request count, reused batches and provider cache-hit tokens. |
 
-Legacy comments from the previous reviewer are updated in place. If several bot
-reports exist, the newest canonical report is preferred and updated first;
-other matching bot reports become links to it, leaving one active findings comment.
-Findings are
-unconfirmed and visible to anyone who can read the public PR. Authors and reviewers
-must validate them before changing code.
+Compare actual spend, useful findings, false positives, deferred coverage and
+second-opinion value across the ten PRs before proposing a larger rollout. A
+green workflow is not evidence that scanning completed.
 
-## Scan scope and troubleshooting
+## Budget behavior and recovery
 
-`source.complete_files` reads complete before/after Git blobs pinned to the PR's
-merge base and head. It rebuilds the diff instead of relying on truncated API
-patches, includes new files outside existing threat patterns, and retains mode,
-rename, empty-file, and deletion metadata. Findings about a verified empty file
-use `line: 0` only on an existing base/head side listed in `metadata_citation_sides`;
-the comment links to that file and labels the citation as file metadata. Absent,
-nonempty and unread sides cannot use that citation. Ordinary citations may point
-to any actual line in the completely retrieved source, including context outside
-the diff hunk; patch-only input remains restricted to visible patch lines. Symlink blobs are read as data; their
-targets are never followed. PR source is never checked out or executed.
+| Limit | Amount |
+|---|---:|
+| Sonnet per workflow attempt | $1 |
+| Opus and Astra combined per attempt | $3 |
+| PR per UTC day across attempts and pushes | $5 |
+| Repository per UTC day across PRs | $25 |
+| Entire pilot, no automatic reset | $25 and ten distinct PRs |
 
-`scan.scan` submits every changed-file text segment in batches, with the entire
-trusted-base `docs/threat-model.yaml` in every request. Each response must acknowledge
-all submitted units. A separate integration pass examines the batch analyses and
-findings for interactions across files; large analysis sets are reduced through
-additional integration passes without dropping batches. An unchanged summary count
-still advances when its serialized size shrinks, allowing
-the next pass to combine summaries. Equal-sized or growing same-count results stop
-as incomplete; the shared scan deadline also bounds repeated reductions.
-Candidate findings pass through integration review for validation and consolidation;
-unsupported candidates and duplicates are removed. Finding references may cite any
-ID defined by a canonical block-list `id` field, including assets (`A-*`), adversaries
-(`ADV-*`), boundaries (`TB-*`), threats (`T-*`) and security findings (`SEC-*`).
-Unknown IDs and IDs only mentioned in prose are rejected; defined non-threat IDs
-do not invalidate an otherwise supported finding.
+`state.py` reserves integer microdollars in one ledger **before** transport.
+GitHub Contents SHA compare-and-swap rejects stale concurrent writes; retries
+reread and recheck every cap. Missing state, write failures and ambiguous writes
+cannot authorize a request. Interrupted or unreconciled reservations never
+expire and also count against later days until reconciled from billing evidence.
 
-`ensemble.review_models` runs this entire process independently for each model,
-in configured order. Models do not see the other reviewer's analysis. The combined
-report removes exact duplicate findings and lists both reviewers on them; differing
-assessments remain separate for human validation. No majority vote or final model
-can veto a finding from the other completed review. Both must finish for a complete
-scan. A model failure does not prevent the next review, and a global timeout
-preserves already completed reviews while marking remaining ones incomplete.
+`paid.py` sets provider price ceilings, disallows fallbacks and per-request fees,
+caps output at 4,096 tokens, and bounds input with UTF-8 bytes plus a framing/schema
+allowance. Reservations assume cold cache and allow two times the input price for
+cache writes. Oversized requests are deferred. Response `usage.cost` settles the
+reservation; missing or invalid usage saves valid findings but stops more calls
+in that run. Charges above the reservation open a persistent circuit breaker.
+Price/provider behavior changes require review; retain the independent key cap.
+Never delete or reset the ledger to work around a limit.
 
-The prompt checks assets, trust boundaries, assumptions, threats and mitigations,
-including new attack surfaces and threat-model updates required by a PR. Context
-includes complete changed files; unchanged callers elsewhere in the repository are
-not automatically retrieved. This is a full PR text scan, not a re-audit of every
-repository file or a guarantee that all vulnerabilities will be found.
+To pause, set `THREAT_REVIEW_ENABLED=false` and cancel active review jobs. Pending
+calls may still incur cost; their reservations remain. Inspect the ledger and
+linked reports, reconcile unknown charges against provider billing, and fix
+credentials, permissions or invalid responses before resuming. HTTP statuses are
+shown without raw error bodies. Cache/checkpoint failures halt further spending.
 
-Resource limits produce an **incomplete** result rather than truncating source:
-GitHub's file-list ceiling is 3,000 files, each API JSON response is bounded to
-4,000,000 bytes, and the canonical threat model must fit 220,000 characters. Source
-collection also caps combined before/after UTF-8 content at 8,000,000 bytes,
-counting repeated uses of a cached blob again because each file can produce its
-own diff and evidence. The PR file inventory (including fallback patches) and
-cached Git trees each have a separate 8,000,000-byte serialized JSON budget.
-Exceeding any aggregate budget stops collection and posts an
-incomplete result asking the author to split the PR; no partial scan is called complete.
-Source
-units contain up to 32,000 characters split at whole lines; a single longer line
-requires manual review. Batches have an 80,000-character encoded-unit budget.
-Non-UTF-8/binary files, Git LFS objects and submodule contents require manual review and are named
-in the comment. A request permits 16,384 output tokens; incomplete responses or a
-full 32-finding response are treated as incomplete; validated findings at the cap
-remain visible with reviewer attribution. A report exceeding the single comment's
-60,000-character budget shows a fitting subset, preserves the full report in the
-Actions summary and asks the author to split the PR. Invalid model configuration
-also produces an incomplete PR notice. The process has
-a shared 50-minute scan deadline within a 60-minute workflow timeout. Models run
-sequentially, so a first scan that uses the whole budget leaves the second incomplete.
-If that one-shot deadline interrupts initial identity/comment lookup, final
-verification or publication, the runner
-refreshes the comment identity and retries delivery once with an incomplete status,
-retaining completed findings. Refreshing first avoids blindly repeating a POST
-whose response was interrupted after GitHub created the comment.
+## Scope, reuse and saved findings
 
-For an incomplete scan, inspect the listed files and source/model availability,
-OpenRouter balance/rate limits, and whether splitting the PR would allow complete
-feedback. Raw API responses and credentials are never printed. OpenRouter and the
-selected providers receive the threat model, changed source, and their review analyses;
-their data-handling settings apply. Disable the workflow or remove its key to stop
-new paid reviews. Operational failures remain non-blocking.
+Immutable merge-base/head blobs supply complete before/after text and rebuilt
+patches, including rename, mode and empty-file metadata. Every source unit is
+scheduled for Sonnet, followed by cross-file integration. Responses must
+acknowledge all submitted units; source findings must cite visible evidence.
+Large changes may exhaust a budget: the comment shows reviewed unit counts and
+pending integration instead of claiming full coverage. Existing limits remain:
+3,000 files, 8 MB aggregate source, 32,000-character line-aligned units and
+80,000-character batches. Binary, LFS and submodule changes need manual review.
+
+Each request receives an index of **all** canonical definition entries, the
+preamble, and up to eight lexically relevant complete definition blocks within
+18,000 characters. Oversized blocks are identified in model context. This is a
+bounded PR review with selected threat detail, not a verbatim full-threat-model
+audit or an automatic scan of unchanged callers. Anthropic requests mark the
+stable prefix for caching; hits are measured, never assumed for admission.
+
+Local analyses are cached by exact inputs, model, schema, prompt, threat text and
+trusted base. Integration also includes the entire changed-source fingerprint:
+identical summaries cannot reuse stale cross-file conclusions. A base change
+conservatively invalidates all results, including unchanged-dependency assumptions.
+Models do not see each other's source verdicts. Findings retain attribution;
+a later clean pass does not silently veto a prior candidate. Humans validate them.
+
+Validated findings are checkpointed after every batch before caching or more
+spend. Reports include exact head/base, progress and the previous public comment,
+and link to immutable state-branch commits. Later heads and incomplete retries
+cannot erase historical advice. One updatable comment links to the saved report;
+oversized reports use that link. If storage fails, old findings stay inline when
+they fit, and local results remain in the Actions summary. Raw responses, keys
+and prompts are not stored in ledger/reports. Cached analyses and findings are
+public like the PR. OpenRouter and its provider receive source and threat context.
 
 Implementation: `.github/workflows/threat-model-review.yml`,
-`.github/scripts/threat_review/runner.py` (`run`), `source.py` (`Sources`,
-`complete_files`), `scan.py` (`scan`), `review.py` (`prepare`, `model_call`,
-`validate_findings`), `ensemble.py` (`configured_models`, `review_models`),
-`client.py` (`GitHub`), and `report.py` (`render`).
+`.github/scripts/threat-model-review.py`, and `.github/scripts/threat_review/`:
+`budget_runner.py`, `budget_scan.py`, `context.py`, `paid.py`, `state.py`, plus shared
+source, validation, transport and rendering helpers. The scan deadline is 15
+minutes inside a 20-minute workflow timeout.
 
 ## Related
 
-- [OpenRouter structured outputs](https://openrouter.ai/docs/guides/features/structured-outputs).
-- [OpenAI Astra API guidance](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-6-astra) — structured output and supported parameters; sampling parameters are omitted.
+- [OpenRouter provider price ceilings](https://openrouter.ai/docs/guides/routing/provider-selection).
+- [OpenRouter prompt caching](https://openrouter.ai/docs/guides/best-practices/prompt-caching).
+- [GitHub Contents API](https://docs.github.com/en/rest/repos/contents).
 - [GitHub trusted-base PR event](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target).
-- [Build](build.md) — local toolchains.
-- [Test](test.md) — regression and CI checks.
-- [Threat model](../threat-model.yaml) — canonical review input.
+- [Build](build.md), [test](test.md), and [canonical threat model](../threat-model.yaml).

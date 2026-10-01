@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-01
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -902,5 +902,7 @@ HTTP/JSON modules and requires no package installation. CI runs its regression
 tests against local HTTP fixtures; the live workflow uses a repository Actions
 secret and the trusted base checkout. Full PR scans read immutable Git blobs as
 data and batch complete changed-file text; they never build or execute PR code.
-Opus 5.5 and GPT-6 Astra use the same OpenRouter key for independent full scans;
-their attributed findings are combined into one advisory comment.
+Sonnet 5.5 handles the first pass; selected Opus 5.5 and GPT-6 Astra reviews use
+the same OpenRouter key. Atomic budget reservations, cached analysis and durable
+reports live on a dedicated state branch. Paid scanning defaults to disabled;
+follow the linked setup instructions to verify writer permissions and pilot caps.

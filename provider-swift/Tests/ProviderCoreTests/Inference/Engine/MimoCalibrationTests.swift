@@ -116,8 +116,8 @@ struct MimoCalibrationTests {
         #expect(!(await bridge.startMimoCalibrationIfNeeded(requireNativeMiMo: false)))
     }
 
-    @Test("waiting for calibration retirement does not restart the original customer deadline")
-    func foregroundKeepsOriginalDeadline() async throws {
+    @Test("calibration retirement preserves the original deadline and cancellation diagnostics", arguments: [false, true])
+    func foregroundKeepsOriginalDeadline(cancel: Bool) async throws {
         let gate = RecoveryStepGate()
         defer { gate.release() }
         let (calibration, _, budget) = try fixture(gate: gate)
@@ -126,23 +126,30 @@ struct MimoCalibrationTests {
         try await waitForEntry(gate)
         let (foreground, engine, _) = try fixture(budget: budget)
         let deadline = FirstContentDeadline(relativeBudgetMilliseconds: 10)
-        let request = Task { () -> PreContentDeadlineFailure? in
+        let profile = RequestProfileBuilder()
+        let request = Task { () -> DeadlineVerdict? in
             do {
                 _ = try await foreground.submitTokenized(promptTokens: [1, 2, 3],
                     request: ChatCompletionRequest(model: "other", messages: [], max_tokens: 8),
-                    requestId: "deadline-customer", firstContentDeadline: deadline)
+                    requestId: "deadline-customer", firstContentDeadline: deadline, profile: profile)
                 Issue.record("expired foreground request was admitted")
                 return nil
-            } catch let failure as PreContentDeadlineFailure {
-                return failure
+            } catch is CancellationError {
+                return .cancelled
+            } catch is PreContentDeadlineFailure {
+                return .expiredBeforeSubmit
             } catch {
                 Issue.record("unexpected foreground failure: \(error)")
                 return nil
             }
         }
         try await Task.sleep(nanoseconds: 50_000_000)
+        if cancel { request.cancel() }
         gate.release()
-        #expect(await request.value == .deadlineUnreachable)
+        let expected: DeadlineVerdict = cancel ? .cancelled : .expiredBeforeSubmit
+        #expect(await request.value == expected)
+        #expect(profile.wireObject().deadlineDecision?.verdict == expected)
+        #expect(profile.wireObject().deadlineDecision?.projectedServiceUs == nil)
         #expect(engine.capacity().activeRequests == 0 && budget.serviceBudget.count == 0)
         #expect(await foreground.calibrationCountersTest() == [0, 0, 0, 0])
         await calibration.shutdown()

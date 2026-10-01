@@ -167,7 +167,9 @@ attempts back off `failureBackoff` (`.seconds(120)`), interruptions
 `IdleCalibrationCoordinator` prevents another calibration while a foreground
 request prepares or admits. A request on any loaded model cancels the existing
 probe and waits for its native retirement before acquiring service/KV. The
-request's original first-content clock continues during that wait. Unload and
+request's original first-content clock continues during that wait. Expiry or
+cancellation at retirement records the ordinary deadline verdict before any
+service/KV admission. Unload and
 shutdown stop the calibration; no background task can retain retired weights.
 
 Only completed, uncached, isolated calibration receipts seed ordinary phase

@@ -200,6 +200,28 @@ extension EngineV2Bridge {
         }
     }
 
+    /// Calibration retirement happens before pending profiles or resource
+    /// ownership exist. Preserve the ordinary refusal diagnostics here too.
+    func checkBeforeServiceAdmission(
+        _ deadline: FirstContentDeadline?,
+        profile: RequestProfileBuilder?,
+        usageSignal: EngineV2RequestUsageSignal?
+    ) throws {
+        do {
+            try Task.checkCancellation()
+            try deadline?.check()
+        } catch is CancellationError {
+            profile?.observeDeadlineDecision(.cancelled, deadline: deadline)
+            recordCancelledBeforeGeneration(profile)
+            usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
+            throw CancellationError()
+        } catch let failure as PreContentDeadlineFailure {
+            profile?.observeDeadlineDecision(.expiredBeforeSubmit, deadline: deadline)
+            usageSignal?.finalizeLookup(failure: .capacity, fallbackTier: prefixCacheFallbackTier)
+            throw failure
+        }
+    }
+
     /// Enforce absolute expiry independently from projection mode and balance
     /// every resource acquired before this boundary.
     func checkFirstContentDeadline(

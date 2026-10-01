@@ -161,8 +161,7 @@ extension EngineV2Bridge {
             continuation.finish()
             return stream
         }
-        try Task.checkCancellation()
-        try firstContentDeadline?.check()
+        try checkBeforeServiceAdmission(firstContentDeadline, profile: profile, usageSignal: usageSignal)
         let retirementTransfer = EngineV2RetirementTransfer()
         guard acquireServiceAllowance(requestID: id, serviceReservationID: serviceReservationID,
             serviceReservation: serviceReservation, promptTokens: promptTokens.count,

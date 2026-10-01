@@ -13,8 +13,16 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-func TestSmallModelsInterestAuthenticatedRegistration(t *testing.T) {
+// Close every server created by these tests, including subtest failure paths.
+func newSmallModelsInterestTestServer(t *testing.T) (*Server, *store.MemoryStore) {
+	t.Helper()
 	srv, st := newKeyTestServer(t)
+	t.Cleanup(srv.Close)
+	return srv, st
+}
+
+func TestSmallModelsInterestAuthenticatedRegistration(t *testing.T) {
+	srv, st := newSmallModelsInterestTestServer(t)
 	user := seedUser(t, st, "interest-a", "a@example.test")
 	token := privySession(t, srv, st, user)
 	r := httptest.NewRequest(http.MethodPost, "/v1/interest/small-models", strings.NewReader(`{"mac_type":"MacBook Pro","chip":"M1","ram_gb":16}`))
@@ -44,7 +52,7 @@ func interestCall(srv *Server, method, path, token, body string) *httptest.Respo
 func TestSmallModelsInterestRejectsNonInteractiveAuth(t *testing.T) {
 	for _, kind := range []string{"missing", "invalid", "inference", "provider", "admin"} {
 		t.Run(kind, func(t *testing.T) {
-			srv, st := newKeyTestServer(t)
+			srv, st := newSmallModelsInterestTestServer(t)
 			user := seedUser(t, st, "interest-auth", "auth@example.test")
 			token := privySession(t, srv, st, user)
 			want := http.StatusForbidden
@@ -97,7 +105,7 @@ func TestSmallModelsInterestInputValidation(t *testing.T) {
 	}
 	for name, body := range inputs {
 		t.Run(name, func(t *testing.T) {
-			srv, st := newKeyTestServer(t)
+			srv, st := newSmallModelsInterestTestServer(t)
 			u := seedUser(t, st, "interest-validation", "v@example.test")
 			token := privySession(t, srv, st, u)
 			w := interestCall(srv, http.MethodPost, "/v1/interest/small-models", token, body)
@@ -114,7 +122,7 @@ func TestSmallModelsInterestInputValidation(t *testing.T) {
 		})
 	}
 	t.Run("email_required", func(t *testing.T) {
-		srv, st := newKeyTestServer(t)
+		srv, st := newSmallModelsInterestTestServer(t)
 		u := seedUser(t, st, "interest-noemail", "")
 		token := privySession(t, srv, st, u)
 		if w := interestCall(srv, http.MethodPost, "/v1/interest/small-models", token, interestBody); w.Code != 422 {
@@ -124,7 +132,7 @@ func TestSmallModelsInterestInputValidation(t *testing.T) {
 }
 
 func TestSmallModelsInterestOwnReadbackAndRateLimit(t *testing.T) {
-	srv, st := newKeyTestServer(t)
+	srv, st := newSmallModelsInterestTestServer(t)
 	a := seedUser(t, st, "interest-a", "a@example.test")
 	b := seedUser(t, st, "interest-b", "b@example.test")
 	token := privySession(t, srv, st, a)
@@ -161,7 +169,7 @@ func (failedInterestStore) GetSmallModelsInterest(context.Context, string) (*sto
 	return nil, errors.New("unavailable")
 }
 func TestSmallModelsInterestStorageFailure(t *testing.T) {
-	srv, st := newKeyTestServer(t)
+	srv, st := newSmallModelsInterestTestServer(t)
 	u := seedUser(t, st, "interest-error", "error@example.test")
 	token := privySession(t, srv, st, u)
 	srv.store = failedInterestStore{Store: st}
@@ -173,7 +181,7 @@ func TestSmallModelsInterestStorageFailure(t *testing.T) {
 }
 
 func TestSmallModelsInterestAdminExport(t *testing.T) {
-	srv, st := newKeyTestServer(t)
+	srv, st := newSmallModelsInterestTestServer(t)
 	a := seedUser(t, st, "interest-a", "a@example.test")
 	b := seedUser(t, st, "interest-b", "b@example.test")
 	for _, u := range []*store.User{a, b} {
@@ -231,7 +239,7 @@ func TestSmallModelsInterestAdminExport(t *testing.T) {
 }
 
 func TestSmallModelsInterestBaselineAuthControl(t *testing.T) {
-	srv, _ := newKeyTestServer(t)
+	srv, _ := newSmallModelsInterestTestServer(t)
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/keys", nil))
 	if w.Code != http.StatusUnauthorized {

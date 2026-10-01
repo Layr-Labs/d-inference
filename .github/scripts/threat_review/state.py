@@ -107,6 +107,15 @@ class State:
             return ticket
         return self.mutate(update)
 
+    def admit(self, pr):
+        """Count even cache-only PRs toward the bounded pilot before scanning."""
+        def update(ledger):
+            if pr not in ledger["prs"]:
+                if len(ledger["prs"]) >= CAPS["prs"]:
+                    raise BudgetStopped("Ten-PR pilot complete; maintainer evaluation required")
+                ledger["prs"].append(pr)
+        self.mutate(update)
+
     def settle(self, ticket, actual):
         if type(actual) is not int or actual < 0:
             raise BudgetStopped("Invalid provider usage; reservation retained")

@@ -22,7 +22,7 @@ from threat_review.context import ThreatContext, SONNET, OPUS, ASTRA
 from threat_review.paid import PaidCalls, microdollars
 from threat_review.report import plain
 from threat_review.source import complete_files
-from threat_review.state import State, BudgetStopped, CAPS, fresh, initialize
+from threat_review.state import State, BudgetStopped, fresh
 
 spec = importlib.util.spec_from_file_location("fixtures", Path(__file__).with_name("test-threat-model-review.py"))
 fixtures = importlib.util.module_from_spec(spec)
@@ -32,7 +32,7 @@ spec.loader.exec_module(fixtures)
 class LocalService:
     def __init__(self):
         self.files, self.lock, self.calls = {}, threading.Lock(), []
-        self.reply = lambda body: self.completion(body)
+        self.reply = self.completion
         self.fail_write = False
         self.conflicts = 0
         service = self
@@ -65,7 +65,7 @@ class LocalService:
                     raw = base64.b64decode(body["content"])
                     sha = hashlib.sha1(raw).hexdigest()
                     service.files[path] = {"sha": sha, "encoding": "base64", "size": len(raw), "content": body["content"]}
-                self.send(200, {"commit": {"sha": sha}})
+                return self.send(200, {"commit": {"sha": sha}})
 
             def assert_branch(self, body):
                 if body["branch"] != "codex/threat-review-state":
@@ -77,7 +77,7 @@ class LocalService:
                 result = service.reply(body)
                 if isinstance(result, int):
                     return self.send(result, {"secret": "never print this"})
-                self.send(200, result)
+                return self.send(200, result)
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -170,6 +170,14 @@ class BudgetTests(unittest.TestCase):
         self.state.reserve(0, "100-1", "normal", 1)
         with self.assertRaisesRegex(BudgetStopped, "Ten-PR"):
             self.state.reserve(10, "101-1", "normal", 1)
+
+    def test_cache_only_prs_also_count_toward_pilot(self):
+        for pr in range(10):
+            self.state.admit(pr)
+        self.state.admit(0)
+        with self.assertRaisesRegex(BudgetStopped, "Ten-PR"):
+            self.state.admit(10)
+        self.assertFalse(self.state.read("ledger.json")[0]["requests"])
 
     def test_missing_or_unwritable_ledger_fails_closed(self):
         self.service.fail_write = True
@@ -389,6 +397,29 @@ class LifecycleTests(unittest.TestCase):
         saved = self.service.state.read("reports/123-1.json")[0]
         self.assertEqual(saved["head"], fixtures.HEAD)
         self.assertTrue(saved["review"]["integration_completed"])
+
+    def test_progress_comment_precedes_source_collection(self):
+        files = self.github.files
+        def collect(count):
+            self.assertTrue(self.github.posts)
+            self.assertIn("Review in progress", self.github.posts[-1][1])
+            self.assertFalse(self.service.calls)
+            return files(count)
+        self.github.files = collect
+        self.run_review()
+
+    def test_uncertain_comment_creation_is_looked_up_before_retry(self):
+        original = self.github.publish
+        def publish(existing, body):
+            original(existing, body)
+            if existing is None:
+                self.github.existing = {"id": 8, "body": body}
+                raise ReviewUnavailable("POST response lost after creation")
+            return dict(existing, body=body)
+        self.github.publish = publish
+        self.run_review()
+        self.assertEqual(sum(old is None for old, body in self.github.posts), 1)
+        self.assertEqual(self.github.posts[-1][0]["id"], 8)
 
     def test_head_changes_after_paid_work_still_preserve_durable_findings(self):
         def reply(body):

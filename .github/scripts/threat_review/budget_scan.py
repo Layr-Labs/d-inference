@@ -139,6 +139,7 @@ class Scanner:
             if len(json.dumps(reduced)) >= len(json.dumps(pending)):
                 raise ReviewUnavailable("Integration did not converge")
             pending = reduced
+        return None
 
     def run(self, force_deep=False):
         summaries, deepen, critical = [], [], []

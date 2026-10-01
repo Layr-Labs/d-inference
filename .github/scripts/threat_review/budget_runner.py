@@ -61,6 +61,7 @@ def run(event, root, env, github=None, state=None, paid_factory=PaidCalls):
     evidence, diff_base, history = {}, None, None
     snapshot = {"errors": [], "findings": []}
     scanner = None
+    publication_uncertain = False
 
     def alive():
         current = github.pull()
@@ -70,7 +71,11 @@ def run(event, root, env, github=None, state=None, paid_factory=PaidCalls):
             verify_diff(github, current, base, head, diff_base)
 
     def publish():
-        nonlocal existing
+        nonlocal existing, publication_uncertain
+        if publication_uncertain:
+            # A timed-out POST can have created a comment. Prove its identity
+            # before retrying; a failed lookup must never authorize another POST.
+            existing = github.existing_comment((MARKER, LEGACY_MARKER))
         alive()
         body = status_body(repository, head, base, diff_base, snapshot, evidence, history)
         if previous and not history:
@@ -83,7 +88,9 @@ def run(event, root, env, github=None, state=None, paid_factory=PaidCalls):
             body = status_body(repository, head, base, diff_base,
                                dict(snapshot, findings=[], errors=["Report exceeds comment capacity; see saved findings"]),
                                evidence, history)
+        publication_uncertain = True
         result = github.publish(existing, body)
+        publication_uncertain = False
         if result:
             existing = result
 
@@ -111,9 +118,13 @@ def run(event, root, env, github=None, state=None, paid_factory=PaidCalls):
                 raise ReviewUnavailable("Deep review requires maintainer permission")
         diff_base = github.comparison_base(base, head)
         alive()
+        state.admit(number)
         key = env.get("OPENROUTER_API_KEY")
         if not key:
             raise ReviewUnavailable("Review key missing")
+        # A large PR can take time to collect. Acknowledge it and archive prior
+        # advice before those reads, rather than leaving the author waiting.
+        checkpoint(snapshot)
         files = github.files(current["changed_files"])
         alive()
         files = complete_files(github, files, diff_base, head)
@@ -134,5 +145,7 @@ def run(event, root, env, github=None, state=None, paid_factory=PaidCalls):
             try:
                 publish()
             except Exception:
+                # Delivery can fail or become stale; return the saved report
+                # to the Actions summary rather than losing local findings.
                 pass
     return status_body(repository, head, base, diff_base, snapshot, evidence, history)

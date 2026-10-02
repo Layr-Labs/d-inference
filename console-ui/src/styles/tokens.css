@@ -1,0 +1,96 @@
+/* The same PP Telegraf and blue used by landing/. Keep status colors semantic. */
+@font-face { font-family: 'PP Telegraf'; src: url('/fonts/PPTelegraf-Regular.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: 'PP Telegraf'; src: url('/fonts/PPTelegraf-Medium.woff2') format('woff2'); font-weight: 500; font-style: normal; font-display: swap; }
+@font-face { font-family: 'PP Telegraf'; src: url('/fonts/PPTelegraf-Semibold.woff2') format('woff2'); font-weight: 600 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'ABC Repro Mono'; src: url('/fonts/ABCReproMono-Regular.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: 'IBM Plex Mono'; src: url('/fonts/IBMPlexMono-Regular.ttf') format('truetype'); font-weight: 400; font-style: normal; font-display: swap; }
+
+:root {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f7f7f8;
+  --bg-tertiary: #f0f0f2;
+  --bg-elevated: #e7e7ea;
+  --bg-hover: #ebebee;
+  --bg-white: #ffffff;
+  --ink: #111113;
+  --ink-light: #606066;
+  --ink-faint: #707078;
+  --text-primary: var(--ink);
+  --text-secondary: var(--ink-light);
+  --text-tertiary: var(--ink-faint);
+  --border-dim: #e7e7ea;
+  --border-subtle: #c9c9d0;
+  --border-default: #dedee3;
+  --action-primary: #0b41ff;
+  --action-danger: #c52f39;
+  --accent-brand: #0b41ff;
+  --accent-brand-dim: #edf1ff;
+  --accent-brand-hover: #0734d9;
+  --accent-green: #187451;
+  --accent-green-dim: #e5f4ec;
+  --accent-amber: #98610c;
+  --accent-amber-dim: #fff4dd;
+  --accent-red: #c52f39;
+  --accent-red-dim: #fff0f0;
+  --danger: var(--accent-red);
+  --coral: var(--accent-brand);
+  --coral-light: var(--accent-brand-dim);
+  --teal: var(--accent-green);
+  --teal-light: var(--accent-green-dim);
+  --teal-dark: #14593e;
+  --blue: #245bbd;
+  --blue-light: #eaf1ff;
+  --purple: #7452ad;
+  --purple-light: #f0ebfa;
+  --gold: var(--accent-amber);
+  --gold-light: var(--accent-amber-dim);
+  --pink: #ae3d76;
+  --pink-light: #fbeaf3;
+  --map-land-dot: rgba(11, 65, 255, 0.32);
+  --map-graticule: rgba(11, 65, 255, 0.08);
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 3%);
+  --shadow-md: 0 3px 12px rgb(0 0 0 / 5%);
+  --shadow-lg: 0 8px 28px rgb(0 0 0 / 7%);
+  --shadow-xl: 0 16px 48px rgb(0 0 0 / 10%);
+  --font-display: 'PP Telegraf', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-sans: var(--font-display);
+  --font-mono: 'ABC Repro Mono', 'IBM Plex Mono', monospace;
+}
+
+.dark {
+  --bg-primary: #070707;
+  --bg-secondary: #0d0d0d;
+  --bg-tertiary: #151515;
+  --bg-elevated: #202020;
+  --bg-hover: #1c1c1c;
+  --bg-white: #121212;
+  --ink: #f5f5f5;
+  --ink-light: #a4a4a9;
+  --ink-faint: #8e8e95;
+  --border-dim: #252525;
+  --border-subtle: #47474b;
+  --border-default: #323235;
+  /* Link text must stay legible; solid buttons keep the landing page blue. */
+  --accent-brand: #91a8ff;
+  --accent-brand-dim: #141c38;
+  --accent-brand-hover: #2856ff;
+  --accent-green: #7bc6a1;
+  --accent-green-dim: #13271e;
+  --accent-amber: #dfb768;
+  --accent-amber-dim: #2a2213;
+  --accent-red: #f28b91;
+  --accent-red-dim: #321b1e;
+  --teal-dark: #99d8b7;
+  --blue: #8eb9ff;
+  --blue-light: #172237;
+  --purple: #bfa5ea;
+  --purple-light: #261e35;
+  --pink: #e5a0c4;
+  --pink-light: #301e28;
+  --map-land-dot: rgba(112, 145, 255, 0.40);
+  --map-graticule: rgba(112, 145, 255, 0.10);
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 12%);
+  --shadow-md: 0 4px 14px rgb(0 0 0 / 20%);
+  --shadow-lg: 0 8px 28px rgb(0 0 0 / 28%);
+  --shadow-xl: 0 16px 48px rgb(0 0 0 / 36%);
+}

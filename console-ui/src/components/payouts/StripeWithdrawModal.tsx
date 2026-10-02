@@ -135,7 +135,7 @@ export function StripeWithdrawModal({
         <button
           onClick={onConfirm}
           disabled={loading || !valid}
-          className="flex-1 py-3 rounded-lg bg-teal border border-border-dim text-white font-bold text-sm hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
+          className="flex-1 py-3 rounded-lg bg-action-primary border border-border-dim text-white font-bold text-sm hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
         >
           {loading && <Loader2 size={14} className="animate-spin" />}
           {loading ? "Processing..." : `Withdraw $${amountNum.toFixed(2)}`}

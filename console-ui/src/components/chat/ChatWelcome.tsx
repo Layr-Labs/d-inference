@@ -16,7 +16,7 @@ export function ChatWelcome({ authenticated }: { authenticated: boolean }) {
   return (
     <div className="mb-6 text-center message-animate sm:mb-8">
       <BloomMark size={42} className="mx-auto mb-5 text-accent-brand" />
-      <h1 className="!font-logo !text-[42px] !font-normal !leading-[1.12] !tracking-[-0.04em] text-ink sm:!text-[54px]">
+      <h1 className="!font-display !text-[42px] !font-medium !leading-[1.12] !tracking-[-0.04em] text-ink sm:!text-[54px]">
         {authenticated ? "What are you working on?" : "Darkbloom"}
       </h1>
       <p className="mx-auto mt-4 max-w-md text-sm leading-relaxed text-text-secondary sm:text-[15px]">

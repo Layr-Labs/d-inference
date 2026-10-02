@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — console branding
+
+- Align the console with Darkbloom’s landing-page wordmark, PP Telegraf typography, blue actions, and neutral light and dark surfaces.
+- Add system appearance, apply saved themes before first paint, synchronize appearance between tabs, and match the sign-in dialog to the selected theme.
+- Keep controls and earnings notices legible in both themes, with contrast and theme-persistence regression checks.
+
 ## Unreleased — provider 0.9.17
 
 - Keep the normal startup selection and explicit `--model` override authoritative while Autopilot is waiting or observing in shadow. Cached planning inventory can no longer make ordinary routing load unselected models.

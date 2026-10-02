@@ -37,7 +37,7 @@ export function SetupProviderCTA({
             }}
             disabled={!ready}
             className="inline-flex items-center justify-center gap-2 px-6 py-2.5 rounded-lg
-                       bg-coral text-white font-medium text-sm
+                       bg-action-primary text-white font-medium text-sm
                        hover:opacity-90
                        disabled:opacity-40 disabled:cursor-not-allowed
                        transition-all shrink-0"
@@ -67,7 +67,7 @@ export function SetupProviderCTA({
               trackEvent("provider_setup_clicked", { source: "earn_page_setup_provider_cta" });
             }}
             className="inline-flex items-center justify-center gap-2 px-6 py-2.5 rounded-lg
-                       bg-accent-brand text-white font-medium text-sm
+                       bg-action-primary text-white font-medium text-sm
                        hover:bg-accent-brand-hover
                        transition-colors shrink-0"
           >

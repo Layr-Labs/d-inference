@@ -17,7 +17,7 @@ export default function SettingsPage() {
       <div className="flex-1 overflow-y-auto">
         <div className="mx-auto max-w-5xl px-5 py-8 sm:px-10 sm:py-12">
           <div className="mb-10">
-            <h1 className="font-logo text-4xl font-normal tracking-tight text-text-primary sm:text-5xl">Your workspace</h1>
+            <h1 className="font-display text-4xl font-medium tracking-tight text-text-primary sm:text-5xl">Your workspace</h1>
             <p className="mt-3 max-w-xl text-sm leading-relaxed text-text-secondary">
               Appearance, request privacy, and connection preferences for this browser.
             </p>
@@ -45,7 +45,7 @@ export default function SettingsPage() {
                   aria-label="Encrypt requests to coordinator"
                   disabled={settings.encStatus === "checking"}
                   onClick={() => settings.handleEncryptionToggle(!settings.encryptToCoord)}
-                  className={`relative mt-0.5 h-7 w-12 shrink-0 rounded-full transition-colors disabled:cursor-wait ${settings.encryptToCoord ? "bg-accent-brand" : "bg-border-subtle"}`}
+                  className={`relative mt-0.5 h-7 w-12 shrink-0 rounded-full transition-colors disabled:cursor-wait ${settings.encryptToCoord ? "bg-action-primary" : "bg-border-subtle"}`}
                 >
                   <span className={`absolute left-1 top-1 h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${settings.encryptToCoord ? "translate-x-5" : ""}`} />
                 </button>
@@ -84,7 +84,7 @@ export default function SettingsPage() {
                 />
                 <p id="coordinator-url-hint" className="mt-2 text-xs leading-relaxed text-text-secondary">Used by the API console&apos;s code examples. The console&apos;s own connection is configured separately by its operator.</p>
                 <div className="mt-4 flex flex-wrap items-center gap-3">
-                  <button type="submit" disabled={!settings.hasChanges} className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-accent-brand px-4 text-sm font-medium text-white dark:text-bg-primary transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-40">
+                  <button type="submit" disabled={!settings.hasChanges} className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-action-primary px-4 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-40">
                     {settings.saved ? <><Check size={15} />Saved</> : "Save URL"}
                   </button>
                   {settings.hasChanges && <span className="text-xs text-text-secondary">Unsaved changes</span>}

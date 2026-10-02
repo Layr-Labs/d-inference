@@ -90,7 +90,7 @@ export function InviteCodeBanner() {
               className="min-w-0 flex-1 rounded-lg border border-border-dim bg-bg-primary px-3 py-2.5 text-sm text-ink placeholder:text-text-tertiary"
               autoFocus
             />
-            <button type="submit" disabled={loading || !code.trim()} className="flex items-center gap-2 rounded-lg bg-accent-brand px-4 py-2.5 text-xs font-medium text-white hover:bg-accent-brand-hover disabled:opacity-40 dark:text-bg-primary">
+            <button type="submit" disabled={loading || !code.trim()} className="flex items-center gap-2 rounded-lg bg-action-primary px-4 py-2.5 text-xs font-medium text-white hover:bg-accent-brand-hover disabled:opacity-40">
               {loading && <Loader2 size={14} className="animate-spin" />}
               {loading ? "Claiming…" : "Claim"}
             </button>

@@ -1,6 +1,6 @@
 # Console UI (`console-ui/`)
 
-> Last updated: 2026-09-27
+> Last updated: 2026-10-01
 
 The console at `console.darkbloom.dev` is a Next.js 16 App Router / React 19 application (`console-ui/package.json`) that gives consumers a chat client, model catalog, network stats, billing, API-key management, and provider linking. The browser never calls the coordinator for authenticated work: every page fetches same-origin `/api/*` route handlers, which resolve the coordinator URL server-side and forward the caller's own credential. This page explains how those pieces fit; the coordinator routes they call are specified in [`../../reference/api-contracts.md`](../../reference/api-contracts.md). The internal, read-only operator dashboard is a separate app — see [`admin-ui.md`](admin-ui.md).
 
@@ -15,7 +15,26 @@ The console exists so a person can use Darkbloom without writing code: sign in, 
 
 ### Runtime and layout
 
-`console-ui/src/app/layout.tsx` (`RootLayout`) mounts, in order: `<Analytics/>` (`@vercel/analytics/next`), `GoogleAnalytics`, `TelemetryInitializer`, `DatadogRUM`, then `ThemeProvider` → `PrivyClientProvider` → `VerificationModeProvider` → `AppShell` → the page. Route entry points compose client workspaces; there is no `not-found.tsx` or `loading.tsx`, and `console-ui/src/app/global-error.tsx` is the root error boundary. Dependencies of note (`console-ui/package.json`): `@privy-io/react-auth`, `zustand`, `tweetnacl`, `@datadog/browser-rum`, `react-markdown`, Tailwind 4. `console-ui/next.config.ts` sets `typescript.ignoreBuildErrors: true`, so type errors do not fail `next build`.
+`console-ui/src/app/layout.tsx` (`RootLayout`) mounts, in order: `<Analytics/>` (`@vercel/analytics/next`), `GoogleAnalytics`, `TelemetryInitializer`, `DatadogRUM`, then `ThemeProvider` → `PrivyClientProvider` → `VerificationModeProvider` → `AppShell` → the page. Route entry points compose client workspaces; there is no `not-found.tsx` or `loading.tsx`, and `console-ui/src/app/global-error.tsx` is the root error boundary. Dependencies of note (`console-ui/package.json`): `@privy-io/react-auth`, `zustand`, `tweetnacl`, `@datadog/browser-rum`, `react-markdown`, Tailwind 4. The production build includes TypeScript validation.
+
+### Brand and appearance
+
+`console-ui/src/styles/tokens.css` owns light and dark surfaces, text, semantic
+status colors, and the blue action token. `globals.css` maps these tokens to
+Tailwind utilities; `styles/workspace.css` owns shared navigation treatments.
+The wordmark and PP Telegraf font files under `console-ui/public/` are copies of
+`landing/public/` assets. `components/brand/Wordmark.tsx` renders the vector in
+the current theme. Keep these copies aligned when the landing brand changes;
+`styles/tokens.test.ts` checks asset parity and text/button contrast.
+
+`lib/theme.ts` (`initializeTheme`, `THEME_INIT_SCRIPT`) applies appearance in the
+root document before first paint. `components/app-providers/ThemeProvider.tsx`
+persists `light`, `dark`, or `system` under `darkbloom-theme`, honors the legacy
+`eigeninference-theme` value, follows OS changes in system mode, and synchronizes
+other tabs through storage events. With no saved preference it follows the OS.
+Blocked storage still permits a session-only choice. `AppearanceSettings`
+exposes all three preferences; the sidebar offers a light/dark shortcut.
+`PrivyRealProvider` uses the resolved theme and the same blue for sign-in.
 
 ### Page routes (13)
 

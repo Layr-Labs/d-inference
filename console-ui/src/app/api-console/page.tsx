@@ -38,10 +38,10 @@ export default function ApiConsolePage() {
         <div className="mx-auto max-w-5xl px-5 pb-12 pt-8 sm:px-10 sm:pt-12">
           <header className="mb-8 flex flex-wrap items-end justify-between gap-6">
             <div className="max-w-xl">
-              <h1 className="font-logo text-4xl font-normal tracking-tight text-text-primary sm:text-5xl">Build with Darkbloom</h1>
+              <h1 className="font-display text-4xl font-medium tracking-tight text-text-primary sm:text-5xl">Build with Darkbloom</h1>
               <p className="mt-3 text-sm leading-relaxed text-text-secondary">Connect with the OpenAI SDK, choose a model, and send your first request.</p>
             </div>
-            <a href="#api-keys" className="inline-flex min-h-10 items-center gap-2 rounded-lg bg-accent-brand px-4 text-sm font-medium text-white dark:text-bg-primary transition-opacity hover:opacity-90"><KeyRound size={15} />Manage API keys</a>
+            <a href="#api-keys" className="inline-flex min-h-10 items-center gap-2 rounded-lg bg-action-primary px-4 text-sm font-medium text-white transition-opacity hover:opacity-90"><KeyRound size={15} />Manage API keys</a>
           </header>
 
           <BaseUrl url={`${exampleUrl}/v1`} />

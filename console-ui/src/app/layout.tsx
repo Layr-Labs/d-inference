@@ -9,6 +9,7 @@ import { PrivyClientProvider } from "@/components/app-providers/PrivyClientProvi
 import { VerificationModeProvider } from "@/components/app-providers/verification-mode";
 import { TelemetryInitializer } from "@/components/TelemetryInitializer";
 import { DatadogRUM } from "@/components/DatadogRUM";
+import { THEME_INIT_SCRIPT } from "@/lib/theme";
 
 export const metadata: Metadata = {
   title: "Darkbloom — Private AI on Verified Macs",
@@ -30,14 +31,13 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
-        {/* Preload the Louize hero weight — it renders the LCP heading on the
-            chat empty state and the page headings, so fetching it eagerly cuts
-            LCP text delay and font-swap CLS (perf F12). */}
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+        {/* Preload the shared brand font for navigation and page content. */}
         <link
           rel="preload"
-          href="/fonts/Louize-Regular.otf"
+          href="/fonts/PPTelegraf-Regular.woff2"
           as="font"
-          type="font/otf"
+          type="font/woff2"
           crossOrigin="anonymous"
         />
       </head>

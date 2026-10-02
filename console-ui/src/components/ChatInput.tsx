@@ -92,7 +92,7 @@ export function ChatInput({
                 onLogin?.();
               }}
               disabled={!ready}
-              className="flex min-h-11 items-center justify-center gap-2 rounded-xl bg-accent-brand px-5 text-sm font-medium text-white transition-colors hover:bg-accent-brand-hover disabled:cursor-not-allowed disabled:opacity-50 dark:text-bg-primary"
+              className="flex min-h-11 items-center justify-center gap-2 rounded-xl bg-action-primary px-5 text-sm font-medium text-white transition-colors hover:bg-accent-brand-hover disabled:cursor-not-allowed disabled:opacity-50"
             >
               <LogIn size={15} />
               {ready ? "Sign in to chat" : "Loading…"}
@@ -184,7 +184,7 @@ export function ChatInput({
               aria-label="Send message"
               title={canSubmit ? "Send message" : "Waiting for your account and model to be ready"}
               disabled={(!input.trim() && images.length === 0) || !canSubmit}
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent-brand text-white transition-colors hover:bg-accent-brand-hover disabled:cursor-not-allowed disabled:bg-bg-secondary disabled:text-text-tertiary dark:text-bg-primary"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-action-primary text-white transition-colors hover:bg-accent-brand-hover disabled:cursor-not-allowed disabled:bg-bg-secondary disabled:text-text-tertiary"
             ><ArrowUp size={19} /></button>
           )}
         </div>

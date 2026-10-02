@@ -9,7 +9,7 @@ import { SetupCommand } from "./SetupCommand";
 import { SETUP_STEPS } from "./content";
 import { MacOSUpgradeNotice } from "./MacOSUpgradeNotice";
 
-const ACTION_CLASS = "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-accent-brand px-4 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-wait disabled:opacity-50 dark:text-bg-primary";
+const ACTION_CLASS = "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-action-primary px-4 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-wait disabled:opacity-50";
 
 export function ProviderOnboarding({ hasLinkedProviders = false }: { hasLinkedProviders?: boolean }) {
   const { ready, authenticated, login } = useAuthContext();
@@ -17,7 +17,7 @@ export function ProviderOnboarding({ hasLinkedProviders = false }: { hasLinkedPr
   return (
     <div className="mx-auto max-w-5xl px-5 pb-12 pt-8 sm:px-8 sm:pt-12">
       <header className="border-b border-border-dim pb-8 sm:pb-10">
-        <h1 className="font-logo text-4xl font-normal tracking-tight text-text-primary sm:text-5xl">
+        <h1 className="font-display text-4xl font-medium tracking-tight text-text-primary sm:text-5xl">
           {hasLinkedProviders ? "Add another Mac." : "Put your Mac to work."}
         </h1>
         <p className="mt-4 max-w-2xl text-base leading-relaxed text-text-secondary">

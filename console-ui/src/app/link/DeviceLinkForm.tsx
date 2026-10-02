@@ -119,7 +119,7 @@ export function DeviceLinkForm() {
           credited automatically.
         </p>
         <p className="text-text-tertiary text-sm mt-4">Return to your terminal to finish starting the provider.</p>
-        <a href="/providers" className="mt-6 inline-flex min-h-11 items-center rounded-lg bg-accent-brand px-5 text-sm font-medium text-white dark:text-bg-primary">Open your provider workspace</a>
+        <a href="/providers" className="mt-6 inline-flex min-h-11 items-center rounded-lg bg-action-primary px-5 text-sm font-medium text-white">Open your provider workspace</a>
       </div>
     );
   }
@@ -138,7 +138,7 @@ export function DeviceLinkForm() {
             });
             login();
           }}
-          className="w-full px-6 py-3 bg-coral text-white rounded-xl font-bold border border-border-dim
+          className="w-full px-6 py-3 bg-action-primary text-white rounded-xl font-bold border border-border-dim
                      hover:opacity-90 transition-all"
         >
           Sign In
@@ -190,7 +190,7 @@ export function DeviceLinkForm() {
         <button
           type="submit"
           disabled={code.replace("-", "").length !== 8 || status === "submitting"}
-          className="w-full px-6 py-3 bg-coral text-white rounded-xl font-bold border border-border-dim
+          className="w-full px-6 py-3 bg-action-primary text-white rounded-xl font-bold border border-border-dim
                      hover:opacity-90
                      transition-all disabled:opacity-40 disabled:cursor-not-allowed"
         >

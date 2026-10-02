@@ -71,10 +71,10 @@ export function EarningsHero({
         >
           <AlertTriangle
             size={16}
-            className="mt-0.5 shrink-0 text-black"
+            className="mt-0.5 shrink-0 text-accent-amber"
             aria-hidden
           />
-          <p className="text-[14.4px] leading-relaxed text-black">
+          <p className="text-[14.4px] leading-relaxed text-text-primary">
             <strong>Estimated earning, not guaranteed.</strong>{" "}
             While the system is bootstrapping, we are seeing significant variation in earning
             levels among providers using the same machine type. The default duty cycle is 5% to

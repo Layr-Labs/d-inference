@@ -29,7 +29,7 @@ export function ModelTokenClaims() {
           {offer.status === "sold_out" && <p className="mt-1 text-xs text-text-secondary">All {offer.max_claims} grants have been claimed.</p>}
         </div>
         {offer.status === "available" && <button type="button" disabled={claimingModel !== null} onClick={() => claim(offer.model_id)}
-          className="shrink-0 rounded-lg bg-accent-brand px-4 py-2 text-xs font-semibold text-white disabled:opacity-50">
+          className="shrink-0 rounded-lg bg-action-primary px-4 py-2 text-xs font-semibold text-white disabled:opacity-50">
           {claimingModel === offer.model_id ? "Claiming…" : `Claim ${tokens} tokens`}
         </button>}
       </div>;

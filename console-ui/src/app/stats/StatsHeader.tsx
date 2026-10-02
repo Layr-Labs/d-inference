@@ -24,7 +24,7 @@ export function StatsHeader({ snapshotAt, fetchedAt, hasSnapshot, refreshing, er
   return (
     <header className="flex flex-wrap items-end justify-between gap-5 pb-7 pt-8 sm:pt-10">
       <div>
-        <h1 className="font-logo text-[42px] font-normal leading-tight tracking-[-0.035em] text-ink sm:text-5xl">The Darkbloom network</h1>
+        <h1 className="font-display text-[42px] font-medium leading-tight tracking-[-0.035em] text-ink sm:text-5xl">The Darkbloom network</h1>
         <p className="mt-3 max-w-xl text-sm leading-relaxed text-text-secondary">Explore the Macs, models, and activity behind private inference.</p>
       </div>
       <div className="flex items-center gap-4">

@@ -1,139 +1,9 @@
 @import "tailwindcss";
+@import "../styles/tokens.css";
+@import "../styles/workspace.css";
 @custom-variant dark (&:where(.dark, .dark *));
 
 button, a, [role="button"], summary { cursor: pointer; }
-
-/* ==================== BRAND FONTS (EigenCloud Brand Book v1.0) ==================== */
-@font-face { font-family: 'ABC Repro'; src: url('/fonts/ABCRepro-Regular.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
-@font-face { font-family: 'ABC Repro'; src: url('/fonts/ABCRepro-Medium.woff2') format('woff2'); font-weight: 500; font-style: normal; font-display: swap; }
-@font-face { font-family: 'ABC Repro'; src: url('/fonts/ABCRepro-Bold.woff2') format('woff2'); font-weight: 700; font-style: normal; font-display: swap; }
-@font-face { font-family: 'ABC Repro Mono'; src: url('/fonts/ABCReproMono-Regular.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
-@font-face { font-family: 'IBM Plex Mono'; src: url('/fonts/IBMPlexMono-Regular.ttf') format('truetype'); font-weight: 400; font-style: normal; font-display: swap; }
-@font-face { font-family: 'IBM Plex Mono'; src: url('/fonts/IBMPlexMono-Medium.ttf') format('truetype'); font-weight: 500; font-style: normal; font-display: swap; }
-@font-face { font-family: 'Louize'; src: url('/fonts/Louize-Regular.otf') format('opentype'); font-weight: 400; font-style: normal; font-display: swap; }
-@font-face { font-family: 'Louize'; src: url('/fonts/Louize-Italic.otf') format('opentype'); font-weight: 400; font-style: italic; font-display: swap; }
-
-/* ─── Light mode (default) — EigenCloud brand palette ─── */
-:root {
-  /* Backgrounds */
-  --bg-primary:     #FAFAFC;
-  --bg-secondary:   #F1F2F6;
-  --bg-tertiary:    #EDEEF3;
-  --bg-elevated:    #E2E4EC;
-  --bg-hover:       #E8EAF1;
-  --bg-white:       #FFFFFF;
-
-  /* Ink / Text */
-  --ink:            #000000;
-  --ink-light:      #595D6E;
-  --ink-faint:      #747887;
-  --text-primary:   #000000;
-  --text-secondary: #595D6E;
-  --text-tertiary:  #747887;
-
-  /* Borders */
-  --border-dim:     #E2E4EC;
-  --border-subtle:  #747887;
-  --border-default: #E2E4EC;
-
-  /* Brand accents — eigen-blue primary */
-  --coral:          #1A0C6D;
-  --coral-light:    rgba(26, 12, 109, 0.06);
-  --teal:           #2D9E7A;
-  --teal-light:     #D1FAE5;
-  --teal-dark:      #1B6B50;
-  --blue:           #95BFFF;
-  --blue-light:     #DBEAFE;
-  --purple:         #7C3AED;
-  --purple-light:   #DDD6FE;
-  --gold:           #D97706;
-  --gold-light:     #FEF3C7;
-  --pink:           #EC4899;
-  --pink-light:     #FCE7F3;
-
-  /* Semantic accents */
-  --accent-brand:       #1A0C6D;
-  --accent-brand-dim:   rgba(26, 12, 109, 0.06);
-  --accent-brand-hover: #130952;
-  --accent-green:       #2D9E7A;
-  --accent-green-dim:   #D1FAE5;
-  --accent-amber:       #D97706;
-  --accent-amber-dim:   #FEF3C7;
-  --accent-red:         #DC2626;
-  --accent-red-dim:     #FEE2E2;
-  --danger:             #DC2626;
-
-  /* Network map (dot-matrix world) — alpha baked per theme for crisp contrast */
-  --map-land-dot:   rgba(26, 12, 109, 0.30);
-  --map-graticule:  rgba(26, 12, 109, 0.07);
-
-  /* Shadows — subtle, professional */
-  --shadow-sm:      0 1px 2px rgba(0, 0, 0, 0.04);
-  --shadow-md:      0 2px 4px rgba(0, 0, 0, 0.06);
-  --shadow-lg:      0 4px 12px rgba(0, 0, 0, 0.08);
-  --shadow-xl:      0 8px 24px rgba(0, 0, 0, 0.10);
-
-  /* Fonts — EigenCloud Brand Book */
-  --font-display: 'ABC Repro', -apple-system, BlinkMacSystemFont, sans-serif;
-  --font-sans: 'ABC Repro', -apple-system, BlinkMacSystemFont, sans-serif;
-  --font-mono: 'ABC Repro Mono', 'IBM Plex Mono', monospace;
-  --font-logo: 'Louize', Georgia, serif;
-}
-
-/* ─── Dark mode — Cool professional dark ─── */
-.dark {
-  --bg-primary:     #11121A;
-  --bg-secondary:   #171922;
-  --bg-tertiary:    #1E202D;
-  --bg-elevated:    #292C3B;
-  --bg-hover:       #303446;
-  --bg-white:       #1E202D;
-
-  --ink:            #E8E8EC;
-  --ink-light:      #9CA3AF;
-  --ink-faint:      #9096AA;
-  --text-primary:   #E8E8EC;
-  --text-secondary: #9CA3AF;
-  --text-tertiary:  #9096AA;
-
-  --border-dim:     #292C3B;
-  --border-subtle:  #363648;
-  --border-default: #363648;
-
-  --coral:          #A3ACFF;
-  --coral-light:    rgba(129, 140, 248, 0.10);
-  --teal:           #34D399;
-  --teal-light:     rgba(52, 211, 153, 0.12);
-  --teal-dark:      #6EE7B7;
-  --blue:           #93C5FD;
-  --blue-light:     rgba(147, 197, 253, 0.12);
-  --purple:         #A78BFA;
-  --purple-light:   rgba(167, 139, 250, 0.12);
-  --gold:           #FBBF24;
-  --gold-light:     rgba(251, 191, 36, 0.12);
-  --pink:           #F472B6;
-  --pink-light:     rgba(244, 114, 182, 0.12);
-
-  --accent-brand:       #A3ACFF;
-  --accent-brand-dim:   rgba(129, 140, 248, 0.10);
-  --accent-brand-hover: #6366F1;
-  --accent-green:       #34D399;
-  --accent-green-dim:   rgba(52, 211, 153, 0.12);
-  --accent-amber:       #FBBF24;
-  --accent-amber-dim:   rgba(251, 191, 36, 0.12);
-  --accent-red:         #F87171;
-  --accent-red-dim:     rgba(248, 113, 113, 0.12);
-  --danger:             #F87171;
-
-  /* Network map (dot-matrix world) — brighter indigo reads on the dark ocean */
-  --map-land-dot:   rgba(129, 140, 248, 0.34);
-  --map-graticule:  rgba(129, 140, 248, 0.09);
-
-  --shadow-sm:      0 1px 2px rgba(0, 0, 0, 0.30);
-  --shadow-md:      0 2px 6px rgba(0, 0, 0, 0.35);
-  --shadow-lg:      0 4px 12px rgba(0, 0, 0, 0.40);
-  --shadow-xl:      0 8px 24px rgba(0, 0, 0, 0.50);
-}
 
 /* ─── Tailwind theme bridge ─── */
 @theme inline {
@@ -165,6 +35,8 @@ button, a, [role="button"], summary { cursor: pointer; }
   --color-gold-light: var(--gold-light);
   --color-pink: var(--pink);
   --color-pink-light: var(--pink-light);
+  --color-action-primary: var(--action-primary);
+  --color-action-danger: var(--action-danger);
   --color-accent-brand: var(--accent-brand);
   --color-accent-brand-dim: var(--accent-brand-dim);
   --color-accent-brand-hover: var(--accent-brand-hover);
@@ -179,10 +51,9 @@ button, a, [role="button"], summary { cursor: pointer; }
   --shadow-md: var(--shadow-md);
   --shadow-lg: var(--shadow-lg);
   --shadow-xl: var(--shadow-xl);
-  --font-sans: 'ABC Repro', -apple-system, BlinkMacSystemFont, sans-serif;
-  --font-display: 'ABC Repro', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-sans: 'PP Telegraf', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-display: 'PP Telegraf', -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: 'ABC Repro Mono', 'IBM Plex Mono', monospace;
-  --font-logo: 'Louize', Georgia, serif;
 }
 
 /* ─── Scrollbars ─── */
@@ -209,8 +80,7 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* ─── Typography — Brand Book rules ─── */
-/* Headlines: Bold, tracking -2%, leading 100% */
+/* Darkbloom display typography. */
 @layer base {
 h1, h2, h3 {
   font-family: var(--font-sans);
@@ -422,7 +292,7 @@ button:disabled { cursor: not-allowed; }
 .skip-link {
   position: fixed; left: 1rem; top: -5rem; z-index: 100;
   border-radius: .5rem; padding: .75rem 1rem;
-  background: var(--accent-brand); color: white;
+  background: var(--action-primary); color: white;
 }
 .skip-link:focus { top: 1rem; }
 @media (prefers-reduced-motion: reduce) {

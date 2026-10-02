@@ -37,7 +37,7 @@ export function ModelCatalog() {
     <div className="mx-auto w-full max-w-[1240px] px-5 py-8 sm:px-9 sm:py-11 lg:px-12">
       <div className="mb-9 flex flex-col items-start justify-between gap-5 sm:flex-row sm:items-center">
         <div>
-          <h1 className="font-logo text-4xl font-normal tracking-tight text-ink sm:text-5xl" style={{ fontFamily: "var(--font-logo)" }}>Model library</h1>
+          <h1 className="font-display text-4xl font-medium tracking-tight text-ink sm:text-5xl" style={{ fontFamily: "var(--font-display)" }}>Model library</h1>
           <p className="mt-3 max-w-xl text-sm leading-relaxed text-text-secondary">Compare capabilities and token prices, then start a new chat.</p>
         </div>
         <Link href="/api-console" className="focus-ring inline-flex min-h-10 shrink-0 items-center gap-2 rounded-lg border border-border-dim bg-bg-white px-4 text-sm text-text-primary transition-colors hover:bg-bg-secondary">

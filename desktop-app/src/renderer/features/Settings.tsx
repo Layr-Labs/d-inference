@@ -7,7 +7,13 @@ import { Button, External, Header, Notice, Status } from '../components/UI';
 import { AutoUpdateSwitch } from './updates/AutoUpdateSwitch';
 import { ScheduleEditor } from '../components/ScheduleEditor';
 
-export function Settings({ backend }: { backend: BackendState }) {
+export function Settings({
+  backend,
+  embedded = false,
+}: {
+  backend: BackendState;
+  embedded?: boolean;
+}) {
   const original = backend.state!.settings;
   const [base, setBase] = useState(original);
   const changedElsewhere = base.revision !== original.revision;
@@ -19,6 +25,7 @@ export function Settings({ backend }: { backend: BackendState }) {
   return (
     <>
       <Header
+        level={embedded ? 2 : 1}
         title="Settings"
         description="Your Mac, on your terms."
         action={
@@ -80,6 +87,21 @@ export function Settings({ backend }: { backend: BackendState }) {
             aria-label="Mac name"
           />
         </label>
+      </section>
+      <section className="settings-section">
+        <h2>Memory</h2>
+        <label className="setting-row">
+          <span>
+            <strong>Preload models</strong>
+            <small>Load selected models when the provider starts or a schedule window opens.</small>
+          </span>
+          <input
+            className="switch"
+            type="checkbox"
+            checked={preload}
+            onChange={(e) => setPreload(e.target.checked)}
+          />
+        </label>
         <label className="setting-row">
           <span>
             <strong>Memory when idle</strong>
@@ -103,18 +125,6 @@ export function Settings({ backend }: { backend: BackendState }) {
       <ScheduleEditor value={schedule} onChange={setSchedule} />
       <section className="settings-section">
         <h2>Updates & background activity</h2>
-        <label className="setting-row">
-          <span>
-            <strong>Preload models</strong>
-            <small>Load selected models when the provider starts or a schedule window opens.</small>
-          </span>
-          <input
-            className="switch"
-            type="checkbox"
-            checked={preload}
-            onChange={(e) => setPreload(e.target.checked)}
-          />
-        </label>
         <AutoUpdateSwitch checked={auto} onChange={setAuto} disabled={backend.busy} />
         <div className="setting-row">
           <span>

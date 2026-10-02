@@ -274,3 +274,49 @@
   gap: 12px;
   margin-top: 26px;
 }
+
+.operation.operation-inline {
+  inset: auto;
+  transform: none;
+  min-width: 0;
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+  max-width: none;
+  margin: 0 0 20px;
+  box-shadow: none;
+  border-radius: 8px;
+}
+.model-extra summary {
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+  margin: 8px 0;
+}
+.model-extra summary:hover {
+  color: var(--text-primary);
+}
+
+.operation-inline > details {
+  min-width: 0;
+  flex: 1;
+}
+.operation-inline pre {
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+
+.operation-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 2px;
+  width: 35%;
+  background: var(--accent-brand);
+  animation: operation-progress 1.8s ease-in-out infinite alternate;
+}
+@keyframes operation-progress {
+  to {
+    left: 65%;
+  }
+}

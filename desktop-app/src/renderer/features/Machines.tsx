@@ -1,191 +1,166 @@
 import { useState } from 'react';
-import { ArrowLeft, ArrowUpRight, Monitor, MoreHorizontal, RotateCw } from 'lucide-react';
+import { ArrowUpRight, Laptop, Monitor, Play, RotateCw, Square } from 'lucide-react';
 import type { BackendState } from '../useBackend';
-import type { Machine, Route } from '../../shared/contracts';
-import { age, gb, money } from '../format';
-import { Button, Empty, Header, Notice, Status } from '../components/UI';
-import { ActivityChart } from './Home';
+import type { Route } from '../../shared/contracts';
+import { Button, Notice, OperationFeed } from '../components/UI';
+import { Models } from './Models';
+import { Cooling } from './Cooling';
+import { Analysis } from './Analysis';
+import { Settings } from './Settings';
+import { Studio } from './Studio';
+import { MachineRail } from './machines/MachineRail';
+import { FleetOverview } from './machines/FleetOverview';
+import { MachineOverview } from './machines/MachineOverview';
+import { machineTabs } from './machines/navigation';
+import styles from './machines/machines.module.css';
 
 export function Machines({
   backend,
   navigate,
+  route = 'machines',
 }: {
   backend: BackendState;
   navigate: (route: Route) => void;
+  route?: Route;
 }) {
-  const [selected, setSelected] = useState<Machine>();
   const state = backend.state!;
+  const [selectedID, setSelectedID] = useState<string | null>(
+    route === 'machines' ? null : state.machine.id,
+  );
   const machines = [
-    { ...state.machine, earnings_micro_usd: backend.cloud?.local_earnings_micro_usd },
+    {
+      ...state.machine,
+      status: state.state,
+      earnings_micro_usd: backend.cloud?.local_earnings_micro_usd,
+    },
     ...(backend.cloud?.machines || []).filter((machine) => machine.id !== state.machine.id),
   ];
-  if (selected) {
-    const isLocal = selected.id === state.machine.id;
-    const machine = isLocal
-      ? { ...state.machine, earnings_micro_usd: backend.cloud?.local_earnings_micro_usd }
-      : selected;
-    return (
-      <>
-        <button className="text-link back" onClick={() => setSelected(undefined)}>
-          <ArrowLeft size={15} /> My Macs
-        </button>
-        <Header
-          title={machine.name}
-          description={`${machine.chip} · ${machine.memory_gb} GB unified memory`}
-          action={
-            <Status
-              state={
-                machine.status === 'running' ||
-                machine.status === 'online' ||
-                machine.status === 'serving'
-                  ? 'online'
-                  : 'offline'
-              }
-            >
-              {machine.status}
-            </Status>
-          }
-        />
-        {!isLocal && (
-          <Notice>
-            Remote Mac · Status and earnings only. Last observed{' '}
-            {age(machine.observed_at).toLowerCase()}.
-          </Notice>
-        )}
-        <div className="metric-row">
-          <div>
-            <span>Usage earnings · 7 days</span>
-            <strong>{money(machine.earnings_micro_usd)}</strong>
-          </div>
-          <div>
-            <span>Serving models</span>
-            <strong>{machine.models.length}</strong>
-          </div>
-          <div>
-            <span>Provider version</span>
-            <strong>{machine.version || '—'}</strong>
-          </div>
-        </div>
-        {isLocal && (
+  const effectiveID = route === 'machines' ? selectedID : state.machine.id;
+  const machine = machines.find((machine) => machine.id === effectiveID);
+  const local = machine?.id === state.machine.id;
+  const select = (id: string | null) => {
+    setSelectedID(id);
+    navigate('machines');
+  };
+  const Icon = machine?.name.includes('Book') ? Laptop : Monitor;
+  return (
+    <div className={styles.workspace}>
+      <MachineRail
+        machines={machines}
+        selected={machine?.id || null}
+        localID={state.machine.id}
+        onSelect={select}
+      />
+      <div className={styles.content}>
+        {(!machine || local) && <OperationFeed backend={backend} inline />}
+        {backend.cloud?.error && <Notice>{backend.cloud.error}</Notice>}
+        {!machine ? (
+          <FleetOverview
+            backend={backend}
+            machines={machines}
+            select={select}
+            onEarnings={() => navigate('earnings')}
+          />
+        ) : (
           <>
-            <div className="action-row">
-              <Button onClick={() => navigate('models')}>Manage models</Button>
-              <Button
-                disabled={backend.busy}
-                onClick={() => void backend.act({ action: 'restart' })}
-              >
-                <RotateCw size={15} /> Restart
-              </Button>
-              <Button
-                disabled={backend.busy || state.state === 'stopped'}
-                onClick={() => void backend.act({ action: 'stop' })}
-              >
-                Stop provider
-              </Button>
+            <div className={styles.breadcrumb}>
+              <button onClick={() => select(null)}>Fleet overview</button>
+              <span>/</span>
+              <span>{machine.name}</span>
             </div>
-            <section className="section">
-              <div className="section-title">
-                <h2>Request activity</h2>
+            <header className={styles.machineHeader}>
+              <div className={styles.machineTitle}>
+                <div className={styles.deviceIcon}>
+                  <Icon size={30} strokeWidth={1.4} />
+                </div>
+                <div>
+                  <h1>
+                    {machine.name} <small>{local ? 'This Mac' : 'View only'}</small>
+                  </h1>
+                  <p>
+                    {machine.chip} ·{' '}
+                    {machine.memory_gb
+                      ? `${machine.memory_gb} GB unified memory`
+                      : 'Memory unknown'}
+                  </p>
+                </div>
               </div>
-              <ActivityChart backend={backend} />
-            </section>
-            <div className="setting-links">
-              {(['cooling', 'analysis', 'studio', 'settings'] as Route[]).map((route) => (
-                <button key={route} onClick={() => navigate(route)}>
-                  <span>{route[0].toUpperCase() + route.slice(1)}</span>
-                  <ArrowUpRight size={18} />
-                </button>
-              ))}
+              {local && (
+                <div className={styles.actions}>
+                  <Button
+                    disabled={backend.busy || state.state === 'draining'}
+                    onClick={() =>
+                      state.state === 'running'
+                        ? void backend.act({ action: 'stop' })
+                        : navigate('models')
+                    }
+                  >
+                    {state.state === 'running' ? <Square size={12} /> : <Play size={13} />}{' '}
+                    {state.state === 'running'
+                      ? 'Stop provider'
+                      : state.state === 'draining'
+                        ? 'Finishing requests'
+                        : 'Start provider'}
+                  </Button>
+                  <Button
+                    title="Restart provider"
+                    aria-label="Restart"
+                    disabled={backend.busy}
+                    onClick={() => void backend.act({ action: 'restart' })}
+                  >
+                    <RotateCw size={15} />
+                  </Button>
+                </div>
+              )}
+            </header>
+            {local && (
+              <>
+                <div className={styles.shortcuts}>
+                  <button className="text-link" onClick={() => navigate('earnings')}>
+                    View earnings <ArrowUpRight size={13} />
+                  </button>
+                  <button
+                    className="text-link"
+                    aria-current={route === 'studio' ? 'page' : undefined}
+                    onClick={() => navigate('studio')}
+                  >
+                    Studio <ArrowUpRight size={13} />
+                  </button>
+                </div>
+                <nav className={styles.tabs} aria-label="Machine sections">
+                  {machineTabs.map((tab) => (
+                    <button
+                      key={tab.route}
+                      aria-current={route === tab.route ? 'page' : undefined}
+                      onClick={() => {
+                        setSelectedID(state.machine.id);
+                        navigate(tab.route);
+                      }}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </nav>
+              </>
+            )}
+            <div className={styles.panel} key={`${machine.id}:${route}`}>
+              {(!local || route === 'machines') && (
+                <MachineOverview
+                  machine={machine}
+                  local={local}
+                  backend={backend}
+                  navigate={navigate}
+                />
+              )}
+              {local && route === 'models' && <Models backend={backend} embedded />}
+              {local && route === 'cooling' && <Cooling backend={backend} embedded />}
+              {local && route === 'analysis' && <Analysis backend={backend} embedded />}
+              {local && route === 'settings' && <Settings backend={backend} embedded />}
+              {local && route === 'studio' && <Studio backend={backend} embedded />}
             </div>
           </>
         )}
-        <section className="section">
-          <h2>Serving models</h2>
-          {machine.models.length ? (
-            machine.models.map((model) => (
-              <div className="plain-row" key={model}>
-                {model}
-              </div>
-            ))
-          ) : (
-            <p className="muted">No serving models reported.</p>
-          )}
-        </section>
-      </>
-    );
-  }
-  return (
-    <>
-      <Header
-        title="My Macs"
-        description="Every Mac you contribute. One place to see the difference."
-        action={
-          <Button onClick={() => void backend.refresh()}>
-            <RotateCw size={15} /> Refresh
-          </Button>
-        }
-      />
-      <div className="metric-row">
-        <div>
-          <span>Earned all time</span>
-          <strong>{money(backend.cloud?.lifetime_micro_usd)}</strong>
-        </div>
-        <div>
-          <span>Past 7 days</span>
-          <strong>{money(backend.cloud?.week_micro_usd)}</strong>
-        </div>
-        <div>
-          <span>Your Macs</span>
-          <strong>{machines.length}</strong>
-        </div>
       </div>
-      {backend.cloud?.error && <Notice>{backend.cloud.error}</Notice>}
-      <div className="section-title">
-        <h2>Your machines</h2>
-        <span className="muted">{machines.length} connected to this view</span>
-      </div>
-      <div className="machine-table">
-        <div className="table-head">
-          <span>Mac</span>
-          <span>Status</span>
-          <span>Models</span>
-          <span>Usage earnings · 7d</span>
-          <span />
-        </div>
-        {machines.map((machine) => (
-          <button
-            className="machine-table-row"
-            onClick={() => setSelected(machine)}
-            key={machine.id}
-          >
-            <div className="machine-name">
-              <Monitor size={23} strokeWidth={1.3} />
-              <div>
-                <strong>{machine.name}</strong>
-                <small>
-                  {machine.id === state.machine.id ? 'This Mac' : 'Remote'} · {machine.chip} ·{' '}
-                  {gb(machine.memory_gb)}
-                </small>
-              </div>
-            </div>
-            <Status
-              state={
-                ['running', 'online', 'serving'].includes(machine.status) ? 'online' : 'offline'
-              }
-            >
-              {machine.status}
-            </Status>
-            <span>{machine.models.length || '—'}</span>
-            <strong>{money(machine.earnings_micro_usd)}</strong>
-            <MoreHorizontal size={17} />
-          </button>
-        ))}
-      </div>
-      {!backend.cloud?.linked && (
-        <Empty title="Connect your other Macs">
-          Link each Mac to the same account to see its status and earnings here.
-        </Empty>
-      )}
-    </>
+    </div>
   );
 }

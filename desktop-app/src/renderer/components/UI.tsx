@@ -45,15 +45,18 @@ export function Header({
   title,
   description,
   action,
+  level = 1,
 }: {
+  level?: 1 | 2;
   title: string;
   description?: string;
   action?: ReactNode;
 }) {
+  const Heading = level === 1 ? 'h1' : 'h2';
   return (
     <header className="page-heading">
       <div>
-        <h1>{title}</h1>
+        <Heading>{title}</Heading>
         {description && <p>{description}</p>}
       </div>
       {action}
@@ -86,12 +89,28 @@ export function Notice({ children, onClose }: { children: ReactNode; onClose?: (
     </div>
   );
 }
-export function OperationFeed({ backend }: { backend: BackendState }) {
+export function OperationFeed({
+  backend,
+  inline = false,
+}: {
+  backend: BackendState;
+  inline?: boolean;
+}) {
   const [dismissed, setDismissed] = useState('');
   const operation = backend.state?.operations[0];
   if (!operation || operation.id === dismissed) return null;
   return (
-    <aside className={`operation ${operation.state}`} aria-live="polite">
+    <aside
+      className={`operation ${operation.state} ${inline ? 'operation-inline' : ''}`}
+      aria-live="polite"
+    >
+      {inline && operation.state === 'running' && (
+        <span
+          className="operation-progress"
+          role="progressbar"
+          aria-label={`${operation.action} in progress`}
+        />
+      )}
       {operation.state === 'running' ? (
         <LoaderCircle className="spin" size={17} />
       ) : operation.state === 'succeeded' ? (

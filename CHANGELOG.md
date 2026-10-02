@@ -2,6 +2,8 @@
 
 ## Unreleased — macOS desktop app
 
+- Rework My Macs around a fleet overview, machine selector, and local Overview/Models/Cooling/Analysis/Settings panels. Preserve scheduling, idle memory, preload, account/storage controls, model metadata, Studio/Earnings shortcuts, and cancellable native operations. Label other machines View only; selected remote data follows fresh snapshots. Align sidebar social links in a shared hover row.
+
 - Add Slack, GitHub, and X shortcuts above the current Mac in the desktop sidebar.
 - Add a visual Updates view with installed/latest versions, expandable release history, configured version cutoffs, and a confirmed auto-update opt-out. Keep provider auto-update defaults and settings in Swift; publish a read-only release-history feed without artifact or account details.
 

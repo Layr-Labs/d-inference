@@ -4,13 +4,20 @@ import type { BackendState } from '../useBackend';
 import { compact } from '../format';
 import { Button, Empty, Header, Notice, Status } from '../components/UI';
 
-export function Cooling({ backend }: { backend: BackendState }) {
+export function Cooling({
+  backend,
+  embedded = false,
+}: {
+  backend: BackendState;
+  embedded?: boolean;
+}) {
   const cooling = backend.cooling;
   const [speed, setSpeed] = useState(70);
   const [temperature, setTemperature] = useState(50);
   return (
     <>
       <Header
+        level={embedded ? 2 : 1}
         title="Cooling"
         description="Keep sustained workloads comfortable."
         action={

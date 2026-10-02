@@ -25,7 +25,9 @@ The original Gajesh desktop, including Cooling and Earnings, is preserved at
 `ba8e209b7` (local branch `codex/desktop-before-combined-design`). All feature
 modules remain in this tree; the simplified sidebar changes discovery only.
 Use `git show ba8e209b7:desktop-app/src/renderer/App.tsx` to inspect the original
-navigation without resetting the working tree.
+navigation without resetting the working tree. The version immediately before
+the My Macs redesign is also preserved on `codex/desktop-before-macs-design`
+at `03fea81f3`.
 
 Kaido's original reference is preserved in
 [darkbloom-desktop-ui at 3025167](https://github.com/Layr-Labs/darkbloom-desktop-ui/tree/3025167).

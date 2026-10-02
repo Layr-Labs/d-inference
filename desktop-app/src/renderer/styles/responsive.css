@@ -59,14 +59,6 @@
   .inline-stats {
     gap: 12px;
   }
-  .table-head,
-  .machine-table-row {
-    grid-template-columns: 2.2fr 0.9fr 0.4fr 1fr 14px;
-    gap: 8px;
-  }
-  .machine-name small {
-    max-width: 210px;
-  }
   .onboarding {
     padding: 60px 40px 25px;
   }
@@ -209,13 +201,6 @@
   }
   .metric-row span {
     font-size: 10px;
-  }
-  .machine-table {
-    overflow: auto;
-  }
-  .table-head,
-  .machine-table-row {
-    min-width: 640px;
   }
   .setting-row {
     flex-wrap: wrap;

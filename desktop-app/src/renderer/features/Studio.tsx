@@ -4,7 +4,13 @@ import type { BackendState } from '../useBackend';
 import { api } from '../useBackend';
 import { Button, Header, Status } from '../components/UI';
 
-export function Studio({ backend }: { backend: BackendState }) {
+export function Studio({
+  backend,
+  embedded = false,
+}: {
+  backend: BackendState;
+  embedded?: boolean;
+}) {
   const state = backend.state!;
   const [mode, setMode] = useState('combined');
   const [key, setKey] = useState<string>();
@@ -22,6 +28,7 @@ export function Studio({ backend }: { backend: BackendState }) {
   return (
     <>
       <Header
+        level={embedded ? 2 : 1}
         title="Studio"
         description="Use the models on your Mac in your own applications."
         action={<span className="tag">Local API</span>}

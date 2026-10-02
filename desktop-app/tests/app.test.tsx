@@ -40,8 +40,8 @@ describe('desktop operator journeys', () => {
   it('keeps remote machines read-only', async () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'Your contribution' });
-    fireEvent.click(screen.getByRole('button', { name: /My Macs/ }));
-    const remote = await screen.findByRole('button', { name: /Mac Studio.*Remote/ });
+    fireEvent.click(screen.getByRole('button', { name: 'My Macs' }));
+    const remote = await screen.findByRole('button', { name: /Select Mac Studio.*View only/ });
     fireEvent.click(remote);
     expect(screen.getByText(/Status and earnings only/)).toBeVisible();
     expect(screen.queryByRole('button', { name: 'Stop provider' })).not.toBeInTheDocument();
@@ -88,8 +88,8 @@ describe('desktop operator journeys', () => {
 });
 
 async function openLocalMac() {
-  fireEvent.click(screen.getByRole('button', { name: /My Macs/ }));
-  fireEvent.click(await screen.findByRole('button', { name: /MacBook Pro.*This Mac/ }));
+  fireEvent.click(screen.getByRole('button', { name: 'My Macs' }));
+  fireEvent.click(await screen.findByRole('button', { name: /Select MacBook Pro.*This Mac/ }));
 }
 
 it('preserves Cooling, Analysis, Studio, and Settings through This Mac', async () => {
@@ -98,6 +98,6 @@ it('preserves Cooling, Analysis, Studio, and Settings through This Mac', async (
   for (const name of ['Cooling', 'Analysis', 'Studio', 'Settings']) {
     await openLocalMac();
     fireEvent.click(screen.getByRole('button', { name }));
-    expect(await screen.findByRole('heading', { name, level: 1 })).toBeVisible();
+    expect(await screen.findByRole('heading', { name, level: 2 })).toBeVisible();
   }
 });

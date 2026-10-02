@@ -5,7 +5,13 @@ import { Button, Empty, Header, Modal, Notice, Status } from '../components/UI';
 import { compact, gb } from '../format';
 import type { NativeModel } from '../../shared/contracts';
 
-export function Models({ backend }: { backend: BackendState }) {
+export function Models({
+  backend,
+  embedded = false,
+}: {
+  backend: BackendState;
+  embedded?: boolean;
+}) {
   const state = backend.state!;
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState('all');
@@ -30,6 +36,7 @@ export function Models({ backend }: { backend: BackendState }) {
   return (
     <>
       <Header
+        level={embedded ? 2 : 1}
         title="Models"
         description="Choose the intelligence your Mac brings to the grid."
         action={
@@ -115,12 +122,15 @@ export function Models({ backend }: { backend: BackendState }) {
                   {model.loaded && <Status state="online">In memory</Status>}
                 </div>
                 <p>{model.description || model.id}</p>
-                <div className="model-meta">
-                  <span>{gb(model.size_gb)} download</span>
-                  {model.memory_gb && <span>{gb(model.memory_gb)} load estimate</span>}
-                  {model.context_length && <span>{compact(model.context_length)} context</span>}
-                  {model.quantization && <span>{model.quantization}</span>}
-                </div>
+                <details className="model-extra">
+                  <summary>Model details</summary>
+                  <div className="model-meta">
+                    <span>{gb(model.size_gb)} download</span>
+                    {model.memory_gb && <span>{gb(model.memory_gb)} load estimate</span>}
+                    {model.context_length && <span>{compact(model.context_length)} context</span>}
+                    {model.quantization && <span>{model.quantization}</span>}
+                  </div>
+                </details>
                 {model.reason && <small className="warning-text">{model.reason}</small>}
               </div>
               <div className="model-actions">

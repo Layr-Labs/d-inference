@@ -4,11 +4,18 @@ import { compact, gb } from '../format';
 import { Button, External, Header, Status } from '../components/UI';
 import { ActivityChart } from './Home';
 
-export function Analysis({ backend }: { backend: BackendState }) {
+export function Analysis({
+  backend,
+  embedded = false,
+}: {
+  backend: BackendState;
+  embedded?: boolean;
+}) {
   const state = backend.state!;
   return (
     <>
       <Header
+        level={embedded ? 2 : 1}
         title="Analysis"
         description="Operational activity reported by this Mac."
         action={

@@ -3,9 +3,9 @@ import { Box, ChevronRight, Home as HomeIcon, Monitor, Trophy, Zap } from 'lucid
 import type { Route } from '../shared/contracts';
 import { api, isPreview, useBackend } from './useBackend';
 import { Home } from './features/Home';
-import { Models } from './features/Models';
 import { Machines } from './features/Machines';
-import { Analysis, Cooling, Leaderboard, Settings, Studio, Updates } from './features/System';
+import { Leaderboard, Updates } from './features/System';
+import { isMachineRoute } from './features/machines/navigation';
 import { Notice, OperationFeed } from './components/UI';
 import { Onboarding } from './components/Onboarding';
 import { Earnings } from './features/Earnings';
@@ -20,6 +20,8 @@ const navigation = [
 export default function App() {
   const [route, setRoute] = useState<Route>('home');
   const backend = useBackend(route);
+  const machineRoute = isMachineRoute(route);
+  const activeRoute = machineRoute ? 'machines' : route;
   const [onboarding, setOnboarding] = useState(
     () => !isPreview && localStorage.getItem('darkbloom.onboardingComplete') !== '1',
   );
@@ -61,8 +63,8 @@ export default function App() {
             <button
               key={id}
               aria-label={label}
-              aria-current={route === id ? 'page' : undefined}
-              className={route === id ? 'active' : ''}
+              aria-current={activeRoute === id ? 'page' : undefined}
+              className={activeRoute === id ? 'active' : ''}
               onClick={() => setRoute(id)}
             >
               <Icon size={18} strokeWidth={1.55} />
@@ -99,19 +101,17 @@ export default function App() {
             {backend.status.state === 'ready' ? 'Runtime connected' : 'Reconnecting'}
           </span>
         </header>
-        <main key={route} className="page-content">
+        <main
+          key={machineRoute ? 'machines' : route}
+          className={`page-content ${machineRoute ? 'machine-page' : ''}`}
+        >
           {backend.error && <Notice onClose={() => backend.setError('')}>{backend.error}</Notice>}
           {backend.status.state !== 'ready' && (
             <Notice>{backend.status.message || 'Connecting to the native runtime…'}</Notice>
           )}
           {route === 'home' && <Home backend={backend} navigate={setRoute} />}
-          {route === 'machines' && <Machines backend={backend} navigate={setRoute} />}
-          {route === 'models' && <Models backend={backend} />}
-          {route === 'studio' && <Studio backend={backend} />}
-          {route === 'analysis' && <Analysis backend={backend} />}
+          {machineRoute && <Machines backend={backend} navigate={setRoute} route={route} />}
           {route === 'earnings' && <Earnings backend={backend} />}
-          {route === 'cooling' && <Cooling backend={backend} />}
-          {route === 'settings' && <Settings backend={backend} />}
           {route === 'updates' && <Updates backend={backend} />}
           {route === 'leaderboard' && <Leaderboard backend={backend} />}
           <footer className="page-footer">
@@ -121,7 +121,7 @@ export default function App() {
             <span>Compute, powered by people.</span>
           </footer>
         </main>
-        <OperationFeed backend={backend} />
+        {!machineRoute && <OperationFeed backend={backend} />}
       </div>
     </div>
   );

@@ -104,8 +104,15 @@ requires the release qualifications below.
 ## Verify
 
 The primary sidebar contains Home, My Macs, Leaderboard, and Updates. The current
-Mac's detail page retains Models, Cooling, Analysis, Studio, and Settings;
+Mac's detail workspace uses Overview, Models, Cooling, Analysis, and Settings
+panels, with Studio and Earnings shortcuts;
 Home retains the Earnings entry. These pages remain implemented, not deleted.
+The machine rail changes into a horizontal selector on narrower windows. Other
+machines are labeled **View only**, with status/earnings snapshots and no local
+control panels. Selection stores the machine ID so new remote observations are
+shown instead of retaining the originally clicked snapshot. Cancellable native
+operations appear inline for the local Mac or fleet overview; Settings retains
+Availability and Memory controls, and model metadata uses expandable details.
 Leaderboard combines the reference's pixel world map and featured top three with
 compact rows. It ranks actual 24-hour earnings from the native API and displays
 annualized pace; expanding a provider shows the underlying earnings and tokens.

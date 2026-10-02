@@ -21,6 +21,33 @@ struct ModelArtifactWriteLeaseTests {
         #expect(try !ModelDownloader.remove(modelID: id))
     }
 
+    @Test("foreground verification reports a busy writer without waiting for its release")
+    func verificationDoesNotWaitForModelUpdate() async throws {
+        let id = "test-org/verify-lease-\(UUID().uuidString)"
+        let lease = try await ModelArtifactWriteLease.acquire(modelID: id)
+        defer { lease.release() }
+        let model = CatalogModel(id: id, s3Name: id, displayName: id, sizeGb: 1, weightHash: "test")
+        let verification = Task {
+            do {
+                try await ModelDownloader().verifySelectedModel(model)
+                return "unexpected success"
+            } catch { return error.localizedDescription }
+        }
+        // Bound regressions: the old implementation waits forever for this
+        // test's lease. Cancellation unblocks it and yields a different error.
+        let timeout = Task {
+            try await Task.sleep(for: .seconds(2))
+            verification.cancel()
+        }
+        defer { timeout.cancel() }
+        let message = await verification.value
+        #expect(message.contains("another process"))
+        #expect(message.contains("retry verification"))
+        #expect(throws: (any Error).self) {
+            try ModelArtifactWriteLease.acquireIfAvailable(modelID: id)
+        }
+    }
+
     @Test("recreating the model directory cannot create a second writer lock")
     func lockSurvivesModelDirectoryReplacement() async throws {
         let id = "test-org/replace-lease-\(UUID().uuidString)"

@@ -13,9 +13,10 @@ import (
 )
 
 type identityFenceVector struct {
-	Artifacts []Artifact `json:"artifacts"`
-	CurrentID string     `json:"expected_prompt_contract_id"`
-	LegacyID  string     `json:"legacy_v6_prompt_contract_id"`
+	Artifacts  []Artifact `json:"artifacts"`
+	CurrentID  string     `json:"expected_prompt_contract_id"`
+	LegacyID   string     `json:"legacy_v6_prompt_contract_id"`
+	LegacyV7ID string     `json:"legacy_v7_prompt_contract_id"`
 }
 
 func identityFenceFixture(t *testing.T) identityFenceVector {
@@ -41,6 +42,7 @@ func identityFenceFixture(t *testing.T) identityFenceVector {
 // also reproduced both preserved shared v6/v7 vectors before these pins were set.
 const identityFenceTinyV6 = "35f35167c8444a2155269a8873c23e69980b334590762b31fb9bfe97250fa109"
 const identityFenceTinyV7 = "1916ae8b83dd77d3c6da1e0860672d79a9c146e2e661ae8e12b3182fb0b57132"
+const identityFenceTinyV8 = "6de1b2c93027ed37e6cfbc4112250fbadca0bd90b8d027dc200a710a462b07c7"
 
 func identityFenceTinyPayloads(t *testing.T) ([]Artifact, map[string][]byte) {
 	t.Helper()
@@ -65,14 +67,17 @@ func identityFenceTinyPayloads(t *testing.T) ([]Artifact, map[string][]byte) {
 	return artifacts, payloads
 }
 
-func TestNormalizationV7RefusesPublishedV6AndMixedMetadataWithoutRewriting(t *testing.T) {
+func TestNormalizationV8RefusesPublishedV6V7AndMixedMetadataWithoutRewriting(t *testing.T) {
 	artifacts, payloads := identityFenceTinyPayloads(t)
 	id, err := ContractID(artifacts, CurrentVersions())
-	if err != nil || id != identityFenceTinyV7 {
+	if err != nil || id != identityFenceTinyV8 {
 		t.Fatalf("complete tiny current identity differs from independent pin: %s, %v", id, err)
 	}
 	legacy := CurrentVersions()
 	legacy.Normalization = "darkbloom-request-normalization-v6"
+	legacy.Renderer = "swift-jinja-request-date-compatible-v3"
+	legacyV7 := legacy
+	legacyV7.Normalization = "darkbloom-request-normalization-v7"
 	if _, err := ContractID(artifacts, legacy); !errors.Is(err, ErrInvalidVersions) {
 		t.Fatalf("direct old-version discriminator failed: %v", err)
 	}
@@ -84,12 +89,15 @@ func TestNormalizationV7RefusesPublishedV6AndMixedMetadataWithoutRewriting(t *te
 		// If old-version admission is removed, this coherent v6 directory has
 		// the correct v6 ID and every valid payload: verification would succeed.
 		{"valid-old-v6-identity", identityFenceTinyV6, legacy},
-		{"v7-directory-v6-semantics", identityFenceTinyV7, legacy},
-		{"v6-directory-relabeled-v7", identityFenceTinyV6, CurrentVersions()},
+		{"v8-directory-v6-semantics", identityFenceTinyV8, legacy},
+		{"v6-directory-relabeled-v8", identityFenceTinyV6, CurrentVersions()},
+		{"valid-old-v7-identity", identityFenceTinyV7, legacyV7},
+		{"v8-directory-v7-semantics", identityFenceTinyV8, legacyV7},
+		{"v7-directory-relabeled-v8", identityFenceTinyV7, CurrentVersions()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := realTempDir(t)
-			directory := filepath.Join(root, identityFenceTinyV7)
+			directory := filepath.Join(root, identityFenceTinyV8)
 			if err := os.Mkdir(directory, 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -98,7 +106,7 @@ func TestNormalizationV7RefusesPublishedV6AndMixedMetadataWithoutRewriting(t *te
 					t.Fatal(err)
 				}
 			}
-			metadata := Metadata{SchemaVersion: 1, PromptContractID: identityFenceTinyV7,
+			metadata := Metadata{SchemaVersion: 1, PromptContractID: identityFenceTinyV8,
 				ModelID: "fixture", ModelType: "fixture", ModelAggregateSHA256: strings.Repeat("0", 64),
 				Artifacts: artifacts, Versions: CurrentVersions()}
 			writeMetadata := func() []byte {
@@ -118,12 +126,12 @@ func TestNormalizationV7RefusesPublishedV6AndMixedMetadataWithoutRewriting(t *te
 				t.Fatal(err)
 			}
 			defer handle.Close()
-			if ok, err := verifyPublished(handle, identityFenceTinyV7); !ok || err != nil {
+			if ok, err := verifyPublished(handle, identityFenceTinyV8); !ok || err != nil {
 				t.Fatalf("complete current positive failed before negative mutation: %v", err)
 			}
 			// This is an isolated test-created directory, not a published cache.
 			// Mutate only version/identity dimensions; payloads are never rewritten.
-			if tc.id != identityFenceTinyV7 {
+			if tc.id != identityFenceTinyV8 {
 				next := filepath.Join(root, tc.id)
 				if err := os.Rename(directory, next); err != nil {
 					t.Fatal(err)
@@ -154,7 +162,7 @@ func TestNormalizationV7RefusesPublishedV6AndMixedMetadataWithoutRewriting(t *te
 	}
 }
 
-func TestNormalizationV7RefusesStalePlansAndRekeysUnchangedTokenBlocks(t *testing.T) {
+func TestNormalizationV8RefusesStalePlansAndRekeysUnchangedTokenBlocks(t *testing.T) {
 	fixture := identityFenceFixture(t)
 	tokens := make([]uint32, 256)
 	for index := range tokens {
@@ -169,14 +177,17 @@ func TestNormalizationV7RefusesStalePlansAndRekeysUnchangedTokenBlocks(t *testin
 		return Plan{PromptContractID: id, PromptTokenCount: 257,
 			BlockBoundaries: []Boundary{{TokenCount: 256, ChainHash: hash}}, LastCompleteBlockHash: &hash}
 	}
-	current, old := plan(fixture.CurrentID), plan(fixture.LegacyID)
-	if current.BlockBoundaries[0].ChainHash == old.BlockBoundaries[0].ChainHash {
-		t.Fatal("same-token old and new contracts shared a cache block")
-	}
+	current := plan(fixture.CurrentID)
 	client := &Client{config: ClientConfig{MaxTokens: 1024}}
-	for _, pair := range []struct{ request, response Plan }{{current, old}, {old, current}} {
-		if err := client.validatePlan(PlanInput{PromptContractID: pair.request.PromptContractID}, pair.response); !errors.Is(err, ErrInvalidPlan) {
-			t.Fatalf("stale cross-version plan accepted: %v", err)
+	for _, legacyID := range []string{fixture.LegacyID, fixture.LegacyV7ID} {
+		old := plan(legacyID)
+		if current.BlockBoundaries[0].ChainHash == old.BlockBoundaries[0].ChainHash {
+			t.Fatal("same-token old and new contracts shared a cache block")
+		}
+		for _, pair := range []struct{ request, response Plan }{{current, old}, {old, current}} {
+			if err := client.validatePlan(PlanInput{PromptContractID: pair.request.PromptContractID}, pair.response); !errors.Is(err, ErrInvalidPlan) {
+				t.Fatalf("stale cross-version plan accepted: %v", err)
+			}
 		}
 	}
 	if err := client.validatePlan(PlanInput{PromptContractID: current.PromptContractID}, current); err != nil {

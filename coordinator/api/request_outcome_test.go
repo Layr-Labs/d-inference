@@ -99,6 +99,7 @@ func TestRequestOutcomeFailedAndShortWrites(t *testing.T) {
 				ap.CompleteHandler()
 			})
 			handler(&outcomeFailWriter{short: short}, httptest.NewRequest("POST", "/v1/chat/completions", nil))
+			srv.requestOutcomes.close()
 			r := awaitRequestOutcomes(t, st, 1)[0]
 			if r.Termination != "interrupted_response" || r.EgressCompleted || r.ContentWriteCompleted || !r.ClientWriteError {
 				t.Fatalf("failed output %+v", r)
@@ -168,6 +169,7 @@ func TestRequestOutcomeSealedWriteFailure(t *testing.T) {
 				req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(encrypted))
 				req.Header.Set("Content-Type", SealedContentType)
 				handler(&outcomeFailWriter{short: short}, req)
+				srv.requestOutcomes.close()
 				r := awaitRequestOutcomes(t, st, 1)[0]
 				if r.Termination != "interrupted_response" || r.EgressCompleted || r.ContentWriteCompleted || !r.ClientWriteError {
 					t.Fatalf("sealed outer write failure %+v", r)
@@ -224,6 +226,7 @@ func TestRequestOutcomeContentSuccessSurvivesLaterWriteFailure(t *testing.T) {
 				write = srv.sealedTransport(write)
 			}
 			srv.observeRequestOutcome(write)(&outcomeFailAfterFirstWriter{}, req)
+			srv.requestOutcomes.close()
 			r := awaitRequestOutcomes(t, st, 1)[0]
 			if !r.ContentWriteCompleted || !r.ClientWriteError || r.EgressCompleted || r.Termination != "interrupted_response" {
 				t.Fatalf("earlier content evidence lost: %+v", r)

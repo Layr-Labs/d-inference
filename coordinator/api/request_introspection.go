@@ -32,13 +32,10 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-// Media prompt-token costs. A vision encoder turns each image/video into a
-// bounded number of soft tokens (Gemma 4 caps around a few hundred per image)
-// regardless of the base64 byte length, so counting a `data:` URI as text
-// inflates the estimate by orders of magnitude — distorting routing admission and
-// over-reserving balance. Qwen's serving cap (8 frames, 512² pixels, temporal
-// patch 2, spatial merge 2) is at most ~1024 video soft tokens, so 1500 remains
-// conservative. These flat per-media costs keep both sane.
+// Legacy fallback costs for media whose processor/geometry is unavailable.
+// Base64 length is not visual token work. Concrete native MiMo requests use
+// mediaPromptTokens to replace recognized parts with artifact-bound geometry;
+// these constants are not asserted to bound an arbitrary image or video.
 const (
 	imagePromptTokenCost = 300
 	videoPromptTokenCost = 1500

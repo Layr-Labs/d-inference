@@ -32,6 +32,9 @@ func (f *fakeGlobalStripe) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	switch {
+	case strings.HasPrefix(r.URL.Path, "/v2/money_management/financial_accounts/"):
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": strings.TrimPrefix(r.URL.Path, "/v2/money_management/financial_accounts/"), "status": "open", "balance": map[string]any{"available": map[string]any{"usd": globalpayouts.Amount{Value: 100_000_000, Currency: "usd"}}}})
+
 	case r.URL.Path == "/v2/core/accounts" || strings.HasPrefix(r.URL.Path, "/v2/core/accounts/"):
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": "acct_gp", "identity": map[string]string{"country": f.country}, "defaults": map[string]any{"payout_methods": map[string]string{f.currency: "pm_gp"}}, "configuration": map[string]any{"recipient": map[string]any{"capabilities": map[string]any{"bank_accounts": map[string]any{"local": map[string]string{"status": "active"}, "wire": map[string]string{"status": "active"}}}}}})
 	case r.URL.Path == "/v2/core/account_links":

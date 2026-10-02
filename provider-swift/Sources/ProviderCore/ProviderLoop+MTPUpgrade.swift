@@ -74,7 +74,7 @@ extension ProviderLoop {
     }
 
     func pendingMTPUpgradeModels() -> [String] {
-        guard nativeMiMoAllowsReclamation(), !isShuttingDown, !state.refusingNewWork,
+        guard autopilotCommand == nil, nativeMiMoAllowsReclamation(), !isShuttingDown, !state.refusingNewWork,
             modelRevisionActivationID == nil,
             SpecDecArtifactFunnel.killSwitchEnabled(environment: ProcessInfo.processInfo.environment)
         else { return [] }

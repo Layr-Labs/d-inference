@@ -98,7 +98,7 @@ final class MiMoV26EncodedAudioAdmissionTests: XCTestCase {
         let tight = ledger(headroom:oldInitial)
         XCTAssertThrowsError(try MiMoV26ManagedMediaReservation(initialBytes:funded.initialBytes,
             hostBytes:funded.hostBytes,maximumBytes:funded.initialBytes,
-            additionalSystemReserveBytes:1,ledger:tight)) {
+            additionalSystemReserveBytes:1,ledger:tight,serviceBudget:.init())) {
             XCTAssertEqual($0 as? MiMoV26MultimodalError,.reservationRejected)
         }
         XCTAssertEqual(tight.snapshot().chargedBytes,0)
@@ -107,7 +107,7 @@ final class MiMoV26EncodedAudioAdmissionTests: XCTestCase {
         let actualLedger = ledger(headroom:funded.initialBytes)
         let owner = try MiMoV26ManagedMediaReservation(initialBytes:funded.initialBytes,
             hostBytes:funded.hostBytes,maximumBytes:funded.initialBytes,
-            additionalSystemReserveBytes:1,ledger:actualLedger)
+            additionalSystemReserveBytes:1,ledger:actualLedger,serviceBudget:.init())
         XCTAssertEqual(actualLedger.snapshot().chargedBytes,funded.initialBytes)
         // A phase replacement sized using the old host share must not drop
         // the promised URI copy. The genuine owner enforces its host floor.

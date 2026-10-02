@@ -43,6 +43,10 @@ extension ProviderLoop {
     /// `.started` status is queued; the download runs on a low-priority task and
     /// never consumes a GPU slot or blocks inference.
     func handlePrefetchModelRequest(modelId: String, priority: Int, send: SendHandle) async {
+        guard autopilotAllowsModel(modelId) else {
+            send.send(.prefetchModelStatus(modelId: modelId, status: .failed, bytesDone: 0, bytesTotal: 0, error: "model_not_selected"))
+            return
+        }
         guard ModelRuntimeRequirements.isEligible(
             modelID: modelId, available: loopConfig.runtimeCapabilities)
         else {
@@ -276,9 +280,16 @@ extension ProviderLoop {
 
     /// Locally retire a superseded build: stop advertising it (so no new requests
     /// route to it and the next register won't re-announce it) and forget its hash.
-    /// The GPU slot, if resident, is left to the idle monitor — a lazy drop.
+    /// The GPU slot, if resident, drains lazily. Legacy providers use their
+    /// idle timer; autopilot providers track this explicit release retirement
+    /// for bounded cleanup once the old build is inactive and unpinned.
     func dropAdvertisedBuild(_ buildID: String) async {
+        if autopilotCommand != nil {
+            autopilotDeferredDrops.insert(buildID)
+            return
+        }
         guard advertisedModels[buildID] != nil else { return }
+        if autopilotManagesResidency { autopilotSupersededModels.insert(buildID) }
         advertisedModels.removeValue(forKey: buildID)
         modelHashes.removeValue(forKey: buildID)
         await coordinatorClient?.unadvertiseModel(buildID)
@@ -314,9 +325,13 @@ extension ProviderLoop {
     /// build is dropped; missing → background-prefetch it (applyVerifiedPrefetch
     /// advertises it + drops the previous build once verified).
     internal func reconcileDesiredModels(_ entries: [CoordinatorMessage.DesiredModelEntry], send: SendHandle) async {
+        if autopilotCommand != nil {
+            autopilotDeferredDesiredModels = entries
+            return
+        }
         let requestedDesired = Set(entries.map(\.desiredBuild).filter { !$0.isEmpty })
         let currentDesired = Set(requestedDesired.filter {
-            ModelRuntimeRequirements.isEligible(
+            autopilotAllowsModel($0) && ModelRuntimeRequirements.isEligible(
                 modelID: $0, available: loopConfig.runtimeCapabilities)
         })
         for stale in desiredPrefetchTargets.subtracting(currentDesired) {
@@ -329,7 +344,7 @@ extension ProviderLoop {
 
         for entry in entries {
             let desired = entry.desiredBuild
-            guard !desired.isEmpty else { continue }
+            guard !desired.isEmpty, autopilotAllowsModel(desired) else { continue }
             guard ModelRuntimeRequirements.isEligible(
                 modelID: desired, available: loopConfig.runtimeCapabilities)
             else {
@@ -378,4 +393,18 @@ extension ProviderLoop {
     }
 
 
+}
+
+
+extension ProviderLoop {
+    internal func resumeAutopilotDeferredModelChanges(send: SendHandle) async {
+        guard autopilotCommand == nil, !isShuttingDown else { return }
+        let drops = autopilotDeferredDrops
+        autopilotDeferredDrops.removeAll()
+        for model in drops.sorted() { await dropAdvertisedBuild(model) }
+        if let desired = autopilotDeferredDesiredModels {
+            autopilotDeferredDesiredModels = nil
+            await reconcileDesiredModels(desired, send: send)
+        }
+    }
 }

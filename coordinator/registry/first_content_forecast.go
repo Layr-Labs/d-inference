@@ -45,6 +45,7 @@ type FirstContentEstimate struct {
 // admission snapshot. Missing measurement age remains unknown; heartbeat age
 // is never used as a substitute for performance age.
 type firstContentSnapshot struct {
+	prefillWorkloadRates        []prefillWorkloadRate
 	transportMs                 float64
 	conservativeTransportMs     float64
 	transportAgeMs              int32
@@ -117,6 +118,7 @@ func (r *Registry) estimateFirstContent(c *routingCandidate, pr *PendingRequest,
 	if s.isolatedPrefillInitialized && finitePositive(s.isolatedPrefillTPS) {
 		conservativeRate = min(conservativeRate, s.isolatedPrefillTPS)
 	}
+	conservativeRate = capPrefillByWorkload(conservativeRate, conservativePrompt, s.prefillWorkloadRates, now)
 	decodeTokens := firstContentDecodeAllowance
 	if pr.RequestedMaxTokens > 0 {
 		decodeTokens = min(decodeTokens, pr.RequestedMaxTokens)

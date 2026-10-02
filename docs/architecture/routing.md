@@ -67,7 +67,13 @@ replacement, drain and capacity sequence; a missing receipt leaves the outcome
 unconfirmed even if routing already resumed.
 Removed model IDs remain queued for cleanup across a failed receipt and another
 same-session drain, until routing resumes or disconnect.
-Invalid selections leave inventory and drain unchanged. See
+The history is bounded by count and total ID bytes before inventory mutation
+(`coordinator/registry/provider_models_replace_history.go`, `replacementRemovedModels`).
+An overflowing validation or commit returns `invalid_models`, preserving the
+settled drain, current inventory and all owed queue cleanup. Restoring removed
+IDs frees their history entries before the new removals are charged. See the
+replacement contract for the limits. Invalid selections leave inventory and
+drain unchanged. See
 [the replacement contract](../reference/protocol-messages.md#models_replace--models_replace_ack--models_replace_ready--models_replace_resumed).
 
 

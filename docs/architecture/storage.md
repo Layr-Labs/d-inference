@@ -169,14 +169,15 @@ from `provider_floor_draws`
 (markers `prepare_earnings_summary_base_reward_v1` for the plan and
 `backfill_earnings_summary_base_reward_v1` when done). A session advisory lock
 serialises coordinators, one REPEATABLE READ transaction commits per-account
-totals into `earnings_summary_base_reward_pending`, and each pending row is
-added and deleted in its own short transaction, so a crash resumes without
-double-adding. `--migrate-only` adds the column but does not run this
+totals into `earnings_summary_base_reward_pending`, and pending rows are
+added and deleted in batches of 1000 per short transaction, so a crash resumes
+without double-adding. `--migrate-only` adds the column but does not run this
 backfill, because the previous release keeps settling draws, without the
 column, for as long as it serves. Base rewards a previous coordinator settles
 after the plan snapshot (during the handoff, or while a rollback to an earlier
-release serves) are in `total_micro_usd` but not in the column. The pending
-table stays after the backfill, empty.
+release serves) are in `total_micro_usd` but not in the column. The backfill
+adds to the column, so deleting its markers to run it again counts every
+account's history twice. The pending table stays after the backfill, empty.
 
 The Solana-era cleanups are retired the same way: the wallet-keyed price delete (marker `cleanup_wallet_model_prices_v1`,
 which on a fresh database ran before `users` existed and so fired on the second

@@ -107,6 +107,7 @@ func newPostgresWithPoolConfig(ctx context.Context, scfg Config, tune func(*pgxp
 		pool.Close()
 		return nil, fmt.Errorf("store: run migrations: %w", err)
 	}
+
 	return s, nil
 }
 

@@ -312,3 +312,65 @@ func TestNewPostgresDoesNotRunBaseRewardBackfill(t *testing.T) {
 		t.Fatalf("after backfill: column = %d, want 1500", got)
 	}
 }
+
+// The backfill adds history to whatever the live writers already counted; it
+// must never overwrite it.
+func TestBaseRewardBackfillAddsToLiveValue(t *testing.T) {
+	s := testPostgresStore(t)
+	ctx := context.Background()
+	acct := uniqueID("acct-add")
+	settleDrawFor(t, s, acct, uniqueID("pk-add"), "2026-04", 1_000) // counted live
+	if _, err := s.pool.Exec(ctx, `INSERT INTO schema_migrations (id) VALUES ($1) ON CONFLICT (id) DO NOTHING`, w4PlanMarker); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(ctx, `DELETE FROM schema_migrations WHERE id = $1`, w4DoneMarker); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(ctx, `INSERT INTO earnings_summary_base_reward_pending (account_id, amount_micro_usd) VALUES ($1, 4000)`, acct); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.migrateEarningsSummaryBaseReward(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := baseRewardColumn(t, s, acct, "account"); got != 5_000 {
+		t.Fatalf("column = %d, want 1000 live + 4000 history", got)
+	}
+}
+
+// Apply drains more pending accounts than one batch holds.
+func TestBaseRewardBackfillDrainsAcrossBatches(t *testing.T) {
+	s := testPostgresStore(t)
+	ctx := context.Background()
+	if _, err := s.pool.Exec(ctx, `DELETE FROM schema_migrations WHERE id IN ($1, $2)`, w4DoneMarker, w4PlanMarker); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE earnings_summary SET total_base_reward_micro_usd = 0`); err != nil {
+		t.Fatal(err)
+	}
+	prefix := uniqueID("acct-batch")
+	n := earningsSummaryBaseRewardBatch*2 + 7
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO provider_floor_draws (provider_key, account_id, epoch_id, amount_micro_usd, floor_micro_usd, earned_micro_usd, uptime_frac, memory_gb, created_at)
+		SELECT $1 || '-pk-' || g, $1 || '-' || g, 'batch', 10, 10, 0, 1, 64, NOW() FROM generate_series(1, $2::int) g`, prefix, n); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
+		SELECT $1 || '-' || g, 'account', 0, 10, 0, 0, NOW() FROM generate_series(1, $2::int) g`, prefix, n); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.migrateEarningsSummaryBaseReward(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var total, rows int64
+	if err := s.pool.QueryRow(ctx, `SELECT COALESCE(SUM(total_base_reward_micro_usd), 0), COUNT(*) FROM earnings_summary
+		WHERE key LIKE $1 || '-%' AND key_type = 'account'`, prefix).Scan(&total, &rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != int64(n) || total != int64(n)*10 {
+		t.Fatalf("rows=%d total=%d, want %d rows and %d", rows, total, n, n*10)
+	}
+	if got := pendingCount(t, s); got != 0 {
+		t.Fatalf("pending = %d, want 0", got)
+	}
+}

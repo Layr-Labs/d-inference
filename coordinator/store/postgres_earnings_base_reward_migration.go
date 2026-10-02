@@ -14,6 +14,11 @@ const (
 	earningsSummaryBaseRewardMigrationID = "backfill_earnings_summary_base_reward_v1"
 	earningsSummaryBaseRewardPlanID      = "prepare_earnings_summary_base_reward_v1"
 	earningsSummaryBaseRewardLockKey     = "darkbloom.earnings-summary-base-reward.v1"
+
+	// earningsSummaryBaseRewardBatch bounds each apply transaction. The serving
+	// coordinator runs the backfill before it listens, so one round trip per
+	// account would add tens of seconds to a deploy with many accounts.
+	earningsSummaryBaseRewardBatch = 1000
 )
 
 const earningsSummaryBaseRewardPendingDDL = `CREATE TABLE IF NOT EXISTS earnings_summary_base_reward_pending (
@@ -49,7 +54,7 @@ func (s *PostgresStore) BackfillEarningsSummaryBaseReward(ctx context.Context) e
 // the base rewards settled before the column existed; every writer adds new
 // ones as they are credited. One planning transaction pins a REPEATABLE READ
 // snapshot and commits the per-account totals together with the plan marker,
-// each total is then added and dequeued in its own short transaction so a
+// the totals are then added and dequeued in short batched transactions so a
 // crash resumes without double-adding, and the final marker keeps later boots
 // from rescanning. Base rewards a previous coordinator settles after the
 // snapshot (during the blue-green handoff, or while a rollback to an earlier
@@ -106,7 +111,7 @@ func (s *PostgresStore) applyEarningsSummaryBaseRewardMigration(ctx context.Cont
 		return false, err
 	}
 	for {
-		applied, err := applyNextEarningsSummaryBaseReward(ctx, conn)
+		applied, err := applyNextEarningsSummaryBaseRewards(ctx, conn, earningsSummaryBaseRewardBatch)
 		if err != nil {
 			return false, err
 		}
@@ -155,13 +160,14 @@ func planEarningsSummaryBaseRewardBackfill(ctx context.Context, db earningsSumma
 	return tx.Commit(ctx)
 }
 
-// applyNextEarningsSummaryBaseReward adds one pending account's history to its
-// live counter and dequeues it atomically. A summary row is never missing for
+// applyNextEarningsSummaryBaseRewards adds up to limit pending accounts'
+// history to their live counters and dequeues them in the same statement, so
+// a crash resumes without adding any account twice. A summary row is never missing for
 // a settled draw in practice; if it were, it is created with the base reward
 // as its total so total_micro_usd stays >= total_base_reward_micro_usd.
-func applyNextEarningsSummaryBaseReward(ctx context.Context, db earningsSummaryMigrationDB) (bool, error) {
+func applyNextEarningsSummaryBaseRewards(ctx context.Context, db earningsSummaryMigrationDB, limit int) (bool, error) {
 	tag, err := db.Exec(ctx, `WITH pending AS MATERIALIZED (
-  SELECT * FROM earnings_summary_base_reward_pending ORDER BY account_id LIMIT 1 FOR UPDATE
+  SELECT * FROM earnings_summary_base_reward_pending ORDER BY account_id LIMIT $1 FOR UPDATE
  ), applied AS (
   INSERT INTO earnings_summary(key,key_type,total_count,total_micro_usd,total_prompt_tokens,total_completion_tokens,total_base_reward_micro_usd,updated_at)
   SELECT account_id,'account',0,amount_micro_usd,0,0,amount_micro_usd,NOW() FROM pending
@@ -169,7 +175,7 @@ func applyNextEarningsSummaryBaseReward(ctx context.Context, db earningsSummaryM
    total_base_reward_micro_usd=earnings_summary.total_base_reward_micro_usd+EXCLUDED.total_base_reward_micro_usd,
    updated_at=NOW()
   RETURNING key
- ) DELETE FROM earnings_summary_base_reward_pending p USING applied a WHERE p.account_id=a.key`)
+ ) DELETE FROM earnings_summary_base_reward_pending p USING applied a WHERE p.account_id=a.key`, limit)
 	if err != nil {
 		return false, fmt.Errorf("store: apply earnings summary base reward history: %w", err)
 	}

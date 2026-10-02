@@ -72,18 +72,37 @@ final class DeadlinePostureState: @unchecked Sendable {
 
     func snapshot(requirement: DeadlineApplicability, at now: ContinuousClock.Instant,
         registering guardToken: CBv2FirstContentEvidenceGuard? = nil) -> Snapshot? {
-        lock.withLock {
-            guard requirement.isValid, let since = nominalSince, let observedAt, let powerReadAt,
-                now >= observedAt, now < observedAt.advanced(by: .seconds(1)),
-                now >= powerReadAt, now < powerReadAt.advanced(by: .seconds(3)),
-                now >= since.advanced(by: .milliseconds(requirement.minimumNominalStabilityMs)) else { return nil }
-            if let guardToken {
-                guards.removeAll { $0.value == nil || $0.value?.isValid == false }
-                if !guards.contains(where: { $0.value === guardToken }) { guards.append(WeakGuard(guardToken)) }
-            }
-            return Snapshot(epoch: epoch, nominalSince: since,
-                validUntil: min(observedAt.advanced(by: .seconds(1)), powerReadAt.advanced(by: .seconds(3))))
+        guard requirement.isValid else { return nil }
+        return lock.withLock {
+            stableNominalSnapshotLocked(minimumStabilityMs: requirement.minimumNominalStabilityMs,
+                at: now, registering: guardToken)
         }
+    }
+
+    /// Online native observations require stable nominal posture and actual
+    /// exclusive device ownership. They do not borrow the qualified text
+    /// catalog's 20-second recovery proof: media preparation itself is work.
+    func nativeMediaSnapshot(at now: ContinuousClock.Instant,
+        registering guardToken: CBv2FirstContentEvidenceGuard) -> Snapshot? {
+        lock.withLock {
+            stableNominalSnapshotLocked(minimumStabilityMs: 5_000,
+                at: now, registering: guardToken)
+        }
+    }
+
+    private func stableNominalSnapshotLocked(minimumStabilityMs: Int,
+        at now: ContinuousClock.Instant,
+        registering guardToken: CBv2FirstContentEvidenceGuard?) -> Snapshot? {
+        guard let since = nominalSince, let observedAt, let powerReadAt,
+            now >= observedAt, now < observedAt.advanced(by: .seconds(1)),
+            now >= powerReadAt, now < powerReadAt.advanced(by: .seconds(3)),
+            now >= since.advanced(by: .milliseconds(minimumStabilityMs)) else { return nil }
+        if let guardToken {
+            guards.removeAll { $0.value == nil || $0.value?.isValid == false }
+            if !guards.contains(where: { $0.value === guardToken }) { guards.append(WeakGuard(guardToken)) }
+        }
+        return Snapshot(epoch: epoch, nominalSince: since,
+            validUntil: min(observedAt.advanced(by: .seconds(1)), powerReadAt.advanced(by: .seconds(3))))
     }
 
     /// Sampling need not wait for the stability window, but must start and end

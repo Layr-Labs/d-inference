@@ -26,6 +26,16 @@ const stripeRecipientTransferDelay = 24 * time.Hour
 // malformed payloads and business no-ops are acked with 200 (redelivery
 // cannot fix those).
 func (s *Server) handleStripeConnectWebhook(w http.ResponseWriter, r *http.Request) {
+	s.handleStripePayoutWebhook(w, r, false)
+}
+
+// Dedicated connected-account destination. The old destination remains active
+// for platform transfer.reversed events with its own signing secret.
+func (s *Server) handleStripeConnectAccountsWebhook(w http.ResponseWriter, r *http.Request) {
+	s.handleStripePayoutWebhook(w, r, true)
+}
+
+func (s *Server) handleStripePayoutWebhook(w http.ResponseWriter, r *http.Request, accounts bool) {
 	if s.billing == nil || s.billing.StripeConnect() == nil {
 		http.Error(w, "Stripe Connect not configured", http.StatusServiceUnavailable)
 		return
@@ -37,7 +47,16 @@ func (s *Server) handleStripeConnectWebhook(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	sig := r.Header.Get("Stripe-Signature")
-	event, err := s.billing.StripeConnect().VerifyConnectWebhookSignature(payload, sig)
+	verifier := s.billing.StripeConnect()
+	if accounts {
+		secret := s.billing.StripeConnectAccountsWebhookSecret()
+		if secret == "" {
+			http.Error(w, "Connected-account webhook not configured", http.StatusServiceUnavailable)
+			return
+		}
+		verifier = billing.NewStripeConnect("", secret, "", false, s.logger)
+	}
+	event, err := verifier.VerifyConnectWebhookSignature(payload, sig)
 	if err != nil {
 		s.logger.Warn("stripe connect webhook: signature verification failed", "error", err)
 		http.Error(w, "invalid signature", http.StatusBadRequest)
@@ -51,6 +70,14 @@ func (s *Server) handleStripeConnectWebhook(w http.ResponseWriter, r *http.Reque
 		Account string `json:"account"`
 	}
 	_ = json.Unmarshal(payload, &envelope)
+	if accounts && envelope.Account == "" {
+		http.Error(w, "Connected-account event required", http.StatusBadRequest)
+		return
+	}
+	if accounts && event.Type == "transfer.reversed" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 
 	var handleErr error
 	switch event.Type {
@@ -311,6 +338,10 @@ func (s *Server) reconcileUnmatchedPayout(pe *billing.PayoutEvent, success bool)
 			"payout_id", pe.ID, "live_status", livePayout.Status,
 			"stripe_account_id", pe.ConnectedAcct)
 		return nil
+	}
+
+	if s.billing.GlobalPayoutsOnly() {
+		return s.reconcileProvenPayout(pe)
 	}
 
 	// Settlement-safe cutoff: recipient-agreement transfers become available

@@ -201,7 +201,13 @@ type Provider struct {
 	IdleUnloadMins *int
 
 	// Live backend capacity from heartbeats (nil for providers without capacity reporting)
-	BackendCapacity *protocol.BackendCapacity
+	BackendCapacity             *protocol.BackendCapacity
+	ModelAutopilot              *protocol.ModelAutopilotState
+	autopilotPending            *autopilotPendingCommand
+	autopilotControlUntil       time.Time
+	autopilotControlRevision    string
+	autopilotControlObserveOnly bool
+	autopilotBackoffUntil       time.Time
 	// CapacityAcceptedAt advances only when the backend-capacity frame is
 	// applied. Rejected sequence frames advance LastHeartbeat but leave this
 	// owner-diagnostic clock unchanged. Guarded by p.mu.

@@ -40,6 +40,7 @@ const keySpendRetentionDays = 40
 
 // MemoryStore manages API keys, usage records, payments, and balances in memory.
 type MemoryStore struct {
+	autopilotRecords          map[string]AutopilotRecord
 	modelTokenProviderCarries map[string]int64
 	modelTokenPromotions      map[string]ModelTokenPromotion
 	modelTokenGrants          map[string]map[string]ModelTokenGrant
@@ -1396,7 +1397,7 @@ func (s *MemoryStore) GetReferrerByCode(code string) (*Referrer, error) {
 
 	ref, ok := s.referrersByCode[code]
 	if !ok {
-		return nil, fmt.Errorf("referral code %q not found", code)
+		return nil, fmt.Errorf("referral code %q: %w", code, ErrNotFound)
 	}
 	copy := *ref
 	return &copy, nil

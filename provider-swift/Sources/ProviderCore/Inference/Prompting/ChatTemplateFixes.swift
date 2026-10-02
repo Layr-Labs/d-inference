@@ -62,10 +62,11 @@ enum ChatTemplateFixes {
         _ tools: [[String: any Sendable]]?,
         context: ChatTemplateFixContext
     ) -> [[String: any Sendable]]? {
+        let metadataScoped = normalizeToolMetadata(tools, context: context)
         if MiMoV26TemplateFix.applies(to: context) {
-            return MiMoV26TemplateFix.normalizeTools(tools)
+            return MiMoV26TemplateFix.normalizeTools(metadataScoped)
         }
-        guard let sanitized = sanitizeTools(tools) else { return nil }
+        guard let sanitized = sanitizeTools(metadataScoped) else { return nil }
         if GPTOSSHarmonyTemplateFix.applies(to: context) {
             return GPTOSSHarmonyTemplateFix.normalizeTools(sanitized)
         }
@@ -73,6 +74,17 @@ enum ChatTemplateFixes {
             return Gemma4TemplateFix.normalizeTools(sanitized)
         }
         return sanitized
+    }
+
+    /// Native media producers preserve their own message/schema representation,
+    /// but must apply the same model-scoped SDK metadata policy as text requests.
+    static func normalizeToolMetadata(
+        _ tools: [[String: any Sendable]]?,
+        context: ChatTemplateFixContext
+    ) -> [[String: any Sendable]]? {
+        NemotronTemplateFilters.applies(modelType: context.modelType)
+            ? tools
+            : tools?.map(droppingNemotronOnlyMetadata)
     }
 
     /// Sanitize a chat-template `tools` array (or `nil`), dropping null /
@@ -83,6 +95,18 @@ enum ChatTemplateFixes {
     ) -> [[String: any Sendable]]? {
         guard let tools else { return nil }
         return tools.map(sanitizeJinjaObject)
+    }
+
+    private static func droppingNemotronOnlyMetadata(
+        _ tool: [String: any Sendable]
+    ) -> [String: any Sendable] {
+        var tool = tool
+        guard var function = tool["function"] as? [String: any Sendable] else {
+            return tool
+        }
+        function.removeValue(forKey: "strict")
+        tool["function"] = function
+        return tool
     }
 
     static func extraEOSTokenIds(

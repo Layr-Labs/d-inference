@@ -185,7 +185,7 @@ extension ProviderLoop {
         // Quote path mirror (routing v2): quotes may admit again.
         resumeAfterUpdateDrain()
         localResponseTracker.setAccepting(!servingDrain.refusing && !isShuttingDown)
-        state.refusingNewWork = servingDrain.refusing || isReconnectingAfterRetirement || isShuttingDown
+        state.refusingNewWork = servingDrain.refusing || isReconnectingAfterRetirement || isShuttingDown || autopilotCommand != nil
         // Announce the un-drain NOW: the coordinator ages its drain mark on a
         // TTL, so a prompt `serving`/`idle` heartbeat ends the routing
         // blackout instead of leaving it to the next 5 s baseline tick.

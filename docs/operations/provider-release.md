@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-01
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -18,8 +18,28 @@ retry of that old workflow still uses its original source. For an unchanged
 candidate with successful build and SDK qualification, merge the tooling fix
 and use the retained unsigned recovery path below.
 
-The prepared version is **0.9.14**. It enables native MiMo text-prefix SSD
-caching by default; the exact model identities and rollback controls are in
+The **0.9.16** hotfix candidate repairs enrolled-daemon status, graceful lifecycle
+control and watchdog health observation. Its schema-1 state files write detailed
+Autopilot data under `autopilot_state`, leaving the old optional `autopilot` key
+absent so a still-running 0.9.15 watchdog can read the candidate heartbeat. New
+readers accept both layouts. Qualify the upgrade with consent already recorded:
+confirm status, graceful restart and promotion after the full stabilization
+window, including when the watchdog process predates the update. A newer release
+can recover machines that quarantined 0.9.15 without overriding quarantine.
+Also verify a busy model update produces a prompt retry message during inventory
+verification and preserves the running daemon and recorded selection.
+
+The released version is **0.9.15**. It adds automatic idle native MiMo
+calibration through the actual serving engine; see
+[calibration behavior](../architecture/first-content-routing.md#automatic-mimo-calibration).
+On the exact signed artifact, verify short/4k phase observations reach capacity
+heartbeats, customer requests on any model preempt calibration until real
+retirement, original deadlines remain anchored, and probe work is excluded from
+served-request/token counters. Compare utilization and capacity/deadline
+refusals under real traffic without expanding memory or concurrency limits.
+
+It retains native MiMo text-prefix SSD caching enabled by default since the
+0.9.14 candidate; the exact model identities and rollback controls are in
 [prefix-cache policy](../architecture/prefix-cache.md#mimo-complete-state).
 Qualify the exact signed build with an ordinary launchd configuration: record a
 cold text request, a useful repeated-prefix donation and an authenticated SSD
@@ -380,8 +400,8 @@ Coordinator deploys are a separate runbook:
 
 The provider and coordinator versions must be identical strings:
 
-- `provider-swift/Sources/ProviderCore/ProviderCore.swift` — `public static let version = "0.9.10"`
-- `coordinator/api/server.go` — `var LatestProviderVersion = "0.9.10"`
+- `provider-swift/Sources/ProviderCore/ProviderCore.swift` — `public static let version = "0.9.15"`
+- `coordinator/api/server.go` — `var LatestProviderVersion = "0.9.15"`
 
 ```bash
 ./scripts/check-release-version.sh          # provider == coordinator, semver
@@ -389,8 +409,8 @@ The provider and coordinator versions must be identical strings:
 ```
 
 `check-release-version.sh` accepts an optional expected version
-(`check-release-version.sh v0.9.10`) and an optional reported string from a
-built binary (`darkbloom 0.9.10` or `0.9.10`); the workflow calls it in all
+(`check-release-version.sh v0.9.15`) and an optional reported string from a
+built binary (`darkbloom 0.9.15` or `0.9.15`); the workflow calls it in all
 three forms. CI job "Release Integrity" runs the two commands above on every
 push.
 

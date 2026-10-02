@@ -113,6 +113,25 @@ func TestPerformanceWorkloadBucketsAreBoundedAndDetached(t *testing.T) {
 	}
 }
 
+func TestNativeMediaPrefillIsRetainedWithoutChangingTextRates(t *testing.T) {
+	capacity := measurementCapacity()
+	pm := capacity.Slots[0].PerformanceMeasurements
+	textRate := *pm.IsolatedPrefill
+	media := protocol.PerformanceWorkloadBucket{Phase: "native_media_prefill",
+		PromptTokenBucket: 4096, ContextTokenBucket: 4096, CacheState: "cold", Contention: "isolated",
+		Observation: protocol.PerformanceRateObservation{TokensPerSecond: 834, SampleCount: 2, SampleAgeMS: 100}}
+	pm.WorkloadBuckets = []protocol.PerformanceWorkloadBucket{media}
+	clampBackendCapacity(testLogger(), "provider", capacity)
+	if len(pm.WorkloadBuckets) != 1 || pm.WorkloadBuckets[0] != media || *pm.IsolatedPrefill != textRate {
+		t.Fatal("native media evidence was discarded or replaced the text rate")
+	}
+	p := &Provider{}
+	p.reconcileFirstContentMeasurementsLocked(capacity)
+	if p.firstContentMeasurements["m"].rate != textRate.TokensPerSecond {
+		t.Fatal("diagnostic media rate changed first-content text evidence")
+	}
+}
+
 func TestPerformanceWorkloadBucketsAcceptOnlyClosedMetadata(t *testing.T) {
 	capacity := measurementCapacity()
 	pm := capacity.Slots[0].PerformanceMeasurements

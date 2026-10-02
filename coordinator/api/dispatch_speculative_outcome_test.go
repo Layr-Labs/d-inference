@@ -107,7 +107,7 @@ func TestSpeculativeBackupFailureAttributesBackupKVBackend(t *testing.T) {
 			heartbeatKV(backup, &contiguous)
 
 			// Dispatch latched the PRIMARY's slot...
-			d.pr = primaryPR
+			d.provider, d.pr = primary, primaryPR
 			d.noteServingSlot()
 			if got := d.kvBackendAttribution().Backend; got != registry.KVBackendPaged {
 				t.Fatalf("primary latch = %q, want %q", got, registry.KVBackendPaged)
@@ -169,7 +169,7 @@ func TestDeterministicPrimaryVerdictKeepsPrimaryAttribution(t *testing.T) {
 	heartbeatSlotKV(d, backup, registry.KVBackendContiguous)
 
 	// Dispatch latched the primary's slot...
-	d.pr = primaryPR
+	d.provider, d.pr = primary, primaryPR
 	d.noteServingSlot()
 
 	// ...then the primary failed with a deterministic client 4xx: runRace's
@@ -217,7 +217,7 @@ func TestPromotedBackupSavedOnLiveMismatch(t *testing.T) {
 	heartbeatSlotKV(d, primary, registry.KVBackendPaged)
 	heartbeatSlotKV(d, backup, registry.KVBackendContiguous)
 
-	d.pr = primaryPR
+	d.provider, d.pr = primary, primaryPR
 	d.noteServingSlot()
 
 	// Promotion outside the choke point: d.pr moves to the backup with no
@@ -246,7 +246,7 @@ func TestFrozenLatchSurvivesLiveMismatchRead(t *testing.T) {
 	heartbeatSlotKV(d, primary, registry.KVBackendPaged)
 	heartbeatSlotKV(d, backup, registry.KVBackendContiguous)
 
-	d.pr = primaryPR
+	d.provider, d.pr = primary, primaryPR
 	d.noteServingSlot()
 	verdict := protocol.InferenceErrorMessage{
 		Error:       "prompt malformed",

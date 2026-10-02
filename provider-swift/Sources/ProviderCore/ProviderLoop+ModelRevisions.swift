@@ -49,7 +49,7 @@ extension ProviderLoop {
     }
 
     func pendingModelRevisions() -> [CoordinatorMessage.DesiredModelEntry] {
-        guard !isShuttingDown, !state.refusingNewWork else { return [] }
+        guard autopilotCommand == nil, !isShuttingDown, !state.refusingNewWork else { return [] }
         return desiredModelRevisions.values.filter {
             !modelRevisionIsSelected($0) || failedModelRevisionRestores[$0.desiredBuild] != nil
         }.sorted { $0.desiredBuild < $1.desiredBuild }
@@ -64,7 +64,8 @@ extension ProviderLoop {
     }
 
     func revisionIsDesired(_ entry: CoordinatorMessage.DesiredModelEntry) -> Bool {
-        !isShuttingDown && !state.refusingNewWork && desiredModelRevisions[entry.desiredBuild] == entry
+        autopilotCommand == nil && !isShuttingDown && !state.refusingNewWork
+            && autopilotAllowsModel(entry.desiredBuild) && desiredModelRevisions[entry.desiredBuild] == entry
     }
 
     private func runModelRevisionAttempt(_ entry: CoordinatorMessage.DesiredModelEntry) async {

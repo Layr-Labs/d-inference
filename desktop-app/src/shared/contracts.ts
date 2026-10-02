@@ -120,6 +120,12 @@ export interface ReleaseData {
   url?: string;
   error?: string;
 }
+export interface ReleaseHistory {
+  minimum_provider_version?: string;
+  observed_at?: string;
+  history: { version: string; published_at: string; notes: string; active: boolean }[];
+  error?: string;
+}
 export interface Leader {
   rank: number;
   name: string;
@@ -147,6 +153,7 @@ export type Resource =
   | 'network'
   | 'cooling'
   | 'release'
+  | 'release-history'
   | 'leaderboard'
   | 'endpoint-key'
   | 'insights-week'
@@ -166,7 +173,8 @@ export interface DesktopAPI {
   status(): Promise<DesktopStatus>;
   install(): Promise<void>;
   openExternal(
-    target: 'console' | 'docs' | 'community' | 'terms' | 'privacy' | 'link',
+    target:
+      'console' | 'docs' | 'community' | 'github' | 'slack' | 'x' | 'terms' | 'privacy' | 'link',
   ): Promise<void>;
   copy(text: string): Promise<void>;
   updateStatus(): Promise<GUIUpdate>;

@@ -145,6 +145,22 @@ for changes to `scripts/install.sh`, which the app bundles. Manual workflow
 dispatch also produces unsigned macOS review artifacts. It does not publish a
 release or establish attestation qualification.
 
+## Updates presentation
+
+Updates shows installed/latest runtime versions, a compact release timeline and
+an automatic provider-update switch. Provider configuration defaults to enabled;
+the UI preserves an existing opt-out. Disabling asks for confirmation in both
+Updates and Settings. Updates saves through the revision-checked native settings
+action, and offers a provider restart to apply the setting to a running provider.
+It never restarts automatically from a toggle.
+
+A mandatory update is shown only when the installed version is below the
+coordinator's published minimum. An available release alone is not mandatory.
+Unknown policy remains unavailable; missing release notes are not invented.
+The release-history resource requires the new coordinator endpoint to be deployed;
+the existing latest-release display works independently. The browser development
+preview contains explicitly illustrative release notes and version cutoffs.
+
 ## Release qualification
 
 Before public distribution, verify all of the following against the final

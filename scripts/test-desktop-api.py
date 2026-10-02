@@ -35,6 +35,13 @@ class Catalog(http.server.BaseHTTPRequestHandler):
             pass
 
     def do_GET(self):
+        if self.path == "/v1/releases/desktop":
+            assert self.headers.get("Authorization") is None
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"minimum_provider_version":"0.9.15","history":[{"version":"0.9.16","active":true,"notes":"Faster recovery","published_at":"2026-10-02T00:00:00Z"}]}')
+            return
         if self.path in ("/v1/stats", "/v1/leaderboard?metric=earnings&window=24h"):
             assert self.headers.get("Authorization") is None
             payload = {"total_tokens": 9007199254740993, "active_providers": 7,
@@ -166,6 +173,9 @@ idle_timeout_mins = 60
                 code, snapshot = request()
                 assert code == 200 and snapshot["machine"]["name"] == "Desktop fixture", snapshot
                 assert snapshot["state"] == "stopped" and not snapshot["linked"]
+                code, release_history = request("release-history")
+                assert code == 200 and release_history["minimum_provider_version"] == "0.9.15", release_history
+                assert release_history["history"][0]["notes"] == "Faster recovery", release_history
                 code, network = request("network")
                 assert code == 200 and network["total_tokens"] == "9007199254740993", network
                 assert network["provider_regions"][0]["region"] == "Tokyo", network

@@ -20,7 +20,7 @@ extension DesktopBackend {
     if name == "cooling" { return await cooling() }
     let paths = [
       "cloud": "/v1/provider/desktop", "network": "/v1/stats", "leaderboard": "/v1/leaderboard",
-      "release": "/v1/releases/latest",
+      "release": "/v1/releases/latest", "release-history": "/v1/releases/desktop",
       "insights-week": "/v1/provider/desktop/insights",
       "insights-month": "/v1/provider/desktop/insights",
     ]

@@ -209,3 +209,35 @@
   align-items: center;
   gap: 5px;
 }
+
+.social-links {
+  display: flex;
+  gap: 6px;
+  padding: 0 6px;
+  -webkit-app-region: no-drag;
+}
+.social-links a {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  color: var(--muted);
+  border-radius: 6px;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+.social-links a:hover {
+  background: var(--raised-bg);
+  color: var(--text-primary);
+}
+.social-links + .local-profile {
+  margin-top: 12px;
+}
+@media (max-width: 760px) {
+  .social-links {
+    flex-direction: column;
+    align-items: center;
+    padding: 0;
+  }
+}

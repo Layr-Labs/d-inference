@@ -17,6 +17,7 @@ func latestReleaseCacheKey(platform string) string {
 func (s *Server) invalidateReleaseCaches(platform string) {
 	s.readCache.Invalidate(latestReleaseCacheKey(platform))
 	s.readCache.Invalidate(runtimeManifestCacheKey)
+	s.readCache.Invalidate("desktop-release-history")
 	if platform == defaultReleasePlatform {
 		s.readCache.Invalidate(apiVersionCacheKey)
 	}

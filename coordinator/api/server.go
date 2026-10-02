@@ -2834,6 +2834,7 @@ func (s *Server) routes() {
 
 	// Runtime manifest — providers and users can inspect accepted runtime hashes.
 	s.mux.HandleFunc("GET /v1/runtime/manifest", s.handleRuntimeManifest)
+	s.mux.HandleFunc("GET /v1/releases/desktop", s.handleDesktopReleases)
 
 	// Payment methods info
 	s.mux.HandleFunc("GET /v1/billing/methods", s.handleBillingMethods) // no auth needed

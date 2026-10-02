@@ -64,6 +64,7 @@ credential (`desktop-app/src/main/backend.ts`, `Backend`; `DesktopHTTP.authorize
 | `GET /control/v1/cloud` | Account and owned fleet projection through the coordinator; separates This Mac using native identity | `DesktopBackend.resource` |
 | `GET /control/v1/insights-week`, `GET /control/v1/insights-month` | Settled earnings, lifetime output tokens, and 7/30-calendar-day analytics through the provider-token-authenticated coordinator endpoint | `DesktopBackend.resource` |
 | `GET /control/v1/network` | Normalized public totals and approximate `provider_regions` from `/v1/stats` | `DesktopBackend.resource` |
+| `GET /control/v1/release-history` | Public release notes and routing floor from `/v1/releases/desktop` | `DesktopBackend.resource` |
 | `GET /control/v1/leaderboard` | Public earnings ranking over 24 hours (`metric=earnings&window=24h`); response includes `metric`, `window`, and `entries`; money and token counts remain decimal strings | `DesktopBackend.resource` |
 | `GET /control/v1/release` | Latest registered runtime version and changelog | `DesktopBackend.resource` |
 | `GET /control/v1/cooling` | Native fan diagnostics and helper state; concurrent and repeat reads within 10 s share one `fan status` run; a finished `cooling` action clears it | `DesktopBackend.cooling` |

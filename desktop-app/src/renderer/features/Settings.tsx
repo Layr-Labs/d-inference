@@ -4,6 +4,7 @@ import type { BackendState } from '../useBackend';
 import { api } from '../useBackend';
 import type { Snapshot } from '../../shared/contracts';
 import { Button, External, Header, Notice, Status } from '../components/UI';
+import { AutoUpdateSwitch } from './updates/AutoUpdateSwitch';
 import { ScheduleEditor } from '../components/ScheduleEditor';
 
 export function Settings({ backend }: { backend: BackendState }) {
@@ -114,18 +115,7 @@ export function Settings({ backend }: { backend: BackendState }) {
             onChange={(e) => setPreload(e.target.checked)}
           />
         </label>
-        <label className="setting-row">
-          <span>
-            <strong>Automatic provider updates</strong>
-            <small>Install verified runtime releases through the native updater.</small>
-          </span>
-          <input
-            className="switch"
-            type="checkbox"
-            checked={auto}
-            onChange={(e) => setAuto(e.target.checked)}
-          />
-        </label>
+        <AutoUpdateSwitch checked={auto} onChange={setAuto} disabled={backend.busy} />
         <div className="setting-row">
           <span>
             <strong>Keep providing in the background</strong>

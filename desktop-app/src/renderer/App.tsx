@@ -10,6 +10,7 @@ import { Notice, OperationFeed } from './components/UI';
 import { Onboarding } from './components/Onboarding';
 import { Earnings } from './features/Earnings';
 import { Appearance } from './components/Appearance';
+import { SocialLinks } from './components/SocialLinks';
 const navigation = [
   { id: 'home', label: 'Home', icon: HomeIcon },
   { id: 'machines', label: 'My Macs', icon: Monitor },
@@ -71,6 +72,7 @@ export default function App() {
           ))}
         </nav>
         <div className="sidebar-bottom">
+          <SocialLinks />
           <button className="local-profile" onClick={() => setOnboarding(true)}>
             <div className="profile-icon">
               <Monitor size={17} />

@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { socialLinks } from '../shared/socialLinks';
 
 // Every trust decision the main process makes about renderer input, in one
 // electron-free module so it can be audited and unit tested.
@@ -41,6 +42,7 @@ export function rendererFile(root: string, requestURL: string) {
 }
 
 const links: Record<string, string> = {
+  ...socialLinks,
   console: 'https://console.darkbloom.dev',
   docs: 'https://docs.darkbloom.dev',
   community: 'https://github.com/Layr-Labs/d-inference/discussions',
@@ -58,7 +60,14 @@ export function externalURL(target: unknown, deviceLinkURL: string | undefined) 
       : typeof target === 'string' && Object.hasOwn(links, target)
         ? links[target]
         : undefined;
-  if (!url || new URL(url).protocol !== 'https:' || !linkHosts.includes(new URL(url).hostname))
+  if (
+    !url ||
+    new URL(url).protocol !== 'https:' ||
+    !(
+      (typeof target === 'string' && Object.hasOwn(socialLinks, target)) ||
+      linkHosts.includes(new URL(url).hostname)
+    )
+  )
     throw new Error('Unsupported link');
   return url;
 }

@@ -1,0 +1,250 @@
+.versionPanel {
+  background: var(--panel-bg);
+  border-radius: 14px;
+  padding: 26px 30px;
+}
+.stateLine {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--accent-brand);
+}
+.stateLine[data-status='current'] {
+  color: var(--positive);
+}
+.stateLine[data-status='required'],
+.required {
+  color: var(--negative);
+}
+.versions {
+  display: flex;
+  gap: 32px;
+  align-items: center;
+  padding: 26px 0;
+}
+.versions > div {
+  display: grid;
+  gap: 8px;
+}
+.versions span {
+  font-size: 11px;
+  color: var(--muted);
+}
+.versions strong {
+  font-size: 32px;
+  letter-spacing: -1px;
+  font-weight: 500;
+}
+.versions > svg {
+  color: var(--muted);
+}
+.versions > button {
+  margin-left: auto;
+}
+.support {
+  display: flex;
+  gap: 28px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+}
+.support b {
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-left: 8px;
+}
+.required {
+  font-size: 12px;
+  margin: 0 0 18px;
+}
+.auto {
+  margin: 16px 0 38px;
+}
+.auto > label {
+  border: 0;
+}
+.restart {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.sectionHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+.sectionHead h2 {
+  font-size: 20px;
+  margin: 0;
+}
+.sectionHead span,
+.muted {
+  font-size: 11px;
+  color: var(--muted);
+}
+.timeline {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.timeline > li {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 24px;
+  padding-bottom: 26px;
+}
+.releaseVersion {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  padding-top: 4px;
+}
+.releaseVersion strong {
+  font-size: 16px;
+  font-weight: 500;
+}
+.releaseVersion time {
+  font-size: 11px;
+  color: var(--muted);
+}
+.releaseBody {
+  padding: 0 0 6px 26px;
+  border-left: 1px solid var(--line);
+  position: relative;
+}
+.releaseBody:before {
+  content: '';
+  position: absolute;
+  top: 7px;
+  left: -4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent-brand);
+}
+.badges {
+  display: flex;
+  gap: 6px;
+}
+.badges span {
+  font-size: 10px;
+  color: var(--accent-brand);
+  background: var(--blue-wash);
+  padding: 4px 7px;
+  border-radius: 4px;
+}
+.badges .retired {
+  color: var(--muted);
+  background: var(--raised-bg);
+}
+.summary {
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 10px 0;
+  overflow-wrap: anywhere;
+}
+.releaseBody summary {
+  display: flex;
+  gap: 6px;
+  cursor: pointer;
+  align-items: center;
+  font-size: 11px;
+  color: var(--muted);
+  list-style: none;
+}
+.releaseBody summary::-webkit-details-marker {
+  display: none;
+}
+.releaseBody summary:hover {
+  color: var(--text-primary);
+}
+.releaseBody summary svg {
+  transition: transform 0.15s;
+}
+.releaseBody details[open] summary svg {
+  transform: rotate(180deg);
+}
+.releaseBody ul {
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding-left: 18px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.desktop {
+  border-top: 1px solid var(--line);
+  padding-top: 24px;
+  margin-top: 10px;
+}
+.desktop h2 {
+  font-size: 14px;
+  margin: 0;
+}
+.desktop p,
+.desktop small {
+  font-size: 12px;
+  color: var(--muted);
+}
+.desktop small {
+  margin-left: 14px;
+}
+@media (max-width: 800px) {
+  .versions {
+    gap: 20px;
+    flex-wrap: wrap;
+  }
+  .versions > button {
+    margin-left: 0;
+  }
+  .versions strong {
+    font-size: 26px;
+  }
+  .timeline > li {
+    grid-template-columns: 80px 1fr;
+    gap: 10px;
+  }
+  .support {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+}
+
+.toggle {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 38px;
+  height: 22px;
+  min-width: 38px;
+  border: 1px solid var(--border-default);
+  border-radius: 20px;
+  position: relative;
+  background: var(--raised-bg);
+  transition: background 0.15s;
+}
+.toggle:after {
+  content: '';
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  left: 2px;
+  top: 2px;
+  background: white;
+  transition: transform 0.15s;
+}
+.toggle:checked {
+  background: #0b41ff;
+  border-color: #0b41ff;
+}
+.toggle:checked:after {
+  transform: translateX(16px);
+}
+.toggle:disabled {
+  opacity: 0.5;
+}

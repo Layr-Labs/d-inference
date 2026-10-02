@@ -17,6 +17,7 @@ const resources = new Set<Resource>([
   'network',
   'cooling',
   'release',
+  'release-history',
   'leaderboard',
   'endpoint-key',
   'insights-week',

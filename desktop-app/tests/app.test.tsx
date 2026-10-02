@@ -14,6 +14,18 @@ describe('desktop operator journeys', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'Your contribution' });
     expect(screen.getByText('Development preview')).toBeVisible();
+    expect(screen.getByRole('link', { name: 'Darkbloom on X' })).toHaveAttribute(
+      'href',
+      'https://x.com/darkbloomai',
+    );
+    expect(screen.getByRole('link', { name: 'Darkbloom on GitHub' })).toHaveAttribute(
+      'href',
+      'https://github.com/Layr-Labs/d-inference',
+    );
+    expect(screen.getByRole('link', { name: 'Join the Darkbloom Slack' })).toHaveAttribute(
+      'target',
+      '_blank',
+    );
     const nav = screen.getByRole('navigation', { name: 'Main navigation' });
     expect(
       within(nav)

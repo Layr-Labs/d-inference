@@ -2,6 +2,9 @@
 
 ## Unreleased — macOS desktop app
 
+- Add Slack, GitHub, and X shortcuts above the current Mac in the desktop sidebar.
+- Add a visual Updates view with installed/latest versions, expandable release history, configured version cutoffs, and a confirmed auto-update opt-out. Keep provider auto-update defaults and settings in Swift; publish a read-only release-history feed without artifact or account details.
+
 - Simplify the desktop sidebar to Home, My Macs, Leaderboard, and Updates while retaining detailed controls under This Mac and Earnings from Home. Bring the desktop reference's pixel map and top-three design to Leaderboard, with compact annualized earnings, expandable actual 24-hour totals, and explicit stale-data handling.
 
 - Show live per-model request activity from Swift snapshots, lifetime settled output-token milestones, and an in-app Earnings dashboard with daily charts, model/Mac breakdowns, exact CSV copying, and separate inference/base-reward income. Add Light, Dark, and System appearance. Keep account credentials and analytics requests in the Swift backend.

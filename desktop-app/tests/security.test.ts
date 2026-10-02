@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { socialLinks } from '../src/shared/socialLinks';
 import { expect, it } from 'vitest';
 import {
   allowedNavigation,
@@ -73,4 +74,12 @@ it('bounds clipboard writes', () => {
   expect(clipboardText('key')).toBe('key');
   expect(() => clipboardText(42)).toThrow('Invalid clipboard value');
   expect(() => clipboardText('x'.repeat(65537))).toThrow('Invalid clipboard value');
+});
+
+it('opens fixed social destinations without expanding device-link hosts', () => {
+  expect(externalURL('github', undefined)).toBe(socialLinks.github);
+  expect(externalURL('slack', undefined)).toBe(socialLinks.slack);
+  expect(externalURL('x', undefined)).toBe(socialLinks.x);
+  expect(() => externalURL('link', socialLinks.x)).toThrow('Unsupported link');
+  expect(() => externalURL('link', socialLinks.slack)).toThrow('Unsupported link');
 });

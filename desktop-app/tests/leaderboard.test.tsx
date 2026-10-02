@@ -19,6 +19,7 @@ function backend(): BackendState {
     cloud: undefined,
     cooling: undefined,
     release: undefined,
+    releaseHistory: undefined,
     network: undefined,
     error: '',
     leaderError: '',

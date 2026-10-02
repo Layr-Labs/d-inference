@@ -1,68 +1,118 @@
 import { useEffect, useState } from 'react';
-import { Download, RotateCw } from 'lucide-react';
+import { RotateCw } from 'lucide-react';
 import type { BackendState } from '../useBackend';
 import { api } from '../useBackend';
 import type { GUIUpdate } from '../../shared/contracts';
-import { Button, External, Header, Notice, Status } from '../components/UI';
+import { Button, Header } from '../components/UI';
+import { AutoUpdateSwitch } from './updates/AutoUpdateSwitch';
+import { ReleaseTimeline } from './updates/ReleaseTimeline';
+import { RuntimeVersion } from './updates/RuntimeVersion';
+import styles from './updates/updates.module.css';
 
 export function Updates({ backend }: { backend: BackendState }) {
   const [update, setUpdate] = useState<GUIUpdate>();
+  const [checking, setChecking] = useState(false);
+  const [restartNeeded, setRestartNeeded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const error = (cause: unknown) =>
+    setUpdate({
+      state: 'error',
+      message: cause instanceof Error ? cause.message : 'Could not check for updates.',
+    });
   useEffect(() => {
-    void api?.updateStatus().then(setUpdate);
+    let mounted = true;
+    const refresh = () => {
+      void api
+        ?.updateStatus()
+        .then((value) => {
+          if (mounted) setUpdate(value);
+        })
+        .catch((cause) => {
+          if (mounted) error(cause);
+        });
+    };
+    refresh();
+    const timer = setInterval(refresh, 5000);
+    return () => {
+      mounted = false;
+      clearInterval(timer);
+    };
   }, []);
+  async function changeAuto(auto: boolean) {
+    const settings = backend.state!.settings;
+    setSaving(true);
+    try {
+      const saved = await backend.act(
+        {
+          action: 'settings',
+          revision: settings.revision,
+          name: settings.name,
+          idle_minutes: settings.idle_minutes,
+          auto_update: auto,
+          schedule: settings.schedule,
+          startup_preload: settings.startup_preload,
+        },
+        true,
+      );
+      if (saved && backend.state!.state !== 'stopped') setRestartNeeded(true);
+    } finally {
+      setSaving(false);
+    }
+  }
   return (
     <>
       <Header
         title="Updates"
-        description="The latest improvements, delivered automatically."
+        description="Stay current. Keep contributing."
         action={
           <Button
+            disabled={checking}
             onClick={async () => {
-              setUpdate((await api?.checkUpdate()) || { state: 'idle' });
-              await backend.refresh();
+              setChecking(true);
+              try {
+                setUpdate((await api?.checkUpdate()) || { state: 'idle' });
+                await backend.refresh();
+              } catch (cause) {
+                error(cause);
+              } finally {
+                setChecking(false);
+              }
             }}
           >
-            <RotateCw size={15} /> Check for updates
+            <RotateCw size={15} /> {checking ? 'Checking…' : 'Check for updates'}
           </Button>
         }
       />
-      <section className="version-panel">
-        <div className="version-symbol">✳</div>
-        <div>
-          <span className="muted">Darkbloom runtime</span>
-          <h2>{backend.state!.version}</h2>
-          <Status state="online">
-            {backend.state!.settings.auto_update
-              ? 'Automatic updates enabled'
-              : 'Automatic updates disabled'}
-          </Status>
-        </div>
-        <Button disabled={backend.busy} onClick={() => void backend.act({ action: 'update' })}>
-          <Download size={15} /> Update runtime
-        </Button>
-      </section>
-      <section className="settings-section">
-        <h2>Latest runtime release</h2>
-        {backend.release?.error ? (
-          <Notice>{backend.release.error}</Notice>
-        ) : (
-          <>
-            <div className="section-title">
-              <strong>{backend.release?.version || 'Checking…'}</strong>
-              <span className="muted">
-                {backend.release?.published_at
-                  ? new Date(backend.release.published_at).toLocaleDateString()
-                  : ''}
-              </span>
-            </div>
-            <p className="release-notes">
-              {backend.release?.notes ||
-                'Verified runtime updates are installed by the native updater. Your provider drains accepted work before activation.'}
-            </p>
-          </>
+      <RuntimeVersion backend={backend} />
+      <section className={styles.auto}>
+        <AutoUpdateSwitch
+          checked={backend.state!.settings.auto_update}
+          disabled={backend.busy || saving}
+          onChange={(value) => void changeAuto(value)}
+        />
+        <small className={styles.muted}>
+          Preference changes apply on the next provider restart.
+        </small>
+        {restartNeeded && (
+          <div className={styles.restart} role="status">
+            <span>Saved. Restart the provider to apply.</span>
+            <Button
+              disabled={backend.busy}
+              onClick={async () => {
+                if (await backend.act({ action: 'restart' }, true)) setRestartNeeded(false);
+              }}
+            >
+              Restart provider
+            </Button>
+          </div>
         )}
       </section>
-      <section className="settings-section">
+      <ReleaseTimeline
+        history={backend.releaseHistory}
+        latest={backend.release}
+        installed={backend.state!.version}
+      />
+      <section className={styles.desktop}>
         <h2>Desktop app</h2>
         <p>
           {!update
@@ -76,13 +126,19 @@ export function Updates({ backend }: { backend: BackendState }) {
                   : 'The desktop app checks for updates automatically.'}
         </p>
         {update?.state === 'ready' && (
-          <Button variant="primary" onClick={() => void api?.applyUpdate()}>
-            Restart desktop app
-          </Button>
+          <>
+            <Button
+              variant="primary"
+              onClick={() => {
+                void api?.applyUpdate().catch(error);
+              }}
+            >
+              Restart desktop app
+            </Button>
+            <small>Your provider keeps running.</small>
+          </>
         )}
-        <p className="muted">Restarting the desktop app keeps the provider running.</p>
       </section>
-      <External target="community">Release discussions</External>
     </>
   );
 }

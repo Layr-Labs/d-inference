@@ -193,6 +193,32 @@ export const previewAPI: DesktopAPI = {
           { rank: 5, name: 'xaden', earnings_micro_usd: '7421000', tokens: '1281500000' },
         ],
       },
+      'release-history': {
+        minimum_provider_version: '0.9.15',
+        observed_at: new Date().toISOString(),
+        history: [
+          {
+            version: '0.9.16',
+            published_at: '2026-10-02T12:00:00Z',
+            active: true,
+            notes:
+              'Improved provider reliability and model management.\n- Recover more reliably after a dropped connection.\n- Keep model downloads separate from models in memory.',
+          },
+          {
+            version: '0.9.15',
+            published_at: '2026-09-28T12:00:00Z',
+            active: true,
+            notes:
+              'Clearer activity and earnings.\n- Track requests by model.\n- Separate inference earnings from base rewards.',
+          },
+          {
+            version: '0.9.14',
+            published_at: '2026-09-20T12:00:00Z',
+            active: false,
+            notes: 'Earlier provider release. Upgrade to a supported version to receive requests.',
+          },
+        ],
+      },
       'endpoint-key': { key: 'preview-key-not-a-credential' },
     };
     return data[resource] as T;

@@ -8,10 +8,12 @@ import type {
   Leader,
   NetworkData,
   ReleaseData,
+  ReleaseHistory,
   Route,
   Snapshot,
 } from '../shared/contracts';
 import { previewAPI } from './preview';
+import { parseReleaseHistory } from './features/updates/version';
 import { parseLeaderboard } from './features/leaderboard/data';
 
 export const isPreview = import.meta.env.DEV && new URLSearchParams(location.search).has('preview');
@@ -26,6 +28,7 @@ export function useBackend(route: Route = 'home') {
   const [network, setNetwork] = useState<NetworkData>();
   const [cooling, setCooling] = useState<CoolingData>();
   const [release, setRelease] = useState<ReleaseData>();
+  const [releaseHistory, setReleaseHistory] = useState<ReleaseHistory>();
   const [leaders, setLeaders] = useState<Leader[]>([]);
   const [leaderError, setLeaderError] = useState('');
   const [error, setError] = useState('');
@@ -72,6 +75,15 @@ export function useBackend(route: Route = 'home') {
         .read<ReleaseData>('release')
         .then(setRelease)
         .catch(() => setRelease({ error: 'Release information is unavailable.' })),
+      api
+        .read<ReleaseHistory>('release-history')
+        .then((value) => setReleaseHistory(parseReleaseHistory(value)))
+        .catch(() =>
+          setReleaseHistory({
+            history: [],
+            error: 'Release history and support policy are unavailable.',
+          }),
+        ),
       api
         .read<unknown>('leaderboard')
         .then((data) => {
@@ -155,6 +167,7 @@ export function useBackend(route: Route = 'home') {
     network,
     cooling,
     release,
+    releaseHistory,
     leaders,
     leaderError,
     error,

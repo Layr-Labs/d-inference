@@ -77,6 +77,18 @@ a 10,000 day/model/machine-group bound. Timeout, unsupported storage, or excess
 groups return 503, never truncated totals. No migration, pricing, settlement,
 remote-control, or payout changes are introduced.
 
+## Desktop release history
+
+`GET /v1/releases/desktop` is public and read-only. It returns
+`minimum_provider_version` (the configured routing floor, empty when no floor is
+set), `observed_at`, and up to 30 newest macOS ARM64 releases in `history`.
+Each release includes `version`, `published_at`, `notes`, and `active`; artifact
+URLs, hashes and account data are excluded. History uses a 30-second cache,
+invalidated with release mutations; the floor is read on each request. Inventory
+failure returns 503. This endpoint does not authorize a download or change any
+serving policy. Source: `coordinator/api/desktop_releases.go`
+(`handleDesktopReleases`).
+
 ## Graceful provider lifecycle
 
 Lifecycle drains preserve the existing public inference protocol. A reservation

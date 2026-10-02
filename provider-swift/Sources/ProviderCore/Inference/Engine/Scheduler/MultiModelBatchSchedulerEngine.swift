@@ -945,7 +945,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             nativeGemmaReasoningEnabled: modelType != "diffusion_gemma"
                 || DiffusionGemmaReasoningControl.enabled(for: request, controls: templateControls),
             nativeMiMoChannels: modelType == "mimo_v2",
-            nativeMiMoThinkingEnabled: nativeMiMoThinkingEnabled
+            nativeMiMoThinkingEnabled: nativeMiMoThinkingEnabled,
+            absorbStrayThinkClose: ToolChoiceEnforcementPolicy.absorbsStrayThinkClose(
+                .init(modelId: modelId, modelType: modelType))
         )
     }
 
@@ -1056,7 +1058,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         nativeGemmaChannels: Bool = false,
         nativeGemmaReasoningEnabled: Bool = true,
         nativeMiMoChannels: Bool = false,
-        nativeMiMoThinkingEnabled: Bool = true
+        nativeMiMoThinkingEnabled: Bool = true,
+        absorbStrayThinkClose: Bool = false
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         do {
             try checkFirstContentDeadline()
@@ -1079,7 +1082,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 nativeGemmaChannels: nativeGemmaChannels,
                 nativeGemmaReasoningEnabled: nativeGemmaReasoningEnabled,
                 nativeMiMoChannels: nativeMiMoChannels,
-                nativeMiMoThinkingEnabled: nativeMiMoThinkingEnabled)
+                nativeMiMoThinkingEnabled: nativeMiMoThinkingEnabled,
+                absorbStrayThinkClose: absorbStrayThinkClose)
             try checkFirstContentDeadline()
             return stream
         } catch {
@@ -1110,7 +1114,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         nativeGemmaReasoningEnabled: Bool = true,
         nativeMiMoChannels: Bool = false,
         nativeMiMoThinkingEnabled: Bool = true,
-        nativeMediaTerminalDrain: Bool = false
+        nativeMediaTerminalDrain: Bool = false,
+        absorbStrayThinkClose: Bool = false
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         // One forwarding implementation preserves all parser/event bytes. The
         // native path changes only task ownership and cancellation handoff.
@@ -1137,7 +1142,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     nativeGemmaReasoningEnabled: nativeGemmaReasoningEnabled,
                     nativeMiMoChannels: nativeMiMoChannels,
                     nativeMiMoThinkingEnabled: nativeMiMoThinkingEnabled,
-                    nativeMiMoRequiresConstraint: nativeMiMoChannels && prepared.mode.requiresInferenceConstraint)
+                    nativeMiMoRequiresConstraint: nativeMiMoChannels && prepared.mode.requiresInferenceConstraint,
+                    absorbStrayThinkClose: absorbStrayThinkClose)
                 startedAt = Date()
 
                 #if DEBUG

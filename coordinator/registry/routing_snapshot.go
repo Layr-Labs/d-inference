@@ -60,6 +60,7 @@ func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider
 		}
 	}
 	snap.modelLoaded = slotStateModelLoaded(snap.slotState)
+	snap.autopilotBlocked = providerAutopilotRoutingBlockedLocked(p, model)
 	snap.availableOnDisk = !snap.modelLoaded
 	snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
 

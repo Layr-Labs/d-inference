@@ -435,6 +435,7 @@ type Server struct {
 	// (network_totals.go). All are driven by the refresher machinery in
 	// cache_refresher.go.
 	summaryWindowsFlights singleflight.Group
+	leaderboardFlights    singleflight.Group
 	statsRefresh          cacheRefresher
 	statsGeographyRefresh cacheRefresher
 	networkTotalsRefresh  struct {

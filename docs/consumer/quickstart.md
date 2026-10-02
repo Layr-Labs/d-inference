@@ -1,6 +1,6 @@
 # Quickstart: first request in five steps
 
-> Last updated: 2026-09-28
+> Last updated: 2026-10-02
 
 Get an API key from the console, list the models your key can use, and make your first chat completion against `https://api.darkbloom.dev` — first with `curl`, then from the OpenAI and Anthropic SDKs. For developers integrating the API; each step is one action. Route details for everything used here are in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -128,10 +128,13 @@ for supported forms and the distinct cache-planning boundary.
 - The step 4 response is a `chat.completion` object whose `model` echoes the alias you sent, whose `usage` is populated, and which carries an `X-Provider-Id` header.
 - `GET /v1/payments/usage` with the same bearer lists the request and its `cost_micro_usd` ([`billing.md`](billing.md#3-read-your-balance-and-usage)).
 
-To display network activity, read `GET /v1/stats`, `GET /v1/network/totals`,
-or `GET /v1/network/series`. If one returns 503 `service_unavailable`, keep
-your last displayed value and retry later; do not replace it with zero.
-Successful empty windows are valid data.
+To display network activity and provider rankings, read `GET /v1/stats`,
+`GET /v1/network/totals`, `GET /v1/network/series`, or `GET /v1/leaderboard`.
+If one returns 503 `service_unavailable`, keep your last displayed value and
+retry later; do not replace it with zero or an empty ranking. For leaderboard
+failures, wait for `Retry-After` before retrying: the coordinator coalesces
+duplicate fills and briefly pauses failed queries. Successful empty windows
+are valid data.
 
 The Stats page also shows **Model demand & fulfillment**. Select 24 hours,
 7 days or 30 days, sort by published request volume or capacity rejections, and

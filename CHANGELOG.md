@@ -3,6 +3,7 @@
 ## Unreleased — leaderboard availability
 
 - Add a concurrent BRIN time index for recent provider-earnings rankings, enable range autosummarization, and keep planner statistics current. Return an uncached 503 when ranking queries fail instead of showing and caching an empty leaderboard.
+- Share one top-200 ranking fill across caller limits and equivalent window aliases. Coalesce concurrent misses, pause failed fills for 10 seconds, and include the remaining retry delay in leaderboard 503 responses.
 
 ## Unreleased — provider 0.9.17
 

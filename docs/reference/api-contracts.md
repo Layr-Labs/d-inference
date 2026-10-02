@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-02
 
 The complete public HTTP surface of the coordinator, derived from the 118 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -277,7 +277,7 @@ Ledger semantics, reservations and payouts: [`../architecture/billing.md`](../ar
 | Method | Path | Handler | Auth | Notes |
 |---|---|---|---|---|
 | GET | `/v1/stats` | `handleStats` (`coordinator/api/stats.go`) | `—` | Refresh every 30 s; preserve the UTC source observation time in `snapshot_at` (`time.RFC3339Nano`). Geography refreshes independently and reports availability per section. Retain a successful core body up to 5 min on core refresh failure; 503 `service_unavailable` without an unexpired success |
-| GET | `/v1/leaderboard` | `handleLeaderboard` (`coordinator/api/leaderboard.go`) | `—` | Successful rankings, including genuinely empty windows, cached 5 min; query, scan, or iteration failures return 503 `service_unavailable` and are not cached |
+| GET | `/v1/leaderboard` | `handleLeaderboard` (`coordinator/api/leaderboard.go`) | `—` | Successful top-200 rankings, including genuinely empty windows, cached 5 min per metric/canonical window; caller limits and aliases share one fill. Query, scan, or iteration failures return 503 `service_unavailable` with `Retry-After`; only a 10 s failure cooldown is retained, never empty/partial data |
 | GET | `/v1/network/totals` | `handleNetworkTotals` (`coordinator/api/network_totals.go`) | `—` | Totals refreshed every minute with the same 5 min safety TTL; 503 `service_unavailable` without an unexpired success; canonical windows `24h`, `7d`, `30d`, `all` (`1d` → `24h`, empty/`lifetime` → `all`) |
 | GET | `/v1/network/model-demand` | `handleModelDemand` (`coordinator/api/model_demand.go`) | `—` | Recorded public model demand; `window=24h` (default), `7d`, `30d`; cached up to 5 min; 400 for other windows; 503 on unavailable aggregation |
 | GET | `/v1/network/series` | `handleNetworkSeries` (`coordinator/api/network_series.go`) | `—` | Time series, cached 1 min; 503 `service_unavailable` on a store error after a miss, with no failed result cached |
@@ -292,6 +292,13 @@ on a subsequent core refresh. Missing or expired geography is unavailable.
 Cache behavior is implemented by `coordinator/api/cache_refresher.go`
 (`computeCachedEntry`, `StartCacheRefreshers`) and
 `coordinator/api/stats_geography.go` (`cachedStatsGeography`, `computeStatsGeography`).
+Leaderboard fills use `coordinator/api/leaderboard_cache.go` (`cachedLeaderboard`):
+one in-flight query per metric/canonical window, `leaderboardCacheLimit = 200`,
+`leaderboardCacheTTL = 5 * time.Minute`, and
+`leaderboardFailureBackoff = 10 * time.Second`. The response retains the caller's
+window spelling and requested limit; shared successful rows are immutable.
+Failure cooldowns return a positive `Retry-After` rounded up to seconds until
+the next query is allowed.
 
 | Stats geography field | Contract | Code |
 |---|---|---|
@@ -611,7 +618,7 @@ contract behavior are defined in [prompt-contract sidecar](../architecture/promp
 | Header | Where | When |
 |---|---|---|
 | `X-Request-ID` | `loggingMiddleware` | Every response |
-| `Retry-After` | `rateLimitWithTier`, `applyKeyRPMLimit`, `writeTokenRateLimited`, `drainGate`, `shedIfModelRejected`, `writeTTFTTooSlow`, `writeServiceUnavailable`, `runInferenceAdmission`, `selfRouteUnavailable`, `preContentTerminal`, the exhausted branch of `dispatchState.run` (`coordinator/api/dispatch.go`) | Every 429 (including the drain 429, [`coordinatorDrainRetryAfter`](#timeouts-and-constants)); 503 `service_unavailable`, `machine_offline` (30 s), `model_not_loaded` (15 s), and 503 `provider_error` from dispatch exhaustion. **Not** set on 503 `model_unavailable`, 502, or 504. Admission values come from `estimateRetryAfter` (`coordinator/api/consumer.go`), capped at [`maxDistressRetryAfter`](#timeouts-and-constants); a provider-forecast `feasible_after_ms` overrides it, clamped to 2–30 s |
+| `Retry-After` | `rateLimitWithTier`, `applyKeyRPMLimit`, `writeTokenRateLimited`, `drainGate`, `shedIfModelRejected`, `writeTTFTTooSlow`, `writeServiceUnavailable`, `handleLeaderboard` (`coordinator/api/leaderboard.go`), `runInferenceAdmission`, `selfRouteUnavailable`, `preContentTerminal`, the exhausted branch of `dispatchState.run` (`coordinator/api/dispatch.go`) | Every 429 (including the drain 429, [`coordinatorDrainRetryAfter`](#timeouts-and-constants)); 503 `service_unavailable`, `machine_offline` (30 s), `model_not_loaded` (15 s), and 503 `provider_error` from dispatch exhaustion. **Not** set on 503 `model_unavailable`, 502, or 504. Leaderboard failures use the remaining `leaderboardFailureBackoff` rounded up to whole seconds (`coordinator/api/leaderboard_cache.go`, `leaderboardRetryAfter`). Admission values come from `estimateRetryAfter` (`coordinator/api/consumer.go`), capped at [`maxDistressRetryAfter`](#timeouts-and-constants); a provider-forecast `feasible_after_ms` overrides it, clamped to 2–30 s |
 | `X-RateLimit-Reset`, `x-ratelimit-limit-requests`, `x-ratelimit-remaining-requests`, `x-ratelimit-reset-requests` | `rateLimitWithTier`, `setRequestRateLimitHeaders` | Request-rate limited routes (`rpm`, `fin`); the first only on rejection |
 | `x-ratelimit-limit-input-tokens`, `x-ratelimit-remaining-input-tokens`, `x-ratelimit-reset-input-tokens`, and the `-output-tokens` triple | `setTokenRateLimitHeaders` | Inference responses when token limits are configured |
 | `X-Timing` | `writeTimingHeaderWithProfile` (`coordinator/api/profiler_dispatch.go`) | Committed inference responses. A JSON object with the `RequestTimingDetails` fields (`coordinator/api/types/types.go`): `parse_us`, `reserve_us`, `media_fetch_us`, `route_us`, `queue_us`, `encrypt_us`, `dispatch_us`, `provider_us`, plus profiler-only additive keys (`pre_handler_us`, `preflight_us`, `route_reserve_us`, `queue_pure_us`, `writer_us`, `socket_us`, `provider_ack_us`, `timing_anomaly`) |

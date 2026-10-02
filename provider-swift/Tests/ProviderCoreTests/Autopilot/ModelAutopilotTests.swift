@@ -112,7 +112,7 @@ struct ModelAutopilotTests {
         #expect(try decoder.decode(ProviderMessage.self, from: replyData) == reply)
         let encoded = try #require(JSONSerialization.jsonObject(with: replyData) as? [String: Any])
         let snapshotObject = try #require(encoded["model_autopilot"] as? [String: Any])
-        #expect(snapshotObject["protocol"] as? Int == 2)
+        #expect(snapshotObject["protocol"] as? Int == 3)
         #expect(snapshotObject["cached_only"] as? Bool == true)
         let residents = try #require(snapshotObject["resident_models"] as? [[String: Any]])
         #expect(residents.first?["weights_gb"] as? Double == 12)

@@ -291,6 +291,8 @@ extension ProviderLoop {
         guard advertisedModels[buildID] != nil else { return }
         if autopilotManagesResidency { autopilotSupersededModels.insert(buildID) }
         advertisedModels.removeValue(forKey: buildID)
+        autopilotInventoryModels.removeValue(forKey: buildID)
+        ordinaryServingModelIDs.remove(buildID)
         modelHashes.removeValue(forKey: buildID)
         await coordinatorClient?.unadvertiseModel(buildID)
         syncWarmModelState()
@@ -328,6 +330,16 @@ extension ProviderLoop {
         if autopilotCommand != nil {
             autopilotDeferredDesiredModels = entries
             return
+        }
+        // A declared successor of a selected build remains that model's
+        // existing update workflow. Unrelated observation-only inventory never
+        // inherits permission merely by appearing in desired state.
+        for entry in entries {
+            if let previous = entry.previousBuild, ordinaryServingModelIDs.contains(previous),
+                !entry.desiredBuild.isEmpty,
+                (!autopilotSettings.enabled || autopilotSettings.allows(entry.desiredBuild)) {
+                ordinaryServingModelIDs.insert(entry.desiredBuild)
+            }
         }
         let requestedDesired = Set(entries.map(\.desiredBuild).filter { !$0.isEmpty })
         let currentDesired = Set(requestedDesired.filter {
@@ -380,6 +392,9 @@ extension ProviderLoop {
             // original verify carried no drop), and the swap is learned later.
             if let desiredInfo = advertisedModels[desired], modelHashes[desired] != nil {
                 if let previous, advertisedModels[previous] != nil {
+                    if ordinaryServingModelIDs.contains(desired) {
+                        await coordinatorClient?.allowOrdinaryModel(desired)
+                    }
                     await dropAdvertisedBuild(previous)
                     // Authoritative re-announce so the coordinator drops previous too.
                     outboundSend?.send(.modelsUpdate(models: [desiredInfo]))

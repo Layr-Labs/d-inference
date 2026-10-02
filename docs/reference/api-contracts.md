@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-02
 
 The complete public HTTP surface of the coordinator, derived from the 118 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -13,6 +13,13 @@ provider downloads; the admin registration accepts the same object. See the
 Admin request-profile records expose additive
 [prediction decision fields](prediction-decision-telemetry.md). Public inference
 responses and error codes are unchanged.
+
+`GET /v1/me/providers` reports the effective serving model set. Cached
+Autopilot planning candidates stay out of its `models` array while control is
+waiting or observing; enrollment alone does not change the operator's selected
+models. This uses `Provider.ServingModelsLocked` in
+`coordinator/registry/autopilot_inventory.go`; see
+[model Autopilot](../architecture/model-autopilot.md).
 
 ## Graceful provider lifecycle
 

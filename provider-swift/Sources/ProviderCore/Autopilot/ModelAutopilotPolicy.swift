@@ -5,7 +5,7 @@ import Foundation
 public enum ModelAutopilotPolicy {
     public static func rejection(command: ModelAutopilotCommand, snapshot: ModelAutopilotSnapshot,
                                  busy: Bool, nowMs: Int64) -> String? {
-        guard snapshot.enabled, snapshot.protocolVersion == 2, snapshot.cachedOnly else { return "not_opted_in" }
+        guard snapshot.enabled, snapshot.protocolVersion == 3, snapshot.cachedOnly else { return "not_opted_in" }
         guard snapshot.active, !snapshot.observeOnly, !snapshot.paused, !snapshot.revision.isEmpty,
               command.revision == snapshot.revision, command.sessionId == snapshot.sessionId else { return "inactive_session" }
         if let target = command.loadModelId, !snapshot.selectedModels.contains(target) { return "model_not_selected" }

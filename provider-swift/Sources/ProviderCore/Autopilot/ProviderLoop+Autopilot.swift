@@ -18,6 +18,7 @@ extension ProviderLoop {
     }
 
     func publishModelAutopilotSnapshot() {
+        state.autopilotInventory = autopilotInventoryModels.values.sorted { $0.id < $1.id }
         loadAutopilotTimingHistory()
         let now = ContinuousClock.now
         autopilotResidentSince = autopilotResidentSince.filter { modelSlots[$0.key] != nil }
@@ -28,7 +29,7 @@ extension ProviderLoop {
         state.modelAutopilot = ModelAutopilotSnapshot(
             enabled: autopilotConsented,
             minDwellSeconds: autopilotSettings.effectiveMinDwellSeconds,
-            pinnedModels: autopilotPinnedModels.sorted(), maxModelSlots: maxModelSlots,
+            pinnedModels: autopilotPinnedModels.sorted(), maxModelSlots: autopilotPlanningMaxModelSlots,
             residentModels: modelSlots.keys.sorted().map { id in
                 ModelAutopilotResident(modelId: id,
                     residentSeconds: Self.autopilotSeconds(now - (autopilotResidentSince[id] ?? now)),
@@ -131,7 +132,7 @@ extension ProviderLoop {
             autopilotLeaseUntil[$0].map { ContinuousClock.now < $0 } ?? false
         }) { return "active_lease" }
         if let target = command.loadModelId {
-            guard advertisedModels[target] != nil,
+            guard autopilotModelInfo(target) != nil,
                   ModelScanner.resolveLocalPath(modelID: target) != nil else { return "model_not_cached" }
             guard ModelRuntimeRequirements.isEligible(modelID: target,
                 available: loopConfig.runtimeCapabilities) else { return "hardware_ineligible" }
@@ -152,7 +153,7 @@ extension ProviderLoop {
             // Use actual resident weights here, never the padded load estimate
             // as reclaim credit. The subsequent load re-samples OS memory.
             if let target = command.loadModelId, modelSlots[target] == nil {
-                guard let info = advertisedModels[target], info.estimatedMemoryGb.isFinite,
+                guard let info = autopilotModelInfo(target), info.estimatedMemoryGb.isFinite,
                       info.estimatedMemoryGb > 0 else { throw AutopilotFailure("unknown_model_size") }
                 let reclaimable = command.unloadModelIds.reduce(0.0) {
                     $0 + Double(max(0, modelSlots[$1]?.sizing.weightsBytes ?? 0)) / 1_073_741_824
@@ -161,9 +162,11 @@ extension ProviderLoop {
                     reclaimableGb: reclaimable,
                     requiredGb: ModelLoadAdmission.requiredToLoadGb(
                         weightsGb: info.estimatedMemoryGb,
-                        headroomGb: loadHeadroomGb))
+                        headroomGb: Double(UnifiedMemoryCap.loadHeadroomBytes(
+                            activationReserveBytes: autopilotTargetReserve(target))) / 1_073_741_824))
                 else { throw AutopilotFailure("insufficient_memory_without_other_victims") }
             }
+            try await preflightAutopilotTarget(command)
             // expires_at_ms bounds acceptance / first mutation, not completion.
             // Never abandon ownership halfway through a multi-victim change.
             try checkAutopilotLoadOwnership(command.commandId)
@@ -184,6 +187,7 @@ extension ProviderLoop {
                 let loadStart = ContinuousClock.now
                 defer { autopilotLastLoadMs = Self.autopilotMilliseconds(.now - loadStart) }
                 try Task.checkCancellation()
+                try await prepareAutopilotTarget(command)
                 try await ensureModelLoaded(modelId: target, allowEviction: false,
                     autopilotCommandId: command.commandId)
                 guard modelSlots[target] != nil, !modelsUnloading.contains(target),
@@ -208,6 +212,7 @@ extension ProviderLoop {
         status: ModelAutopilotStatus.State, error: String? = nil, send: SendHandle) {
         if autopilotCommand?.commandId == command.commandId {
             autopilotCommand = nil
+            withdrawInactiveAutopilotModels()
             autopilotMutationStarted = false
             autopilotTask = nil
             state.refusingNewWork = isShuttingDown || isDraining || isReconnectingAfterRetirement

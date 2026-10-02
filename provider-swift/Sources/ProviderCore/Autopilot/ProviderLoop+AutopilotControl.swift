@@ -35,7 +35,14 @@ extension ProviderLoop {
     }
 
     func autopilotAllowsModel(_ id: String) -> Bool {
-        !autopilotSettings.enabled || autopilotSettings.allows(id)
+        if ordinaryServingModelIDs.contains(id) { return true }
+        if !autopilotSettings.enabled {
+            return autopilotInventoryModels[id] == nil
+        }
+        // Inventory is observational until a valid live lease. Never let
+        // waiting, shadow, paused, expired or disconnected control widen it.
+        return modelAutopilotEnabled && autopilotSettings.allows(id)
+            && autopilotInventoryModels[id] != nil
     }
 
     /// Connection loss and lease expiry both restore the saved idle policy.
@@ -44,6 +51,7 @@ extension ProviderLoop {
     func clearAutopilotControl() {
         guard autopilotControl != nil else { return }
         autopilotControl = nil
+        withdrawInactiveAutopilotModels()
         autopilotGeneration &+= 1
         startIdleMonitor()
         publishModelAutopilotSnapshot()
@@ -60,6 +68,7 @@ extension ProviderLoop {
         let hadControl = autopilotControl != nil
         autopilotSettingsOverride = settings
         autopilotControl = nil
+        withdrawInactiveAutopilotModels()
         autopilotGeneration &+= 1
         // Disabling / pausing does not cancel an accepted mutation. Its owner
         // finishes and publishes actual capacity before ordinary changes resume.
@@ -82,6 +91,9 @@ extension ProviderLoop {
         } else {
             clearAutopilotControl()
         }
+        withdrawInactiveAutopilotModels()
+        restoreAutopilotResidentModels()
+        await refreshActivationReserve()
         await updateAggregateCapacity()
         await coordinatorClient?.sendEventHeartbeat()
         writeDaemonState()

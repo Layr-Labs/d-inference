@@ -1,6 +1,6 @@
 # Experimental Autopilot operation and recovery
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-02
 
 Use this runbook to observe explicitly enrolled providers in shadow and prepare
 a separately approved live rollout. Startup opt-in records interest/consent, not
@@ -8,7 +8,7 @@ activation; the coordinator defaults to shadow observation.
 
 ## When to use
 
-Use with compatible protocol-2 coordinator and provider releases. See the
+Use with compatible protocol-3 coordinator and provider releases. See the
 [architecture](../architecture/model-autopilot.md) for ownership and eligibility.
 
 ## Prerequisites
@@ -40,6 +40,10 @@ Use with compatible protocol-2 coordinator and provider releases. See the
    exists but no valid coordinator lease is acknowledged. In shadow, ordinary
    startup loading, cold loading and the configured idle policy remain in force.
    Cached inventory and hypothetical proposals are not proof of ready capacity.
+   Confirm the normal startup selection is unchanged: a Gemma-only selection
+   must not cold-load another cached model in `waiting` or `shadow`. The separate
+   `autopilot_inventory` may list additional candidates. Older coordinators keep
+   protocol-3 providers waiting, with ordinary selected-model serving intact.
    Freshness follows the configured heartbeat interval, so an intentionally
    slower daemon refresh does not appear as a missing live report.
 3. Inspect authenticated `GET /v1/admin/autopilot`. It returns controller summary

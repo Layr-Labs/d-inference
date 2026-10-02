@@ -1593,6 +1593,13 @@ func (r *Registry) providerRoutingGateReasonLockedEx(p *Provider, model string, 
 	if ok, reason := r.providerServesRoutableModelReasonLocked(p, model, selfRouteOwner); !ok {
 		return false, reason
 	}
+	return r.providerPostCatalogGateReasonLocked(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker, ignoreCapacityCooldown)
+}
+
+// Shared trust, liveness and request-shape checks. Autopilot planning supplies
+// its separate inventory permission before entering here; it never changes a
+// provider's ordinary routing permission to ask a hypothetical question.
+func (r *Registry) providerPostCatalogGateReasonLocked(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time, ignoreProviderBreaker, ignoreCapacityCooldown bool) (bool, GateReason) {
 	// The identity's fault-tracker gates (gate_state.go): cached on the
 	// connected provider, so the five reads are atomic loads for a provider
 	// with no fault state and one short gate.mu section per tracker that has

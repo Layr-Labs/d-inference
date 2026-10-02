@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-02
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -9,6 +9,8 @@ constants, as declared in `provider-swift/Sources/darkbloom/` (`Darkbloom`,
 version `ProviderCore.version` in
 `provider-swift/Sources/ProviderCore/ProviderCore.swift`). For operators; types
 and defaults are the ArgumentParser declarations; `—` means required.
+
+Waiting and shadow Autopilot preserve the normal picker and `--model` serving selection. Other verified cached models are reported separately for planning and cannot be loaded by ordinary routing. See [Autopilot architecture](../architecture/model-autopilot.md).
 
 ## Global options
 

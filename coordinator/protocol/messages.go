@@ -239,6 +239,7 @@ type RegisterMessage struct {
 	Type                        string                             `json:"type"`
 	Hardware                    Hardware                           `json:"hardware"`
 	Models                      []ModelInfo                        `json:"models"`
+	AutopilotInventory          []ModelInfo                        `json:"autopilot_inventory,omitempty"`
 	Backend                     string                             `json:"backend"`
 	RuntimeCapabilities         []string                           `json:"runtime_capabilities,omitempty"`      // connection-scoped hardware/runtime capabilities
 	Version                     string                             `json:"version,omitempty"`                   // provider binary version (e.g. "0.2.31")

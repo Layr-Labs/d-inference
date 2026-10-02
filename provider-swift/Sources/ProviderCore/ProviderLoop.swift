@@ -210,6 +210,8 @@ public actor ProviderLoop {
     /// new process has no stalled call).
     internal var appAttestStallRetryAt: ContinuousClock.Instant?
     internal let loopConfig: ProviderLoopConfig
+    internal var ordinaryServingModelIDs: Set<String>
+    internal var autopilotInventoryModels: [String: ModelInfo]
     internal let keyPair: NodeKeyPair
     internal let signer: (any AttestationSigner)?
     internal let attestationBuilder: AttestationBuilder?
@@ -283,6 +285,13 @@ public actor ProviderLoop {
     internal var maxModelSlots: Int {
         let live = max(startupModelCount, advertisedModels.count)
         return max(1, min(configuredMaxModelSlots, live))
+    }
+
+    /// Counterfactual slot limit for planning; observing more cached models
+    /// never changes the ordinary runtime's effective `maxModelSlots`.
+    internal var autopilotPlanningMaxModelSlots: Int {
+        min(configuredMaxModelSlots, max(maxModelSlots,
+            Set(autopilotInventoryModels.keys).union(advertisedModels.keys).count))
     }
 
     /// Maps request IDs to the model they're running on, so the idle
@@ -744,6 +753,11 @@ public actor ProviderLoop {
         nativeMiMoRegistryForTesting: MiMoV26NativeLoadRegistry? = nil
     ) throws {
         self.loopConfig = config
+        self.ordinaryServingModelIDs = Set(config.models.map(\.id))
+        self.autopilotInventoryModels = Dictionary(config.autopilotInventory.filter {
+            $0.weightHash?.isEmpty == false && EngineV2SupportedModels.isSupported(model: $0)
+                && ModelRuntimeRequirements.isEligible(modelID: $0.id, available: config.runtimeCapabilities)
+        }.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         self.nativeMiMoRegistry = nativeMiMoRegistryForTesting ?? .shared
         self.specDecFunnel = SpecDecArtifactFunnel(
             resolver: SpecDecResolver(),

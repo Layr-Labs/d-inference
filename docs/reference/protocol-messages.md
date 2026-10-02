@@ -47,6 +47,8 @@ that generation again at handoff: reusing a wire `request_id` cannot let an earl
 worker or queued receipt settle the latest drain. Disconnect cancels the wait and
 clears its reservation tracking. A final barrier after accepted requests and local
 response writes finish establishes that prior terminal usage has been processed.
+The receipt includes synchronous ledger accounting, but does not wait for the
+separate asynchronous public-usage INSERT in `completionAccounting`.
 The Swift acknowledgement also passes through the ordered provider event queue,
 so earlier inbound inference frames are refused before the barrier completes.
 It is not a bearer credential or permission to serve. A stale idle heartbeat or

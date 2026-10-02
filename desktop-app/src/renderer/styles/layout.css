@@ -96,6 +96,15 @@
   width: 100%;
 }
 
+.local-profile:hover .profile-icon {
+  background: rgba(var(--contrast-rgb), 0.07);
+  color: var(--text-primary);
+}
+
+.local-profile:hover small {
+  color: var(--text-secondary);
+}
+
 .profile-icon {
   height: 32px;
   width: 32px;
@@ -103,6 +112,9 @@
   display: grid;
   place-items: center;
   border-radius: 6px;
+  transition:
+    background var(--hover-duration),
+    color var(--hover-duration);
 }
 
 .local-profile strong {
@@ -116,6 +128,7 @@
   color: var(--muted);
   display: block;
   margin-top: 5px;
+  transition: color var(--hover-duration);
 }
 
 .local-profile i {

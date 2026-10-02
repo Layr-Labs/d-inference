@@ -28,6 +28,7 @@
   --blue: var(--brand-blue);
   --line: rgba(var(--contrast-rgb), 0.09);
   --surface: var(--brand-card);
+  --hover-duration: 0.16s;
   color-scheme: dark;
 }
 

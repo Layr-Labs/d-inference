@@ -163,6 +163,11 @@
   padding: 16px 0;
   font-size: 12px;
   cursor: pointer;
+  transition: background var(--hover-duration);
+}
+
+.choice:hover small {
+  color: var(--text-secondary);
 }
 
 .choice input {
@@ -180,6 +185,7 @@
   margin-top: 7px;
   color: var(--muted);
   font-size: 11px;
+  transition: color var(--hover-duration);
 }
 
 .setup-models {
@@ -193,8 +199,16 @@
   border-radius: 3px;
 }
 
+.setup-models .choice:not(.selected):hover {
+  background: rgba(var(--contrast-rgb), 0.025);
+}
+
 .setup-models .choice.selected {
   background: rgba(var(--contrast-rgb), 0.02);
+}
+
+.setup-models .choice.selected:hover {
+  background: rgba(var(--contrast-rgb), 0.045);
 }
 
 .setup-code {

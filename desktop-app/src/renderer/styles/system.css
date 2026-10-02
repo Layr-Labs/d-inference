@@ -12,9 +12,12 @@
   display: grid;
   place-items: center;
   border-radius: 4px;
+  transition:
+    background var(--hover-duration),
+    color var(--hover-duration);
 }
 
-.icon-button:hover {
+.icon-button:not(:disabled):hover {
   background: rgba(var(--contrast-rgb), 0.031);
   color: var(--text-primary);
 }
@@ -74,10 +77,11 @@
   border-bottom: 1px solid var(--line);
   font-size: 12px;
   border-radius: 3px;
+  transition: background var(--hover-duration);
 }
 
 .machine-table-row:hover {
-  background: rgba(var(--contrast-rgb), 0.016);
+  background: rgba(var(--contrast-rgb), 0.03);
 }
 
 .machine-name {
@@ -134,6 +138,22 @@
   border: 1px solid var(--line);
   padding: 24px;
   border-radius: 5px;
+  transition:
+    background var(--hover-duration),
+    border-color var(--hover-duration);
+}
+
+.setting-links svg {
+  transition: transform var(--hover-duration);
+}
+
+.setting-links button:hover {
+  background: rgba(var(--contrast-rgb), 0.03);
+  border-color: rgba(var(--contrast-rgb), 0.2);
+}
+
+.setting-links button:hover svg {
+  transform: translate(2px, -2px);
 }
 
 .settings-section {
@@ -170,6 +190,21 @@
   color: var(--muted);
   font-size: 11px;
   margin-top: 7px;
+  transition: color var(--hover-duration);
+}
+
+label.setting-row:hover small {
+  color: var(--text-secondary);
+}
+
+/* Native checkboxes, switches and sliders only expose hover through a filter. */
+label.setting-row:hover input:not(:disabled) {
+  filter: var(--control-hover-filter);
+}
+
+label.setting-row:has(input:disabled),
+label.setting-row input:disabled {
+  cursor: not-allowed;
 }
 
 .setting-row > input:not(.switch),
@@ -180,6 +215,22 @@ select {
   padding: 10px 12px;
   min-width: 180px;
   font-size: 12px;
+  transition: border-color var(--hover-duration);
+}
+
+select {
+  cursor: pointer;
+}
+
+.setting-row > input:not(.switch):not(:disabled):hover,
+select:not(:disabled):hover {
+  border-color: rgba(var(--contrast-rgb), 0.24);
+}
+
+label.setting-row,
+.switch,
+.range-field input {
+  cursor: pointer;
 }
 
 .setting-row > code {
@@ -295,11 +346,23 @@ select {
   border: 1px solid var(--line);
   border-radius: 5px;
   cursor: pointer;
+  transition:
+    background var(--hover-duration),
+    border-color var(--hover-duration);
+}
+
+.mode-options label:not(.selected):hover {
+  border-color: rgba(var(--contrast-rgb), 0.2);
+  background: rgba(var(--contrast-rgb), 0.02);
 }
 
 .mode-options label.selected {
   border-color: #486dfb70;
   background: #0b41ff08;
+}
+
+.mode-options label.selected:hover {
+  border-color: #486dfbb0;
 }
 
 .mode-options input {
@@ -453,6 +516,20 @@ select {
   border-radius: 4px;
   font-size: 11px;
   color: var(--muted);
+  transition:
+    background var(--hover-duration),
+    border-color var(--hover-duration),
+    color var(--hover-duration);
+}
+
+.schedule-days label:hover input:not(:checked) + span {
+  border-color: rgba(var(--contrast-rgb), 0.24);
+  color: var(--text-primary);
+}
+
+.schedule-days label:hover input:checked + span {
+  background: #2858ff;
+  border-color: #2858ff;
 }
 
 .schedule-days input:checked + span {
@@ -479,6 +556,11 @@ select {
   border: 1px solid var(--line);
   padding: 9px;
   border-radius: 4px;
+  transition: border-color var(--hover-duration);
+}
+
+.schedule-time input:not(:disabled):hover {
+  border-color: rgba(var(--contrast-rgb), 0.24);
 }
 
 .schedule-windows {

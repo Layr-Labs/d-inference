@@ -19,6 +19,7 @@
   --positive: #83d9a7;
   --negative: #ffa3a3;
   --warning: #e3cda5;
+  --control-hover-filter: brightness(1.3);
 }
 :root[data-theme='light'] {
   color-scheme: light;
@@ -42,6 +43,7 @@
   --positive: #187451;
   --negative: #b42e38;
   --warning: #8a5919;
+  --control-hover-filter: brightness(0.9);
 }
 :root {
   color: var(--text-primary);
@@ -61,6 +63,13 @@
   color: var(--text-secondary);
   padding: 5px 8px;
   font-size: 11px;
+  transition:
+    border-color var(--hover-duration),
+    color var(--hover-duration);
+}
+.appearance-select:hover {
+  border-color: rgba(var(--contrast-rgb), 0.24);
+  color: var(--text-primary);
 }
 .sidebar {
   overflow-y: auto;

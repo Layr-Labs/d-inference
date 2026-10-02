@@ -56,6 +56,14 @@
   padding: 7px 12px;
   color: var(--muted);
   border-radius: 3px;
+  transition:
+    background var(--hover-duration),
+    color var(--hover-duration);
+}
+
+.segmented button:not(.selected):hover {
+  background: rgba(var(--contrast-rgb), 0.045);
+  color: var(--text-primary);
 }
 
 .segmented button.selected {
@@ -68,6 +76,12 @@
   align-items: center;
   gap: 8px;
   color: var(--muted);
+  transition: color var(--hover-duration);
+}
+
+.search:hover,
+.search:focus-within {
+  color: var(--text-secondary);
 }
 
 .search input {
@@ -88,12 +102,23 @@
 
 .model-selection {
   position: relative;
+  cursor: pointer;
 }
 
 .model-selection input {
   width: 14px;
   height: 14px;
   accent-color: var(--blue);
+  cursor: pointer;
+}
+
+.model-selection:hover input:not(:disabled) {
+  filter: var(--control-hover-filter);
+}
+
+.model-selection:has(input:disabled),
+.model-selection input:disabled {
+  cursor: not-allowed;
 }
 
 .model-glyph {

@@ -25,15 +25,19 @@
   min-height: 38px;
   white-space: nowrap;
   transition:
-    background 0.16s,
+    background var(--hover-duration),
+    border-color var(--hover-duration),
+    color var(--hover-duration),
+    box-shadow var(--hover-duration),
     transform 0.1s;
 }
 
-.button:hover {
-  background: rgba(var(--contrast-rgb), 0.051);
+.button:not(:disabled):hover {
+  background: rgba(var(--contrast-rgb), 0.06);
+  border-color: rgba(var(--contrast-rgb), 0.24);
 }
 
-.button:active {
+.button:not(:disabled):active {
   transform: translateY(1px);
 }
 
@@ -43,8 +47,10 @@
   color: var(--text-primary);
 }
 
-.button.primary:hover {
+.button.primary:not(:disabled):hover {
   background: #2858ff;
+  border-color: #2858ff;
+  box-shadow: 0 6px 20px rgba(40, 88, 255, 0.28);
 }
 
 .button.quiet {
@@ -52,10 +58,20 @@
   color: var(--muted);
 }
 
+.button.quiet:not(:disabled):hover {
+  border-color: transparent;
+  color: var(--text-primary);
+}
+
 .button.danger {
   background: #d04c4c20;
   border-color: #d04c4c55;
   color: var(--negative);
+}
+
+.button.danger:not(:disabled):hover {
+  background: #d04c4c33;
+  border-color: #d04c4c88;
 }
 
 .status {
@@ -96,10 +112,38 @@
   color: var(--text-secondary);
   font-size: 12px;
   text-decoration: none;
+  transition: color var(--hover-duration);
 }
 
-.text-link:hover {
+.text-link svg {
+  transition: transform var(--hover-duration);
+}
+
+.text-link:not(:disabled):hover {
   color: var(--text-primary);
+}
+
+.text-link:not(.back):not(:disabled):hover svg:last-child {
+  transform: translateX(2px);
+}
+
+.text-link.back:not(:disabled):hover svg:first-child {
+  transform: translateX(-2px);
+}
+
+.notice > button:not(.button),
+.modal header > button:not(.button) {
+  border-radius: 3px;
+  transition:
+    background var(--hover-duration),
+    box-shadow var(--hover-duration);
+}
+
+/* The halo gives the bare icon a hover target without moving the layout. */
+.notice > button:not(.button):hover,
+.modal header > button:not(.button):hover {
+  background: rgba(var(--contrast-rgb), 0.08);
+  box-shadow: 0 0 0 5px rgba(var(--contrast-rgb), 0.08);
 }
 
 .notice {
@@ -165,6 +209,11 @@
 
 .operation summary {
   cursor: pointer;
+}
+
+.operation summary:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .operation pre {

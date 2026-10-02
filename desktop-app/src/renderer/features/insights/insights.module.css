@@ -61,9 +61,13 @@
   border-radius: 8px;
   font-size: 12px;
   cursor: pointer;
+  transition:
+    background var(--hover-duration),
+    color var(--hover-duration);
 }
 .motionButton:hover {
   background: var(--bg-hover);
+  color: var(--text-primary);
 }
 .liveSummary {
   display: flex;
@@ -99,6 +103,10 @@
 .lane summary::-webkit-details-marker,
 .breakdownRow summary::-webkit-details-marker {
   display: none;
+}
+.modelName,
+.breakdownRow summary {
+  transition: color var(--hover-duration);
 }
 .lane summary:hover .modelName,
 .breakdownRow summary:hover {
@@ -340,6 +348,13 @@
   color: var(--text-secondary);
   font-size: 12px;
   cursor: pointer;
+  transition:
+    background var(--hover-duration),
+    color var(--hover-duration);
+}
+.segmented button:not([aria-pressed='true']):hover {
+  background: rgba(var(--contrast-rgb), 0.05);
+  color: var(--text-primary);
 }
 .segmented button[aria-pressed='true'] {
   background: var(--bg-primary);
@@ -390,6 +405,7 @@
   min-width: 0;
   cursor: pointer;
   background: transparent;
+  transition: background var(--hover-duration);
 }
 .barButton[aria-pressed='true'],
 .barButton:hover {

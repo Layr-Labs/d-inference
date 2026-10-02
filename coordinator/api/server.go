@@ -2701,6 +2701,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/provider/account-earnings", s.requireAuth(s.handleAccountEarnings))
 
 	// Account-scoped provider dashboard.
+	s.mux.HandleFunc("POST /v1/interest/small-models", s.requirePrivyAuth(s.rateLimitFinancial(s.handleRegisterSmallModelsInterest)))
+	s.mux.HandleFunc("GET /v1/interest/small-models", s.requirePrivyAuth(s.handleGetSmallModelsInterest))
+	s.mux.HandleFunc("GET /v1/admin/interest/small-models", s.requireAuth(s.handleAdminSmallModelsInterest))
+
 	s.mux.HandleFunc("GET /v1/me/providers", s.requirePrivyAuth(s.handleMyProviders))
 	s.mux.HandleFunc("GET /v1/me/token-promotions", s.requirePrivyAuth(s.handleMyModelTokenPromotions))
 	s.mux.HandleFunc("POST /v1/me/token-promotions/claim", s.requirePrivyAuth(s.rateLimitFinancial(s.handleMyModelTokenPromotions)))

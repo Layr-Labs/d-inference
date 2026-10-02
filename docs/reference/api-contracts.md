@@ -2,7 +2,7 @@
 
 > Last updated: 2026-10-02
 
-The complete public HTTP surface of the coordinator, derived from the 118 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
+The complete public HTTP surface of the coordinator, derived from the `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
 Production base URL: `https://api.darkbloom.dev`. Unless a file is named, handler symbols below live in `coordinator/api/server.go`.
 
@@ -20,6 +20,28 @@ waiting or observing; enrollment alone does not change the operator's selected
 models. This uses `Provider.ServingModelsLocked` in
 `coordinator/registry/autopilot_inventory.go`; see
 [model Autopilot](../architecture/model-autopilot.md).
+
+## Small-model interest
+
+Both Earn-page notification buttons register the same per-account interest; a later registration replaces that account's selected hardware. No endpoint sends email.
+
+| Route | Authentication and rate limit | Result | Code |
+|---|---|---|---|
+| `POST /v1/interest/small-models` | Privy JWT only; financial mutation bucket | Empty `204` only after the store upsert completes | `coordinator/api/small_models_interest.go` (`handleRegisterSmallModelsInterest`), `coordinator/api/server.go` (`routes`) |
+| `GET /v1/interest/small-models` | Privy JWT only | Own record (`account_id`, hardware, `created_at`, `updated_at`), or `404`; private/no-store | `coordinator/api/small_models_interest.go` (`handleGetSmallModelsInterest`) |
+| `GET /v1/admin/interest/small-models?limit=100&after=<account_id>` | Admin key or verified Privy admin; inference/provider keys rejected | `{data: [...], next_cursor?: string}`; each record includes the current user email; private/no-store | `coordinator/api/small_models_interest.go` (`handleAdminSmallModelsInterest`) |
+
+| Registration field / constraint | Accepted values | Code |
+|---|---|---|
+| `mac_type` | `MacBook Pro`, `Mac Mini`, `Mac Studio`, `Mac Pro` | `coordinator/api/small_models_interest.go` (`handleRegisterSmallModelsInterest`) |
+| `chip` | Nonblank string, at most 128 bytes, no control characters | Same handler |
+| `ram_gb` | Integer from 1 through 2048 | Same handler |
+| Identity/contact | Derived from the verified session and stored user; caller-supplied identity, email, or other unknown fields reject with `400` | Same handler |
+| Body | One JSON object, no trailing values; maximum 1024 bytes (`413` when exceeded) | Same handler, `interestJSONError` |
+| Contactability | A stored account email is required (`422 email_required`); `401` invalid/missing session, `403` noninteractive credentials, `429` rate limit, `500` storage failure never acknowledge registration | Same handler and `requirePrivyAuth`, `rateLimitFinancial` in `coordinator/api/server.go` |
+| Export page | `limit` defaults to 100, valid range 1–100; `after` is exclusive account ID, at most 256 bytes; follow `next_cursor` until absent | `coordinator/api/small_models_interest.go` (`handleAdminSmallModelsInterest`) |
+
+The console forwards only to this fixed coordinator path. Its pending hardware marker is not proof of registration; success requires `204` or authenticated readback. See [sign-in and registration steps](../consumer/authentication.md#6-register-hardware-interest).
 
 ## Graceful provider lifecycle
 

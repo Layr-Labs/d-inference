@@ -40,6 +40,7 @@ const keySpendRetentionDays = 40
 
 // MemoryStore manages API keys, usage records, payments, and balances in memory.
 type MemoryStore struct {
+	smallModelsInterest       map[string]SmallModelsInterest
 	autopilotRecords          map[string]AutopilotRecord
 	modelTokenProviderCarries map[string]int64
 	modelTokenPromotions      map[string]ModelTokenPromotion
@@ -183,6 +184,7 @@ type MemoryStore struct {
 // pre-seeded as a valid API key for bootstrapping.
 func NewMemory(scfg Config) *MemoryStore {
 	s := &MemoryStore{
+		smallModelsInterest:           make(map[string]SmallModelsInterest),
 		modelDemandStartedAt:          time.Now().UTC(),
 		keyRecords:                    make(map[string]*APIKey),
 		keysByID:                      make(map[string]string),

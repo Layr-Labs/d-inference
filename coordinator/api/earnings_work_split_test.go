@@ -117,3 +117,35 @@ func TestW7MySummaryLifetimeBaseReward(t *testing.T) {
 		t.Fatalf("lifetime_base_reward_micro_usd = %v, want 1250000", got)
 	}
 }
+
+// work_micro_usd is floored at zero even if the base-reward total exceeds the
+// summary total (e.g. a backfill that counted a draw the total never saw).
+func TestAccountEarningsWorkFlooredAtZero(t *testing.T) {
+	srv, st := testWithdrawServer(t)
+	account := "acct-work-floor"
+	for i, e := range []store.ProviderEarning{
+		{AccountID: account, ProviderKey: "k1", JobID: "floor:2026-01:k1", Model: "base_reward", AmountMicroUSD: 1_000},
+		{AccountID: account, ProviderID: "n1", ProviderKey: "k1", JobID: "neg-job", Model: "qwen", AmountMicroUSD: -5_000},
+	} {
+		if err := st.CreditProviderAccount(&e); err != nil {
+			t.Fatalf("credit %d: %v", i, err)
+		}
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/provider/account-earnings", nil)
+	req = req.WithContext(context.WithValue(req.Context(), ctxKeyConsumer, account))
+	w := httptest.NewRecorder()
+	srv.handleAccountEarnings(w, req)
+	var m map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &m); err != nil {
+		t.Fatal(err)
+	}
+	if got := num(t, m, "total_micro_usd"); got >= 1_000 {
+		t.Fatalf("setup: total_micro_usd = %v, want below the base reward", got)
+	}
+	if got := num(t, m, "work_micro_usd"); got != 0 {
+		t.Fatalf("work_micro_usd = %v, want 0", got)
+	}
+	if got := str(t, m, "work_usd"); got != "0.000000" {
+		t.Fatalf("work_usd = %q, want 0.000000", got)
+	}
+}

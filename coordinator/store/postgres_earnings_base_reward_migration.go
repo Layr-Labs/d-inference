@@ -37,6 +37,14 @@ type earningsSummaryMigrationDB interface {
 	BeginTx(ctx context.Context, txOptions pgx.TxOptions) (pgx.Tx, error)
 }
 
+// BackfillEarningsSummaryBaseReward runs the one-shot base-reward backfill.
+// The serving coordinator calls it at startup, before any worker settles
+// draws; --migrate-only does not, because a coordinator of the previous
+// release can keep settling draws for as long as it serves after this runs.
+func (s *PostgresStore) BackfillEarningsSummaryBaseReward(ctx context.Context) error {
+	return s.migrateEarningsSummaryBaseReward(ctx)
+}
+
 // migrateEarningsSummaryBaseReward fills total_base_reward_micro_usd once with
 // the base rewards settled before the column existed; every writer adds new
 // ones as they are credited. One planning transaction pins a REPEATABLE READ
@@ -44,8 +52,8 @@ type earningsSummaryMigrationDB interface {
 // each total is then added and dequeued in its own short transaction so a
 // crash resumes without double-adding, and the final marker keeps later boots
 // from rescanning. Base rewards a previous coordinator settles after the
-// snapshot, during a blue-green overlap, are in total_micro_usd but not in
-// this column.
+// snapshot (during the blue-green handoff, or while a rollback to an earlier
+// release serves) are in total_micro_usd but not in this column.
 func (s *PostgresStore) migrateEarningsSummaryBaseReward(ctx context.Context) error {
 	started := time.Now()
 	applied, err := s.applyEarningsSummaryBaseRewardMigration(ctx)

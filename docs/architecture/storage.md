@@ -159,18 +159,24 @@ backfills keep their markers and their now-unused scratch tables
 `earnings_summary.total_base_reward_micro_usd` is the part of an account's
 `total_micro_usd` that came from base rewards. `RecordProviderEarning`,
 `CreditProviderAccount` and floor-draw settlement add to it in the statement
-that already updates the row; `GetAccountEarningsSummary` reads it, and work is
-`total_micro_usd - total_base_reward_micro_usd`. The column is added by
-`ALTER TABLE ... ADD COLUMN IF NOT EXISTS` in the schema slice, and
-`migrateEarningsSummaryBaseReward` fills it once from `provider_floor_draws`
+that already updates the row. `GetAccountEarningsSummary` reads it, and
+`/v1/provider/account-earnings` reports work as
+`total_micro_usd - total_base_reward_micro_usd`, floored at zero. The column is added by
+`ALTER TABLE ... ADD COLUMN IF NOT EXISTS` in the schema slice, and the
+serving coordinator's startup (`BackfillEarningsSummaryBaseReward`, called from
+`coordinator/cmd/coordinator/main.go` before any worker starts) fills it once
+from `provider_floor_draws`
 (markers `prepare_earnings_summary_base_reward_v1` for the plan and
 `backfill_earnings_summary_base_reward_v1` when done). A session advisory lock
 serialises coordinators, one REPEATABLE READ transaction commits per-account
 totals into `earnings_summary_base_reward_pending`, and each pending row is
 added and deleted in its own short transaction, so a crash resumes without
-double-adding. Base rewards a previous coordinator settles after the plan
-snapshot, during a blue-green overlap, are in `total_micro_usd` but not in the
-column. The pending table stays after the migration, empty.
+double-adding. `--migrate-only` adds the column but does not run this
+backfill, because the previous release keeps settling draws, without the
+column, for as long as it serves. Base rewards a previous coordinator settles
+after the plan snapshot (during the handoff, or while a rollback to an earlier
+release serves) are in `total_micro_usd` but not in the column. The pending
+table stays after the backfill, empty.
 
 The Solana-era cleanups are retired the same way: the wallet-keyed price delete (marker `cleanup_wallet_model_prices_v1`,
 which on a fresh database ran before `users` existed and so fired on the second

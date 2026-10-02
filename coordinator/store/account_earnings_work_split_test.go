@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"os"
 	"testing"
 )
 
@@ -250,5 +251,64 @@ func TestW5BaseRewardBackfillSkippedWhenMarkerPresent(t *testing.T) {
 	}
 	if got := baseRewardColumn(t, s, acct, "account"); got != 1 {
 		t.Fatalf("column = %d, want sentinel 1 (marker present, no rewrite)", got)
+	}
+}
+
+// RecordProviderEarning adds base_reward rows to the column and nothing else.
+func TestRecordProviderEarningBaseRewardColumn(t *testing.T) {
+	for name, s := range storeBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			acct := uniqueID("acct-rpe")
+			for i, e := range []ProviderEarning{
+				{AccountID: acct, ProviderID: "p", ProviderKey: "k", JobID: uniqueID("job"), Model: "qwen", AmountMicroUSD: 40},
+				{AccountID: acct, ProviderKey: "k", JobID: uniqueID("floor"), Model: "base_reward", AmountMicroUSD: 900},
+			} {
+				if err := s.RecordProviderEarning(&e); err != nil {
+					t.Fatalf("record %d: %v", i, err)
+				}
+			}
+			got, err := s.GetAccountEarningsSummary(acct)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.BaseRewardMicroUSD != 900 || got.TotalMicroUSD != 940 || got.Count != 1 {
+				t.Fatalf("base=%d total=%d count=%d, want 900, 940, 1", got.BaseRewardMicroUSD, got.TotalMicroUSD, got.Count)
+			}
+		})
+	}
+}
+
+// NewPostgres (and so --migrate-only) leaves the backfill to the serving
+// coordinator: a previous release still settling draws would otherwise land
+// them after the snapshot, permanently outside the column.
+func TestNewPostgresDoesNotRunBaseRewardBackfill(t *testing.T) {
+	s := testPostgresStore(t)
+	ctx := context.Background()
+	acct := uniqueID("acct-boot")
+	settleDrawFor(t, s, acct, uniqueID("pk-boot"), "2026-03", 1_500)
+	if _, err := s.pool.Exec(ctx, `UPDATE earnings_summary SET total_base_reward_micro_usd = 0 WHERE key = $1`, acct); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(ctx, `DELETE FROM schema_migrations WHERE id IN ($1, $2)`, w4DoneMarker, w4PlanMarker); err != nil {
+		t.Fatal(err)
+	}
+
+	fresh, err := NewPostgres(ctx, Config{DatabaseURL: os.Getenv("DATABASE_URL")})
+	if err != nil {
+		t.Fatalf("NewPostgres: %v", err)
+	}
+	defer fresh.Close()
+	if got := baseRewardColumn(t, s, acct, "account"); got != 0 {
+		t.Fatalf("after NewPostgres: column = %d, want 0 (backfill must not run)", got)
+	}
+	if markerCount(t, s, w4DoneMarker) != 0 {
+		t.Fatal("after NewPostgres: done marker recorded")
+	}
+
+	if err := fresh.BackfillEarningsSummaryBaseReward(ctx); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if got := baseRewardColumn(t, s, acct, "account"); got != 1_500 {
+		t.Fatalf("after backfill: column = %d, want 1500", got)
 	}
 }

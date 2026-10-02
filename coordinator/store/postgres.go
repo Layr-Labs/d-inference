@@ -107,11 +107,6 @@ func newPostgresWithPoolConfig(ctx context.Context, scfg Config, tune func(*pgxp
 		pool.Close()
 		return nil, fmt.Errorf("store: run migrations: %w", err)
 	}
-	if err := s.migrateEarningsSummaryBaseReward(ctx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("store: migrate earnings summary base reward: %w", err)
-	}
-
 	return s, nil
 }
 
@@ -665,8 +660,9 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			PRIMARY KEY (key, key_type)
 		)`,
 		// total_base_reward_micro_usd is the part of total_micro_usd that came
-		// from base rewards; the one-shot migrateEarningsSummaryBaseReward fills
-		// it for history. The pending table is its crash-safe work queue.
+		// from base rewards; BackfillEarningsSummaryBaseReward fills it for
+		// history at serving startup. The pending table is its crash-safe work
+		// queue.
 		`ALTER TABLE earnings_summary ADD COLUMN IF NOT EXISTS total_base_reward_micro_usd BIGINT NOT NULL DEFAULT 0`,
 		earningsSummaryBaseRewardPendingDDL,
 

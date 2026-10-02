@@ -246,3 +246,10 @@
 .onboarding .text-link {
   font-size: 11px;
 }
+
+.onboarding-form > .terms-note {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+}

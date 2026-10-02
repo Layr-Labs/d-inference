@@ -8,7 +8,6 @@ export function Onboarding({ backend, done }: { backend: BackendState; done: () 
   const [step, setStep] = useState(0);
   const [mode, setMode] = useState<'network' | 'local'>('network');
   const [selected, setSelected] = useState('');
-  const [agreed, setAgreed] = useState(false);
   const [error, setError] = useState('');
   const connected = backend.status.state === 'ready' && !!backend.state;
   const steps = ['Connect', 'Choose a model', 'Start'];
@@ -194,19 +193,9 @@ export function Onboarding({ backend, done }: { backend: BackendState; done: () 
                   <small className="muted">Managed by the native runtime.</small>
                 </span>
               </div>
-              <label className="choice">
-                <input
-                  type="checkbox"
-                  checked={agreed}
-                  onChange={(e) => setAgreed(e.target.checked)}
-                />
-                <span>
-                  I agree to the <External target="terms">Terms of Service</External>
-                </span>
-              </label>
               <Button
                 variant="primary"
-                disabled={!agreed || backend.busy || !selected}
+                disabled={backend.busy || !selected}
                 onClick={async () => {
                   if (
                     backend.state &&
@@ -232,6 +221,9 @@ export function Onboarding({ backend, done }: { backend: BackendState; done: () 
               >
                 Start {mode === 'local' ? 'local inference' : 'providing'} <ArrowRight size={16} />
               </Button>
+              <p className="terms-note">
+                By turning on, you agree to our <External target="terms">Terms of Service</External>
+              </p>
               <Button variant="quiet" onClick={done}>
                 Explore the app first
               </Button>

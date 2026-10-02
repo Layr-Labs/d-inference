@@ -280,6 +280,7 @@ func (d *dispatchState) traits() registry.RequestTraits {
 		avoidVersion = "" // A request-clock refusal does not indict the provider build.
 	}
 	return registry.RequestTraits{
+		TargetProviderID:       d.policy.providerID,
 		HasTools:               d.hasTools,
 		RequiresToolConstraint: d.requiresToolConstraint,
 		ToolChoiceMode:         d.toolChoiceMode,

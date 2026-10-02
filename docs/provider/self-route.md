@@ -1,6 +1,6 @@
 # Self-route: use your own machine through the coordinator
 
-> Last updated: 2026-09-27
+> Last updated: 2026-10-01
 
 Send your normal Darkbloom API requests to the provider your account owns —
 free, end-to-end, through the same `api.darkbloom.dev` endpoint and SDK
@@ -18,7 +18,7 @@ fleet traffic whose scheduler is told which machine may serve it.
 - A provider linked to your account: `darkbloom login` on the Mac, then
   `darkbloom start` ([quickstart](./quickstart.md)). Ownership is the account
   that linked the device (`Provider.AccountID`), stamped by the coordinator;
-  the header cannot name a machine.
+  an optional selector can name only a machine owned by that account.
 - A consumer API key issued to the same account.
 - The model you request downloaded and advertised on that machine
   (`darkbloom models list`).
@@ -46,6 +46,15 @@ fleet traffic whose scheduler is told which machine may serve it.
      -H "Content-Type: application/json" \
      -d '{"model":"<model-id>","messages":[{"role":"user","content":"hi"}]}'
    ```
+
+   To select one Mac, also send `-H "X-Darkbloom-Machine: <provider-id>"`.
+   Use its opaque `id` from `GET /v1/me/providers` (authenticate that management
+   endpoint with your Privy bearer token). Omit the selector to let the
+   coordinator choose among your machines. The id identifies the current
+   connection; refresh it after the provider reconnects. Selection also works
+   without the route header on a `self_route_only` key. It requires exclusive
+   self-routing and cannot be combined with ordinary or `prefer` routing.
+   See the [header contract](../reference/api-contracts.md#headers).
 
    OpenAI SDKs accept extra headers (`default_headers` in Python,
    `defaultHeaders` in Node). The header is invisible to the body schema, so it
@@ -121,8 +130,9 @@ Exclusive self-route fails fast with the real cause instead of queueing
 
 | Status / code | Meaning | Fix |
 |---|---|---|
+| `400 invalid_request_error` | Machine selector is empty, repeated, or used without exclusive self-routing | Send one provider id with `self`, or use a `self_route_only` key |
 | `409 no_linked_machine` | No provider is linked to the account that owns the key | `darkbloom login` on the Mac under that account |
-| `503 machine_offline` (`Retry-After: 30`) | Linked machine(s) exist but none is online | `darkbloom start`; `darkbloom doctor` for connection problems ([troubleshooting](./troubleshooting.md)) |
+| `503 machine_offline` (`Retry-After: 30`) | No linked machine is online, or the selected id is unavailable on your account | Refresh selected ids from `/v1/me/providers`; `darkbloom start`; `darkbloom doctor` for connection problems ([troubleshooting](./troubleshooting.md)) |
 | `503 model_not_loaded` (`Retry-After: 15`) | Online, but no owned machine serves this model id | `darkbloom models download <id>`, then `darkbloom restart`; list ids with the `self` header |
 | `503 model_capability_unsupported` | Machine serves the model but not this request shape (inference-enforced `tool_choice` without the tool-constraint advertisement, media on a text-only build) | `darkbloom update`; load a vision-capable build |
 | `prefer` requests are billed | Your machine could not serve at that moment, so the fleet did | Check the same causes as above; use `self` if you never want the fallback |

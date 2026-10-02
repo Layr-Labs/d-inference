@@ -15,6 +15,8 @@ import (
 // and provider.go (settlement); the owner filter and trust relaxation live in
 // the registry scheduler.
 
+const selfRouteMachineHeader = "X-Darkbloom-Machine"
+
 // selfRoutePolicy carries the authenticated "use my own machine, for free"
 // decision through dispatch so that primary, sequential-retry, and
 // speculative-backup PendingRequests all inherit the same owner filter and
@@ -34,6 +36,8 @@ type selfRoutePolicy struct {
 	prefer bool
 	// ownerAccountID is the account that must own the serving provider.
 	ownerAccountID string
+	// providerID optionally pins exclusive self-route to one provider session.
+	providerID string
 }
 
 // resolveSelfRoutePolicy derives the self-route decision from the request's
@@ -66,6 +70,25 @@ func (s *Server) resolveSelfRoutePolicy(r *http.Request) selfRoutePolicy {
 	return selfRoutePolicy{enabled: exclusive, prefer: prefer, ownerAccountID: owner}
 }
 
+// resolveInferenceSelfRoute adds an optional machine selector to the existing
+// policy. The scheduler enforces ownership and the selected session together.
+func (s *Server) resolveInferenceSelfRoute(w http.ResponseWriter, r *http.Request) (selfRoutePolicy, bool) {
+	policy := s.resolveSelfRoutePolicy(r)
+	values := r.Header.Values(selfRouteMachineHeader)
+	if len(values) == 0 {
+		return policy, true
+	}
+	id := strings.TrimSpace(values[0])
+	if len(values) != 1 || id == "" || len(id) > 256 || strings.Contains(id, ",") || !policy.enabled {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
+			"X-Darkbloom-Machine requires one provider id and exclusive self-routing (X-Darkbloom-Route: self or a self_route_only key)",
+			withParam(selfRouteMachineHeader)))
+		return policy, false
+	}
+	policy.providerID = id
+	return policy, true
+}
+
 // selfRouteUnavailable reports whether a self-route request cannot proceed and,
 // when so, writes the precise terminal error. Self-route never falls back to
 // the paid fleet, so "can't serve" is an explicit failure rather than a
@@ -78,11 +101,18 @@ func (s *Server) resolveSelfRoutePolicy(r *http.Request) selfRoutePolicy {
 // real cause. Returns false (no write) when at least one owned, online
 // machine can serve this request.
 func (s *Server) selfRouteUnavailable(w http.ResponseWriter, r *http.Request, owner, model string, traits registry.RequestTraits, requiresVision bool) bool {
+	traits.TargetProviderID = strings.TrimSpace(r.Header.Get(selfRouteMachineHeader))
 	online, servesRequest := s.registry.OwnedProviderSummary(owner, model, traits, requiresVision)
 	if servesRequest > 0 {
 		return false
 	}
 	if online == 0 {
+		if traits.TargetProviderID != "" {
+			w.Header().Set("Retry-After", "30")
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("machine_offline",
+				"the selected machine is not online on your account; check its id in /v1/me/providers", withCode("machine_offline")))
+			return true
+		}
 		linked := 0
 		if recs, err := s.store.ListProvidersByAccount(r.Context(), owner); err == nil {
 			linked = len(recs)
@@ -103,7 +133,7 @@ func (s *Server) selfRouteUnavailable(w http.ResponseWriter, r *http.Request, ow
 	// request's shape: the machine lacks a request-shape capability (tools,
 	// tool constraints) or the build isn't vision-capable (media). Deterministic for this machine, so
 	// say the real cause rather than "not loaded".
-	if _, servesBase := s.registry.OwnedProviderSummary(owner, model, registry.RequestTraits{}, false); servesBase > 0 {
+	if _, servesBase := s.registry.OwnedProviderSummary(owner, model, registry.RequestTraits{TargetProviderID: traits.TargetProviderID}, false); servesBase > 0 {
 		var reason string
 		switch {
 		case requiresVision && !traits.HasTools:

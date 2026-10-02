@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased - self-route machine selection
+
+- Add optional `X-Darkbloom-Machine: <provider-id>` for exclusive self-routing. Select an owned machine using its `/v1/me/providers` id; inference and retries stay on that session. Omitting the header preserves automatic selection. Refresh ids after reconnect.
+
 ## Unreleased — provider 0.9.17
 
 - Keep the normal startup selection and explicit `--model` override authoritative while Autopilot is waiting or observing in shadow. Cached planning inventory can no longer make ordinary routing load unselected models.

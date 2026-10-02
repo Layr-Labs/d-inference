@@ -88,6 +88,11 @@ func (r *Registry) ColdSpillProviders(model string, traits RequestTraits, requir
 func (r *Registry) coldSpillProviderEligibleLocked(p *Provider, model string, traits RequestTraits, requiresVision bool, now time.Time) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	// Cold spill promises a legacy load_model. Managed inventory can be warmed
+	// only by an explicit placement command; never queue on this false promise.
+	if providerLegacyModelChangesBlockedLocked(p) {
+		return false
+	}
 
 	// Structural / trust / privacy / freshness / cooldown / trait gates.
 	if !r.providerPassesRoutingGatesLocked(p, model, traits, false, now) {

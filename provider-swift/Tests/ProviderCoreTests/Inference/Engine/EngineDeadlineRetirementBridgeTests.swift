@@ -51,6 +51,7 @@ struct EngineDeadlineRetirementBridgeTests {
         let stream = try await bridge.submitTokenized(promptTokens: [1, 2], request: request,
             requestId: "held", firstContentDeadline: .init(relativeBudgetMilliseconds: 60_000),
             serviceReservationID: reservationID, serviceReservation: lifetime)
+        await bridge.markNativeBootstrapOwnerForRetirementTest("held")
         #expect(engine.deadlineAdmissions.count == 1)
         let continuation = try #require(engine.continuations.last)
         continuation.yield(.finished(reason: cancelled ? .cancelled : .stop,
@@ -71,6 +72,8 @@ struct EngineDeadlineRetirementBridgeTests {
         #expect(await bridge.activeRequestCount() == 0)
         #expect(await bridge._testPendingSubmissionCount() == 1)
         #expect(await bridge._testLivePumpCount() == 1)
+        #expect(await bridge.nativeMediaBootstrapRequestID == "held")
+        #expect(await bridge.nextNativeMediaBootstrapAt != nil)
         let overlapping = EnginePrefillReceipt(activity: activity, model: "other-model")
         #expect(overlapping.overlap.contended)
         #expect(overlapping.overlap.otherModel)
@@ -91,6 +94,8 @@ struct EngineDeadlineRetirementBridgeTests {
         }
         #expect(await bridge._testLivePumpCount() == 0)
         #expect(await bridge._testPendingSubmissionCount() == 0)
+        #expect(await bridge.nativeMediaBootstrapRequestID == nil)
+        #expect(await bridge.nextNativeMediaBootstrapAt == nil)
         #expect(await budget.outstandingReservedBytes() == 0)
         #expect(budget.serviceBudget.count == limit - 1)
         let isolated = EnginePrefillReceipt(activity: activity, model: "other-model")
@@ -107,5 +112,13 @@ struct EngineDeadlineRetirementBridgeTests {
         #expect(budget.serviceBudget.count == limit - 1)
         await bridge.shutdown()
         await otherBridge.shutdown()
+    }
+}
+
+extension EngineV2Bridge {
+    func markNativeBootstrapOwnerForRetirementTest(_ id: String) {
+        nativeMediaBootstrapRequestID = id
+        nativeMediaLearnedRequestIDs.insert(id)
+        nextNativeMediaBootstrapAt = .now + .seconds(120)
     }
 }

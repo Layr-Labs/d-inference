@@ -235,6 +235,7 @@ type PrefixCacheDonationOutcomeCount struct {
 // RegisterMessage is sent when a provider first connects.
 type RegisterMessage struct {
 	AppAttestProtocol           int                                `json:"app_attest_protocol,omitempty"`
+	ModelAutopilot              *ModelAutopilotState               `json:"model_autopilot,omitempty"`
 	Type                        string                             `json:"type"`
 	Hardware                    Hardware                           `json:"hardware"`
 	Models                      []ModelInfo                        `json:"models"`
@@ -279,13 +280,14 @@ type PrivacyCapabilities struct {
 
 // HeartbeatMessage is sent periodically by connected providers.
 type HeartbeatMessage struct {
-	Type            string           `json:"type"`
-	Status          string           `json:"status"`
-	ActiveModel     *string          `json:"active_model"`
-	Stats           HeartbeatStats   `json:"stats"`
-	WarmModels      []string         `json:"warm_models,omitempty"`      // models currently loaded in memory
-	SystemMetrics   SystemMetrics    `json:"system_metrics"`             // live resource utilization
-	BackendCapacity *BackendCapacity `json:"backend_capacity,omitempty"` // live backend capacity (nil for old providers)
+	ModelAutopilot  *ModelAutopilotState `json:"model_autopilot,omitempty"`
+	Type            string               `json:"type"`
+	Status          string               `json:"status"`
+	ActiveModel     *string              `json:"active_model"`
+	Stats           HeartbeatStats       `json:"stats"`
+	WarmModels      []string             `json:"warm_models,omitempty"`      // models currently loaded in memory
+	SystemMetrics   SystemMetrics        `json:"system_metrics"`             // live resource utilization
+	BackendCapacity *BackendCapacity     `json:"backend_capacity,omitempty"` // live backend capacity (nil for old providers)
 	// Pointer preserves the distinction between an old provider that omitted
 	// v2 capabilities and a v2 provider authoritatively clearing its live set.
 	PrefixCacheProtocol     int                        `json:"prefix_cache_protocol,omitempty"`
@@ -1170,6 +1172,12 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		var msg LoadModelStatusMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("protocol: failed to unmarshal load_model_status: %w", err)
+		}
+		pm.Payload = &msg
+	case TypeModelAutopilotStatus:
+		var msg ModelAutopilotStatusMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal model_autopilot_status: %w", err)
 		}
 		pm.Payload = &msg
 

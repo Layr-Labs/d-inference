@@ -1,6 +1,10 @@
 package store
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/google/uuid"
+)
 
 func (s *PostgresStore) PrepareGlobalRecipient(r GlobalRecipient) (*GlobalRecipient, error) {
 	ctx, cancel := payoutContext()
@@ -38,6 +42,11 @@ func (s *PostgresStore) GetGlobalRecipient(accountID string) (*GlobalRecipient, 
 func (s *PostgresStore) RemoveGlobalRecipient(accountID string) error {
 	ctx, cancel := payoutContext()
 	defer cancel()
-	_, err := s.pool.Exec(ctx, `DELETE FROM global_payout_recipients WHERE account_id=$1`, accountID)
+	// Retain a generation tombstone: unlink must never restore legacy Connect routing.
+	data, err := json.Marshal(GlobalRecipient{ID: uuid.NewString(), AccountID: accountID})
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `UPDATE global_payout_recipients SET country='', data=$2 WHERE account_id=$1`, accountID, data)
 	return err
 }

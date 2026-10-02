@@ -184,6 +184,8 @@ let package = Package(
                 "ProviderAppAttest",
                 "ProviderCore",
                 "ProviderBenchmark",
+                .product(name: "Hummingbird", package: "hummingbird"),
+                .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             path: "Sources/darkbloom"
@@ -316,7 +318,7 @@ let package = Package(
         // ----------------------------------------------------------------
         .testTarget(
             name: "DarkbloomCLITests",
-            dependencies: ["darkbloom"],
+            dependencies: ["darkbloom", .product(name: "HummingbirdTesting", package: "hummingbird")],
             path: "Tests/DarkbloomCLITests"
         ),
 

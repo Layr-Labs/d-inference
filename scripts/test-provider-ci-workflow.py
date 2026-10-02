@@ -209,6 +209,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             MIMO_PREPARE,
             MIMO_PROVIDER_PREPARE,
             "../scripts/run-provider-tests.sh",
+            "python3 scripts/test-desktop-api.py provider-swift/.build/debug/darkbloom",
             *MIMO_NATIVE_COMMANDS.values(),
             'python3 scripts/prepare-mimo-audio-fixtures.py --cache "$RUNNER_TEMP/mimo-audio-source" --output "$RUNNER_TEMP/mimo-audio-fixtures" --github-env "$GITHUB_ENV"',
             "../scripts/run-nested-suite.sh testNativeAudioRelease --no-parallel",
@@ -219,6 +220,9 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(field(test_step, "working-directory"), "provider-swift")
         self.assertEqual(field(test_step, "if"), PROVIDER_MIMO_READY)
         self.assertEqual(field(test_step, "MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS", indent=10), "'1'")
+        desktop = next(step for step in steps if "scripts/test-desktop-api.py" in (run_command(step) or ""))
+        self.assertEqual(field(desktop, "if"), "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}")
+        self.assertEqual(field(desktop, "timeout-minutes"), "3")
         installer = next(step for step in steps if run_command(step) == "./scripts/test-install-atomic.sh")
         self.assertEqual(field(installer, "if"), "${{ !cancelled() }}")
         self.assertEqual(field(installer, "timeout-minutes"), "2")

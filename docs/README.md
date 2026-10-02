@@ -1,6 +1,6 @@
 # Darkbloom documentation
 
-> Last updated: 2026-09-28
+> Last updated: 2026-10-01
 
 > Darkbloom is a decentralized private-inference network: an OpenAI- and
 > Anthropic-compatible HTTP API served by a Go coordinator that routes each
@@ -23,6 +23,8 @@
 - [`operations/README.md`](operations/README.md): deploy or change production (human approval required for every mutation).
 - [`architecture/overview.md`](architecture/overview.md): understand the whole system in one page.
 - [`architecture/security/encryption.md`](architecture/security/encryption.md): the exact, hop-by-hop privacy model — the only page that states it.
+
+- [`developer/desktop-app.md`](developer/desktop-app.md): build and validate the Electron frontend and its Swift CLI/backend interface.
 
 ## How the system works (explanation)
 

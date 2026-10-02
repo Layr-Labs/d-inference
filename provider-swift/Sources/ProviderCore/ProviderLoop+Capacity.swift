@@ -285,6 +285,7 @@ extension ProviderLoop {
         autopilotFreeNoEvictGb = nativeColdAdmissionBlocked ? 0 : freeForLoadNoEvictGb
         publishModelAutopilotSnapshot()
         state.setModelAutopilotCapacity(capacity, snapshot: state.modelAutopilot)
+        desktopActivityObservedAt = Date().timeIntervalSince1970
         state.inferenceActive = totalActive > 0
         let loadedSlots = modelSlots.compactMap { modelId, slot
             -> (String, EngineV2Bridge)? in

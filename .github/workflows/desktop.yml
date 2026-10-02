@@ -1,0 +1,58 @@
+name: Desktop App
+
+on:
+  pull_request:
+    paths:
+      - 'desktop-app/**'
+      - 'landing/public/**'
+      - 'landing/src/app/globals.css'
+      - 'scripts/install.sh'
+      - '.github/workflows/desktop.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'desktop-app/**'
+      - 'landing/public/**'
+      - 'landing/src/app/globals.css'
+      - 'scripts/install.sh'
+      - '.github/workflows/desktop.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop-app/package-lock.json
+      - run: npm ci
+        working-directory: desktop-app
+      - run: npm run lint && npm test && npm run build
+        working-directory: desktop-app
+  review-package:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: blacksmith-12vcpu-macos-27
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop-app/package-lock.json
+      - run: npm ci && npm run dist
+        working-directory: desktop-app
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: unsigned-desktop-review
+          path: |
+            desktop-app/release/*.dmg
+            desktop-app/release/*.zip
+          if-no-files-found: error

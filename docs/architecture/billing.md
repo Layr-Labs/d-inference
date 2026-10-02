@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-02
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -16,6 +16,13 @@ Qualified App Attest-only providers can receive base rewards through the [canoni
 The remaining epoch allocation commits as one transaction in `coordinator/payments/baserewards/settlement_plan.go` (`settleCandidatePlan`) and `coordinator/store/floor_draw_batch.go` (`FloorDrawBatchStore`). If authorization or canonical identity changes before commit, the pending plan rolls back and the engine reallocates its unspent budget. This includes partial and zero-value waitlisted rows, so a rejected provider cannot permanently reduce another provider's payment. Previously finalized rows remain unchanged.
 
 ## Context
+
+The desktop Earnings screen reads settled inference and base-reward income
+separately through the [desktop insights API](../reference/api-contracts.md#desktop-earnings-insights).
+Its average request income divides inference income alone by settled inference
+jobs; its token milestones use lifetime completion tokens from the account
+summary. Running model activity is not treated as paid work. These reporting
+reads do not change settlement, balances or withdrawal eligibility.
 
 - **Prepaid, reservation-first.** There is no post-paid billing. A request is
   admitted only after its worst-case cost is debited (or held), so a provider

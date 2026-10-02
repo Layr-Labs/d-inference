@@ -74,7 +74,11 @@ extension ProviderLoop {
                     loadTransitionActive: isLoadingAny || !modelsLoading.isEmpty
                         || !startupPreloadPendingModels.isEmpty
                         || mtpStagingReservations.hasRetainedTargets
-                        || $0.slots.contains { $0.state == "reloading" })
+                        || $0.slots.contains { $0.state == "reloading" },
+                    modelActivity: $0.slots.map {
+                        .init(model: $0.model, state: $0.state, running: $0.numRunning, waiting: $0.numWaiting)
+                    },
+                    activityObservedAt: desktopActivityObservedAt)
             },
             lastModelLoadError: lastModelLoadError,
             // Joined at WRITE time, not at sample time: a refused explicit

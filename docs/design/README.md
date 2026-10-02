@@ -1,6 +1,6 @@
 # Design records — what was decided, and whether it shipped
 
-> Last updated: 2026-09-28
+> Last updated: 2026-10-01
 
 Plans, proposals, and architecture decision records. Each file is frozen at the
 moment it was written except for its **Status** line, which says whether the
@@ -12,6 +12,12 @@ Status vocabulary (closed, [`../AGENTS.md`](../AGENTS.md) §3):
 `Status: Proposed | In progress | Implemented (vX.Y.Z) | Superseded by <link> | Abandoned`,
 followed by the record's date and one clause of evidence. The Status column
 below repeats the vocabulary word only; the file's line 5 carries the evidence.
+
+## Desktop app
+
+| Record | Status | Date | One line |
+|---|---|---|---|
+| [macos-electron-app.md](macos-electron-app.md) | In progress | 2026-10-01 | Fresh Electron frontend, authoritative Swift CLI/backend APIs, landing-derived design, and staged installation/runtime qualification |
 
 ## Routing and scheduling
 

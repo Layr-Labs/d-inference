@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-01
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -12,6 +12,19 @@ read once at process start and a restart applies a change.
 [App Attest shadow configuration](app-attest-shadow.md#configuration) defines evidence collection and receipt renewal. [Provider authorization](provider-authorization.md#controls) defines the separate serving and MDM-removal opt-ins, both disabled by default. The account cohort, safe-version floor and qualified build/code hashes remain required. `EIGENINFERENCE_APP_ATTEST_KEY_ROTATION_PERCENT` (default `100`) selects the separate account cohort for coordinator-requested [dead-key rotation](app-attest-shadow.md#dead-key-rotation). [Durable build approvals](provider-authorization.md#durable-build-qualification) replace per-release env edits; existing env pairs are a bootstrap fallback that cannot override a durable revocation. Shadow alone grants no trust; an explicitly enabled qualified App Attest path can replace legacy serving verification.
 
 Autopilot `selected_models` is the cached planning inventory; `backend.enabled_models` and explicit startup overrides remain ordinary serving permission in waiting/shadow mode. See [the protocol and activation boundary](../architecture/model-autopilot.md).
+
+## Desktop app
+
+| Setting | Default | Consumer and effect |
+|---|---|---|
+| `DARKBLOOM_DESKTOP_DIR` | `~/.darkbloom/desktop` | `DesktopStorage.directory` in `provider-swift/Sources/darkbloom/Desktop/DesktopStorage.swift`; owner-only API discovery and operation journal; useful for isolated tests |
+| `DARKBLOOM_CLI_PATH` | `~/.darkbloom/bin/darkbloom` | `Backend.binary` in `desktop-app/src/main/backend.ts`; development-only CLI override, ignored by packaged apps |
+| `DARKBLOOM_DESKTOP_ATTACH_ONLY` | unset | `Backend.connect` in `desktop-app/src/main/backend.ts`; when `1` in development, attach to an already-running isolated API without creating a LaunchAgent; ignored in packaged apps |
+| `DARKBLOOM_DEV_URL` | Packaged `darkbloom://app/index.html` | `desktop-app/src/main/index.ts`; development-only renderer URL, ignored by packaged apps |
+
+Provider `auto_update`, `idle_timeout_mins`, schedule windows, and startup
+preloading retain their existing native configuration. The app writes them
+through the [versioned desktop API](desktop-control.md), using expected revisions.
 
 ## Provider drain deadline
 

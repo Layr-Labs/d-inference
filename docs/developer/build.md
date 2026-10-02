@@ -145,6 +145,13 @@ The revision publisher accepts optional per-version HF repo, commit and path-pre
 artifacts. It also needs Python 3 and the AWS CLI; use the existing pinned tools.
 The [revision runbook](../operations/model-revisions.md) describes its invocation.
 
+## Electron desktop app
+
+`make desktop-install`, `make desktop-build`, and `make desktop-package` build
+and package the app without publishing. The frontend uses the Swift CLI's local
+API. See [desktop development](desktop-app.md) for the isolated preview,
+component boundary, and signed release qualification.
+
 ## SDK 27 release builds and caches
 
 All checked-in `d-inference` workflow jobs use Blacksmith runners. macOS build,

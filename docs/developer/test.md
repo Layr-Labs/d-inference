@@ -1,6 +1,11 @@
 # Test
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-02
+
+Desktop activity and earnings tests are described in the
+[desktop verification guide](desktop-app.md#verify). `make desktop-api-test`
+also checks authenticated insights relay, decimal-string preservation, and
+account-session revision changes against an isolated local coordinator fixture.
 
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the
@@ -404,6 +409,14 @@ Set `MIMO_V26_MANAGED_AAC_VIDEO_FIXTURE` to the verified video file emitted by
 the fixture preparation script.
 Use `prepare-mimo-audio-fixtures.py --cache <cache> --output <new-directory>`;
 its public codec download is about 1.87 GB and is checked against fixed hashes.
+
+## Desktop control and frontend
+
+`make desktop-test` exercises the frontend journeys and bridge validation.
+`make desktop-api-test` runs the compiled Swift CLI API with a temporary config,
+model cache, credentials, daemon state, discovery directory, and local catalog.
+`DesktopControlTests` and `TestDesktopAccountTokenIsolationAndRevocation` cover
+native authentication and account separation. See [desktop development](desktop-app.md).
 
 ## Provider lifecycle regression checks
 

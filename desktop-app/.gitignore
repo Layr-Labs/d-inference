@@ -1,0 +1,12 @@
+node_modules/
+dist/
+release/
+test-results/
+public/fonts/
+public/brand/
+resources/install-runtime.sh
+resources/icon.png
+resources/icon.icns
+resources/icon.iconset/
+src/renderer/brand.css
+resources/trayTemplate.png

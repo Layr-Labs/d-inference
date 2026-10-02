@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — macOS desktop app
+
+- Show live per-model request activity from Swift snapshots, lifetime settled output-token milestones, and an in-app Earnings dashboard with daily charts, model/Mac breakdowns, exact CSV copying, and separate inference/base-reward income. Add Light, Dark, and System appearance. Keep account credentials and analytics requests in the Swift backend.
+- Add a fresh Electron frontend using the landing brand, with onboarding, Home, My Macs, Models, Studio, Analysis, Cooling, Settings, Leaderboard and Updates. Closing its window retains menu-bar access and provider activity. It starts hidden when macOS opens it at login, and GUI updates use only a feed configured at build time (`DARKBLOOM_DESKTOP_UPDATE_URL`), never provider releases.
+- Expose authenticated desktop control from the Swift CLI, preserving native lifecycle/configuration/model operations and automatic update ownership. `darkbloom desktop ensure` replaces a stale or mismatched control service, the service restarts itself after its binary is replaced, and `darkbloom stop --uninstall` removes it. Add a scoped, read-only provider account/fleet projection with exact money strings, rate-limited and cached per account.
+- Add isolated control-API tests, frontend journey tests, desktop packaging and CI. Public distribution remains subject to signed-runtime, update-feed and notarization qualification.
+
 ## Unreleased — provider 0.9.17
 
 - Keep the normal startup selection and explicit `--model` override authoritative while Autopilot is waiting or observing in shadow. Cached planning inventory can no longer make ordinary routing load unselected models.

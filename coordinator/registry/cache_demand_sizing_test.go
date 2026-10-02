@@ -1,9 +1,15 @@
 package registry
 
 import (
+	"encoding/binary"
+	"encoding/hex"
 	"math"
+	"reflect"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/promptcontract"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 // The demand cap is sized for this plan rate over cacheRoutingSizingTTL.
@@ -85,12 +91,54 @@ func TestCacheDemandCapCoversMeasuredPlanMix(t *testing.T) {
 
 // demandStridePlan lists only what a plan of that length observes: its
 // boundaries on the 1,024-token stride and its final one. Selection is by
-// token count (TestCacheDemandSelectionIgnoresListPosition), so it records
-// what the dense plan does at a quarter of the construction cost.
+// token count (TestCacheDemandSelectionIgnoresListPosition), so hashes only
+// need encoding after selection.
 func demandStridePlan(tracker *cacheRoutingTracker, promptTokens int, variant uint32) CachePlan {
-	dense := demandTestPlan(tracker, promptTokens, 0, variant)
-	dense.Boundaries = cacheDemandAnchors(dense.Boundaries)
-	return dense
+	block := int(promptcontract.BlockSize)
+	count := 0
+	if promptTokens > 0 {
+		count = (promptTokens - 1) / block
+	}
+	boundaries := make([]protocol.PrefixCacheAnchor, count)
+	for i := range boundaries {
+		boundaries[i].TokenCount = (i + 1) * block
+	}
+	boundaries = cacheDemandAnchors(boundaries)
+	var digest [32]byte
+	binary.BigEndian.PutUint32(digest[24:], variant)
+	for i := range boundaries {
+		// The digest names the original dense block, not its selected position.
+		binary.BigEndian.PutUint32(digest[28:], uint32(boundaries[i].TokenCount/block))
+		boundaries[i].ChainHash = hex.EncodeToString(digest[:])
+	}
+	plan := exactTestPlan(boundaries...)
+	plan.PromptTokenCount = promptTokens
+	plan.generation = tracker.generation
+	return plan
+}
+
+func TestCacheDemandStridePlanMatchesDensePlan(t *testing.T) {
+	tracker := newCacheRoutingTracker(cacheRoutingSizingTTL, defaultCacheRoutingMaxHolders)
+	block := int(promptcontract.BlockSize)
+	check := func(tokens int, variant uint32) {
+		t.Helper()
+		dense := demandTestPlan(tracker, tokens, 0, variant)
+		dense.Boundaries = cacheDemandAnchors(dense.Boundaries)
+		sparse := demandStridePlan(tracker, tokens, variant)
+		if !reflect.DeepEqual(sparse, dense) || sparse.generation != dense.generation {
+			t.Fatalf("tokens=%d variant=%d: sparse plan %+v differs from dense plan %+v", tokens, variant, sparse, dense)
+		}
+	}
+	// These plan fixtures require at least one boundary. Cover every supported
+	// nonempty block count, including the stride window and ladder.
+	for count := 1; count <= cacheRoutingMaxReceiptTokens/block; count++ {
+		check(count*block+1, uint32(count)*0x01010101)
+	}
+	for _, tokens := range []int{block + 1, 2*block - 1, 2 * block, 2*block + 1, cacheRoutingMaxReceiptTokens, cacheRoutingMaxReceiptTokens + 1} {
+		for _, variant := range []uint32{0, 1, 0x12345678, ^uint32(0)} {
+			check(tokens, variant)
+		}
+	}
 }
 
 // A plan observed 29 minutes ago still reports its repeat while the

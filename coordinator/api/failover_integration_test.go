@@ -72,6 +72,7 @@ func setupFailoverServer(t *testing.T) (*registry.Registry, *store.MemoryStore, 
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{FirstContentSLAAccounts: []string{testConsumerID}}, logger)
+	t.Cleanup(srv.Close)
 	srv.challengeInterval = 500 * time.Millisecond
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
@@ -125,8 +126,9 @@ type failoverProviderConfig struct {
 }
 
 // startFailoverProvider dials the provider WebSocket, registers (raw-JSON
-// register message patched from a protocol.RegisterMessage), marks the new
-// provider hardware-trusted + challenge-verified, and starts the read loop.
+// register message patched from a protocol.RegisterMessage), and starts the
+// read loop. It returns once registration setup finishes and the new provider
+// is marked hardware-trusted + challenge-verified.
 func startFailoverProvider(t *testing.T, ctx context.Context, ts *httptest.Server, reg *registry.Registry, cfg failoverProviderConfig) *failoverProvider {
 	t.Helper()
 
@@ -136,11 +138,6 @@ func startFailoverProvider(t *testing.T, ctx context.Context, ts *httptest.Serve
 		t.Fatalf("provider %s: missing cached keypair for %q", cfg.Name, pubKey)
 	}
 	keypair := v.(testProviderKeyPair)
-
-	before := make(map[string]struct{})
-	for _, id := range reg.ProviderIDs() {
-		before[id] = struct{}{}
-	}
 
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
 	conn, _, err := websocket.Dial(ctx, wsURL, nil)
@@ -196,42 +193,61 @@ func startFailoverProvider(t *testing.T, ctx context.Context, ts *httptest.Serve
 		t.Fatalf("provider %s: write register: %v", cfg.Name, err)
 	}
 
-	// Let registration process, then identify and trust the new provider.
-	time.Sleep(200 * time.Millisecond)
-	registryID := ""
-	for _, id := range reg.ProviderIDs() {
-		if _, existed := before[id]; !existed {
-			registryID = id
-			break
-		}
-	}
-	if registryID == "" {
-		t.Fatalf("provider %s: did not appear in registry after register", cfg.Name)
-	}
-	reg.SetTrustLevel(registryID, registry.TrustHardware)
-	reg.RecordChallengeSuccess(registryID)
-
 	fp := &failoverProvider{
 		t:               t,
 		name:            cfg.Name,
 		conn:            conn,
 		pubKey:          pubKey,
 		privKey:         keypair.private,
-		registryID:      registryID,
 		script:          cfg.Script,
 		quoteScript:     cfg.QuoteScript,
 		bodies:          make(chan []byte, 8),
 		done:            make(chan struct{}),
 		appAttestFrames: cfg.AppAttestFrames,
 	}
-	go fp.run(ctx)
 	t.Cleanup(fp.close)
+	registered := make(chan error, 1)
+	go fp.run(ctx, func() {
+		// desired_models follows attestation, account linkage, and runtime
+		// setup. Registry presence alone precedes those writes and is too early.
+		for _, id := range reg.ProviderIDs() {
+			p := reg.GetProvider(id)
+			if p == nil {
+				continue
+			}
+			p.Mu().Lock()
+			matches := p.PublicKey == pubKey
+			p.Mu().Unlock()
+			if matches {
+				fp.registryID = id
+				reg.SetTrustLevel(id, registry.TrustHardware)
+				reg.RecordChallengeSuccess(id)
+				registered <- nil
+				return
+			}
+		}
+		registered <- fmt.Errorf("did not appear in registry after desired_models")
+	})
+	readyCtx, readyCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer readyCancel()
+	select {
+	case err := <-registered:
+		if err != nil {
+			t.Fatalf("provider %s: registration: %v", cfg.Name, err)
+		}
+	case <-fp.done:
+		t.Fatalf("provider %s: connection closed before registration completed", cfg.Name)
+	case <-readyCtx.Done():
+		t.Fatalf("provider %s: waiting for registration: %v", cfg.Name, readyCtx.Err())
+	}
 	return fp
 }
 
 // run reads coordinator messages: answers attestation challenges, counts and
-// dispatches inference requests to the script. Returns on connection close.
-func (fp *failoverProvider) run(ctx context.Context) {
+// dispatches inference requests to the script. The first desired_models frame
+// signals registration readiness before any challenge response is sent.
+// Returns on connection close.
+func (fp *failoverProvider) run(ctx context.Context, onRegistered func()) {
 	defer close(fp.done)
 	for {
 		_, data, err := fp.conn.Read(ctx)
@@ -245,6 +261,11 @@ func (fp *failoverProvider) run(ctx context.Context) {
 			continue
 		}
 		switch env.Type {
+		case protocol.TypeDesiredModels:
+			if onRegistered != nil {
+				onRegistered()
+				onRegistered = nil
+			}
 		case protocol.TypeAppAttestShadow:
 			if fp.appAttestFrames != nil {
 				var message protocol.AppAttestShadowMessage

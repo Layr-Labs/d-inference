@@ -165,7 +165,7 @@ func (r *Registry) modelTrackedByCatalogLocked(id string) bool {
 // requirements even with catalog filtering disabled. Caller holds r.mu and
 // p.mu.
 func (r *Registry) modelServableForOwnerLocked(p *Provider, m protocol.ModelInfo) bool {
-	return (r.modelAllowedByCatalogLocked(m) || !r.modelTrackedByCatalogLocked(m.ID)) &&
+	return providerOrdinaryModelAllowedLocked(p, m.ID) && (r.modelAllowedByCatalogLocked(m) || !r.modelTrackedByCatalogLocked(m.ID)) &&
 		r.providerMeetsModelRequirementsLocked(p, m.ID)
 }
 

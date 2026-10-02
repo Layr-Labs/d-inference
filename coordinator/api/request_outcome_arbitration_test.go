@@ -95,6 +95,7 @@ func TestRequestOutcomeCompactProfilePreservesTerminalArbitration(t *testing.T) 
 				w.WriteHeader(500)
 			})(httptest.NewRecorder(), httptest.NewRequest("POST", "/v1/chat/completions", nil))
 			if mode == "compact" {
+				srv.requestOutcomes.close()
 				r := awaitRequestOutcomes(t, srv.store, 1)[0]
 				if r.ProviderOutcome != "error" {
 					t.Fatalf("compact terminal owner=%+v", r)
@@ -146,6 +147,7 @@ func TestRequestOutcomeCompactEmptyLoserKeepsReceivedEvidence(t *testing.T) {
 				}
 				w.WriteHeader(503)
 			})(httptest.NewRecorder(), httptest.NewRequest("POST", "/v1/chat/completions", nil))
+			srv.requestOutcomes.close()
 			r := awaitRequestOutcomes(t, srv.store, 1)[0]
 			if len(r.Attempts) != 1 || !r.Attempts[0].ProviderCompleteObserved || r.Attempts[0].ProviderOutcome != "unknown" || r.Attempts[0].Winning || r.ProviderOutcome != "no_terminal" {
 				t.Fatalf("discarded terminal evidence=%+v", r)

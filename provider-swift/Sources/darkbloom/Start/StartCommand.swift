@@ -23,11 +23,17 @@ struct Start: AsyncParsableCommand {
     @Option(help: "Model ID to serve (repeatable, skips interactive picker).")
     var model: [String] = []
 
+    @Flag(inversion: .prefixedNo, help: "Report downloaded network models to experimental Autopilot; keep the normal startup model and memory selector.")
+    var autopilot: Bool?
+
     @Flag(help: "Serve all local models (skips interactive picker).")
     var all = false
 
     @Option(help: "Minutes without requests before a model is unloaded (0 = keep loaded). Saved to your config; the interactive picker asks this too. See `darkbloom idle`.")
     var idleTimeout: UInt64?
+
+    @Flag(help: "Interactively configure weekly availability and preloading before starting.")
+    var schedule = false
 
     @Flag(inversion: .prefixedNo, help: .hidden)
     var foreground = false
@@ -82,9 +88,34 @@ struct Start: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
+        var scheduleEdit: (current: ScheduleSettings, draft: ScheduleSettings)?
+        if schedule {
+            guard !local, !foreground else {
+                throw ValidationError("--schedule configures a background provider. Use `darkbloom schedule` before --foreground; standalone --local does not use availability windows.")
+            }
+            try AvailabilitySchedule.requireInteractiveTerminal()
+            let loaded = try loadRuntimeConfiguration(configPath: configOptions.config)
+            let current = ScheduleSettings(config: loaded.config)
+            guard let draft = ScheduleWizard().run(current: current,
+                idleMinutes: idleTimeout ?? loaded.config.backend.idleTimeoutMins,
+                preloadModels: loaded.config.backend.preloadModels, starting: true) else {
+                print("Cancelled. Configuration unchanged; provider not started or stopped.")
+                return
+            }
+            scheduleEdit = (current, draft)
+        }
+
         let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
         let effectiveCoordinator = coordinatorURL ?? snapshot.config.coordinator.url
         var effectiveConfig = snapshot.config
+        scheduleEdit?.draft.apply(to: &effectiveConfig)
+        if !local { try effectiveConfig.schedule?.validate() }
+        if local {
+            if autopilot == true { throw ValidationError("Autopilot requires a network provider.") }
+            // A standalone local invocation does not inherit network residency
+            // restrictions or change the saved network enrollment.
+            effectiveConfig.backend.modelAutopilot.enabled = false
+        }
         if let idleTimeout {
             if let problem = IdleUnloadPolicy.validate(minutes: idleTimeout) {
                 printError("--idle-timeout: \(problem)")
@@ -159,7 +190,8 @@ struct Start: AsyncParsableCommand {
                 config: effectiveConfig,
                 coordinatorURL: effectiveCoordinator,
                 configPath: configOptions.config == nil ? nil : snapshot.configPath,
-                runtimeCapabilities: runtimeCapabilities
+                runtimeCapabilities: runtimeCapabilities,
+                scheduleEdit: scheduleEdit
             )
         }
     }

@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-02
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -16,6 +16,8 @@ accept the desired and retained approved revisions for that same model. An
 unpromoted or explicitly retired hash is not accepted. Catalog size uses the
 largest retained revision as a conservative admission bound during convergence.
 [Model revisions](model-revisions.md) defines this transition policy.
+
+Autopilot protocol 3 keeps cached planning inventory separate from ordinary serving permission. `providerOrdinaryModelAllowedLocked` excludes observation-only IDs from catalog, owner, capacity and legacy acquisition gates until acknowledged live control; shadow planning reuses the remaining safety gates without changing permission. See [model Autopilot](model-autopilot.md).
 
 ## Provider lifecycle drain boundary
 

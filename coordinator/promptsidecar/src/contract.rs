@@ -3,8 +3,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 pub const CONTRACT_DOMAIN: &[u8] = b"darkbloom.prompt-contract.v1";
-pub const NORMALIZATION_VERSION: &str = "darkbloom-request-normalization-v7";
-pub const RENDERER_VERSION: &str = "swift-jinja-request-date-compatible-v3";
+pub const NORMALIZATION_VERSION: &str = "darkbloom-request-normalization-v8";
+pub const RENDERER_VERSION: &str = "swift-jinja-request-date-compatible-v4";
 pub const TOKENIZER_VERSION: &str = "huggingface-tokenizer-json-v1";
 pub const BLOCK_HASH_VERSION: &str = "darkbloom-block-chain-v1";
 pub const BLOCK_SIZE: u32 = 256;
@@ -168,6 +168,32 @@ mod tests {
             compute_contract_id(&changed, &versions).unwrap(),
             compute_contract_id(&b, &versions).unwrap()
         );
+    }
+
+    #[test]
+    fn rejects_previous_normalization_and_renderer_identities() {
+        let artifacts = [artifact("config.json", "config", 1)];
+        for (normalization, renderer) in [
+            ("darkbloom-request-normalization-v7", RENDERER_VERSION),
+            (
+                NORMALIZATION_VERSION,
+                "swift-jinja-request-date-compatible-v3",
+            ),
+            (
+                "darkbloom-request-normalization-v7",
+                "swift-jinja-request-date-compatible-v3",
+            ),
+        ] {
+            let versions = ContractVersions {
+                normalization: normalization.into(),
+                renderer: renderer.into(),
+                ..ContractVersions::default()
+            };
+            assert!(matches!(
+                compute_contract_id(&artifacts, &versions),
+                Err(ContractError::UnsupportedVersions)
+            ));
+        }
     }
 
     #[test]

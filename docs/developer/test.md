@@ -1,6 +1,10 @@
 # Test
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-01
+
+The provider test runner isolates daemon-state and loaded-model snapshots in a
+temporary directory for each run. Unit-test providers must not overwrite the
+operator’s live status or recovery evidence (`scripts/run-provider-tests.sh`).
 
 The `d-inference` macOS CI lanes pin `blacksmith-12vcpu-macos-27` and select
 Xcode 27 / native SwiftPM before compilation. Unit, SDK, prompt-parity,
@@ -71,6 +75,12 @@ Inside that task, call the concrete test type rather than dynamic `Self`:
 Swift 6.3's region-based isolation checker can reject the latter form. Keep
 the same plan, cancellation order, real decode and reservation assertions;
 do not add unchecked sendability or suppress cancellation to compile the test.
+
+`NativeLocalConsumerOwnershipTests` waits for the parent cancellation handler
+to be installed before asserting that cancellation closes its native lease.
+The preparation task entering its own barrier does not establish that ordering.
+The fixture still requires cancellation-insensitive cleanup to finish before
+the lease is released.
 
 The complete-prefix methods in `MiMoV26NativeLoadTransactionTests` require a
 strict generated **asymmetric** tiny BF16 fixture with three synthetic MTP
@@ -783,6 +793,11 @@ The [App Attest shadow validation commands](../reference/app-attest-shadow.md#va
   multi-model suites), and `mlx-community/gemma-4-e2b-it-4bit` (exact-cache
   routing test). CI pins revisions `GPT_OSS_REVISION` /
   `EXACT_CACHE_MODEL_REVISION` in `.github/workflows/integration.yml`.
+  The exact-cache suite explicitly selects `PrefixCacheMode: "ssd"`: this
+  development checkpoint is outside the default-on catalog. Ephemeral cache
+  keys only isolate storage and do not enable caching. The first request verifies
+  `skipped_novel`; a second cold request establishes repeat demand and donates
+  the checkpoint before the test asserts positive cached-token usage.
 - `golangci-lint` v2.1.6 for the lint job
   (`go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6`;
   config in `.golangci.yml`).
@@ -812,6 +827,12 @@ Postgres tests require an explicitly disposable `DATABASE_URL` and include an
 upgrade from the old profile schema. See
 [prediction telemetry](../reference/prediction-decision-telemetry.md).
 
+`first_byte_attribution_test.go` holds the registry write lock while primary
+and backup dispatches capture their serving-slot metrics. The encrypted
+WebSocket test in `first_byte_lock_test.go` separately requires the first
+content to reach the HTTP client while that lock stays held. Run both with
+`go test -race ./coordinator/api -run 'TestServingSlotAttribution|TestFirstByteReachesClient' -count=25`.
+
 The [admission calibration baseline](../reports/2026-09-06-admission-calibration-baseline.md)
 gives the focused `TestTTFTPendingPrompt` comparison command. Its registry
 cases exercise preflight, reservation, retained-plan revalidation and retained
@@ -834,10 +855,10 @@ fatal assertions, preventing leaked background allocations from contaminating
 index invariants and allocation ceiling are unchanged.
 
 ```bash
-make coordinator-test                      # cd coordinator && go test ./...
+make coordinator-test                      # runner guards + complete coordinator suite
 # what CI runs (repo root, race detector, Postgres-backed store tests included):
 DATABASE_URL='postgres://testbed:testbed@127.0.0.1:5432/testbed?sslmode=disable' \
-  go test -race -coverprofile=coverage.out -covermode=atomic \
+  python3 scripts/run-coordinator-tests.py --race --coverprofile coverage.out \
     $(go list ./... | grep -vx 'github.com/eigeninference/d-inference/e2e')
 go tool cover -func=coverage.out | tail -n 1   # total statement coverage
 gofmt -l .                                 # must print nothing
@@ -847,6 +868,46 @@ golangci-lint run                          # .golangci.yml
 CI writes the total statement coverage to the job summary and keeps
 `coverage.out` for 14 days as the `coordinator-coverage` artifact. The number
 is for information only. A low number does not fail the job.
+
+The runner compiles `coordinator/api` once and discovers its tests, examples,
+and fuzz seed tests from that binary. Race-enabled runs also compile and shard
+`coordinator/registry`; ordinary runs leave registry in one package process to
+preserve its host-throughput guards. Each sharded package's complete list runs
+in eight process-isolated shards with four workers by default. Other selected
+packages run through ordinary `go test` while shard binaries compile, and
+registry shards enter the worker queue before API compilation. No test
+allowlist, test-result cache, shortened production timeout, or disabled race
+detector is used. Shared environment and package-global fixtures remain isolated
+between shards; tests within each shard keep Go's normal parallelism.
+
+Use `--jobs 1` for one process per sharded package, or use ordinary focused Go commands
+such as `go test -race ./coordinator/api -run '^TestRequestOutcome' -count=1`.
+Keep an unsharded race/shuffle run when changing shared fixtures or the runner;
+shards do not preserve cross-test process state. `GOMAXPROCS` is inherited rather
+than forced to one. Store tests are never partitioned within their package.
+
+`--output-dir <directory>` retains a unique run directory containing the exact
+shard membership, per-task JSON events, stderr, compilation/listing timings,
+and optional coverage. Every discovered test must produce exactly one terminal
+result; a missing, duplicate,
+unexpected, or failing result fails the run. Coverage merges atomic counters by
+source block, retaining zero-hit blocks and counting their statements once.
+Malformed or missing coverage fails the run rather than publishing a partial
+success. CI uploads test evidence as `coordinator-test-timings` for 14 days.
+The separate uninstrumented adversarial-number parser check still runs in CI.
+CI uses a 16-vCPU Linux runner with eight workers (sixteen shards per package),
+sharing the worker pool with the ordinary package task. Compilation and Go's
+internal package parallelism are separate from this task limit.
+The local default remains four workers; use `--jobs` to choose process concurrency.
+
+Fixture speedups must retain the event being tested. Synchronous request-outcome
+tests drain the real sink before asserting; `TestRequestOutcomeSinkPeriodicFlush`
+separately checks the unchanged 100ms flush using virtual time.
+`TestStreamingChatMissingCompletionUsesBoundedFallback` similarly preserves the
+two-second missing-usage fallback without delaying ordinary signature tests. Failover providers
+wait for the registration's `desired_models` frame rather than sleeping. The
+crash fixture observes active streams and queued work before disconnecting, then
+requires server-side error/queue-timeout completion, not a client timeout.
 
 `TestProfile_RequestProfilesRecorded` checks that the stored transport estimate
 matches the difference of coordinator and provider spans. Negative values remain
@@ -2154,11 +2215,30 @@ binary that already has `mlx.metallib` beside it.
 |---|---|
 | `e2e/integration_test.go` | `TestIntegration_NonStreamingInference`, `_StreamingInference`, `_GreedyDeterminism`, `_MultipleRequestsAccounting`, `_E2EEncryptionCorrectness`, `_BillingBalanceDeduction`, `_ProviderPayoutSplit`, `_InsufficientBalance`, `_InvalidModel`, `_StreamingContentValidation`, `_ConcurrentRequests`, `_AttestationHeaders`, `_SwiftProviderRealRoutingGates`, `_FullNetworkSingleSwiftProviderMultiModelRouting`, `_ReferralRewardDistribution`, `_Qwen38RealProcessToolsAndVideo`; plus `TestQwen38GatePolicy`, `TestQwen38ExpectedBuiltKVBackend` |
 | `e2e/profile_test.go` | `TestProfile_SingleProviderNonStreaming`, `TestProfile_RequestProfilesRecorded` |
-| `e2e/exact_cache_routing_test.go` | `TestIntegrationExactCacheRouting` (expected red on paged with the e2b fixture; informational step in CI) |
+| `e2e/exact_cache_routing_test.go` | `TestIntegrationExactCacheRouting` (blocking paged gate with the pinned e2b fixture; verifies novel-demand suppression, donation, exact reuse, account isolation and recovery) |
 | `e2e/exact_cache_recurrent_test.go` | `TestIntegrationExactCacheRecurrentCompanyLeaves` (opt-in via `DARKBLOOM_EXACT_CACHE_RECURRENT_MODEL`): primes an ~18k-token Qwen prompt (fleet-novel, `skipped_novel`), streams a second tenant and after its first token streams the donor beside it (plain chunks), cancels the second tenant after four of its tokens arrive at the slowed beside-a-prefill cadence and while the donor is still prefilling (its remaining ranges run solo on the stripe), and asserts the repeat restores within one 4,096 stripe of the prompt end and more than 8,192 tokens through the real coordinator |
 | `e2e/benchmark_test.go` | `TestBenchmark_SingleProviderStreaming`, `_SingleProviderNonStreaming`, `_MultiModelMultiProvider`, `_HighConcurrency`, `_QueueSaturation`, `_ManyUsers`, `_SingleModelScaling`, `_HeavyLoad_100Concurrent_10KB`; config tests `TestBenchmarkSuiteConfig*`, `TestBenchmarkControlSuiteIsIsolatedAndMatchesPosture`, `TestBenchmarkCapacitySaturationPolicy` |
 
 ### 9. Prompt-contract parity fixtures and vectors
+
+After building provider tests, run `./scripts/verify-nemotron-prompt-parity.sh`
+for the separate Nemotron contract. CI runs this even if the general parity
+step fails. It provisions only prompt metadata through the existing Go artifact
+cache using `fixtures/prompt-contract/nemotron/manifests`, then requires the
+Swift reference suite to execute without skips and explicitly runs the Rust
+artifact-dependent reference and planner tests. The 25 original cases plus
+seven numeric edge cases cover exact prompt bytes/tokens, including numeric
+enum/minimum/default values, nested numbers and integral decoding. No weights,
+generation, or GPU model qualification is involved.
+
+`nemotron_number_vectors.json` contains 526 finite Double spellings captured by
+`swift scripts/generate-nemotron-number-vectors.swift`; offline Swift and Rust
+filter tests consume the same oracle. The edge corpus can be regenerated with
+`python3 scripts/generate-nemotron-prompt-edges.py <pinned-model-directory>`;
+it uses local-only Transformers after checking the template hash and mirrors
+the SDK's typed numeric conversion before reference rendering.
+`MediaToolMetadataTests` separately preserves non-Nemotron text/media metadata
+policy without loading a model.
 
 The `prompt-fixtures` generator writes pretty JSON without an extra final newline,
 matching the checked-in production corpus. `verify-prompt-parity.sh` compares
@@ -2288,8 +2368,8 @@ token IDs are accepted.
 
 | Workflow | Trigger | Jobs (name → what runs) |
 |---|---|---|
-| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — release/script checks and offline provider CI/cache/routing guards · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race -coverprofile=… -covermode=atomic` over every package except the top-level `e2e` integration package (`coordinator/internal/e2e` and `e2e/testbed/...` run) with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence; total statement coverage in the job summary, `coverage.out` kept 14 days as the `coordinator-coverage` artifact · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh`, then `cargo llvm-cov` (0.9.1) line coverage in the job summary · **Provider Unit Tests** (macOS 12-vcpu) — full debug test build, matched Metal, serial/fresh-process provider tests and installer checks · **Provider SDK Tests** (independent macOS 12-vcpu) — full nested test build and all required numerical/SDK selectors through checked wrappers · **Provider Prompt Parity** (independent macOS 12-vcpu) — `verify-prompt-parity.sh`, pinned Swift/Go/Rust vectors and sustained sidecar load proof · **Provider Tests** (Linux aggregate) — requires all three provider lanes to succeed · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper` · **Console UI Lint & Build** — Node 22, `npm ci`, lint, vitest, and Next.js build |
-| [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 75 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (expected red, `continue-on-error`) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`) |
+| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — release/script checks and offline provider CI/cache/routing guards · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `scripts/run-coordinator-tests.py --race --coverprofile` over every package except the top-level `e2e` integration package (`coordinator/internal/e2e` and `e2e/testbed/...` run), isolated API/registry shards and runner guards, with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence; total statement coverage in the job summary, merged `coverage.out` and timing evidence kept 14 days · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh`, then `cargo llvm-cov` (0.9.1) line coverage in the job summary · **Provider Unit Tests** (macOS 12-vcpu) — full debug test build, matched Metal, serial/fresh-process provider tests and installer checks · **Provider SDK Tests** (independent macOS 12-vcpu) — full nested test build and all required numerical/SDK selectors through checked wrappers · **Provider Prompt Parity** (independent macOS 12-vcpu) — `verify-prompt-parity.sh`, pinned Swift/Go/Rust vectors and sustained sidecar load proof · **Provider Tests** (Linux aggregate) — requires all three provider lanes to succeed · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper` · **Console UI Lint & Build** — Node 22, `npm ci`, lint, vitest, and Next.js build |
+| [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 75 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (blocking; explicit SSD opt-in and repeat demand) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`) |
 | [`.github/workflows/benchmarks.yml`](../../.github/workflows/benchmarks.yml) | PR, gated by the `benchmarks` environment (manual approval) | **E2E Benchmarks** — `go test ./e2e/ -count=1 -v -timeout 40m -p=1 -run 'TestBenchmark'`, posts `BENCHMARK_MD_PATH` as a PR comment |
 | [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml) | tag `v*`, manual | Provider release; see [`../operations/provider-release.md`](../operations/provider-release.md) |
 | [`.github/workflows/provider-signing-validation.yml`](../../.github/workflows/provider-signing-validation.yml) | manual only | Build an exact signed source revision, validate Developer ID signing/provisioning/notarization in a separate job, and retain an Actions artifact; no GitHub environment, deployment, release registration or model execution |
@@ -2783,6 +2863,31 @@ against a mock WebSocket coordinator while accepted work is held open.
 `TestRestartStatusReportsOwnerAuthorizationWithoutPublicGrant` checks explicit
 owner authorization while retaining runtime/security denials.
 
+## Experimental Autopilot integration
+
+Autopilot testbed suites explicitly set `ObserveOnly=false` for isolated live
+execution and start their controller before KV-backend verification
+(`e2e/testbed/suite.go`, `Suite.Start`). This is not the production default.
+That verification observes Autopilot-created slots and keeps the same strict
+backend check; it does not send a competing legacy `load_model` to an enrolled
+provider. This also covers CI lanes with `DARKBLOOM_TESTBED_EXPECT_KV_BACKEND` set.
+
+`e2e/autopilot_test.go` (`TestIntegration_AutopilotCachedBootstrapAndPause`)
+starts an isolated PostgreSQL coordinator and a real local Swift provider with
+explicit consent in its temporary test config. It verifies a durable intent,
+actual cached-model load, terminal heartbeat, inference, and operator pause.
+It never enrolls the operator's production provider. The normal testbed model
+must already be downloaded and the provider must have its source-matched Metal
+library. Run:
+
+```bash
+go test ./e2e -run TestIntegration_AutopilotCachedBootstrapAndPause -count=1 -timeout 10m
+```
+
+The request-shape, selected-model, revision/session, ledger-failure and donor-floor
+regressions also run in the coordinator/provider unit and race suites. Real
+production improvement remains a separate measured rollout result.
+
 ## Advisory threat-model review checks
 
 Run `python3 .github/scripts/test-threat-model-review.py` for the review input,
@@ -2818,3 +2923,16 @@ normal/recovery success guard. Publication tests bind original build source and
 current signing provenance separately and require a moved tag to fail before
 registration. These offline checks do not grant App Attest qualification or
 prove successful Apple signing/notarization.
+
+## Stripe migration maintenance
+
+Build the audit/repair binary with `go build -o /tmp/payout-audit ./coordinator/cmd/payout-audit`.
+It uses the configured database without running migrations and defaults to read-only
+bounded output. Applying a refund requires an exact withdrawal ID, expected amount
+and an operator-verified Stripe request. See [the cutover runbook](../operations/stripe-migration.md).
+
+Exercise the API, funding and settlement contracts with
+`go test ./coordinator/api ./coordinator/billing/... ./coordinator/store ./coordinator/cmd/payout-audit`.
+Set `DATABASE_URL` to a disposable local PostgreSQL database to run transaction,
+concurrency and rollback coverage. Never point tests at production. Console
+migration coverage runs with `npm test` in `console-ui`.

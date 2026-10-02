@@ -189,7 +189,18 @@ extension Start {
         // (previous_exit / start_reason) before any in-place update exec.
         ProviderProcessRun.begin()
 
-        let (models, modelHashes, modelHashFingerprints) = attachWeightHashes(to: selectedModels)
+        let selectedIDs = Set(selectedModels.map(\.id))
+        let inventory = config.backend.modelAutopilot.hasConsent
+            ? snapshot.models.filter {
+                config.backend.modelAutopilot.allows($0.id)
+                    && ModelRuntimeRequirements.isEligible(modelID: $0.id, available: runtimeCapabilities)
+            } : []
+        let combined = selectedModels + inventory.filter { !selectedIDs.contains($0.id) }
+        let (verified, modelHashes, modelHashFingerprints) = attachWeightHashes(to: combined)
+        let models = verified.filter { selectedIDs.contains($0.id) }
+        let autopilotInventory = verified.filter {
+            config.backend.modelAutopilot.allows($0.id) && $0.weightHash?.isEmpty == false
+        }
         let runtimeHashes = (try? RuntimeHashReporter().report().coordinatorRuntimeHashes)
         let authToken = AuthTokenStore.load()
         if let identity = ProcessIdentity.current() {
@@ -305,7 +316,8 @@ extension Start {
             modelHashes: modelHashes,
             modelHashFingerprints: modelHashFingerprints,
             localEndpoint: localEndpointConfig,
-            configPath: snapshot.configPath
+            configPath: snapshot.configPath,
+            autopilotInventory: autopilotInventory
         )
 
         do {
@@ -403,23 +415,29 @@ extension Start {
             }
 
             let windowStart = Date()
-            let windowEnd = windowStart.addingTimeInterval(schedule.durationUntilInactive(from: windowStart) ?? 3600)
+            guard let timing = ScheduledWindowTiming(schedule: schedule, at: windowStart) else { continue }
+            let windowEnd = timing.end
             let windowConfig = try selection.nextWindowConfiguration()
             // Selection validation may hash several large models. Keep the
             // original window end rather than starting a full timer afterward.
-            guard schedule.isActiveNow(), windowEnd.timeIntervalSinceNow > 0 else { continue }
+            guard schedule.isActiveNow(), windowEnd.map({ $0.timeIntervalSinceNow > 0 }) ?? true else { continue }
             let loop = try ProviderLoop(config: windowConfig)
-            let remaining = windowEnd.timeIntervalSinceNow
-            guard schedule.isActiveNow(), remaining > 0 else { continue }
-            print("Availability window active for \(formatDuration(remaining)).")
+            guard schedule.isActiveNow(), windowEnd.map({ $0.timeIntervalSinceNow > 0 }) ?? true else { continue }
+            if let windowEnd {
+                print("Availability window active for \(formatDuration(windowEnd.timeIntervalSinceNow)).")
+            } else {
+                print("Availability windows cover the full week; serving continuously.")
+            }
             try await withThrowingTaskGroup(of: ScheduledLoopResult.self) { group in
                 group.addTask {
                     try await runProviderLoopWithFanLease(loop)
                     return .loopEnded
                 }
-                group.addTask {
-                    try await Task.sleep(nanoseconds: sleepNanoseconds(for: windowEnd.timeIntervalSinceNow))
-                    return .windowClosed
+                if let windowEnd {
+                    group.addTask {
+                        try await Task.sleep(nanoseconds: sleepNanoseconds(for: windowEnd.timeIntervalSinceNow))
+                        return .windowClosed
+                    }
                 }
 
                 guard let result = try await group.next() else { return }

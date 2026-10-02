@@ -12,8 +12,8 @@ extension Start {
     /// Interactive multi-select model picker using raw terminal mode.
     /// Arrow keys navigate, Space toggles selection, Enter confirms, Esc/q cancels.
     /// Enforces memory budget and shows two sections: downloaded and available.
-    internal func runModelPicker(entries: [PickerEntry], memoryGb: Double) throws -> [Int] {
-        let budget = memoryGb - Start.pickerOSReserveGb
+    internal func runModelPicker(entries: [PickerEntry], memoryGb: Double, preselectDownloaded: Bool = true) throws -> [Int] {
+        let budget = Start.pickerLoadBudgetGiB(memoryGb: memoryGb)
 
         var cursorPos = 0
         var selected = [Bool](repeating: false, count: entries.count)
@@ -55,7 +55,7 @@ extension Start {
         }
 
         // Pre-select the largest downloaded model that can fit on this machine.
-        if let idx = entries.firstIndex(where: { $0.downloaded && canFitIndividually($0) }) {
+        if preselectDownloaded, let idx = entries.firstIndex(where: { $0.downloaded && canFitIndividually($0) }) {
             selected[idx] = true
         }
 
@@ -83,9 +83,9 @@ extension Start {
             lines += 1
 
             if fitsSimultaneously {
-                output += "  \(ansiDim)\(count) selected \u{00B7} \(formattedGB(used)) GB total \u{00B7} all models can be served simultaneously\(ansiReset)\r\n\r\n"
+                output += "  \(ansiDim)\(count) selected \u{00B7} \(formattedGB(used)) GiB load estimate \u{00B7} models are loaded as capacity allows\(ansiReset)\r\n\r\n"
             } else {
-                output += "  \(ansiDim)\(count) selected \u{00B7} \(formattedGB(used)) GB on disk \u{00B7} \(ansiReset)\(ansiYellow)one model active at a time (swap on demand)\(ansiReset)\r\n\r\n"
+                output += "  \(ansiDim)\(count) selected \u{00B7} \(formattedGB(used)) GiB load estimate \u{00B7} \(ansiReset)\(ansiYellow)selected models may share memory or take turns\(ansiReset)\r\n\r\n"
             }
             lines += 2
 
@@ -93,7 +93,7 @@ extension Start {
 
             // Section 1: Downloaded models.
             if downloadedCount > 0 {
-                output += "  \u{1B}[1mReady to serve:\u{1B}[0m\r\n"
+                output += "  \u{1B}[1mDownloaded:\u{1B}[0m\r\n"
                 lines += 1
                 for entry in entries where entry.downloaded {
                     let arrow = idx == pos ? "\u{25B8}" : " "
@@ -103,7 +103,7 @@ extension Start {
                     // A downloaded model that exceeds this box's budget is shown
                     // (it IS on disk) but flagged "won't fit" — never hidden.
                     let warn = canFitIndividually(entry) ? "" : " \u{26A0} won't fit"
-                    output += "    \(highlight)\(arrow) [\(check)] \(entry.displayName) (\(formattedGB(entry.sizeGb)) GB)\(warn)\(reset)\r\n"
+                    output += "    \(highlight)\(arrow) [\(check)] \(entry.displayName) (~\(formattedGB(entry.sizeGb)) GiB load)\(warn)\(reset)\r\n"
                     lines += 1
                     idx += 1
                 }
@@ -135,7 +135,7 @@ extension Start {
                     } else {
                         note = tooLargeForMachine ? " \u{26A0} exceeds RAM" : ""
                     }
-                    output += "    \(highlight)\(arrow) [\(check)] \u{2193} \(entry.displayName) (\(formattedGB(entry.sizeGb)) GB)\(note)\u{1B}[0m\r\n"
+                    output += "    \(highlight)\(arrow) [\(check)] \u{2193} \(entry.displayName) (\(formattedGB(entry.catalogModel.sizeGb)) GB download; ~\(formattedGB(entry.sizeGb)) GiB load)\(note)\u{1B}[0m\r\n"
                     lines += 1
                     idx += 1
                 }

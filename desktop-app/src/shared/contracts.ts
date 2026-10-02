@@ -138,7 +138,7 @@ export interface DesktopStatus {
   message?: string;
 }
 export interface GUIUpdate {
-  state: 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error';
+  state: 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error' | 'unconfigured';
   version?: string;
   message?: string;
 }
@@ -151,6 +151,7 @@ export interface DesktopAPI {
     target: 'console' | 'docs' | 'community' | 'terms' | 'privacy' | 'link',
   ): Promise<void>;
   copy(text: string): Promise<void>;
+  updateStatus(): Promise<GUIUpdate>;
   checkUpdate(): Promise<GUIUpdate>;
   applyUpdate(): Promise<void>;
   onState(callback: (state: Snapshot) => void): () => void;

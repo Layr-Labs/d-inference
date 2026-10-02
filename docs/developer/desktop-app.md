@@ -1,6 +1,6 @@
 # Build and validate the macOS desktop app
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-02
 
 Build the Electron frontend and its Swift CLI/backend API in this repository.
 This guide covers development and review artifacts; production distribution also
@@ -76,6 +76,30 @@ requires the release qualifications below.
    checks for an isolated packaged-renderer check.
    If a valid Developer ID is available, electron-builder signs the GUI;
    notarization requires its configured credentials. Verify the actual result.
+   Set `CSC_IDENTITY_AUTO_DISCOVERY=false` for an unsigned review build.
+
+6. Choose the GUI update feed at build time. Packaging settings live in
+   `desktop-app/electron-builder.ts` (`desktopBuildConfig`), not `package.json`;
+   electron-builder discovers that file even without `--config`. The feed is
+   opt-in:
+
+   ```bash
+   cd desktop-app
+   DARKBLOOM_DESKTOP_UPDATE_URL=https://<desktop-update-host>/<path> npm run dist
+   ```
+
+   With the variable set (https only), electron-builder embeds a `generic` feed
+   as `Darkbloom.app/Contents/Resources/app-update.yml` and writes the zip,
+   blockmap and `latest-mac.yml` to `release/` for hosting at that URL. Without
+   it the config sets `publish: null`. No `app-update.yml` is embedded, and
+   electron-builder cannot infer a GitHub feed from `GH_TOKEN`/`GITHUB_TOKEN`.
+   The app then never calls the updater, and Updates shows "Desktop app updates
+   are not configured for this build." instead of failing every check.
+   `--dir` builds (`make desktop-package`) never embed the file.
+
+   The packaged app checks only when `app-update.yml` declares a `generic` https
+   feed. The GUI must never use this repository's GitHub releases. Those are
+   provider runtime releases with no `latest-mac.yml`.
 
 ## Verify
 
@@ -91,7 +115,8 @@ make docs-check
 using a real in-process HTTP server and store. The ordinary provider/coordinator
 component suites remain required for changes to their shared code.
 
-`.github/workflows/desktop.yml` runs the frontend tests and build. Manual workflow
+`.github/workflows/desktop.yml` runs the frontend tests and build, including
+for changes to `scripts/install.sh`, which the app bundles. Manual workflow
 dispatch also produces unsigned macOS review artifacts. It does not publish a
 release or establish attestation qualification.
 
@@ -105,8 +130,9 @@ signed frontend and signed provider artifact:
   published CLI cannot provide this API.
 - Deploy the reviewed coordinator projection before advertising fleet features.
   A missing endpoint appears as unavailable data, never sample account results.
-- Publish the GUI zip and `latest-mac.yml` to the configured GitHub release feed;
-  verify GUI update download, restart and rollback separately from native update.
+- Choose and host the GUI update feed (`DARKBLOOM_DESKTOP_UPDATE_URL`, step 6),
+  publish the signed zip and `latest-mac.yml` there, and verify GUI update
+  download, restart and rollback separately from native update.
 - Verify notarization, Gatekeeper, the provisioned provider bundle, App Attest,
   source-matched metallib/resources, and the existing fan helper on real hardware.
 - Exercise a real eligible model through download, start, inference, local/network
@@ -115,8 +141,39 @@ signed frontend and signed provider artifact:
 - Exercise API interruption during a long operation. The operation journal marks
   an interrupted operation for reconciliation; automatic exactly-once replay is
   not implemented. Do not retry until native state is known.
+- Log out and back in after the first packaged launch: the menu bar item appears
+  and no window opens (`wasOpenedAtLogin`). Reopening the app shows the window.
 - Confirm desktop redistribution rights for the supplied fonts.
 
 See [provider releases](../operations/provider-release.md) and
 [coordinator deployment](../operations/coordinator-deploy.md) for the independently
 authorized release/deploy procedures.
+
+## Launch at login
+
+The first packaged launch registers the app as a macOS login item (the default
+`mainAppService`) once; later changes in System Settings are kept. Login-item
+`args` are Windows-only in Electron, so a login launch is detected through
+`app.getLoginItemSettings().wasOpenedAtLogin` (`launchedHidden` in
+`desktop-app/src/main/loginLaunch.ts`) and starts without a window. The
+menu bar item stays available. Passing `--hidden` also starts hidden.
+
+## Main-process layout
+
+`desktop-app/src/main/index.ts` only wires the modules below together;
+`desktop-app/scripts/build.mjs` bundles them into `dist/main.cjs`.
+
+| Module | Responsibility |
+|--------|----------------|
+| `desktop-app/src/main/security.ts` | IPC sender/frame/origin checks, navigation and link allowlists, renderer path guard, CSP, clipboard bounds (electron-free, unit tested) |
+| `desktop-app/src/main/protocol.ts` | privileged `darkbloom://` scheme and renderer file serving |
+| `desktop-app/src/main/window.ts` | the sandboxed main window; close hides |
+| `desktop-app/src/main/ipc.ts` | renderer-callable channels, each gated by `isTrustedSender` |
+| `desktop-app/src/main/tray.ts`, `desktop-app/src/main/trayMenu.ts` | menu bar item; the native menu rebuilds only when its state model changes |
+| `desktop-app/src/main/appMenu.ts`, `desktop-app/src/main/notifications.ts`, `desktop-app/src/main/lifecycle.ts` | application menu, failed-operation notification, quit state |
+| `desktop-app/src/main/loginLaunch.ts` | login-item registration and hidden login launch |
+| `desktop-app/src/main/updates.ts`, `desktop-app/src/main/updateFeed.ts` | GUI self-update and the build-time feed contract |
+| `desktop-app/src/main/backend.ts` | runtime discovery, signature checks and the native API client |
+
+`Backend.verifyRuntime` checks the runtime's code signature in packaged builds before
+running `desktop ensure` or `update`.

@@ -186,6 +186,9 @@ export const previewAPI: DesktopAPI = {
     await navigator.clipboard.writeText(text);
   },
   async openExternal() {},
+  async updateStatus() {
+    return { state: 'idle' };
+  },
   async checkUpdate() {
     return { state: 'idle' };
   },

@@ -12,6 +12,7 @@ const api: DesktopAPI = {
   install: () => ipcRenderer.invoke('backend:install'),
   openExternal: (target) => ipcRenderer.invoke('app:external', target),
   copy: (text) => ipcRenderer.invoke('app:copy', text),
+  updateStatus: () => ipcRenderer.invoke('app:update-status'),
   checkUpdate: () => ipcRenderer.invoke('app:update'),
   applyUpdate: () => ipcRenderer.invoke('app:apply-update'),
   onState: (callback) => subscribe('backend:state', callback),

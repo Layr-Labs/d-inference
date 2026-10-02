@@ -7,6 +7,10 @@ import { EventEmitter } from 'node:events';
 import type { Action, DesktopStatus, Operation, Resource, Snapshot } from '../shared/contracts';
 
 const execute = promisify(execFile);
+const runtimeRequirement =
+  '-R=anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"';
+// `desktop ensure` may wait for a launchd bootout, one restart, and the new API's version.
+const ensureTimeoutMs = 90_000;
 const resources = new Set<Resource>([
   'state',
   'cloud',
@@ -51,6 +55,11 @@ export class Backend extends EventEmitter {
       path.join(homedir(), '.darkbloom/bin/darkbloom')
     );
   }
+  // Packaged builds only execute a runtime signed by Darkbloom's Developer ID.
+  private async verifyRuntime(binary: string) {
+    if (this.packaged)
+      await execute('/usr/bin/codesign', ['--verify', '--strict', runtimeRequirement, binary]);
+  }
   private status(value: DesktopStatus) {
     this.current = value;
     this.emit('status', value);
@@ -58,15 +67,12 @@ export class Backend extends EventEmitter {
   async connect() {
     try {
       const binary = await realpath(this.binary);
-      if (this.packaged)
-        await execute('/usr/bin/codesign', [
-          '--verify',
-          '--strict',
-          '-R=anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"',
-          binary,
-        ]);
+      await this.verifyRuntime(binary);
       if (this.packaged || process.env.DARKBLOOM_DESKTOP_ATTACH_ONLY !== '1')
-        await execute(binary, ['desktop', 'ensure'], { timeout: 45_000, maxBuffer: 64_000 });
+        await execute(binary, ['desktop', 'ensure'], {
+          timeout: ensureTimeoutMs,
+          maxBuffer: 64_000,
+        });
       await this.discover();
       this.snapshot = await this.read<Snapshot>('state');
       if (
@@ -187,13 +193,14 @@ export class Backend extends EventEmitter {
       try {
         existing = await realpath(this.binary);
       } catch {}
-      if (existing)
+      if (existing) {
+        await this.verifyRuntime(existing);
         await execute(existing, ['update'], { timeout: 10 * 60_000, maxBuffer: 256_000 });
-      else
+      } else
         await execute('/bin/bash', [script], {
           timeout: 10 * 60_000,
           maxBuffer: 256_000,
-          env: { ...process.env, CI: '1', COORD_URL: 'https://api.darkbloom.dev' },
+          env: { ...process.env, COORD_URL: 'https://api.darkbloom.dev' },
         });
       await this.connect();
     } catch {

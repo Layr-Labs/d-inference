@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Download, RotateCw } from 'lucide-react';
 import type { BackendState } from '../useBackend';
 import { api } from '../useBackend';
@@ -6,7 +6,10 @@ import type { GUIUpdate } from '../../shared/contracts';
 import { Button, External, Header, Notice, Status } from '../components/UI';
 
 export function Updates({ backend }: { backend: BackendState }) {
-  const [update, setUpdate] = useState<GUIUpdate>({ state: 'idle' });
+  const [update, setUpdate] = useState<GUIUpdate>();
+  useEffect(() => {
+    void api?.updateStatus().then(setUpdate);
+  }, []);
   return (
     <>
       <Header
@@ -62,15 +65,17 @@ export function Updates({ backend }: { backend: BackendState }) {
       <section className="settings-section">
         <h2>Desktop app</h2>
         <p>
-          {update.state === 'ready'
-            ? `Version ${update.version} is ready.`
-            : update.state === 'downloading'
-              ? 'Downloading the desktop update…'
-              : update.state === 'error'
-                ? update.message
-                : 'The desktop app checks for updates automatically.'}
+          {!update
+            ? 'Checking desktop update status…'
+            : update.state === 'ready'
+              ? `Version ${update.version} is ready.`
+              : update.state === 'downloading'
+                ? 'Downloading the desktop update…'
+                : update.state === 'error' || update.state === 'unconfigured'
+                  ? update.message
+                  : 'The desktop app checks for updates automatically.'}
         </p>
-        {update.state === 'ready' && (
+        {update?.state === 'ready' && (
           <Button variant="primary" onClick={() => void api?.applyUpdate()}>
             Restart desktop app
           </Button>

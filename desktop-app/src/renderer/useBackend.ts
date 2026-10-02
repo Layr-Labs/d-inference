@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   Action,
   CloudData,
@@ -8,13 +8,17 @@ import type {
   Leader,
   NetworkData,
   ReleaseData,
+  Route,
   Snapshot,
 } from '../shared/contracts';
 import { previewAPI } from './preview';
 
 export const isPreview = import.meta.env.DEV && new URLSearchParams(location.search).has('preview');
 export const api: DesktopAPI | undefined = isPreview ? previewAPI : window.darkbloom;
-export function useBackend() {
+// Cooling status spawns a `darkbloom fan status` process in the native backend,
+// so it is read only while a screen that displays it is shown.
+export const showsCooling = (route: Route) => route === 'cooling';
+export function useBackend(route: Route = 'home') {
   const [status, setStatus] = useState<DesktopStatus>({ state: 'connecting' });
   const [state, setState] = useState<Snapshot>();
   const [cloud, setCloud] = useState<CloudData>();
@@ -24,6 +28,21 @@ export function useBackend() {
   const [leaders, setLeaders] = useState<Leader[]>([]);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const coolingVisible = useRef(showsCooling(route));
+  const readCooling = useCallback(async () => {
+    if (!api) return;
+    await api
+      .read<CoolingData>('cooling')
+      .then(setCooling)
+      .catch(() =>
+        setCooling({
+          supported: false,
+          fans: [],
+          mode: 'unavailable',
+          error: 'Cooling status is unavailable.',
+        }),
+      );
+  }, []);
   const refresh = useCallback(async () => {
     if (!api) return;
     await Promise.allSettled([
@@ -46,17 +65,7 @@ export function useBackend() {
         .catch(() =>
           setNetwork((previous) => ({ ...previous, error: 'Network statistics are unavailable.' })),
         ),
-      api
-        .read<CoolingData>('cooling')
-        .then(setCooling)
-        .catch(() =>
-          setCooling({
-            supported: false,
-            fans: [],
-            mode: 'unavailable',
-            error: 'Cooling status is unavailable.',
-          }),
-        ),
+      ...(coolingVisible.current ? [readCooling()] : []),
       api
         .read<ReleaseData>('release')
         .then(setRelease)
@@ -65,7 +74,7 @@ export function useBackend() {
         .read<{ entries?: Leader[] } | Leader[]>('leaderboard')
         .then((data) => setLeaders(Array.isArray(data) ? data : data.entries || [])),
     ]);
-  }, []);
+  }, [readCooling]);
   useEffect(() => {
     if (!api) {
       setStatus({
@@ -90,6 +99,14 @@ export function useBackend() {
     }, 30_000);
     return () => clearInterval(timer);
   }, [status.state, refresh]);
+  const coolingShown = showsCooling(route);
+  useEffect(() => {
+    coolingVisible.current = coolingShown;
+    // Entering the screen fetches at once (status is deliberately not a dependency:
+    // the periodic refresh covers the rest, including the first refresh after the
+    // runtime connects).
+    if (coolingShown && status.state === 'ready') void readCooling();
+  }, [coolingShown, readCooling]);
   const act = useCallback(
     async (action: Action, wait = false): Promise<boolean> => {
       if (!api) return false;

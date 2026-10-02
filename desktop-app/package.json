@@ -9,59 +9,10 @@
     "dev": "node scripts/assets.mjs && node scripts/dev.mjs",
     "build": "node scripts/assets.mjs && tsc --noEmit && vite build && node scripts/build.mjs",
     "test": "node scripts/assets.mjs && vitest run",
-    "package": "npm run build && electron-builder --mac --dir --publish never",
-    "dist": "npm run build && electron-builder --mac --publish never",
+    "package": "npm run build && electron-builder --config electron-builder.ts --mac --dir --publish never",
+    "dist": "npm run build && electron-builder --config electron-builder.ts --mac --publish never",
     "format": "prettier --write src scripts tests *.ts *.json",
     "lint": "prettier --check src scripts tests *.ts *.json"
-  },
-  "build": {
-    "appId": "io.darkbloom.desktop",
-    "productName": "Darkbloom",
-    "directories": {
-      "output": "release"
-    },
-    "files": [
-      "dist/**/*",
-      "package.json"
-    ],
-    "extraResources": [
-      {
-        "from": "resources",
-        "to": "bootstrap",
-        "filter": [
-          "install-runtime.sh"
-        ]
-      }
-    ],
-    "mac": {
-      "category": "public.app-category.utilities",
-      "target": [
-        {
-          "target": "dmg",
-          "arch": [
-            "arm64"
-          ]
-        },
-        {
-          "target": "zip",
-          "arch": [
-            "arm64"
-          ]
-        }
-      ],
-      "hardenedRuntime": true,
-      "minimumSystemVersion": "14.0",
-      "extendInfo": {
-        "LSUIElement": true
-      },
-      "icon": "resources/icon.icns"
-    },
-    "publish": {
-      "provider": "github",
-      "owner": "Layr-Labs",
-      "repo": "d-inference",
-      "releaseType": "draft"
-    }
   },
   "dependencies": {
     "electron-updater": "6.8.9",

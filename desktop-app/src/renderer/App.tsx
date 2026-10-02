@@ -31,8 +31,8 @@ const navigation = [
   { id: 'cooling', label: 'Cooling', icon: Fan },
 ] as const;
 export default function App() {
-  const backend = useBackend();
   const [route, setRoute] = useState<Route>('home');
+  const backend = useBackend(route);
   const [onboarding, setOnboarding] = useState(
     () => !isPreview && localStorage.getItem('darkbloom.onboardingComplete') !== '1',
   );

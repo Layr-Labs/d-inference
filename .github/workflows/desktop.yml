@@ -6,10 +6,16 @@ on:
       - 'desktop-app/**'
       - 'landing/public/**'
       - 'landing/src/app/globals.css'
+      - 'scripts/install.sh'
       - '.github/workflows/desktop.yml'
   push:
     branches: [master]
-    paths: ['desktop-app/**', 'landing/public/**', 'landing/src/app/globals.css']
+    paths:
+      - 'desktop-app/**'
+      - 'landing/public/**'
+      - 'landing/src/app/globals.css'
+      - 'scripts/install.sh'
+      - '.github/workflows/desktop.yml'
   workflow_dispatch:
 
 permissions:

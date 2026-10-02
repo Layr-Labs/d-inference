@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-10-02
+> Last updated: 2026-09-30
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -39,15 +39,6 @@ The remaining epoch allocation commits as one transaction in `coordinator/paymen
   may pay out (`coordinator/store/postgres.go` DDL).
 
 ## Mechanism
-
-### Provider earnings reporting
-
-The owner-only [provider insights API](../reference/api-contracts.md#provider-insights)
-groups settled inference income separately from base rewards. The console's
-period average divides inference income by settled inference requests; it
-never divides combined rewards by requests. Token milestones read the existing
-account lifetime completion-token total. These are reporting reads only and
-do not change pricing, settlement, balances, or payout eligibility.
 
 ### Prices
 

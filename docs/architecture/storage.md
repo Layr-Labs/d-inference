@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-01
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -212,23 +212,6 @@ flowchart LR
   B -- no --> X[exit 1]
   D -. any error .-> X
 ```
-
-### Provider insights reads
-
-`coordinator/store/provider_insights.go` (`ProviderInsightsReader`) is a
-read-only capability discovered through `store.As`, including through
-`CachedStore`. Its memory and Postgres implementations group settled provider
-earnings by UTC day, model, and historical provider ID. Base-reward rows add
-money only, never inference counts or tokens. No new table or writer is added.
-
-`coordinator/store/postgres_provider_insights.go` (`ProviderInsightGroups`)
-uses the existing account/time index and a bounded window, aggregates in SQL,
-applies a five-second deadline, and rejects output beyond 10,000 groups rather
-than truncating it. Lifetime progress reads the existing `earnings_summary`
-account row through `GetAccountEarningsSummary`; only a missing row means zero.
-Other database errors propagate, so a storage failure cannot reset visible
-lifetime progress to zero. API snapshots and caching are specified in
-[provider insights](../reference/api-contracts.md#provider-insights).
 
 ### Table families
 

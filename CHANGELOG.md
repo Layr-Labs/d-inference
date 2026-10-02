@@ -2,8 +2,6 @@
 
 ## Unreleased — console branding
 
-- Add owner-only model activity lanes, lifetime output-token milestones with one-time crossing celebrations, and 7/30-day earnings dashboards with daily charts, model/Mac breakdowns, and CSV export. Add a bounded provider-insights API backed by settled earnings; separate inference income from base rewards and preserve unknown/stale states.
-
 - Show model traffic and fulfillment after capacity, with a default comparison across models, published-traffic shares, separate outcome rates, and responsive rows. Preserve missing and partially published history without estimating suppressed requests.
 
 - Align the console with Darkbloom’s landing-page wordmark, PP Telegraf typography, blue actions, and neutral light and dark surfaces.

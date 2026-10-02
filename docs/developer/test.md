@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-01
 
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the
@@ -2927,23 +2927,6 @@ normal/recovery success guard. Publication tests bind original build source and
 current signing provenance separately and require a moved tag to fail before
 registration. These offline checks do not grant App Attest qualification or
 prove successful Apple signing/notarization.
-
-## Provider activity and earnings insights
-
-Provider activity and insights coverage is in
-`console-ui/src/app/providers/insights/` and
-`console-ui/src/app/api/me/provider-insights/route.test.ts`: stale activity,
-account-switch cancellation, milestone boundaries/celebrations, metric and
-breakdown controls, and relay authentication/window validation. Run `npm test`
-in `console-ui` and inspect light/dark layouts with 390px and 1063px viewports.
-Use synthetic local fixtures; never connect tests to the production coordinator.
-
-Run `go test ./store -run 'TestProviderInsights|TestAccountEarningsSummaryDatabaseFailure'`
-and `go test ./api -run 'TestProviderInsights|TestBuildProviderInsights'` from
-`coordinator`. Set `DATABASE_URL` to a disposable local PostgreSQL database for
-memory/Postgres parity, UTC boundaries, full-window totals beyond 5,000 rows,
-and database-failure semantics. API tests cover owner isolation, fixed windows,
-cache separation, zero days, and totals across breakdowns.
 
 ## Stripe migration maintenance
 

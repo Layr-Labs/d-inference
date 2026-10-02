@@ -1,6 +1,6 @@
 # Console UI (`console-ui/`)
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-01
 
 The console at `console.darkbloom.dev` is a Next.js 16 App Router / React 19 application (`console-ui/package.json`) that gives consumers a chat client, model catalog, network stats, billing, API-key management, and provider linking. The browser never calls the coordinator for authenticated work: every page fetches same-origin `/api/*` route handlers, which resolve the coordinator URL server-side and forward the caller's own credential. This page explains how those pieces fit; the coordinator routes they call are specified in [`../../reference/api-contracts.md`](../../reference/api-contracts.md). The internal, read-only operator dashboard is a separate app — see [`admin-ui.md`](admin-ui.md).
 
@@ -56,36 +56,7 @@ Files are under `console-ui/src/app/`. "Auth" is what the page itself requires; 
 | `/earn` | `earn/page.tsx`, `earn/calc.ts`, `earn/useEarningsCalculator.ts`, `earn/providerReadiness.ts` | Earnings calculator — pure client math, no network call; readiness notice below `MIN_PROVIDER_MEMORY_GB` | Public; CTAs call `login()` |
 | `/leaderboard` | `leaderboard/page.tsx` → `components/leaderboard/LeaderboardContent.tsx`, `components/leaderboard/useLeaderboard.ts` | Provider leaderboard from `/api/leaderboard?<metric,window,limit>` | Public |
 
-The earnings dashboard separates inference income and base rewards. The
-Privy-gated admin proxy `console-ui/src/app/api/admin/base-rewards/route.ts`
-retains the administrative view — see [`../../design/base-rewards.md`](../../design/base-rewards.md).
-
-### Provider activity and earnings insights
-
-`providers/insights/ProviderExperience.tsx` composes `LiveModels`,
-`TokenMilestones`, and `EarningsPulse` in the existing fleet dashboard.
-`activity.ts` aggregates only online providers' fresh accepted-capacity slots
-in `running` or `idle` state. Each lit cell represents one currently reported
-running request, capped visually at 24 per model with the full count beside it.
-These are sampled gauges, not invented per-request events. Failed polls hide
-live counts; absent or heartbeat-expired capacity is unknown. Motion can be
-paused and respects reduced-motion preferences.
-
-`useProviderInsights` polls the owner-only insights relay every 30 seconds while
-visible. Account/window changes cancel old work and hide previous data on the
-first render. A failed refresh retains a labeled stale snapshot. A coordinator
-without the new endpoint produces an unavailable message without zero-filling.
-`TokenMilestones` counts settled lifetime output tokens; a crossing observed
-while mounted shows a brief celebration, while first load does not replay old
-achievements. Removing a machine does not delete the settlement history.
-
-`EarningsAnalytics` supplies 7/30-day UTC charts, earnings/output-token/request
-selectors, keyboard-accessible daily details, model/machine breakdowns, and
-daily CSV export. Base rewards contribute money but no requests or tokens;
-average request income uses only inference earnings. Payout controls remain in
-`providers/earnings/EarningsContent.tsx`, keyed to the account to discard old
-account state. The [API contract](../../reference/api-contracts.md#provider-insights)
-defines aggregation limits and snapshot semantics.
+No console page surfaces base rewards; the only base-rewards code is the Privy-gated admin proxy `console-ui/src/app/api/admin/base-rewards/route.ts` — see [`../../design/base-rewards.md`](../../design/base-rewards.md).
 
 ### Workspace entry and provider journeys
 

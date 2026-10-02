@@ -6,10 +6,11 @@ import { trackEvent } from "@/lib/google-analytics";
 import { useToastStore } from "@/hooks/useToast";
 import { useVisiblePolling } from "@/hooks/useVisiblePolling";
 import { STORAGE_KEYS } from "@/lib/storage-keys";
-import { EarningsAnalytics } from "../insights/EarningsAnalytics";
-import { money, compact } from "../insights/types";
 import {
   Loader2,
+  DollarSign,
+  Briefcase,
+  TrendingUp,
   LogIn,
   ArrowDownToLine,
 } from "lucide-react";
@@ -48,11 +49,6 @@ interface EarningsResponse {
 }
 
 export default function EarningsContent() {
-  const { user, authenticated } = useAuth();
-  return <AccountEarningsContent key={authenticated ? user?.id || "authenticated" : "signed-out"} />;
-}
-
-function AccountEarningsContent() {
   const { ready, authenticated, login, getAccessToken } = useAuth();
   const addToast = useToastStore((s) => s.addToast);
   const [data, setData] = useState<EarningsResponse | null>(null);
@@ -142,6 +138,7 @@ function AccountEarningsContent() {
     );
   }
 
+  const totalEarned = data?.total_usd || "0.000000";
   const withdrawableBalanceMicro = data?.withdrawable_balance_micro_usd ?? data?.available_balance_micro_usd ?? 0;
   const totalBalance = data?.available_balance_micro_usd || 0;
   const creditsBalance = totalBalance - withdrawableBalanceMicro;
@@ -152,20 +149,44 @@ function AccountEarningsContent() {
   const availableUsd = withdrawableBalanceMicro / 1_000_000;
 
   return (
-    <div className="max-w-6xl mx-auto p-6 space-y-6">
+    <div className="max-w-4xl mx-auto p-6 space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-text-primary">Your earnings</h1>
+        <h2 className="text-lg font-semibold text-text-primary">Provider Earnings</h2>
         <p className="text-sm text-text-tertiary mt-0.5">
           Earnings stay available after you remove your Macs.
         </p>
       </div>
 
-      <dl className="grid grid-cols-1 gap-6 py-3 sm:grid-cols-2">
-        <div><dt className="text-xs text-text-tertiary">Lifetime earnings</dt><dd className="mt-2 text-3xl font-medium tracking-tight tabular-nums">{money(data?.total_micro_usd ?? 0)}</dd></div>
-        <div><dt className="text-xs text-text-tertiary">Lifetime settled requests</dt><dd className="mt-2 text-3xl font-medium tracking-tight tabular-nums">{compact(totalJobs)}</dd></div>
-      </dl>
-
-      <EarningsAnalytics />
+      {/* Stats cards */}
+      <div className="grid grid-cols-3 gap-4">
+        <div className="rounded-xl bg-bg-secondary shadow-sm p-5">
+          <div className="flex items-center gap-2 mb-2">
+            <DollarSign size={16} className="text-accent-green" />
+            <p className="text-xs text-text-tertiary">Total Earned</p>
+          </div>
+          <p className="text-2xl font-bold text-text-primary">
+            ${totalEarned}
+          </p>
+        </div>
+        <div className="rounded-xl bg-bg-secondary shadow-sm p-5">
+          <div className="flex items-center gap-2 mb-2">
+            <Briefcase size={16} className="text-accent-amber" />
+            <p className="text-xs text-text-tertiary">Jobs Completed</p>
+          </div>
+          <p className="text-2xl font-bold text-text-primary">
+            {totalJobs}
+          </p>
+        </div>
+        <div className="rounded-xl bg-bg-secondary shadow-sm p-5">
+          <div className="flex items-center gap-2 mb-2">
+            <TrendingUp size={16} className="text-accent-brand" />
+            <p className="text-xs text-text-tertiary">Avg per Job</p>
+          </div>
+          <p className="text-2xl font-bold text-text-primary">
+            ${totalJobs > 0 ? (parseFloat(totalEarned) / totalJobs).toFixed(6) : "0.00"}
+          </p>
+        </div>
+      </div>
 
       {/* Payout coverage caveat — set expectations before bank linking */}
       <PayoutCoverageNotice />
@@ -212,15 +233,15 @@ function AccountEarningsContent() {
         <h3 className="text-sm font-semibold text-text-primary mb-3">Recent Activity</h3>
         {totalJobs > recentCount && (
           <p className="text-xs text-text-tertiary mb-3">
-            Showing the latest {recentCount} payouts.
+            Showing the latest {recentCount} of {totalJobs} payouts.
           </p>
         )}
-        <div className="rounded-xl bg-bg-secondary shadow-sm overflow-x-auto">
+        <div className="rounded-xl bg-bg-secondary shadow-sm overflow-hidden">
           {data?.earnings && data.earnings.length > 0 ? (
             <table className="w-full">
               <thead>
                 <tr className="border-b border-border-dim">
-                  <th className="text-left text-xs text-text-tertiary font-medium px-4 py-3">Source</th>
+                  <th className="text-left text-xs text-text-tertiary font-medium px-4 py-3">Model</th>
                   <th className="text-left text-xs text-text-tertiary font-medium px-4 py-3">Earned</th>
                   <th className="text-left text-xs text-text-tertiary font-medium px-4 py-3">Tokens</th>
                   <th className="text-left text-xs text-text-tertiary font-medium px-4 py-3">Time</th>
@@ -230,13 +251,13 @@ function AccountEarningsContent() {
                 {data.earnings.map((e) => (
                   <tr key={e.id} className="border-b border-border-dim/50 last:border-0">
                     <td className="px-4 py-3 text-sm font-mono text-text-primary">
-                      {e.model === "base_reward" ? "Base reward" : e.model.split("/").pop()}
+                      {e.model.split("/").pop()}
                     </td>
                     <td className="px-4 py-3 text-sm font-mono text-accent-green">
                       +${(e.amount_micro_usd / 1_000_000).toFixed(6)}
                     </td>
                     <td className="px-4 py-3 text-sm text-text-tertiary">
-                      {e.model === "base_reward" ? "—" : `${e.prompt_tokens + e.completion_tokens} (${e.completion_tokens} out)`}
+                      {e.prompt_tokens + e.completion_tokens} ({e.completion_tokens} out)
                     </td>
                     <td className="px-4 py-3 text-sm text-text-tertiary">
                       {new Date(e.created_at).toLocaleString()}

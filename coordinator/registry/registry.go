@@ -25,8 +25,10 @@ import (
 
 // Registry holds all connected providers and provides routing.
 type Registry struct {
-	mu        sync.RWMutex
-	providers map[string]*Provider
+	autopilotEventsMu sync.Mutex
+	autopilotEvents   map[string]store.AutopilotRecord
+	mu                sync.RWMutex
+	providers         map[string]*Provider
 
 	queue *RequestQueue
 	// drainSuppress rate-limits HEARTBEAT-triggered queue drains per model
@@ -233,6 +235,8 @@ type Registry struct {
 	cacheRoutingMaxDiscountMs    *float64
 	cacheRoutingMaxCostFraction  *float64
 	warmPool                     *warmPoolController
+	autopilot                    *modelAutopilotController
+	autopilotSender              func(providerID string, command protocol.ModelAutopilotMessage) error
 	// Provider-control sender seams let focused tests prove eligibility failures
 	// stop before any command invocation. Nil uses the provider WebSocket.
 	loadModelSender               func(providerID, modelID string) error

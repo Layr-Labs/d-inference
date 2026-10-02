@@ -5,6 +5,12 @@
 # Keep both outcomes: a failure in the general suite must not silence this gate.
 set -uo pipefail
 script_directory=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# ProviderLoop tests can publish state without a per-loop override. Keep their
+# snapshots away from the operator's running provider and recovery watchdog.
+provider_test_state_root=$(mktemp -d "${TMPDIR:-/tmp}/darkbloom-provider-tests.XXXXXX") || exit 1
+trap 'rm -rf "$provider_test_state_root"' EXIT
+export DARKBLOOM_STATE_FILE="$provider_test_state_root/daemon-state.json"
+export DARKBLOOM_LOADED_MODELS_FILE="$provider_test_state_root/loaded-models.json"
 provider_test_status=0
 isolated_filters=(
   emptyNativePoolTeardownUsesActualRetiredAdapter

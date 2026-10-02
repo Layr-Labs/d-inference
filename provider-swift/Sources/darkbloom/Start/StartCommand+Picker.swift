@@ -63,7 +63,7 @@ extension Start {
             if !isDownloaded, let minRam = model.minRamGb, Double(minRam) > memoryGb {
                 return nil
             }
-            let size = isDownloaded ? (localMemoryByID[model.id] ?? model.sizeGb) : model.sizeGb
+            let size = isDownloaded ? (localMemoryByID[model.id] ?? model.sizeGb) : model.sizeGb * 1.2 * 1e9 / Double(1 << 30)
             return PickerEntry(
                 id: model.id,
                 catalogModel: model,
@@ -82,16 +82,17 @@ extension Start {
         return entries
     }
 
-    /// Memory held back for the OS before the per-model serving budget. Shared by
-    /// the interactive TUI picker and the non-TTY fallback so both agree on what
-    /// "fits".
-    static let pickerOSReserveGb = 4.0
+    /// Use the provider's cap, activation and minimum KV safeguards. Catalog
+    /// estimates are conservative; the loader rechecks live memory before use.
+    static func pickerLoadBudgetGiB(memoryGb: Double) -> Double {
+        guard memoryGb.isFinite, memoryGb > 0, memoryGb <= 4096 else { return 0 }
+        let gib = Double(1 << 30)
+        let cap = Double(UnifiedMemoryCap.hardCapBytes(physicalBytes: UInt64(memoryGb * gib))) / gib
+        return max(0, cap - Double(UnifiedMemoryCap.loadHeadroomBytes()) / gib)
+    }
 
-    /// Whether a single model of `sizeGb` can be served on a box with `memoryGb`
-    /// RAM. One model is warm at a time, so this is an individual-fit check with
-    /// the OS reserve held back.
     static func modelFitsBudget(sizeGb: Double, memoryGb: Double) -> Bool {
-        sizeGb <= memoryGb - pickerOSReserveGb
+        sizeGb.isFinite && sizeGb > 0 && sizeGb <= pickerLoadBudgetGiB(memoryGb: memoryGb)
     }
 
     /// Outcome of resolving a non-TTY fallback-picker input line.
@@ -113,7 +114,7 @@ extension Start {
     ) -> FallbackSelection {
         let input = rawInput.trimmingCharacters(in: .whitespaces)
         guard !input.isEmpty else { return .cancelled }
-        let budget = memoryGb - pickerOSReserveGb
+        let budget = pickerLoadBudgetGiB(memoryGb: memoryGb)
         func fits(_ e: PickerEntry) -> Bool { modelFitsBudget(sizeGb: e.sizeGb, memoryGb: memoryGb) }
 
         if input.lowercased() == "all" {
@@ -325,8 +326,11 @@ extension Start {
             let downloader = ModelDownloader(
                 catalogClient: client,
                 runtimeCapabilities: runtimeCapabilities)
+            let plan = try await downloader.selectedDownloadPlan(models: missing.map(\.catalogModel))
+            print("  Download remaining: \(String(format: "%.1f GB", Double(plan.remainingBytes)/1e9))")
+            if let available = plan.availableBytes { print("  Disk available: \(String(format: "%.1f GB", Double(available)/1e9))") }
             for entry in missing {
-                print("  Downloading \(entry.displayName) (\(String(format: "%.1f GB", entry.sizeGb)))...")
+                print("  Downloading \(entry.displayName) (\(String(format: "%.1f GB", entry.catalogModel.sizeGb)))...")
                 do {
                     try await downloader.download(model: entry.catalogModel) { progress in
                         let pct: String
@@ -403,7 +407,7 @@ extension Start {
                 catalogClient: client,
                 runtimeCapabilities: runtimeCapabilities)
             for entry in missing {
-                print("  Downloading \(entry.displayName) (\(String(format: "%.1f GB", entry.sizeGb)))...")
+                print("  Downloading \(entry.displayName) (\(String(format: "%.1f GB", entry.catalogModel.sizeGb)))...")
                 do {
                     try await downloader.download(model: entry.catalogModel) { progress in
                         let mb = Double(progress.bytesDownloaded) / 1_048_576

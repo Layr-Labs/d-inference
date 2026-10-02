@@ -14,9 +14,9 @@ import (
 
 // TestFirstByteReachesClientWhileRegistryWriteLockHeld: once a provider has
 // produced content, the first client byte must not wait on the registry
-// write lock. The test takes the lock after the provider has received the
-// inference request (post-commit) and holds it while the provider streams
-// its first chunk; the chunk has to reach the HTTP client while the lock is
+// write lock. The test takes the lock after dispatch consumes a content-free
+// preamble and holds it while the provider streams its first content chunk;
+// the content has to reach the HTTP client while the lock is
 // still held. Before the change the capacity-accept recorder in
 // commitFirstContent (r.mu.Lock) and the latency sample (r.mu.RLock) both sat
 // between the provider chunk and the client write.
@@ -67,6 +67,8 @@ func TestFirstByteReachesClientWhileRegistryWriteLockHeld(t *testing.T) {
 			break
 		}
 		gotRequest <- inferReq
+		writeEncryptedTestChunk(t, ctx, conn, inferReq, pubKey,
+			`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{"role":"assistant"}}]}`+"\n\n")
 		<-sendChunkNow
 		writeEncryptedTestChunk(t, ctx, conn, inferReq, pubKey,
 			`data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"Hello"}}]}`+"\n\n")
@@ -94,16 +96,38 @@ func TestFirstByteReachesClientWhileRegistryWriteLockHeld(t *testing.T) {
 		responses <- result{resp, err}
 	}()
 
+	var inferReq protocol.InferenceRequestMessage
 	select {
-	case <-gotRequest:
+	case inferReq = <-gotRequest:
 	case err := <-providerErr:
 		t.Fatalf("provider read: %v", err)
 	case <-time.After(10 * time.Second):
 		t.Fatal("provider never received the inference request")
 	}
 
-	// The reservation is committed (the provider holds the request). Now hold
-	// the registry write lock for the whole first-chunk exchange.
+	// Frame receipt (and StampWriteDone) precedes dispatchPrimary's registry
+	// reads in noteServingSlot/maybeProbePlanCandidates. Only the dispatch
+	// goroutine stamps FirstChunkAt when it consumes the held preamble, proving
+	// those reads are finished without committing any client-visible content.
+	ids := reg.ProviderIDs()
+	if len(ids) != 1 {
+		t.Fatalf("providers = %d, want 1", len(ids))
+	}
+	pr := reg.GetProvider(ids[0]).GetPending(inferReq.RequestID)
+	if pr == nil {
+		t.Fatal("dispatched request is not pending")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for pr.FirstChunkAtSafe().IsZero() {
+		if time.Now().After(deadline) {
+			t.Fatal("dispatch did not consume the content-free preamble within 2 s")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if pr.ContentCommittedSafe() || pr.HasFirstContentIngress() {
+		t.Fatal("content-free preamble committed content before the registry write lock was held")
+	}
+	// Hold the registry write lock for the whole first-content exchange.
 	release := reg.HoldWriteLockForTest()
 	released := false
 	defer func() {
@@ -149,7 +173,7 @@ func TestFirstByteReachesClientWhileRegistryWriteLockHeld(t *testing.T) {
 
 	// The stream still completes normally once the lock is free, including
 	// the deferred capacity-accept bookkeeping.
-	deadline := time.Now().Add(5 * time.Second)
+	deadline = time.Now().Add(5 * time.Second)
 	buf := make([]byte, 4096)
 	var rest strings.Builder
 	for time.Now().Before(deadline) {
@@ -171,10 +195,6 @@ func TestFirstByteReachesClientWhileRegistryWriteLockHeld(t *testing.T) {
 	// re-offer (noteInferenceSuccess) adds nothing because the request was
 	// stamped before the goroutine ran. A reject makes the window observable:
 	// one accept + one reject = 2 samples, never 3.
-	ids := reg.ProviderIDs()
-	if len(ids) != 1 {
-		t.Fatalf("providers = %d, want 1", len(ids))
-	}
 	reg.RecordCapacityReject(ids[0], model)
 	deadline = time.Now().Add(3 * time.Second)
 	for {

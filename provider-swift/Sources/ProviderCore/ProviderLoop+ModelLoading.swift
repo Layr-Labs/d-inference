@@ -120,6 +120,7 @@ extension ProviderLoop {
         if var model = advertisedModels[modelId] {
             model.weightHash = nil
             advertisedModels[modelId] = model
+            if autopilotInventoryModels[modelId] != nil { autopilotInventoryModels[modelId] = model }
         }
         if let previous {
             logger.warning(
@@ -195,11 +196,18 @@ extension ProviderLoop {
     /// the assistant before admission. The target remains independently
     /// loadable: assistant headroom failure selects target-only decode.
     internal func ensureModelLoaded(
-        modelId: String, allowEviction: Bool = true, revisionUpdate: Bool = false, revisionDirectory: URL? = nil
+        modelId: String, allowEviction: Bool = true, revisionUpdate: Bool = false,
+        revisionDirectory: URL? = nil, autopilotCommandId: String? = nil
     ) async throws {
         try requireNativeMiMoProcessWorkAllowed()
         try refuseClosingNativeMiMoOwner(modelId)
         if !revisionUpdate { await waitForMTPUpgrade(modelId) }
+        try checkAutopilotLoadOwnership(autopilotCommandId)
+        guard autopilotAllowsModel(modelId)
+            || (autopilotCommandId != nil && autopilotCommand?.commandId == autopilotCommandId
+                && autopilotCommand?.loadModelId == modelId)
+        else { throw InferenceError.modelLoadFailed("model_not_selected") }
+        try checkAutopilotLoadOwnership(autopilotCommandId)
         try ModelRuntimeRequirements.requireEligible(
             modelID: modelId, available: loopConfig.runtimeCapabilities)
         if isShuttingDown {
@@ -207,6 +215,7 @@ extension ProviderLoop {
         }
 
         try throwIfRetiring(modelId)
+        try checkAutopilotLoadOwnership(autopilotCommandId)
 
         while modelsUnloading.contains(modelId) {
             await waitForModelUnload(modelId)
@@ -217,6 +226,7 @@ extension ProviderLoop {
         // parked when the tombstone landed. Re-check before every
         // resident-slot return.
         try throwIfRetiring(modelId)
+        try checkAutopilotLoadOwnership(autopilotCommandId)
 
         if modelSlots[modelId] != nil {
             return
@@ -236,9 +246,11 @@ extension ProviderLoop {
             // on may have FAILED its self-test and begun retiring while we
             // were parked.
             try throwIfRetiring(modelId)
+            try checkAutopilotLoadOwnership(autopilotCommandId)
             if modelSlots[modelId] != nil { return }
             try await ensureModelLoaded(
-                modelId: modelId, allowEviction: allowEviction, revisionUpdate: revisionUpdate, revisionDirectory: revisionDirectory)
+                modelId: modelId, allowEviction: allowEviction, revisionUpdate: revisionUpdate,
+                revisionDirectory: revisionDirectory, autopilotCommandId: autopilotCommandId)
             return
         }
 
@@ -266,7 +278,9 @@ extension ProviderLoop {
                 externalPath: loopConfig.config.backend.mtpDrafterPath,
                 embeddedArtifactDeclared: nativeLoad.hasEmbeddedMTP)
         } else {
-            mtpPreparation = await specDecPreparation(modelId: modelId, modelInfo: modelInfo, modelDirectory: modelPath)
+            mtpPreparation = await specDecPreparation(
+                modelId: modelId, modelInfo: modelInfo, modelDirectory: modelPath,
+                allowDownload: autopilotCommandId == nil)
         }
 
         // Re-check residency and in-flight loads after the preparation await:
@@ -284,10 +298,12 @@ extension ProviderLoop {
         // begun retiring this model meanwhile; the resident return below
         // must not hand the request to the failed build.
         try throwIfRetiring(modelId)
+        try checkAutopilotLoadOwnership(autopilotCommandId)
         if modelSlots[modelId] != nil { return }
         if modelsLoading.contains(modelId) {
             try await ensureModelLoaded(
-                modelId: modelId, allowEviction: allowEviction, revisionUpdate: revisionUpdate, revisionDirectory: revisionDirectory)
+                modelId: modelId, allowEviction: allowEviction, revisionUpdate: revisionUpdate,
+                revisionDirectory: revisionDirectory, autopilotCommandId: autopilotCommandId)
             return
         }
 
@@ -306,13 +322,17 @@ extension ProviderLoop {
             }
             // Same rule at the load-gate wait's resident return.
             try throwIfRetiring(modelId)
+            try checkAutopilotLoadOwnership(autopilotCommandId)
             if modelSlots[modelId] != nil { return }
         }
+        try checkAutopilotLoadOwnership(autopilotCommandId)
         // Preparation/load-gate waits may have spanned a complete revision
         // activation. Re-resolve both bytes and metadata before owning the load
         // gate, otherwise a cold preload can resurrect the previous revision.
         if (revisionDirectory == nil && ModelScanner.resolveLocalPath(modelID: modelId) != modelPath) || advertisedModels[modelId] != modelInfo {
-            try await ensureModelLoaded(modelId: modelId, allowEviction: allowEviction, revisionUpdate: revisionUpdate, revisionDirectory: revisionDirectory)
+            try await ensureModelLoaded(
+                modelId: modelId, allowEviction: allowEviction, revisionUpdate: revisionUpdate,
+                revisionDirectory: revisionDirectory, autopilotCommandId: autopilotCommandId)
             return
         }
         isLoadingAny = true
@@ -479,6 +499,7 @@ extension ProviderLoop {
             // weights BEFORE survivor grants are restored/regrown. Never
             // bind `borrow()` to a long-lived local — that would keep the
             // weights alive past `release()`.
+            try checkAutopilotLoadOwnership(autopilotCommandId)
             let newcomer = EngineV2NewcomerBox(try await loadModelContainer(
                 from: modelPath, modelID: modelId))
             try Task.checkCancellation()
@@ -799,6 +820,7 @@ extension ProviderLoop {
             // Remember the serving set across restarts: the persisted file is
             // the default startup preload plan (ProviderLoop+StartupPreload).
             persistLoadedModelSet()
+            recordAutopilotLoadTime(model: modelId, milliseconds: Int64(max(0, loadMs.rounded())))
             await updateAggregateCapacity()
             logger.info("Model loaded: \(modelId) (\(modelSlots.count) model(s) in memory)")
 
@@ -889,8 +911,15 @@ extension ProviderLoop {
     }
 
     @discardableResult
-    internal func unloadModel(_ modelId: String, forEviction: Bool = false, revisionUpdate: Bool = false) async -> Bool {
+    internal func unloadModel(_ modelId: String, forEviction: Bool = false,
+                              revisionUpdate: Bool = false, autopilotCommandId: String? = nil) async -> Bool {
         if !revisionUpdate { await waitForMTPUpgrade(modelId) }
+        if forEviction && autopilotProtectsPins && autopilotPinnedModels.contains(modelId) { return false }
+        // An idle/eviction candidate may have been captured before the
+        // autopilot transaction reserved this box. Only its explicit victims
+        // may be removed until the transaction settles.
+        if forEviction, let command = autopilotCommand,
+           command.commandId != autopilotCommandId { return false }
         // Recheck after the transition wait: staging or new work can begin
         // after the LRU/idle snapshot. Explicit retirement still may unload;
         // its retained target stays charged until preparation/discard ends.
@@ -970,6 +999,7 @@ extension ProviderLoop {
     }
 
     internal func syncWarmModelState() {
+        publishModelAutopilotSnapshot()
         let loaded = modelSlots.keys.filter { !modelsUnloading.contains($0) }.sorted()
         state.warmModels = loaded
         let activeSlots = modelSlots.filter { !modelsUnloading.contains($0.key) }
@@ -1073,10 +1103,11 @@ extension ProviderLoop {
     /// One actor-local eviction snapshot shared by slot-cap, memory-load and
     /// pre-accept admission decisions. Callers still recheck after suspension;
     /// unloadModel(forEviction:) is the authoritative final gate.
-    private func evictableModelSlots() -> [String: ModelSlot] {
+    internal func evictableModelSlots() -> [String: ModelSlot] {
         let modelsWithInflight = Set(requestToModel.values)
         return modelSlots.filter {
-            !modelsWithInflight.contains($0.key)
+            !(autopilotProtectsPins && autopilotPinnedModels.contains($0.key))
+                && !modelsWithInflight.contains($0.key)
                 && !hasLocalReservation($0.key)
                 && !modelsUnloading.contains($0.key)
                 && !isMTPUpgradeTargetRetained($0.key)

@@ -191,7 +191,7 @@ func usableMetricSample(v float64) bool {
 // the half of Gate G5 that catches a paged regression — would all land in
 // kv_backend:unknown.
 func (d *dispatchState) noteServingSlot() {
-	d.noteServingSlotFor(d.pr)
+	d.noteServingSlotFor(d.provider, d.pr)
 }
 
 // noteServingSlotFor re-latches the attribution to an explicit pending request.
@@ -212,17 +212,23 @@ func (d *dispatchState) noteServingSlot() {
 // dispatchSlotAttribution and may replace one another atomically. A backup that
 // goes on to WIN is unaffected: commit-path reads go through the live d.pr (see
 // kvBackendAttribution), not the terminal snapshot.
-func (d *dispatchState) noteServingSlotFor(pr *registry.PendingRequest) {
+func (d *dispatchState) noteServingSlotFor(provider *registry.Provider, pr *registry.PendingRequest) {
 	if pr == nil || pr.ProviderID == "" {
 		return
 	}
 	if d.attributionLatchFrozen() {
 		return
 	}
+	// The request is already on the wire. Dispatch owns the selected provider,
+	// so another registry lookup here could stall first content behind a writer.
+	backend := newUnknownKVBackendAttribution()
+	if provider != nil && provider.ID == pr.ProviderID {
+		backend = d.s.providerKVBackendAttribution(provider, pr.Model)
+	}
 	d.servedKVSlot = dispatchSlotAttribution{
 		providerID: pr.ProviderID,
 		model:      pr.Model,
-		backend:    d.s.kvBackendAttribution(pr.ProviderID, pr.Model),
+		backend:    backend,
 	}
 }
 

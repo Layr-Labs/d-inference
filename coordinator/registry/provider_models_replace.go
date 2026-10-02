@@ -65,6 +65,12 @@ func (r *Registry) ReplaceProviderModels(p *Provider, msg *protocol.ModelsReplac
 		return nil, nil, 0, nil
 	}
 
+	nextModels, observerOnly := mergeAutopilotInventory(msg.Models, p.autopilotInventory)
+	nextIDs := make(map[string]bool, len(nextModels))
+	for _, model := range nextModels {
+		nextIDs[model.ID] = true
+	}
+
 	// Retained slots survive only with the same weight identity. Cache evidence
 	// is invalidated before reopening routing; its tracker is a leaf lock.
 	invalidated := make(map[string]cacheHolderRemovalReason)
@@ -72,7 +78,7 @@ func (r *Registry) ReplaceProviderModels(p *Provider, msg *protocol.ModelsReplac
 	for _, old := range p.Models {
 		oldIDs[old.ID] = struct{}{}
 		next, retained := selected[old.ID]
-		if !retained {
+		if !nextIDs[old.ID] {
 			removed = append(removed, old.ID)
 			if p.Status != StatusUntrusted {
 				r.modelProviderDec(old.ID)
@@ -121,7 +127,7 @@ func (r *Registry) ReplaceProviderModels(p *Provider, msg *protocol.ModelsReplac
 			p.recordDeadlineActivityLocked(time.Now())
 		}
 	}
-	p.Models = append([]protocol.ModelInfo(nil), msg.Models...)
+	p.Models, p.autopilotOnlyModels = nextModels, observerOnly
 	// The owner load equation must never join a new weight estimate to the
 	// previous inventory's memory sample, even when the model ID is retained.
 	// Routing remains fenced until a fresh capacity heartbeat; that heartbeat

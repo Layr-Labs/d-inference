@@ -260,12 +260,21 @@ func preflightScanWait(deadline time.Duration) time.Duration {
 	return wait
 }
 
+func (p inferenceAdmissionParams) requestTraitsForModel(model string) registry.RequestTraits {
+	if p.traitsForModel != nil {
+		return p.traitsForModel(model)
+	}
+	if p.traits != nil {
+		return *p.traits
+	}
+	return registry.RequestTraits{HasTools: p.hasTools}
+}
+
 // evaluateInferenceAdmission keeps provider evaluation under permit ownership.
 // A completed rejection returns its terminal effects for the caller to apply
 // after release. Failed acquisition and fallback callbacks already handle their
 // own terminal outcome while no permit is held, so they return no action.
 func (s *Server) evaluateInferenceAdmission(w http.ResponseWriter, r *http.Request, parsed map[string]any, p inferenceAdmissionParams, permit *admissionScanPermit) admissionOutcome {
-	markPublicModelDemand(r, p)
 	model := p.model
 	publicModel := p.publicModel
 	refundReservation := p.refundReservation
@@ -276,10 +285,7 @@ func (s *Server) evaluateInferenceAdmission(w http.ResponseWriter, r *http.Reque
 		return registry.RequestTraits{HasTools: p.hasTools}
 	}
 	modelTraits := func(candidateModel string) registry.RequestTraits {
-		if p.traitsForModel != nil {
-			return p.traitsForModel(candidateModel)
-		}
-		return requestTraits()
+		return p.requestTraitsForModel(candidateModel)
 	}
 	fallbackTraits := func(currentModel string) registry.RequestTraits {
 		target, ok := s.registry.AliasTarget(publicModel)

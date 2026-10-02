@@ -142,7 +142,7 @@ func (s *Server) handleGlobalPayoutQuote(w http.ResponseWriter, r *http.Request)
 func (s *Server) maybeGlobalWithdraw(w http.ResponseWriter, r *http.Request, user *store.User) bool {
 	repo, ok := s.globalPayoutStore()
 	if !ok {
-		return false
+		return s.rejectUnavailableGlobalPayouts(w)
 	}
 	// Inspect once and restore the body for the Connect handler. A Global
 	// confirmation must remain on its original rail even after unlink/country changes.
@@ -160,6 +160,10 @@ func (s *Server) maybeGlobalWithdraw(w http.ResponseWriter, r *http.Request, use
 	decodeErr := json.Unmarshal(body, &req)
 	local, err := repo.GetGlobalRecipient(user.AccountID)
 	if errors.Is(err, store.ErrNotFound) && req.QuoteID == "" {
+		if s.billing.GlobalPayoutsOnly() {
+			writeJSON(w, http.StatusConflict, errorResponse("bank_setup_required", "Update your bank details before withdrawing. Your earnings are unchanged."))
+			return true
+		}
 		return false
 	}
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
@@ -218,6 +222,27 @@ func (s *Server) maybeGlobalWithdraw(w http.ResponseWriter, r *http.Request, use
 		if err = s.refreshGlobalRecipient(r.Context(), local); err != nil {
 			globalPayoutError(w, err)
 			return true
+		}
+		needed, fundingErr := globalpayouts.RequiredFundingCents(p.AmountMicroUSD/10_000, p.EstimatedStripeFees)
+		if fundingErr != nil {
+			globalPayoutError(w, fundingErr)
+			return true
+		}
+		available, fundingErr := s.billing.GlobalPayouts().AvailableUSD(r.Context())
+		if fundingErr != nil || available < needed {
+			s.logger.Warn("global payout funding check blocked confirmation", "available_cents", available, "required_cents", needed, "error", fundingErr)
+			// Another confirmation may already have submitted this same quote.
+			// Recover that outcome instead of reporting a new funding failure.
+			latest, readErr := repo.GetGlobalPayout(p.ID)
+			if readErr != nil {
+				globalPayoutError(w, readErr)
+				return true
+			}
+			if latest.Status == "quoted" {
+				writeJSON(w, http.StatusServiceUnavailable, errorResponse("payout_funding_unavailable", "Bank payouts are temporarily unavailable. This attempt did not debit your earnings; check any pending withdrawal before trying again."))
+				return true
+			}
+			p = latest
 		}
 		p, err = repo.BeginGlobalPayout(user.AccountID, p.ID, time.Now())
 		if err != nil {

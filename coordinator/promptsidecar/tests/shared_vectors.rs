@@ -35,6 +35,7 @@ struct ContractVector {
     legacy_v4_prompt_contract_id: String,
     legacy_v5_prompt_contract_id: String,
     legacy_v6_prompt_contract_id: String,
+    legacy_v7_prompt_contract_id: String,
 }
 
 #[derive(Deserialize)]
@@ -109,6 +110,10 @@ fn shared_contract_vectors_match() {
             vector.legacy_v6_prompt_contract_id
         );
         let tokens = (0..256).collect::<Vec<u32>>();
+        assert_ne!(
+            vector.expected_prompt_contract_id,
+            vector.legacy_v7_prompt_contract_id
+        );
         let old_chain = hash::chain_hashes(
             vector.legacy_v6_prompt_contract_id.as_bytes(),
             b"same-scope",
@@ -127,11 +132,23 @@ fn shared_contract_vectors_match() {
             old_chain, new_chain,
             "unchanged tokens must not reuse v6 cache blocks"
         );
+        let v7_chain = hash::chain_hashes(
+            vector.legacy_v7_prompt_contract_id.as_bytes(),
+            b"same-scope",
+            &tokens,
+            256,
+        )
+        .unwrap();
+        assert_ne!(
+            v7_chain, new_chain,
+            "unchanged tokens must not reuse v7 cache blocks"
+        );
         for version in [
             "darkbloom-request-normalization-v3",
             "darkbloom-request-normalization-v4",
             "darkbloom-request-normalization-v5",
             "darkbloom-request-normalization-v6",
+            "darkbloom-request-normalization-v7",
         ] {
             let legacy = ContractVersions {
                 normalization: version.to_owned(),

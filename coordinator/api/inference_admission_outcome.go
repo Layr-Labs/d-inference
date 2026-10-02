@@ -19,9 +19,14 @@ func rejectedAdmission(model string, apply func()) admissionOutcome {
 // Every provider walk stays inside evaluation; its completed rejection applies
 // refunds, store lookups, telemetry and HTTP output only after permit release.
 func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, parsed map[string]any, p inferenceAdmissionParams) (string, bool) {
+	markPublicModelDemand(r, p)
+	model := p.model
+	armAutopilotDemand(r, p)
+	defer func() { setAutopilotDemandModel(r, model, p.requestTraitsForModel(model)) }()
 	permit := admissionScanPermit{server: s, w: w, r: r, parsed: parsed, params: p}
 	defer permit.release()
 	outcome := s.evaluateInferenceAdmission(w, r, parsed, p, &permit)
+	model = outcome.model
 	permit.release()
 	if outcome.applyRejection != nil {
 		outcome.applyRejection()

@@ -7,9 +7,12 @@ import Testing
 
 @testable import ProviderCore
 
-/// The tests that load the tiny model. They change the process-wide model
-/// cache folder (`ModelScanner.configureCacheDirectory`), so they run one at
-/// a time. `.serialized` also applies to the suites nested in this one.
+/// The tests that load the tiny model. They change the model cache folder
+/// (`ModelScanner.configureCacheDirectory`). That setting is process-wide,
+/// so they run one at a time. `.serialized` also applies to the suites
+/// nested in this one. It does not stop other suites from running at the
+/// same time, so the test run needs `--no-parallel`. CI and
+/// `make provider-test` use it (`scripts/run-provider-tests.sh`).
 @Suite("Tiny model load through the real loader", .serialized)
 enum TinyModelLoadTests {}
 

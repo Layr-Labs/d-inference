@@ -254,6 +254,10 @@ jobs:
         # Reuse the built bundle and matched metallib. The exact allocator
         # suite runs in its own process even if the general suite fails.
         run: ../scripts/run-provider-tests.sh
+      - name: Test desktop control API with isolated local state
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
+        timeout-minutes: 3
+        run: python3 scripts/test-desktop-api.py provider-swift/.build/debug/darkbloom
       - name: Run isolated native MiMo startup gates
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
         working-directory: provider-swift

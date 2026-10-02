@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the real CLI HTTP API using temporary state and a local catalog.
 
-No provider is started; the only mutation changes a temporary TOML file.
+No provider is started. Settings and a cancelled local login use temporary state.
 """
 import argparse
 import hashlib
@@ -19,6 +19,17 @@ import uuid
 
 
 class Catalog(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        assert self.path == "/v1/device/code", self.path
+        self.server.link_started.set()
+        self.server.link_release.wait(10)
+        try:
+            self.send_response(503)
+            self.end_headers()
+            self.wfile.write(b"fixture login cancelled")
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -35,6 +46,8 @@ def main():
     parser.add_argument("--hold", action="store_true", help="Keep the isolated API available for a manual Electron bridge check")
     args = parser.parse_args()
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Catalog)
+    server.link_started = threading.Event()
+    server.link_release = threading.Event()
     threading.Thread(target=server.serve_forever, daemon=True).start()
     with tempfile.TemporaryDirectory(prefix="darkbloom-desktop-test-") as temporary:
         root = Path(temporary)
@@ -104,11 +117,26 @@ idle_timeout_mins = 60
                 assert hashlib.sha256(config.read_bytes()).hexdigest() == before
                 conflict = dict(action, name="Unexpected overwrite")
                 assert request("actions", conflict)[0] == 400
-                print("desktop-api: authentication, isolation, state, settings, idempotency, and validation passed")
+                link_id = str(uuid.uuid4())
+                assert request("actions", {"id": link_id, "action": "link"})[0] == 202
+                assert server.link_started.wait(10), "Native login did not reach the local server"
+                code, cancelling = request("actions", {"id": str(uuid.uuid4()), "action": "cancel", "operation": link_id})
+                assert code == 202 and cancelling["state"] == "running", cancelling
+                assert not cancelling["cancellable"], cancelling
+                server.link_release.set()
+                for _ in range(40):
+                    snapshot = request()[1]
+                    if snapshot["operations"][0]["state"] != "running":
+                        break
+                    time.sleep(.1)
+                assert snapshot["operations"][0]["state"] == "cancelled", snapshot
+                assert not snapshot["linked"] and snapshot["link"] is None, snapshot
+                print("desktop-api: authentication, isolation, state, settings, idempotency, cancellation, and validation passed")
                 if args.hold:
                     print("DARKBLOOM_DESKTOP_DIR=" + str(root / "desktop"), flush=True)
                     input("Press Enter to stop the isolated API: ")
             finally:
+                server.link_release.set()
                 process.terminate()
                 try:
                     process.wait(timeout=10)

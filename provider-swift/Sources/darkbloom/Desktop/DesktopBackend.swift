@@ -12,6 +12,7 @@ actor DesktopBackend {
   private var requests: [String: DesktopAction] = [:]
   private var workers: [String: DesktopWorker] = [:]
   private var tasks: [String: Task<Void, Never>] = [:]
+  private var cancellationRequested: Set<String> = []
   var catalog: [CatalogModel] = []
   var catalogError: String?
   var catalogAt = Date.distantPast
@@ -42,10 +43,12 @@ actor DesktopBackend {
       guard let id = request.operation, let index = operations.firstIndex(where: { $0.id == id }),
         operations[index].state == "running", operations[index].cancellable
       else { throw ValidationError("This operation cannot be cancelled") }
+      cancellationRequested.insert(id)
       workers[id]?.cancel()
       tasks[id]?.cancel()
-      operations[index].state = "cancelled"
-      operations[index].message = "Cancelled"
+      // Keep the mutation slot until the child exits or the native task unwinds.
+      operations[index].cancellable = false
+      operations[index].message = "Cancelling…"
       persist()
       return operations[index]
     }
@@ -65,7 +68,14 @@ actor DesktopBackend {
   }
 
   private func execute(_ request: DesktopAction) async {
+    defer {
+      workers[request.id] = nil
+      tasks[request.id] = nil
+      cancellationRequested.remove(request.id)
+      localAt = .distantPast
+    }
     do {
+      try Task.checkCancellation()
       if request.action == "settings" {
         try withMutableConfig(configPath: configPath) { path, config in
           guard DesktopStorage.revision(path) == request.revision else {
@@ -90,7 +100,7 @@ actor DesktopBackend {
           coordinatorURL: config.coordinator.url,
           onDisplayCode: { [weak self] code, url, seconds in
             Task {
-              await self?.setLink(
+              await self?.setLink(request.id,
                 .dict([
                   "url": .string(url), "code": .string(code),
                   "expires_at": .number(Date().timeIntervalSince1970 + Double(seconds)),
@@ -105,6 +115,7 @@ actor DesktopBackend {
           try await DesktopLocalLifecycle.stop()
         }
         let arguments = try arguments(for: request)
+        try Task.checkCancellation()
         let worker = DesktopWorker()
         workers[request.id] = worker
         let before = executableStamp()
@@ -114,15 +125,15 @@ actor DesktopBackend {
             Task { await self?.setProgress(request.id, output: output) }
           })
         complete(request.id, code: code, message: output)
-        workers[request.id] = nil
         if request.action == "update", code == 0, executableStamp() != before {
           // launchd reopens the replacement CLI after the native updater commits it.
           Darwin.exit(0)
         }
       }
-    } catch { complete(request.id, code: 1, message: String(describing: error)) }
-    localAt = .distantPast
-    tasks[request.id] = nil
+    } catch {
+      if request.action == "link" { link = .null }
+      complete(request.id, code: 1, message: String(describing: error))
+    }
   }
 
   func arguments(for request: DesktopAction) throws -> [String] {
@@ -162,7 +173,12 @@ actor DesktopBackend {
     }
   }
 
-  private func setLink(_ value: JSONValue) { link = value }
+  private func setLink(_ id: String, _ value: JSONValue) {
+    guard !cancellationRequested.contains(id),
+      operations.contains(where: { $0.id == id && $0.state == "running" })
+    else { return }
+    link = value
+  }
   private func setProgress(_ id: String, output: String) {
     guard let index = operations.firstIndex(where: { $0.id == id }),
       operations[index].state == "running"
@@ -173,9 +189,10 @@ actor DesktopBackend {
     guard let index = operations.firstIndex(where: { $0.id == id }),
       operations[index].state == "running"
     else { return }
-    operations[index].state = code == 0 ? "succeeded" : "failed"
+    let cancelled = cancellationRequested.contains(id)
+    operations[index].state = cancelled ? "cancelled" : (code == 0 ? "succeeded" : "failed")
     operations[index].finished_at = Date().timeIntervalSince1970
-    operations[index].message = String(message.suffix(8000))
+    operations[index].message = cancelled ? "Cancelled" : String(message.suffix(8000))
     persist()
   }
   private func persist() { try? DesktopStorage.write(operations, name: "operations.json") }

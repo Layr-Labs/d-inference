@@ -47,6 +47,10 @@ running operations are marked `interrupted` for reconciliation. Clients must
 inspect current state before retrying; there is no exactly-once guarantee across
 an API crash (`DesktopBackend.init`, `submit`).
 
+Cancellation keeps an operation `running` with `cancellable: false` while its
+child exits or its native task unwinds. The mutation slot remains occupied until
+that cleanup completes, then the operation becomes `cancelled`.
+
 | Action | Additional fields | Behavior |
 |---|---|---|
 | `start` | `models`; optional `local`, `endpoint` | Existing start path; local-only mode uses the same canonical provider LaunchAgent |

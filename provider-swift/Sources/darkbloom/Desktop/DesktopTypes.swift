@@ -107,5 +107,5 @@ struct DesktopOperation: Codable, Sendable {
   let started_at: Double
   var finished_at: Double?
   var message = "Working…"
-  let cancellable: Bool
+  var cancellable: Bool
 }

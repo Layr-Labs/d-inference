@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-02
 
 The complete public HTTP surface of the coordinator, derived from the 119 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -24,13 +24,30 @@ models. This uses `Provider.ServingModelsLocked` in
 ## Desktop provider account projection
 
 `GET /v1/provider/desktop` calls `handleDesktopAccount` in
-`coordinator/api/desktop_handlers.go`. It accepts an active linked provider token,
-rejects consumer API keys, and returns only its owner's status/earnings projection.
-Revocation is checked before reading the account cache. Monetary values are
-integer micro-USD strings. Per-machine amounts are seven-day organic usage earnings
-and are omitted if attribution is unknown. Device keys and attestation records
-are excluded. See [desktop control](desktop-control.md) for this shape and the
-separate Swift loopback API.
+`coordinator/api/desktop_handlers.go`. The chain is
+`requireDesktopProviderToken → rateLimitDesktop → handleDesktopAccount`. The
+endpoint accepts only an active, account-linked provider token. Privy JWTs, the
+admin key, consumer API keys, and revoked tokens get 401. It returns only the
+owner's status/earnings projection.
+
+The token is checked on every request, before the cache is read, so revocation
+takes effect immediately. Requests are limited per account through
+`rateLimitWithTier`, using the same per-account limiter as inference
+(`SetRateLimiter`) under the metrics tier `desktop`. Per-key RPM and
+service-role overrides do not apply. Every token linked to the account shares
+the bucket. Over the limit, the endpoint returns 429 `rate_limit_exceeded` with
+`Retry-After`.
+
+The projection is cached for 20 s per account ID only. The optional
+`X-Darkbloom-Device-Identity` header (at most 4096 bytes, otherwise 400) is
+client-controlled. It never selects a cache entry. `is_this_mac` is computed
+per request by comparing the header with each cached machine's SE key, and the
+key itself is never serialized.
+
+Monetary values are integer micro-USD strings. Per-machine amounts are seven-day
+organic usage earnings and are omitted if attribution is unknown. Device keys and
+attestation records are excluded. See [desktop control](desktop-control.md) for
+this shape and the separate Swift loopback API.
 
 ## Graceful provider lifecycle
 
@@ -154,6 +171,7 @@ Code: `coordinator/api/me_handlers.go` (`buildMyProvider`).
 | `stripe-sig` | Stripe webhook signature | `handleStripeWebhook` (`coordinator/api/stripe_checkout_webhook.go`), `handleStripeConnectWebhook` (`coordinator/api/stripe_payouts_webhooks.go`) |
 | `mdm-secret` | Webhook secret via `X-Webhook-Token` header or `?token=`; body capped at [`maxMDMWebhookBodyBytes`](#limits-and-validation) | `HandleMDMWebhook` |
 | `ws` | Provider WebSocket handshake (enrollment credentials + attestation); see [`protocol-messages.md`](protocol-messages.md) | `handleProviderWS` (`coordinator/api/provider.go`) |
+| `provider-token` | Bearer must be an active, account-linked provider token. Privy JWTs, the admin key, consumer API keys and revoked tokens → 401 `authentication_error` | `requireDesktopProviderToken` (`coordinator/api/desktop_handlers.go`) |
 
 **Limiter column** — the rate-limit middleware in the chain. All limiters share one implementation, `rateLimitWithTier`, keyed by the authenticated account id (`consumerKeyFromContext`); the admin key bypasses it.
 
@@ -162,6 +180,7 @@ Code: `coordinator/api/me_handlers.go` (`buildMyProvider`).
 | `drain` | While draining, new inference requests get **429** `rate_limit_exceeded` with `Retry-After` set to [`coordinatorDrainRetryAfter`](#timeouts-and-constants) (written through `writeTokenRateLimited`) | `drainGate` (`coordinator/api/drain.go`) |
 | `rpm` | Consumer tier: first the key's own `rpm_limit` (`applyKeyRPMLimit`), then the account limiter; service-role accounts use the elevated service limiter. Rejection → 429 `rate_limit_exceeded` (`code: rate_limit_exceeded`) with `Retry-After` and `X-RateLimit-Reset` | `rateLimitConsumer` |
 | `fin` | Financial tier: the stricter limiter installed by `SetFinancialRateLimiter`, applied to every account regardless of role; same 429 shape | `rateLimitFinancial` |
+| `desktop` | The per-account limiter installed by `SetRateLimiter`, without per-key RPM or service-role overrides; every token on the account shares the bucket; same 429 shape | `rateLimitDesktop` (`coordinator/api/desktop_handlers.go`) |
 
 Both tiers set `x-ratelimit-limit-requests`, `x-ratelimit-remaining-requests`, `x-ratelimit-reset-requests` on allowed *and* rejected responses (`setRequestRateLimitHeaders`). Limiter `Retry-After` values are clamped to `[DefaultRetryAfter, maxRetryAfter]` ([Timeouts and constants](#timeouts-and-constants)).
 
@@ -237,6 +256,7 @@ Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInter
 | GET | `/v1/billing/wallet/balance` | `handleWalletBalance` (`coordinator/api/billing_handlers.go`) | `key` | — | Wallet view of the ledger balance |
 | GET | `/v1/billing/methods` | `handleBillingMethods` (`coordinator/api/billing_handlers.go`) | `—` | — | Which top-up methods are enabled |
 | GET | `/v1/provider/account-earnings` | `handleAccountEarnings` (`coordinator/api/billing_handlers.go`) | `key` | — | Earnings across the account's providers |
+| GET | `/v1/provider/desktop` | `handleDesktopAccount` (`coordinator/api/desktop_handlers.go`) | `provider-token` | `desktop` | Owner-only fleet status and earnings for the desktop app, cached 20 s per account; `is_this_mac` per request ([details](#desktop-provider-account-projection)) |
 | GET | `/v1/me/token-promotions` | `handleMyModelTokenPromotions` (`coordinator/api/model_token_promotions.go`) | `privy` | — | Account-scoped grants and eligible offers |
 | POST | `/v1/me/token-promotions/claim` | `handleMyModelTokenPromotions` (`coordinator/api/model_token_promotions.go`) | `privy` | `fin` | Claim a capped grant; [campaign procedure](../operations/model-token-promotions.md) |
 | GET | `/v1/me/summary` | `handleMySummary` (`coordinator/api/me_handlers.go`) | `user` | — | Console account summary; includes `latest_provider_version` |

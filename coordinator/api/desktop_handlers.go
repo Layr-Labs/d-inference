@@ -2,9 +2,8 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -25,6 +24,9 @@ type desktopMachine struct {
 	Version          string   `json:"version,omitempty"`
 	Models           []string `json:"models"`
 	EarningsMicroUSD *string  `json:"earnings_micro_usd,omitempty"`
+	// seKey is kept in the cached projection to derive IsThisMac per request.
+	// Unexported, so it is never serialized.
+	seKey string
 }
 
 type desktopAccount struct {
@@ -37,52 +39,123 @@ type desktopAccount struct {
 	Machines         []desktopMachine `json:"machines"`
 }
 
-// handleDesktopAccount authenticates a linked provider token directly. It is a
-// read-only projection for its owner; consumer API keys cannot enumerate a fleet.
+const (
+	desktopAccountCacheTTL    = 20 * time.Second
+	desktopIdentityHeader     = "X-Darkbloom-Device-Identity"
+	desktopIdentityMaxBytes   = 4096
+	desktopAccountCachePrefix = "desktop-account:"
+	desktopRateLimitTier      = "desktop"
+	desktopAuthKind           = "provider_token"
+)
+
+// requireDesktopProviderToken authenticates only an active, account-linked
+// provider token (never Privy JWTs, the admin key, or consumer API keys, which
+// requireAuth would accept). It runs on every request, so revocation is
+// enforced before any cached projection is read.
+func (s *Server) requireDesktopProviderToken(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		setOutcomeStage(r, "auth")
+		token, err := s.store.GetProviderToken(extractBearerToken(r))
+		if err != nil || token == nil || !token.Active || token.AccountID == "" {
+			writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "a linked provider token is required"))
+			return
+		}
+		stampAuth(r, desktopAuthKind, true)
+		next(w, r.WithContext(context.WithValue(r.Context(), ctxKeyConsumer, token.AccountID)))
+	}
+}
+
+// rateLimitDesktop applies the per-account request limiter (the account's
+// inference bucket, read at request time) under its own metrics tier label.
+func (s *Server) rateLimitDesktop(next http.HandlerFunc) http.HandlerFunc {
+	return s.rateLimitWithTier(s.rateLimiterFn, desktopRateLimitTier, next)
+}
+
+// handleDesktopAccount is a read-only projection for the token's owner;
+// consumer API keys cannot enumerate a fleet. The projection is cached per
+// account only: the identity header is client-controlled, so it selects This
+// Mac per request and never keys the cache.
 func (s *Server) handleDesktopAccount(w http.ResponseWriter, r *http.Request) {
-	token, err := s.store.GetProviderToken(extractBearerToken(r))
-	if err != nil || token == nil || !token.Active || token.AccountID == "" {
+	accountID := consumerKeyFromContext(r.Context())
+	if accountID == "" {
 		writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "a linked provider token is required"))
 		return
 	}
-	accountID := token.AccountID
-	identity := r.Header.Get("X-Darkbloom-Device-Identity")
-	if len(identity) > 4096 {
+	identity := r.Header.Get(desktopIdentityHeader)
+	if len(identity) > desktopIdentityMaxBytes {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request", "invalid device identity"))
 		return
 	}
-	cacheKey := fmt.Sprintf("desktop-account:%s:%x", accountID, sha256.Sum256([]byte(identity)))
-	if cached, ok := s.readCache.Get(cacheKey); ok {
-		writeCachedJSON(w, cached)
+	projection, ok := s.cachedDesktopAccount(accountID)
+	if !ok {
+		var status int
+		var err error
+		projection, status, err = s.buildDesktopAccount(r.Context(), accountID)
+		if err != nil {
+			writeJSON(w, status, errorResponse("unavailable", err.Error()))
+			return
+		}
+		if s.readCache != nil {
+			s.readCache.SetValue(desktopAccountCachePrefix+accountID, projection, desktopAccountCacheTTL)
+		}
+	}
+	body, err := json.Marshal(projection.forIdentity(identity))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "could not encode account"))
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	writeCachedJSON(w, body)
+}
+
+func (s *Server) cachedDesktopAccount(accountID string) (*desktopAccount, bool) {
+	value, ok := s.readCacheGetValue(desktopAccountCachePrefix + accountID)
+	if !ok {
+		return nil, false
+	}
+	projection, ok := value.(*desktopAccount)
+	return projection, ok && projection != nil
+}
+
+// forIdentity renders a per-request copy of the shared (immutable) cached
+// projection with IsThisMac set for the machine whose SE key matches.
+func (a *desktopAccount) forIdentity(identity string) desktopAccount {
+	out := *a
+	out.Machines = make([]desktopMachine, len(a.Machines))
+	for i, machine := range a.Machines {
+		machine.IsThisMac = identity != "" && identity == machine.seKey
+		out.Machines[i] = machine
+	}
+	return out
+}
+
+// buildDesktopAccount computes the account-level projection. The returned
+// error message is safe to show the caller; status is the HTTP code to use.
+func (s *Server) buildDesktopAccount(parent context.Context, accountID string) (*desktopAccount, int, error) {
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
 	fleet, err := s.mergeFleet(ctx, accountID)
 	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("unavailable", "fleet data unavailable"))
-		return
+		return nil, http.StatusServiceUnavailable, errors.New("fleet data unavailable")
 	}
 	summary, err := s.store.GetAccountEarningsSummary(accountID)
 	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("unavailable", "earnings unavailable"))
-		return
+		return nil, http.StatusServiceUnavailable, errors.New("earnings unavailable")
 	}
 	windows, err := s.accountEarningsWindows(accountID)
 	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("unavailable", "earnings windows unavailable"))
-		return
+		return nil, http.StatusServiceUnavailable, errors.New("earnings windows unavailable")
 	}
 	now := time.Now()
-	result := desktopAccount{Linked: true, AccountID: accountID, ObservedAt: now.Unix(),
+	result := &desktopAccount{Linked: true, AccountID: accountID, ObservedAt: now.Unix(),
 		LifetimeMicroUSD: strconv.FormatInt(summary.TotalMicroUSD, 10),
 		WeekMicroUSD:     strconv.FormatInt(windows.Last7dMicroUSD, 10),
 		BalanceMicroUSD:  strconv.FormatInt(s.store.GetWithdrawableBalance(accountID), 10),
 		Machines:         make([]desktopMachine, 0, len(fleet)),
 	}
 	for _, machine := range fleet {
-		item := desktopMachine{IsThisMac: identity != "" && identity == machine.SEPublicKey, ID: machine.ID, Name: machine.Hardware.MachineModel, Chip: machine.Hardware.ChipName,
-			MemoryGB: machine.Hardware.MemoryGB, Status: machine.Status, Version: machine.Version, Models: []string{}}
+		item := desktopMachine{ID: machine.ID, Name: machine.Hardware.MachineModel, Chip: machine.Hardware.ChipName,
+			MemoryGB: machine.Hardware.MemoryGB, Status: machine.Status, Version: machine.Version, Models: []string{},
+			seKey: machine.SEPublicKey}
 		if item.Name == "" {
 			item.Name = "Mac"
 		}
@@ -99,13 +172,7 @@ func (s *Server) handleDesktopAccount(w http.ResponseWriter, r *http.Request) {
 
 		result.Machines = append(result.Machines, item)
 	}
-	body, err := json.Marshal(result)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "could not encode account"))
-		return
-	}
-	s.readCache.Set(cacheKey, body, 20*time.Second)
-	writeCachedJSON(w, body)
+	return result, 0, nil
 }
 
 // Earnings keys may survive an ownership change. Always scope historical rows

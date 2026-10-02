@@ -140,6 +140,7 @@ func (r *Registry) expirePendingModelLoads(now time.Time) {
 	defer r.mu.Unlock()
 	for key, expiresAt := range r.pendingModelLoads {
 		if now.After(expiresAt) {
+			r.recordDeadlineLoadActivityLocked(key.ProviderID, now)
 			delete(r.pendingModelLoads, key)
 			delete(r.pendingModelLoadStarted, key)
 		}
@@ -190,6 +191,9 @@ func (r *Registry) hasWarmProviderLocked(model string, now time.Time) bool {
 // with stale attestation or failed privacy checks should not suppress swap
 // planning. Caller must hold p.mu. Caller must hold r.mu (read or write).
 func (r *Registry) providerHasWarmModelLocked(p *Provider, model string, now time.Time) bool {
+	if providerAutopilotTransitionLocked(p) {
+		return false
+	}
 	// Liveness/trust/privacy core, with NO owner relaxation: private-only
 	// providers serve only their owner's self-route traffic, never the public
 	// fleet, and must not suppress public swap planning — otherwise a
@@ -267,7 +271,7 @@ func (r *Registry) bestModelLoadProviderLocked(model string, now time.Time, sele
 func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, now time.Time) (int, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if now.Before(p.modelLoadSendRetryAt) {
+	if providerLegacyModelChangesBlockedLocked(p) || now.Before(p.modelLoadSendRetryAt) {
 		return 0, false
 	}
 
@@ -300,7 +304,7 @@ func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, no
 		// so the warming planner can't send a load_model the provider then
 		// OOM-rejects, which would leave queued cold-dispatch requests sitting until
 		// they time out. Legacy providers (no report) fall through to the static gate.
-		if admit, reported := reportedFreeForLoadAdmitsWithOffload(entry.SizeGB, advertisedOffloadedMemoryGBLocked(p, model), backendFreeForLoadGB(p.BackendCapacity)); reported && !admit {
+		if admit, reported := reportedFreeForLoadAdmitsWithOffload(entry.SizeGB, advertisedOffloadedMemoryGBLocked(p, model, entry.SizeGB), backendFreeForLoadGB(p.BackendCapacity)); reported && !admit {
 			return 0, false
 		}
 	}
@@ -322,7 +326,7 @@ func (r *Registry) reservePendingModelLoads(actions []modelLoadAction, now time.
 	for _, action := range actions {
 		if p, ok := r.providers[action.providerID]; ok {
 			p.mu.Lock()
-			eligible := !now.Before(p.modelLoadSendRetryAt) && r.providerCanAcquireCatalogModelLocked(p, action.modelID)
+			eligible := !providerLegacyModelChangesBlockedLocked(p) && !now.Before(p.modelLoadSendRetryAt) && r.providerCanAcquireCatalogModelLocked(p, action.modelID)
 			p.mu.Unlock()
 			if !eligible {
 				continue
@@ -335,6 +339,7 @@ func (r *Registry) reservePendingModelLoads(actions []modelLoadAction, now time.
 			continue
 		}
 		key := modelLoadKey{ProviderID: action.providerID, ModelID: action.modelID}
+		r.recordDeadlineLoadActivityLocked(action.providerID, now)
 		r.pendingModelLoads[key] = now.Add(pendingModelLoadTTL)
 		r.pendingModelLoadStarted[key] = now
 		action.reservation = pendingModelLoadSendAttempt{
@@ -395,6 +400,7 @@ func (r *Registry) ClearIneligiblePendingModelLoads(providerID string) int {
 		}
 		delete(r.pendingModelLoads, key)
 		delete(r.pendingModelLoadStarted, key)
+		p.recordDeadlineActivityLocked(time.Now())
 		cleared++
 	}
 	p.mu.Unlock()
@@ -472,6 +478,9 @@ func (r *Registry) ClearPendingModelLoad(providerID, modelID string) time.Durati
 	key := modelLoadKey{ProviderID: providerID, ModelID: modelID}
 	_, released := r.pendingModelLoads[key]
 	started := r.pendingModelLoadStarted[key]
+	if released {
+		r.recordDeadlineLoadActivityLocked(providerID, time.Now())
+	}
 	delete(r.pendingModelLoads, key)
 	delete(r.pendingModelLoadStarted, key)
 	r.mu.Unlock()
@@ -523,6 +532,7 @@ func (r *Registry) backoffPendingModelLoad(providerID, modelID string, backoff t
 	}
 	key := modelLoadKey{ProviderID: providerID, ModelID: modelID}
 	now := time.Now()
+	r.recordDeadlineLoadActivityLocked(providerID, now)
 	r.pendingModelLoads[key] = now.Add(backoff)
 	if r.pendingModelLoadStarted[key].IsZero() {
 		r.pendingModelLoadStarted[key] = now

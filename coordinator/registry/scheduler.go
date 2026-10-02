@@ -171,6 +171,10 @@ type routingSnapshot struct {
 	// telemetry keep reading the provider-reported truth. Only set when the
 	// slot reports a token budget (activeTokenBudgetMax > 0).
 	budgetClamped bool
+	// A managed cold slot or a real placement transition cannot accept network
+	// work. Kept separate from structural eligibility so planners still see
+	// cached inventory and preflight reports temporary capacity, not absence.
+	autopilotBlocked bool
 	// kvBytesPerToken is the provider-reported per-token KV-cache cost (bytes)
 	// for THIS model's slot (BackendSlotCapacity.KVBytesPerToken). 0 = unreported
 	// (callers fall back to the kvCacheBytesPerToken default). Used by the
@@ -798,6 +802,7 @@ func (r *Registry) commitProviderReservation(
 		candidate.firstContent.ExpectedMs != selected.firstContent.ExpectedMs ||
 		candidate.firstContent.ConservativeMs != selected.firstContent.ConservativeMs ||
 		candidate.firstContent.Status != selected.firstContent.Status ||
+		firstContentEvidenceExplorable(candidate) != firstContentEvidenceExplorable(selected) ||
 		candidate.firstContent.ServiceMs != selected.firstContent.ServiceMs ||
 		candidate.costMs != selected.costMs ||
 		candidate.breakdown.CacheDiscountMs != selected.breakdown.CacheDiscountMs ||
@@ -1793,6 +1798,9 @@ func reportedFreeForLoadAdmits(catalogSizeGB float64, freeForLoadGB *float64) (a
 // Providers that report a token budget use budget-based admission;
 // legacy providers fall back to memory-based estimation.
 func freeMemoryAdmits(snap *routingSnapshot, reqPromptTokens, reqMaxTokens int) bool {
+	if snap.autopilotBlocked {
+		return false
+	}
 	// Gray-box budget clamp: a capacity-503 proved the provider's live gate
 	// rejects while the heartbeat budget below still advertises headroom
 	// (stale-optimistic). While the clamp holds, the slot is FULL — no
@@ -2565,6 +2573,9 @@ func providerModelIDs(p *Provider) []string {
 // The default wrapper (breaker honored) is unchanged for every other caller.
 // Caller holds r.mu and p.mu.
 func (r *Registry) providerCanAdmitLockedEx(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, ignoreProviderBreaker bool, now time.Time) bool {
+	if providerAutopilotRoutingBlockedLocked(p, model) {
+		return false
+	}
 	if !r.providerPassesRoutingGatesLockedEx(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker, false) {
 		return false
 	}

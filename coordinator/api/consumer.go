@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/promptwork"
 	"github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
@@ -1065,6 +1066,7 @@ func (s *Server) dispatchWithReserver(
 		IsResponsesAPI:           isResponsesAPI,
 		EstimatedPromptTokens:    estimatedPromptTokens,
 		FirstContentPromptTokens: calibratedContextPromptTokens(model, estimatedPromptTokens),
+		PromptWork:               promptwork.ForAttempt(r.Context(), model, rawBody, calibratedContextPromptTokens(model, estimatedPromptTokens)),
 		RequiresVision:           requiresVision,
 		Traits:                   traits,
 		RequestedMaxTokens:       requestedMaxTokens,
@@ -1992,6 +1994,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	stream, _ := parsed["stream"].(bool)
 	estimatedPromptTokens := shape.routingPromptTokens(parsed)
+	estimatedPromptTokens = s.mediaPromptTokens(r.Context(), publicModel, model, parsed, estimatedPromptTokens)
 	billingPromptTokens := shape.billingPromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
 	deadline, deadlineErr := s.requestFirstContentDeadline(r, publicModel, model, estimatedPromptTokens)
@@ -2138,8 +2141,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// reservation, and the catalog check, so network I/O is gated behind the
 	// cost gates: an authenticated but unfunded/over-quota request (or one for a
 	// nonexistent model) can never drive coordinator-side fetches. The token &
-	// routing estimates above count media parts flatly (300/1500 per part), so
-	// they don't need the inlined bytes. The billing reservation is refunded on
+	// routing estimates above can inspect already-inline metadata; unresolved
+	// URLs keep legacy per-part estimates until the post-fetch recount below.
+	// The billing reservation is refunded on
 	// any failure, and topped up below on success — it was taken while the media
 	// was still a ~100-byte URL. parsed is mutated in place, so every view
 	// derived from the pre-inline body is refreshed via refreshForwardBody.
@@ -2221,6 +2225,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if !refreshForwardBody(rawBody, model) {
 			return
 		}
+		// URLs were cost-gated before fetching. Recount the now-inline media
+		// from the original flat estimate, never adding the same image twice.
+		// A larger input charge must pass both token limiters before dispatch.
+		estimatedPromptTokens, deadline, ok = s.reconcileFetchedMedia(w, r, publicModel, model,
+			parsed, shape.routingPromptTokens(parsed), estimatedPromptTokens, deadline)
+		if !ok {
+			refundReservation()
+			return
+		}
 		// The reservation was taken against a body where the image was a short
 		// URL, so estimateBillingPromptTokens — the guaranteed len(bytes) >= tokens
 		// upper bound the settlement path relies on — was computed over ~100 bytes
@@ -2280,12 +2293,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		return refreshForwardBody(forwardBytes, newModel)
 	}
-	cachePlans := &requestCachePlans{
-		body: bodies.body,
-		plan: func(candidateModel string, candidateBody []byte) registry.CachePlan {
-			return s.planCacheRoute(r.Context(), consumerKeyFromContext(r.Context()), candidateModel, candidateBody, requiresVision)
+	cachePlans := newRequestPromptWorkPlans(
+		bodies.body,
+		func(candidateModel string, candidateBody []byte, hasMedia bool) promptwork.Result {
+			ctx, cancel := promptwork.PlanningContext(r.Context(), timingReceivedAt(timing), deadline)
+			defer cancel()
+			return s.planPromptRoute(ctx, consumerKeyFromContext(r.Context()), candidateModel, candidateBody, hasMedia, hasTools, estimatedPromptTokens)
 		},
-	}
+		requiresVision, parsed)
+	r = r.WithContext(promptwork.WithMemo(r.Context(), &cachePlans.memo))
 	var preflightHandled bool
 	preflightStart := time.Now()
 	model, preflightHandled = s.runInferenceAdmission(w, r, parsed, inferenceAdmissionParams{
@@ -2304,6 +2320,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		deadline:                  deadline,
 		receivedAt:                timingReceivedAt(timing),
 		cachePlanForModel:         cachePlans.forModel,
+		promptWorkForModel:        cachePlans.workForModel,
 		policy:                    policy,
 		refundReservation:         refundReservation,
 		onModelFallback:           onModelFallback,
@@ -2724,6 +2741,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 
 	stream, _ := parsed["stream"].(bool)
 	estimatedPromptTokens := estimatePromptTokens(parsed)
+	estimatedPromptTokens = s.mediaPromptTokens(r.Context(), publicModel, model, parsed, estimatedPromptTokens)
 	billingPromptTokens := estimateBillingPromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
 	genericDeadline, deadlineErr := s.requestFirstContentDeadline(r, publicModel, model, estimatedPromptTokens)
@@ -2849,15 +2867,18 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 
 	// Shared routing/capacity admission preflight (self-route / prefer / public
 	// capacity+TTFT gate — see runInferenceAdmission).
-	cachePlans := &requestCachePlans{
-		body: func(candidateModel string) ([]byte, error) {
+	cachePlans := newRequestPromptWorkPlans(
+		func(candidateModel string) ([]byte, error) {
 			_, candidateBody, err := lowerGenericBodyForModel(candidateModel)
 			return candidateBody, err
 		},
-		plan: func(candidateModel string, candidateBody []byte) registry.CachePlan {
-			return s.planCacheRoute(r.Context(), consumerKey, candidateModel, candidateBody, requiresVision)
+		func(candidateModel string, candidateBody []byte, hasMedia bool) promptwork.Result {
+			ctx, cancel := promptwork.PlanningContext(r.Context(), timingReceivedAt(timing), genericDeadline)
+			defer cancel()
+			return s.planPromptRoute(ctx, consumerKey, candidateModel, candidateBody, hasMedia, hasTools, estimatedPromptTokens)
 		},
-	}
+		requiresVision, parsed)
+	r = r.WithContext(promptwork.WithMemo(r.Context(), &cachePlans.memo))
 	var preflightHandled bool
 	preflightStart := time.Now()
 	model, preflightHandled = s.runInferenceAdmission(w, r, parsed, inferenceAdmissionParams{
@@ -2876,6 +2897,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		deadline:                  genericDeadline,
 		receivedAt:                timingReceivedAt(timing),
 		cachePlanForModel:         cachePlans.forModel,
+		promptWorkForModel:        cachePlans.workForModel,
 		policy:                    policy,
 		refundReservation:         refundReservation,
 		onModelFallback:           refreshGenericBody,

@@ -72,7 +72,9 @@ extension ProviderLoop {
         // 1. Apply security hardening
         try await applySecurityHardening()
         if Task.isCancelled || servingDrain.refusing {
-            await shutdownBeforeRegistration()
+            guard await shutdownBeforeRegistration() else {
+                throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
+            }
             return
         }
 
@@ -82,7 +84,9 @@ extension ProviderLoop {
         // assistant bytes and fails open on timeout.
         await prewarmSpecDecCatalog()
         if Task.isCancelled || servingDrain.refusing {
-            await shutdownBeforeRegistration()
+            guard await shutdownBeforeRegistration() else {
+                throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
+            }
             return
         }
         startMTPUpgradeMonitor()
@@ -121,7 +125,9 @@ extension ProviderLoop {
         await runStartupPreloadGate()
         preloadLivenessRefresh.cancel()
         if Task.isCancelled || servingDrain.refusing {
-            await shutdownBeforeRegistration()
+            guard await shutdownBeforeRegistration() else {
+                throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
+            }
             return
         }
 
@@ -182,10 +188,13 @@ extension ProviderLoop {
         // A termination received during the APNs/startup awaits can already
         // have drained a process that has no coordinator connection yet.
         if Task.isCancelled || servingDrain.refusing {
-            await shutdownBeforeRegistration()
+            guard await shutdownBeforeRegistration() else {
+                throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
+            }
             return
         }
         // 4. Create coordinator client and start connection
+        publishModelAutopilotSnapshot()
         let coordinator = CoordinatorClient(
             config: coordinatorConfig,
             stats: stats,
@@ -199,12 +208,16 @@ extension ProviderLoop {
 
         if Task.isCancelled || servingDrain.refusing {
             await coordinator.shutdown()
-            await shutdownBeforeRegistration()
+            guard await shutdownBeforeRegistration() else {
+                throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
+            }
             return
         }
         let (events, sendFn) = await coordinator.start()
         if Task.isCancelled || servingDrain.refusing {
-            await shutdownBeforeRegistration()
+            guard await shutdownBeforeRegistration() else {
+                throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
+            }
             return
         }
         // Wire the direct inference-chunk fast path (Optimizations 1-3) alongside
@@ -276,6 +289,7 @@ extension ProviderLoop {
                     await coordinator.completeDrainAcknowledgement(id)
                 case .connected:
                     clearConnectionAuthorization()
+                    clearAutopilotControl()
                     logger.info(.coordinatorConnected)
                     // The post-retirement reconnect's admission barrier
                     // (see `requestPlannedReconnect`) lifts with the new
@@ -286,6 +300,7 @@ extension ProviderLoop {
                 case .disconnected:
                     clearConnectionAuthorization()
                     modelSwitchTask?.cancel()
+                    clearAutopilotControl()
                     cancelAppAttestShadow()
                     logger.warning(.coordinatorDisconnected)
                     // Cancel all in-flight requests on disconnect -- the coordinator
@@ -298,7 +313,7 @@ extension ProviderLoop {
                     let cacheReceiptBoundaryMode, let cacheRepeatedPrefixTokens,
                     let toolSchemaMetadataProtocol, let firstContentDeadline,
                     let receivedAt,
-                    let profile, let serviceReservationID
+                    let profile, let serviceReservationID, let promptWork
                 ):
                     await handleInferenceRequest(
                         requestId: requestId,
@@ -314,6 +329,7 @@ extension ProviderLoop {
                         receivedAt: receivedAt,
                         profile: profile,
                         serviceReservationID: serviceReservationID,
+                        promptWork: promptWork,
                         send: send
                     )
 
@@ -338,6 +354,11 @@ extension ProviderLoop {
                     for m in mismatches {
                         logger.warning("  \(m.component): expected=\(m.expected), got=\(m.got)")
                     }
+
+                case .modelAutopilotControl(let control):
+                    await handleAutopilotControl(control)
+                case .modelAutopilot(let command):
+                    handleModelAutopilot(command, send: send)
 
                 case .loadModel(let modelId):
                     handleLoadModelRequest(modelId: modelId, send: send)
@@ -368,6 +389,7 @@ extension ProviderLoop {
         clearConnectionAuthorization()
         logger.info(.coordinatorEventStreamEnded)
         isShuttingDown = true
+        closeNativeMiMoLifecycle() // close native generation before teardown awaits
         await cancelModelSwitchAndWait()
         // Quote path mirror (routing v2): a shutting-down provider quotes
         // `slot_state` rejections for the brief window the socket stays up.
@@ -408,6 +430,7 @@ extension ProviderLoop {
         // any still-running startup preload driver (it outlives the readiness
         // gate when the timeout passed).
         var preloads = Array(preloadTasks.values)
+        if let autopilotTask { preloads.append(autopilotTask) }
         if let startupTask = startupPreloadTask {
             preloads.append(startupTask)
         }
@@ -428,6 +451,11 @@ extension ProviderLoop {
             await cancelAllInflight()
         }
         await coordinator.shutdown()
+        guard await drainNativeMiMoOwners() else {
+            // Real registry/slot/consumer owners stay reachable. A pending or
+            // faulted native engine is not an empty successful shutdown.
+            throw InferenceError.modelLoadFailed("Native MiMo slot shutdown remains pending or requires process restart")
+        }
         while !modelSlots.isEmpty {
             if let unloading = modelsUnloading.first {
                 await waitForModelUnload(unloading)

@@ -1,6 +1,6 @@
 # 0.9.0 correctness candidate build and focused tests
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-06
 
 The combined correctness candidate builds both optimized executables and passes eight focused provider suites on M5 Max. This record establishes build and regression-test results; full-model comparisons and release acceptance remain pending at this checkpoint. The binary still carries the existing version metadata, not a published 0.9.0 release.
 

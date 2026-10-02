@@ -69,7 +69,7 @@ func (s *Server) handleStripeOnboard(w http.ResponseWriter, r *http.Request) {
 	if user == nil {
 		return
 	}
-	if s.billing == nil || s.billing.StripeConnect() == nil {
+	if s.billing == nil {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "Stripe Payouts not configured"))
 		return
 	}
@@ -122,6 +122,10 @@ func (s *Server) handleStripeOnboard(w http.ResponseWriter, r *http.Request) {
 	// as the source of truth.
 	requestedCountry := strings.ToUpper(strings.TrimSpace(req.Country))
 	if s.maybeGlobalOnboard(w, r, user, requestedCountry, returnURL, refreshURL) {
+		return
+	}
+	if s.billing.StripeConnect() == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "Stripe Payouts not configured"))
 		return
 	}
 	if requestedCountry == "" && user.StripeAccountID == "" {
@@ -249,12 +253,16 @@ func (s *Server) handleStripeStatus(w http.ResponseWriter, r *http.Request) {
 	if user == nil {
 		return
 	}
-	if s.billing == nil || s.billing.StripeConnect() == nil {
+	if s.billing == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"has_account": false, "configured": false})
 		return
 	}
 
 	if s.maybeGlobalStatus(w, r, user) {
+		return
+	}
+	if s.billing.StripeConnect() == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"has_account": false, "configured": false})
 		return
 	}
 	resp := map[string]any{
@@ -377,6 +385,21 @@ func (s *Server) handleStripeDashboardLink(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "Stripe Payouts not configured"))
 		return
 	}
+	if s.billing.GlobalPayoutsOnly() {
+		writeJSON(w, http.StatusConflict, errorResponse("bank_setup_required", "Manage your bank details through bank payout setup."))
+		return
+	}
+	if repo, ok := s.globalPayoutStore(); ok {
+		if _, err := repo.GetGlobalRecipient(user.AccountID); !errors.Is(err, store.ErrNotFound) {
+			if err != nil {
+				globalPayoutError(w, err)
+			} else {
+				writeJSON(w, http.StatusConflict, errorResponse("bank_setup_required", "Manage your bank details through bank payout setup."))
+			}
+			return
+		}
+	}
+
 	if user.StripeAccountID == "" || !stripeDashboardAvailable(user.StripeAccountStatus) {
 		writeJSON(w, http.StatusConflict, errorResponse("not_onboarded",
 			"finish your payout setup first, then you can manage the account in Stripe"))
@@ -453,6 +476,12 @@ func (s *Server) handleStripeUnlink(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "billing not configured"))
 		return
 	}
+	if s.billing.GlobalPayoutsOnly() {
+		// Retain the legacy identity for old payouts. Future setup is Global Payouts.
+		writeJSON(w, http.StatusOK, map[string]bool{"unlinked": false})
+		return
+	}
+
 	if user.StripeAccountID == "" {
 		writeJSON(w, http.StatusOK, map[string]any{"unlinked": false})
 		return

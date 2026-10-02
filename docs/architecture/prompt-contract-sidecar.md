@@ -1,6 +1,6 @@
 # Prompt-contract sidecar
 
-> Last updated: 2026-09-27 · commit `1e4f506f2`
+> Last updated: 2026-10-01
 
 The Go `LowerResponsesInferenceBody` serving adapter preserves ordered inline
 media; it does not broaden this sidecar's text-only cache-planning contract.
@@ -179,9 +179,11 @@ Five provider-side transformations that precede every template are mirrored in
 2. **Tool-call arguments.** Decoded `arguments` take the value bridge's
    shape: sorted members and integral JSON doubles as integers, because
    `Jinja.Value(any:)` matches `Int` before `Double` (`provider_bridged_value`).
-3. **Tool definitions.** A tool's `function` object keeps only `name`,
-   `description` and `parameters`, because `OpenAITool.toolSpec()` renders
-   nothing else (`typed_function_definition`).
+3. **Tool definitions.** A tool's `function` object keeps `name`,
+   `description` and `parameters`, plus optional `strict` for Nemotron
+   (`typed_function_definition`). `ChatTemplateFixes.normalizeToolMetadata`
+   removes that SDK metadata for other families in both text and native media
+   inputs. It preserves the media producer's existing schema/history handling.
 4. **Harmony framing.** Assistant `content` and `reasoning_content` lose raw
    Harmony channel framing for every model family
    (`strip_harmony_channel_framing`, the mirror of `sanitizeJinjaMessages`).
@@ -275,8 +277,8 @@ the provider contract, relax receipt checks or clear existing fences.
 
 The semantic versions (`CurrentVersions`) are:
 
-- normalization: `darkbloom-request-normalization-v6` (retains prior model policies and extends the native Qwen4 text prompt and reasoning-effort policy to the exact registry ID)
-- renderer: `swift-jinja-request-date-compatible-v3`
+- normalization: `darkbloom-request-normalization-v8` (retains v7 model policies, including native MiMo history/null handling, and preserves typed function-level `strict` only for Nemotron)
+- renderer: `swift-jinja-request-date-compatible-v4` (Nemotron-scoped Transformers-compatible scalar/JSON filters)
 - tokenizer: `huggingface-tokenizer-json-v1`
 - block hash: `PromptContractIdentity.blockHashVersion`, stated in
   [`prefix-cache.md#block-hashing`](prefix-cache.md#block-hashing)
@@ -315,21 +317,37 @@ them to a different value. The context/error vectors mirror
 `Qwen4SupportPolicy.validateReasoningContext` and
 `MultiModelBatchSchedulerEngine.templateAdditionalContext`.
 
-A v3/v4/v5 provider and v6 coordinator (or the reverse) cannot earn cache credit or
-affinity from the other's contract: `coordinator/registry/cache_tiers.go`
+A provider and coordinator using different normalization or renderer identities
+cannot earn cache credit or affinity from the other's contract:
+`coordinator/registry/cache_tiers.go`
 (`capabilityMatchesPlan`) requires identical IDs while ordinary serving remains
 available. Before an authorized rollout, regenerate prompt artifacts/preloaded
 contracts and any configured exact artifact allowlist using the new identity;
-do not relabel old cache objects as v6. Renderer, tokenizer and block-hash
-versions are unchanged. No deployment or allowlist mutation follows merely
+do not relabel old cache objects as v8. Tokenizer and block-hash versions are
+unchanged. No deployment or allowlist mutation follows merely
 from building this private candidate.
 
 The new registry ID additionally requires a compatible provider version for
 all inference, not merely cache credit; see the
 [registry-ID gate](routing.md#native-model-capacity-and-registry-identity).
-The version transition preserves existing models' template inputs and token
-arrays while regenerating contract-dependent hashes. It is not a change to
-model weights or a new floating-point baseline.
+The v8 transition preserves non-Nemotron template inputs and token arrays while
+regenerating contract-dependent hashes. The checked-in production corpus has
+no Nemotron model; its identity-only transformation cannot establish Nemotron
+prompt parity. Nemotron's reference corpus separately verifies the changed
+tool metadata and filter bytes. Model weights and floating-point behavior are
+unchanged.
+
+Nemotron's Rust filters mirror the provider's `String(Double)` spelling rather
+than Rust's decimal display or serde's exponent spelling. The normalizer applies
+the SDK's Int-before-Double conversion to Nemotron tool values before rendering;
+numeric enum/default/minimum fields therefore produce identical token counts
+and cache blocks. Decimal/exponent tool values at or above the `2^53` exact
+integer boundary stay cold: serde's Double may already have lost a digit that
+Swift's typed Int decoder preserves. Plain signed integer spellings remain
+eligible. The shared 526-value finite-number oracle exercises both
+Swift and Rust filters, and the pinned reference/edge corpora exercise the real
+provider tokenizer and Rust planner. See the
+[Nemotron parity gate](../developer/test.md#9-prompt-contract-parity-fixtures-and-vectors).
 
 The artifact loader records the pinned `swift-transformers` precedence:
 `chat_template.jinja`, then `chat_template.json`, then the tokenizer-config
@@ -448,6 +466,29 @@ values remain booleans through `ParserUtilities.asSendable` in
 
 ### Parity fixtures and measured latency
 
+For `model_type=nemotron_h`, the provider and sidecar instead use the pinned
+Nemotron template's Transformers-compatible default scalar and JSON filters.
+`provider-swift/Sources/ProviderCoreFoundation/NemotronTemplateFilters.swift`
+and `coordinator/promptsidecar/src/render/nemotron.rs` preserve Unicode and
+use comma-space/colon-space JSON separators. The Swift writer bounds nesting
+at 128 and output at 16 MiB; unsupported filter options fail closed.
+`NemotronTemplateFilterBinding` binds only the `string` filter to a private
+name because Swift Jinja shares filter and type-test names. It leaves
+`is string` tests intact. Model artifact templates are not modified.
+
+The SDK preserves optional boolean `strict` (including false); provider and
+sidecar normalization retain it only for Nemotron. Unknown function fields
+are still outside the typed SDK contract. This is not a general arbitrary-JSON
+or every-template parity guarantee. The fixture corpus verifies the pinned
+template's supported request shapes; it does not certify model tool-selection
+quality.
+
+The normalization-v8/renderer-v4 identity change affects all model families,
+including those with unchanged prompt bytes. Existing checkpoints remain separated by prompt
+identity and start cold. Coordinator/sidecar contracts and artifact allowlists
+must be regenerated with the provider rollout; rollback restores the prior
+provider/coordinator versions together, never relabeling old cache entries.
+
 `fixtures/prompt-contract/v1` is shared by Rust, Go, and Swift tests:
 `contract_vectors.json` and `block_hash_vectors.json` hold the contract and
 block-hash vectors; `corpus.json` contains complete requests for tools, null
@@ -561,3 +602,13 @@ gate.
 - [`../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md) — the DBK3 blocks the chain addresses
 - [`../reference/configuration.md#prompt-sidecar-and-media-fetch`](../reference/configuration.md#prompt-sidecar-and-media-fetch) — every `EIGENINFERENCE_PROMPT_SIDECAR_*` variable and default
 - [`../developer/test.md#9-prompt-contract-parity-fixtures-and-vectors`](../developer/test.md#9-prompt-contract-parity-fixtures-and-vectors) — regenerating vectors and running the parity gate
+
+### MiMo thinking alias
+
+For exact `mimo_v2`, `coordinator/promptsidecar/src/mimo_v26.rs`
+(`additional_context`) accepts Boolean `chat_template_kwargs.thinking` as a
+fallback alias for `enable_thinking`. Nested `reasoning.enabled`, top-level
+`enable_thinking`, and kwargs `enable_thinking` retain precedence. Every
+supplied alias is type checked. The provider mirrors this in
+`MiMoV26RawControlEvidence` and `MiMoV26TemplateFix`; existing valid requests
+retain identical normalized content and contract identity.

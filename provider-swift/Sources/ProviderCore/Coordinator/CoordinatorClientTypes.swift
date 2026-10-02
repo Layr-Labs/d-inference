@@ -116,7 +116,8 @@ public enum CoordinatorEvent: Sendable {
         /// Profiler accumulator anchored at frame receipt (created
         /// unconditionally, unlike the budget-derived deadline).
         profile: RequestProfileBuilder,
-        serviceReservationID: String? = nil
+        serviceReservationID: String? = nil,
+        promptWork: PromptWork? = nil
     )
     case cancel(requestId: String)
     case attestationChallenge(nonce: String, timestamp: String)
@@ -127,6 +128,8 @@ public enum CoordinatorEvent: Sendable {
     /// (off-thread) and reply with a `loadModelStatus` outbound message
     /// when the load completes or fails.
     case loadModel(modelId: String)
+    case modelAutopilotControl(ModelAutopilotControl)
+    case modelAutopilot(ModelAutopilotCommand)
     /// Coordinator-driven background prefetch. Provider should download +
     /// verify the build on disk (off-thread, no GPU load) and reply with
     /// `prefetchModelStatus` outbound messages. `priority` orders concurrent
@@ -254,6 +257,7 @@ public enum OutboundMessage: Sendable {
     case codeAttestationResponse(nonce: String, signature: String, onWritten: (@Sendable () -> Void)? = nil)
     case appAttestShadow(AppAttestShadowPayload)
     case loadModelStatus(modelId: String, status: ProviderMessage.LoadModelStatus.Status, error: String?)
+    case modelAutopilotStatus(ModelAutopilotStatus)
     case prefetchModelStatus(
         modelId: String,
         status: ProviderMessage.PrefetchModelStatus.Status,

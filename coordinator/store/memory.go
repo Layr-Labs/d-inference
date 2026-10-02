@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	crs "github.com/eigeninference/d-inference/coordinator/store/cacheroutingstate"
 	"sort"
 	"strconv"
 	"strings"
@@ -39,6 +40,7 @@ const keySpendRetentionDays = 40
 
 // MemoryStore manages API keys, usage records, payments, and balances in memory.
 type MemoryStore struct {
+	autopilotRecords          map[string]AutopilotRecord
 	modelTokenProviderCarries map[string]int64
 	modelTokenPromotions      map[string]ModelTokenPromotion
 	modelTokenGrants          map[string]map[string]ModelTokenGrant
@@ -57,13 +59,16 @@ type MemoryStore struct {
 	ledgerSeq     int64 // auto-increment ID
 
 	// Observation-only keys; independent from provider/rewards identity.
-	appAttestShadowKeys  map[string]AppAttestShadowKey
-	appAttestRevocations map[string]bool
-	machineInventory     *memoryMachineInventory
-	appAttestEvidence    map[string]memoryAppAttestEvidence
-	appAttestEnrollments map[string]AppAttestEnrollment
-	appAttestBuilds      map[string]AppAttestBuildQualification
-	appAttestRotations   map[string]AppAttestKeyRotation
+	appAttestShadowKeys     map[string]AppAttestShadowKey
+	appAttestRevocations    map[string]bool
+	machineInventory        *memoryMachineInventory
+	appAttestEvidence       map[string]memoryAppAttestEvidence
+	appAttestEnrollments    map[string]AppAttestEnrollment
+	appAttestBuilds         map[string]AppAttestBuildQualification
+	cacheHolders            map[crs.HolderKey]crs.HolderRecord
+	cacheDemand             map[string]time.Time
+	cacheRoutingFingerprint string
+	appAttestRotations      map[string]AppAttestKeyRotation
 
 	// Referral system
 	referrersByCode    map[string]*Referrer // code → referrer
@@ -1392,7 +1397,7 @@ func (s *MemoryStore) GetReferrerByCode(code string) (*Referrer, error) {
 
 	ref, ok := s.referrersByCode[code]
 	if !ok {
-		return nil, fmt.Errorf("referral code %q not found", code)
+		return nil, fmt.Errorf("referral code %q: %w", code, ErrNotFound)
 	}
 	copy := *ref
 	return &copy, nil

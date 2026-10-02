@@ -19,7 +19,7 @@ func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider
 	snap.prefillTPS = resolvedPrefillTPS(p)
 	snap.totalMemoryGB = float64(p.Hardware.MemoryGB)
 	snap.modelSizeGB = r.modelSizeGBForFitLocked(p, model)
-	snap.estimatedOffloadedMemoryGB = advertisedOffloadedMemoryGBLocked(p, model)
+	snap.estimatedOffloadedMemoryGB = advertisedOffloadedMemoryGBLocked(p, model, snap.modelSizeGB)
 	snap.minRAMGb = r.catalogMinRAMGbLocked(model)
 
 	fillSnapshotPendingAndPool(snap, p, model)
@@ -60,6 +60,7 @@ func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider
 		}
 	}
 	snap.modelLoaded = slotStateModelLoaded(snap.slotState)
+	snap.autopilotBlocked = providerAutopilotRoutingBlockedLocked(p, model)
 	snap.availableOnDisk = !snap.modelLoaded
 	snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
 
@@ -79,5 +80,9 @@ func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider
 	rawRemaining := snap.activeTokenBudgetMax - snap.activeTokenBudgetUsed - snap.queuedTokenBudget
 	snap.budgetClamped = r.budgetClampedFor(p, model, p.LastHeartbeat, rawRemaining, snap.activeTokenBudgetMax > 0, now)
 	snap.performanceProfile = qualifiedPerformanceProfileLocked(p, model)
+	snap.deadlineProfile = qualifiedDeadlineProfileLocked(p, model)
+	if !r.deadlineProfileApplicableLocked(p, snap.deadlineProfile, now) {
+		snap.deadlineProfile = nil
+	}
 	r.fillFirstContentSnapshot(snap, p, now)
 }

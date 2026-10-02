@@ -201,11 +201,23 @@ type Provider struct {
 	IdleUnloadMins *int
 
 	// Live backend capacity from heartbeats (nil for providers without capacity reporting)
-	BackendCapacity *protocol.BackendCapacity
+	BackendCapacity             *protocol.BackendCapacity
+	ModelAutopilot              *protocol.ModelAutopilotState
+	autopilotPending            *autopilotPendingCommand
+	autopilotControlUntil       time.Time
+	autopilotControlRevision    string
+	autopilotControlObserveOnly bool
+	autopilotBackoffUntil       time.Time
 	// CapacityAcceptedAt advances only when the backend-capacity frame is
 	// applied. Rejected sequence frames advance LastHeartbeat but leave this
 	// owner-diagnostic clock unchanged. Guarded by p.mu.
 	CapacityAcceptedAt time.Time
+
+	// Session-local invalidation clocks for reviewed deadline applicability.
+	// Provider idle references cannot erase intervening coordinator-owned work.
+	// Both clocks are monotonic maxima and guarded by p.mu.
+	deadlineActivityAt       time.Time
+	deadlinePostureInvalidAt time.Time
 
 	// capacitySamplesAt is the coordinator time of the last accepted slot
 	// sample reconciliation. Separate from LastHeartbeat: rejected capacity
@@ -355,6 +367,7 @@ func (p *Provider) AddPending(pr *PendingRequest) {
 func (p *Provider) addPendingLocked(pr *PendingRequest) {
 	pr.providerAuthorizationBinding = providerRequestAuthorizationBindingLocked(p)
 	pr.reservedAt = time.Now()
+	p.recordDeadlineActivityLocked(pr.reservedAt)
 	pr.reservedServiceCharge = p.serviceChargeForModelLocked(pr.Model)
 	pr.serviceRetirementTracked = p.serviceRetirementProtocol
 	pr.serviceHandoffAuthorized = false
@@ -403,6 +416,9 @@ func (p *Provider) RemovePendingForFirstContentTimeout(
 // removePendingLocked removes and returns a pending request. Caller must hold p.mu.
 func (p *Provider) removePendingLocked(requestID string) *PendingRequest {
 	pr := p.pendingReqs[requestID]
+	if pr != nil {
+		p.recordDeadlineActivityLocked(time.Now())
+	}
 	p.retainServiceRetirementShadowLocked(pr)
 	delete(p.pendingReqs, requestID)
 	if len(p.pendingReqs) == 0 {

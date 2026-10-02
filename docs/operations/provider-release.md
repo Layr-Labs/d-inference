@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-27 · commit `2b714c427`
+> Last updated: 2026-10-01
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -10,9 +10,69 @@ re-downloads artifacts and requires independent App Attest qualification before
 activating a production release. Staging/publication failures retry the retained
 artifact; GitHub and R2 publication are separate recoverable steps.
 
-The prepared version is **0.9.12**; its source changes since `v0.9.9` are
-collected in [`CHANGELOG.md`](../../CHANGELOG.md): the unshipped 0.9.10
-candidate, the prefix-cache hit-rate set, and model-download cache recovery.
+The macOS signing and older-OS smoke jobs install the checksum-pinned GitHub CLI
+with `scripts/install-macos-github-cli.sh` before downloading retained artifacts.
+A `gh: command not found` error in an older run is runner setup failure before
+artifact verification, not a failed model test or notarization rejection. A
+retry of that old workflow still uses its original source. For an unchanged
+candidate with successful build and SDK qualification, merge the tooling fix
+and use the retained unsigned recovery path below.
+
+The **0.9.16** hotfix candidate repairs enrolled-daemon status, graceful lifecycle
+control and watchdog health observation. Its schema-1 state files write detailed
+Autopilot data under `autopilot_state`, leaving the old optional `autopilot` key
+absent so a still-running 0.9.15 watchdog can read the candidate heartbeat. New
+readers accept both layouts. Qualify the upgrade with consent already recorded:
+confirm status, graceful restart and promotion after the full stabilization
+window, including when the watchdog process predates the update. A newer release
+can recover machines that quarantined 0.9.15 without overriding quarantine.
+Also verify a busy model update produces a prompt retry message during inventory
+verification and preserves the running daemon and recorded selection.
+
+The released version is **0.9.15**. It adds automatic idle native MiMo
+calibration through the actual serving engine; see
+[calibration behavior](../architecture/first-content-routing.md#automatic-mimo-calibration).
+On the exact signed artifact, verify short/4k phase observations reach capacity
+heartbeats, customer requests on any model preempt calibration until real
+retirement, original deadlines remain anchored, and probe work is excluded from
+served-request/token counters. Compare utilization and capacity/deadline
+refusals under real traffic without expanding memory or concurrency limits.
+
+It retains native MiMo text-prefix SSD caching enabled by default since the
+0.9.14 candidate; the exact model identities and rollback controls are in
+[prefix-cache policy](../architecture/prefix-cache.md#mimo-complete-state).
+Qualify the exact signed build with an ordinary launchd configuration: record a
+cold text request, a useful repeated-prefix donation and an authenticated SSD
+restore, including target/assistant output correctness and memory headroom.
+Verify image, audio and video requests still complete through the joint native
+path without reporting media-prefix reuse. Set `DARKBLOOM_MIMO_COMPLETE_PREFIX=0`
+and rerun the replacement `darkbloom start` flow, preserving the selected models
+and existing start options, then repeat with `DARKBLOOM_PREFIX_CACHE=0`.
+Replacement start drains the old process, rewrites its plist from the current
+shell environment and starts the provider; `darkbloom restart` reuses the saved
+plist and does not apply newly exported variables. Verify each replacement
+provider serves cold, then unset both overrides and repeat replacement start
+to restore the model default. RAM
+retention and experimental paging/rectangular verification stay off for this
+qualification. The source change does not qualify those runtime results.
+
+The MiMo memory/media fixes carried forward from 0.9.13 are collected in
+[`CHANGELOG.md`](../../CHANGELOG.md). Qualify the signed build
+on a 256 GiB host both with MiMo alone and with another model resident:
+confirm a positive usable token budget, successful inference, bounded memory
+pressure, and correct concurrency reduction or load refusal when grants shrink.
+Include base64 PNG, EXIF JPEG, silent H.264 MP4 and combined image/video
+requests through the authenticated API. Include the standard PCM8/22050 Hz audio
+case and the OpenRouter MP4 with stereo AAC audio; verify native audio
+tokenization, generation and reservation cleanup. Check both on/off
+`chat_template_kwargs.thinking` aliases and tool-return reasoning history.
+Deploy the matching coordinator prompt normalizer before enabling the new
+request shapes across the provider fleet.
+Compare 30- and 300-source-frame clips
+with the same sampled frame count; record actual peak process memory and usable
+KV headroom, and confirm terminal reservation cleanup. Local tiny-weight
+inference and decoder tests cover the path but do not qualify the full artifact.
+The source change does not itself establish those live-serving results.
 Cache rollout steps are in [`cache-routing-rollout.md`](cache-routing-rollout.md).
 The 0.9.10 rollout order below applies unchanged: the new inference-request
 field is optional in both directions. The version bump prepares the source for
@@ -31,12 +91,16 @@ Keep `ProviderCore.version` in
 identity. Record release history in `CHANGELOG.md`;
 `scripts/check-release-version.sh` checks parity with the coordinator display
 fallback before packaging.
+The release Metal cache namespace also binds the prepared downloadable compiler's
+binary SHA, so an exact outer-cache hit cannot prevent publishing a library built
+with a newly installed Metal component.
 
 Production publication requires independent [durable App Attest build qualification](app-attest-build-qualification.md). Signing retains immutable bytes and a qualification template; a separate Linux staging job uploads those retained bytes to R2, and the Linux publication job verifies approval before release registration, R2 latest aliases and GitHub publication. Retry only the failed publication job after approval, preserving the original signed artifact. Deploy the matching coordinator first; the existing release key cannot approve builds.
 
 ### 0.9.10 rollout order
 
 1. Merge the version bump, then verify Release Integrity, Provider Tests,
+   Provider SDK Tests, Provider Prompt Parity,
    Coordinator Tests, E2E Integration Tests, and both SDK 27 release-preparation
    lanes on the final source. Build-cache success and a source version bump are
    neither signed-bundle qualification nor publication.
@@ -167,7 +231,7 @@ For App Attest coexistence, both signing workflows prepare optional profile-auth
 1. After merging release inputs, let **SDK 27 release preparation** complete on
    `master`, or dispatch `.github/workflows/provider-release-cache.yml` on
    `master`. It runs optimized compilation and SDK qualification on separate
-   `xcode-27-xlarge` runners, with no signing secrets or publication steps. This seeds
+   `blacksmith-12vcpu-macos-27` runners, with no signing secrets or publication steps. This seeds
    caches in the default branch's scope, which release tags can restore. PR
    validation caches stay isolated to their PR and do not seed `master`.
    Pipeline shutdown changes run these lanes on their PR as well; the
@@ -209,6 +273,38 @@ Implementation: `.github/actions/provider-release-build/action.yml`,
 `scripts/provider-signing-validation.py` (`stage`, `unpack`). See the
 [build cache contract](../developer/build.md#sdk-27-release-builds-and-caches) and
 [SDK qualification checks](../developer/test.md#sdk-27-release-qualification).
+
+## Resume signing from a retained unsigned build
+
+Use this when build and SDK qualification succeeded but signing failed because
+of workflow tooling or runner setup. Keep the release tag on the original
+candidate. After the corrected workflow is merged into current `master`, run:
+
+```bash
+gh workflow run release-swift.yml --ref master \
+  -f environment=prod -f resume_run_id=36750197236 -f resume_run_attempt=1
+```
+
+The example identifies the failed 0.9.13 candidate at `ee46e5f34`. Substitute the
+explicit source run and successful build attempt for another recovery.
+`scripts/provider-release-resume.py` validates repository, workflow, push/tag
+origin, current signed tag, source signature/version, both successful jobs, and
+one unexpired immutable unsigned artifact. It refuses a source run that already
+retained a signed publication artifact. The resolver and download step both
+check identity; download verifies the GitHub artifact ZIP digest before the
+existing archive, file inventory, source/version and entitlement checks.
+
+The recovery skips compilation and SDK qualification and resumes at the normal
+protected signing job. Code signing, notarization, final signed-bundle smoke,
+independent App Attest qualification, R2 staging and publication remain required.
+`release-provenance.json` distinguishes original build source/run from the
+current signing workflow source/run. The tag is rechecked before registration.
+The unsigned artifact expires after three days; missing/expired bytes require a
+new build. Changed candidate source also requires a new build and reviewed tag.
+
+For a failure after a signed artifact was retained, retry only the failed
+staging/publication jobs from that signing run. That existing retry path
+preserves signed bytes and does not need unsigned recovery or re-signing.
 
 ## Environment-free signing validation
 
@@ -304,8 +400,8 @@ Coordinator deploys are a separate runbook:
 
 The provider and coordinator versions must be identical strings:
 
-- `provider-swift/Sources/ProviderCore/ProviderCore.swift` — `public static let version = "0.9.10"`
-- `coordinator/api/server.go` — `var LatestProviderVersion = "0.9.10"`
+- `provider-swift/Sources/ProviderCore/ProviderCore.swift` — `public static let version = "0.9.15"`
+- `coordinator/api/server.go` — `var LatestProviderVersion = "0.9.15"`
 
 ```bash
 ./scripts/check-release-version.sh          # provider == coordinator, semver
@@ -313,8 +409,8 @@ The provider and coordinator versions must be identical strings:
 ```
 
 `check-release-version.sh` accepts an optional expected version
-(`check-release-version.sh v0.9.10`) and an optional reported string from a
-built binary (`darkbloom 0.9.10` or `0.9.10`); the workflow calls it in all
+(`check-release-version.sh v0.9.15`) and an optional reported string from a
+built binary (`darkbloom 0.9.15` or `0.9.15`); the workflow calls it in all
 three forms. CI job "Release Integrity" runs the two commands above on every
 push.
 
@@ -333,6 +429,7 @@ message** (step 4), so write the tag message from this entry.
 ### 3. Merge to `master` and wait for CI
 
 Open a PR with the bump + changelog; "Release Integrity", "Provider Tests",
+"Provider SDK Tests", "Provider Prompt Parity",
 "Coordinator Tests", and "E2E Integration Tests" must be green. The release
 workflow re-runs `scripts/verify-prompt-parity.sh` itself, so a prompt-contract
 change that is not fixture-synced will fail the release, not just CI.
@@ -386,11 +483,15 @@ R2 uploads, release registration and GitHub Release creation. The default remain
 The Actions artifact contains the final signed tarball and
 `darkbloom-validation-identity.json`, with source/submodule revisions and final
 bundle, executable and metallib hashes plus the full SHA-256 CodeDirectory digest and build SDK version.
-The release build uses GitHub’s `xcode-27` runner with Apple Command Line Tools
-27.0 / Swift 6.4 preinstalled. The ordinary Blacksmith runner was observed on
-macOS 26.3, below the SDK 27 installer’s 26.4 minimum; it remains the general
-PR CI environment. The selector refuses an older SDK/compiler instead of
-installing software or falling back.
+The release build, SDK qualification, signing and signing-validation jobs use
+Blacksmith's pinned `blacksmith-12vcpu-macos-27` image (currently public beta)
+with Xcode 27. The selector resolves the image's default Xcode after checkout,
+requires SDK 27.0 / Apple Swift 6.4, and scopes native SwiftPM through the existing
+wrapper. Python 3.12.10 and checksum-verified Rust/CMake bootstraps are explicit;
+the older-OS validation job pins `blacksmith-12vcpu-macos-26` so it cannot drift
+to macOS 27. Blacksmith hosts the protected signing jobs and receives their
+existing signing credentials after environment approval. Publication remains a
+separate protected Linux job. See the [runner and cache contract](../developer/build.md#sdk-27-release-builds-and-caches).
 The workflow obtains Xcode's matching Metal compiler through
 `xcodebuild -downloadComponent MetalToolchain` when the image omits it, and
 checks availability before computing the source-matched metallib cache key.
@@ -414,7 +515,7 @@ durability or authorize rollout.
 
 After `build-provider` and `qualify-sdk` both succeed, approve the pending
 `prod` (or `dev`) deployment for **Sign, notarize and retain exact artifact**
-(`build-and-release`, `xcode-27`). Compilation and SDK tests have already run
+(`build-and-release`, `blacksmith-12vcpu-macos-27`). Compilation and SDK tests have already run
 in the parallel jobs; the signing job consumes their source-bound artifact.
 The relevant signing steps run in this order:
 

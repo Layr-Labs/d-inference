@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-09-28 · commit `18fad5efe`
+> Last updated: 2026-09-30
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -249,3 +249,26 @@ Sign in and click the model offer’s **Claim tokens** button before its deadlin
 Input and output tokens both consume the allowance. Tiny requests consume their actual token usage; there is no extra token deduction for a sponsored payout minimum. When it runs out, requests use your paid balance. If a request crosses the boundary, only its uncovered tokens are billed, subject to the normal request minimum. A `402 free_tokens_exhausted` means no free tokens are available and paid credit cannot cover the request. Add credit, or wait if another request has reserved the remaining free tokens. A `402 promotion_balance_required` means the maximum requested size cannot fit the remaining free tokens plus paid balance; reduce `max_tokens` or add credit. A request may reserve more than it ultimately uses; unused tokens return at settlement.
 
 With an interactive Privy session, `GET /v1/me/token-promotions` lists grants; `POST /v1/me/token-promotions/claim` with `{"model_id":"..."}` claims the selected offer safely. The response also lists available offers, remaining claim slots and eligibility status. API keys may use an existing grant but cannot issue one. See [pricing-model.md](../reference/pricing-model.md).
+
+## Update bank details when prompted
+
+1. Open the bank withdrawal panel in Billing or provider earnings.
+2. If it says **Update your bank details to continue withdrawing**, confirm your
+   country and select **Update bank details**.
+3. Complete the secure Stripe page yourself, including bank and any required
+   identity information, then return to Darkbloom.
+4. Wait for the bank destination to become ready. Review the withdrawal amount,
+   local-currency estimate and destination before confirming.
+
+Your Darkbloom login, provider setup, earned balance and withdrawal history stay
+with your account. Already configured bank-payout users need no migration step.
+The migrated flow offers standard bank payouts; the former Connect instant-card
+option is not part of it. **Reset bank setup** clears the current destination,
+not your history, and requires you to link a bank again. A funding-unavailable
+message before confirmation leaves earnings untouched. An uncertain submitted
+withdrawal must be checked using its existing confirmation, not submitted again
+as a new withdrawal.
+
+The bank panel and self-service migration state are implemented by
+`console-ui/src/components/payouts/StripePayoutsCard.tsx` and
+`coordinator/api/global_payouts_status.go` (`maybeGlobalStatus`).

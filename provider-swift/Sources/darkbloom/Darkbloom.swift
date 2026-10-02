@@ -47,6 +47,8 @@ struct Darkbloom: AsyncParsableCommand {
             AutoUpdate.self,
             Beta.self,
             Idle.self,
+            AvailabilitySchedule.self,
+            Autopilot.self,
             Fan.self,
             Watchdog.self,
             RuntimeSmoke.self,
@@ -149,7 +151,10 @@ func advertisedModels(
     runtimeCapabilities: Set<ProviderRuntimeCapability>? = nil
 ) -> [ModelInfo] {
     let selected: [ModelInfo]
-    if !modelOverrides.isEmpty {
+    if config.backend.modelAutopilot.enabled {
+        let settings = config.backend.modelAutopilot
+        selected = models.filter { settings.allows($0.id) }
+    } else if !modelOverrides.isEmpty {
         let byID = Dictionary(uniqueKeysWithValues: models.map { ($0.id, $0) })
         selected = modelOverrides.compactMap { byID[$0] }
     } else if includeDisabled || config.backend.enabledModels.isEmpty {

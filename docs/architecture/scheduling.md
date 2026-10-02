@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-28 · commit `9b2a28f59`
+> Last updated: 2026-10-01
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -9,6 +9,8 @@ derived from them, demand-driven model loads, and the warm-pool controller
 that keeps enough providers resident for each model. Choosing *which*
 eligible provider gets a request is the subject of
 [`routing.md`](routing.md); this page stops where that choice begins.
+Provider-local weekly availability separately controls when a Mac joins that
+fleet, as described under [Provider availability windows](#provider-availability-windows).
 
 For automatic same-ID weight updates, desired state includes a revision and
 aggregate hash for providers advertising `model_revisions_v1`. The provider
@@ -75,6 +77,65 @@ serving policy as dispatch (`coordinator/registry/warm_pool_fleet.go`,
 legacy trust flags. See [provider authorization](../reference/provider-authorization.md).
 
 ## Mechanism
+
+### Provider availability windows
+
+The provider's weekly schedule controls coordinator-connected serving and an
+attached local endpoint, not standalone `--local`. The CLI editor saves
+availability and the existing startup-preload policy; it does not start/stop the
+service or change a running process's schedule. Flags and presets belong to the
+[CLI reference](../provider/cli-reference.md#darkbloom-schedule); keys belong to
+[configuration](../reference/configuration.md#provider-availability).
+
+`Start.runScheduled` in `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift`
+waits outside availability windows without a `ProviderLoop` or coordinator
+connection. At an opening it resolves and validates the model selection, then
+starts a loop. The existing `ProviderLoop.runStartupPreloadGate` in
+`provider-swift/Sources/ProviderCore/ProviderLoop+StartupPreload.swift` loads
+models then, not before the opening. Memory/slot limits and the explicit
+`preload_models` list still apply. Disabling startup preload does not prohibit
+coordinator-driven or request-driven loads. At a close, accepted work drains
+before disconnect and model unloading; the wait between windows continues to
+handle lifecycle commands (`Start.waitOutsideSchedule` in
+`provider-swift/Sources/darkbloom/Start/StartCommand+ScheduledDrain.swift`).
+
+```mermaid
+flowchart LR
+    A[Saved schedule] --> B[ScheduleConfig.validate]
+    B -->|invalid enabled schedule| E[Reject before serving]
+    B -->|valid enabled schedule| C[Schedule.intervals: calendar boundaries and union]
+    C --> D[Start.runScheduled waits for opening]
+    D --> F[Resolve selected models and start ProviderLoop]
+    F --> G[Startup preload if enabled, then serve]
+    G -->|union closes| H[Drain accepted work, disconnect and unload]
+    H --> D
+    G -->|full-week union| I[Serve without a close timer]
+```
+
+Availability invariants:
+
+1. Enabled schedules require at least one window, nonempty valid days and valid
+   `HH:MM` endpoints. `ScheduleConfig.validate` in
+   `provider-swift/Sources/ProviderCore/Scheduling/ScheduleConfig.swift` rejects
+   invalid input before serving through `Start.run`. `Schedule.from` in
+   `provider-swift/Sources/ProviderCore/Scheduling/Schedule.swift` independently
+   fails closed: invalid enabled input produces an unavailable schedule, not
+   `nil`/always-available. Disabled schedules return `nil` and may retain invalid
+   windows for later repair.
+2. Days name the opening day; an earlier or equal end belongs to the following
+   local-calendar day. Availability uses inclusive start/exclusive end, not
+   fixed elapsed-day arithmetic (`Schedule.from`, `Schedule.isActive`).
+3. All membership and wait/close calculations share calendar-derived boundaries
+   in the Mac's local timezone. Nonexistent DST times advance to the next valid
+   time; repeated times use the first occurrence (`Schedule.boundary` in
+   `provider-swift/Sources/ProviderCore/Scheduling/ScheduleIntervals.swift`).
+   Equal endpoints denote a calendar day, whose elapsed length can change at DST.
+   The schedule does not wake a sleeping Mac; it must remain awake to serve.
+4. Overlapping and adjacent windows form a union, including overnight and weekly
+   boundaries; an internal boundary never unloads models or disconnects the
+   provider (`Schedule.intervals`, `Schedule.durationUntilInactive`). A union
+   covering the full week has no close timer, rather than an hourly fallback
+   disconnect (`Schedule.coversEntireWeek`, `Start.runScheduled`).
 
 ### Per-model request queue
 
@@ -228,6 +289,30 @@ coordinator-pending tokens, in bytes when every budget slot reports
 for a cold model that has no slot yet, and a grant that a re-slice shrank
 below its live use. A cold request is charged against the same pool.
 
+Native MiMo capacity in 0.9.13 also accounts for fixed request workspace.
+`EngineV2Bridge.memoryLimitedConcurrency`
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+MemoryConcurrency.swift`)
+reduces the configured concurrency to what the current admission ceiling can
+hold while retaining `UnifiedMemoryCap.minimumLoadKVBytes`. The provider
+deducts fixed workspace only for the resulting available slots, reports that
+same `MaxConcurrency`, and enforces it before local or remote submission.
+The ceiling includes the real engine watermark and fleet clamp; live native
+reservations remain charged through retirement. A zero budget still means
+unavailable, and raw `kv_bytes_capacity` must not override it.
+
+Before a new model loads or an advertised serving set raises its reserve,
+`resliceMeetsServiceabilityFloor`
+(`provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2Reslice.swift`)
+preserves one native request's fixed workspace, the watermark and minimum KV
+allowance for existing slots. The new native contiguous engine is checked
+against the same floor before publication. Ordinary engines keep their existing
+floor. These are provider-side changes; the coordinator's existing per-model
+concurrency and token-budget checks consume the corrected heartbeat.
+The standalone/local server applies the same per-engine minimum to native and
+ordinary newcomer loads and serving-set reserve raises through
+`StandaloneServer.resliceKeepsSlotsServiceable`
+(`provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift`).
+
 **Memory fallback** for slots without a token budget: a resident model needs
 no weight memory; a non-resident one needs `modelSizeGB` plus the request's
 KV estimate (`tokens × kvCacheBytesPerToken / bytesPerGB`; the fallback
@@ -252,7 +337,12 @@ family declarations retain catalog-based accounting; a model name alone grants
 no reduction (`coordinator/registry/offloaded_weights.go`).
 `reportedFreeForLoadAdmitsWithOffload` is shared by routing, the model-load
 planner and the warm pool, so none independently discounts the same weights.
-This is weight-residency accounting, not prefix-cache credit, a lower activation
+Exact `mimo_v2` may instead advertise a checked full-LOAD supplement with zero
+SSD subtraction. The same shared helper preserves raw catalog/source-size
+floors, adds the supplement once, and rejects malformed/understated declarations.
+All four consumers provide unpadded decimal catalog GB; they do not replace it
+with minimum RAM, GiB or an already padded requirement.
+This is load-admission accounting, not prefix-cache credit, a lower activation
 reserve or proof that a physical RAM tier passes cold load and reload. The
 [native support reference](../reference/qwen4-next-support.md) records those
 separate model/resource qualification boundaries.
@@ -736,6 +826,9 @@ gate. The existing eviction-loop gate sweep handles this cleanup
 | Teardown | `coordinator/registry/provider_lifecycle.go` — `Disconnect` |
 | Cold dispatch and queue-before-shed flags | `coordinator/api/cold_dispatch.go` |
 | Provider-side slot limit and heartbeat interval | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` — `maxModelSlots`, `heartbeatIntervalSecs` |
+| Availability validation and parsing | `provider-swift/Sources/ProviderCore/Scheduling/ScheduleConfig.swift` (`ScheduleConfig.validate`); `provider-swift/Sources/ProviderCore/Scheduling/Schedule.swift` (`Schedule.from`, `isActive`, `durationUntilInactive`, `durationUntilNextActive`) |
+| Calendar boundaries and window union | `provider-swift/Sources/ProviderCore/Scheduling/ScheduleIntervals.swift` (`Schedule.intervals`, `boundary`, `coversEntireWeek`) |
+| Availability editor and scheduled serving | `provider-swift/Sources/darkbloom/Scheduling/ScheduleCommand.swift` (`AvailabilitySchedule`); `provider-swift/Sources/darkbloom/Scheduling/ScheduleSettings.swift` (`ScheduleSettings.save`); `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift` (`Start.runScheduled`) |
 
 ## Related
 
@@ -759,3 +852,24 @@ completion signals the dispatcher immediately. Due-row pages start at
 `min(limit, verificationDuePageHint)` with `verificationDuePageHint = 256`
 and grow to the requested limit (`coordinator/store/postgres.go`,
 `ListDueVerificationJobsPage`); the initial allocation does not truncate a page.
+
+Qualified first-content prediction is separate from physical scheduling limits.
+The numeric `deadline_work` snapshot retains pre-submit and retiring owners,
+correlates them with whole-Mac reservations, and requires fresh matching
+measurements before pricing contention. The provider's final atomic check uses
+actual queue/cache state and the original deadline. See
+[first-content routing](first-content-routing.md) for the measured-cell gate and
+fallback behavior; this does not relax activation, KV or context safeguards.
+
+## Experimental selected-model residency
+
+`coordinator/registry/autopilot/planner.go` (`Plan`) adds guarded
+capacity moves for explicitly enrolled providers. The controller splits logical
+work by request shape, prefers positive-benefit additions, protects all donor
+contributions during whole-device transitions, and revalidates at reservation.
+The default shadow rollout computes hypothetical plans without reservations,
+fences or residency commands. Startup opt-in records consent, not active control;
+shadow/waiting consent retains ordinary policy. Only an explicit live rollout
+can activate control. Active/paused providers accept network work only on
+confirmed residents. See [Autopilot](model-autopilot.md) for the
+session/selection lease, floors, quiet unloading and recovery invariants.

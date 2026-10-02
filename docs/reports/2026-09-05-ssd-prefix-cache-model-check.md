@@ -1,6 +1,6 @@
 # Streamed SSD prefix cache model check
 
-> Last updated: 2026-09-05 · commit `2a306f2f9`
+> Last updated: 2026-09-05
 
 The measured Qwen model restored encrypted complete checkpoints with normal MTP, exact generated-token parity and no resident prefix bank. One same-binary repeat improved from **6.578 to 1.836 seconds TTFT (72.09% lower)**, including SSD staging. The combined refactor also passed its direct-engine smoke. These are ordered single observations using an explicitly ephemeral key; production-key restart and live multi-provider routing remain unmeasured.
 

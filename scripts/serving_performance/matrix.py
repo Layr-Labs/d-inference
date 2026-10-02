@@ -3,7 +3,7 @@ import itertools
 import math
 import re
 
-RUNTIME_REVISION = "cbv2-first-content-v1"
+RUNTIME_REVISION = "cbv2-first-content-v2"
 CHECKS = ("correctness", "constraints", "isolation", "cancellation", "accounting", "retirement")
 MIN_SAMPLES = 20
 IDENTITY_FIELDS = (
@@ -26,7 +26,7 @@ def widths(identity):
 
 def identity_errors(identity):
     errors = [f"identity.{field} is not a supported identity field"
-              for field in sorted(identity.keys() - set(IDENTITY_FIELDS))]
+              for field in sorted(identity.keys() - set(IDENTITY_FIELDS) - {"mtp"})]
     for field in ("id", "model_id", "provider_version", "chip_name"):
         if not isinstance(identity.get(field), str) or not identity[field].strip():
             errors.append(f"identity.{field} is required")
@@ -39,6 +39,32 @@ def identity_errors(identity):
     for field in ("gpu_cores", "memory_gb", "context_tokens_max"):
         if type(identity.get(field)) is not int or identity[field] <= 0:
             errors.append(f"identity.{field} must be a positive integer")
+    mtp = identity.get("mtp")
+    if mtp is not None:
+        errors.extend(mtp_errors(mtp))
+    return errors
+
+
+def mtp_errors(mtp):
+    if not isinstance(mtp, dict):
+        return ["identity.mtp must describe the actual active assistant"]
+    fields = {"enabled", "artifact_sha256", "max_draft_tokens", "fixed_draft_tokens",
+              "max_speculative_batch", "verification_mode", "max_automatic_rectangular_tokens"}
+    if (set(mtp) - fields or fields - {"fixed_draft_tokens"} - set(mtp)
+            or mtp.get("enabled") is not True or not digest(mtp.get("artifact_sha256"))):
+        return ["identity.mtp requires the exact verified active configuration"]
+    errors = []
+    for field in ("max_draft_tokens", "max_speculative_batch", "max_automatic_rectangular_tokens"):
+        if type(mtp.get(field)) is not int or mtp[field] < 0:
+            errors.append(f"identity.mtp.{field} must be nonnegative")
+    fixed = mtp.get("fixed_draft_tokens")
+    if fixed is not None and (type(fixed) is not int or fixed < 0):
+        errors.append("identity.mtp.fixed_draft_tokens must be null or nonnegative")
+    if not errors and (mtp["max_draft_tokens"] > 7 or not 1 <= mtp["max_speculative_batch"] <= 8
+                       or (fixed is not None and fixed > mtp["max_draft_tokens"])):
+        errors.append("identity.mtp exceeds runtime configuration bounds")
+    if mtp.get("verification_mode") not in ("serial_target", "rectangular", "rectangular_exact", "automatic"):
+        errors.append("identity.mtp.verification_mode is unsupported")
     return errors
 
 

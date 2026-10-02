@@ -1,6 +1,6 @@
 # Bounded observation of actual target logits
 
-> Last updated: 2026-09-05 · commit `53e45fc14`
+> Last updated: 2026-09-05
 
 An optional native diagnostic and standalone benchmark flags capture the actual
 target decision at one generated position. The source passes 139 native test

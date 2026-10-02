@@ -11,9 +11,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("receipt", type=Path, help="raw qualification JSON (schema_version=1)")
     parser.add_argument("--output", type=Path, help="write the derived review report here")
+    parser.add_argument("--evidence-root", type=Path,
+                        help="root containing reviewed prerequisite files (default: receipt directory)")
     args = parser.parse_args()
     try:
-        report = evaluate(args.receipt.read_bytes())
+        report = evaluate(args.receipt.read_bytes(),
+            evidence_root=args.evidence_root or args.receipt.resolve().parent)
     except (OSError, ValueError, TypeError, KeyError) as error:
         parser.error(str(error))
     encoded = json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n"

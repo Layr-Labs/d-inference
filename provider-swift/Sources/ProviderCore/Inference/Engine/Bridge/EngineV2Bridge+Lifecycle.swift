@@ -137,11 +137,28 @@ extension EngineV2Bridge {
     /// can't keep a pump (and its KV reservation) alive past shutdown, then
     /// await the engine drain.
     public func shutdown() async {
+        if nativeShutdownClosed, ownedEngine == nil { return }
+        if let native = ownedEngine as? EngineV2,
+            let contractID = native.nativeShutdownExecutionContractID {
+            // Native callers must consume the reporting method below through
+            // their registered transaction. Void compatibility never clears
+            // resources after an incomplete or still-pending result.
+            _ = try? await shutdownNativeConstruction(
+                expectedEngine: native, executionContractID: contractID)
+            return
+        }
+        defer {
+            deadlinePostureMonitoring?.finish()
+            deadlinePostureMonitoring = nil
+        }
+        let deviceActivity = serviceBudget?.beginUnboundedActivity()
+        defer { deviceActivity?.finish() }
         let statsTask = prefixCacheStatsTask
         prefixCacheStatsTask = nil
         prefixCacheTelemetry.close()
         statsTask?.cancel()
         slotPostureClosed = true
+        let calibrationTask = cancelMimoCalibration()
         let postureTask = slotPostureTask
         slotPostureTask = nil
         postureTask?.cancel()
@@ -153,6 +170,7 @@ extension EngineV2Bridge {
         if let engine = ownedEngine {
             await engine.shutdown()
         }
+        await calibrationTask?.value
         for task in live.values {
             await task.value
         }

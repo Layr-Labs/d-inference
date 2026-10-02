@@ -1,6 +1,6 @@
 # Detached allocator sizing policy
 
-> Last updated: 2026-09-05 · commit `2dcec3574`
+> Last updated: 2026-09-05
 
 Allocator bounds can now be projected from an immutable policy value without
 entering the allocator, allocating memory, waiting, throwing or invoking an

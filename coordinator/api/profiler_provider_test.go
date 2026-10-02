@@ -159,6 +159,8 @@ func TestDecodeInferenceProfileCoversEveryWireField(t *testing.T) {
 					f.SetString(string(protocol.DeadlineContinuationExpired))
 				case reflect.TypeOf(protocol.DeadlineProjection("")):
 					f.SetString(string(protocol.DeadlineProjectionBounded))
+				case reflect.TypeOf(protocol.DeadlineUnboundedReason("")):
+					f.SetString(string(protocol.DeadlineUnboundedCapacityNotGuaranteed))
 				case reflect.TypeOf(protocol.DeadlineProjectionReason("")):
 					f.SetString(string(protocol.DeadlineProjectionModeOff))
 				default:

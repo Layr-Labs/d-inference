@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-28 · commit `1902940eb`
+> Last updated: 2026-10-01
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -225,6 +225,7 @@ Roughly forty tables; grouped by what would be lost if the family vanished.
 | Usage and routing telemetry | `usage`, `usage_totals`, `inference_routes`, `request_rejections`, `request_profiles`, `fleet_snapshots`, `request_outcomes` | Row per request, per dispatched attempt, per rejection, per profiled attempt, per fleet sample; `usage_totals` is a single-row counter seeded at boot by `checkRetiredBackfills` and incremented by `RecordUsage`. `usage.cached_tokens` (`INTEGER NOT NULL DEFAULT 0`) is the subset of `prompt_tokens` billed at the cache-read rate; rows written before the column existed read 0, which is what they were billed. It and `model_prices.cache_read_price` are added by plain `ALTER TABLE … ADD COLUMN IF NOT EXISTS` statements, not exception-swallowing `DO` blocks. Settlement reads and writes both columns, so if either cannot be added (a lock timeout, a missing privilege), startup fails rather than boot a coordinator that bills at the default rates and drops usage rows. |
 | Provider fleet and trust | `providers`, `provider_reputation`, `provider_sessions`, `provider_trust_reuse`, `provider_verification_jobs`, `code_attestations`, `code_attest_push_budgets`, `provider_log_reports` | Trust reuse and code attestations are durable. `code_attestations.continuous_coverage_until` is compare-and-updated only for the exact original proof tuple; it never refreshes `attested_at` or inserts proof. This allows bounded same-process resume after a redeploy; see [`security/attestation.md`](security/attestation.md). `provider_log_reports.serial_number` is kept empty by trigger. |
 | Models and releases | `model_registry`, `model_versions`, `model_version_files`, `model_active_versions`, `model_aliases`, `releases` | The catalog the registry syncs at boot; see [`model-registry.md`](model-registry.md). |
+| Cache routing state | `cache_routing_holders`, `cache_routing_demand`, `cache_routing_meta` | Write-behind copy of the registry's in-memory exact prefix-cache holder index and observed-demand index, so a restart does not start from an empty index (`coordinator/store/cacheroutingstate_postgres.go`, `coordinator/store/cacheroutingstate/records.go`, `coordinator/registry/cachepersist/persister.go`). Holders are keyed by boundary key plus the provider's cache epoch (a UUID the provider mints per model SSD root and persists), never by connection-scoped provider ID; rows name a boundary by its keyed identifier (the HMAC output under the route key; the key material itself is never stored) and token count, plus the Ready fallback and measured stage costs; the provider-confirmed chain hash is not stored, and no prompt content is. Rows are pruned in 10,000-row batches every five minutes under the active routing TTL (the effective expiry is the earlier of the stored one and `updated_at` plus the TTL, indexed on both columns), so a longer past TTL cannot leave rows in the table after they stopped loading; rows stamped more than a minute ahead of the pruning clock (a previous instance's skew) are removed too, at boot and on every prune, so a current receipt is never outranked by a quarantined future timestamp. `cache_routing_meta` records a non-secret fingerprint of the cache-key generation (HMAC of the master key over every key-derivation label, the block contract and a persistence generation, `deriveCacheKeys`); nothing is written before a boot has recorded it; a boot under a different master key finds rows whose keys can never match a request again and empties both tables with unconditional bounded deletes, recording the new generation last, instead of restoring them (`cachepersist.Restore`, `ResetCacheRoutingState`). Loads apply the current TTL to each row's expiry before ordering and capping. Losing the tables costs minutes of hit rate, nothing else. |
 | Bookkeeping | `schema_migrations` | Completion markers for one-shot data migrations. |
 
 ### Global Payouts state
@@ -353,3 +354,55 @@ KV blocks under a per-model key, not tokens.
 `coordinator/store/model_token_promotions_schema.go` (`modelTokenPromotionDDL`) adds `model_token_promotions`, account/model keyed `model_token_grants`, durable `model_token_reservations`, and provider-account keyed `model_token_provider_carries`. The carry row retains a sub-micro-dollar payout remainder in `[0, 100000000)`; the additive table also works when upgrading an existing promotion schema. Promotion model IDs deliberately do not reference the model registry, allowing pre-launch setup. The promotion row serializes claims, enforces the maximum claim count and validates the user table’s authoritative account creation timestamp. Account/model uniqueness makes duplicate claims idempotent. Grant counters enforce nonnegative usage/reservations and prevent their sum from exceeding the grant. Reservation terminal state prevents duplicate spending, refunds and provider credit. Claim windows do not expire previously issued grants.
 
 `coordinator/store/model_token_settlement_postgres.go` (`SettleModelTokenReservation`) updates grant usage, consumer money, fractional payout carry and provider earnings in one transaction, locking balance rows in account order before the carry row. `coordinator/store/model_token_earnings_postgres.go` (`carryModelTokenEarningPostgres`) updates the remainder; the reservation persists the credited whole-micro-dollar payout so replay returns the original result without accumulating fractions again. The optional backend capability is discovered through `store.As`; grants bypass the user/model read-through caches and no user/model invalidation is needed. Lease recovery is in `coordinator/store/model_token_leases.go` (`ReleaseStaleModelTokenReservations`). Operational details: [model token promotions](../operations/model-token-promotions.md).
+
+### Stripe migration settlement
+
+`StripeSettlementStore` (`coordinator/store/stripe_settlement.go`) is discovered
+through `store.As`. `CompleteStripeCheckout` locks the local session and commits
+the deposit and completion together. `RefundRejectedStripeWithdrawal` locks the
+withdrawal, checks the shared refund ledger reference, and commits the credit and
+flag together. A durable confirmed-rejection marker makes failed refund writes
+retryable; unverified old rows remain for operator review. These methods do not
+write cached user records.
+
+`RemoveGlobalRecipient` resets the row to a new empty generation instead of
+deleting it. The retained row fences routing to Global Payouts after unlink or
+country-policy rollback and invalidates old unconfirmed quotes. Historical
+withdrawals retain their immutable destination and source data. Legacy Connect
+user IDs remain available for old payout events. The maintenance tool uses an
+existing pool through `StripeSettlementForMaintenance` without startup migrations.
+
+## Autopilot operation ledger
+
+`coordinator/store/postgres_autopilot.go` (`autopilotDDL`, `RecordAutopilot`)
+creates `autopilot_events`, keyed by `(command_id, phase)` with an indexed `at`
+timestamp and a bounded typed JSON record. Insert retries are idempotent. The
+ledger stores model/control metadata without prompts or free-form provider
+errors. A command intent is persisted before dispatch; failed writes prevent new
+changes and terminal observations remain queued for retry. Incomplete historical
+phases remain unresolved evidence, not an inferred rollback. Reads use bounded
+windows. Records currently have no automatic deletion; preservation and archive
+policy can be added independently. `MemoryStore` provides equivalent test/dev
+semantics without restart durability. See [Autopilot](model-autopilot.md).
+
+`coordinator/registry/provider_lifecycle.go` (`disconnectProvider`) queues an
+`uncertain` record for a pending operation before removing its provider state.
+The normal ledger flush persists it outside registry/provider
+locks and retains it for retry on database failure. A dropped connection is not
+a confirmed failure, success or rollback; intended and actual residency must not
+be conflated (`coordinator/registry/autopilot_events.go`, `flushAutopilotEvents`).
+
+Shadow `proposed` phases form a decision ledger, not a per-tick time series. Their
+stable SHA-256 identity covers the provider session, consent revision,
+workload, reason, target, unload set and prior actual resident/selected state.
+Capacity sequence, time and predicted benefit are excluded, so unchanged
+decisions reuse the same key. Store idempotency retains the first record, including
+its timestamp and benefit; distinct state, session or revision decisions remain
+retained. Live command UUIDs are unchanged (`coordinator/registry/autopilot_events.go`,
+`autopilotProposalID`; `RecordAutopilot`). This deduplication is not an
+absolute database retention cap.
+
+An unchanged decision can age outside the admin endpoint's recent-events window
+while the current tick summary remains fresh. Proposals are not dispatched
+commands, residency changes or live capacity evidence; see the
+[API contract](../reference/api-contracts.md#experimental-model-autopilot).

@@ -1,7 +1,7 @@
 package registry
 
 import (
-	"fmt"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -76,7 +76,7 @@ func TestCacheDemandConcurrentCapacity(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			for j := 0; j < 100; j++ {
-				d.observe([]cacheDemandBoundary{{fmt.Sprintf("%d/%d", i, j), 256}}, time.Now())
+				d.observe([]cacheDemandBoundary{{strconv.Itoa(i) + "/" + strconv.Itoa(j), 256}}, time.Now())
 			}
 		}(i)
 	}
@@ -131,7 +131,7 @@ func TestCacheDemandRetainsBoundaryForTTLAtFleetRate(t *testing.T) {
 		now := start
 		for i := 0; i < fillRatePerSecond*60*fillMinutes; i++ {
 			now = now.Add(step)
-			d.observe([]cacheDemandBoundary{{fmt.Sprintf("other/%d", i), 256}}, now)
+			d.observe([]cacheDemandBoundary{{"other/" + strconv.Itoa(i), 256}}, now)
 		}
 		return now
 	}
@@ -195,7 +195,7 @@ func TestCacheDemandRetainsBoundaryFor29MinutesAtSizingRate(t *testing.T) {
 			now := start
 			for i := 0; i < fillRatePerSecond*60*fillMinutes; i++ {
 				now = now.Add(time.Second / fillRatePerSecond)
-				d.observe([]cacheDemandBoundary{{fmt.Sprintf("other/%d", i), 256}}, now)
+				d.observe([]cacheDemandBoundary{{"other/" + strconv.Itoa(i), 256}}, now)
 			}
 			if age := now.Sub(start); age < 28*time.Minute+59*time.Second || age >= cacheRoutingSizingTTL {
 				t.Fatalf("fill covered %s, want just under %d minutes", age, fillMinutes)
@@ -216,7 +216,7 @@ func TestCacheDemandEvictsAtExactlyTheCap(t *testing.T) {
 	d := newCacheDemandTracker(cacheDemandMaxEntries, defaultCacheRoutingTTL)
 	now := time.Unix(1_700_000_000, 0)
 	for i := 0; i <= cacheDemandMaxEntries; i++ {
-		d.observe([]cacheDemandBoundary{{fmt.Sprintf("k/%d", i), 256}}, now.Add(time.Duration(i)*time.Microsecond))
+		d.observe([]cacheDemandBoundary{{"k/" + strconv.Itoa(i), 256}}, now.Add(time.Duration(i)*time.Microsecond))
 	}
 	if len(d.entries) != cacheDemandMaxEntries || d.order.Len() != cacheDemandMaxEntries {
 		t.Fatalf("entries=%d order=%d, want exactly %d", len(d.entries), d.order.Len(), cacheDemandMaxEntries)
@@ -227,7 +227,7 @@ func TestCacheDemandEvictsAtExactlyTheCap(t *testing.T) {
 	if _, ok := d.entries["k/1"]; !ok {
 		t.Fatal("cap evicted more than one entry")
 	}
-	if _, ok := d.entries[fmt.Sprintf("k/%d", cacheDemandMaxEntries)]; !ok {
+	if _, ok := d.entries["k/"+strconv.Itoa(cacheDemandMaxEntries)]; !ok {
 		t.Fatal("newest entry missing")
 	}
 }
@@ -240,7 +240,7 @@ func TestCacheDemandExpiryIsBoundedPerObserveAndStaleNeverMatches(t *testing.T) 
 	d := newCacheDemandTracker(cacheDemandMaxEntries, defaultCacheRoutingTTL)
 	start := time.Unix(1_700_000_000, 0)
 	for i := 0; i < filled; i++ {
-		d.observe([]cacheDemandBoundary{{fmt.Sprintf("stale/%d", i), 512}}, start.Add(time.Duration(i)*time.Millisecond))
+		d.observe([]cacheDemandBoundary{{"stale/" + strconv.Itoa(i), 512}}, start.Add(time.Duration(i)*time.Millisecond))
 	}
 	later := start.Add(defaultCacheRoutingTTL + time.Minute)
 	if got, _ := d.observe([]cacheDemandBoundary{{"fresh", 256}}, later); got != 0 {
@@ -251,14 +251,14 @@ func TestCacheDemandExpiryIsBoundedPerObserveAndStaleNeverMatches(t *testing.T) 
 			filled+1-len(d.entries), cacheDemandMaxExpiryPerObserve)
 	}
 	// A stale entry that survived the bounded sweep must not read as demand.
-	if got, key := d.observe([]cacheDemandBoundary{{fmt.Sprintf("stale/%d", filled-1), 512}}, later); got != 0 || key != "" {
+	if got, key := d.observe([]cacheDemandBoundary{{"stale/" + strconv.Itoa(filled-1), 512}}, later); got != 0 || key != "" {
 		t.Fatalf("stale surviving entry matched: %d %q", got, key)
 	}
 	for i := 0; i < filled/cacheDemandMaxExpiryPerObserve+1; i++ {
-		d.observe([]cacheDemandBoundary{{fmt.Sprintf("fresh/%d", i), 256}}, later.Add(time.Duration(i)*time.Millisecond))
+		d.observe([]cacheDemandBoundary{{"fresh/" + strconv.Itoa(i), 256}}, later.Add(time.Duration(i)*time.Millisecond))
 	}
 	for key := range d.entries {
-		if len(key) >= 6 && key[:6] == "stale/" && key != fmt.Sprintf("stale/%d", filled-1) {
+		if len(key) >= 6 && key[:6] == "stale/" && key != "stale/"+strconv.Itoa(filled-1) {
 			t.Fatalf("stale entry %q survived repeated sweeps", key)
 		}
 	}

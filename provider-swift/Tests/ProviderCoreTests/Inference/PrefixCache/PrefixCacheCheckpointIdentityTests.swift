@@ -1,11 +1,51 @@
+import Foundation
 import MLX
 import MLXLMCommon
+import ProviderCoreFoundation
 import Testing
 
 @testable import ProviderCore
 
 @Suite("Complete checkpoint identity")
 struct PrefixCacheCheckpointIdentityTests {
+    @Test("Normalization v8 and renderer v4 separate prior memory and disk cache identities")
+    func normalizationVersionFence() throws {
+        struct Vector: Decodable {
+            let artifacts: [ManifestFile]
+            let expected_prompt_contract_id: String
+            let legacy_v6_prompt_contract_id: String
+            let legacy_v7_prompt_contract_id: String
+        }
+        struct Corpus: Decodable { let vectors: [Vector] }
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<6 { root.deleteLastPathComponent() }
+        let corpus = try JSONDecoder().decode(Corpus.self, from: Data(contentsOf:
+            root.appendingPathComponent("fixtures/prompt-contract/v1/contract_vectors.json")))
+        #expect(!corpus.vectors.isEmpty)
+        for vector in corpus.vectors {
+            let current = try PromptContractIdentity.compute(files: vector.artifacts)
+            #expect(current == vector.expected_prompt_contract_id)
+            for old in [vector.legacy_v6_prompt_contract_id, vector.legacy_v7_prompt_contract_id] {
+                #expect(current != old)
+                let oldIdentity = try #require(identity(prompt: old))
+                let newIdentity = try #require(identity(prompt: current))
+                #expect(oldIdentity.modelAggregateHash == newIdentity.modelAggregateHash)
+                #expect(oldIdentity.buildID == newIdentity.buildID)
+                #expect(oldIdentity.numericsFingerprint == newIdentity.numericsFingerprint)
+                #expect(oldIdentity != newIdentity)
+                let layout = CBv2CompleteCheckpointManifest.historicalAttentionLayout
+                #expect(SSDHybridCheckpointStoreFactory.namespace(modelId: "same-model", identity: oldIdentity, backendLayout: layout)
+                    != SSDHybridCheckpointStoreFactory.namespace(modelId: "same-model", identity: newIdentity, backendLayout: layout))
+                let tokens = Array(0..<257)
+                let oldHasher = CBv2BlockHasher(promptContractID: old, scopeID: "same-scope")
+                let newHasher = CBv2BlockHasher(promptContractID: current, scopeID: "same-scope")
+                #expect(oldHasher.maxLookupBlocks(tokenCount: tokens.count) == 1)
+                #expect(oldHasher.chainHashes(tokens: tokens, maxBlocks: 1)
+                    != newHasher.chainHashes(tokens: tokens, maxBlocks: 1))
+            }
+        }
+    }
+
     private func identity(
         model: String? = String(repeating: "a", count: 64),
         prompt: String? = String(repeating: "b", count: 64),

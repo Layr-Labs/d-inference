@@ -1,8 +1,8 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-28 · commit `1902940eb`
+> Last updated: 2026-10-01
 
-The complete public HTTP surface of the coordinator, derived from the 115 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
+The complete public HTTP surface of the coordinator, derived from the 118 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
 Production base URL: `https://api.darkbloom.dev`. Unless a file is named, handler symbols below live in `coordinator/api/server.go`.
 
@@ -133,7 +133,7 @@ Code: `coordinator/api/me_handlers.go` (`buildMyProvider`).
 | `admin-session` | `requireAuth` verifies the Privy JWT or admin key; the handler requires an allowlisted admin and rejects inference API keys/provider tokens even when owned by an admin. Missing/invalid credentials → 401; authenticated non-admin or non-interactive account credentials → 403 | `isBuildAdminAuthorized` (`coordinator/api/app_attest_builds.go`) |
 | `publishing` | `X-Darkbloom-Publishing-Key` header or Bearer equal to the bootstrap `MODEL_REGISTRY_PUBLISHING_KEY`, the admin key, or a publishing key stored in the DB | `requirePublishingAPIKey` (`coordinator/api/model_registry_handlers.go`) |
 | `release` | Bearer equal to `EIGENINFERENCE_RELEASE_KEY`; otherwise 401 `unauthorized` | `handleRegisterRelease` (`coordinator/api/release_handlers.go`) |
-| `stripe-sig` | Stripe webhook signature | `handleStripeWebhook` (`coordinator/api/billing_handlers.go`), `handleStripeConnectWebhook` (`coordinator/api/stripe_payouts_webhooks.go`) |
+| `stripe-sig` | Stripe webhook signature | `handleStripeWebhook` (`coordinator/api/stripe_checkout_webhook.go`), `handleStripeConnectWebhook` (`coordinator/api/stripe_payouts_webhooks.go`) |
 | `mdm-secret` | Webhook secret via `X-Webhook-Token` header or `?token=`; body capped at [`maxMDMWebhookBodyBytes`](#limits-and-validation) | `HandleMDMWebhook` |
 | `ws` | Provider WebSocket handshake (enrollment credentials + attestation); see [`protocol-messages.md`](protocol-messages.md) | `handleProviderWS` (`coordinator/api/provider.go`) |
 
@@ -231,19 +231,20 @@ Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInter
 
 All six `/v1/me/*` routes are wrapped in `requirePrivyAuth`, so they are Privy-JWT only.
 
-### Stripe, payouts and MDM (13)
+### Stripe, payouts and MDM (14)
 
 | Method | Path | Handler | Auth | Limiter | Notes |
 |---|---|---|---|---|---|
 | POST | `/v1/billing/stripe/create-session` | `handleStripeCreateSession` (`coordinator/api/billing_handlers.go`) | `key` | `fin` | 502 `stripe_error` when Stripe rejects |
-| POST | `/v1/billing/stripe/webhook` | `handleStripeWebhook` (`coordinator/api/billing_handlers.go`) | `stripe-sig` | — | Checkout events |
+| POST | `/v1/billing/stripe/webhook` | `handleStripeWebhook` (`coordinator/api/stripe_checkout_webhook.go`) | `stripe-sig` | — | Checkout events |
 | GET | `/v1/billing/stripe/session` | `handleStripeSessionStatus` (`coordinator/api/billing_handlers.go`) | `key` | — | Poll a checkout session |
 | POST | `/v1/billing/stripe/onboard` | `handleStripeOnboard` (`coordinator/api/stripe_payouts.go`) | `user` (Privy-only wrapper) | `fin` | Country-aware Connect or Global Payouts onboarding link |
-| GET | `/v1/billing/stripe/status` | `handleStripeStatus` (`coordinator/api/stripe_payouts.go`) | `user` | — | Payout readiness; additive `account_id` scopes browser confirmation recovery, plus `payout_rail`, `payout_currency`, `countries`, `payouts_available`, `recipient_limits` (currency, exponent, published minimum/maximum minor units) |
+| GET | `/v1/billing/stripe/status` | `handleStripeStatus` (`coordinator/api/stripe_payouts.go`) | `user` | — | Payout readiness; additive `account_id` scopes browser confirmation recovery, plus `migration_required` (self-service bank setup needed), `payout_rail`, `payout_currency`, `countries`, `payouts_available`, `recipient_limits` (currency, exponent, published minimum/maximum minor units) |
 | POST | `/v1/billing/withdraw/stripe` | `handleStripeWithdraw` (`coordinator/api/stripe_withdraw.go`) | `user` (Privy-only wrapper) | `fin` | Global Payouts confirms a persisted `quote_id`; 409 `stripe_account_gone` / `stripe_account_recreate_required`; 502 `stripe_error` |
 | GET | `/v1/billing/stripe/withdrawals` | `handleStripeWithdrawals` (`coordinator/api/stripe_payouts.go`) | `user` | — | Withdrawal history |
 | POST | `/v1/billing/stripe/dashboard` | `handleStripeDashboardLink` (`coordinator/api/stripe_payouts.go`) | `user` (Privy-only wrapper) | `fin` | Express dashboard link |
-| DELETE | `/v1/billing/stripe/account` | `handleStripeUnlink` (`coordinator/api/stripe_payouts.go`) | `user` (Privy-only wrapper) | — | Removes the Global Payouts mapping when present; otherwise removes the stored Connect mapping. Does not close Stripe accounts or cancel withdrawals. |
+| DELETE | `/v1/billing/stripe/account` | `handleStripeUnlink` (`coordinator/api/stripe_payouts.go`) | `user` (Privy-only wrapper) | — | Resets Global Payouts to a fresh empty generation while retaining its routing fence. During cutover, preserves the legacy Connect mapping; before cutover, an unmigrated Connect user can still unlink it. Does not close Stripe accounts or cancel withdrawals. |
+| POST | `/v1/billing/stripe/connect/accounts/webhook` | `handleStripeConnectAccountsWebhook` (`coordinator/api/stripe_payouts_webhooks.go`) | `stripe-sig` (accounts secret) | — | Requires a connected-account envelope; account updates and payout events. |
 | POST | `/v1/billing/stripe/connect/webhook` | `handleStripeConnectWebhook` (`coordinator/api/stripe_payouts_webhooks.go`) | `stripe-sig` | — | Connect events |
 | POST | `/v1/billing/stripe/quote` | `handleGlobalPayoutQuote` (`coordinator/api/global_payouts_withdraw.go`) | `user` (Privy-only wrapper) | `fin` | `{amount_usd}` returns quote ID, local amount/currency/exponent, expiry and fee; no ledger debit. |
 | POST | `/v1/billing/stripe/global/webhook` | `handleGlobalPayoutWebhook` (`coordinator/api/global_payouts_reconcile.go`) | `stripe-sig` (separate secret) | — | Reconciles the current outbound-payment state; does not consume Connect sweep events. |
@@ -355,7 +356,7 @@ client receipt. See [incoming request accounting](../architecture/request-accoun
 | GET | `/v1/releases/latest` | `handleLatestRelease` (`coordinator/api/release_handlers.go`) | `—` | Latest release record |
 | GET | `/readyz` | `handleReadyz` (`coordinator/api/drain.go`) | `—` | 200 normally; 503 while draining |
 
-The 0.9.12 candidate sets `LatestProviderVersion = "0.9.12"` in
+The 0.9.16 candidate sets `LatestProviderVersion = "0.9.16"` in
 `coordinator/api/server.go`. A registered active release still takes precedence
 for version displays; this fallback change does not publish an updater release.
 `GET /v1/releases/latest` requires a registered release and returns 404 when none
@@ -375,7 +376,7 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 | GET | `/ws/provider` | `handleProviderWS` (`coordinator/api/provider.go`) | `ws` | Provider WebSocket; message catalogue in [`protocol-messages.md`](protocol-messages.md) |
 | POST | `/v1/provider/log-report` | `handleUploadLogReport` (`coordinator/api/log_report_handlers.go`) | `key` | Body capped at [`maxLogReportBodySize`](#timeouts-and-constants); 426 `upgrade_required` when `?serial=` names a provider below the minimum version |
 
-### Admin (41)
+### Admin (43)
 
 | Method | Path | Handler | Auth | Notes |
 |---|---|---|---|---|
@@ -405,6 +406,7 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 | GET | `/v1/admin/metrics` | `handleAdminMetrics` | `admin-key` | Telemetry counters |
 | GET | `/v1/admin/base-rewards` | `handleAdminBaseRewards` (`coordinator/api/base_rewards_handlers.go`) | `admin-key` | |
 | GET | `/v1/admin/utilization` | `handleAdminUtilization` (`coordinator/api/admin_utilization.go`) | `admin-key` | |
+| GET / POST | `/v1/admin/autopilot` | `handleAdminAutopilot` (`coordinator/api/autopilot_handlers.go`) | `admin` | Two registrations; [controller status and runtime pause](#experimental-model-autopilot), not shadow/live promotion |
 | POST | `/v1/admin/drain` | `handleAdminDrain` (`coordinator/api/drain.go`) | `admin` | Start a drain; default grace [`DefaultDrainGrace`](#timeouts-and-constants) |
 | GET | `/v1/admin/routes`, `/v1/admin/routes/export` | `handleAdminRoutes`, `handleAdminRoutesExport` (`coordinator/api/admin_telemetry.go`) | `admin-key` | Route records |
 | GET | `/v1/admin/rejections`, `/v1/admin/rejections/export` | `handleAdminRejections`, `handleAdminRejectionsExport` (`coordinator/api/admin_telemetry.go`) | `admin-key` | Admission rejections; `could_have_served` is nullable: `null` means not evaluated. CSV uses an empty cell; `could_have_served=true|false` filters exclude unknowns. |
@@ -423,6 +425,15 @@ Total: 4 + 9 + 10 + 3 + 15 + 13 + 6 + 6 + 5 + 3 + 1 + 41 + 1 = **117 registratio
 
 ## Exact cache status
 
+Typed audio content (`input_audio` / `audio_url`), including malformed audio
+parts and audio-bearing tool output, is ineligible for the text-only prefix
+planner. Ordinary text mentioning audio and opaque tool argument strings are
+not audio-presence signals. This exclusion does not enable audio routing or a
+provider capability, and does not classify audio as vision for billing.
+Sources: `coordinator/api/audio_cache_eligibility.go`,
+`coordinator/promptcontract/endpoint_lower.go` and
+`coordinator/promptsidecar/src/endpoint.rs`.
+
 `GET /v1/cache/status` returns aggregate operational state, with no provider,
 model, tenant, prompt, token, hash, scope, or epoch identifiers
 (`ExactCacheStatus`, `coordinator/api/exact_cache_status.go`). Readiness counts
@@ -436,9 +447,22 @@ are advertised provider/model pairs, not unique models or guaranteed cache hits.
 | `providers.memory_ready_models` | Ready resident capabilities, counted separately from SSD readiness | `coordinator/registry/cache_status.go` (`PrefixCacheProtocolStatus`) |
 | `lifecycle.fences_applied` | Proof-fence windows opened or escalated | `coordinator/registry/cache_routing.go` (`CacheRoutingLifecycleStatus`); `coordinator/registry/cache_proof_fence.go` (`rejectCapability`) |
 | `lifecycle.fences_expired` | Windows that lifted by time, each counted once | Same; `coordinator/registry/cache_proof_fence.go` (`countLapseLocked`) |
-| `lifecycle.fenced_capabilities` | Currently fenced provider/model/tier capabilities | Same; `coordinator/registry/cache_proof_fence.go` (`sweepFencesLocked`) |
+| `lifecycle.persistence.enabled` / `.ready` | Persistence is started / restore has established the key generation. Holder and demand writes wait for `ready`; failed restores retry each flush tick | `coordinator/registry/cachepersist/status.go` (`Status`); `coordinator/registry/cache_persistence_registry.go` (`runCacheRoutingPersistence`) |
+| `lifecycle.persistence.restored_holders` / `.restored_demand` | Holder rows accepted into the parked set during boot or retry, and restored demand entries accepted by the index. Loads enforce TTL, caps and clock-skew bounds | `coordinator/registry/cachepersist/restore.go` (`Restore`, `SeedDemandPersisted`) |
+| `lifecycle.persistence.pending_holders` / `.bound_holders` / `.dropped_pending` | Currently parked holders (not pending writes), cumulative bindings, and parked/restored rows dropped for expiry, capacity, identity mismatch, abandoned epoch or invalidation fences | `coordinator/registry/cachepersist/pending.go` (`Park`, `AddBound`, `prunePendingChunked`); `coordinator/registry/cache_persistence.go` (`bindRowsLocked`, `settleParkedChunk`); `coordinator/registry/cachepersist/restore.go` (`Restore`) |
+| `lifecycle.persistence.key_rotated` | This boot reset a different recorded cache-key generation, covering the master key and all derivation versions. Excludes first initialization and completion of an in-progress reset | `coordinator/registry/cachepersist/restore.go` (`Restore`) |
+| `lifecycle.persistence.flushes` / `.flush_errors` | Nonempty or reset-only flush attempts, and their failures. Unwritten mutations stay pending; successful chunks clear only matching revisions | `coordinator/registry/cachepersist/flush.go` (`Flush`, `recordFlush`); `coordinator/registry/cachepersist/mutations.go` (`acknowledgeHolders`, `acknowledgeDemand`) |
+| `lifecycle.persistence.rows_written` / `.rows_deleted` | Holder/demand rows successfully submitted in upsert chunks / holder keys successfully submitted in delete chunks. Deletes can name missing rows; neither is a current row count or a count of rows actually changed. Reset/prune deletions are excluded | `coordinator/registry/cachepersist/mutations.go` (`acknowledgeHolders`, `acknowledgeDemand`) |
+| `lifecycle.persistence.dropped_dirty` | Upsert/demand marks dropped at their pending cap, plus pending holder upserts discarded by delete-backlog overflow | `coordinator/registry/cachepersist/marks.go` (`MarkHolderUpsert`, `MarkDemand`); `coordinator/registry/cachepersist/reset.go` (`requireResetLocked`) |
+| `lifecycle.persistence.overflow_resets` / `.stale_upserts` | Delete-backlog overflows requesting a durable reset (not completed resets) / holder upserts rejected because evidence is at or before a per-key invalidation or the process-lifetime overflow cutoff | `coordinator/registry/cachepersist/reset.go` (`requireResetLocked`); `coordinator/registry/cachepersist/marks.go` (`MarkHolderUpsert`); `coordinator/registry/cachepersist/delete_fences.go` (`tombstonedLocked`) |
+| `lifecycle.persistence.last_flush_ms` / `.last_flush_at` | Duration and completion time of the last counted flush, successful or failed, including a mid-flush reset. Time is UTC RFC 3339 and omitted before any counted flush | `coordinator/registry/cachepersist/flush.go` (`recordFlush`); `coordinator/registry/cachepersist/status.go` (`Status`) |
+| `lifecycle.fenced_capabilities` | Currently fenced provider/model/tier capabilities | `coordinator/registry/cache_proof_fence.go` (`sweepFencesLocked`) |
 | `lifecycle.demand_entries` | Entries currently in the observed-demand index | `coordinator/registry/cache_demand.go` (`stats`) |
 | `lifecycle.demand_cap_evictions` | Demand entries evicted by the cap inside their TTL; a growing count means repeated prefixes are being reported as novel | Same |
+
+The persistence field names are unchanged. Routing reads remain in memory;
+write-behind, restore and overflow guarantees are defined in
+[cache persistence](../architecture/cache-aware-routing.md#persistence-across-restarts).
 
 The artifact-list fields have Prometheus gauges
 `exact_cache_artifact_allowlist_configured`, `exact_cache_artifact_allowlist_count`
@@ -490,6 +514,13 @@ Existing tabs running an older bundle must reload. The updated console also
 accepts older responses containing the extra field.
 
 ## First-content routing and retry behavior
+
+Inference planning may obtain exact input work from the verified model/template
+tokenizer before dispatch. The internal numeric provenance is not a client
+request field. Planning, retries and provider reconciliation spend the same
+original first-content clock; neither corrected counts nor a calibrated margin
+extend it. Unsupported shapes keep conservative fallback, and billing continues
+to settle actual provider usage (`planPromptRoute`, `coordinator/api/prompt_work.go`).
 
 Public inference uses [first-content routing](../architecture/first-content-routing.md)
 by default across chat completions, Responses, completions and Anthropic messages.
@@ -779,6 +810,7 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consu
 | Forced media tools / media tool results | Requires explicit per-model native media-tool capability. A public model served only by providers lacking it → 400, `param: model`; no currently eligible capable provider → 503. Applies to `required`/named tools with media and media-bearing tool results even with `tool_choice: none`. Other vision/tool checks remain; `response_format` is not validated by the coordinator | `nativeMediaToolsFailFast`, `coordinator/api/native_media_tools.go` |
 | Token rate limits | Per-account input and output tokens per minute → 429 with `Retry-After` | `applyTokenRateLimitWithAdmission`, `writeTokenRateLimited` |
 | Model shedding | A model currently rejecting → 429 with `Retry-After` from `estimateRetryAfter` | `shedIfModelRejected` |
+| Media preparation memory | Provider reason `media_memory_unavailable` permits bounded failover and eventual 429 when no candidate serves it. It does not invalidate a provider's text capacity or mark its engine unhealthy | `isProviderHealthNeutralErrorReason`, `classifyRejection`; `coordinator/api/route_outcome.go`, `coordinator/api/inference_failure_class.go` |
 
 ## Timeouts and constants
 
@@ -801,7 +833,7 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consu
 
 Two distinct version values govern providers:
 
-- `LatestProviderVersion = "0.9.10"` (`coordinator/api/server.go`) is the source's provider-version display fallback. `handleVersion` (`/api/version`) and `/v1/me/summary` report the highest active release in the store and fall back to this constant when none is registered. With production App Attest serving enabled, `/api/version` returns 503 instead of a download fallback when release authorization is unavailable. Preparing a source bump does not create a release row or alter `/v1/releases/latest`.
+- `LatestProviderVersion = "0.9.16"` (`coordinator/api/server.go`) is the source's provider-version display fallback. `handleVersion` (`/api/version`) and `/v1/me/summary` report the highest active release in the store and fall back to this constant when none is registered. With production App Attest serving enabled, `/api/version` returns 503 instead of a download fallback when release authorization is unavailable. Preparing a source bump does not create a release row or alter `/v1/releases/latest`.
 - `EIGENINFERENCE_MIN_PROVIDER_VERSION` (`MinProviderVersion`, `coordinator/api/server_config.go`; `SetMinProviderVersion`) is the **routing floor**: a provider that registers or re-attests below it stays connected but is marked not runtime-verified and excluded from routing (`belowMinProviderVersion` in `coordinator/api/server.go`, applied at registration, in `applyChallengeMinVersionPolicy` and in manifest sync). While a floor is set, a provider that reports no version counts as below it.
 - **Request-shape gates** exclude providers from specific request traits rather than the whole model, and they key on advertised capabilities, not versions: inference-enforced `tool_choice` (required/named) needs the model's tool-constraint advertisement (`providerSupportsToolConstraintLocked`, `coordinator/registry/tool_constraints.go`), and a build reporting `template_render_ok=false` serves no request for that model (`providerEligibleForTraitsLocked`, `coordinator/registry/request_traits.go`). Servability and pooled admission assume the routed fleet is past the routing floor and carry no version branches. When no provider clears a gate for a request, the client sees 503 `model_unavailable` (or 400 `param: tool_choice` when the fleet serves the model but no provider advertises the tool-constraint protocol).
 
@@ -878,3 +910,60 @@ An unknown payout outcome held for manual reconciliation remains `status=pending
 Promotion input is `{ "model_id": "...", "tokens": 150000000, "claim_starts_at": "RFC3339", "claim_ends_at": "RFC3339 or null", "signup_cutoff_at": "RFC3339", "max_claims": 250, "enabled": true }`. Signup eligibility is strictly before `signup_cutoff_at` using the persisted account creation timestamp. `max_claims` accepts integers in `[1, 1000000]`. A null claim end is supported, but the Bonsai launch draft has an explicit end. Only `enabled` is mutable; conflicting terms return `409 promotion_conflict`. Tokens are integers in `[1, 1000000000000]`. Grant responses have a `grants` array containing `model_id`, `total_tokens`, `used_tokens`, `reserved_tokens`, `remaining_tokens` (available after reservations), and `claimed_at`. There is no expiry field. Claiming requires `{"model_id":"..."}`, uses the server clock and does not require catalog registration. Repeated successful claims return the existing grant without consuming another slot, including after the window or cap closes. Service accounts receive no grant. Responses also include `offers` with `model_id`, `tokens`, `max_claims`, `remaining_claims`, `signup_cutoff_at`, `claim_ends_at` and `status` (`available`, `claimed`, `sold_out`, `ineligible`, or `unavailable`). Claim failures return `403 promotion_ineligible`, `409 promotion_sold_out`, `409 promotion_unavailable`, or `404 promotion_not_found`.
 
 Inference returns `402 free_tokens_exhausted` when the claimed allowance is exhausted or held by active requests and paid balance is insufficient. `402 promotion_balance_required` means remaining free tokens plus paid balance cannot cover the request's upper bound. Both carry an OpenAI-compatible `error.code` and user-facing message. Paid fallback succeeds when funded. See [operations/model-token-promotions.md](../operations/model-token-promotions.md).
+
+## Experimental model Autopilot
+
+Source: `coordinator/api/autopilot/handler.go` (`Handler.ServeHTTP`),
+authenticated adapter `coordinator/api/autopilot_handlers.go` (`handleAdminAutopilot`),
+`coordinator/api/me_handlers.go` (`handleMyProviders`).
+
+| Endpoint | Authorization | Result |
+|---|---|---|
+| `GET /v1/admin/autopilot` | Admin key or authenticated admin | Controller summary and up to 200 durable events in the last 24 hours; ledger read failure returns 503 |
+| `POST /v1/admin/autopilot` | Admin key or authenticated admin | Required JSON `{ "paused": true }` stops new reservations; `false` resumes in the configured mode, never promotes shadow to live. Existing operations continue reconciliation. Missing/invalid input or unknown fields (including `observe_only`) return 400; unavailable controller returns 409; successful mutation returns the summary independently of ledger availability |
+| `GET /v1/me/providers` | Provider owner | Optional `model_autopilot` live snapshot with consent, exact approved cached network inventory (`selected_models`), `active`, `observe_only`, paused state and last operation; a valid shadow lease reports `active=false`, `observe_only=true` |
+
+Each model summary separates completed logical observations (`logical_requests`)
+from current qualified public queue occupancy (`queued_requests`) and in-flight
+reservations (`public_inflight_requests`). Live snapshots do not increment arrival
+history. Private/local or unattributed slot work creates no public placement demand.
+
+The controller summary's `observe_only` distinguishes the default shadow rollout
+from live control. Startup enrollment is consent, not activation; shadow proposals
+are hypothetical and `issued` remains zero. Mode changes use the startup
+[`EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY`](configuration.md#model-autopilot) setting
+and a coordinator restart, not this API.
+
+The `events` array is a recent decision/operation ledger, not a per-tick time
+series. Unchanged shadow decisions retain their first timestamp and can age out
+of the 24-hour window even while proposed again; the current controller summary
+still reports the latest tick. See [ledger semantics](../architecture/storage.md#autopilot-operation-ledger).
+
+The operator pause lasts for the current coordinator process. Live intent is persisted
+before dispatch. Ledger read/write errors are not success or rollback evidence.
+Snapshots and operation records contain model/control metadata, never prompts.
+
+## MiMo prompt parity fixtures
+
+See [MiMo prompt fixture reproduction](../developer/mimo-prompt-fixtures.md)
+for the independent pinned corpus and metadata required by the Rust parity gate.
+
+### Bank payout cutover contract
+
+With `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ONLY=true`, legacy clients attempting
+an amount-only withdrawal receive 409 `bank_setup_required` before any debit.
+All returned countries use `rail=global`; users enter their own bank details via
+`/v1/billing/stripe/onboard`. A missing country returns 400 `country_required`,
+an unsupported destination returns 400 `country_unavailable`, and paused bank
+setup returns 503 `payouts_paused`. No error falls through to Connect.
+
+Before first confirmation, unavailable funding (including estimated fees) returns
+503 `payout_funding_unavailable` without debit. Already-confirmed quote retries
+remain available while paused. Bank reset never re-enables Connect or mutates
+historical payouts (`coordinator/api/global_payouts_withdraw.go`,
+`maybeGlobalWithdraw`; `coordinator/api/global_payouts_status.go`, `maybeGlobalStatus`).
+
+Checkout amounts require at most two decimal places and the supported integer
+cent range (`coordinator/api/stripe_checkout_webhook.go`, `checkoutUSDCents`).
+Current and legacy Checkout signatures share exact local-session validation and
+atomic, non-withdrawable credit (`handleStripeWebhook`, `CompleteStripeCheckout`).

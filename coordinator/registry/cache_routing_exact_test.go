@@ -497,6 +497,7 @@ func TestExactRoutingMixedV1V2FleetFallsBackToV1Inference(t *testing.T) {
 	v1.mu.Unlock()
 	v2.mu.Lock()
 	v2.PrefixCacheProtocol = 2
+	v2.Models[0].WeightHash = capability.ModelAggregateHash
 	v2.PrefixCacheV2Models = map[string]protocol.PrefixCacheV2Capability{"model": capability}
 	// Keep the cache-capable provider routable but more expensive. The ordinary
 	// v1 provider must remain a valid cold fallback instead of failing closed.
@@ -598,6 +599,8 @@ func TestExactV2LongestHolderChangesMultiProviderSelection(t *testing.T) {
 	cold := makeSchedulerProvider(t, r, "cold", "model", 100)
 	for _, provider := range []*Provider{cached, cold} {
 		provider.mu.Lock()
+		// Production accepts this capability only for the same advertised artifact.
+		provider.Models[0].WeightHash = capability.ModelAggregateHash
 		provider.PrefillTPS = 100
 		provider.PrefixCacheProtocol = 2
 		provider.PrefixCacheV2Models =

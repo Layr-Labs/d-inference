@@ -1,6 +1,6 @@
 # Deploy the coordinator (production)
 
-> Last updated: 2026-09-27 · commit `12b6b7901`
+> Last updated: 2026-09-30
 
 Runbook for swapping the production coordinator container on the GCE VM
 `darkbloom-coordinator` to a Cloud-Build image of a reviewed `master` commit,
@@ -24,7 +24,7 @@ before the container swap.
 For the remaining coordinator performance upgrade, also follow
 [the Tiers 2 and 3 rollout checks](coordinator-perf-tier23-rollout.md).
 
-For international payout configuration and validation, also follow [Global Payouts](global-payouts.md).
+For bank payout configuration and validation, follow [Global Payouts](global-payouts.md) and the [Stripe account cutover](stripe-migration.md). The global-only cutover is explicit and remains false in release defaults; deploying code alone does not switch accounts.
 
 ## When to use
 
@@ -63,7 +63,7 @@ For international payout configuration and validation, also follow [Global Payou
 | Access | `gcloud compute ssh darkbloom-coordinator --project darkbloom-mainnet --zone us-east4-a --tunnel-through-iap` |
 | Ingress | `api.darkbloom.dev` → host Caddy (systemd, static certificate) → `:8080`. Do not reload Caddy during a swap; it reconnects the whole provider fleet |
 | Image | `us-east4-docker.pkg.dev/darkbloom-mainnet/coordinator/coordinator:<SHORT_SHA>` built by [`deploy/gcp/cloudbuild-prod.yaml`](../../deploy/gcp/cloudbuild-prod.yaml) from [`coordinator/Dockerfile`](../../coordinator/Dockerfile) |
-| Container | `coordinator`: `--network host`, `--restart unless-stopped`, `--stop-timeout 630`, `-v /mnt/disks/userdata:/mnt/disks/userdata`, `--env-file /etc/d-inference/env`; entrypoint [`coordinator/deploy/start.sh`](../../coordinator/deploy/start.sh) |
+| Container | `coordinator`: `--network host`, `--restart unless-stopped`, `--stop-timeout 690`, `-v /mnt/disks/userdata:/mnt/disks/userdata`, `--env-file /etc/d-inference/env`; entrypoint [`coordinator/deploy/start.sh`](../../coordinator/deploy/start.sh) |
 | Inside the container | `start.sh` symlinks `/data -> /mnt/disks/userdata`, starts MicroMDM on `:9002` (state in `/data/micromdm`, command webhook `http://localhost:8080/v1/mdm/webhook`), then `exec coordinator` as PID 1. `/usr/local/bin/promptsidecar` is spawned by the coordinator when `EIGENINFERENCE_PROMPT_SIDECAR_ENABLED=true` |
 | Persistent disk | `/mnt/disks/userdata`: MicroMDM BoltDB, prompt-contract artifacts (`EIGENINFERENCE_PROMPT_SIDECAR_ARTIFACT_ROOT=/mnt/disks/userdata/prompt-contracts`), logs. **Omitting the bind mount boots a blank MDM and drops the fleet to `self_signed` trust** (2026-07-04 incident) |
 | Database | AWS RDS PostgreSQL via `EIGENINFERENCE_DATABASE_URL`; schema migrations run at coordinator start |
@@ -282,15 +282,18 @@ printf '%s\n%s\n%s\n%s\n' "$PREVIOUS_IMAGE" "$PREVIOUS_ENV_BACKUP" "$PREVIOUS_EN
 ### 4. Swap
 
 Rules: **one host-network container at a time** (stop before start; two
-containers on `:8080` caused the 2026-07-03 outage); **630-second stop
-timeout** so the 10-minute application drain completes instead of Docker's
-10-second SIGKILL; **the volume mount is mandatory**.
+containers on `:8080` caused the 2026-07-03 outage); **690-second stop
+timeout** so the 10-minute application drain plus the shutdown tail (HTTP
+shutdown 15 s, provider-socket close and join 5 s, persistence-loop join
+15 s, the final cache routing flush 10 s, and a second handler join and
+flush of 10 s each when the first join timed out: up to 65 s) completes
+instead of Docker's 10-second SIGKILL; **the volume mount is mandatory**.
 
 ```bash
 sudo docker rename coordinator "$FALLBACK"
-sudo docker stop -t 630 "$FALLBACK"               # drains: /readyz goes 503, new requests get retryable 429s
+sudo docker stop -t 690 "$FALLBACK"               # drains: /readyz goes 503, new requests get retryable 429s
 sudo docker run -d --name coordinator \
-  --network host --restart unless-stopped --stop-timeout 630 \
+  --network host --restart unless-stopped --stop-timeout 690 \
   -v /mnt/disks/userdata:/mnt/disks/userdata \
   --env-file /etc/d-inference/env \
   "$CANDIDATE_IMAGE"
@@ -365,11 +368,11 @@ FALLBACK=$(sudo sed -n 4p "$ROLLBACK_STATE")
 [[ "$(sudo sha256sum "$PREVIOUS_ENV_BACKUP" | cut -d' ' -f1)" == "$PREVIOUS_ENV_BACKUP_SHA256" ]]
 sudo docker image inspect "$PREVIOUS_IMAGE" --format '{{.Id}}'
 
-sudo docker stop -t 630 coordinator && sudo docker rm coordinator     # one host-network container at a time
-sudo docker ps -q --filter "name=$FALLBACK" | grep -q . && sudo docker stop -t 630 "$FALLBACK"
+sudo docker stop -t 690 coordinator && sudo docker rm coordinator     # one host-network container at a time
+sudo docker ps -q --filter "name=$FALLBACK" | grep -q . && sudo docker stop -t 690 "$FALLBACK"
 sudo cp "$PREVIOUS_ENV_BACKUP" /etc/d-inference/env
 sudo docker run -d --name coordinator \
-  --network host --restart unless-stopped --stop-timeout 630 \
+  --network host --restart unless-stopped --stop-timeout 690 \
   -v /mnt/disks/userdata:/mnt/disks/userdata \
   --env-file /etc/d-inference/env \
   "$PREVIOUS_IMAGE"

@@ -36,6 +36,11 @@ var _ Store = (*PostgresStore)(nil)
 type PostgresStore struct {
 	pool *pgxpool.Pool
 
+	// afterCacheRoutingResetMarker, when set (tests only), runs once
+	// ResetCacheRoutingState has recorded the in-progress marker and before
+	// it deletes anything: the point an interrupted reset is observed from.
+	afterCacheRoutingResetMarker func()
+
 	// In-memory cache for model prices. Keyed by "accountID:model".
 	// Eliminates a DB round trip on every inference request for
 	// platform pricing lookups (which change rarely).
@@ -1161,8 +1166,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		fleetSnapshotsProviderIndexDDL,
 	}
 
+	migrations = append(migrations, autopilotDDL)
 	migrations = append(migrations, appAttestShadowDDL, machineInventoryDDL, appAttestArchiveDDL, appAttestEnrollmentDDL, appAttestReceiptDDL)
 	migrations = append(migrations, appAttestRevocationDDL, appAttestBuildDDL, appAttestKeyRotationDDL, modelTokenPromotionDDL)
+	migrations = append(migrations, cacheRoutingHoldersDDL, cacheRoutingHoldersBackfillColumnsDDL, cacheRoutingHoldersDropChainHashDDL, cacheRoutingHoldersExpiryIndexDDL, cacheRoutingHoldersUpdatedIndexDDL, cacheRoutingDemandDDL, cacheRoutingDemandSeenIndexDDL, cacheRoutingMetaDDL)
 	for i, m := range migrations {
 		started := time.Now()
 		_, err := s.pool.Exec(ctx, m)
@@ -2486,8 +2493,11 @@ func (s *PostgresStore) GetReferrerByCode(code string) (*Referrer, error) {
 	err := s.pool.QueryRow(ctx,
 		`SELECT account_id, code, created_at FROM referrers WHERE code = $1`, code,
 	).Scan(&ref.AccountID, &ref.Code, &ref.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
 	if err != nil {
-		return nil, fmt.Errorf("store: referrer not found: %w", err)
+		return nil, fmt.Errorf("store: referrer lookup: %w", err)
 	}
 	return &ref, nil
 }
@@ -2531,8 +2541,11 @@ func (s *PostgresStore) GetReferrerForAccount(accountID string) (string, error) 
 	err := s.pool.QueryRow(ctx,
 		`SELECT referrer_code FROM referrals WHERE referred_account = $1`, accountID,
 	).Scan(&code)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
 	if err != nil {
-		return "", nil // no referrer is not an error
+		return "", fmt.Errorf("store: lookup referrer: %w", err)
 	}
 	return code, nil
 }

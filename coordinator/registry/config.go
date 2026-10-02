@@ -9,12 +9,14 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/env"
+	"github.com/eigeninference/d-inference/coordinator/registry/autopilot"
 )
 
 // Config holds registry-level configuration.
 type Config struct {
 	MinTrustLevel string
 	WarmPool      WarmPoolConfig
+	Autopilot     autopilot.Config
 	CacheRouting  CacheRoutingConfig
 	QualityCap    QualityCapConfig
 }
@@ -30,6 +32,9 @@ type CacheRoutingConfig struct {
 	MaxDiscountMs       *float64
 	MaxCostFraction     *float64
 	MasterKey           string
+	// Persist keeps the holder and demand indexes in the store across
+	// restarts (EIGENINFERENCE_CACHE_ROUTING_PERSIST, default on).
+	Persist bool
 }
 
 // QualityCapConfig governs the per-provider admission concurrency cap derived
@@ -154,6 +159,7 @@ func ReadConfig() Config {
 	artifacts, artifactsErr := readCacheRoutingArtifacts()
 	return Config{
 		MinTrustLevel: os.Getenv(env.EnvPrefix + "_MIN_TRUST"),
+		Autopilot:     autopilotConfigFromEnv(),
 		WarmPool: WarmPoolConfig{
 			Enabled:                   env.EnvBool(env.EnvPrefix+"_WARM_POOL_ENABLED", true),
 			ObserveOnly:               env.EnvBool(env.EnvPrefix+"_WARM_POOL_OBSERVE_ONLY", false),
@@ -194,6 +200,7 @@ func ReadConfig() Config {
 			MaxHolders:          env.EnvInt(env.EnvPrefix+"_CACHE_ROUTING_MAX_HOLDERS", defaultCacheRoutingMaxHolders),
 			MaxDiscountMs:       optionalCacheScoreLimit(env.EnvPrefix + "_CACHE_ROUTING_MAX_DISCOUNT_MS"),
 			MaxCostFraction:     optionalCacheScoreLimit(env.EnvPrefix + "_CACHE_ROUTING_MAX_COST_FRACTION"),
+			Persist:             env.EnvBool(env.EnvPrefix+"_CACHE_ROUTING_PERSIST", true),
 			MasterKey:           strings.TrimSpace(os.Getenv(env.EnvPrefix + "_CACHE_MASTER_KEY")),
 		},
 		QualityCap: QualityCapConfig{
@@ -238,6 +245,9 @@ func (c Config) Check() error {
 			c.MinTrustLevel, TrustNone, TrustSelfSigned, TrustHardware)
 	}
 	if err := c.WarmPool.Check(); err != nil {
+		return err
+	}
+	if err := c.Autopilot.Check(); err != nil {
 		return err
 	}
 	if err := c.CacheRouting.Check(); err != nil {

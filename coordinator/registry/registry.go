@@ -13,6 +13,7 @@
 package registry
 
 import (
+	"github.com/eigeninference/d-inference/coordinator/registry/cachepersist"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -24,8 +25,10 @@ import (
 
 // Registry holds all connected providers and provides routing.
 type Registry struct {
-	mu        sync.RWMutex
-	providers map[string]*Provider
+	autopilotEventsMu sync.Mutex
+	autopilotEvents   map[string]store.AutopilotRecord
+	mu                sync.RWMutex
+	providers         map[string]*Provider
 
 	queue *RequestQueue
 	// drainSuppress rate-limits HEARTBEAT-triggered queue drains per model
@@ -220,14 +223,20 @@ type Registry struct {
 	// without New(). See capacity_quotes.go.
 	capacityQuotes quoteTracker
 
-	cacheRouting                 *cacheRoutingTracker
-	cacheActivation              *cacheActivationGate
-	cacheRoutingMode             string
+	cacheRouting     *cacheRoutingTracker
+	cacheActivation  *cacheActivationGate
+	cacheRoutingMode string
+	cachePersister   *cachepersist.Persister
+	// cachePersistDone closes when the persistence loop has exited, so
+	// shutdown can join it before the final flush decides on readiness.
+	cachePersistDone             chan struct{}
 	cacheRoutingAllowedArtifacts cacheArtifactAllowlist
 	cacheRouteKeys               cacheRouteKeys
 	cacheRoutingMaxDiscountMs    *float64
 	cacheRoutingMaxCostFraction  *float64
 	warmPool                     *warmPoolController
+	autopilot                    *modelAutopilotController
+	autopilotSender              func(providerID string, command protocol.ModelAutopilotMessage) error
 	// Provider-control sender seams let focused tests prove eligibility failures
 	// stop before any command invocation. Nil uses the provider WebSocket.
 	loadModelSender               func(providerID, modelID string) error

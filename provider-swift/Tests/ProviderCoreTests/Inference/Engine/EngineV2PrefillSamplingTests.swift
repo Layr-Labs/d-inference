@@ -636,7 +636,7 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         return false
     }
 
-    @Test("enforce mode carries absolute monotonic deadline and conservative phase rates")
+    @Test("enforce mode carries absolute monotonic deadline and observed phase rates")
     func enforceUsesAtomicAdmission() async throws {
         let engine = PrefillScriptEngine()
         let bridge = try makeProductionBridge(
@@ -668,7 +668,7 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         #expect(admission.deadline == expectedDeadline.instant)
         #expect(
             admission.conservativePrefillTokensPerSecond
-                == measured * EngineV2Bridge.deadlineProjectionRateHaircut)
+                == measured)
         #expect(admission.conservativeDecodeTokensPerSecond == nil)
         #expect(
             await bridge._testSubmissionInstant(requestId: "atomic-admit")
@@ -766,7 +766,7 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         let admission = try #require(engine.deadlineAdmissions.last)
         #expect(
             admission.conservativeDecodeTokensPerSecond
-                == measuredDecode * EngineV2Bridge.deadlineProjectionRateHaircut)
+                == measuredDecode)
         #expect(profile.wireObject().deadlineDecision?.decodeTps
             == admission.conservativeDecodeTokensPerSecond)
         try await finishLatestSubmission(deadlineStream, engine: engine)
@@ -1026,6 +1026,7 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
                 firstContentDeadline: deadline())
         }
         #expect(await waitForDeadlineSubmission(engine))
+        await bridge.markNativeBootstrapOwnerForRetirementTest(requestID)
         await bridge.cancel(requestId: requestID)
         engine.releaseSuspendedDeadlineSubmissions()
 
@@ -1061,6 +1062,7 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
                 firstContentDeadline: deadline())
         }
         #expect(await waitForDeadlineSubmission(engine))
+        await bridge.markNativeBootstrapOwnerForRetirementTest(requestID)
         await bridge.cancel(requestId: requestID)
         engine.releaseSuspendedDeadlineSubmissions()
 
@@ -1080,6 +1082,7 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         #expect(await bridge._testPendingSubmissionCount() == 1)
         #expect(await bridge._testPendingEngineIDCount() == 1)
         #expect(await bridge._testMappedRequestCount() == 1)
+        #expect(await bridge.nativeMediaBootstrapRequestID == requestID)
         let duplicate = try await bridge.submitTokenized(
             promptTokens: promptTokens,
             request: request,
@@ -1104,6 +1107,7 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         #expect(await bridge._testPendingSubmissionCount() == 0)
         #expect(await bridge._testPendingEngineIDCount() == 0)
         #expect(await bridge._testMappedRequestCount() == 0)
+        #expect(await bridge.nativeMediaBootstrapRequestID == nil)
         #expect(await bridge._testLivePumpCount() == 0)
     }
 

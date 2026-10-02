@@ -237,6 +237,8 @@ func main() {
 	)
 	stopWarmPool := reg.StartWarmPoolController(ctx, cfg.RegistryCfg.WarmPool)
 	defer stopWarmPool()
+	stopAutopilot := reg.StartAutopilotController(ctx, cfg.RegistryCfg.Autopilot)
+	defer stopAutopilot()
 	if cfg.RegistryCfg.WarmPool.Enabled {
 		logger.Info("warm-pool controller enabled", "observe_only", cfg.RegistryCfg.WarmPool.ObserveOnly, "interval", cfg.RegistryCfg.WarmPool.Interval.String())
 	}
@@ -270,6 +272,23 @@ func main() {
 		}
 	}
 	srv := api.NewServer(reg, st, serverCfg, logger)
+	// The server handed the store to the registry; restore the durable cache
+	// routing indexes now so the holder index is not empty after a restart.
+	// The write-behind loop keeps running through the drain (the main ctx is
+	// cancelled before it) and is stopped and joined right before the final
+	// flush, which runs once the HTTP server and the provider sockets are
+	// down.
+	persistCtx, persistCancel := context.WithCancel(context.Background())
+	defer persistCancel()
+	if cfg.RegistryCfg.CacheRouting.Persist {
+		if status, err := reg.StartCacheRoutingPersistence(persistCtx); err != nil {
+			logger.Warn("cache routing persistence restore failed; the index starts empty and nothing is written until a retry succeeds", "error", err)
+		} else if status.Enabled {
+			logger.Info("cache routing persistence restored",
+				"holders_pending", status.PendingHolders, "demand_entries", status.RestoredDemand,
+				"key_rotated", status.KeyRotated)
+		}
+	}
 	var promptProvisioner *promptcontract.Provisioner
 	if cfg.PromptSidecar.Enabled {
 		artifactBaseURL, err := url.Parse(cfg.PromptSidecar.ArtifactBaseURL)
@@ -882,7 +901,7 @@ func main() {
 	}
 
 	// Start background eviction of stale providers.
-	reg.StartEvictionLoop(ctx, 90*time.Second)
+	reg.StartEvictionLoop(ctx, registry.DefaultProviderHeartbeatTimeout)
 
 	// Push gauge values to DogStatsD periodically.
 	go srv.StartDDGaugeLoop(ctx)
@@ -999,6 +1018,51 @@ func main() {
 	defer shutdownCancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		logger.Error("shutdown error", "error", err)
+	}
+
+	// Provider sockets are hijacked, so Shutdown neither closes nor waits on
+	// them and they keep producing receipts and heartbeats; close them and
+	// join their handlers, then take the final write-behind of the cache
+	// routing indexes with no producer left behind it. The periodic flush
+	// loop stays alive until here.
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	joined := srv.CloseProviderConnections(closeCtx)
+	closeCancel()
+	// Stop the periodic loop and join it before deciding on the final flush:
+	// a restore retry in flight has then either made the persister ready
+	// (so the flush below writes everything) or been cancelled, and no flush
+	// of the loop's own can run behind the final one.
+	persistCancel()
+	loopCtx, loopCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	if !reg.WaitCacheRoutingPersistence(loopCtx) {
+		logger.Warn("cache routing persistence loop still running at the shutdown deadline; the final flush proceeds")
+	}
+	loopCancel()
+	warnedNotReady := false
+	finalFlush := func() {
+		flushCtx, flushCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer flushCancel()
+		if s := reg.CacheRoutingPersistenceStatus(); s.Enabled && !s.Ready {
+			if !warnedNotReady {
+				logger.Warn("cache routing persistence never established its key generation this run; the final flush writes nothing")
+				warnedNotReady = true
+			}
+		} else if err := reg.FlushCacheRoutingState(flushCtx); err != nil {
+			logger.Warn("final cache routing persistence flush failed", "error", err)
+		}
+	}
+	finalFlush()
+	if !joined {
+		// A handler still running can mark evidence behind that flush (a
+		// read-error close and the deferred teardown take seconds). Give the
+		// join the rest of the budget, then flush again.
+		joinCtx, joinCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		joined = srv.WaitProviderHandlers(joinCtx)
+		joinCancel()
+		finalFlush()
+		if !joined {
+			logger.Warn("provider socket handlers still running at exit; cache routing evidence they mark from here is lost")
+		}
 	}
 
 	logger.Info("coordinator stopped")

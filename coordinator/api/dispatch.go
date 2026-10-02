@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/promptwork"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -1378,32 +1379,34 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		// No idle provider — try queueing.
 		d.requestID = uuid.New().String()
 		queuePR := &registry.PendingRequest{
-			RequestID:              d.requestID,
-			Attempt:                d.attempt,
-			Model:                  d.model,
-			PublicModel:            d.publicModel,
-			ConsumerKey:            d.consumerKey,
-			KeyID:                  keyIDFromContext(r.Context()),
-			KeyLimitMicroUSD:       keyLimitMicroFromContext(r.Context()),
-			KeyLimitReset:          keyLimitResetFromContext(r.Context()),
-			ConsumerLocation:       d.consumerLocation,
-			IsResponsesAPI:         d.isResponsesAPI,
-			EstimatedPromptTokens:  d.estimatedPromptTokens,
-			RequiresVision:         d.requiresVision,
-			Traits:                 d.traits(),
-			RequestedMaxTokens:     d.requestedMaxTokens,
-			TokenAdmission:         d.tokenAdmission,
-			ReservedMicroUSD:       d.reservedMicroUSD,
-			BaseReservedMicroUSD:   d.reservedMicroUSD,
-			ServiceReservation:     d.serviceReservation,
-			AllowedProviderSerials: d.allowedProviderSerials,
-			ExcludedProviderIDs:    d.excludedProviderIDs(),
-			CachePlan:              d.cachePlan,
-			SelfRouteOnly:          d.policy.enabled,
-			PreferOwner:            d.policy.prefer,
-			OwnerAccountID:         d.policy.ownerAccountID,
-			FreeSelfRoute:          d.policy.enabled,
-			MetadataDetails:        d.metadataDetails,
+			RequestID:                d.requestID,
+			Attempt:                  d.attempt,
+			Model:                    d.model,
+			PublicModel:              d.publicModel,
+			ConsumerKey:              d.consumerKey,
+			KeyID:                    keyIDFromContext(r.Context()),
+			KeyLimitMicroUSD:         keyLimitMicroFromContext(r.Context()),
+			KeyLimitReset:            keyLimitResetFromContext(r.Context()),
+			ConsumerLocation:         d.consumerLocation,
+			IsResponsesAPI:           d.isResponsesAPI,
+			EstimatedPromptTokens:    d.estimatedPromptTokens,
+			FirstContentPromptTokens: calibratedContextPromptTokens(d.model, d.estimatedPromptTokens),
+			PromptWork:               promptwork.ForAttempt(r.Context(), d.model, d.rawBody, calibratedContextPromptTokens(d.model, d.estimatedPromptTokens)),
+			RequiresVision:           d.requiresVision,
+			Traits:                   d.traits(),
+			RequestedMaxTokens:       d.requestedMaxTokens,
+			TokenAdmission:           d.tokenAdmission,
+			ReservedMicroUSD:         d.reservedMicroUSD,
+			BaseReservedMicroUSD:     d.reservedMicroUSD,
+			ServiceReservation:       d.serviceReservation,
+			AllowedProviderSerials:   d.allowedProviderSerials,
+			ExcludedProviderIDs:      d.excludedProviderIDs(),
+			CachePlan:                d.cachePlan,
+			SelfRouteOnly:            d.policy.enabled,
+			PreferOwner:              d.policy.prefer,
+			OwnerAccountID:           d.policy.ownerAccountID,
+			FreeSelfRoute:            d.policy.enabled,
+			MetadataDetails:          d.metadataDetails,
 			MaxTTFTMs: queueMaxTTFTMs(
 				d.policy, d.deadline, d.s.hardTTFTGateApplies(d.requiresVision)),
 			MinDecodeTPS: d.s.minDecodeTPS,
@@ -3042,7 +3045,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 	// re-latch is a no-op by design: the terminal response will be the
 	// primary's 4xx/422/429, so the primary keeps the attribution even
 	// though the backup keeps racing (noteServingSlotFor's freeze rule).
-	d.noteServingSlotFor(backupPR)
+	d.noteServingSlotFor(backupProvider, backupPR)
 	backupDeadline := d.newFirstContentTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
 	for {
 		select {

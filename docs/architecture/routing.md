@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-28 · commit `9b2a28f59`
+> Last updated: 2026-10-01
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -187,6 +187,15 @@ Missing/invalid allowance declarations retain the 1.2 load-transient padding.
 Missing/invalid offload or other-family declarations keep the existing
 catalog/measured-weight policy.
 
+Exact `mimo_v2` has a separate full-LOAD declaration with **zero** SSD offload.
+The same helper requires matching ID, checked positive source bytes/supplement,
+finite memory at least their sum, and a valid raw decimal-GB catalog size from
+the normal/swap/warm/cold caller. It retains the greater catalog/source-size
+floor and adds the supplement once. Invalid or absent declarations keep legacy
+pricing; no hardware, catalog identity, activation or request-KV gate is waived.
+See `provider-swift/Sources/ProviderCore/Models/MiMo/MiMoV26DiscoveryLoadFootprint.swift`
+(`estimate`) for the metadata-only strict native main/sidecar quote.
+
 `coordinator/registry/scheduler.go` carries this estimate into cold snapshots.
 `reportedFreeForLoadAdmitsWithOffload` in
 `coordinator/registry/offloaded_weights.go` uses it at the cold-load boundary;
@@ -342,6 +351,11 @@ floored at 1 tok/s. The prefill fallback prefers `ObservedPrefillTPS`, else
 the static prefill rate (`resolvedPrefillTPS`: the registered `PrefillTPS`,
 or decode × `prefillToDecodeRatio`), capped at `maxPrefillTPS`. Reviewed prefill
 points satisfy the same ceiling during profile validation.
+Native providers can renew an expired isolated-prefill estimate with one
+exclusive, short text request; the original deadline, physical admission and
+retirement ownership remain enforced. See
+[provider prefill evidence recovery](first-content-routing.md#provider-recovery-of-expired-text-prefill-evidence)
+for the age, prompt and failure-backoff bounds.
 `SetPrefillToDecodeRatio` changes the ratio process-wide; the coordinator
 binary wires it to `EIGENINFERENCE_PREFILL_DECODE_RATIO`
 (`coordinator/cmd/coordinator/main.go`).
@@ -546,6 +560,16 @@ requires both a heartbeat delivered after the clamp showing at least
 [`EIGENINFERENCE_BUDGET_CLAMP`](../reference/configuration.md#routing-admission-and-ttft);
 TTL override `EIGENINFERENCE_BUDGET_CLAMP_TTL_SECONDS`.
 
+The typed `media_memory_unavailable` refusal describes one request's media
+preparation reservation. It is excluded from model-wide budget clamps,
+capacity-rate penalties, health breakers and reputation through
+`isProviderHealthNeutralErrorReason` (`coordinator/api/route_outcome.go`). It
+still receives bounded capacity failover (`classifyRejection`,
+`coordinator/api/inference_failure_class.go`). A genuine native engine terminal
+cannot claim this exemption. Deploy the coordinator's reason handling before
+providers that emit it; older coordinators treat unknown capacity reasons as
+ordinary capacity refusals.
+
 **Capacity-rate penalty** (`coordinator/registry/capacity_rate.go`). A pair
 whose capacity-503 rate over `capacityRateWindow = 5 * time.Minute` exceeds
 `capacityRateThreshold = 0.25` with at least `capacityRateMinSample = 8`
@@ -633,7 +657,11 @@ onto the formerly cheapest provider), the admit re-check
 (`tryClaimCapacityProbe`, check-and-claim under `gate.mu`) and the pending
 debit (`addPendingLocked`). `ReserveNextFromPlan`
 (`coordinator/registry/dispatch_plan.go`) commits each plan entry the same
-way. `commitLock` (`coordinator/registry/gate_commit_mode.go`) selects the
+way. The comparison also rechecks the [idle evidence-exploration
+exception](first-content-routing.md#prediction-and-freshness): newly reported
+service or an unretired terminal lease forces a rescan even if pending counts
+and numeric forecasts have not changed.
+`commitLock` (`coordinator/registry/gate_commit_mode.go`) selects the
 mode: `reserveCommitShared` as described, or `reserveCommitGlobal`, which
 takes `r.mu.Lock()` for the commit — the previous fleet-wide serialization,
 kept as the kill switch behind
@@ -865,9 +893,34 @@ must not run in parallel with other scheduler tests in the same process.
 - [`../design/routing-v2.md`](../design/routing-v2.md), [`../design/routing-telemetry-and-calibration.md`](../design/routing-telemetry-and-calibration.md) — the design history behind the current constants.
 - [`request-outcome-observability.md`](request-outcome-observability.md) — how routing outcomes surface in telemetry.
 
+Native MiMo providers also [calibrate idle loaded engines automatically](first-content-routing.md#automatic-mimo-calibration).
+The resulting measured phase rates use the existing capacity heartbeat and
+freshness checks; probes yield to serving and do not increase reviewed
+concurrency or memory limits.
+
 ## Account-scoped first-content SLA
 
-`coordinator/modelpolicy/first_content_sla.go` (`SetFirstContentSLAsFromEnv`) configures both fixed and per-input-token terms for exact model IDs, independently of model registration. Bonsai 2 uses a 10-second upstream base plus 5 ms per estimated prompt token; the live coordinator cutoff retains the existing 1-second response margin. This is the request-absolute first-content budget, carried through admission, queueing, retries and provider writer handoff, not an independent kernel prefill clock. These budgets apply only to accounts selected by `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS`. Provision the selector privately in the deployment environment; its value must match the authenticated account ID or stored email. Other service accounts and direct consumers are exempt, including for Bonsai. An explicit public-model policy takes precedence over its resolved build, and the selected duration is pinned before media, admission and alias fallback. Configuration details are in [configuration.md](../reference/configuration.md).
+`coordinator/modelpolicy/first_content_sla.go` (`SetFirstContentSLAsFromEnv`) configures both fixed and per-input-token terms for exact model IDs, independently of model registration. Bonsai 2 uses a 10-second upstream base plus 5 ms per estimated prompt token; the live coordinator cutoff retains the existing 1-second response margin. This is the request-absolute first-content budget, carried through admission, queueing, retries and provider writer handoff, not an independent kernel prefill clock. These budgets apply only to accounts selected by `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS`. Provision the selector privately in the deployment environment; its value must match the authenticated account ID or stored email. Other service accounts and direct consumers are exempt, including for Bonsai. An explicit public-model policy takes precedence over its resolved build. Enforcement is selected before media and admission; a concrete native-media post-fetch recount may correct the input-token term once, anchored to the original receive time. Alias fallback and retries retain that clock. Configuration details are in [configuration.md](../reference/configuration.md).
+
+Concrete native MiMo requests replace recognized media fallback costs with
+processor-aware estimates (`coordinator/api/media_prompt_work.go`,
+`mediaPromptTokens`). The background prompt-artifact provisioner verifies and
+retains `config.json` geometry; a changed active artifact invalidates its use.
+`coordinator/mediawork` reads bounded image headers, ordinary MP4/MOV sample
+tables, and PCM WAV metadata without decoding media or fetching URLs. Counts
+include native resize/merge/temporal rounding, sampled frames, audio patches,
+and wrappers. Timestamp text retains a byte upper estimate; text/template work
+remains heuristic, so these values never qualify as exact cache or calibration
+evidence. Unknown formats, unavailable metadata and alias traffic retain the
+existing fallback. Optional accounting has eight non-queuing permits and a
+100 ms work bound; media payloads are not copied into telemetry.
+
+Remote media remains behind the existing quota, balance and catalog gates.
+After fetching, the handler recounts against the original fallback, charges any
+additional input-token quota before dispatch, and runs the existing balance
+top-up. The corrected deadline spends time from the original request arrival;
+it never grants a fresh clock after fetching. Provider memory and deadline
+checks remain authoritative.
 
 `coordinator/api/first_content_accounts.go` (`requestFirstContentDeadline`) selects the policy using authenticated identity. Empty selectors disable the SLA for all accounts. An email lookup storage failure returns a retryable service error before reservation rather than silently changing account policy. Missing user records do not match an email selector.
 

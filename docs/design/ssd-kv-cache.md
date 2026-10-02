@@ -1,6 +1,6 @@
 # Encrypted SSD prefix KV cache
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-03
 
 Status: **Superseded by [../reference/ssd-kv-cache.md](../reference/ssd-kv-cache.md)** — 2026-06-13 — the pre-v0.7.5 implementation below is gone; the as-built tier is the DBK3 store in `provider-swift/Sources/ProviderCore/KVCacheSSD/`, constructed only on resolved-paged slots (`PrefixCachePolicy.adoptionIsExact`), see [`../architecture/prefix-cache.md`](../architecture/prefix-cache.md).
 

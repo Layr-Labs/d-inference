@@ -1,6 +1,6 @@
 # Memory reservation retirement follows ownership
 
-> Last updated: 2026-09-05 · commit `966eac55c`
+> Last updated: 2026-09-05
 
 `GlobalKVCacheBudget` no longer refunds an old reservation during a sustained
 rejection audit. A long decode or pending load keeps its charge until explicit

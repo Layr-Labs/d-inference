@@ -76,6 +76,21 @@ func sanitizeProviderInferenceError(msg *protocol.InferenceErrorMessage) (safe p
 	}
 	safe.CapacitySeq = msg.CapacitySeq
 	safe.ErrorReason = safeInferenceErrorReason(safe.FailureCode, suppliedReason)
+	// Media-memory refusal describes preparation, not an engine terminal.
+	// A typed engine terminal contradicts that exemption and must keep its
+	// normal fault/cancellation semantics rather than bypass health tracking.
+	if safe.ErrorReason == errorReasonMediaMemoryUnavailable && safe.TerminalCause != "" {
+		safe.ErrorReason = errorReasonProviderError
+		safe.FailureCode = protocol.FailureCodeGenerationFailure
+	}
+	if safe.ErrorReason == errorReasonMediaMemoryUnavailable {
+		// Media scratch admission is not a fresh observation of text/KV
+		// headroom, even if a sender attached the generic enrichment fields.
+		safe.RejectionReason = ""
+		safe.AvailableTokenBudget = nil
+		safe.FeasibleAfterMS = 0
+		safe.CapacitySeq = 0
+	}
 	safe.StatusCode = safeInferenceFailureStatus(safe.FailureCode, safe.ErrorReason, safe.TerminalCause, msg.StatusCode)
 	safe.Error = safeInferenceFailureMessage(safe.FailureCode)
 	return safe, invalidCode, invalidCause
@@ -197,6 +212,7 @@ func safeInferenceErrorReason(code protocol.InferenceFailureCode, supplied strin
 		case errorReasonCapacityTimeout,
 			errorReasonQueueFull,
 			errorReasonTokenBudgetExhaust,
+			errorReasonMediaMemoryUnavailable,
 			errorReasonRequestExceedsContext,
 			errorReasonRequestExceedsNode,
 			errorReasonRequestExceedsNodeBudget,

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/autopilot"
 )
 
 // Sanity caps on provider-reported stats. A malicious (or broken) provider
@@ -254,6 +255,10 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 	}
 
 	p.mu.Lock()
+	var reportedAutopilotCapacity *protocol.BackendCapacity
+	if p.autopilotPending != nil {
+		reportedAutopilotCapacity = autopilot.CloneReportedCapacity(msg.BackendCapacity)
+	}
 	eligibleModels := make([]protocol.ModelInfo, 0, len(p.Models))
 	for _, model := range p.Models {
 		if r.providerModelAllowedByCatalogLocked(p, model) {
@@ -309,6 +314,9 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 	// from reaching clamp diagnostics or TPS/KV observations.
 	clampBackendCapacity(r.logger, id, backendCapacity)
 	now := time.Now()
+	// Inspect the accepted wire snapshot before catalog filtering can hide an
+	// unrelated model's activity. A stale sequence never changes these clocks.
+	p.reconcileDeadlineApplicabilityLocked(msg.BackendCapacity, systemMetrics, now)
 	prevHB := p.LastHeartbeat
 	p.reconcileFirstContentMeasurementsLocked(backendCapacity, now)
 	p.reconcileWarmPoolWorkLocked(backendCapacity, now, warmController, workModels)
@@ -326,6 +334,7 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 	// Update backend capacity from heartbeat. A nil report clears prior live
 	// capacity so stale slot state cannot keep influencing routing.
 	p.BackendCapacity = backendCapacity
+	r.reconcileAutopilotHeartbeatLocked(p, msg.ModelAutopilot, reportedAutopilotCapacity, now)
 	if backendCapacity != nil && backendCapacity.WholeMacServiceRetirementProtocol == 1 && backendCapacity.WholeMacServiceUsed != nil {
 		p.serviceRetirementProtocol = true
 	}
@@ -677,6 +686,7 @@ func cloneBackendSlot(slot, in *protocol.BackendSlotCapacity) {
 	*slot = *in
 	if in.PerformanceProfile != nil {
 		profile := *in.PerformanceProfile
+		profile.MTP = in.PerformanceProfile.MTP.Clone()
 		slot.PerformanceProfile = &profile
 	}
 	if slot.KVBackend != nil {
@@ -689,6 +699,9 @@ func cloneBackendSlot(slot, in *protocol.BackendSlotCapacity) {
 	}
 	slot.Telemetry = slot.Telemetry.Clone()
 	slot.PerformanceMeasurements = slot.PerformanceMeasurements.Clone()
+	slot.DeadlineWork = slot.DeadlineWork.Clone()
+	slot.DeadlineProfile = slot.DeadlineProfile.Clone()
+	slot.PromptWorkIdentity = slot.PromptWorkIdentity.Clone()
 	slot.PrefixCache = in.PrefixCache.Clone()
 	slot.PagedStorage = in.PagedStorage.Clone()
 }

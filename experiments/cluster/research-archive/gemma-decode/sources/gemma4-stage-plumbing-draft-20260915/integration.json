@@ -1,0 +1,63 @@
+{
+  "compilerExecuted": false,
+  "files": [
+    {
+      "action": "add",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ArtifactMetadata.swift",
+      "proposedPath": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ArtifactMetadata.swift",
+      "sha256": "f92a07115f68ff485b28ef66152bd9ec6bf6e5d22de5ad7b6eebc45a3b52072b",
+      "sizeBytes": 4881
+    },
+    {
+      "action": "add",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4LayerStagePlan.swift",
+      "proposedPath": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4LayerStagePlan.swift",
+      "sha256": "feb740be4e851de3ee0abe3a48be7e8428abf06698bfbd03a0e5647d84f0b0ed",
+      "sizeBytes": 4557
+    },
+    {
+      "action": "add",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4StageConstructionDescriptor.swift",
+      "proposedPath": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4StageConstructionDescriptor.swift",
+      "sha256": "58776a1d3c6d184511f1b7f784ff9e64b728ef02a7bad996e64bcc821d8339d3",
+      "sizeBytes": 4630
+    },
+    {
+      "action": "add",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4TensorInventory.swift",
+      "proposedPath": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4TensorInventory.swift",
+      "sha256": "3fd25dde279bd3933fbff4ad60b44b2925a4c513b8bd996b2541e2f95fff5349",
+      "sizeBytes": 3392
+    },
+    {
+      "action": "add",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4TextMetadata.swift",
+      "proposedPath": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4TextMetadata.swift",
+      "sha256": "e1ad2f46a3ed88101c1dd5f98295178a1bab7dd8121fc95a1637b173ca78c121",
+      "sizeBytes": 5577
+    },
+    {
+      "action": "add",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/LayerStageCapturedTensorHeaders.swift",
+      "proposedPath": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/LayerStageCapturedTensorHeaders.swift",
+      "sha256": "69b4281e8eaa8a60a60bd2eba52edef8359d1f050a2b46910570d9ecf816cb30",
+      "sizeBytes": 4473
+    },
+    {
+      "action": "add",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/LayerStageStorageConservation.swift",
+      "proposedPath": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/LayerStageStorageConservation.swift",
+      "sha256": "b71adce47c85cc145567054833658f05b90a1cfe121189addbbc0631b8a32213",
+      "sizeBytes": 6983
+    },
+    {
+      "action": "add",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/LayerStageTensorMetadata.swift",
+      "proposedPath": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/LayerStageTensorMetadata.swift",
+      "sha256": "a529f6c6a2689dbafe3f49775f4b7529cb65028353cd0a3cb8415090578390ee",
+      "sizeBytes": 2786
+    }
+  ],
+  "mainMutationsPerformed": false,
+  "scope": "Eight new metadata-only Runtime files; no existing MAIN source changes"
+}

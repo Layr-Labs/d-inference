@@ -1,0 +1,11 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/GemmaExpertRDMACheck.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/GemmaExpertRDMACheck.swift
+@@ -15,7 +15,7 @@
+                 "rank": job.rank, "globalLayerIndex": job.layer,
+                 "globalExpertIDsByRank": job.expertOwnership().globalIDsByRank,
+                 "tokenCounts": job.tokenCounts, "topK": 8, "hiddenSize": 2816, "intermediateSize": 704,
+-                "dtype": "bfloat16", "maximumAssignments": 264,
++                "dtype": "bfloat16", "maximumAssignments": ExpertAxisQualificationLimits.maximumAssignments,
+                 "maximumControlBytes": ExpertAxisRDMACodec.controlLimit,
+                 "maximumTensorBytes": ExpertAxisRDMACodec.payloadLimit,
+                 "maximumRecordsPerDirection": ExpertAxisRDMACodec.recordLimit,

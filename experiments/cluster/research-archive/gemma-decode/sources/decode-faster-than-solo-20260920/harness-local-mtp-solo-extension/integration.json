@@ -1,0 +1,97 @@
+{
+  "changes": [
+    {
+      "afterBytes": 14760,
+      "afterSHA256": "17d1275e24e9fe6c216f6bbca6d1b71f15cbe8133efed6f490ffd74374bd7f04",
+      "beforeSHA256": "f58ddf3fc6d70906adb90748c84d77b4a3559bb63337166258b1366d03c4af53",
+      "bytes": 14666,
+      "path": "run_case.py"
+    },
+    {
+      "afterBytes": 4561,
+      "afterSHA256": "6f7ce35e593c5a03c3a6bdaec34f1f1bab44b4b0698206515c0272c0f673f4a7",
+      "beforeSHA256": "90657f30984da35f5265595fc0530ffbb63ec8beeca9e11d48c88bc8769fd9d5",
+      "bytes": 4546,
+      "path": "root_run.py"
+    },
+    {
+      "afterBytes": 4699,
+      "afterSHA256": "11eef769f2bea9cf7f35ce72bfb944da610811fbb6e21572377634af45d7bc1b",
+      "beforeSHA256": "c876f4496ca7778b27f5270ed849b713ac20a5eaf8266494fc3246e1acf9b352",
+      "bytes": 4440,
+      "path": "package/native_gate.py"
+    },
+    {
+      "afterBytes": 9210,
+      "afterSHA256": "bab7ca0e046e7d0f034012b664f776cf503c1f9e70ef95fe7a20c060efe67d41",
+      "beforeSHA256": "273f0ac4041f3a7eddcf33e171ba110d6e24ace0a626808883409fe7bbbd9000",
+      "bytes": 8685,
+      "path": "package/run_benchmark.py"
+    },
+    {
+      "afterBytes": 5572,
+      "afterSHA256": "8afcb1866212471f1166f56aedb8db65b8515e1023c90934ca9564dacce71b30",
+      "beforeSHA256": null,
+      "path": "package/solo_contract.py"
+    }
+  ],
+  "compilerExecuted": false,
+  "liveDraftRoot": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-local-mtp",
+  "nativeExecuted": false,
+  "remoteExecuted": false,
+  "rootOwnedFilesUntouched": [
+    "compare.py",
+    "package/local_mtp_contract.py",
+    "activation.py",
+    "source-inputs.json",
+    "required-native-sources.json"
+  ],
+  "schema": "gemma4_local_mtp_solo_harness_extension_v1",
+  "unchangedSupervision": [
+    {
+      "bytes": 15271,
+      "path": "package/worker_processes.py",
+      "sha256": "b277a0c72a53788a470f0f9634500002c9f7f680fa96fb216c1ebe76e8d784d2"
+    },
+    {
+      "bytes": 5163,
+      "path": "package/worker_contract.py",
+      "sha256": "9898b44c07337ddfc7949e880deb44ad8ccc9eaa700576c7c6ce008a88feefd6"
+    },
+    {
+      "bytes": 3133,
+      "path": "package/reference_resources.py",
+      "sha256": "497f059014a53d3c69f446f7cb6644ca71cbc00c39af7ca2526abcfaa5d7cc28"
+    },
+    {
+      "bytes": 2631,
+      "path": "package/mtp_journal.py",
+      "sha256": "6c3a2d08b994bcbd0a4941ef01f4cf898b1e04a536dbdf21cd322043aa0bec70"
+    },
+    {
+      "bytes": 3423,
+      "path": "package/target_processes.py",
+      "sha256": "fc2887b87541dd251d6bd1e185bde5c9f16f9f3608ac370dacd6fc85a9979dcb"
+    },
+    {
+      "bytes": 1532,
+      "path": "package/benchmark_package.py",
+      "sha256": "8122bab7e2d6ec0b39fd1e8dcadff7213a3d058bd0059132bfea9f005c6bbe56"
+    },
+    {
+      "bytes": 2211,
+      "path": "owned_process.py",
+      "sha256": "c3910bf16a0fbe4d68ab6349e862ef5a2c92fe64e79a68d2ccfc700daf4fa2bf"
+    },
+    {
+      "bytes": 343,
+      "path": "parent_settings.py",
+      "sha256": "482d4facaf255bede388c4737375d9d1203d0208bcee8aacb576abbd8cfea39b"
+    },
+    {
+      "bytes": 4285,
+      "path": "remote_metadata.py",
+      "sha256": "87d1318f35d93635133d077358a3519ff4696b8696383871b39a47a29fb014c5"
+    }
+  ]
+}

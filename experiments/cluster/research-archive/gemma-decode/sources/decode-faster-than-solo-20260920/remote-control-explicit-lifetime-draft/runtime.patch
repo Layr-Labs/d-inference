@@ -1,0 +1,30 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPControlOperation.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPControlOperation.swift
+@@ -22,8 +22,11 @@
+                     try native.check(); try lifetimeCheck(); try native.check()
+                     try counters.innerChecked()
+                 }
+-                try BoundedControlResourceOperation().send(resourceCheck:resource,faultCheck:fault) { checkpoint in
+-                    try metrics.measure(.wireSendCompleted) { try body(checkpoint) }
++                let operation = BoundedControlResourceOperation()
++                try withExtendedLifetime(operation) {
++                    try operation.send(resourceCheck:resource,faultCheck:fault) { checkpoint in
++                        try metrics.measure(.wireSendCompleted) { try body(checkpoint) }
++                    }
+                 }
+             }
+             try counters.complete()
+@@ -42,8 +45,11 @@
+                     try native.check(); try lifetimeCheck(); try native.check()
+                     try counters.innerChecked()
+                 }
+-                return try BoundedControlResourceOperation().receive(resourceCheck:resource,faultCheck:fault) { checkpoint in
+-                    try metrics.measure(.wireReceiveCompleted) { try body(checkpoint) }
++                let operation = BoundedControlResourceOperation()
++                return try withExtendedLifetime(operation) {
++                    try operation.receive(resourceCheck:resource,faultCheck:fault) { checkpoint in
++                        try metrics.measure(.wireReceiveCompleted) { try body(checkpoint) }
++                    }
+                 }
+             }
+             try counters.complete()

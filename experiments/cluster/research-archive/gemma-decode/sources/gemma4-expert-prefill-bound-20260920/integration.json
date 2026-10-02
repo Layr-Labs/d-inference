@@ -1,0 +1,107 @@
+{
+  "schema": "expert_prefill_bound_source_v1",
+  "entries": [
+    {
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisCheckCases.swift",
+      "source": "Runtime/ExpertAxisCheckCases.swift",
+      "before": {
+        "bytes": 8344,
+        "sha256": "60206b31d26d32bcbd8bd2ac5ea9bb3f82259951e6c154cd6571f639537231da"
+      },
+      "after": {
+        "bytes": 8390,
+        "sha256": "007abb9bf1e11b4518734d50053bcb34b68242eca0aae9632c114819682d72f6"
+      }
+    },
+    {
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisCheckResources.swift",
+      "source": "Runtime/ExpertAxisCheckResources.swift",
+      "before": {
+        "bytes": 4813,
+        "sha256": "f3aa307a3658e5f68651ef1b1f5a5aa8c3c56a6db2aa90fc0ccd1d9a5d7d5950"
+      },
+      "after": {
+        "bytes": 4950,
+        "sha256": "2b4e7e0ad43c4c36f39677f5abf617b9f87525ef88dbb4accefa36251f2c6ff5"
+      }
+    },
+    {
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisPreparedDispatch.swift",
+      "source": "Runtime/ExpertAxisPreparedDispatch.swift",
+      "before": {
+        "bytes": 4880,
+        "sha256": "eb0e51582e09cc2d27a9f62706d9b7dec5fbbde89062e7cb6dfa3bba232e38ec"
+      },
+      "after": {
+        "bytes": 4964,
+        "sha256": "32914a9200a9df4009d0598e2d55f45bfb4c9bdad469bcc9467a4e2c8f663d97"
+      }
+    },
+    {
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisProjectionPolicy.swift",
+      "source": "Runtime/ExpertAxisProjectionPolicy.swift",
+      "before": {
+        "bytes": 2758,
+        "sha256": "05abea6eb1827a4e3897ebdef40f15e1c75d6f06336d08daae3a41971583025f"
+      },
+      "after": {
+        "bytes": 2803,
+        "sha256": "973f19e23a461b2d9a637f7c4a938ebc98e4ffe1cbbfe233a6c0807e04033d38"
+      }
+    },
+    {
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisQualificationLimits.swift",
+      "source": "Runtime/ExpertAxisQualificationLimits.swift",
+      "before": null,
+      "after": {
+        "bytes": 734,
+        "sha256": "5f5d0339660ca611757fb95b3ac83a09853c820b3dc9117e5dc05728fdf83372"
+      }
+    },
+    {
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisRDMAContract.swift",
+      "source": "Runtime/ExpertAxisRDMAContract.swift",
+      "before": {
+        "bytes": 5278,
+        "sha256": "d8667130f190d52ab839bb688b0c409f1f954654f2265351bf0321349d54ba02"
+      },
+      "after": {
+        "bytes": 5399,
+        "sha256": "f24fa55adcfe4946d5fef4d732f765e2f712021aa7be461e880202ed563f0aef"
+      }
+    },
+    {
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisRDMALocalChecks.swift",
+      "source": "Runtime/ExpertAxisRDMALocalChecks.swift",
+      "before": {
+        "bytes": 6645,
+        "sha256": "1ed3f82abcd7b6b62fca68e1a04bb1282b6259d8269bcacf6bbdb7906d03cc49"
+      },
+      "after": {
+        "bytes": 6703,
+        "sha256": "50af1012b2bd5ea6cd841369c62a3855009251e0759ce3b16f565e4fc48d7087"
+      }
+    },
+    {
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisRDMAResources.swift",
+      "source": "Runtime/ExpertAxisRDMAResources.swift",
+      "before": {
+        "bytes": 1447,
+        "sha256": "5808bde409583fb89324ffa90c93b18ca3050b5ae4045f46153b456e910b117a"
+      },
+      "after": {
+        "bytes": 1447,
+        "sha256": "01d2fac5013557aea851ff2dd118bd760021700862547b18b372c30b71413a5a"
+      }
+    }
+  ],
+  "maximumTransferBytes": 5767168,
+  "wirePayloadLimit": 8388608,
+  "additionalWireNativeAndHostReserveBytesEach": 16777216,
+  "expectedLocalCases": {
+    "small": 60,
+    "geometry": 42,
+    "checkpoint": 14
+  },
+  "fullModelEPEnabled": false
+}

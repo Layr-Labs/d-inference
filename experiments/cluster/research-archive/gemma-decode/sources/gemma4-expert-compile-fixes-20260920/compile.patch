@@ -1,0 +1,22 @@
+--- before
++++ after
+@@ -54,9 +54,16 @@
+                             }
+                         }
+                         let dtype: DType = geometry.metadataDType == .float32 ? .float32 : .bfloat16
+-                        let weights = MLXArray((0..<rows).flatMap { row in
+-                            (0..<topK).map { Float($0 + 1) / Float(topK * (topK + 1)) * (1 + Float(row % 3) / 4) }
+-                        }).reshaped(rows, topK).asType(dtype)
++                        var weightValues: [Float] = []
++                        weightValues.reserveCapacity(rows * topK)
++                        let denominator = Float(topK * (topK + 1))
++                        for row in 0..<rows {
++                            let rowScale: Float = 1 + Float(row % 3) / 4
++                            for slot in 0..<topK {
++                                weightValues.append(Float(slot + 1) / denominator * rowScale)
++                            }
++                        }
++                        let weights = MLXArray(weightValues).reshaped(rows, topK).asType(dtype)
+                         return try one(label: label + "/" + pattern, ownership: ownership,
+                             reference: reference, banks: banks, input: input(rows: rows, hidden: geometry.hidden, dtype: dtype),
+                             selected: selected, weights: weights, router: nil, check: check)

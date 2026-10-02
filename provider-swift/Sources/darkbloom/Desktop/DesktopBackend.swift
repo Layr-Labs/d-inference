@@ -5,6 +5,10 @@ import ProviderCore
 
 actor DesktopBackend {
   let configPath: String?
+  /// CLI used for child operations; nil means this process's own executable.
+  let executable: URL?
+  /// Stamp of the binary this API started from (`exitWhenExecutableReplaced`).
+  let startupExecutableStamp = DesktopBackend.currentExecutableStamp()
   let instance = UUID().uuidString
   var cachedConfiguration: RuntimeConfiguration?
   var cachedConfigurationRevision: String?
@@ -21,9 +25,13 @@ actor DesktopBackend {
   var link: JSONValue = .null
   var samples: [JSONValue] = []
   var sampleSession: Double?
+  /// Shared `fan status` read; `coolingReadAt` is nil while it is in flight.
+  var coolingRead: Task<JSONValue, Never>?
+  var coolingReadAt: Date?
 
-  init(configPath: String?) {
+  init(configPath: String?, executable: URL? = nil) {
     self.configPath = configPath
+    self.executable = executable
     operations = DesktopStorage.read([DesktopOperation].self, name: "operations.json") ?? []
     for i in operations.indices where operations[i].state == "running" {
       operations[i].state = "interrupted"
@@ -73,6 +81,7 @@ actor DesktopBackend {
       tasks[request.id] = nil
       cancellationRequested.remove(request.id)
       localAt = .distantPast
+      operationFinished(request.action)
     }
     do {
       try Task.checkCancellation()
@@ -112,20 +121,23 @@ actor DesktopBackend {
         complete(request.id, code: 0, message: "This Mac is linked to your account.")
       } else {
         if request.action == "start", request.local != true, DesktopLocalLifecycle.isActive {
-          try await DesktopLocalLifecycle.stop()
+          try await DesktopLocalLifecycle.stop(configPath: configPath)
         }
         let arguments = try arguments(for: request)
         try Task.checkCancellation()
-        let worker = DesktopWorker()
+        let worker = DesktopWorker(executable: executable)
         workers[request.id] = worker
-        let before = executableStamp()
+        let before = Self.currentExecutableStamp()
         let (code, output) = try await worker.run(
           arguments,
           progress: { [weak self] output in
             Task { await self?.setProgress(request.id, output: output) }
           })
         complete(request.id, code: code, message: output)
-        if request.action == "update", code == 0, executableStamp() != before {
+        if request.action == "update", code == 0,
+          Self.shouldRestartForReplacedExecutable(
+            startup: before, current: Self.currentExecutableStamp(), hasRunningOperation: false)
+        {
           // launchd reopens the replacement CLI after the native updater commits it.
           Darwin.exit(0)
         }
@@ -137,33 +149,37 @@ actor DesktopBackend {
   }
 
   func arguments(for request: DesktopAction) throws -> [String] {
-    let config = configPath.map { ["--config", $0] } ?? []
-    switch request.action {
-    case "start":
-      guard request.local != true else {
-        return ["desktop", "start-local"] + (request.models ?? []).flatMap { ["--model", $0] }
-          + config
-      }
-      return ["start"] + (request.models ?? []).flatMap { ["--model", $0] }
-        + (request.endpoint == true ? ["--local-endpoint"] : []) + config
-    case "switch":
-      if DesktopLocalLifecycle.isActive {
-        return ["desktop", "start-local"] + (request.models ?? []).flatMap { ["--model", $0] }
-          + config
-      }
-      return ["switch"] + (request.models ?? []).flatMap { ["--model", $0] }
-    case "stop", "restart":
-      return DesktopLocalLifecycle.isActive
-        ? ["desktop", request.action == "stop" ? "stop-local" : "restart-local"] : [request.action]
-    case "update", "diagnose": return [request.action == "diagnose" ? "doctor" : "update"] + config
-    case "unlink": return ["logout"]
-    case "download": return ["models", "download", request.model!] + config
-    case "remove":
+    if request.action == "remove" {
       let state = DaemonStateFile.read()
       guard !(state?.warmModels.contains(request.model!) ?? false),
         !(state?.advertisedModels?.contains(request.model!) ?? false)
       else { throw ValidationError("Stop serving this model before removing it") }
-      return ["models", "remove", request.model!, "--force"] + config
+    }
+    return try Self.arguments(
+      for: request, configPath: configPath, localActive: DesktopLocalLifecycle.isActive)
+  }
+
+  /// Argv for a validated action. `--config` goes only to commands declaring
+  /// `ConfigOptions`: `switch` reuses the live provider's config and `stop`
+  /// and `logout` take none.
+  static func arguments(
+    for request: DesktopAction, configPath: String?, localActive: @autoclosure () -> Bool
+  ) throws -> [String] {
+    let config = configPath.map { ["--config", $0] } ?? []
+    let models = (request.models ?? []).flatMap { ["--model", $0] }
+    switch request.action {
+    case "start":
+      guard request.local != true else { return ["desktop", "start-local"] + models + config }
+      return ["start"] + models + (request.endpoint == true ? ["--local-endpoint"] : []) + config
+    case "switch":
+      return localActive() ? ["desktop", "start-local"] + models + config : ["switch"] + models
+    case "stop": return localActive() ? ["desktop", "stop-local"] + config : ["stop"]
+    case "restart": return (localActive() ? ["desktop", "restart-local"] : ["restart"]) + config
+    case "update": return ["update"] + config
+    case "diagnose": return ["doctor"] + config
+    case "unlink": return ["logout"]
+    case "download": return ["models", "download", request.model!] + config
+    case "remove": return ["models", "remove", request.model!, "--force"] + config
     case "cooling":
       return [
         "desktop", "configure-cooling", "--enabled", request.enabled == true ? "true" : "false",
@@ -195,13 +211,5 @@ actor DesktopBackend {
     operations[index].message = cancelled ? "Cancelled" : String(message.suffix(8000))
     persist()
   }
-  private func persist() { try? DesktopStorage.write(operations, name: "operations.json") }
-  private func executableStamp() -> String {
-    guard let path = try? FanServiceManager().currentExecutableURL().path,
-      let attributes = try? FileManager.default.attributesOfItem(atPath: path)
-    else { return "unknown" }
-    return
-      "\(attributes[.systemFileNumber] ?? ""):\(attributes[.size] ?? ""):\(attributes[.modificationDate] ?? "")"
-  }
-
+  func persist() { try? DesktopStorage.write(operations, name: "operations.json") }
 }

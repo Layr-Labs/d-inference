@@ -5,10 +5,12 @@ No provider is started. Settings and a cancelled local login use temporary state
 """
 import argparse
 import hashlib
+import http.client
 import http.server
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -28,6 +30,8 @@ class Catalog(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"fixture login cancelled")
         except (BrokenPipeError, ConnectionResetError):
+            # Cancelling the login drops the CLI's connection before this
+            # fixture replies, so a disconnected client here is expected.
             pass
 
     def do_GET(self):
@@ -38,6 +42,40 @@ class Catalog(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, *_):
         pass
+
+
+def copy_binary(source, destination):
+    # A clone is instant on APFS; fall back to a byte copy elsewhere.
+    if subprocess.run(["/bin/cp", "-c", str(source), str(destination)], capture_output=True).returncode != 0:
+        shutil.copy2(source, destination)
+
+
+def check_replacement_exit(binary, root, config, env):
+    """A serve process exits once its executable is replaced, so launchd relaunches the new one."""
+    copy = root / "replaceable" / "darkbloom"
+    copy.parent.mkdir()
+    copy_binary(binary, copy)
+    env = dict(env, DARKBLOOM_DESKTOP_DIR=str(root / "replaceable-desktop"))
+    with (root / "replaceable.log").open("w") as log:
+        process = subprocess.Popen([str(copy), "desktop", "serve", "--config", str(config),
+                                    "--replacement-check-seconds", "1"], env=env, stdout=log, stderr=log)
+        try:
+            discovery = root / "replaceable-desktop/connection.json"
+            for _ in range(100):
+                if discovery.exists() or process.poll() is not None:
+                    break
+                time.sleep(.1)
+            assert discovery.exists(), (root / "replaceable.log").read_text()
+            time.sleep(2.5)
+            assert process.poll() is None, "API exited although its executable was unchanged"
+            replacement = copy.with_name(".darkbloom.new")
+            copy_binary(binary, replacement)
+            os.replace(replacement, copy)
+            assert process.wait(timeout=10) == 0, (root / "replaceable.log").read_text()
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
 
 
 def main():
@@ -100,7 +138,26 @@ idle_timeout_mins = 60
                 code, snapshot = request()
                 assert code == 200 and snapshot["machine"]["name"] == "Desktop fixture", snapshot
                 assert snapshot["state"] == "stopped" and not snapshot["linked"]
-                assert request("actions", {"id": str(uuid.uuid4()), "action": "start", "models": ["--force"]})[0] == 400
+                code, rejected = request("actions", {"id": str(uuid.uuid4()), "action": "start", "models": ["--force"]})
+                assert code == 400 and rejected["error"] == "Invalid model ID", rejected
+                code, malformed = request("actions", {"action": "start"})
+                assert code == 400 and malformed["error"] == "Invalid request body", malformed
+                code, oversized = request("actions", {"id": str(uuid.uuid4()), "action": "settings", "name": "x" * 17000})
+                assert code == 413, (code, oversized)
+                code, unknown = request("not-a-resource")
+                assert code == 404 and unknown["error"] == "Unknown resource", unknown
+                streams = []
+                try:
+                    for _ in range(8):
+                        stream = http.client.HTTPConnection("127.0.0.1", connection["port"], timeout=15)
+                        stream.request("GET", "/control/v1/events", headers={"Authorization": "Bearer " + connection["token"]})
+                        assert stream.getresponse().status == 200
+                        streams.append(stream)
+                    code, limited = request("events")
+                    assert code == 429, (code, limited)
+                finally:
+                    for stream in streams:
+                        stream.close()
                 action = {"id": str(uuid.uuid4()), "action": "settings", "revision": snapshot["settings"]["revision"],
                           "name": "Updated fixture", "idle_minutes": 15, "auto_update": False}
                 code, operation = request("actions", action)
@@ -131,7 +188,8 @@ idle_timeout_mins = 60
                     time.sleep(.1)
                 assert snapshot["operations"][0]["state"] == "cancelled", snapshot
                 assert not snapshot["linked"] and snapshot["link"] is None, snapshot
-                print("desktop-api: authentication, isolation, state, settings, idempotency, cancellation, and validation passed")
+                check_replacement_exit(args.binary.resolve(), root, config, env)
+                print("desktop-api: authentication, isolation, state, settings, idempotency, cancellation, validation, error statuses, and replaced-executable exit passed")
                 if args.hold:
                     print("DARKBLOOM_DESKTOP_DIR=" + str(root / "desktop"), flush=True)
                     input("Press Enter to stop the isolated API: ")

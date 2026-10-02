@@ -1,4 +1,5 @@
 import Foundation
+import Hummingbird
 import ProviderCore
 
 extension DesktopBackend {
@@ -16,38 +17,13 @@ extension DesktopBackend {
       guard let endpoint = LocalEndpoint.readLiveInfo() else { return .null }
       return .dict(["key": .string(endpoint.apiKey)])
     }
-    if name == "cooling" {
-      let (code, output) = try await DesktopWorker().run(["fan", "status", "--json"], timeout: 15)
-      guard code == 0, let data = output.data(using: .utf8),
-        let status = try? JSONDecoder().decode(JSONValue.self, from: data)
-      else {
-        return .dict([
-          "supported": .bool(false), "mode": .string("unavailable"), "fans": .array([]),
-          "error": .string("Cooling status unavailable"),
-        ])
-      }
-      let diagnostic = status.field("diagnostic")
-      let temperatures = diagnostic.field("gpuTemperatures").values.compactMap {
-        $0.field("celsius").number
-      }
-      let fans = diagnostic.field("fans").values.map { fan in
-        DV.dict([
-          "name": fan.field("name").text.map(DV.string) ?? .string("Fan"),
-          "rpm": fan.field("actualRPM"), "max_rpm": fan.field("maximumRPM"),
-        ])
-      }
-      return .dict([
-        "supported": diagnostic.field("supported"),
-        "mode": status.field("helper").field("mode").text.map(DV.string) ?? .string("automatic"),
-        "temperature": .number(temperatures.max()), "fans": .array(fans),
-      ])
-    }
-    let config = try configuration().config
+    if name == "cooling" { return await cooling() }
     let paths = [
       "cloud": "/v1/provider/desktop", "network": "/v1/stats", "leaderboard": "/v1/leaderboard",
       "release": "/v1/releases/latest",
     ]
-    guard let path = paths[name] else { throw URLError(.unsupportedURL) }
+    guard let path = paths[name] else { throw HTTPError(.notFound, message: "Unknown resource") }
+    let config = try configuration().config
     if name == "cloud", AuthTokenStore.load() == nil {
       return .dict([
         "linked": .bool(false), "observed_at": .number(Date().timeIntervalSince1970),
@@ -77,7 +53,9 @@ extension DesktopBackend {
     else {
       throw URLError(.badServerResponse)
     }
-    let value = try JSONDecoder().decode(JSONValue.self, from: data)
+    guard let value = try? JSONDecoder().decode(JSONValue.self, from: data) else {
+      throw URLError(.cannotParseResponse)
+    }
     if name == "network" {
       return .dict([
         "total_tokens": Self.integerText(value.field("total_tokens")),

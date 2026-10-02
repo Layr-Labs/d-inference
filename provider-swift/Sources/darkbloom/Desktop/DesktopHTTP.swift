@@ -1,3 +1,4 @@
+import ArgumentParser
 import Foundation
 import HTTPTypes
 import Hummingbird
@@ -62,13 +63,35 @@ struct DesktopHTTP: HTTPResponder {
           return try json(.dict(["error": .string("JSON required")]), status: .unsupportedMediaType)
         }
         let bytes = try await request.body.collect(upTo: 16_384)
-        let action = try JSONDecoder().decode(
-          DesktopAction.self, from: Data(bytes.readableBytesView))
+        let action = try Self.decodeAction(Data(bytes.readableBytesView))
         return try json(try .encoded(await backend.submit(action)), status: .accepted)
       }
       return try json(.dict(["error": .string("Unknown route")]), status: .notFound)
     } catch {
-      return try json(.dict(["error": .string(String(describing: error))]), status: .badRequest)
+      let failure = Self.errorResponse(for: error)
+      return try json(.dict(["error": .string(failure.message)]), status: failure.status)
+    }
+  }
+
+  /// Only the client's own body is a client error (400); the renderer shows the
+  /// message, so it is fixed rather than Swift's coding-path text.
+  static func decodeAction(_ data: Data) throws -> DesktopAction {
+    do { return try JSONDecoder().decode(DesktopAction.self, from: data) } catch {
+      throw ValidationError("Invalid request body")
+    }
+  }
+
+  /// Validation messages are user-facing and pass through verbatim; HTTP errors
+  /// (including the body limit's 413) keep their status. Coordinator and
+  /// internal failures get a generic message.
+  static func errorResponse(for error: any Error) -> (status: HTTPResponse.Status, message: String)
+  {
+    switch error {
+    case let error as HTTPError: return (error.status, error.body ?? error.status.reasonPhrase)
+    case let error as any HTTPResponseError: return (error.status, error.status.reasonPhrase)
+    case let error as ValidationError: return (.badRequest, error.message)
+    case is URLError: return (.badGateway, "Coordinator request failed")
+    default: return (.internalServerError, "Internal error")
     }
   }
 

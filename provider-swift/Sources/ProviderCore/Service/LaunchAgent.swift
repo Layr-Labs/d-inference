@@ -253,6 +253,28 @@ public enum LaunchAgent: Sendable {
         }
     }
 
+    // MARK: - Other CLI-owned agents
+
+    /// Shared launchctl plumbing for the CLI's other user agents (the desktop
+    /// control API), so they reuse this file's enable/bootstrap/kickstart/bootout
+    /// handling instead of spawning ad-hoc `launchctl` processes.
+    public static func isLoaded(agentLabel: String) -> Bool { isLoaded(label: agentLabel) }
+
+    /// Enable, bootstrap (an already-loaded job is benign) and kickstart `plist`.
+    public static func bootstrap(agentLabel: String, plist: URL) throws {
+        try loadService(label: agentLabel, path: plist)
+    }
+
+    /// Unload the job; a job that is not loaded is not an error.
+    public static func bootout(agentLabel: String) throws { try unloadService(label: agentLabel) }
+
+    /// `launchctl kickstart -k`: kill and relaunch a loaded job from its loaded
+    /// plist. For a job that is not loaded it may throw or return without effect
+    /// (launchctl's wording varies), so callers check `isLoaded(agentLabel:)`.
+    public static func kickstart(agentLabel: String) throws {
+        try kickstartInPlace(label: agentLabel, reloadIfMissing: false)
+    }
+
     // MARK: - Private
 
     /// Env vars passed through from the installing shell into the launchd plist's

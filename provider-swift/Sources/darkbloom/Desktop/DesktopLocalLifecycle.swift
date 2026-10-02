@@ -13,12 +13,12 @@ enum DesktopLocalLifecycle {
     return state?.processIdentity != owner
   }
 
-  static func stop() async throws {
+  static func stop(configPath: String?) async throws {
     guard let local = LocalEndpoint.readLiveInfo(),
       let owner = LaunchAgent.launchSnapshot()?.process,
       owner.pid == local.pid, owner.isCurrent(), isActive
     else { throw ValidationError("Cannot verify the local runtime owner") }
-    let config = try loadRuntimeConfiguration(configPath: nil).config
+    let config = try loadRuntimeConfiguration(configPath: configPath).config
     let lease = try SelfUpdater(coordinatorBaseURL: config.coordinator.url).beginUpdateSession(
       operation: "desktop-local-stop", timeout: 0)
     defer { lease.release() }
@@ -40,14 +40,16 @@ enum DesktopLocalLifecycle {
 
 extension Desktop {
   struct StopLocal: AsyncParsableCommand {
+    @OptionGroup var configOptions: ConfigOptions
     mutating func run() async throws {
-      try await DesktopLocalLifecycle.stop()
+      try await DesktopLocalLifecycle.stop(configPath: configOptions.config)
       print("Local provider stopped")
     }
   }
   struct RestartLocal: AsyncParsableCommand {
+    @OptionGroup var configOptions: ConfigOptions
     mutating func run() async throws {
-      try await DesktopLocalLifecycle.stop()
+      try await DesktopLocalLifecycle.stop(configPath: configOptions.config)
       try LaunchAgent.restartAfterDrain()
       print("Local provider restarted")
     }

@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-02
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -18,11 +18,13 @@ can resume. Waiting and shadow Autopilot preserve the normal picker and `--model
 ## Desktop frontend control
 
 `darkbloom desktop serve --config <path>` runs the authenticated loopback API.
-`darkbloom desktop ensure --config <path>` installs/starts its user LaunchAgent.
+`darkbloom desktop ensure --config <path>` installs/starts its user LaunchAgent,
+reinstalling it when the plist changed and restarting it once when the running
+API reports a different version than the invoking CLI.
 The desktop frontend sends validated actions to existing CLI operations and
 keeps the provider independent of its window lifetime. Internal
 `desktop start-local --model <id>`, `stop-local`, and `restart-local` commands
-retain the native provider owner and termination handler. Cooling uses
+(each accepting `--config`) retain the native provider owner and termination handler. Cooling uses
 `desktop configure-cooling --enabled <bool> --speed <percent> --temperature <celsius>`
 to request macOS administrator authorization for the existing signed helper.
 See [desktop control](../reference/desktop-control.md) for the exact routes,
@@ -61,7 +63,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `start` | Serve. Default: install and start the LaunchAgent; `--local` for a coordinator-less server | ✓ | `StartCommand.swift` (`Start`) |
 | `schedule` | Edit, show or disable saved weekly availability and startup loading; never start/stop the service | ✓ | `Scheduling/ScheduleCommand.swift` (`AvailabilitySchedule`) |
 | `switch` | Gracefully replace hosted models in the running coordinator-connected provider, without restart or reconnect | | `SwitchCommand.swift` (`Switch`) |
-| `stop` | Drain accepted requests, then stop the LaunchAgent; `--uninstall` removes both plists | | `StopCommand.swift` (`Stop`) |
+| `stop` | Drain accepted requests, then stop the LaunchAgent; `--uninstall` removes the provider, watchdog and desktop API agents | | `StopCommand.swift` (`Stop`) |
 | `restart` | Drain, restart with recorded configuration, and confirm fresh authorization | ✓ | `RestartCommand.swift` (`Restart`) |
 | `status` | Config, hardware, schedule, live daemon state (including the coordinator's last `Trust: <level> / <status>` message), per-slot KV/MTP posture | ✓ | `StatusCommand.swift` (`Status`) |
 | `doctor` | Diagnostics (see [troubleshooting](./troubleshooting.md#doctor-checks)) | ✓ | `DoctorCommand.swift` (`Doctor`) |
@@ -679,7 +681,7 @@ darkbloom stop [--timeout <seconds>] [--force] [--uninstall]
 |---|---|---|---|
 | `--timeout <seconds>` | integer, 0–3600 | `600` | Wait for accepted coordinator requests, local response writes and the coordinator acknowledgement |
 | `--force` | flag | `false` | Explicitly permit bounded cancellation and termination of unfinished work |
-| `--uninstall` | flag | `false` | After draining or explicit force, remove the provider and watchdog plists |
+| `--uninstall` | flag | `false` | After draining or explicit force, remove the provider and watchdog plists and boot out and remove the desktop API agent (`io.darkbloom.desktop-api`, best effort) |
 
 The command disarms the watchdog and disables login/reboot startup before
 requesting the drain. If setup fails before the mailbox request is published,

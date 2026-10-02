@@ -57,8 +57,8 @@ func (s *PostgresStore) BackfillEarningsSummaryBaseReward(ctx context.Context) e
 // the totals are then added and dequeued in short batched transactions so a
 // crash resumes without double-adding, and the final marker keeps later boots
 // from rescanning. Base rewards a previous coordinator settles after the
-// snapshot (during the blue-green handoff, or while a rollback to an earlier
-// release serves) are in total_micro_usd but not in this column.
+// snapshot, while a rollback to an earlier release serves, are in
+// total_micro_usd but not in this column.
 func (s *PostgresStore) migrateEarningsSummaryBaseReward(ctx context.Context) error {
 	started := time.Now()
 	applied, err := s.applyEarningsSummaryBaseRewardMigration(ctx)

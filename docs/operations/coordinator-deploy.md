@@ -302,7 +302,12 @@ sudo docker run -d --name coordinator \
 Startup takes ~15–40 s (MicroMDM init, migrations, listeners). If `/health`
 does not answer after ~60 s, suspect a migration behind a DB lock: re-run the
 `pg_stat_activity` query and `pg_terminate_backend(<pid>)` the blocker. **Do
-not restart the container again** — restarts stack migrations.
+not restart the container again** — restarts stack migrations. The first
+startup of a release that adds `earnings_summary.total_base_reward_micro_usd`
+also runs its one-time backfill (`BackfillEarningsSummaryBaseReward`, about
+10 s per 10 million `provider_floor_draws` rows measured locally); a query on
+`provider_floor_draws` or `earnings_summary_base_reward_pending` is that
+backfill, not a blocker.
 
 ## Verification
 

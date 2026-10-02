@@ -174,8 +174,8 @@ added and deleted in batches of 1000 per short transaction, so a crash resumes
 without double-adding. `--migrate-only` adds the column but does not run this
 backfill, because the previous release keeps settling draws, without the
 column, for as long as it serves. Base rewards a previous coordinator settles
-after the plan snapshot (during the handoff, or while a rollback to an earlier
-release serves) are in `total_micro_usd` but not in the column. The backfill
+after the plan snapshot, while a rollback to an earlier release serves, are in
+`total_micro_usd` but not in the column. The backfill
 adds to the column, so deleting its markers to run it again counts every
 account's history twice. The pending table stays after the backfill, empty.
 

@@ -6,15 +6,17 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestSmallModelsInterestStoreContract(t *testing.T) {
-	for _, backend := range []string{"memory", "postgres", "cached_memory"} {
+	for _, backend := range []string{"memory", "postgres", "cached_memory", "cached_postgres"} {
 		t.Run(backend, func(t *testing.T) {
 			var st Store = NewMemory(Config{})
-			if backend == "postgres" {
+			if backend == "postgres" || backend == "cached_postgres" {
 				st = testPostgresStore(t)
-			} else if backend == "cached_memory" {
+			}
+			if backend == "cached_memory" || backend == "cached_postgres" {
 				st = NewCached(st, CacheConfig{})
 			}
 			ctx := context.Background()
@@ -81,6 +83,64 @@ func TestSmallModelsInterestStoreContract(t *testing.T) {
 			cancel()
 			if err := st.UpsertSmallModelsInterest(cancelled, record); !errors.Is(err, context.Canceled) {
 				t.Fatalf("cancelled write: %v", err)
+			}
+		})
+	}
+}
+
+func TestSmallModelsInterestAutopilotComposition(t *testing.T) {
+	for _, backend := range []string{"memory", "postgres"} {
+		t.Run(backend, func(t *testing.T) {
+			var inner Store = NewMemory(Config{})
+			if backend == "postgres" {
+				inner = testPostgresStore(t)
+			}
+			st := NewCached(inner, CacheConfig{})
+			ctx := context.Background()
+			user := seedUser(t, st, "interest-autopilot")
+			if _, err := st.GetUserByAccountID(user.AccountID); err != nil {
+				t.Fatal(err)
+			}
+			ledger, ok := As[AutopilotStore](st)
+			if !ok {
+				t.Fatal("cached store hides Autopilot persistence")
+			}
+			event := AutopilotRecord{CommandID: uniqueID("interest"), ProviderID: "session", Phase: "proposed", At: time.Now().UTC(), Load: "candidate"}
+			if err := ledger.RecordAutopilot(ctx, []AutopilotRecord{event}); err != nil {
+				t.Fatal(err)
+			}
+			record := SmallModelsInterest{AccountID: user.AccountID, MacType: "Mac Mini", Chip: "M4", RAMGB: 24}
+			if err := st.UpsertSmallModelsInterest(ctx, record); err != nil {
+				t.Fatal(err)
+			}
+			record.RAMGB = 32
+			if err := st.UpsertSmallModelsInterest(ctx, record); err != nil {
+				t.Fatal(err)
+			}
+			event.Phase = "reserved"
+			if err := ledger.RecordAutopilot(ctx, []AutopilotRecord{event}); err != nil {
+				t.Fatal(err)
+			}
+			got, err := st.GetSmallModelsInterest(ctx, user.AccountID)
+			if err != nil || got.RAMGB != 32 {
+				t.Fatalf("Autopilot write changed interest: %+v %v", got, err)
+			}
+			rows, err := st.ListSmallModelsInterest(ctx, "", 100)
+			if err != nil || len(rows) != 1 || rows[0].Email != user.Email {
+				t.Fatalf("cached interest export: %+v %v", rows, err)
+			}
+			events, err := ledger.AutopilotRecords(ctx, event.At.Add(-time.Second), 1000)
+			if err != nil {
+				t.Fatal(err)
+			}
+			phases := map[string]bool{}
+			for _, got := range events {
+				if got.CommandID == event.CommandID {
+					phases[got.Phase] = true
+				}
+			}
+			if len(phases) != 2 || !phases["proposed"] || !phases["reserved"] {
+				t.Fatalf("interest write changed Autopilot events: %+v", events)
 			}
 		})
 	}

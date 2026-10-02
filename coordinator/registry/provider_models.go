@@ -135,6 +135,16 @@ func (r *Registry) mergeProviderModels(
 		if !replaced {
 			p.Models = append(p.Models, m)
 		}
+		for i := range p.autopilotInventory {
+			if p.autopilotInventory[i].ID == m.ID {
+				p.autopilotInventory[i] = m
+			}
+		}
+		for _, target := range aliasTargets {
+			if target.Desired == m.ID && providerSelectedModelLocked(p, target.Previous) {
+				delete(p.autopilotOnlyModels, m.ID)
+			}
+		}
 		merged = append(merged, m.ID)
 		present[m.ID] = struct{}{}
 		if toolConstraintProtocol != 0 {
@@ -186,6 +196,13 @@ func (r *Registry) mergeProviderModels(
 			kept = append(kept, m)
 		}
 		p.Models = kept
+		inventory := p.autopilotInventory[:0]
+		for _, model := range p.autopilotInventory {
+			if _, removed := drop[model.ID]; !removed {
+				inventory = append(inventory, model)
+			}
+		}
+		p.autopilotInventory = inventory
 	}
 	p.PrefixCacheStatuses, p.PrefixCacheStatusReported =
 		reconcilePrefixCacheStatuses(

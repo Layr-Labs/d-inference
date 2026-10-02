@@ -77,7 +77,7 @@ func (r *Registry) deadlineProfileApplicableLocked(p *Provider, profile *deadlin
 		return false
 	}
 	quiescence := *profile.MinimumWholeMacQuiescenceMS
-	if len(p.pendingReqs) != 0 || len(p.serviceRetirementShadows) != 0 || r.providerHasPendingLoad(p.ID) ||
+	if len(p.pendingReqs) != 0 || len(p.serviceRetirementShadows) != 0 || r.providerHasPendingLoad(p.ID) || providerAutopilotTransitionLocked(p) ||
 		!deadlineReportedQuiescent(p.BackendCapacity) {
 		return false
 	}

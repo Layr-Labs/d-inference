@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/autopilot"
 )
 
 // Sanity caps on provider-reported stats. A malicious (or broken) provider
@@ -254,6 +255,10 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 	}
 
 	p.mu.Lock()
+	var reportedAutopilotCapacity *protocol.BackendCapacity
+	if p.autopilotPending != nil {
+		reportedAutopilotCapacity = autopilot.CloneReportedCapacity(msg.BackendCapacity)
+	}
 	eligibleModels := make([]protocol.ModelInfo, 0, len(p.Models))
 	for _, model := range p.Models {
 		if r.providerModelAllowedByCatalogLocked(p, model) {
@@ -329,6 +334,7 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 	// Update backend capacity from heartbeat. A nil report clears prior live
 	// capacity so stale slot state cannot keep influencing routing.
 	p.BackendCapacity = backendCapacity
+	r.reconcileAutopilotHeartbeatLocked(p, msg.ModelAutopilot, reportedAutopilotCapacity, now)
 	if backendCapacity != nil && backendCapacity.WholeMacServiceRetirementProtocol == 1 && backendCapacity.WholeMacServiceUsed != nil {
 		p.serviceRetirementProtocol = true
 	}

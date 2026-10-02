@@ -269,9 +269,10 @@ func TestRequestOutcomeSegmentsByServingSlotBackend(t *testing.T) {
 	for _, row := range fleet {
 		p := registerHeartbeatedProvider(t, srv, row.providerID, row.model, row.backend)
 		d := &dispatchState{
-			s:     srv,
-			model: row.model,
-			pr:    &registry.PendingRequest{RequestID: "req-" + row.providerID, ProviderID: p.ID, Model: row.model},
+			s:        srv,
+			model:    row.model,
+			provider: p,
+			pr:       &registry.PendingRequest{RequestID: "req-" + row.providerID, ProviderID: p.ID, Model: row.model},
 		}
 		d.noteServingSlot()
 		// Every failover path clears these before the exhaustion ladder runs.
@@ -349,6 +350,7 @@ func TestDispatchKVBackendTagFollowsTheServingSlot(t *testing.T) {
 		t.Fatalf("before dispatch = %q, want %q", got, registry.KVBackendUnknown)
 	}
 
+	d.provider = primary
 	d.pr = &registry.PendingRequest{RequestID: "req-latch", ProviderID: primary.ID, Model: model}
 	d.noteServingSlot()
 	d.pr = nil

@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-02
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -10,6 +10,8 @@ file. Secrets are named, never valued. Unless a row says *live*, the variable is
 read once at process start and a restart applies a change.
 
 [App Attest shadow configuration](app-attest-shadow.md#configuration) defines evidence collection and receipt renewal. [Provider authorization](provider-authorization.md#controls) defines the separate serving and MDM-removal opt-ins, both disabled by default. The account cohort, safe-version floor and qualified build/code hashes remain required. `EIGENINFERENCE_APP_ATTEST_KEY_ROTATION_PERCENT` (default `100`) selects the separate account cohort for coordinator-requested [dead-key rotation](app-attest-shadow.md#dead-key-rotation). [Durable build approvals](provider-authorization.md#durable-build-qualification) replace per-release env edits; existing env pairs are a bootstrap fallback that cannot override a durable revocation. Shadow alone grants no trust; an explicitly enabled qualified App Attest path can replace legacy serving verification.
+
+Autopilot `selected_models` is the cached planning inventory; `backend.enabled_models` and explicit startup overrides remain ordinary serving permission in waiting/shadow mode. See [the protocol and activation boundary](../architecture/model-autopilot.md).
 
 ## Provider drain deadline
 
@@ -35,11 +37,11 @@ time; they are not network control endpoints or serving credentials.
 | Setting | Default / precedence | Consumer |
 |---|---|---|
 | `backend.enabled_models` | `[]` means all eligible local models; a successful `switch` pins its complete nonempty selection | `provider-swift/Sources/ProviderCore/Service/ProviderModelSelection.swift` (`save`) |
-| launchd-managed `start --foreground --model` | Explicitly pinned `enabled_models` overrides stale baked arguments, including restart and watchdog recovery | `provider-swift/Sources/darkbloom/StartCommand.swift` (`usesPinnedModelSelection`); `provider-swift/Sources/darkbloom/StartCommand+Modes.swift` (`runForeground`) |
-| direct manual `start --foreground --model` | Explicit command-line IDs still override the saved selection | `provider-swift/Sources/darkbloom/StartCommand+Modes.swift` (`runForeground`) |
-| later scheduled serving windows | Keep the initial foreground selection until a live switch or saved `enabled_models` change; then resolve an empty list to all eligible local models, validating and hashing the selected set before each window. Hashing consumes the original window duration; an expired window does not start serving | `provider-swift/Sources/darkbloom/ScheduledWindowSelection.swift` (`ScheduledWindowSelection`); `provider-swift/Sources/darkbloom/StartCommand+Modes.swift` (`runScheduled`) |
+| launchd-managed `start --foreground --model` | Explicitly pinned `enabled_models` overrides stale baked arguments, including restart and watchdog recovery | `provider-swift/Sources/darkbloom/Start/StartCommand.swift` (`usesPinnedModelSelection`); `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift` (`runForeground`) |
+| direct manual `start --foreground --model` | Explicit command-line IDs still override the saved selection | `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift` (`runForeground`) |
+| later scheduled serving windows | Read full current Autopilot settings/consent plus saved selection. Disabling between windows restores ordinary `enabled_models` even if unchanged; otherwise keep the initial foreground selection until a live switch or saved selection change. Resolve an empty ordinary list to eligible local models, validate/hash before reopening and retain the original window end. All other inputs remain frozen | `provider-swift/Sources/darkbloom/ScheduledWindowSelection.swift` (`ScheduledWindowSelection`); `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift` (`runScheduled`) |
 
-`start` saves its selected models under the lifecycle lease before disabling
+Ordinary non-enrolled `start` saves its selected models under the lifecycle lease before disabling
 recovery or draining/stopping the current daemon; persistence failure leaves it
 running. Live [`switch`](../provider/cli-reference.md#darkbloom-switch) uses the running
 daemon's resolved config path and does not optimistically write from the CLI.
@@ -326,6 +328,70 @@ Throughput anomaly detector:
 | `EIGENINFERENCE_THROUGHPUT_ANOMALY_MIN_SAMPLES` | integer > 0 | `3` | `coordinator/api/throughput_anomaly.go` (`throughputAnomalyConfigFromEnv`) | Providers required in a bucket before it is judged. |
 | `EIGENINFERENCE_THROUGHPUT_ANOMALY_EFFICIENCY` | float > 0 | `0.80` | `coordinator/api/throughput_anomaly.go` (`throughputAnomalyConfigFromEnv`) | Expected decode efficiency relative to the chip's theoretical rate. |
 
+### Model autopilot
+
+Cached-inventory verification reports a busy model update/verification lock
+immediately. A normal start with saved consent preserves the configuration and
+running provider when any selected model cannot be verified. This introduces no
+new configuration setting (`ModelDownloader.verifySelectedModel`).
+
+All coordinator variables below are startup-only and read by
+`coordinator/registry/autopilot_config.go` (`autopilotConfigFromEnv`); defaults and
+validation live in `coordinator/registry/autopilot/config.go` (`DefaultConfig`, `Config.Check`).
+Provider consent is separate persistent TOML, documented in
+[CLI configuration](../provider/cli-reference.md#providertoml-keys-read-by-the-cli).
+See [architecture](../architecture/model-autopilot.md) and
+[rollout](../operations/model-autopilot.md).
+
+| Variable | Values / type | Default | Effect / source |
+|---|---|---|---|
+| `EIGENINFERENCE_AUTOPILOT_ENABLED` | bool | `true` | Enable demand collection and controller ticks (`autopilotConfigFromEnv`) |
+| `EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY` | bool | `true` | Default shadow rollout: compute/log hypothetical plans and send shadow status leases without residency ownership, reservations, fences or commands. Explicit `false` switches to live control after restart (`autopilotConfigFromEnv`; `autopilot_controller.go`, `tick`; `autopilot_activation.go`, `refreshControlLeases`) |
+| `EIGENINFERENCE_AUTOPILOT_INTERVAL` | Go duration, `1s...1m` | `10s` | Tick cadence (`autopilotConfigFromEnv`, `Check`) |
+| `EIGENINFERENCE_AUTOPILOT_DEMAND_WINDOW` | Go duration, `1m...30m` | `5m` | Arrival-window workload aggregation (`autopilotConfigFromEnv`, `Check`) |
+| `EIGENINFERENCE_AUTOPILOT_MIN_DWELL`, `EIGENINFERENCE_AUTOPILOT_IDLE_UNLOAD_AFTER` | Go durations, dwell `1m...24h`; idle ≥ dwell and ≤ `24h` | `30m`, `1h` | Replacement residence/idle protection and optional standalone quiet window; provider's longer dwell also binds (`autopilotConfigFromEnv`, `Check`) |
+| `EIGENINFERENCE_AUTOPILOT_LOAD_TIME_PRIOR` | Go duration, `1s...5m` | `30s` | Conservative unmeasured load cost; recent exact-build/weight-hash measurements retained after unloading may replace it (`autopilotConfigFromEnv`; `autopilot_snapshot.go`, `autopilotModelFitLocked`) |
+| `EIGENINFERENCE_AUTOPILOT_MAX_ACTIONS_PER_TICK`, `EIGENINFERENCE_AUTOPILOT_MAX_CONCURRENT_OPERATIONS` | ints, `1...32`, `1...64` | `2`, `4` | Per-tick proposals/commands and managed-operation start budget, accounting for currently observed legacy pending loads; legacy controllers retain separate limits (`autopilotConfigFromEnv`; `autopilot_controller.go`, `tick`) |
+| `EIGENINFERENCE_AUTOPILOT_TARGET_UTILIZATION` | float, `0.1...0.9` | `0.7` | Quality-capacity utilization factor (`autopilotConfigFromEnv`; `autopilot_snapshot.go`, `autopilotModelFitLocked`) |
+| `EIGENINFERENCE_AUTOPILOT_ALLOW_IDLE_UNLOAD` | bool | `true` | Allow standalone surplus unloading after quiet/dwell, pins, floors, whole-device-idle gates (`autopilotConfigFromEnv`; `coordinator/registry/autopilot/planner.go`, `Plan`) |
+
+These implementation defaults have **no environment-variable override** in this
+change; programmatic configuration fields are validated by `autopilot.Config.Check`.
+
+| Field / rule | Default or bound | Source |
+|---|---|---|
+| `MaxSnapshotAge` | `30s` baseline for actively controlled providers; effective age is at least controller interval + `10s`, at most `70s` with valid config | `coordinator/registry/autopilot/config.go`, `DefaultConfig`, `ControlSnapshotMaxAge` |
+| Ordinary/shadow/waiting/paused donor capacity | Normal `90s` serving heartbeat window; an accepted capacity sample is still required | `coordinator/registry/provider_lifecycle.go`, `DefaultProviderHeartbeatTimeout`; `autopilot_snapshot.go` |
+| `CommandAcceptTimeout` | `20s`; acceptance/first mutation, not total operation duration | `autopilot.DefaultConfig`; `provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+Autopilot.swift`, `checkAutopilotLoadOwnership` |
+| `CommandWatchdog` | `5m`; retain uncertain ownership rather than assume completion | `autopilot.DefaultConfig`; `coordinator/registry/autopilot_commands.go`, `markAutopilotWatchdogs` |
+| `FailureBackoff` | `2m` | `autopilot.DefaultConfig`; `coordinator/registry/autopilot_provider_state.go`, `reconcileAutopilotHeartbeatLocked` |
+| `MinBenefitSeconds` | `30` | `autopilot.DefaultConfig`; `coordinator/registry/autopilot/planner.go`, `Plan` |
+| Same-command sends | At most `3` total, separated by at least `30s`; immutable ID/payload/expiry | `coordinator/registry/autopilot_retries.go`, `retryAutopilotCommands` |
+| Standalone unload | Quiet, dwell, work and floor guards apply; no memory-pressure threshold | `coordinator/registry/autopilot/planner.go`, `Plan` |
+| Demand retention | `10s` buckets, at most `256` models; partial boundary bucket retains < `10s` | `coordinator/registry/autopilot/demand.go`, `DemandTracker.Record`, `DemandTracker.Snapshot` |
+
+Each normal interactive start offers Yes/No again, defaulting to saved consent
+(or No initially); automatic restarts reuse the saved setting without prompting.
+Enrollment records interest/consent and verified downloaded network inventory;
+it is not activation. Both answers retain the normal model and memory selector,
+which saves the operator’s explicit choices. Enrollment itself preserves other
+preferences, and a larger advertised inventory does not change implicit startup
+preload selection. Ordinary restarts retain recorded `selected_models`; explicit
+startup choices can extend it, and explicit inventory refresh can replace it.
+Inventory verification adds no downloads. See [CLI enrollment](../provider/cli-reference.md#darkbloom-autopilot).
+Only active live control, or an explicit provider pause, transfers residency
+ownership away from ordinary cold loading and the saved idle policy. The default
+shadow lease reports `observe_only=true`, `active=false` and an acknowledged
+session without transferring ownership. Each accepted control renewal explicitly
+rebuilds capacity and sends an event heartbeat, independently of the normal
+provider heartbeat timer.
+
+Live control uses a connection/revision lease lasting `3 * Interval + 10s`.
+`POST /v1/admin/autopilot` changes only the runtime pause flag; resume does not
+promote shadow to live or alter startup configuration. Restart resets the
+operator pause. See `coordinator/registry/autopilot_activation.go`
+(`SetAutopilotPaused`, `refreshControlLeases`).
+
 ### Billing, Stripe and base rewards
 
 Prices, the platform fee and the referral share live in [`../architecture/billing.md#invariants`](../architecture/billing.md#invariants); this table only names the switches.
@@ -337,12 +403,16 @@ Prices, the platform fee and the referral share live in [`../architecture/billin
 | `EIGENINFERENCE_STRIPE_SECRET_KEY` | secret | unset (deposits disabled) | `coordinator/billing/config.go` (`ReadConfig`) | Stripe API key for consumer deposits. |
 | `EIGENINFERENCE_STRIPE_WEBHOOK_SECRET` | secret | unset | `coordinator/billing/config.go` (`ReadConfig`) | Verifies Checkout webhooks. |
 | `EIGENINFERENCE_STRIPE_SUCCESS_URL`, `EIGENINFERENCE_STRIPE_CANCEL_URL` | URLs | unset | `coordinator/billing/config.go` (`ReadConfig`); `coordinator/billing/stripe.go` (`NewStripeProcessor`) | Checkout redirect targets. |
-| `EIGENINFERENCE_STRIPE_CONNECT_WEBHOOK_SECRET` | secret | unset | `coordinator/billing/config.go` (`ReadConfig`) | Verifies Connect account webhooks (provider payouts). |
+| `EIGENINFERENCE_STRIPE_CONNECT_WEBHOOK_SECRET` | secret | unset | `coordinator/billing/config.go` (`ReadConfig`) | Verifies the retained Connect destination, including platform transfer reversals. Connected-account events can use the separate accounts destination below. |
+| `EIGENINFERENCE_STRIPE_CONNECT_SECRET_KEY` | secret | Checkout key before cutover; no fallback during cutover | `coordinator/billing/billing.go` (`NewService`) | Retains access to the old Connect platform independently of new Checkout. Required while retained Connect webhook secrets are configured during cutover. |
+| `EIGENINFERENCE_STRIPE_CONNECT_ACCOUNTS_WEBHOOK_SECRET` | secret | unset | `coordinator/api/stripe_payouts_webhooks.go` (`handleStripeConnectAccountsWebhook`) | Signs `/v1/billing/stripe/connect/accounts/webhook`; configure events from connected accounts. |
+| `EIGENINFERENCE_STRIPE_LEGACY_WEBHOOK_SECRET` | secret | unset | `coordinator/api/stripe_checkout_webhook.go` (`handleStripeWebhook`) | Verifies old-account Checkout events at the existing URL; shares atomic session settlement with the primary secret. |
+| `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ONLY` | `true` / `false` | `false` | `coordinator/billing/config.go` (`ReadConfig`, `Check`) | Explicit cutover: all supported new bank setups and withdrawals use Global Payouts. Requires its dedicated key, financial account and webhook secret even while paused. Unknown values refuse startup. Does not erase legacy history or move money. |
 | `EIGENINFERENCE_STRIPE_CONNECT_COUNTRY` | ISO 3166-1 alpha-2 | `US` | `coordinator/billing/config.go` (`ReadConfig`) | Country for new Connect express accounts. |
-| `EIGENINFERENCE_STRIPE_CONNECT_RETURN_URL`, `EIGENINFERENCE_STRIPE_CONNECT_REFRESH_URL` | URLs | unset | `coordinator/billing/config.go` (`ReadConfig`); `coordinator/api/stripe_payouts.go` | Connect onboarding redirect targets; caller-supplied URLs are validated against the configured return URL. |
-| `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED` | bool | `true` in production release defaults; `false` otherwise | `coordinator/billing/config.go` (`ReadConfig`, `Check`); `deploy/gcp/prod/release-env-defaults` | Enables new international onboarding, quotes and withdrawals. Production refresh preserves an explicit `false` and requires the funding account and webhook secret before activation; runtime validation also requires the base `EIGENINFERENCE_STRIPE_SECRET_KEY` used for Connect. Reconciliation continues with configured credentials even when disabled. |
+| `EIGENINFERENCE_STRIPE_CONNECT_RETURN_URL`, `EIGENINFERENCE_STRIPE_CONNECT_REFRESH_URL` | URLs | unset | `coordinator/billing/config.go` (`ReadConfig`); `coordinator/api/stripe_payouts.go` | Bank onboarding redirect targets for both payout products; caller-supplied URLs are validated against the configured return URL. |
+| `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED` | bool | `true` in production release defaults; `false` otherwise | `coordinator/billing/config.go` (`ReadConfig`, `Check`); `deploy/gcp/prod/release-env-defaults` | Enables new international onboarding, quotes and withdrawals. Production refresh preserves an explicit `false` and requires the funding account and webhook secret before activation; the payout client is independent of the Checkout and legacy Connect clients. Reconciliation continues with configured credentials even when disabled. |
 | `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_FINANCIAL_ACCOUNT` | ID | unset | `coordinator/billing/config.go` (`Check`) | Funding financial account; required when enabled. |
-| `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_SECRET_KEY` | secret | falls back to `EIGENINFERENCE_STRIPE_SECRET_KEY` | `coordinator/billing/config.go` (`ReadConfig`) | Restricted API key override for Global Payouts; does not replace the required base Connect key. |
+| `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_SECRET_KEY` | secret | falls back to `EIGENINFERENCE_STRIPE_SECRET_KEY` | `coordinator/billing/config.go` (`ReadConfig`) | Restricted Global Payouts key; must be explicit during global-only cutover (no fallback in that mode). |
 | `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_WEBHOOK_SECRET` | secret | unset | `coordinator/api/global_payouts_reconcile.go` (`handleGlobalPayoutWebhook`) | Verifies the separate Global Payouts event destination; missing secret rejects all events. |
 | `EIGENINFERENCE_SERVICE_RESERVATIONS_ENABLED` | bool | `false` | `coordinator/api/server_config.go` (`ReadServerConfig`) | Reserve balance up front for service-account requests. |
 | `EIGENINFERENCE_BASE_REWARDS` | bool | `false` | `coordinator/api/server_config.go` (`ReadServerConfig`) | Turns on the hourly base-rewards settlement loop. |
@@ -423,17 +493,54 @@ narrower architecture and physical memory constraints. `darkbloom status` and
 
 Startup loading is independent of the idle-unload policy. The default
 preloads selected models on coordinator-connected and standalone `--local`
-starts; an explicit list takes precedence. All loads retain the normal memory
-and slot admission checks, and a failed preload remains request-loadable.
+starts and at each scheduled window opening, never before that opening; an
+explicit list takes precedence within the selected serving set. All loads retain
+the normal memory and slot admission checks, and a failed preload remains
+request-loadable. The [availability wizard](../provider/cli-reference.md#darkbloom-schedule)
+sets the existing `startup_preload` key, not a separate scheduling preload key.
 
 | `provider.toml` key | Default | Effect and reader |
 |---|---|---|
-| `[backend] startup_preload` | `true` | Enable startup loading in `ProviderLoop.runStartupPreloadGate` and `Start.runLocalStandalone`; `false` disables it in both modes (`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `BackendSettings`). |
+| `[backend] startup_preload` | `true` | Enable startup/window-opening loading in `ProviderLoop.runStartupPreloadGate` and `Start.runLocalStandalone`; wizard on-demand mode sets `false`, skipping preload but not coordinator load commands or request-triggered loads (`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `BackendSettings`). |
 | `[backend] preload_models` | `[]` | Explicit startup order when nonempty; otherwise selected models, with the previously loaded set first on coordinator starts (`ProviderLoop.startupPreloadPlan`, `StandaloneServer.startupPreloadPlan`). |
 | `[backend] startup_preload_timeout_secs` | `120` | Maximum delay before coordinator registration; remaining loads continue in the background. Standalone `--local` finishes its preload before opening the listener (`ProviderLoop.runStartupPreloadGate`, `Start.runLocalStandalone`). |
 | `[backend] startup_selftest` | `true` | Coordinator-connected startup runs a one-token serving-path decode after each load; standalone `--local` loads weights and the engine but does not run this decode (`ProviderLoop.runStartupPreloadGate`, `StandaloneServer.preloadSelectedModels`). |
 | `[backend] startup_selftest_fail_closed` | `false` | Coordinator-connected self-test failures can retire the model when enabled; there is no synthetic self-test or fail-closed retirement in standalone `--local` (`ProviderLoop.runStartupPreloadGate`, `StandaloneServer.preloadSelectedModels`). |
 | `[backend] idle_timeout_mins` | `60` | Controls later idle unloading for coordinator serving, not whether models load at startup (`provider-swift/Sources/ProviderCore/ProviderLoop+IdleTimeout.swift`, `ProviderLoop.startupPreloadPlan`). |
+
+### Provider availability
+
+Weekly availability lives in `provider.toml`; command behavior and presets are
+in the [schedule CLI reference](../provider/cli-reference.md#darkbloom-schedule).
+
+| `provider.toml` key | Default / accepted values | Effect and reader |
+|---|---|---|
+| `[schedule] enabled` | Schedule absent by default; `ScheduleConfig.enabled = false` | Disabled/absent means available while running. Enabled requires valid windows; disabled schedules retain windows without validating them (`provider-swift/Sources/ProviderCore/Scheduling/ScheduleConfig.swift`, `ScheduleConfig.validate`; `provider-swift/Sources/ProviderCore/Scheduling/Schedule.swift`, `Schedule.from`) |
+| `[[schedule.windows]] days` | Nonempty array of case-insensitive short/full day names, `mon`/`monday` through `sun`/`sunday` | Days when the window starts; wizard shorthands/ranges are expanded before saving (`provider-swift/Sources/ProviderCore/Scheduling/Schedule.swift`, `DayOfWeek.parse`; `provider-swift/Sources/darkbloom/Scheduling/ScheduleWizard.swift`, `ScheduleWizard.parseDays`) |
+| `[[schedule.windows]] start` | Required `HH:MM`, `00:00`-`23:59` | Inclusive opening in this Mac's local time (`provider-swift/Sources/ProviderCore/Scheduling/ScheduleConfig.swift`, `ScheduleWindow`; `provider-swift/Sources/ProviderCore/Scheduling/Schedule.swift`, `TimeOfDay.parse`, `Schedule.isActive`) |
+| `[[schedule.windows]] end` | Required `HH:MM`, `00:00`-`23:59` | Exclusive close; earlier end crosses midnight, equal start/end spans a local-calendar day (`provider-swift/Sources/ProviderCore/Scheduling/Schedule.swift`, `Schedule.from`; `provider-swift/Sources/ProviderCore/Scheduling/ScheduleIntervals.swift`, `Schedule.intervals`) |
+
+```toml
+[schedule]
+enabled = true
+
+[[schedule.windows]]
+days = ["mon", "tue", "wed", "thu", "fri"]
+start = "22:00"
+end = "08:00"
+```
+
+`darkbloom schedule --disable` preserves windows and `startup_preload`.
+The editor changes only availability and `startup_preload`, retaining
+`preload_models`, selected models and idle timeout (`ScheduleSettings.apply`
+in `provider-swift/Sources/darkbloom/Scheduling/ScheduleSettings.swift`).
+Both `schedule` and `start --schedule` support `--config`. Edits require the
+next start/restart; they are not a live daemon update. Availability applies to
+coordinator serving and attached `--local-endpoint`, not standalone `--local`
+(`Start.run` in `provider-swift/Sources/darkbloom/Start/StartCommand.swift`).
+There is no saved timezone or wake-up setting: keep the Mac awake and use its
+local timezone. [Scheduling architecture](../architecture/scheduling.md#provider-availability-windows)
+defines DST adjustment, merged windows, full-week coverage and fail-closed parsing.
 
 ### Model cache location
 
@@ -504,7 +611,7 @@ provider or model command is running. Code:
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `DARKBLOOM_NO_UPDATE_CHECK` | any value | unset | `provider-swift/Sources/darkbloom/Darkbloom.swift`; `provider-swift/Sources/darkbloom/StartCommand+Modes.swift`; `provider-swift/Sources/darkbloom/WatchdogCommand.swift`; `provider-swift/Sources/ProviderCore/ProviderLoop+AutoUpdate.swift`; forwarded by `provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift` | Skips the startup version banner, the in-daemon auto-update loop, the start-mode check and the watchdog's update check; `scripts/install.sh` sets it for the runtime smoke test. |
+| `DARKBLOOM_NO_UPDATE_CHECK` | any value | unset | `provider-swift/Sources/darkbloom/Darkbloom.swift`; `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift`; `provider-swift/Sources/darkbloom/WatchdogCommand.swift`; `provider-swift/Sources/ProviderCore/ProviderLoop+AutoUpdate.swift`; forwarded by `provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift` | Skips the startup version banner, the in-daemon auto-update loop, the start-mode check and the watchdog's update check; `scripts/install.sh` sets it for the runtime smoke test. |
 | `DARKBLOOM_AUTH_TOKEN_PATH` | file path | `~/.darkbloom/auth_token` | `provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift` | A nonempty explicit path replaces the token path. Without it, the token is read only from `~/.darkbloom/auth_token` (for `sudo darkbloom report`, the invoking user's, read-only through `AuthTokenStore.loadReadOnly`); there is no legacy-path fallback. |
 | `DARKBLOOM_LOCAL_DIR` | directory | `~/.darkbloom` | `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift` | Directory for `local_token` and `local.json` (direct mode). |
 | `DARKBLOOM_STATE_FILE` | file path | `~/.darkbloom/daemon-state.json` | `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift` | Daemon state snapshot read by `status`, `doctor` and the watchdog. |
@@ -544,21 +651,23 @@ These controls affect the dedicated [native MiMo path](../architecture/inference
 They do not add a catalog entry, bypass the advertised-model allowlist, grant
 media/audio capabilities or qualify a performance route. Except for the
 `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY` and
-`DARKBLOOM_MIMO_COMPLETE_PREFIX` controls, none of the
-`DARKBLOOM_MIMO_*` names below is a LaunchAgent passthrough entry; install
-process-scoped settings before first use and restart for latched kernel flags.
+`DARKBLOOM_MIMO_COMPLETE_PREFIX` controls, the three short-forward
+decode-kernel rollbacks and the three exact-verification rollbacks, none of
+the `DARKBLOOM_MIMO_*` names below is a LaunchAgent passthrough entry; install process-scoped settings before first use
+and restart for latched kernel flags.
 
 | Control | Accepted enabling value | Default | Read in / effect |
 |---|---|---|---|
-| `backend.mtp_mode` for `mimo_v2` | `auto` or `on`, subject to genuine native head inspection and existing kill switch | `auto` requests embedded MTP by default; `off` disables it | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`MTPMode.enablesMTP`); `MiMoV26ServingLoad.hasEmbeddedMTP` derives intent from the validated native inventory; actual native assembly proves activation. No external assistant download |
-| `DARKBLOOM_MIMO_RECTANGULAR_VERIFY` | exact `1` | off; serial target when MTP is enabled | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift` (`nativeMiMoVerificationMode`); does not itself enable MTP and remains subject to exact greedy/state qualification |
-| `DARKBLOOM_MIMO_RECTANGULAR_SCALAR_DENSE` | exact `1` | off | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26RectangularDense.swift` (`enabledByEnvironment`); separately charged scalar-shape projections only in genuine admitted rectangular verification; full target/head-state qualification remains required |
+| `backend.mtp_mode` for `mimo_v2` | `auto` or `on`, subject to genuine native head inspection and existing kill switch | `auto` requests embedded MTP by default; `off` disables it | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`MTPMode.enablesMTP`); `MiMoV26ServingLoad.hasEmbeddedMTP` derives intent from the validated native inventory; actual native assembly proves activation. No external assistant download. The default verification is exact rectangular (`EngineV2SlotFactory.nativeMiMoVerificationMode`): scalar-dense rows, row-exact affine projections and serialized attention reproduce serial decode while scoring all draft columns in one forward; a tracked engine that cannot arm the scalar-dense scratch never drafts. Under the serial-target rollback the adaptive controller keeps plans target-only (`nativeMiMoMTPConfig`, `allowsAdaptiveSerialRounds: false`), because each serial draft column costs one ordinary target forward. Media rows stay target-only |
+| `DARKBLOOM_MIMO_RECTANGULAR_VERIFY` | unset enables; rollback: trimmed, case-insensitive `0`, `false`, `no`, `off` | on (exact rectangular verification when MTP is enabled); rollback selects serial target | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift` (`nativeMiMoVerificationMode`); does not itself enable MTP; the provider never selects the bulk rectangular trunk. Forwarded to the launchd provider job |
+| `DARKBLOOM_MIMO_RECTANGULAR_SCALAR_DENSE` | unset enables; same rollback values | on | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26RectangularDense.swift` (`enabled(environment:)`); separately charged scalar-shape rows only in genuine admitted rectangular verification. Its rollback also selects serial target in the provider. Forwarded to the launchd provider job |
+| `DARKBLOOM_MIMO_ROW_EXACT_PROJECTION` | unset enables; same rollback values | on | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26RowExactProjection.swift`; scalar-dense affine 8-bit projections stream each weight tile once for up to seven rows with one-row `qmv_fast` arithmetic; rollback keeps one matmul per row (same output, slower). Forwarded to the launchd provider job |
 | `DARKBLOOM_MIMO_NATIVE_PAGED_TARGET` | exact `1` with an explicit paged backend | off | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift`; separately issued asymmetric target-only or explicit serial-MTP paging, including authenticated complete-prefix composition; rectangular verification and managed media remain refused in this profile |
 | `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY` | rollback: trimmed, case-insensitive `0`, `false`, `no`, `off` | on (standing residency for the native weight payload, bounded by the safe ceiling) | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26WiredResidency.swift` (`isEnabled`, `Bounds`, `Policy`); shared-manager, owned-lifetime acceleration only, never load admission or physical-page coverage proof. Without it a 256 GiB M3 Ultra measured ~0.4 tok/s decode versus ~38 tok/s. Forwarded to the launchd provider job so the rollback reaches installed providers |
 | `DARKBLOOM_MIMO_COMPLETE_PREFIX` | unset or trimmed-empty uses the model default; exact `1` enables this gate; any other nonempty value disables; unlisted IDs also require affirmative `DARKBLOOM_PREFIX_CACHE`; global cache disable wins | on only for the [exact MiMo identities](../architecture/prefix-cache.md#mimo-complete-state) | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isMiMoCompletePrefixEnabled`); `EngineV2SlotFactory.nativeMiMoPrefixRefusal` gates text-only COMPLETE checkpoints with exact store/process/loaded-owner binding. Forwarded to the launchd provider job. Media requests remain uncached; native paging still needs its separate explicit opt-in |
 
-Only NAX attention and admitted block grouping below default on; the other
-kernel controls remain off. A requested flag is not effective
+NAX attention, admitted block grouping and the three short-forward decode
+kernels below default on; the other kernel controls remain off. A requested flag is not effective
 dispatch: module ownership, actual device/stream, native dtype, shape,
 quantization, mask and admission checks still apply. Unsupported cases retain
 the existing implementation; required execution failures are not silently
@@ -566,9 +675,9 @@ converted into successful fallback.
 
 | Variable | Values / type | Reader / scoped candidate |
 |---|---|---|
-| `DARKBLOOM_MIMO_FUSED_DECODE_NORMS` | exact `1` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26Text.swift` (`useFusedDecodeNorms`); native residual/norm tail |
-| `DARKBLOOM_MIMO_DECODE_ROUTER_GEMV` | exact `1` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26DecodeRouter.swift` (`enabledByEnvironment`); eligible short-forward router |
-| `DARKBLOOM_MIMO_DECODE_EXPERTS` | exact `1` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26DecodeExperts.swift` (`requested`); distinct-expert short-forward reuse |
+| `DARKBLOOM_MIMO_FUSED_DECODE_NORMS` | unset enables; rollback: trimmed, case-insensitive `0`, `false`, `no`, `off` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26Text.swift` (`fusedDecodeNormsEnabled`); native residual/norm tail, also row-local inside the scalar-dense verifier. Forwarded to the launchd provider job |
+| `DARKBLOOM_MIMO_DECODE_ROUTER_GEMV` | unset enables; same rollback values | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26DecodeRouter.swift` (`enabledByEnvironment`); eligible short-forward router. Forwarded to the launchd provider job |
+| `DARKBLOOM_MIMO_DECODE_EXPERTS` | unset enables; same rollback values | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26DecodeExperts.swift` (`requested`); distinct-expert short-forward reuse. Forwarded to the launchd provider job |
 | `DARKBLOOM_MIMO_FP32_WEIGHTED_REDUCE` | trimmed, case-insensitive `1`, `true`, `on` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26FP32WeightedReduction.swift` (`isEnabled`); native FP32 weighted combine |
 | `DARKBLOOM_MIMO_V26_DECODE_ROWS` | exact `1` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26DecodeRows.swift` (`requested`); eligible singleton full-attention verification rows |
 

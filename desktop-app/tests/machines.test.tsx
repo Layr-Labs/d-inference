@@ -77,7 +77,7 @@ it('keeps the local machine controls and supported operation cancellation in the
     within(tabs)
       .getAllByRole('button')
       .map((button) => button.textContent),
-  ).toEqual(['Overview', 'Models', 'Cooling', 'Analysis', 'Settings']);
+  ).toEqual(['Overview', 'Models', 'Cooling', 'Stats', 'Settings']);
   fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
   expect(backend.act).toHaveBeenCalledWith({ action: 'cancel', operation: 'working' });
   fireEvent.click(screen.getByRole('button', { name: 'Studio' }));

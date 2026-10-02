@@ -5,7 +5,7 @@ import type { Route } from '../../shared/contracts';
 import { Button, Notice, OperationFeed } from '../components/UI';
 import { Models } from './Models';
 import { Cooling } from './Cooling';
-import { Analysis } from './Analysis';
+import { Stats } from './Stats';
 import { Settings } from './Settings';
 import { Studio } from './Studio';
 import { MachineRail } from './machines/MachineRail';
@@ -154,7 +154,7 @@ export function Machines({
               )}
               {local && route === 'models' && <Models backend={backend} embedded />}
               {local && route === 'cooling' && <Cooling backend={backend} embedded />}
-              {local && route === 'analysis' && <Analysis backend={backend} embedded />}
+              {local && route === 'analysis' && <Stats backend={backend} embedded />}
               {local && route === 'settings' && <Settings backend={backend} embedded />}
               {local && route === 'studio' && <Studio backend={backend} embedded />}
             </div>

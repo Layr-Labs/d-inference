@@ -35,7 +35,7 @@ export default function App() {
     { id: 'settings', label: 'Settings' },
     { id: 'models', label: 'Models' },
     { id: 'studio', label: 'Studio' },
-    { id: 'analysis', label: 'Analysis' },
+    { id: 'analysis', label: 'Stats' },
     { id: 'earnings', label: 'Earnings' },
     { id: 'cooling', label: 'Cooling' },
   ].find((item) => item.id === route)?.label;
@@ -103,7 +103,7 @@ export default function App() {
         </header>
         <main
           key={machineRoute ? 'machines' : route}
-          className={`page-content ${machineRoute ? 'machine-page' : ''}`}
+          className={`page-content ${machineRoute ? 'machine-page' : route === 'home' ? 'home-page' : ''}`}
         >
           {backend.error && <Notice onClose={() => backend.setError('')}>{backend.error}</Notice>}
           {backend.status.state !== 'ready' && (

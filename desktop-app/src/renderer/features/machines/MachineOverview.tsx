@@ -1,7 +1,7 @@
 import type { Machine, Route } from '../../../shared/contracts';
 import type { BackendState } from '../../useBackend';
 import { age, compact, gb, money } from '../../format';
-import { ActivityChart } from '../Home';
+import { ActivityChart } from '../../components/ActivityChart';
 import styles from './machines.module.css';
 export function MachineOverview({
   machine,

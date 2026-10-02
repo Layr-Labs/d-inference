@@ -50,15 +50,6 @@
   .model-actions > .muted {
     display: none;
   }
-  .home-lead {
-    grid-template-columns: 1fr 1fr;
-  }
-  .large-number {
-    font-size: 60px;
-  }
-  .inline-stats {
-    gap: 12px;
-  }
   .onboarding {
     padding: 60px 40px 25px;
   }
@@ -126,35 +117,11 @@
   .mode-options {
     grid-template-columns: 1fr;
   }
-  .earnings-lead {
-    border-right: 0;
-    padding-right: 0;
-  }
-  .network-lead {
-    border-top: 1px solid var(--line);
-    min-height: 160px;
-    padding-left: 0;
-  }
-  .machine-overview {
-    padding: 20px 15px;
-    gap: 14px;
-  }
-  .machine-art {
-    width: 45px;
-    height: 50px;
-  }
   .machine-art svg {
     width: 30px;
   }
-  .machine-load {
-    display: none;
-  }
   .section-title {
     align-items: flex-start;
-  }
-  .inline-stats {
-    flex-direction: column;
-    gap: 7px;
   }
   .model-memory {
     flex-wrap: wrap;

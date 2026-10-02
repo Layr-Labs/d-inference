@@ -269,6 +269,14 @@ export const previewAPI: DesktopAPI = {
   onState(callback) {
     listeners.add(callback);
     const timer = setInterval(() => {
+      if (snapshot.state === 'running') {
+        snapshot.activity.tokens = (BigInt(snapshot.activity.tokens || '0') + 324n).toString();
+        snapshot.activity.requests = (BigInt(snapshot.activity.requests || '0') + 1n).toString();
+        snapshot.activity.models = snapshot.activity.models?.map((model, index) => ({
+          ...model,
+          running: (index === 0 ? 15 : 6) + (Math.floor(Date.now() / 2000 + index) % 5),
+        }));
+      }
       snapshot.observed_at = Date.now() / 1000;
       snapshot.activity.sampled_at = snapshot.observed_at;
       callback(structuredClone(snapshot));

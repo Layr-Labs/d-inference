@@ -3,7 +3,7 @@ export const machineTabs = [
   { route: 'machines', label: 'Overview' },
   { route: 'models', label: 'Models' },
   { route: 'cooling', label: 'Cooling' },
-  { route: 'analysis', label: 'Analysis' },
+  { route: 'analysis', label: 'Stats' },
   { route: 'settings', label: 'Settings' },
 ] as const;
 export const isMachineRoute = (route: Route) =>

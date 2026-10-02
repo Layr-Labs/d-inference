@@ -104,7 +104,7 @@ requires the release qualifications below.
 ## Verify
 
 The primary sidebar contains Home, My Macs, Leaderboard, and Updates. The current
-Mac's detail workspace uses Overview, Models, Cooling, Analysis, and Settings
+Mac's detail workspace uses Overview, Models, Cooling, Stats, and Settings
 panels, with Studio and Earnings shortcuts;
 Home retains the Earnings entry. These pages remain implemented, not deleted.
 The machine rail changes into a horizontal selector on narrower windows. Other
@@ -119,8 +119,17 @@ annualized pace; expanding a provider shows the underlying earnings and tokens.
 Missing location data never lights illustrative locations in production.
 
 
-Home includes live model activity from the Swift event stream and settled-token
-milestones. **View earnings** opens the desktop Earnings screen, which supports
+Home is a single-viewport contribution summary with session output tokens,
+requests, network totals, and current model activity. Its preview animates
+simulated request stages; production uses current native activity and never
+invents stage events. Stats replaces Analysis and includes an inspectable traffic
+curve, model traffic, and settled-token milestones. The current design preview
+supplies clearly labeled sample 24-hour model traffic, outcome rate and generation
+speed. Production shows observed interval deltas and leaves unavailable metrics
+unknown. Future runtime/coordinator work must supply real per-model traffic bins,
+request outcomes, generation speeds and request-stage events before those preview
+metrics can become live. Counter resets and reversed timestamps are excluded.
+ **View earnings** opens the desktop Earnings screen, which supports
 7/30-day periods, earnings/output-token/request metrics, model/Mac breakdowns,
 and exact **Copy CSV**. Failed reads retain a labeled prior observation only
 within the same account session. New milestone crossings are celebrated once

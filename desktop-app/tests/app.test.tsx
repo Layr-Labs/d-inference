@@ -95,7 +95,7 @@ async function openLocalMac() {
 it('preserves Cooling, Analysis, Studio, and Settings through This Mac', async () => {
   render(<App />);
   await screen.findByRole('heading', { name: 'Your contribution' });
-  for (const name of ['Cooling', 'Analysis', 'Studio', 'Settings']) {
+  for (const name of ['Cooling', 'Stats', 'Studio', 'Settings']) {
     await openLocalMac();
     fireEvent.click(screen.getByRole('button', { name }));
     expect(await screen.findByRole('heading', { name, level: 2 })).toBeVisible();

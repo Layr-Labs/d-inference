@@ -15,11 +15,12 @@ enum LaunchctlControl {
     @TaskLocal static var runnerForTesting: (@Sendable ([String]) throws -> Output)?
 
     /// Test seam: the home folder that `LaunchAgent` derives its plist and
-    /// log paths from. Production never binds it.
+    /// log paths from. Production never binds it. `WatchdogAgent` does not
+    /// use it: its paths still come from the real home folder.
     @TaskLocal static var homeDirectoryForTesting: URL?
 
-    /// The home folder for agent paths: the real one unless a test bound
-    /// `homeDirectoryForTesting` for its task.
+    /// The home folder for `LaunchAgent` paths: the real one unless a test
+    /// bound `homeDirectoryForTesting` for its task.
     static func homeDirectory() -> URL {
         homeDirectoryForTesting ?? FileManager.default.homeDirectoryForCurrentUser
     }

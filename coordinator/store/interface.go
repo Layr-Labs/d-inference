@@ -833,6 +833,9 @@ type ProviderEarningsSummary struct {
 	TotalMicroUSD    int64 `json:"total_micro_usd"`
 	PromptTokens     int64 `json:"prompt_tokens"`
 	CompletionTokens int64 `json:"completion_tokens"`
+	// BaseRewardMicroUSD is the part of TotalMicroUSD that came from base
+	// rewards (model 'base_reward'); inference work is the remainder.
+	BaseRewardMicroUSD int64 `json:"base_reward_micro_usd"`
 }
 
 // AccountEarningsWindows holds an account's rolling-window earnings (job count

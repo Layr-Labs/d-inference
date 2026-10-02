@@ -187,3 +187,43 @@ describe("EarningsContent", () => {
     expect(screen.queryByText(/Showing the latest/)).toBeNull();
   });
 });
+
+describe("EarningsContent work/base-reward split", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  const split = {
+    total_micro_usd: 3_000_000,
+    total_usd: "3.000000",
+    work_micro_usd: 2_000_000,
+    work_usd: "2.000000",
+    base_reward_micro_usd: 1_000_000,
+    base_reward_usd: "1.000000",
+    count: 4,
+  };
+
+  it("real response shape: Avg per Job = work_usd / count and base-reward sub-line", async () => {
+    await renderLoaded(response(split));
+    expect(screen.getByText(AVG)).toBeInTheDocument();
+    expect(screen.getByText("$0.500000")).toBeInTheDocument();
+    expect(screen.getByText("incl. $1.000000 base rewards")).toBeInTheDocument();
+  });
+
+  it("no base-reward sub-line when base_reward_usd is zero", async () => {
+    await renderLoaded(
+      response({ ...split, work_usd: "3.000000", base_reward_micro_usd: 0, base_reward_usd: "0.000000" }),
+    );
+    expect(screen.getByText(AVG)).toBeInTheDocument();
+    expect(screen.queryByText(/base rewards/)).toBeNull();
+  });
+
+  it("no base-reward sub-line when base_reward_usd is absent", async () => {
+    await renderLoaded(response({ work_usd: "2.000000", count: 4 }));
+    expect(screen.queryByText(/base rewards/)).toBeNull();
+  });
+});

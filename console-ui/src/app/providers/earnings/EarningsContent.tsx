@@ -43,6 +43,9 @@ interface EarningsResponse {
   recent_count: number;
   history_limit: number;
   work_usd?: string | number;
+  work_micro_usd?: number;
+  base_reward_usd?: string;
+  base_reward_micro_usd?: number;
   available_balance_micro_usd: number;
   available_balance_usd: string;
   withdrawable_balance_micro_usd: number;
@@ -178,6 +181,11 @@ export default function EarningsContent() {
           <p className="text-2xl font-bold text-text-primary">
             ${totalEarned}
           </p>
+          {Number(data?.base_reward_usd) > 0 && (
+            <p className="text-xs text-text-tertiary mt-1">
+              incl. ${data?.base_reward_usd} base rewards
+            </p>
+          )}
         </div>
         <div className="rounded-xl bg-bg-secondary shadow-sm p-5">
           <div className="flex items-center gap-2 mb-2">

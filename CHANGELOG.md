@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased — earnings work and base-reward split
+
+- `GET /v1/provider/account-earnings` now returns `work_micro_usd`, `work_usd`, `base_reward_micro_usd` and `base_reward_usd` next to the unchanged totals, and `GET /v1/me/summary` returns `lifetime_base_reward_micro_usd`. The earnings page computes "Avg per Job" from the real work figure and shows "incl. $X base rewards" under Total Earned when the account has any.
+- `earnings_summary` gains `total_base_reward_micro_usd`, maintained by the same statements that already update the row. A one-shot, crash-resumable boot migration (markers `prepare_earnings_summary_base_reward_v1` and `backfill_earnings_summary_base_reward_v1`) fills it from `provider_floor_draws` in short per-account transactions. Base rewards a previous coordinator settles during a blue-green overlap after the migration snapshot stay in the total but not in the column.
+
 ## Unreleased — one meaning of jobs on the provider console
 
 - The 24 h and 7 d job counts in the earnings summary now exclude `base_reward` rows, matching the lifetime count; micro-USD sums still include them. The machine card stat that shows the reputation counter is labelled "Requests", and its low-success-rate warning and fix link say "requests" too. The earnings page hides "Avg per Job" until the response carries a numeric `work_usd`, labels the activity column "Source" with base rewards shown as "Base reward" and no token count, and no longer prints the inference-only count in its "latest payouts" caption.

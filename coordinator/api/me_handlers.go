@@ -155,6 +155,7 @@ type mySummaryResponse struct {
 	PayoutReady                 bool          `json:"payout_ready"`
 	LifetimeMicroUSD            int64         `json:"lifetime_micro_usd"`
 	LifetimeJobs                int64         `json:"lifetime_jobs"`
+	LifetimeBaseRewardMicroUSD  int64         `json:"lifetime_base_reward_micro_usd"`
 	Last24hMicroUSD             int64         `json:"last_24h_micro_usd"`
 	Last24hJobs                 int64         `json:"last_24h_jobs"`
 	Last7dMicroUSD              int64         `json:"last_7d_micro_usd"`
@@ -204,6 +205,7 @@ func (s *Server) handleMySummary(w http.ResponseWriter, r *http.Request) {
 		PayoutReady:                 user.StripeAccountStatus == "ready",
 		LifetimeMicroUSD:            summary.TotalMicroUSD,
 		LifetimeJobs:                summary.Count,
+		LifetimeBaseRewardMicroUSD:  summary.BaseRewardMicroUSD,
 		Last24hMicroUSD:             windows.Last24hMicroUSD,
 		Last24hJobs:                 windows.Last24hJobs,
 		Last7dMicroUSD:              windows.Last7dMicroUSD,

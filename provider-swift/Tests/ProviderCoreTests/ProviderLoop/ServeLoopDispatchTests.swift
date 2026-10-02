@@ -136,7 +136,18 @@ struct ServeLoopDispatchTests {
         let response = try #require(answered?.attestationResponses.first)
         #expect(response.nonce == "c2VydmUtbG9vcA==")
         #expect(response.publicKey == register.publicKey)
-        #expect(!response.signature.isEmpty)
+        // The signature covers nonce + timestamp and verifies with the
+        // signer's public key. Another nonce must not verify.
+        let signature = try #require(Data(base64Encoded: response.signature))
+        let signerKey = try #require(Data(base64Encoded: fixture.signer.publicKeyBase64))
+        #expect(SecureEnclaveIdentity.verify(
+            signature: signature,
+            for: Data("c2VydmUtbG9vcA==2026-09-30T12:00:00Z".utf8),
+            publicKey: signerKey))
+        #expect(!SecureEnclaveIdentity.verify(
+            signature: signature,
+            for: Data("b3RoZXItbm9uY2U=2026-09-30T12:00:00Z".utf8),
+            publicKey: signerKey))
         #expect(Set(response.modelHashes.keys) == [ServeLoopFixture.modelId],
                 "the reply reports only the model this loop serves")
 

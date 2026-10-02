@@ -46,16 +46,36 @@ struct ServeLoopConnectionTests {
         let task = fixture.start()
         _ = try await fixture.awaitRegistration()
 
-        // Skip the first interval: a session can also send event heartbeats
-        // when it starts. After that, a 1 s interval gives about three
-        // heartbeats in a 3 s window.
-        try await Task.sleep(for: .milliseconds(1_200))
-        let before = fixture.mock.snapshot().heartbeats.count
-        try await Task.sleep(for: .seconds(3))
-        let heartbeats = fixture.mock.snapshot().heartbeats
-        let sent = heartbeats.count - before
-        #expect((2...5).contains(sent), "\(sent) heartbeats in 3 s")
-        #expect(heartbeats.allSatisfy { $0.status == .idle })
+        // A session can also send event heartbeats when it starts, so the
+        // timer heartbeats are the ones that arrive 0.9 s or more after
+        // registration. Record when each of the next four timer heartbeats
+        // arrives (polled every 10 ms), with a 15 s limit.
+        let registeredAt = ContinuousClock.now
+        var arrivals: [ContinuousClock.Instant] = []
+        var seen = fixture.mock.snapshot().heartbeats.count
+        let deadline = registeredAt.advanced(by: .seconds(15))
+        while arrivals.count < 4, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+            let count = fixture.mock.snapshot().heartbeats.count
+            guard count > seen else { continue }
+            let now = ContinuousClock.now
+            if now - registeredAt >= .milliseconds(900) {
+                arrivals += Array(repeating: now, count: count - seen)
+            }
+            seen = count
+        }
+        try #require(arrivals.count >= 4, "\(arrivals.count) timer heartbeats in 15 s")
+
+        // The timer sleeps 1 s, builds the heartbeat and sends it, so the
+        // spacing is 1 s plus the build and send time. Tolerance: 0.8 s to
+        // 2.0 s. The lower bound allows for the 10 ms poll; the upper bound
+        // allows for a slow CI runner.
+        let gaps = zip(arrivals.dropFirst(), arrivals).map { $0 - $1 }
+        for gap in gaps {
+            #expect(gap >= .milliseconds(800) && gap <= .milliseconds(2_000),
+                    "heartbeat spacing \(gap) is outside 0.8 s to 2.0 s")
+        }
+        #expect(fixture.mock.snapshot().heartbeats.allSatisfy { $0.status == .idle })
 
         #expect(await fixture.stop(task))
     }

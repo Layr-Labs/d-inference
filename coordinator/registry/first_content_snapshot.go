@@ -52,6 +52,7 @@ func (r *Registry) fillFirstContentSnapshot(s *routingSnapshot, p *Provider, now
 			s.wholeMacBusy = s.wholeMacBusy || busy || !slotStateModelLoaded(slot.State)
 		}
 		if slot.Model == s.model {
+			s.prefillWorkloadRates = snapshotPrefillWorkloadRates(slot.PerformanceMeasurements, p.CapacityAcceptedAt)
 			s.modelLoadMs = float64(slot.ModelLoadTimeMS)
 			if s.modelLoaded {
 				s.modelLoadMs = 0

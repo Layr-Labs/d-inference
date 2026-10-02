@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-28
+> Last updated: 2026-09-30
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -348,3 +348,18 @@ Published recipient bounds are stored in `coordinator/billing/globalpayouts/reci
 | Reservation recovery | Renew every 30 seconds; reclaim after ten minutes without renewal | `coordinator/api/model_token_maintenance.go` (`runModelTokenMaintenance`, `modelTokenLeaseTimeout`) |
 
 Configure using the [model token promotion runbook](../operations/model-token-promotions.md).
+
+## Global-only bank payout funding
+
+The cutover preserves the existing user-facing standard withdrawal fee and
+minimum; it does not introduce instant-card payouts. `RequiredFundingCents`
+(`coordinator/billing/globalpayouts/funding.go`) checks the financial account's
+available USD against principal plus rounded-up quoted USD Stripe fees before
+the first debit. The platform pays these fees. This is an availability check,
+not a reservation: definitive send rejection still refunds atomically.
+
+Confirmed Connect rejections refund gross principal and mark the row refunded in
+one transaction (`coordinator/store/stripe_settlement_postgres.go`,
+`RefundRejectedStripeWithdrawal`). Historical failures without a verified
+rejection marker are not automatically credited; follow the
+[cutover runbook](../operations/stripe-migration.md).

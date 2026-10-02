@@ -2,10 +2,10 @@
 
 > Last updated: 2026-09-28
 
-How the coordinator decides how far to trust a provider connection: three
-trust levels (`none`, `self_signed`, `hardware`), two flags carried alongside
-the level (`mda_verified`, `code_attested`), the five-minute challenge that
-keeps the verdict fresh, and the single routing gate that consumes all of it.
+The evidence checks behind legacy MDM/APNs verification and qualified App
+Attest authorization. The [provider trust overview](provider-trust.md) owns the
+shared decision model and threat boundaries; this page details the checks,
+legacy levels and flags, refresh behavior, and routing gates.
 
 The legacy levels and flags below retain their meaning. With the explicit serving opt-in, [qualified App Attest authorization](../../reference/provider-authorization.md) is an independent path alongside complete legacy verification. `coordinator/registry/app_attest_authorization.go` (`GrantAppAttestServingAuthorization`) binds permission to the account, verified machine, credential, live connection, endpoint and policy generation. `coordinator/registry/inference_authorization.go` (`authorizeInferenceHandoff`) checks every final inference handoff after queueing. Expired, revoked or replaced authorizations cannot permit new dispatch; no legacy flags are fabricated. Shadow mode alone still changes no trust.
 
@@ -69,14 +69,20 @@ Closed client diagnostics separate local availability failures and synthetic cal
 
 A verified first App Attest assertion may have no **verified** risk receipt yet: the initial `ATTEST` receipt can require renewal, or a verified receipt can lack a risk metric. With receipt renewal configured and no first serving record, the coordinator requests a fresh assertion after one minute, five minutes, then at the normal ten-minute cadence while the independent receipt worker renews evidence. An unverified receipt or another assertion does not itself create a grant. The [serving authorization policy](../../reference/provider-authorization.md) still requires a verified current risk receipt and complete metric, fresh assertion, non-revoked credential, qualified build and bound identity before granting permission.
 
-Providers are adversarial until proven otherwise ([`../../threat-model.yaml`](../../threat-model.yaml),
-`ADV-001`). A provider's self-report is worthless on its own — the reporter is
-the thing being judged — so every claim that matters is either signed by a key
-the provider cannot extract (the Secure Enclave P-256 key), corroborated by
-Apple's MDM subsystem (SecurityInfo), or proven by a channel only genuine code
-can use (APNs). The result feeds one routing decision: the public floor is
-`Registry.MinTrustLevel` (`EIGENINFERENCE_MIN_TRUST`, default under
-[configuration](../../reference/configuration.md#routing-admission-and-ttft); `coordinator/registry/config.go`).
+Providers are adversarial ([`../../threat-model.yaml`](../../threat-model.yaml),
+`ADV-001`). The legacy blob authenticates provider-supplied data with its embedded
+P-256 public key; a valid self-signature alone does not prove Secure Enclave
+provenance or the truth of its posture fields. MDM independently supplies
+SecurityInfo, while APNs binds its entitled application identity to a challenge
+answered by the endpoint and signing keys. App Attest adds Apple-verified key
+and application evidence under the separate qualification policy. Its signed
+app-origin hardware and runtime reports remain distinct from independent Apple
+measurements. See [identity binding](identity-binding.md#app-attest-v3-endpoint-binding)
+and [provider trust](provider-trust.md) for those limits. Sources:
+`coordinator/attestation/attestation.go` (`VerifyJSON`),
+`coordinator/appattest/verify.go` (`Verifier.Attestation`, `Verifier.Assertion`),
+and `provider-swift/Sources/ProviderCore/Security/AttestationBuilder.swift`
+(`buildAttestation`).
 
 ## Mechanism
 
@@ -360,40 +366,50 @@ is an availability event, not a confidentiality breach.
 
 ### Routing gate
 
-One chokepoint decides whether a provider may receive a request. Evaluated in
-this order; the first failure is the `GateReason`
-(`coordinator/registry/routing_eligibility.go`, `providerLivenessGateReasonLocked`):
+The shared liveness gate evaluates these conditions in order; the first failure
+is the `GateReason`. Model, capacity and request-trait checks follow in callers.
+Code: `coordinator/registry/routing_eligibility.go`
+(`providerLivenessGateReasonLocked`).
 
 | # | Gate | Reason |
 |---|---|---|
 | 1 | `Status != offline` | `GateOffline` |
-| 2 | `Status != untrusted` | `GateUntrusted` |
-| 3 | `!(PrivateOnly && !allowPrivate)` | `GatePrivateOnly` |
-| 4 | `trustRank(TrustLevel) ≥ trustRank(minTrust)` | `GateTrustFloor` |
-| 5 | `RuntimeVerified` ([runtime manifest](#runtime-manifest)) | `GateRuntimeUnverified` |
-| 6 | `providerSupportsPrivateTextLocked` (below) | `GatePrivateText` |
-| 7 | `LastChallengeVerified` non-zero and within [`challengeFreshnessMaxAge`](../routing.md#challenge-freshness) | `GateChallengeStale` |
+| 2 | `Status != untrusted` and no App Attest security denial | `GateUntrusted` |
+| 3 | Verified identity's durable state restoration is complete | `GateStateRestoring` |
+| 4 | `!(PrivateOnly && !allowPrivate)` | `GatePrivateOnly` |
+| 5 | Legacy trust meets `minTrust`, or a current qualified App Attest authorization exists | `GateTrustFloor` |
+| 6 | `RuntimeVerified` ([runtime manifest](#runtime-manifest)) | `GateRuntimeUnverified` |
+| 7 | Private-text authorization below | `GatePrivateText` |
+| 8 | A fresh legacy challenge, or a current qualified App Attest authorization | `GateChallengeStale` |
 
-`providerSupportsPrivateTextLocked` (`coordinator/registry/attestation_policy.go`) requires
-all of: non-empty X25519 `PublicKey`; `Backend == "mlx-swift"`
-(`privateTextBackendSupported`); `EncryptedResponseChunks`;
-`RuntimeManifestChecked`; `ChallengeVerifiedSIP` (coordinator-verified, not
-self-reported); current application evidence when a release policy is enforced
-(`releasePolicyEnforcedLocked`); `CodeAttested` when
-`codeAttestationEnforcedLocked()`; and `PrivacyCapabilities`
-`text_backend_inprocess`, `text_proxy_disabled`, `anti_debug_enabled`,
-`core_dumps_disabled`, `env_scrubbed` all true. The self-reported
-`sip_enabled` in `PrivacyCapabilities` is not consulted; the gate uses the
-challenge-verified `ChallengeVerifiedSIP`.
+`providerSupportsPrivateTextAuthorizationAtLocked` in
+`coordinator/registry/attestation_policy.go` requires a nonempty X25519
+`PublicKey`, `mlx-swift` backend, encrypted response chunks,
+`RuntimeManifestChecked`, and the privacy capabilities `text_backend_inprocess`,
+`text_proxy_disabled`, `anti_debug_enabled`, `core_dumps_disabled`, and
+`env_scrubbed`. Both authorization paths retain these common checks.
 
-| Level | Public routing — `publiclyRoutableLocked`, which is the liveness gate called with `minTrust = MinTrustLevel` ([default](../../reference/configuration.md#routing-admission-and-ttft)) and `allowPrivate = false` | Owner self-route (`minTrust = TrustNone`, `allowPrivate = true`) |
+Without a current App Attest authorization, the same predicate also requires
+`ChallengeVerifiedSIP`, current application evidence when release policy is
+enforced, and `CodeAttested` when APNs enforcement is enabled. App Attest
+satisfies those authorization branches without fabricating the legacy fields.
+The legacy challenge's signed SIP report is checked by the coordinator; the
+signature itself is not an independent posture measurement.
+
+| Authorization state | Public routing | Owner self-route |
 |---|---|---|
-| `none` | no (`GateTrustFloor`) | yes, if gates 1–2 and 5–7 pass |
-| `self_signed` | no (`GateTrustFloor`) | yes, same conditions |
-| `hardware` | yes, if every other gate passes | yes |
+| Legacy `none` or `self_signed`, no qualified App Attest grant | Fails when below configured `MinTrustLevel` | May pass with `TrustNone` and `allowPrivate`, if all other gates pass |
+| Legacy trust meets the configured floor | May pass if all other gates pass | Same common and legacy privacy requirements |
+| Current qualified App Attest grant, including legacy `self_signed` | May pass if all common and model gates pass | Same common requirements |
+| Offline, security-denied, expired evidence without another valid path, or runtime failure | No | No bypass for common security failures |
 
-Self-route relaxes only the trust floor and the private-only rule; every
-privacy gate, including code identity once enforced, still applies.
+`coordinator/registry/app_attest_authorization.go`
+(`providerTrustMeetsMinimumAtLocked`, `providerChallengeFreshAtLocked`) implements
+the two authorization alternatives. The final writer repeats the live gates and
+endpoint/account/machine binding checks after queueing, then captures the dispatch
+verification snapshot: `coordinator/registry/inference_authorization.go`
+(`authorizeInferenceHandoff`). Later revocation blocks subsequent handoffs; it
+cannot recall an already committed request or plaintext already delivered.
 
 ### Trust status messages to providers
 
@@ -412,13 +428,13 @@ received (`darkbloom status`, `Trust: <level> / <status>`).
 2. A stored `hardware` level and a stored `MDAVerified` flag are never restored on reconnect; the connection re-earns them — `coordinator/registry/persistence.go` (`RestoreProviderState`).
 3. Only a posture mismatch proven by a received SecurityInfo demotes; lookup failures, timeouts, and not-enrolled outcomes leave trust unchanged and retry — `coordinator/api/provider.go` (`verifyProviderViaMDM`).
 4. The coordinator sends only `SecurityInfo` and `DeviceInformation` MDM commands and honours only webhook responses for an outstanding `CommandUUID` — `coordinator/mdm/mdm.go` (`assertReadOnlyCommand`, `HandleWebhook`).
-5. Every challenge and code-identity signature is verified against the SE key from the registration blob, never a key carried in the reply — `coordinator/api/provider.go` (`verifyChallengeResponse`), `coordinator/api/provider_codeattest.go` (`handleCodeAttestationResponse`).
+5. Every legacy challenge and APNs code-identity signature is verified against the SE key from the registration blob, never a key carried in the reply — `coordinator/api/provider.go` (`verifyChallengeResponse`), `coordinator/api/provider_codeattest.go` (`handleCodeAttestationResponse`).
 6. `sip_enabled == false` or `secure_boot_enabled == false` in any challenge reply, a binary/model-hash drift, or an encrypted-chunk violation untrusts the provider immediately, without the three-strike count — `coordinator/api/provider.go` (`verifyChallengeResponse`, `decryptTextResponseChunk`).
 7. A code-identity proof is accepted only for the exact (SE key, APNs token, `K`) it was issued to and only within `challengeValidity`; cached proofs authorise a resume challenge, never a grant — `coordinator/api/provider_codeattest.go` (`codeAttestLoopForGeneration`, `handleCodeAttestationResponse`), `coordinator/api/code_attest_throttle.go`.
-8. Code identity becomes mandatory only when an attestor is configured and `APNS_ENFORCE_AFTER` has passed — `coordinator/registry/attestation_policy.go` (`codeAttestationEnforcedLocked`).
-9. Routing evaluates `providerLivenessGateReasonLocked` in a fixed order and skips any provider whose last verified challenge is older than [`challengeFreshnessMaxAge`](../routing.md#challenge-freshness) — `coordinator/registry/routing_eligibility.go`, `coordinator/registry/scheduler.go`.
+8. The legacy path requires APNs code identity when an attestor is configured and `APNS_ENFORCE_AFTER` has passed; a current qualified App Attest authorization satisfies the independent authorization branch — `coordinator/registry/attestation_policy.go` (`codeAttestationEnforcedLocked`).
+9. Routing evaluates `providerLivenessGateReasonLocked` in a fixed order; challenge freshness is satisfied by a current App Attest authorization or a legacy challenge within [`challengeFreshnessMaxAge`](../routing.md#challenge-freshness) — `coordinator/registry/routing_eligibility.go`, `coordinator/registry/app_attest_authorization.go` (`providerChallengeFreshAtLocked`).
 10. Hard untrust writes a durable tombstone that wins any race with a pending hardware grant — `coordinator/api/trust_reuse.go` (`invalidateTrustReuse`), `coordinator/registry/provider_evidence.go` (`GrantHardwareEvidenceAtEpochIfNotUntrusted`).
-11. Effective `RuntimeCapabilities` require hardware trust and code proof; `SetAttested` below hardware and `SetCodeAttested(false)` clear them — `coordinator/registry/provider_evidence.go`.
+11. Effective `RuntimeCapabilities` require qualified App Attest authorization or complete legacy evidence, together with the runtime and capability consistency checks — `coordinator/registry/provider_capabilities.go` (`ReconcileAttestedRuntimeCapabilities`).
 12. The [runtime manifest](#runtime-manifest) accepts every active release's values (one set per template name, `mlx_metallib` included); registering a release can only widen it and deactivating one narrows it, so a registration never deroutes providers on the previous release — `coordinator/api/server.go` (`SyncRuntimeManifest`, `RuntimeManifest`).
 
 ## Failure modes

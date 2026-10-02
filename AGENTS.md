@@ -127,7 +127,7 @@ make ui-install         # console-ui npm deps
 
 ### Coordinator (Go)
 ```bash
-make coordinator-test         # cd coordinator && go test ./...
+make coordinator-test         # runner guards + complete Go suite with isolated API shards
 make coordinator-build        # cd coordinator && go build ./cmd/coordinator
 make coordinator-build-linux  # GOOS=linux GOARCH=amd64 CGO_ENABLED=0 build (GCP prod container)
 make coordinator              # test + build

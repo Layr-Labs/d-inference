@@ -143,6 +143,7 @@ func setupLoadTestServer(t *testing.T) (*httptest.Server, *registry.Registry, *s
 	// Replace the default queue (10 slots, 30s) with a larger one for load tests.
 	reg.SetQueue(registry.NewRequestQueue(200, 30*time.Second))
 	srv := NewServer(reg, st, ServerConfig{}, logger)
+	t.Cleanup(srv.Close)
 	srv.challengeInterval = 500 * time.Millisecond
 	ts := httptest.NewServer(srv.Handler())
 	return ts, reg, st

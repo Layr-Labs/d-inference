@@ -66,7 +66,9 @@
         "coordinator/config/**",
         "coordinator/env/**",
         "coordinator/registry/config.go",
-        "provider-swift/Sources/ProviderCore/Config/**"
+        "coordinator/registry/autopilot_config.go",
+        "provider-swift/Sources/ProviderCore/Config/**",
+        "coordinator/registry/autopilot/config.go"
       ],
       "docs_any_of": [
         "docs/reference/configuration.md"
@@ -92,6 +94,22 @@
       ],
       "docs_any_of": [
         "docs/operations/provider-release.md"
+      ]
+    },
+    {
+      "name": "model autopilot",
+      "source_patterns": [
+        "coordinator/registry/autopilot/**",
+        "coordinator/registry/autopilot*.go",
+        "coordinator/api/autopilot*.go",
+        "coordinator/api/autopilot/**",
+        "provider-swift/Sources/ProviderCore/Autopilot/**",
+        "provider-swift/Sources/darkbloom/Autopilot/**",
+        "provider-swift/Sources/darkbloom/Start/StartCommand+Autopilot.swift"
+      ],
+      "docs_any_of": [
+        "docs/architecture/model-autopilot.md",
+        "docs/operations/model-autopilot.md"
       ]
     },
     {

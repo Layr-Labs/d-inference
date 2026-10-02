@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-09-28
+> Last updated: 2026-09-30
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models and the
@@ -104,7 +104,7 @@ and `provider-swift/Sources/darkbloom/Diagnostics/DoctorRunner.swift`, using
 |---|---|---|
 | `--local and --local-endpoint are mutually exclusive …` | Both flags given | Pick one ([direct mode](./direct-mode.md)) |
 | `A debugger is attached. The coordinator will reject this provider.` | `checkDebuggerAttached()` | Detach the debugger |
-| `This Mac has N GB RAM. At least 8 GB is needed to serve any model.` | `Start.runPreflightChecks` (`provider-swift/Sources/darkbloom/StartCommand+Preflight.swift`) | Use a larger machine ([hardware requirements](./hardware-requirements.md)) |
+| `This Mac has N GB RAM. At least 8 GB is needed to serve any model.` | `Start.runPreflightChecks` (`provider-swift/Sources/darkbloom/Start/StartCommand+Preflight.swift`) | Use a larger machine ([hardware requirements](./hardware-requirements.md)) |
 | `Cannot start: …` | `Start.prepareServeRuntime` — `GPUEnforcement.requireMetal` failed, or the Gemma runtime environment could not be applied (`GemmaOptimizationEnvironment.apply`) | Confirm a Metal GPU (`system_profiler SPDisplaysDataType`); retry |
 | `Cannot start: hardware detection failed …` | `sysctl`/`system_profiler` failed | Retry; report the output of `sysctl machdep.cpu.brand_string hw.memsize` |
 | `No models selected.` | Picker cancelled or `--model` ids not local | `darkbloom models list`; `darkbloom models download <id>` |

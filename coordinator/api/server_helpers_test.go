@@ -28,6 +28,7 @@ func testBillingServer(t *testing.T) (*Server, *store.MemoryStore) {
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
+	t.Cleanup(srv.Close)
 
 	ledger := payments.NewLedger(st)
 	billingSvc := billing.NewService(st, ledger, logger, billing.Config{
@@ -60,6 +61,7 @@ func testServerWithConfig(t *testing.T, cfg ServerConfig) (*Server, *store.Memor
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, cfg, logger)
+	t.Cleanup(srv.Close)
 	return srv, st
 }
 

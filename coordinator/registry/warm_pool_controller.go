@@ -35,10 +35,11 @@ func (r *Registry) ConfigureWarmPool(cfg WarmPoolConfig) {
 }
 
 func (r *Registry) StartWarmPoolController(ctx context.Context, cfg WarmPoolConfig) func() {
+	// Keep operator floors available to Autopilot even when legacy warming is off.
+	r.ConfigureWarmPool(cfg)
 	if !cfg.Enabled {
 		return func() {}
 	}
-	r.ConfigureWarmPool(cfg)
 	ctx, cancel := context.WithCancel(ctx)
 	r.mu.RLock()
 	controller := r.warmPool

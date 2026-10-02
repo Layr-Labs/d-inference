@@ -229,6 +229,7 @@ Zero prerequisites and no `sudo`. The installer fetches the latest signed releas
 
 ```bash
 darkbloom start              # background launchd service (interactive model picker + memory policy)
+darkbloom start --schedule   # optional availability wizard before background startup
 darkbloom start --foreground # run attached to the terminal
 darkbloom idle keep-loaded   # keep models loaded while idle (instant responses); default frees after 60 min
 darkbloom login              # link your account (RFC 8628 device-code flow)
@@ -238,11 +239,18 @@ darkbloom doctor             # local diagnostics + coordinator's trust view
 
 [`docs/provider/quickstart.md`](docs/provider/quickstart.md) walks through the full flow.
 
+Ordinary `start` does not prompt for a schedule. Use `darkbloom schedule` to edit
+saved availability without starting or stopping the service,
+`darkbloom schedule --show` to inspect it, or `darkbloom schedule --disable` to turn scheduling off
+without deleting saved windows. See the [schedule CLI reference](docs/provider/cli-reference.md#darkbloom-schedule)
+for presets, loading choices, custom configuration paths and restart requirements.
+
 ### CLI reference
 
 | Command | Purpose |
 |---------|---------|
 | `start` | Start serving (launchd daemon, `--foreground`, or `--local`) |
+| `schedule` | Edit, show or disable saved weekly provider availability |
 | `stop` / `restart` | Stop (`--uninstall` removes the agent) / restart in place |
 | `status` | Hardware, config, schedule, and live daemon/trust state |
 | `doctor` / `verify` | Diagnostics (`verify` = strict, non-zero on any warning) |

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/saferun"
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 const (
@@ -24,11 +25,10 @@ const (
 // StartStripePayoutReconciler launches the hourly stuck-withdrawal sweep: it
 // heals legacy "manual" payout schedules (which strand transferred funds in
 // the connected balance forever) and alerts on rows that stay non-terminal
-// past the threshold. It never touches the ledger — money movement stays in
-// the withdraw handler and the webhook state machine. No-op when Stripe
-// Connect isn't configured.
+// past the threshold. Confirmed transfer rejections also retry their atomic ledger refunds.
+// Historical unverified failures are left for operator reconciliation.
 func (s *Server) StartStripePayoutReconciler(ctx context.Context) {
-	if s.billing == nil || s.billing.StripeConnect() == nil {
+	if s.billing == nil {
 		return
 	}
 	s.logger.Info("stripe payout reconciler started",
@@ -47,12 +47,16 @@ func (s *Server) StartStripePayoutReconciler(ctx context.Context) {
 		}
 		ticker := time.NewTicker(stripeReconcileInterval)
 		defer ticker.Stop()
+		refundTicker := time.NewTicker(time.Minute)
+		defer refundTicker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
 				s.sweepStuckStripeWithdrawals()
+			case <-refundTicker.C:
+				s.recoverStripeRefunds()
 			}
 		}
 	})
@@ -61,6 +65,11 @@ func (s *Server) StartStripePayoutReconciler(ctx context.Context) {
 // sweepStuckStripeWithdrawals runs one reconciler pass.
 func (s *Server) sweepStuckStripeWithdrawals() {
 	cutoff := time.Now().Add(-stripeStuckThreshold)
+	s.recoverStripeRefunds()
+
+	if s.billing.StripeConnect() == nil {
+		return
+	}
 
 	// Rows stuck in "pending" mean the transfer-create either never ran
 	// (crash mid-request) or ran and the row update failed after retries —
@@ -125,4 +134,22 @@ func (s *Server) sweepStuckStripeWithdrawals() {
 			"disabled_reason", acct.DisabledReason,
 			"payout_interval", acct.PayoutInterval)
 	}
+}
+
+func (s *Server) recoverStripeRefunds() {
+	if repo, ok := store.As[store.StripeSettlementStore](s.billing.Store()); ok {
+		rows, err := repo.ListStripeRefundsToRecover(stripeReconcileBatch)
+		if err != nil {
+			s.logger.Error("stripe refund recovery scan failed", "error", err)
+		}
+		for i := range rows {
+			if !store.StripeRefundRecoverable(&rows[i]) {
+				continue
+			}
+			if _, err := repo.RefundRejectedStripeWithdrawal(rows[i].ID); err != nil {
+				s.logger.Error("stripe refund recovery failed", "withdrawal_id", rows[i].ID, "error", err)
+			}
+		}
+	}
+
 }

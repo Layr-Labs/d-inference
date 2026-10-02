@@ -98,6 +98,13 @@ enum ToolChoiceEnforcementPolicy {
         context.modelType == "mimo_v2" || nativeStructuredTarget(context)
     }
 
+    /// Only the qualified Nemotron parser absorbs a close already in content.
+    /// Other native-channel families retain their existing literal handling.
+    static func absorbsStrayThinkClose(_ context: ChatTemplateFixContext) -> Bool {
+        context.modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "nemotron_h"
+            && EngineV2SupportedModels.isNemotron35ListingModelID(context.modelId)
+    }
+
     /// Nested examples inside native XML-family reasoning stay reasoning.
     /// Admission is family-specific; this is a wire policy, not an architecture
     /// alias, and must not change legacy Nemotron or other model behavior.

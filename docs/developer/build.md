@@ -1,6 +1,10 @@
 # Build
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-01
+
+The provider test runner isolates daemon-state and loaded-model snapshots in a
+temporary directory for each run. Unit-test providers must not overwrite the
+operator’s live status or recovery evidence (`scripts/run-provider-tests.sh`).
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -59,6 +63,12 @@ metadata, not model weights. The sidecar, provider-unit and prompt-parity jobs r
 [pinned fixture procedure](mimo-prompt-fixtures.md) for local runs. Missing
 inputs fail rather than silently skipping assertions.
 
+The prompt-parity lane also runs `scripts/verify-nemotron-prompt-parity.sh`
+after the provider test product has been built. The existing Go artifact
+provisioner fetches only hash-verified prompt metadata from the committed
+Nemotron manifest; the gate uses no model weights or GPU generation. See the
+[parity test procedure](test.md#9-prompt-contract-parity-fixtures-and-vectors).
+
 Provider CI also runs `scripts/prepare-mimo-provider-fixtures.py` offline. It
 writes a deterministic, bounded synthetic BF16 target/vision/audio-patch/three-head
 inventory, not the selected model or its audio codec. Routine metadata tests use
@@ -106,6 +116,10 @@ metallib; it does not rebuild or download a model. Follow the
 [provider test procedure](test.md) to run GPU-global assertions in separate
 processes with the exclusive opt-in scoped to the named test.
 
+The exact-cache E2E fixture uses the built provider and pinned Gemma checkpoint
+with an explicit SSD-cache opt-in. Its ephemeral storage setting alone does not
+enable caching; see the [E2E prerequisites](test.md#prerequisites).
+
 The [Bonsai performance qualification](test.md#bonsai-performance-qualification)
 uses a separate optimized test build with `-enable-testing` and `-DDEBUG` for
 test-only ownership/scheduler seams. Do not add these switches to the ordinary
@@ -136,7 +150,8 @@ The [revision runbook](../operations/model-revisions.md) describes its invocatio
 All checked-in `d-inference` workflow jobs use Blacksmith runners. macOS build,
 unit/SDK/parity, integration, benchmark, cache, signing and validation jobs pin
 `blacksmith-12vcpu-macos-27` (M4, 12 vCPU, 48 GB); the signed-artifact older-OS
-smoke pins `blacksmith-12vcpu-macos-26`. Linux jobs retain
+smoke pins `blacksmith-12vcpu-macos-26`. Coordinator Tests uses
+`blacksmith-16vcpu-ubuntu-2404`; other Linux jobs retain
 `blacksmith-4vcpu-ubuntu-2404`. The macOS 27 image is currently a public beta;
 see [Blacksmith's runner catalog](https://docs.blacksmith.sh/blacksmith-runners/overview).
 This migration is limited to this repository; SDK repository workflows are separate.
@@ -775,7 +790,7 @@ local stub servers; its default observation mode sends only public GETs.
 | Target | What it runs |
 |---|---|
 | `help` | List targets (default goal) |
-| `coordinator-test` | `cd coordinator && go test ./...` |
+| `coordinator-test` | Runner self-tests, then `python3 scripts/run-coordinator-tests.py` (complete coordinator suite; process-isolated API shards, also registry under `--race`, see [test](test.md)) |
 | `coordinator-build` | `go build ./cmd/coordinator` → `./coordinator/coordinator` |
 | `coordinator-build-linux` | `GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o coordinator-linux ./cmd/coordinator` |
 | `coordinator` | `coordinator-test` + `coordinator-build` |
@@ -904,3 +919,16 @@ secret and the trusted base checkout. Full PR scans read immutable Git blobs as
 data and batch complete changed-file text; they never build or execute PR code.
 Opus 5.5 and GPT-6 Astra use the same OpenRouter key for independent full scans;
 their attributed findings are combined into one advisory comment.
+
+## Stripe migration maintenance
+
+Build the audit/repair binary with `go build -o /tmp/payout-audit ./coordinator/cmd/payout-audit`.
+It uses the configured database without running migrations and defaults to read-only
+bounded output. Applying a refund requires an exact withdrawal ID, expected amount
+and an operator-verified Stripe request. See [the cutover runbook](../operations/stripe-migration.md).
+
+Exercise the API, funding and settlement contracts with
+`go test ./coordinator/api ./coordinator/billing/... ./coordinator/store ./coordinator/cmd/payout-audit`.
+Set `DATABASE_URL` to a disposable local PostgreSQL database to run transaction,
+concurrency and rollback coverage. Never point tests at production. Console
+migration coverage runs with `npm test` in `console-ui`.

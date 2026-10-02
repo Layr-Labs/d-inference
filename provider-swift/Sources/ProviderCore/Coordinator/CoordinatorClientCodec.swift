@@ -15,7 +15,10 @@ public enum CoordinatorClientCodec {
         prefixCacheV2Models: [PrefixCacheV2Capability]? = nil,
         prefixCacheMemoryModels: [PrefixCacheV2Capability]? = nil,
         prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
-        prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil
+        prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
+        modelAutopilot: ModelAutopilotSnapshot? = nil,
+        ordinaryServingModelIDs: Set<String>? = nil,
+        autopilotInventory: [ModelInfo]? = nil
     ) -> ProviderMessage {
         // A token that arrived after the config was built (APNs slow at startup)
         // overrides the config value so a reconnect re-registers WITH it.
@@ -41,10 +44,23 @@ public enum CoordinatorClientCodec {
         } else {
             effectiveModels = baseModels
         }
-        let constrainedModels = toolConstraintModelIDs(effectiveModels)
+        // The initial and every reconnect registration keep observation-only
+        // candidates out of `models`, including when a previous lease was live.
+        let inventory = (autopilotInventory ?? config.autopilotInventory).filter {
+            modelAutopilot?.enabled == true
+                && modelAutopilot?.selectedModels.contains($0.id) == true
+                && ModelRuntimeRequirements.isEligible(modelID: $0.id, available: config.runtimeCapabilities)
+        }.map { model in
+            var current = model
+            if let overrides = modelWeightHashOverrides, overrides[model.id] != model.weightHash { current.weightHash = nil }
+            return current
+        }.filter { $0.weightHash?.isEmpty == false }
+        let candidateIDs = Set(config.autopilotInventory.map(\.id)).subtracting(ordinaryServingModelIDs ?? Set(config.models.map(\.id)))
+        let servingModels = effectiveModels.filter { !candidateIDs.contains($0.id) }
+        let constrainedModels = toolConstraintModelIDs(servingModels + inventory)
         return .register(ProviderMessage.Register(
             hardware: config.hardware,
-            models: effectiveModels,
+            models: servingModels,
             backend: config.backendName,
             version: version,
             publicKey: config.publicKey,
@@ -64,7 +80,9 @@ public enum CoordinatorClientCodec {
             prefixCacheDonationOutcomes: prefixCacheDonationOutcomes,
             toolConstraintProtocol: constrainedModels.isEmpty ? nil : 1,
             toolConstraintModels: constrainedModels.isEmpty ? nil : constrainedModels,
-            appAttestProtocol: 3
+            appAttestProtocol: 3,
+            modelAutopilot: modelAutopilot,
+            autopilotInventory: inventory.isEmpty ? nil : inventory
         ))
     }
 
@@ -79,7 +97,10 @@ public enum CoordinatorClientCodec {
         prefixCacheV2Models: [PrefixCacheV2Capability]? = nil,
         prefixCacheMemoryModels: [PrefixCacheV2Capability]? = nil,
         prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
-        prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil
+        prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
+        modelAutopilot: ModelAutopilotSnapshot? = nil,
+        ordinaryServingModelIDs: Set<String>? = nil,
+        autopilotInventory: [ModelInfo]? = nil
     ) throws -> Data {
         try ProviderProtocolCodec.encodeProviderMessage(
             registrationMessage(
@@ -93,7 +114,10 @@ public enum CoordinatorClientCodec {
                 prefixCacheV2Models: prefixCacheV2Models,
                 prefixCacheMemoryModels: prefixCacheMemoryModels,
                 prefixCacheStatuses: prefixCacheStatuses,
-                prefixCacheDonationOutcomes: prefixCacheDonationOutcomes
+                prefixCacheDonationOutcomes: prefixCacheDonationOutcomes,
+                modelAutopilot: modelAutopilot,
+                ordinaryServingModelIDs: ordinaryServingModelIDs,
+                autopilotInventory: autopilotInventory
             )
         )
     }
@@ -112,7 +136,8 @@ public enum CoordinatorClientCodec {
         prefixCacheMemoryModels: [PrefixCacheV2Capability]? = nil,
         prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
         prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
-        idleUnloadMins: UInt64? = nil
+        idleUnloadMins: UInt64? = nil,
+        modelAutopilot: ModelAutopilotSnapshot? = nil
     ) -> ProviderMessage {
         .heartbeat(ProviderMessage.Heartbeat(
             status: status,
@@ -128,7 +153,8 @@ public enum CoordinatorClientCodec {
             prefixCacheMemoryModels: prefixCacheMemoryModels,
             prefixCacheStatuses: prefixCacheStatuses,
             prefixCacheDonationOutcomes: prefixCacheDonationOutcomes,
-            idleUnloadMins: idleUnloadMins
+            idleUnloadMins: idleUnloadMins,
+            modelAutopilot: modelAutopilot
         ))
     }
 
@@ -198,6 +224,9 @@ public enum CoordinatorClientCodec {
                 nonce: nonce,
                 signature: signature
             ))
+
+        case .modelAutopilotStatus(let status):
+            return .modelAutopilotStatus(status)
 
         case .loadModelStatus(let modelId, let status, let error):
             return .loadModelStatus(ProviderMessage.LoadModelStatus(
@@ -270,8 +299,8 @@ public enum CoordinatorClientCodec {
     private static func toolConstraintModelIDs(
         _ models: [ModelInfo]
     ) -> [String] {
-        models.filter(ToolChoiceEnforcementPolicy.advertisesCapability)
-            .map(\.id).sorted()
+        Set(models.filter(ToolChoiceEnforcementPolicy.advertisesCapability)
+            .map(\.id)).sorted()
     }
 
     public static func encodeOutboundMessage(_ outbound: OutboundMessage) throws -> Data {

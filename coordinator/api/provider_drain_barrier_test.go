@@ -19,9 +19,12 @@ import (
 
 type drainSettlementStore struct {
 	store.Store
-	block   atomic.Bool
-	entered chan struct{}
-	release chan struct{}
+	block         atomic.Bool
+	entered       chan struct{}
+	release       chan struct{}
+	usageStarted  chan store.UsageRecord
+	usageRelease  chan struct{}
+	usageRecorded chan struct{}
 }
 
 func (s *drainSettlementStore) GetModelPrice(account, model string) (store.ModelPrice, bool) {
@@ -32,6 +35,13 @@ func (s *drainSettlementStore) GetModelPrice(account, model string) (store.Model
 	return s.Store.GetModelPrice(account, model)
 }
 
+func (s *drainSettlementStore) RecordUsage(record store.UsageRecord) {
+	s.usageStarted <- record
+	<-s.usageRelease
+	s.Store.RecordUsage(record)
+	s.usageRecorded <- struct{}{}
+}
+
 func TestProviderDrainLatestOverlappingBarrierFollowsUsageSettlementAndKeepsControlTrafficAlive(t *testing.T) {
 	for _, stream := range []bool{true, false} {
 		t.Run(map[bool]string{true: "streaming", false: "nonstreaming"}[stream], func(t *testing.T) {
@@ -39,11 +49,18 @@ func TestProviderDrainLatestOverlappingBarrierFollowsUsageSettlementAndKeepsCont
 			defer ts.Close()
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
-			blocked := &drainSettlementStore{Store: original, entered: make(chan struct{}), release: make(chan struct{})}
+			blocked := &drainSettlementStore{
+				Store: original, entered: make(chan struct{}), release: make(chan struct{}),
+				usageStarted: make(chan store.UsageRecord, 2), usageRelease: make(chan struct{}),
+				usageRecorded: make(chan struct{}, 2),
+			}
 			s.store = blocked
 			var releaseOnce sync.Once
 			release := func() { releaseOnce.Do(func() { close(blocked.release) }) }
 			defer release()
+			var usageReleaseOnce sync.Once
+			releaseUsage := func() { usageReleaseOnce.Do(func() { close(blocked.usageRelease) }) }
+			defer releaseUsage()
 			pub := testPublicKeyB64()
 			const model = "lifecycle-barrier-model"
 			conn := connectProvider(t, ctx, ts.URL, []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}, pub)
@@ -115,6 +132,9 @@ func TestProviderDrainLatestOverlappingBarrierFollowsUsageSettlementAndKeepsCont
 				if err == nil {
 					_, err = io.ReadAll(resp.Body)
 					resp.Body.Close()
+					if err == nil && resp.StatusCode != http.StatusOK {
+						err = fmt.Errorf("inference response: %s", resp.Status)
+					}
 				}
 				response <- err
 			}()
@@ -151,6 +171,27 @@ func TestProviderDrainLatestOverlappingBarrierFollowsUsageSettlementAndKeepsCont
 			}
 			if err := <-response; err != nil {
 				t.Fatal(err)
+			}
+			// The drain covers settlement and synchronous ledger accounting.
+			// Public usage persistence is a separate asynchronous write; hold it
+			// until after the ACK so this distinction cannot pass by scheduling luck.
+			var usage store.UsageRecord
+			select {
+			case usage = <-blocked.usageStarted:
+			case <-ctx.Done():
+				t.Fatal("usage persistence never started")
+			}
+			if entries := s.ledger.Usage(usage.ConsumerKey); len(entries) != 1 || entries[0].JobID != usage.RequestID {
+				t.Fatalf("settled ledger usage = %+v, want one entry for %s", entries, usage.RequestID)
+			}
+			if count, err := original.UsageCountSince(time.Time{}); err != nil || count != 0 {
+				t.Fatalf("held asynchronous usage count=%d err=%v", count, err)
+			}
+			releaseUsage()
+			select {
+			case <-blocked.usageRecorded:
+			case <-ctx.Done():
+				t.Fatal("usage persistence did not finish")
 			}
 			if count, err := original.UsageCountSince(time.Time{}); err != nil || count != 1 {
 				t.Fatalf("usage count=%d err=%v", count, err)

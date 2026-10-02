@@ -23,7 +23,7 @@ func (r *Registry) SendLoadModel(providerID, modelID string) error {
 		return fmt.Errorf("provider %q not found", providerID)
 	}
 	p.mu.Lock()
-	eligible := !providerDrainingLocked(p, time.Now()) && r.providerServesCatalogModelLocked(p, modelID)
+	eligible := !providerDrainingLocked(p, time.Now()) && !providerLegacyModelChangesBlockedLocked(p) && r.providerServesCatalogModelLocked(p, modelID)
 	p.mu.Unlock()
 	r.mu.RUnlock()
 	if !eligible {
@@ -76,7 +76,7 @@ func (r *Registry) SendPrefetchModel(providerID, modelID string, priority int) e
 		return fmt.Errorf("provider %q not found", providerID)
 	}
 	p.mu.Lock()
-	eligible := !providerDrainingLocked(p, time.Now()) && r.providerCanAcquireCatalogModelLocked(p, modelID)
+	eligible := !providerDrainingLocked(p, time.Now()) && !providerLegacyModelChangesBlockedLocked(p) && r.providerCanAcquireCatalogModelLocked(p, modelID)
 	p.mu.Unlock()
 	r.mu.RUnlock()
 	if !eligible {
@@ -166,7 +166,7 @@ func (r *Registry) sendDesiredModels(p *Provider, entries []protocol.DesiredMode
 	if !forceEmpty {
 		for _, entry := range entries {
 			if entry.DesiredBuild == "" ||
-				!r.providerCanAcquireCatalogModelLocked(p, entry.DesiredBuild) {
+				!r.providerCanAcquireDesiredModelLocked(p, entry.DesiredBuild, entry.PreviousBuild) {
 				continue
 			}
 			if entry.PreviousBuild != "" &&
@@ -263,7 +263,7 @@ func (r *Registry) DesiredModelsForProvider(providerID string) []protocol.Desire
 	}
 	advertised := make(map[string]struct{}, len(p.Models))
 	for _, m := range p.Models {
-		if m.ID != "" {
+		if m.ID != "" && providerOrdinaryModelAllowedLocked(p, m.ID) {
 			advertised[m.ID] = struct{}{}
 		}
 	}
@@ -280,7 +280,7 @@ func (r *Registry) DesiredModelsForProvider(providerID string) []protocol.Desire
 		if t.OpenRouterOnly || t.Desired == "" {
 			continue
 		}
-		if !r.providerCanAcquireCatalogModelLocked(p, t.Desired) {
+		if !r.providerCanAcquireDesiredModelLocked(p, t.Desired, t.Previous) {
 			continue
 		}
 

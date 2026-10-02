@@ -237,6 +237,7 @@ func TestStreamingChatSingleDoneSignatureBeforeIt(t *testing.T) {
 	pr.ChunkCh <- registry.ProviderChunk{Data: `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-oss-20b","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`}
 	pr.ChunkCh <- registry.ProviderChunk{Data: "data: [DONE]"} // the provider's own terminator — must be swallowed
 	close(pr.ChunkCh)
+	pr.CompleteCh <- protocol.UsageInfo{PromptTokens: 10, CompletionTokens: 1}
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	rec := httptest.NewRecorder()

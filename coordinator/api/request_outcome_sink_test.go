@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -25,6 +26,35 @@ func (s *failedRequestOutcomeStore) RecordRequestOutcomes(context.Context, []sto
 }
 func (s *failedRequestOutcomeStore) RequestOutcomes(context.Context, time.Time, time.Time, int) ([]store.RequestOutcomeRecord, error) {
 	return nil, errors.New("fake failing dependency")
+}
+
+func TestRequestOutcomeSinkPeriodicFlush(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		st := store.NewMemory(store.Config{})
+		sink := newRequestOutcomeSink(&Server{store: st}, 2)
+		defer sink.close()
+		now := time.Now()
+		sink.submit(store.RequestOutcomeRecord{CoordRequestID: "periodic-flush", SchemaVersion: store.RequestOutcomeSchemaVersion, Revision: 1, ReceivedAt: now, UpdatedAt: now, FinalizedAt: &now})
+		// One record cannot fill a batch. It must persist while the sink is open,
+		// independently of the close-and-drain path used by synchronous fixtures.
+		synctest.Wait()
+		time.Sleep(99 * time.Millisecond)
+		synctest.Wait()
+		rows, err := st.RequestOutcomes(context.Background(), time.Time{}, time.Now(), 10)
+		if err != nil || len(rows) != 0 {
+			t.Fatalf("flushed before the first tick: rows=%+v err=%v", rows, err)
+		}
+		time.Sleep(time.Millisecond)
+		synctest.Wait()
+		rows, err = st.RequestOutcomes(context.Background(), time.Time{}, time.Now(), 10)
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("periodic flush missing: rows=%+v err=%v", rows, err)
+		}
+		row := rows[0]
+		if row.CoordRequestID != "periodic-flush" || row.Revision != 1 {
+			t.Fatalf("periodic flush changed the record: %+v", row)
+		}
+	})
 }
 
 func TestRequestOutcomeSinkLossIsExplicit(t *testing.T) {

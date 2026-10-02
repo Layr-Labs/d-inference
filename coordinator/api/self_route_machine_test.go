@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -102,21 +101,18 @@ func TestSelfRouteMachineValidationAndAvailability(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, record := range []store.ProviderRecord{
-		{ID: "offline", AccountID: owner}, {ID: "foreign", AccountID: "someone-else"},
-	} {
-		if err := st.UpsertProvider(context.Background(), record); err != nil {
-			t.Fatal(err)
-		}
-	}
+	foreign := srv.registry.Register("foreign", nil, &protocol.RegisterMessage{})
+	foreign.Mu().Lock()
+	foreign.AccountID = "someone-else"
+	foreign.Mu().Unlock()
 	for _, tc := range []struct {
 		name, route string
 		values      []string
 		status      int
 		code        string
 	}{
-		{"unknown", "self", []string{"missing"}, 404, "machine_not_found"},
-		{"foreign", "self", []string{"foreign"}, 404, "machine_not_found"},
+		{"unknown", "self", []string{"missing"}, 503, "machine_offline"},
+		{"foreign", "self", []string{"foreign"}, 503, "machine_offline"},
 		{"offline", "self", []string{"offline"}, 503, "machine_offline"},
 		{"ordinary routing", "", []string{"offline"}, 400, "invalid_request_error"},
 		{"prefer", "prefer", []string{"offline"}, 400, "invalid_request_error"},
@@ -140,7 +136,7 @@ func TestSelfRouteMachineValidationAndAvailability(t *testing.T) {
 	}
 }
 
-func TestSelfRouteMachineModelViewAndPreflight(t *testing.T) {
+func TestSelfRouteMachinePreflight(t *testing.T) {
 	srv, st, _ := billingTestServer(t)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -156,31 +152,13 @@ func TestSelfRouteMachineModelViewAndPreflight(t *testing.T) {
 	other, _, _ := setupProviderForBilling(t, ctx, ts, srv.registry, "other-model")
 	defer other.Close(websocket.StatusNormalClosure, "")
 	setOwnedProvider(srv, owner)
-	request := func(method, path, body string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(method, path, strings.NewReader(body))
-		req.Header.Set("Authorization", "Bearer "+raw)
-		req.Header.Set("X-Darkbloom-Route", "self")
-		req.Header.Set(selfRouteMachineHeader, id)
-		response := httptest.NewRecorder()
-		srv.Handler().ServeHTTP(response, req)
-		return response
-	}
-	response := request(http.MethodGet, "/v1/models", "")
-	var payload struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
-		t.Fatal(err)
-	}
-	if response.Code != 200 || len(payload.Data) != 1 || payload.Data[0].ID != "selected-model" {
-		t.Fatalf("model list: %d %s", response.Code, response.Body)
-	}
-	if response := request(http.MethodGet, "/v1/models/other-model", ""); response.Code != 404 {
-		t.Fatalf("retrieve=%d: %s", response.Code, response.Body)
-	}
-	if response := request(http.MethodPost, "/v1/chat/completions", `{"model":"other-model","messages":[{"role":"user","content":"hi"}]}`); response.Code != 503 || !strings.Contains(response.Body.String(), "model_not_loaded") {
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"other-model","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer "+raw)
+	req.Header.Set("X-Darkbloom-Route", "self")
+	req.Header.Set(selfRouteMachineHeader, id)
+	response := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(response, req)
+	if response.Code != 503 || !strings.Contains(response.Body.String(), "model_not_loaded") {
 		t.Fatalf("preflight=%d: %s", response.Code, response.Body)
 	}
 }

@@ -64,8 +64,7 @@ fleet traffic whose scheduler is told which machine may serve it.
    follows the resolved route mode (`coordinator/api/models_endpoints.go`,
    `handleListModels`): with `self` (or a `self_route_only` key) it lists only
    models on your online owned machines; header-less and `prefer` requests see
-   the public catalog. Add the same `X-Darkbloom-Machine` header to list or
-   retrieve only the selected machine's models.
+   the public catalog.
 
    ```bash
    curl -s https://api.darkbloom.dev/v1/models \
@@ -131,10 +130,9 @@ Exclusive self-route fails fast with the real cause instead of queueing
 
 | Status / code | Meaning | Fix |
 |---|---|---|
-| `404 machine_not_found` | Selected id is unknown or belongs to another account | Fetch your machine ids from `/v1/me/providers` |
 | `400 invalid_request_error` | Machine selector is empty, repeated, or used without exclusive self-routing | Send one provider id with `self`, or use a `self_route_only` key |
 | `409 no_linked_machine` | No provider is linked to the account that owns the key | `darkbloom login` on the Mac under that account |
-| `503 machine_offline` (`Retry-After: 30`) | Linked machine(s) exist but none is online | `darkbloom start`; `darkbloom doctor` for connection problems ([troubleshooting](./troubleshooting.md)) |
+| `503 machine_offline` (`Retry-After: 30`) | No linked machine is online, or the selected id is unavailable on your account | Refresh selected ids from `/v1/me/providers`; `darkbloom start`; `darkbloom doctor` for connection problems ([troubleshooting](./troubleshooting.md)) |
 | `503 model_not_loaded` (`Retry-After: 15`) | Online, but no owned machine serves this model id | `darkbloom models download <id>`, then `darkbloom restart`; list ids with the `self` header |
 | `503 model_capability_unsupported` | Machine serves the model but not this request shape (inference-enforced `tool_choice` without the tool-constraint advertisement, media on a text-only build) | `darkbloom update`; load a vision-capable build |
 | `prefer` requests are billed | Your machine could not serve at that moment, so the fleet did | Check the same causes as above; use `self` if you never want the fallback |

@@ -191,12 +191,8 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	// inference path accepts. Header-less requests on ordinary keys see the
 	// public catalog, matching their public routing. (prefer falls back to the
 	// paid fleet, so it keeps the public view.)
-	policy, ok := s.resolveSelfRouteMachine(w, r, s.resolveSelfRoutePolicy(r))
-	if !ok {
-		return
-	}
-	if policy.enabled {
-		entries := s.selfRouteModelEntries(policy.ownerAccountID, r.URL.Query().Get("include_builds") == "1", policy.providerID)
+	if policy := s.resolveSelfRoutePolicy(r); policy.enabled {
+		entries := s.selfRouteModelEntries(policy.ownerAccountID, r.URL.Query().Get("include_builds") == "1")
 		writeJSON(w, http.StatusOK, types.ModelListResponse{
 			Object: "list",
 			Data:   filterEntriesByKeyAllowList(entries, apiKeyFromContext(r.Context())),
@@ -224,8 +220,8 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 // listing. includeHidden re-exposes those covered builds so retrieve-by-exact-
 // id keeps working (parity with the public GET /v1/models/{id}, which serves
 // hidden builds via listModelEntries(true)).
-func (s *Server) selfRouteModelEntries(accountID string, includeHidden bool, providerIDs ...string) []types.ModelEntry {
-	models := s.registry.OwnedModels(accountID, providerIDs...)
+func (s *Server) selfRouteModelEntries(accountID string, includeHidden bool) []types.ModelEntry {
+	models := s.registry.OwnedModels(accountID)
 	byID := make(map[string]registry.AggregateModel, len(models))
 	for _, m := range models {
 		byID[m.ID] = m
@@ -328,12 +324,8 @@ func (s *Server) handleGetModel(w http.ResponseWriter, r *http.Request) {
 	// handleListModels, including the header-based opt-in): list and retrieve
 	// must agree, or an OpenAI client that validates a model id via
 	// retrieve-model can never use a listed local model.
-	policy, ok := s.resolveSelfRouteMachine(w, r, s.resolveSelfRoutePolicy(r))
-	if !ok {
-		return
-	}
-	if policy.enabled {
-		entries := filterEntriesByKeyAllowList(s.selfRouteModelEntries(policy.ownerAccountID, true, policy.providerID), apiKeyFromContext(r.Context()))
+	if policy := s.resolveSelfRoutePolicy(r); policy.enabled {
+		entries := filterEntriesByKeyAllowList(s.selfRouteModelEntries(policy.ownerAccountID, true), apiKeyFromContext(r.Context()))
 		for _, entry := range entries {
 			if entry.ID == id {
 				writeJSON(w, http.StatusOK, entry)

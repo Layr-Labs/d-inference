@@ -31,7 +31,7 @@ func TestSelfRouteMachineReservationAndPlan(t *testing.T) {
 	}
 }
 
-func TestSelfRouteMachineSummaryAndModels(t *testing.T) {
+func TestSelfRouteMachineSummary(t *testing.T) {
 	reg := New(testLogger())
 	selected := makeSchedulerProvider(t, reg, "selected", "selected-model", 100)
 	other := makeSchedulerProvider(t, reg, "other", "other-model", 100)
@@ -40,12 +40,6 @@ func TestSelfRouteMachineSummaryAndModels(t *testing.T) {
 	traits := RequestTraits{TargetProviderID: "selected"}
 	if online, serves := reg.OwnedProviderSummary("owner", "other-model", traits, false); online != 1 || serves != 0 {
 		t.Fatalf("summary=(%d,%d), want (1,0)", online, serves)
-	}
-	if models := reg.OwnedModels("owner", "selected"); len(models) != 1 || models[0].ID != "selected-model" {
-		t.Fatalf("models=%+v", models)
-	}
-	if models := reg.OwnedModels("foreign", "selected"); len(models) != 0 {
-		t.Fatalf("foreign models=%+v", models)
 	}
 	selected.mu.Lock()
 	selected.Status = StatusOffline

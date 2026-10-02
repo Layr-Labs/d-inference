@@ -2,7 +2,7 @@
 
 ## Unreleased - self-route machine selection
 
-- Add optional `X-Darkbloom-Machine: <provider-id>` for exclusive self-routing. Select an owned machine using its `/v1/me/providers` id; inference, retries and model discovery stay on that session. Omitting the header preserves automatic selection. Refresh ids after reconnect.
+- Add optional `X-Darkbloom-Machine: <provider-id>` for exclusive self-routing. Select an owned machine using its `/v1/me/providers` id; inference and retries stay on that session. Omitting the header preserves automatic selection. Refresh ids after reconnect.
 
 ## Unreleased — provider 0.9.16
 

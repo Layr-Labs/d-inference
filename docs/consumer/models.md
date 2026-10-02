@@ -1,6 +1,6 @@
 # Models reference
 
-> Last updated: 2026-10-01
+> Last updated: 2026-09-30
 
 Reference for `GET /v1/models` and `GET /v1/models/{id}`: every field of a `ModelEntry`, how the `model` you send is resolved, and the capability flags the API exposes and enforces. For SDK users and integrators. The catalog itself is database-driven — builds, capabilities and prices live in the coordinator's registry and price tables, and public names are aliases maintained by operators (`coordinator/api/model_alias_handlers.go`, [`../architecture/model-registry.md`](../architecture/model-registry.md)) — so there is no static list to reproduce here; `GET /v1/models` is the list.
 
@@ -57,7 +57,7 @@ What is listed (`listModelEntries`, `aliasModelEntries`):
 - Every **catalog build not covered by an alias**, under its build id.
 - `?include_builds=1` adds the hidden builds (operations/debugging).
 - OpenRouter-only aliases are excluded; they appear only in `GET /v1/models/openrouter` (`handleListModelsOpenRouter`, `coordinator/api/openrouter_endpoint.go`).
-- With `X-Darkbloom-Route: self`, or on a key created with `self_route_only`, the list is instead the account's own machines' models, filtered by the key's `allowed_models` (`selfRouteModelEntries`, `filterEntriesByKeyAllowList`). The optional `X-Darkbloom-Machine` header narrows list and retrieve to one owned provider session. See [`../provider/self-route.md`](../provider/self-route.md).
+- With `X-Darkbloom-Route: self`, or on a key created with `self_route_only`, the list is instead the account's own machines' models, filtered by the key's `allowed_models` (`selfRouteModelEntries`, `filterEntriesByKeyAllowList`). See [`../provider/self-route.md`](../provider/self-route.md).
 
 ### `ModelEntry` fields
 

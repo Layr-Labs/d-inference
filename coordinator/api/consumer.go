@@ -1843,7 +1843,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// schema) OR a per-key hard ceiling. The header can only *request*
 	// self-routing; an optional machine selector is ownership-checked against
 	// the coordinator-stamped provider AccountID.
-	policy, machineOK := s.resolveSelfRouteMachine(w, r, s.resolveSelfRoutePolicy(r))
+	policy, machineOK := s.resolveInferenceSelfRoute(w, r)
 	if !machineOK {
 		return
 	}
@@ -2631,7 +2631,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	applyMetadataDetailsRequest(r, parsed)
 
 	// "Use my own machine, for free" opt-in (see handleChatCompletions).
-	policy, machineOK := s.resolveSelfRouteMachine(w, r, s.resolveSelfRoutePolicy(r))
+	policy, machineOK := s.resolveInferenceSelfRoute(w, r)
 	if !machineOK {
 		return
 	}

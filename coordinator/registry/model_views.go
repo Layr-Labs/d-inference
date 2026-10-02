@@ -127,9 +127,8 @@ func (r *Registry) ListModels() []AggregateModel {
 
 // OwnedModels returns deduplicated live models advertised by providers owned by
 // accountID. Unlike ListModels, it intentionally does not apply the public
-// catalog filter; self-route keys may target off-catalog local models. An
-// optional provider id restricts the view to that owned session.
-func (r *Registry) OwnedModels(accountID string, providerIDs ...string) []AggregateModel {
+// catalog filter; self-route keys may target off-catalog local models.
+func (r *Registry) OwnedModels(accountID string) []AggregateModel {
 	if accountID == "" {
 		return nil
 	}
@@ -140,8 +139,7 @@ func (r *Registry) OwnedModels(accountID string, providerIDs ...string) []Aggreg
 	defer r.mu.RUnlock()
 	for _, p := range r.providers {
 		p.mu.Lock()
-		eligible := (len(providerIDs) == 0 || providerIDs[0] == "" || p.ID == providerIDs[0]) &&
-			p.AccountID == accountID &&
+		eligible := p.AccountID == accountID &&
 			p.Status != StatusOffline &&
 			p.Status != StatusUntrusted &&
 			p.RuntimeVerified &&

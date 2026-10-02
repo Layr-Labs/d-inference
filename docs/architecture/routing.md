@@ -277,12 +277,13 @@ Every other gate — runtime verification, private-text attestation, challenge
 freshness, slot state, memory — still applies to owned machines.
 
 Exclusive self-route may carry `RequestTraits.TargetProviderID`, resolved from
-an ownership-checked `X-Darkbloom-Machine` header
-(`coordinator/api/self_route_machine.go`, `resolveSelfRouteMachine`).
+the optional `X-Darkbloom-Machine` header
+(`coordinator/api/self_route.go`, `resolveInferenceSelfRoute`).
 `providerEligibleForTraitsLocked` (`coordinator/registry/request_traits.go`)
 requires that session id at every trait gate, including alias resolution,
-reservation, queue dispatch and plan revalidation. `OwnedProviderSummary` and
-`OwnedModels` restrict preflight and model discovery to the same session.
+reservation, queue dispatch and plan revalidation. The existing scheduler
+owner filter still applies. `OwnedProviderSummary` restricts preflight to the
+same session.
 Other owned machines and the public fleet cannot satisfy a pinned request;
 omitting the header preserves owner-pool selection. Reconnect creates a new
 session id, so clients refresh it from `/v1/me/providers`.

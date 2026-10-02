@@ -13,6 +13,14 @@ read once at process start and a restart applies a change.
 
 Autopilot `selected_models` is the cached planning inventory; `backend.enabled_models` and explicit startup overrides remain ordinary serving permission in waiting/shadow mode. See [the protocol and activation boundary](../architecture/model-autopilot.md).
 
+## Runtime metallib snapshots
+
+The provider creates an anonymous snapshot before binding the runtime metallib.
+
+| Variable | Default / accepted values | Consumer |
+|---|---|---|
+| `TMPDIR` | When absent, Foundation's temporary directory. When present, an absolute path without NUL bytes to an existing writable directory; invalid or inaccessible values fail snapshot creation without fallback. Read when creating the snapshot. | `provider-swift/Sources/ProviderCore/Security/BinaryHasher.swift` (`makeRuntimeMetallibSnapshot`) |
+
 ## Provider drain deadline
 
 | Setting | Default / bounds | Consumer |

@@ -23,6 +23,7 @@ import { OnboardingState } from "./OnboardingState";
 import { LoadingState, ErrorState } from "./states";
 import { useCurrentAuthorizations } from "./useCurrentAuthorizations";
 import { MacOSUpgradeNotice } from "@/components/provider-onboarding/MacOSUpgradeNotice";
+import { ProviderExperience } from "../insights/ProviderExperience";
 
 export function ProviderDashboard() {
   const {
@@ -84,6 +85,7 @@ export function ProviderDashboard() {
       <MacOSUpgradeNotice providers={providers} />
       <FleetHealthStrip verdict={verdict} summary={summary} />
       <AttentionFeed groups={groups} />
+      <ProviderExperience providers={providers} heartbeatSeconds={ctx.heartbeat_timeout_seconds} pollFailed={pollFailed} lastUpdatedAt={lastUpdatedAt} />
       <MachineGrid providers={providers} ctx={ctx} fleetMaxDecodeTps={maxDecode} onRemoved={refetch} />
       <TrustFooter providers={providers} />
     </Shell>

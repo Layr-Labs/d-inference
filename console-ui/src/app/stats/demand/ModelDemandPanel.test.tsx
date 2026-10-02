@@ -33,6 +33,19 @@ function mockResponse(value = snapshot) { return Response.json(value); }
 function renderPanel() { render(<ModelDemandPanel refreshToken={null} catalogData={null} />); }
 
 describe("Model demand", () => {
+  it("keeps a tapped interval visible after touch release while mouse leave clears it", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockResponse())); renderPanel();
+    const chart = await screen.findByRole("group", { name: "Published requests by model over time" });
+    vi.spyOn(chart.querySelector("svg")!, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 240, 190));
+    fireEvent.pointerDown(chart, { pointerType: "touch", clientX: 5 });
+    const observation = "130 published requests · 2 of 2 listed models have published observations.";
+    expect(screen.getByText(observation)).toBeInTheDocument();
+    fireEvent.pointerOut(chart, { pointerType: "touch", relatedTarget: document.body });
+    expect(screen.getByText(observation)).toBeInTheDocument();
+    fireEvent.pointerOut(chart, { pointerType: "mouse", relatedTarget: document.body });
+    expect(screen.queryByText(observation)).not.toBeInTheDocument();
+  });
+
   it("keeps partial-publication markers visible when a partial interval sets the scale", async () => {
     const partial = structuredClone(snapshot);
     partial.models[1].time_series[1].counts = partial.models[1].time_series[0].counts;

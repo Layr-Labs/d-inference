@@ -32,7 +32,8 @@ export function TrafficComparisonPlot({ data, names, onModelChange }: { data: Mo
     </div>
     <div role="group" aria-label="Published requests by model over time" aria-describedby={`${id}-help`} tabIndex={0}
       onFocus={() => setSelected(current => current ?? 0)} onBlur={() => setSelected(null)}
-      onPointerMove={event => selectAt(event.clientX)} onPointerDown={event => selectAt(event.clientX)} onPointerLeave={() => setSelected(null)}
+      onPointerMove={event => selectAt(event.clientX)} onPointerDown={event => selectAt(event.clientX)}
+      onPointerLeave={event => { if (event.pointerType !== "touch") setSelected(null); }}
       onKeyDown={event => {
         if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
         event.preventDefault();

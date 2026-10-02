@@ -2706,6 +2706,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/admin/token-promotions", s.handleAdminModelTokenPromotions)
 	s.mux.HandleFunc("PUT /v1/admin/token-promotions", s.handleAdminModelTokenPromotions)
 	s.mux.HandleFunc("GET /v1/me/summary", s.requirePrivyAuth(s.handleMySummary))
+	s.mux.HandleFunc("GET /v1/me/provider-insights", s.requirePrivyAuth(s.handleProviderInsights))
 	// Alias-aware owned live-model ids for the console's self-route key picker.
 	s.mux.HandleFunc("GET /v1/me/self-route-models", s.requirePrivyAuth(s.handleMySelfRouteModels))
 	// Ownership-checked hard delete of a retired/offline machine's record(s).

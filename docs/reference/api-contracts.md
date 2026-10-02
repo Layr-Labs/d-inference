@@ -2,7 +2,7 @@
 
 > Last updated: 2026-10-02
 
-The complete public HTTP surface of the coordinator, derived from the 118 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
+The complete public HTTP surface of the coordinator, derived from the 119 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
 Production base URL: `https://api.darkbloom.dev`. Unless a file is named, handler symbols below live in `coordinator/api/server.go`.
 
@@ -217,7 +217,7 @@ Lifecycle semantics: [`../consumer/authentication.md`](../consumer/authenticatio
 
 Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInterval` = 5 (`interval`). The `token` is a **provider token** (`eigeninference-pt-` + 64 hex characters, labelled `device-<user_code>`; only its SHA-256 hash is stored) used by the provider CLI to link a machine to the account; it is not a consumer API key. The small-body cap [`maxControlPlaneBodyBytes`](#limits-and-validation) applies to these unauthenticated endpoints.
 
-### Account, balance, usage and pricing (15)
+### Account, balance, usage and pricing (16)
 
 | Method | Path | Handler | Auth | Limiter | Notes |
 |---|---|---|---|---|---|
@@ -229,6 +229,7 @@ Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInter
 | GET | `/v1/me/token-promotions` | `handleMyModelTokenPromotions` (`coordinator/api/model_token_promotions.go`) | `privy` | — | Account-scoped grants and eligible offers |
 | POST | `/v1/me/token-promotions/claim` | `handleMyModelTokenPromotions` (`coordinator/api/model_token_promotions.go`) | `privy` | `fin` | Claim a capped grant; [campaign procedure](../operations/model-token-promotions.md) |
 | GET | `/v1/me/summary` | `handleMySummary` (`coordinator/api/me_handlers.go`) | `user` | — | Console account summary; includes `latest_provider_version` |
+| GET | `/v1/me/provider-insights` | `handleProviderInsights` (`coordinator/api/provider_insights.go`) | `user` | — | Owner-only settled earnings and token progress; `window=7d` (default) or `30d` |
 | GET | `/v1/me/providers` | `handleMyProviders` (`coordinator/api/me_handlers.go`) | `user` | — | Machines linked to the account |
 | GET | `/v1/me/self-route-models` | `handleMySelfRouteModels` (`coordinator/api/me_handlers.go`) | `user` | — | Models the account's own machines can serve |
 | DELETE | `/v1/me/providers/{id}` | `handleDeleteMyProvider` (`coordinator/api/me_handlers.go`) | `user` | `fin` | Unlink a machine |
@@ -236,7 +237,32 @@ Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInter
 | PUT | `/v1/pricing` | `handleSetPricing` (`coordinator/api/billing_handlers.go`) | `user` | — | Provider sets its own prices: `{model, input_price, output_price, cache_read_price?}` (`modelPriceInput`, `coordinator/api/model_pricing.go`; `0 ≤ cache_read_price ≤ input_price`, omitted = derived) → `types.PriceUpdateResponse` |
 | DELETE | `/v1/pricing` | `handleDeletePricing` (`coordinator/api/billing_handlers.go`) | `user` | — | Revert to defaults |
 
-All six `/v1/me/*` routes are wrapped in `requirePrivyAuth`, so they are Privy-JWT only.
+The `/v1/me/*` routes are wrapped in `requirePrivyAuth`, so they are Privy-JWT only.
+
+#### Provider insights
+
+`coordinator/api/provider_insights.go` (`providerInsightsResponse`) returns
+`window`, `since`, `as_of`, `lifetime`, `totals`, `days`, `models`, and `machines`.
+The selected window starts at UTC midnight 6 or 29 days before today and ends
+at `as_of`, exclusive; today's bucket is partial. `days` contains every UTC
+date in ascending order, including measured zero-earning days. `models` and
+`machines` are ranked by total earnings with a stable ID tie-break.
+
+| Object | Fields / semantics |
+|---|---|
+| `lifetime` | `count`, `total_micro_usd`, `prompt_tokens`, `completion_tokens` from the account's existing materialized settlement totals, including removed providers |
+| `totals` and each breakdown entry | `work_micro_usd`, `base_reward_micro_usd`, `jobs`, `prompt_tokens`, `completion_tokens`; `jobs` and tokens exclude rows whose model is `base_reward` |
+| Breakdown `id` | UTC `YYYY-MM-DD` for `days`, catalog/model string for `models`, historical provider ID for `machines`; empty machine ID means unattributed/account-level earnings, including base rewards |
+
+The endpoint accepts no account selector: identity comes from the authenticated
+Privy user. Responses are `Cache-Control: private, no-store`; the coordinator
+caches each account/window for 30 seconds. Bad windows return 400; unavailable
+storage, timeout, or more than 10,000 day/model/provider groups return 503,
+never truncated totals. The indexed window aggregate and lifetime lookup each
+have a five-second storage deadline. Lifetime and window reads are independent
+settlement snapshots; they are not a transactionally simultaneous balance quote.
+No prompt content, per-request identity, or public traffic feed is exposed.
+See the [console earnings procedure](../consumer/billing.md#provider-earnings-insights).
 
 ### Stripe, payouts and MDM (14)
 

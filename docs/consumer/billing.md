@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-02
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -96,6 +96,27 @@ Dashboard earnings windows include every row in each window, without the old
 5,000-row truncation. Concurrent tabs share one aggregate per account and may
 lag by the per-account cache interval
 (`coordinator/api/me_summary_cache.go`, `mySummaryWindowsCacheTTL`).
+
+### Provider earnings insights
+
+1. Sign in and open **Your fleet** to see currently reported running requests
+   by model. Expand a model to see the reporting Macs. Use **Pause motion** to
+   stop animation while keeping counts updated; delayed or missing reports
+   are labeled rather than treated as activity.
+2. Open **Your earnings** and select **7 days** or **30 days**. Switch the chart
+   between earnings, output tokens, and settled requests. Hover, focus, or tap
+   a day for its details; today is an incomplete UTC day.
+3. Switch **By model** / **By Mac** and expand a row for the inference/base-reward
+   split. Download **CSV** for exact daily amounts in micro-USD and token counts.
+4. Check the next output-token milestone. It uses lifetime settled inference,
+   includes removed Macs, and excludes prompt tokens and base rewards.
+
+Verify that inference income plus base rewards equals the period's earnings.
+The average request amount uses inference income alone. This view records
+settlements, not current generation or projected income; balance and withdrawal
+controls remain separate. A failed refresh shows its last successful snapshot
+with a notice. See [provider insights](../reference/api-contracts.md#provider-insights)
+for freshness and date boundaries.
 
 ### 4. Understand what a request costs you
 

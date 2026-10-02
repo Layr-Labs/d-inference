@@ -1,6 +1,6 @@
 # Community tools for providers
 
-> Last updated: 2026-09-29 · commit `4bc3a0a3b`
+> Last updated: 2026-10-02 · commit `4bc3a0a3b`
 
 Reference list of third-party apps and scripts that some operators run beside
 the `darkbloom` provider to monitor it or manage its models. None of them is
@@ -17,8 +17,8 @@ option.
 
 | Tool | Maintainer | Runs as | What it does | Controls the provider | License |
 |---|---|---|---|---|---|
-| [BloomGauge](https://github.com/cookder/bloomgauge) | [cookder](https://github.com/cookder) | macOS app with a local web dashboard | Shows earnings, network demand and hardware health; optional model optimizer, off by default | Yes | MIT |
-| [Bloomy](https://github.com/knightfolk/Bloomy) (formerly Darkbloom Control) | [knightfolk](https://github.com/knightfolk) | macOS menu bar app | Shows provider status, earnings and energy estimates; start, stop and restart controls; optional model switching, off by default | Yes | None listed |
+| [BloomGauge](https://github.com/cookder/bloomgauge) | [cookder](https://github.com/cookder) | macOS app with a local web dashboard | Shows earnings, network demand and hardware health; recovers stalls with a test request, then a restart; model optimizer, on by default after setup | Yes | MIT |
+| [Bloomy](https://github.com/knightfolk/Bloomy) (formerly Darkbloom Control) | [knightfolk](https://github.com/knightfolk) | macOS menu bar app | Shows provider status, earnings and energy estimates; start, stop and restart controls; optional model switching, off by default; optional idle nudge (a small request routed to your own Mac) | Yes | None listed |
 | [Darkbloom Dashboard](https://github.com/SplittyDev/darkbloom-dashboard) | [SplittyDev](https://github.com/SplittyDev) | macOS, iOS and visionOS app, built from source | Shows network health, machine and account statistics and local logs; warm-up and provider restart | Yes | MIT |
 | [Darkbloom Live & Stats](https://github.com/jordglob/darkbloom-live-stats) | [jordglob](https://github.com/jordglob) | Local web dashboard with LaunchAgents | Shows hardware gauges, electricity cost against revenue and account payouts; keeps configured models warm | No | MIT |
 | [darkbloom-manager](https://github.com/benbuschmann/darkbloom-manager) | [benbuschmann](https://github.com/benbuschmann) | Python command-line script | Scores downloaded models by network pressure and price and switches the warm model when the provider is idle | Yes | MIT |

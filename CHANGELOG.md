@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — bounded model replacement history
+
+- Bound removed-model cleanup history across unconfirmed provider inventory switches by count and total ID bytes. Reject overflowing validation and commit requests atomically while preserving the drain, current inventory and earlier queue cleanup; restored models and completed readiness release the corresponding history budget.
+
 ## Unreleased — leaderboard availability
 
 - Add a concurrent BRIN time index for recent provider-earnings rankings, enable range autosummarization, and keep planner statistics current. Return an uncached 503 when ranking queries fail instead of showing and caching an empty leaderboard.

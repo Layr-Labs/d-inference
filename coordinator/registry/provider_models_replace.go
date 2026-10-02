@@ -61,14 +61,17 @@ func (r *Registry) ReplaceProviderModels(p *Provider, msg *protocol.ModelsReplac
 		}
 		tools[id] = struct{}{}
 	}
-	if msg.ValidateOnly {
-		return nil, nil, 0, nil
-	}
-
 	nextModels, observerOnly := mergeAutopilotInventory(msg.Models, p.autopilotInventory)
 	nextIDs := make(map[string]bool, len(nextModels))
 	for _, model := range nextModels {
 		nextIDs[model.ID] = true
+	}
+	pendingRemoved, withinHistoryBudget := replacementRemovedModels(p.drainRemovedModels, p.Models, nextIDs)
+	if !withinHistoryBudget {
+		return nil, nil, 0, errors.New("invalid_models")
+	}
+	if msg.ValidateOnly {
+		return nil, nil, 0, nil
 	}
 
 	// Retained slots survive only with the same weight identity. Cache evidence
@@ -156,20 +159,7 @@ func (r *Registry) ReplaceProviderModels(p *Provider, msg *protocol.ModelsReplac
 	p.drainReplacementReadySeq = 0
 	p.drainReplacementAppliedSeq = 0
 	p.drainReplacementID = msg.RequestID
-	// A failed receipt can be reconciled on this session after another drain.
-	// Retain removals from every unconfirmed replacement, except IDs restored
-	// by the final selection. Otherwise their queued requests wait for timeout.
-	pendingRemoved := make([]string, 0, len(p.drainRemovedModels)+len(removed))
-	seenRemoved := make(map[string]struct{}, len(p.drainRemovedModels)+len(removed))
-	for _, id := range append(append([]string(nil), p.drainRemovedModels...), removed...) {
-		if _, restored := selected[id]; restored {
-			continue
-		}
-		if _, seen := seenRemoved[id]; !seen {
-			seenRemoved[id] = struct{}{}
-			pendingRemoved = append(pendingRemoved, id)
-		}
-	}
+	// The complete cleanup history was budgeted before any inventory mutation.
 	p.drainRemovedModels = pendingRemoved
 	return added, removed, p.drainGeneration, nil
 }

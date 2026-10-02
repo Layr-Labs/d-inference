@@ -56,7 +56,7 @@ export function TrafficComparisonPlot({ data, names, onModelChange }: { data: Mo
                 height += value.requests;
                 return <rect key={groups[group].id} x={left} y={y(height)} width={width} height={HEIGHT * value.requests / max} fill={groups[group].color} />;
               })}
-              {bucket.publishedModels < data.models.length && <line x1={left} x2={left + width} y1={y(bucket.total) - 3} y2={y(bucket.total) - 3} stroke="var(--text-primary)" strokeDasharray="2 3" vectorEffect="non-scaling-stroke" />}
+              {bucket.publishedModels < data.models.length && <line x1={left} x2={left + width} y1={Math.max(1, y(bucket.total) - 3)} y2={Math.max(1, y(bucket.total) - 3)} stroke="var(--text-primary)" strokeDasharray="2 3" vectorEffect="non-scaling-stroke" />}
             </g>;
           })}
           {selected !== null && <line x1={x(selected)} x2={x(selected)} y1="0" y2={HEIGHT} stroke="var(--text-secondary)" strokeDasharray="3 3" vectorEffect="non-scaling-stroke" />}

@@ -33,6 +33,16 @@ function mockResponse(value = snapshot) { return Response.json(value); }
 function renderPanel() { render(<ModelDemandPanel refreshToken={null} catalogData={null} />); }
 
 describe("Model demand", () => {
+  it("keeps partial-publication markers visible when a partial interval sets the scale", async () => {
+    const partial = structuredClone(snapshot);
+    partial.models[1].time_series[1].counts = partial.models[1].time_series[0].counts;
+    partial.models[1].time_series[0].counts = null;
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockResponse(partial))); renderPanel();
+    const chart = await screen.findByRole("group", { name: "Published requests by model over time" });
+    const markers = chart.querySelectorAll('line[stroke-dasharray="2 3"]');
+    expect(markers).toHaveLength(2);
+    for (const marker of markers) expect(Number(marker.getAttribute("y1"))).toBeGreaterThanOrEqual(0);
+  });
   it("compares all models first and links traffic shares to model outcomes", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockResponse())); renderPanel();
     const comparison = await screen.findByRole("group", { name: "Published requests by model over time" });

@@ -1,7 +1,5 @@
 package registry
 
-import "slices"
-
 // providerAutopilotRoutingBlockedLocked is a capacity gate, not a catalog or
 // trust gate. Managed providers retain their cached inventory for planning but
 // accept network inference only on confirmed warm models, outside transitions.
@@ -9,7 +7,7 @@ import "slices"
 // direct local inference retains its independent admission/ownership checks.
 // Caller holds r.mu and p.mu.
 func providerAutopilotRoutingBlockedLocked(p *Provider, model string) bool {
-	if p.ModelAutopilot != nil && p.ModelAutopilot.Enabled && !slices.Contains(p.ModelAutopilot.SelectedModels, model) {
+	if !providerOrdinaryModelAllowedLocked(p, model) {
 		return true
 	}
 	if providerAutopilotTransitionLocked(p) {

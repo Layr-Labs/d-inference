@@ -13,7 +13,7 @@ func providerAutopilotManagedLocked(p *Provider) bool {
 }
 
 func providerAutopilotControlActiveLocked(p *Provider) bool {
-	return providerAutopilotConsentedLocked(p) && p.ModelAutopilot.Active &&
+	return providerAutopilotConsentedLocked(p) && !p.ModelAutopilot.Paused && p.ModelAutopilot.Active &&
 		!p.ModelAutopilot.ObserveOnly && !p.autopilotControlObserveOnly &&
 		p.ModelAutopilot.SessionID == p.ID && p.ModelAutopilot.Revision == p.autopilotControlRevision && time.Now().Before(p.autopilotControlUntil)
 }

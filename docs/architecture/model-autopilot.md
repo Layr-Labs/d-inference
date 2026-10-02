@@ -1,6 +1,6 @@
 # Experimental model Autopilot
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-02
 
 Autopilot observes demand for an explicitly approved cached model inventory and
 can manage their memory residency during a separately enabled live rollout.
@@ -69,9 +69,25 @@ starts unpaused (`saveAutopilotEnrollment`).
 
 `ModelAutopilotSettings.selectedModels` is an exact-build allowlist. An empty list
 cannot enroll, and another model appearing on disk cannot expand permission.
-The provider advertises this verified network inventory even when it is broader
-than saved `enabled_models`, and rechecks the allowlist before loads, prefetches
-and network acceptance. Discovering another build alone does not expand consent. An explicit startup
+The provider sends this verified network inventory separately in
+`register.autopilot_inventory`. The ordinary `models` advertisement remains the
+normal picker or explicit command-line selection. Waiting and shadow enrollment
+therefore cannot expand routing, cold loads, prefetches, startup preloading or
+the activation-memory reserve. Only an acknowledged, unexpired live lease permits an explicit placement
+command to make its named target loadable. The target is published under the
+reslice gate after survivor validation and a reserve raise; a lease or snapshot
+alone never expands the loadable set. Expiry, disconnect, pause and opt-out restore
+the ordinary selection. Accepted operations retain ownership until completion.
+The coordinator stores observation-only metadata with a separate permission
+marker: `providerOrdinaryModelAllowedLocked` fences public and owner routing,
+capacity and legacy commands, while `providerPassesAutopilotGatesLocked` lets the
+planner inspect candidates through the same remaining safety gates. Dedicated-model
+checks project the permission set after activation; a mixed cached inventory can
+therefore be excluded from a hypothetical plan while ordinary Gemma-only serving
+remains available. See
+`coordinator/registry/autopilot_inventory.go` and
+`provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+AutopilotInventory.swift`.
+Discovering another build alone does not expand consent. An explicit startup
 selection may add its chosen IDs to the recorded set. Ordinary starts with saved
 consent validate every recorded ID plus those chosen startup models or fail before persistence/drain if any is missing,
 ineligible or unverified, including a transient manifest error. They never save
@@ -88,13 +104,21 @@ state decoder’s snake-case conversion, including residents and load history.
 The 0.9.16 local file writes `autopilot_state` so a 0.9.15 watchdog can ignore
 the optional detail while reading heartbeat health; new readers also accept old
 `autopilot` files. WebSocket encoding and required-field validation remain unchanged.
-Desired-build updates outside the recorded set are ignored. While enrolled,
+Unrelated desired-build updates outside the recorded set are ignored. A declared
+successor of an ordinary selected model retains the existing artifact-update
+workflow even when its new build ID is absent from the Autopilot inventory;
+this does not add that ID to cached-only Autopilot consent. When that extends
+ordinary permission beyond cached consent, wire participation is suspended
+(`enabled=false`) until explicit inventory refresh. Saved enrollment stays on;
+`waiting_inventory` explains the required refresh. This prevents older
+coordinators from applying their cached-selection routing fence to the new
+ordinary successor and grants no additional Autopilot command permission. While enrolled,
 `darkbloom switch` directs the operator to `darkbloom autopilot models` or opt-out
 so a manual hosted-model transaction cannot bypass the approved selection.
 Both operation owners reject overlap, including model-switch validation. Pause, resume, pins and
 disable update a config revision consumed by the running daemon's capacity poll.
 
-Protocol 2 separates `enabled` consent, `observe_only` shadow mode and `active`
+Protocol 3 separates `enabled` consent, `observe_only` shadow mode and `active`
 live control. The coordinator defaults to `ObserveOnly=true`; operators explicitly
 set `EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY=false` and restart to switch to live.
 The startup enable switch and runtime admin pause remain independent controls;
@@ -122,13 +146,16 @@ ninety-second serving heartbeat window, including ordinary, shadow, waiting and 
 providers. A fresh liveness-only frame never refreshes an old capacity sample.
 Before coordinator activation, the ordinary startup preloader retains the saved
 explicit or implicit model preference, including `preload_models`, within slot
-and memory limits. Advertising a broader enrolled inventory does not turn it
-into a preload-all request. Autopilot rejects commands while that
+and memory limits. Only models in the ordinary serving selection can preload;
+observation-only inventory does not turn it into a preload-all request. Autopilot rejects commands while that
 preloader is still running; it takes over only after the startup owner finishes.
 Absent or expired control restores ordinary serving policy. Pins apply while live
 control, explicit pause or an accepted operation owns residency.
 Recorded consent alone does not block ordinary idle or load-driven eviction.
-An explicitly paused provider retains its resident set and accepts network work only on ready models.
+An explicitly paused provider retains its resident set and accepts network work
+only on ready models in its ordinary serving selection. Protocol-2 coordinators
+ignore the additional inventory field and issue no protocol-3 control leases;
+selected models continue serving through ordinary routing.
 An accepted operation retains ownership until it finishes even after opt-out,
 pause, connection loss or lease expiry; newer commands cannot overlap it.
 

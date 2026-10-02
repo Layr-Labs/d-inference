@@ -92,6 +92,8 @@ public enum ProviderProtocolCodec {
         try fields.append(("type", encodeValue("register")))
         try fields.append(("hardware", encodeValue(register.hardware)))
         try fields.append(("models", encodeValue(register.models)))
+        try appendIfPresent(register.modelAutopilot, key: "model_autopilot", to: &fields)
+        try appendIfPresent(register.autopilotInventory, key: "autopilot_inventory", to: &fields)
         try fields.append(("backend", encodeValue(register.backend)))
         try appendIfPresent(register.version, key: "version", to: &fields)
         try appendIfPresent(register.publicKey, key: "public_key", to: &fields)

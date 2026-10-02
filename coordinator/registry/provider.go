@@ -42,9 +42,11 @@ func BackendUsesSwiftRuntime(backend string) bool {
 
 // Provider represents a connected provider agent.
 type Provider struct {
-	ID       string
-	Hardware protocol.Hardware
-	Models   []protocol.ModelInfo
+	ID                  string
+	Hardware            protocol.Hardware
+	Models              []protocol.ModelInfo
+	autopilotInventory  []protocol.ModelInfo
+	autopilotOnlyModels map[string]bool
 	// CapacityModelIDs is the catalog/capability-accepted inventory used by
 	// the last applied heartbeat to canonicalize warm models and slots.
 	// Guarded by mu; nil until the first applied heartbeat.

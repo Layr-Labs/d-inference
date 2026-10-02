@@ -4,6 +4,12 @@
 
 - Add optional `X-Darkbloom-Machine: <provider-id>` for exclusive self-routing. Select an owned machine using its `/v1/me/providers` id; inference and retries stay on that session. Omitting the header preserves automatic selection. Refresh ids after reconnect.
 
+## Unreleased — provider 0.9.17
+
+- Keep the normal startup selection and explicit `--model` override authoritative while Autopilot is waiting or observing in shadow. Cached planning inventory can no longer make ordinary routing load unselected models.
+- Separate cached candidates from serving advertisements in Autopilot protocol 3; retain full shadow planning and require an acknowledged live lease before additional models become loadable. Older coordinators keep the selected models serving without activating the new protocol.
+- Preserve normal selected-model successor updates independently of Autopilot inventory, and show the serving selection in My Macs instead of observational candidates.
+
 ## Unreleased — provider 0.9.16
 
 - Offer the Autopilot yes/no choice on every normal interactive start, using the saved choice as default and retaining the normal startup model and memory selector, including explicit `--model` selection.

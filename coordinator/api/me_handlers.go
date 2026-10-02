@@ -556,7 +556,7 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		// Hardware / models from the live snapshot are authoritative because
 		// the provider may have re-registered with new specs.
 		mp.Hardware = live.Hardware
-		mp.Models = append([]protocol.ModelInfo{}, live.Models...)
+		mp.Models = live.ServingModelsLocked()
 		if live.CapacityModelIDs != nil {
 			ids := append([]string{}, live.CapacityModelIDs...)
 			mp.CapacityModelIDs = &ids

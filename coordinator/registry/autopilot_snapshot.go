@@ -79,13 +79,13 @@ func (r *Registry) autopilotFleetSnapshotLocked(c *modelAutopilotController, dem
 			}
 			// Keep base residency independent of a specialized request shape.
 			// Each cohort earns capacity only from providers qualified for it.
-			if !r.providerPassesRoutingGatesLocked(p, model.ID, RequestTraits{}, false, now) {
+			if !r.providerPassesAutopilotGatesLocked(p, model, RequestTraits{}, now) {
 				continue
 			}
 			found := false
 			for key, d := range byModel[model.ID] {
 				found = true
-				if !r.providerPassesRoutingGatesLocked(p, model.ID, requestTraitsForAutopilot(d.Requirements), false, now) || (d.RequiresVision && !model.IsVision) {
+				if !r.providerPassesAutopilotGatesLocked(p, model, requestTraitsForAutopilot(d.Requirements), now) || (d.RequiresVision && !model.IsVision) {
 					continue
 				}
 				fit := r.autopilotModelFitLocked(p, model.ID, d, c.config)

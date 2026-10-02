@@ -58,6 +58,11 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	}
 
 	models := msg.Models
+	var inventory []protocol.ModelInfo
+	if msg.ModelAutopilot != nil && msg.ModelAutopilot.Protocol == protocol.ModelAutopilotProtocol {
+		inventory = validatedAutopilotInventory(msg.AutopilotInventory, msg.ModelAutopilot)
+	}
+	models, observerOnly := mergeAutopilotInventory(models, inventory)
 	modelInventory, _ := uniqueProviderModels(models)
 	cacheStatuses, cacheStatusReported := sanitizePrefixCacheStatuses(
 		msg.PrefixCacheStatuses, modelInventory)
@@ -91,6 +96,8 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		stateRestorePending:         r.store != nil,
 		Hardware:                    msg.Hardware,
 		Models:                      models,
+		autopilotInventory:          inventory,
+		autopilotOnlyModels:         observerOnly,
 		Backend:                     msg.Backend,
 		appAttestProtocol:           msg.AppAttestProtocol,
 		ReportedRuntimeCapabilities: normalizeRuntimeCapabilities(msg.RuntimeCapabilities, msg.Hardware),
@@ -109,7 +116,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		PrefixCacheStatusReported:   cacheStatusReported,
 		PrefixCacheDonationOutcomes: cacheDonationOutcomes,
 		ToolConstraintProtocol:      msg.ToolConstraintProtocol,
-		ToolConstraintModels:        toolConstraintModelSet(msg.ToolConstraintModels, msg.Models),
+		ToolConstraintModels:        toolConstraintModelSet(msg.ToolConstraintModels, models),
 		TrustLevel:                  TrustNone,
 		RuntimeVerified:             true,  // default to verified; API layer sets false when manifest check fails
 		RuntimeManifestChecked:      true,  // default to true; API layer sets false when no manifest is configured

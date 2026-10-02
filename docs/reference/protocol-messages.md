@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-02
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -47,6 +47,8 @@ that generation again at handoff: reusing a wire `request_id` cannot let an earl
 worker or queued receipt settle the latest drain. Disconnect cancels the wait and
 clears its reservation tracking. A final barrier after accepted requests and local
 response writes finish establishes that prior terminal usage has been processed.
+The receipt includes synchronous ledger accounting, but does not wait for the
+separate asynchronous public-usage INSERT in `completionAccounting`.
 The Swift acknowledgement also passes through the ordered provider event queue,
 so earlier inbound inference frames are refused before the barrier completes.
 It is not a bearer credential or permission to serve. A stale idle heartbeat or
@@ -1066,7 +1068,7 @@ rejected. Same-ID recovery never extends the original expiration. See
 
 Go `ModelAutopilotControl` (`coordinator/protocol/model_autopilot.go`) · Swift
 `ModelAutopilotControl` (`provider-swift/Sources/ProviderCore/Protocol/Autopilot/ModelAutopilot.swift`).
-Sent only to protocol-2 explicit enrollments, bound to the current connection and
+Sent only to protocol-3 explicit enrollments, bound to the current connection and
 approved configuration.
 
 | JSON key | Go / Swift | Presence | Meaning |
@@ -1171,7 +1173,7 @@ support.
 
 | JSON key | Go / Swift | Presence | Meaning |
 |---|---|---|---|
-| `protocol` | `int` / `Int` | req | `2` for explicit selection and session activation |
+| `protocol` | `int` / `Int` | req | `3` for separate planning inventory and session activation |
 | `enabled`, `cached_only` | `bool` / `Bool` | req | Explicit consent and cached-only scope; both must be true for planning |
 | `active`, `paused` | `bool` / `Bool` | req | Acknowledged live control and explicit local pause |
 | `observe_only` | `bool` / `Bool` | req; always emitted | Acknowledged shadow mode; a valid shadow lease reports `true` with `active=false` and the matching session |
@@ -1204,16 +1206,29 @@ State validation and malformed-report fencing are in
 replace the paired heartbeat, clear an uncertain operation by age alone or
 make unconfirmed slots routable.
 
-Provider `enabled` is configured consent, not activation. It does not itself
+Provider `enabled` reports eligible consent, not activation. Saved consent stays
+local when an ordinary successor extends serving permission beyond cached
+consent: the provider reports `enabled=false` and local phase `waiting_inventory`
+until explicit inventory refresh, preserving ordinary serving with old peers.
+It does not itself
 activate warm-only network admission. The default shadow rollout sends leases for
 explicit mode/status but no residency commands. Shadow lease acknowledgement is
 not live ownership or actual capacity credit.
 
 The `selected_models` allowlist is populated by verified active downloaded network
 inventory, not a model picker, arbitrary local/off-catalog discovery or a download
-request. It can be broader than saved `enabled_models`; advertising it does not
-rewrite serving/preload/idle preferences. Ordinary restarts reuse it rather than
-automatically consenting to new catalog builds.
+request. It can be broader than saved `enabled_models`; its metadata is carried
+in optional `register.autopilot_inventory` (`[]ModelInfo`, at most 256 entries),
+not in ordinary `register.models`. Only consented IDs with a nonempty verified
+weight hash are accepted. Ordinary models win duplicate IDs and weight identity.
+Observation-only models do not grant public/owner routing, capacity or legacy
+load permission until a matching live lease is acknowledged. Shadow planning
+can inspect that metadata without granting permission. Old coordinators ignore
+the additive field and cannot activate protocol 3. Both the ordinary JSON encoder
+and the raw-attestation registration encoder preserve this separation. Ordinary
+restarts reuse the recorded inventory rather than automatically consenting to
+new catalog builds. Implementation: `coordinator/registry/autopilot_inventory.go`,
+`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientCodec.swift`.
 
 ### `EncryptedPayload`
 

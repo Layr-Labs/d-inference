@@ -32,7 +32,7 @@ export function CatalogEmpty({ kind, onReset, onRetry }: { kind: "error" | "empt
       <h3 className="text-lg font-medium leading-snug text-text-primary">{copy.title}</h3>
       <p className="mt-2 max-w-sm text-sm leading-relaxed text-text-secondary">{copy.description}</p>
       <div className="mt-6 flex flex-wrap items-center justify-center gap-4">
-        <button onClick={isFiltered ? onReset : onRetry} className="focus-ring inline-flex min-h-10 items-center gap-2 rounded-lg bg-coral px-4 text-sm font-medium text-white dark:text-bg-primary">
+        <button onClick={isFiltered ? onReset : onRetry} className="focus-ring inline-flex min-h-10 items-center gap-2 rounded-lg bg-action-primary px-4 text-sm font-medium text-white">
           {!isFiltered && <RefreshCw size={14} />}
           {isFiltered ? "Clear filters" : "Try again"}
         </button>

@@ -93,7 +93,7 @@ export function SmallModelsInterest({
         onClick={register}
         disabled={!ready}
         className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg
-                   bg-accent-brand text-white font-medium text-sm
+                   bg-action-primary text-white font-medium text-sm
                    hover:bg-accent-brand-hover
                    disabled:opacity-40 disabled:cursor-not-allowed
                    transition-colors"

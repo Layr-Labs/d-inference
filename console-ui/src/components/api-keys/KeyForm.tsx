@@ -214,7 +214,7 @@ export function KeyForm({
                     >
                       <span
                         className={`flex items-center justify-center w-4 h-4 rounded border shrink-0 ${
-                          checked ? "bg-coral border-coral text-white" : "border-border-subtle"
+                          checked ? "bg-action-primary border-coral text-white" : "border-border-subtle"
                         }`}
                       >
                         {checked && <Check size={11} />}
@@ -252,7 +252,7 @@ export function KeyForm({
       >
         <span
           className={`mt-0.5 flex items-center justify-center w-4 h-4 rounded border shrink-0 ${
-            selfRouteOnly ? "bg-teal border-teal text-white" : "border-border-subtle"
+            selfRouteOnly ? "bg-action-primary border-action-primary text-white" : "border-border-subtle"
           }`}
         >
           {selfRouteOnly && <Check size={11} />}
@@ -277,7 +277,7 @@ export function KeyForm({
         <button
           onClick={handleSubmit}
           disabled={!canSubmit}
-          className="flex-1 py-2.5 rounded-lg bg-coral text-white dark:text-bg-primary text-sm font-semibold hover:opacity-90 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+          className="flex-1 py-2.5 rounded-lg bg-action-primary text-white text-sm font-semibold hover:opacity-90 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
         >
           {submitting && <Loader2 size={14} className="animate-spin" />}
           {mode === "create" ? "Create key" : "Save changes"}

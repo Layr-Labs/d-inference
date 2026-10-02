@@ -177,7 +177,7 @@ export default function BillingContent() {
 
               <button
                 onClick={() => setBuyOpen(true)}
-                className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-coral border-2 border-ink text-white text-sm font-bold hover:opacity-90 transition-all"
+                className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-action-primary border border-action-primary text-white text-sm font-bold hover:opacity-90 transition-all"
               >
                 <CreditCard size={14} />
                 Buy Credits
@@ -208,7 +208,7 @@ export default function BillingContent() {
               <button
                 onClick={handleRedeem}
                 disabled={inviteLoading || !inviteCode.trim()}
-                className="px-5 py-2.5 rounded-lg bg-coral border-2 border-ink text-white text-sm font-bold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-2"
+                className="px-5 py-2.5 rounded-lg bg-action-primary border border-action-primary text-white text-sm font-bold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-2"
               >
                 {inviteLoading ? (
                   <Loader2 size={14} className="animate-spin" />
@@ -416,7 +416,7 @@ export default function BillingContent() {
           <button
             onClick={handleStripeCheckout}
             disabled={actionLoading || !buyAmount || parseFloat(buyAmount) <= 0 || parseFloat(buyAmount) > 20}
-            className="w-full py-3 rounded-lg bg-coral border border-border-dim text-white font-bold text-sm
+            className="w-full py-3 rounded-lg bg-action-primary border border-border-dim text-white font-bold text-sm
                        hover:opacity-90
                        disabled:opacity-50
                        transition-all flex items-center justify-center gap-2"

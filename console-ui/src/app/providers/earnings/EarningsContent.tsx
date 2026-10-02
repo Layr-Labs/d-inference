@@ -113,7 +113,7 @@ export default function EarningsContent() {
               login();
             }}
             disabled={!ready}
-            className="px-4 py-2 rounded-lg bg-coral text-white text-sm font-medium hover:opacity-90 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-4 py-2 rounded-lg bg-action-primary text-white text-sm font-medium hover:opacity-90 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {ready ? "Sign In" : "Loading..."}
           </button>

@@ -111,7 +111,7 @@ export function StripePayoutsCard({
           <button
             onClick={onOnboard}
             disabled={onboardLoading || !selectedCountry || status?.payouts_available === false}
-            className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-teal border-2 border-ink text-white text-sm font-bold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+            className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-action-primary border border-action-primary text-white text-sm font-bold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
           >
             {onboardLoading ? <Loader2 size={14} className="animate-spin" /> : <Building2 size={14} />}
             {onboardLoading ? "Redirecting..." : migrating ? "Update bank details" : "Link bank via Stripe"}
@@ -132,7 +132,7 @@ export function StripePayoutsCard({
           <button
             onClick={onOpenWithdraw}
             disabled={!canWithdraw}
-            className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-teal border-2 border-ink text-white text-sm font-bold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+            className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-action-primary border border-action-primary text-white text-sm font-bold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
           >
             <ArrowDownToLine size={14} />
             {confirmationPending ? "Check withdrawal" : "Withdraw"}
@@ -159,7 +159,7 @@ export function StripePayoutsCard({
           <button
             onClick={onOnboard}
             disabled={onboardLoading || !selectedCountry || status?.payouts_available === false}
-            className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-teal border-2 border-ink text-white text-sm font-bold hover:opacity-90 disabled:opacity-50 transition-all"
+            className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-action-primary border border-action-primary text-white text-sm font-bold hover:opacity-90 disabled:opacity-50 transition-all"
           >
             {onboardLoading ? <Loader2 size={14} className="animate-spin" /> : <Building2 size={14} />}
             {onboardLoading ? "Redirecting..." : restricted ? "Provide more info" : "Continue setup"}

@@ -33,8 +33,8 @@ export default function StatsPage() {
               <div className="space-y-9 pb-9">
                 <NetworkGeography stats={stats} />
                 <TrafficPanel refreshToken={network.fetchedAt} />
-                <ModelDemandPanel refreshToken={network.fetchedAt} catalogData={network.catalogData} />
                 <ModelCapacityLandscape stats={stats} catalogData={network.catalogData} capacityModels={network.capacityModels} />
+                <ModelDemandPanel refreshToken={network.fetchedAt} catalogData={network.catalogData} />
                 <HardwareComposition stats={stats} />
               </div>
             </>

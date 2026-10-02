@@ -68,7 +68,7 @@ export function GlobalWithdrawModal({ status, balanceMicroUsd, amount, loading, 
       {confirmationPending && <p role="status" className="text-sm text-text-secondary mb-4">We are confirming your existing withdrawal. Check its status before starting another.</p>}
       <div className="flex gap-3">
         <button onClick={onCancel} disabled={loading} className="flex-1 py-3 rounded-lg border border-border-dim text-sm font-bold disabled:opacity-50">{confirmationPending ? "Close" : "Cancel"}</button>
-        <button onClick={onConfirm} disabled={loading || (!confirmationPending && !valid)} className="flex-1 py-3 rounded-lg bg-teal text-white text-sm font-bold flex items-center justify-center gap-2 disabled:opacity-50">
+        <button onClick={onConfirm} disabled={loading || (!confirmationPending && !valid)} className="flex-1 py-3 rounded-lg bg-action-primary text-white text-sm font-bold flex items-center justify-center gap-2 disabled:opacity-50">
           {loading ? <Loader2 size={14} className="animate-spin" /> : <ArrowRight size={14} />}
           {buttonLabel}
         </button>

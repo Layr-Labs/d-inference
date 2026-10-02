@@ -18,7 +18,7 @@ export function TopBar({ title }: { title?: string }) {
 
   return (
     <>
-      <header className="flex h-[64px] shrink-0 items-center gap-3 border-b border-border-dim px-4 sm:px-8">
+      <header className="console-topbar flex h-[64px] shrink-0 items-center gap-3 border-b border-border-dim px-4 sm:px-8">
         <button type="button" onClick={() => setSidebarOpen(true)} aria-label="Open navigation" aria-controls="console-navigation" aria-expanded={sidebarOpen} className="-ml-2 rounded-lg p-2 text-text-secondary hover:bg-bg-hover sm:hidden"><Menu size={19} /></button>
         <div className="flex min-w-0 items-center gap-3 text-[13px]">
           <span className="hidden text-text-tertiary sm:inline">Console</span><span className="hidden text-border-subtle sm:inline" aria-hidden="true">/</span>

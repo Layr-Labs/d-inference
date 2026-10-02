@@ -8,6 +8,7 @@ import { useStore } from "@/lib/store";
 import { useAuth } from "@/hooks/useAuth";
 import { useTheme } from "@/components/app-providers/ThemeProvider";
 import { CommunityLinks } from "@/components/community/CommunityLinks";
+import { Wordmark } from "./brand/Wordmark";
 import { BloomMark } from "./brand/BloomMark";
 import { accountItems, navigationGroups, isNavigationActive } from "./navigation/items";
 import { WorkspaceSwitcher } from "./navigation/WorkspaceSwitcher";
@@ -38,8 +39,8 @@ export function Sidebar() {
 
   if (!sidebarOpen) {
     return (
-      <aside className="hidden w-[60px] shrink-0 flex-col items-center border-r border-border-dim bg-bg-secondary px-2 py-5 sm:flex" aria-label="Collapsed navigation">
-        <a href="/" aria-label="Darkbloom home" className="mb-5 rounded p-1 text-accent-brand"><BloomMark size={24} /></a>
+      <aside className="console-sidebar hidden w-[60px] shrink-0 flex-col items-center border-r border-border-dim bg-bg-secondary px-2 py-5 sm:flex" aria-label="Collapsed navigation">
+        <a href="/" aria-label="Darkbloom home" className="mb-5 rounded p-1 text-text-primary"><BloomMark size={24} /></a>
         <button type="button" onClick={() => setSidebarOpen(true)} aria-label="Expand navigation" title="Expand navigation (⌘/Ctrl B)" className="mb-4 rounded-lg p-2.5 text-text-tertiary hover:bg-bg-hover"><PanelLeftOpen size={18} /></button>
         <nav aria-label="Main navigation" className="w-full space-y-1">
           {groups.flatMap((group) => group.items).map((item) => <NavigationLink key={item.href} item={item} active={isNavigationActive(pathname, item.href)} collapsed />)}
@@ -54,20 +55,19 @@ export function Sidebar() {
   return (
     <>
       <div onClick={close} className="fixed inset-0 z-40 bg-black/25 backdrop-blur-[2px] sm:hidden" aria-hidden="true" />
-      <aside ref={ref} id="console-navigation" role={mobile ? "dialog" : undefined} aria-modal={mobile ? true : undefined} aria-label="Console navigation" className="sidebar-animate fixed inset-y-0 left-0 z-50 flex h-dvh w-[min(300px,85vw)] shrink-0 flex-col border-r border-border-dim bg-bg-secondary sm:static sm:w-[244px]">
+      <aside ref={ref} id="console-navigation" role={mobile ? "dialog" : undefined} aria-modal={mobile ? true : undefined} aria-label="Console navigation" className="console-sidebar sidebar-animate fixed inset-y-0 left-0 z-50 flex h-dvh w-[min(300px,85vw)] shrink-0 flex-col border-r border-border-dim bg-bg-secondary sm:static sm:w-[244px]">
         <div className="px-5 pb-3 pt-6">
           <div className="flex items-center gap-3">
             <a href="/" onClick={closeOnMobile} className="flex min-w-0 flex-1 items-center gap-2.5 rounded text-ink">
-              <BloomMark size={26} className="shrink-0 text-accent-brand" />
-              <span className="font-logo text-[27px] leading-none tracking-tight">Darkbloom</span>
+              <Wordmark />
             </a>
             <button type="button" onClick={close} aria-label="Collapse navigation" title="Collapse navigation (⌘/Ctrl B)" className="-mr-2 rounded-lg p-2 text-text-tertiary hover:bg-bg-hover hover:text-text-primary"><PanelLeftClose size={16} /></button>
           </div>
-          <div className="mt-2.5 flex items-center gap-2 pl-[36px] text-[11px] text-text-tertiary">
-            <span>Console</span><span className="rounded border border-border-default px-1.5 py-0.5 text-[10px] leading-none">Alpha</span>
+          <div className="mt-3 flex items-center gap-2 text-[11px] text-text-tertiary">
+            <span>Console</span><span className="rounded bg-bg-tertiary px-1.5 py-0.5 text-[10px] leading-none">Alpha</span>
           </div>
           <WorkspaceSwitcher onNavigate={closeOnMobile} />
-          {mode === "consumer" ? <button type="button" onClick={startChat} className="flex h-10 w-full items-center justify-between rounded-lg bg-accent-brand px-3 text-[13px] font-medium text-white transition-colors hover:bg-accent-brand-hover dark:text-bg-primary"><span>New conversation</span><Plus size={16} /></button> : <a href="/providers/setup" onClick={closeOnMobile} className="flex h-10 w-full items-center justify-between rounded-lg bg-accent-brand px-3 text-[13px] font-medium text-white transition-colors hover:bg-accent-brand-hover dark:text-bg-primary"><span>{providerAccount.status === "linked" ? "Add a Mac" : "Set up a Mac"}</span><Plus size={16} /></a>}
+          {mode === "consumer" ? <button type="button" onClick={startChat} className="flex h-10 w-full items-center justify-between rounded-lg bg-action-primary px-3 text-[13px] font-medium text-white transition-colors hover:bg-accent-brand-hover"><span>New conversation</span><Plus size={16} /></button> : <a href="/providers/setup" onClick={closeOnMobile} className="flex h-10 w-full items-center justify-between rounded-lg bg-action-primary px-3 text-[13px] font-medium text-white transition-colors hover:bg-accent-brand-hover"><span>{providerAccount.status === "linked" ? "Add a Mac" : "Set up a Mac"}</span><Plus size={16} /></a>}
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-5">
           {groups.map((group) => (

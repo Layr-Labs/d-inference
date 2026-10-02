@@ -33,6 +33,42 @@ function mockResponse(value = snapshot) { return Response.json(value); }
 function renderPanel() { render(<ModelDemandPanel refreshToken={null} catalogData={null} />); }
 
 describe("Model demand", () => {
+  it("keeps a tapped interval visible after touch release while mouse leave clears it", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockResponse())); renderPanel();
+    const chart = await screen.findByRole("group", { name: "Published requests by model over time" });
+    vi.spyOn(chart.querySelector("svg")!, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 240, 190));
+    fireEvent.pointerDown(chart, { pointerType: "touch", clientX: 5 });
+    const observation = "130 published requests · 2 of 2 listed models have published observations.";
+    expect(screen.getByText(observation)).toBeInTheDocument();
+    fireEvent.pointerOut(chart, { pointerType: "touch", relatedTarget: document.body });
+    expect(screen.getByText(observation)).toBeInTheDocument();
+    fireEvent.pointerOut(chart, { pointerType: "mouse", relatedTarget: document.body });
+    expect(screen.queryByText(observation)).not.toBeInTheDocument();
+  });
+
+  it("keeps partial-publication markers visible when a partial interval sets the scale", async () => {
+    const partial = structuredClone(snapshot);
+    partial.models[1].time_series[1].counts = partial.models[1].time_series[0].counts;
+    partial.models[1].time_series[0].counts = null;
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockResponse(partial))); renderPanel();
+    const chart = await screen.findByRole("group", { name: "Published requests by model over time" });
+    const markers = chart.querySelectorAll('line[stroke-dasharray="2 3"]');
+    expect(markers).toHaveLength(2);
+    for (const marker of markers) expect(Number(marker.getAttribute("y1"))).toBeGreaterThanOrEqual(0);
+  });
+  it("compares all models first and links traffic shares to model outcomes", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockResponse())); renderPanel();
+    const comparison = await screen.findByRole("group", { name: "Published requests by model over time" });
+    expect(screen.getByRole("combobox", { name: historyModelLabel })).toHaveValue("");
+    expect(screen.getByRole("img", { name: "model-a: 100 published requests, 76.9% of published model traffic" })).toBeInTheDocument();
+    fireEvent.focus(comparison);
+    expect(screen.getByText("130 published requests · 2 of 2 listed models have published observations.")).toBeInTheDocument();
+    fireEvent.keyDown(comparison, { key: "ArrowRight" });
+    expect(screen.getByText("Interval not published. This is not a measured zero.")).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole("list", { name: "Model traffic legend" })).getByRole("button", { name: "model-b" }));
+    expect(screen.getByRole("combobox", { name: historyModelLabel })).toHaveValue("model-b");
+    expect(screen.getByRole("group", { name: "model-b published demand history chart" })).toBeInTheDocument();
+  });
   it("sorts models by capacity and expands their outcome details", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockResponse()));
     renderPanel();
@@ -60,7 +96,8 @@ describe("Model demand", () => {
   });
   it("offers metric charts and interval data without zero-filling gaps", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockResponse())); renderPanel();
-    await screen.findByRole("group", { name: "model-a published demand history chart" });
+    await screen.findByRole("group", { name: "Published requests by model over time" });
+    fireEvent.change(screen.getByRole("combobox", { name: historyModelLabel }), { target: { value: "model-a" } });
     fireEvent.change(screen.getByRole("combobox", { name: "Demand history metric" }), { target: { value: "capacity_rejected" } });
     expect(screen.getByRole("combobox", { name: "Demand history metric" })).toHaveValue("capacity_rejected");
     fireEvent.change(screen.getByRole("combobox", { name: historyModelLabel }), { target: { value: "model-b" } });

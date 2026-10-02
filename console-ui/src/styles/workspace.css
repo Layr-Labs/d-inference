@@ -1,0 +1,32 @@
+.brand-wordmark {
+  display: block;
+  width: 158px;
+  height: auto;
+  filter: brightness(0);
+}
+.dark .brand-wordmark { filter: brightness(0) invert(1); }
+
+.console-sidebar { background: var(--bg-secondary); }
+.console-navigation-link[aria-current='page'] {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.console-navigation-link[aria-current='page'] svg { color: var(--accent-brand); }
+.console-navigation-link { transition: background-color 150ms, color 150ms; }
+.workspace-tab { position: relative; }
+.workspace-tab[aria-current='true']::after {
+  position: absolute;
+  content: '';
+  inset: auto 12px -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--action-primary);
+}
+.console-topbar { background: var(--bg-primary); }
+.appearance-preview { transition: transform 160ms ease; }
+.appearance-option:hover .appearance-preview { transform: translateY(-2px); }
+
+@media (prefers-reduced-motion: reduce) {
+  .console-navigation-link, .appearance-preview { transition: none; }
+  .appearance-option:hover .appearance-preview { transform: none; }
+}

@@ -1,14 +1,9 @@
 import { useEffect, useState } from 'react';
-import { ArrowDownToLine, BookOpen, Cpu, Send, Pause, Play } from 'lucide-react';
+import { Pause, Play } from 'lucide-react';
+import { ParticleScene } from './ParticleScene';
 import type { Snapshot } from '../../../shared/contracts';
 import { activityFresh } from './data';
 import styles from './stats.module.css';
-const stages = [
-  { name: 'Receive', Icon: ArrowDownToLine },
-  { name: 'Read', Icon: BookOpen },
-  { name: 'Generate', Icon: Cpu },
-  { name: 'Send', Icon: Send },
-];
 export function RequestFlow({
   state,
   preview,
@@ -18,8 +13,7 @@ export function RequestFlow({
   preview: boolean;
   compact?: boolean;
 }) {
-  const [tick, setTick] = useState(0),
-    [paused, setPaused] = useState(false),
+  const [paused, setPaused] = useState(false),
     [reduced, setReduced] = useState(false);
   const [now, setNow] = useState(Date.now() / 1000);
   useEffect(() => {
@@ -43,11 +37,6 @@ export function RequestFlow({
     const timer = setInterval(() => setNow(Date.now() / 1000), 2000);
     return () => clearInterval(timer);
   }, []);
-  useEffect(() => {
-    if (!animate) return;
-    const timer = setInterval(() => setTick((value) => value + 1), 800);
-    return () => clearInterval(timer);
-  }, [animate]);
   const models = (state.activity.models || []).filter((model) =>
     ['running', 'idle'].includes(model.state),
   );
@@ -86,49 +75,38 @@ export function RequestFlow({
         <span className={styles.liveDot}>{fresh ? 'Connected' : 'Not live'}</span>
       </div>
       {preview && (
-        <div className={styles.stages}>
-          {stages.map(({ name, Icon }, i) => (
-            <div
-              key={name}
-              className={styles.stage}
-              data-active={fresh && !!running && Math.floor(tick / 2) % 4 === i}
-            >
-              <Icon size={19} />
-              <span>{name}</span>
-              {i < 3 && (
-                <i className={styles.connector}>
-                  <b />
-                </i>
-              )}
-            </div>
-          ))}
+        <ParticleScene
+          animate={animate}
+          active={fresh && !!running}
+          names={models.map(
+            (model) => state.models.find((m) => m.id === model.model)?.display_name || model.model,
+          )}
+        />
+      )}
+      {!preview && (
+        <div className={styles.modelLanes}>
+          {models.map((model, index) => {
+            return (
+              <div key={model.model}>
+                <span className={styles.modelGlyph}>{index === 0 ? '◎' : '✧'}</span>
+                <strong>
+                  {state.models.find((m) => m.id === model.model)?.display_name || model.model}
+                </strong>
+                <span className={styles.lane}>
+                  <i
+                    style={{
+                      width: fresh
+                        ? `${preview ? Math.min(100, model.running * 4) : model.running > 0 ? 100 : 0}%`
+                        : '0%',
+                    }}
+                  />
+                </span>
+                <small>{!fresh ? 'Waiting' : `${model.running} running`}</small>
+              </div>
+            );
+          })}
         </div>
       )}
-      <div className={styles.modelLanes}>
-        {models.map((model, index) => {
-          const stage = (Math.floor(tick / 2) + index * 2) % 4;
-          return (
-            <div key={model.model}>
-              <span className={styles.modelGlyph}>{index === 0 ? '◎' : '✧'}</span>
-              <strong>
-                {state.models.find((m) => m.id === model.model)?.display_name || model.model}
-              </strong>
-              <span className={styles.lane}>
-                <i
-                  style={{
-                    width: fresh
-                      ? `${preview ? 25 + stage * 23 : model.running > 0 ? 100 : 0}%`
-                      : '0%',
-                  }}
-                />
-              </span>
-              <small>
-                {!fresh ? 'Waiting' : preview ? stages[stage].name : `${model.running} running`}
-              </small>
-            </div>
-          );
-        })}
-      </div>
     </section>
   );
 }

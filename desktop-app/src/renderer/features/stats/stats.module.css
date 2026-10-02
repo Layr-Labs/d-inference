@@ -106,76 +106,6 @@
   height: 5px;
   margin-right: 6px;
 }
-.stages {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 30px;
-  margin-bottom: 28px;
-}
-.stage {
-  display: grid;
-  justify-items: center;
-  gap: 10px;
-  color: var(--muted);
-  position: relative;
-  transition: color 0.3s;
-}
-.stage > svg {
-  padding: 13px;
-  width: 48px;
-  height: 48px;
-  background: var(--raised-bg);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  transition:
-    background 0.3s,
-    box-shadow 0.3s;
-}
-.stage > span {
-  font-size: 11px;
-}
-.stage[data-active='true'] {
-  color: var(--accent-brand);
-}
-.stage[data-active='true'] > svg {
-  background: var(--blue-wash);
-  box-shadow: 0 0 22px color-mix(in srgb, var(--accent-brand) 14%, transparent);
-  border-color: var(--accent-brand);
-}
-.connector {
-  position: absolute;
-  top: 24px;
-  left: calc(50% + 30px);
-  width: calc(100% - 30px);
-  height: 1px;
-  background: var(--line);
-}
-.connector b {
-  display: block;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--accent-brand);
-  position: absolute;
-  top: -2px;
-  left: 0;
-  opacity: 0;
-}
-.flow[data-animate='true'] .connector b {
-  opacity: 1;
-  animation: packet 1.6s linear infinite;
-}
-.stage:nth-child(2) .connector b {
-  animation-delay: -0.5s;
-}
-.stage:nth-child(3) .connector b {
-  animation-delay: -1s;
-}
-@keyframes packet {
-  to {
-    left: 100%;
-  }
-}
 .modelLanes {
   display: grid;
   gap: 15px;
@@ -366,22 +296,11 @@
   .flow {
     padding: 20px;
   }
-  .stages {
-    gap: 10px;
-  }
-  .connector {
-    width: calc(100% - 50px);
-  }
   .modelLanes > div {
     grid-template-columns: 20px minmax(95px, 1fr) minmax(35px, 1fr) 50px;
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .connector b {
-    animation: none !important;
-  }
-  .stage,
-  .stage > svg,
   .lane i {
     transition: none !important;
   }
@@ -397,21 +316,6 @@
 }
 .flow[data-compact='true'] .flowCounts strong {
   font-size: 28px;
-}
-.flow[data-compact='true'] .stages {
-  margin-bottom: 14px;
-}
-.flow[data-compact='true'] .stage > svg {
-  width: 38px;
-  height: 38px;
-  padding: 9px;
-  border-radius: 9px;
-}
-.flow[data-compact='true'] .connector {
-  top: 19px;
-}
-.flow[data-compact='true'] .stage {
-  gap: 6px;
 }
 .flow[data-compact='true'] .modelLanes {
   gap: 9px;

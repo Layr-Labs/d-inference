@@ -121,14 +121,17 @@ Missing location data never lights illustrative locations in production.
 
 Home is a single-viewport contribution summary with session output tokens,
 requests, network totals, and current model activity. Its preview animates
-simulated request stages; production uses current native activity and never
+simulated requests gathering around model cores and fanning into token streams; production uses current native activity and never
 invents stage events. Stats replaces Analysis and includes an inspectable traffic
 curve, model traffic, and settled-token milestones. The current design preview
 supplies clearly labeled sample 24-hour model traffic, outcome rate and generation
 speed. Production shows observed interval deltas and leaves unavailable metrics
 unknown. Future runtime/coordinator work must supply real per-model traffic bins,
 request outcomes, generation speeds and request-stage events before those preview
-metrics can become live. Counter resets and reversed timestamps are excluded.
+metrics can become live. The particle canvas caps drawing at roughly 30 frames
+per second, limits pixel density, and pauses off-screen, when hidden, when the
+provider is inactive, or when motion is paused/reduced. Counter resets and
+reversed timestamps are excluded.
  **View earnings** opens the desktop Earnings screen, which supports
 7/30-day periods, earnings/output-token/request metrics, model/Mac breakdowns,
 and exact **Copy CSV**. Failed reads retain a labeled prior observation only

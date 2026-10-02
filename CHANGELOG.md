@@ -2,6 +2,8 @@
 
 ## Unreleased — macOS desktop app
 
+- Replace the desktop preview's step diagram with a continuous particle scene: incoming requests gather around orbiting model cores, then spread into token trails. Preserve pause, reduced-motion, inactive-provider, and off-screen behavior; keep illustrative motion separate from native activity.
+
 - Replace Analysis with Stats and add a visual-first traffic preview with animated request stages, model traffic shares, an inspectable traffic curve, and milestones. Make Home a single-screen contribution view with updating session counters and quieter earnings. Keep illustrative metrics confined to development preview; live mode uses existing native observations until richer APIs are added.
 
 - Rework My Macs around a fleet overview, machine selector, and local Overview/Models/Cooling/Analysis/Settings panels. Preserve scheduling, idle memory, preload, account/storage controls, model metadata, Studio/Earnings shortcuts, and cancellable native operations. Label other machines View only; selected remote data follows fresh snapshots. Align sidebar social links in a shared hover row.

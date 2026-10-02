@@ -78,50 +78,65 @@ func (s *Server) resolveSelfRoutePolicy(r *http.Request) selfRoutePolicy {
 // real cause. Returns false (no write) when at least one owned, online
 // machine can serve this request.
 func (s *Server) selfRouteUnavailable(w http.ResponseWriter, r *http.Request, owner, model string, traits registry.RequestTraits, requiresVision bool) bool {
+	if reject := s.selfRouteRejection(w, r, owner, model, traits, requiresVision); reject != nil {
+		reject()
+		return true
+	}
+	return false
+}
+
+// selfRouteRejection completes every owned-provider walk before returning the
+// terminal store lookup or HTTP write. Callers can release their scan permit
+// before applying it; nil means that an owned provider can serve the request.
+func (s *Server) selfRouteRejection(w http.ResponseWriter, r *http.Request, owner, model string, traits registry.RequestTraits, requiresVision bool) func() {
 	online, servesRequest := s.registry.OwnedProviderSummary(owner, model, traits, requiresVision)
 	if servesRequest > 0 {
-		return false
+		return nil
 	}
 	if online == 0 {
-		linked := 0
-		if recs, err := s.store.ListProvidersByAccount(r.Context(), owner); err == nil {
-			linked = len(recs)
+		return func() {
+			linked := 0
+			if recs, err := s.store.ListProvidersByAccount(r.Context(), owner); err == nil {
+				linked = len(recs)
+			}
+			if linked == 0 {
+				writeJSON(w, http.StatusConflict, errorResponse("no_linked_machine",
+					"self-route requested but no machine is linked to your account — run `darkbloom login` on your Mac to link it",
+					withCode("no_linked_machine")))
+				return
+			}
+			w.Header().Set("Retry-After", "30")
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("machine_offline",
+				"your machine is offline — self-route will not fall back to paid providers; start your Darkbloom node and retry",
+				withCode("machine_offline")))
+			return
 		}
-		if linked == 0 {
-			writeJSON(w, http.StatusConflict, errorResponse("no_linked_machine",
-				"self-route requested but no machine is linked to your account — run `darkbloom login` on your Mac to link it",
-				withCode("no_linked_machine")))
-			return true
-		}
-		w.Header().Set("Retry-After", "30")
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("machine_offline",
-			"your machine is offline — self-route will not fall back to paid providers; start your Darkbloom node and retry",
-			withCode("machine_offline")))
-		return true
 	}
 	// Online and the model is served for plain requests, but not for THIS
 	// request's shape: the machine lacks a request-shape capability (tools,
 	// tool constraints) or the build isn't vision-capable (media). Deterministic for this machine, so
 	// say the real cause rather than "not loaded".
 	if _, servesBase := s.registry.OwnedProviderSummary(owner, model, registry.RequestTraits{}, false); servesBase > 0 {
-		var reason string
-		switch {
-		case requiresVision && !traits.HasTools:
-			reason = "image/video input needs a vision-capable build of the model"
-		case traits.HasTools && !requiresVision:
-			reason = "tool calls need a node whose chat template renders cleanly"
-		default:
-			reason = "this request needs capabilities your node build doesn't advertise (vision-capable model / tool support)"
+		return func() {
+			var reason string
+			switch {
+			case requiresVision && !traits.HasTools:
+				reason = "image/video input needs a vision-capable build of the model"
+			case traits.HasTools && !requiresVision:
+				reason = "tool calls need a node whose chat template renders cleanly"
+			default:
+				reason = "this request needs capabilities your node build doesn't advertise (vision-capable model / tool support)"
+			}
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
+				fmt.Sprintf("your machine serves model %q but cannot take this request: %s — update your Darkbloom node or load a capable build", model, reason),
+				withCode("model_capability_unsupported")))
 		}
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
-			fmt.Sprintf("your machine serves model %q but cannot take this request: %s — update your Darkbloom node or load a capable build", model, reason),
-			withCode("model_capability_unsupported")))
-		return true
 	}
 	// Online, but no owned machine currently serves this model.
-	w.Header().Set("Retry-After", "15")
-	writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_loaded",
-		fmt.Sprintf("model %q is not available on your machine — load it on your node and retry", model),
-		withCode("model_not_loaded")))
-	return true
+	return func() {
+		w.Header().Set("Retry-After", "15")
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_loaded",
+			fmt.Sprintf("model %q is not available on your machine — load it on your node and retry", model),
+			withCode("model_not_loaded")))
+	}
 }

@@ -1076,6 +1076,11 @@ without executing Swift or a GPU.
 SDK 27 qualification uses the same prompt and symmetric metadata fixtures
 before its watchdog-driven general provider pass; the shared action exports
 them for that step without enabling native opt-ins.
+Caller regressions also verify that disabled native tests skip before fixture
+access or MTP assertions, while enabled missing fault fixtures fail. Provisioning
+reserves a private output namespace atomically and creates files exclusively;
+offline checks pin complete shard membership, CLI forwarding, existing environment
+exports and the actual two startup, four prefix and one retained-fault selectors.
 
 `BetaCommandTests` and `IdleCommandTests` drive `setBetaFeature` and
 `setIdleUnloadMinutes` with an explicit `configPath` in a unique temporary

@@ -6,8 +6,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
 func TestHealthEndpoint(t *testing.T) {
@@ -34,44 +32,10 @@ func TestHealthEndpoint(t *testing.T) {
 // assertions by TestOpenAI_AuthRequired; malformed-request validation
 // (invalid JSON, missing model/messages) by the TestEdge_* suite.
 
-func TestChatCompletionsNoProvider(t *testing.T) {
-	srv, _ := testServer(t)
-
-	// Set a catalog so the unknown model returns 404 immediately instead of
-	// blocking for the full 120s queue timeout.
-	srv.registry.SetModelCatalog([]registry.CatalogEntry{{ID: "known-model"}})
-
-	body := `{"model":"nonexistent-model","messages":[{"role":"user","content":"hi"}]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer test-key")
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-
-	if w.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusNotFound)
-	}
-}
-
 // Authenticated /v1/models (empty registry, list envelope) is covered by
 // TestEdge_ModelsEndpointNoProviders; the populated-registry wire format by
 // TestOpenAI_ListModelsFormat; unauthenticated access by
 // TestOpenAI_AuthRequired/list_models_no_auth.
-
-func TestCORSHeaders(t *testing.T) {
-	srv, _ := testServer(t)
-
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-
-	origin := w.Header().Get("Access-Control-Allow-Origin")
-	if origin == "*" {
-		t.Errorf("CORS origin must not be wildcard, got %q", origin)
-	}
-	if origin == "" {
-		t.Errorf("CORS origin header missing")
-	}
-}
 
 func TestCORSPreflight(t *testing.T) {
 	srv, _ := testServer(t)

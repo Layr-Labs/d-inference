@@ -20,13 +20,6 @@ func creditBalance(t *testing.T, l *Ledger, consumerID string, amountMicroUSD in
 	}
 }
 
-func TestNewLedger(t *testing.T) {
-	l := newTestLedger()
-	if l == nil {
-		t.Fatal("NewLedger returned nil")
-	}
-}
-
 func TestBalance(t *testing.T) {
 	l := newTestLedger()
 

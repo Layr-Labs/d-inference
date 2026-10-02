@@ -10,14 +10,14 @@ const (
 )
 
 // replacementRemovedModels computes the next history before any mutation. IDs
-// restored by the selected inventory no longer need removed-model queue cleanup.
+// restored by the effective next inventory no longer need queue cleanup.
 // Reject overflow rather than dropping cleanup owed to earlier replacements.
-func replacementRemovedModels(previous []string, current []protocol.ModelInfo, selected map[string]protocol.ModelInfo) ([]string, bool) {
+func replacementRemovedModels(previous []string, current []protocol.ModelInfo, nextIDs map[string]bool) ([]string, bool) {
 	var removed []string
 	seen := make(map[string]struct{})
 	bytes := 0
 	retain := func(id string) bool {
-		if _, restored := selected[id]; restored {
+		if nextIDs[id] {
 			return true
 		}
 		if _, duplicate := seen[id]; duplicate {

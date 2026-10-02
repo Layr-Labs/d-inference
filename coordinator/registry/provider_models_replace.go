@@ -61,18 +61,17 @@ func (r *Registry) ReplaceProviderModels(p *Provider, msg *protocol.ModelsReplac
 		}
 		tools[id] = struct{}{}
 	}
-	pendingRemoved, withinHistoryBudget := replacementRemovedModels(p.drainRemovedModels, p.Models, selected)
+	nextModels, observerOnly := mergeAutopilotInventory(msg.Models, p.autopilotInventory)
+	nextIDs := make(map[string]bool, len(nextModels))
+	for _, model := range nextModels {
+		nextIDs[model.ID] = true
+	}
+	pendingRemoved, withinHistoryBudget := replacementRemovedModels(p.drainRemovedModels, p.Models, nextIDs)
 	if !withinHistoryBudget {
 		return nil, nil, 0, errors.New("invalid_models")
 	}
 	if msg.ValidateOnly {
 		return nil, nil, 0, nil
-	}
-
-	nextModels, observerOnly := mergeAutopilotInventory(msg.Models, p.autopilotInventory)
-	nextIDs := make(map[string]bool, len(nextModels))
-	for _, model := range nextModels {
-		nextIDs[model.ID] = true
 	}
 
 	// Retained slots survive only with the same weight identity. Cache evidence

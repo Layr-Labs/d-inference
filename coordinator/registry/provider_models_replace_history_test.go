@@ -95,3 +95,64 @@ func TestReplaceProviderModelsBoundsUnconfirmedHistory(t *testing.T) {
 		})
 	}
 }
+
+func TestReplaceProviderModelsBudgetsEffectiveAutopilotInventory(t *testing.T) {
+	observer := protocol.ModelInfo{ID: autopilotTestTarget, WeightHash: "cached"}
+	countHistory := make([]string, maxDrainRemovedModels)
+	for i := range countHistory {
+		countHistory[i] = fmt.Sprintf("removed/%d", i)
+	}
+	for _, tc := range []struct {
+		name    string
+		history []string
+		want    []string
+	}{
+		{"no removals", nil, nil},
+		{"count limit", countHistory, countHistory},
+		{"byte limit", []string{strings.Repeat("x", maxDrainRemovedModelBytes)}, []string{strings.Repeat("x", maxDrainRemovedModelBytes)}},
+		{"restored observer", []string{observer.ID, "earlier"}, []string{"earlier"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := New(testLogger())
+			normal := protocol.ModelInfo{ID: autopilotTestDonor, WeightHash: "selected"}
+			state := autopilotControllerState()
+			state.Active, state.ObserveOnly = false, true
+			p := r.Register("shadow", nil, &protocol.RegisterMessage{
+				Models: []protocol.ModelInfo{normal}, ModelAutopilot: state,
+				AutopilotInventory: []protocol.ModelInfo{observer},
+			})
+			if len(p.Models) != 2 || !p.autopilotOnlyModels[observer.ID] {
+				t.Fatal("registration did not retain the observer inventory")
+			}
+			p.drainRemovedModels = append([]string(nil), tc.history...)
+			generation := r.CommitProviderDrain(p, "drain")
+			if !r.CompleteProviderDrain(p, "drain", generation) {
+				t.Fatal("drain did not settle")
+			}
+			msg := &protocol.ModelsReplaceMessage{
+				RequestID: "replace", DrainRequestID: "drain", Models: []protocol.ModelInfo{normal}, ValidateOnly: true,
+			}
+			if _, _, _, err := r.ReplaceProviderModels(p, msg); err != nil {
+				t.Fatalf("retained observer consumed validation history budget: %v", err)
+			}
+			if !reflect.DeepEqual(p.drainRemovedModels, tc.history) || len(p.Models) != 2 || !p.drainReady {
+				t.Fatal("validation changed history or inventory")
+			}
+			msg.ValidateOnly = false
+			_, removed, receipt, err := r.ReplaceProviderModels(p, msg)
+			if err != nil || len(removed) != 0 || !reflect.DeepEqual(p.Models, []protocol.ModelInfo{normal, observer}) ||
+				!p.autopilotOnlyModels[observer.ID] || !reflect.DeepEqual(p.drainRemovedModels, tc.want) {
+				t.Fatalf("replacement counted retained observer as removed: %v", err)
+			}
+			if !r.ConfirmProviderModelsReceipt(p, msg.RequestID, receipt) {
+				t.Fatal("receipt did not confirm")
+			}
+			markReplacementCapacityFresh(p)
+			_, removed, resumed, _ := r.ResumeProviderModels(p, msg.RequestID, msg.DrainRequestID, 1)
+			if !resumed || !reflect.DeepEqual(removed, tc.want) {
+				t.Fatal("queue cleanup included retained observer models")
+			}
+			assertModelIndexConsistent(t, r)
+		})
+	}
+}

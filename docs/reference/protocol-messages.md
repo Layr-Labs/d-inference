@@ -840,7 +840,8 @@ most `maxDrainRemovedModels = 1024` unique removed IDs and
 `maxDrainRemovedModelBytes = 64 * 1024` total ID bytes per session. Both validation
 and commit return `invalid_models` before any mutation if the next history would
 exceed either bound. Restored IDs leave history before new removals are charged;
-rejection preserves all earlier queue cleanup. Source:
+the effective next inventory includes retained Autopilot shadow models, which
+do not consume removed-model history. Rejection preserves all earlier queue cleanup. Source:
 `coordinator/registry/provider_models_replace_history.go` (`replacementRemovedModels`).
 After resume the coordinator sends a fresh `desired_models` snapshot
 for the replaced inventory, bypassing its prior-snapshot deduplication, then

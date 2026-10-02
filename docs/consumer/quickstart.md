@@ -1,6 +1,6 @@
 # Quickstart: first request in five steps
 
-> Last updated: 2026-09-28
+> Last updated: 2026-10-01
 
 Get an API key from the console, list the models your key can use, and make your first chat completion against `https://api.darkbloom.dev` — first with `curl`, then from the OpenAI and Anthropic SDKs. For developers integrating the API; each step is one action. Route details for everything used here are in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -159,6 +159,7 @@ Direct accounts do not have the upstream first-content SLA. Allow enough time fo
 
 | Response | Cause | Fix |
 |---|---|---|
+| Console: "This message is too large to send" | The complete chat request, including history and optional encryption, exceeds the [transport budget](../reference/api-contracts.md#limits-and-validation); valid individual uploads can exceed it together | Send fewer or smaller images, shorten the conversation, or start a new chat. The refused message and images remain in the current chat; retry checks the request again |
 | 400 `invalid_request_error` naming an output-token field | A negative or malformed `max_tokens`, `max_completion_tokens` or `max_output_tokens` | Use a positive integer bound or omit it for the coordinator default; null and zero retain default-bound behavior ([request contract](../reference/api-contracts.md#inference-4)) |
 | 401 `authentication_error` | `Authorization: Bearer` header missing, or the key is unknown, disabled, expired or revoked | Re-export the key; create or rotate one in the console ([`authentication.md`](authentication.md)) |
 | 402 | Balance or key budget cannot cover the worst-case reservation ([payment-required taxonomy](../architecture/billing.md#payment-required-responses)) | Deposit, or lower `max_tokens` ([`billing.md`](billing.md)) |

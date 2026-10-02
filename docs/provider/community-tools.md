@@ -17,7 +17,7 @@ option.
 
 | Tool | Maintainer | Runs as | What it does | Controls the provider | License |
 |---|---|---|---|---|---|
-| [BloomGauge](https://github.com/cookder/bloomgauge) | [cookder](https://github.com/cookder) | macOS app with a local web dashboard | Shows earnings, network demand and hardware health; recovers stalls with a test request, then a restart; model optimizer, on by default after setup | Yes | MIT |
+| [BloomGauge](https://github.com/cookder/bloomgauge) | [cookder](https://github.com/cookder) | macOS app with a local web dashboard | Shows earnings, network demand and hardware health; recovers stalls with a test request, then a restart; model optimizer, on by default after setup | Yes | Source-available (PolyForm Shield) |
 | [Bloomy](https://github.com/knightfolk/Bloomy) (formerly Darkbloom Control) | [knightfolk](https://github.com/knightfolk) | macOS menu bar app | Shows provider status, earnings and energy estimates; start, stop and restart controls; optional model switching, off by default; optional idle nudge (a small request routed to your own Mac) | Yes | None listed |
 | [Darkbloom Dashboard](https://github.com/SplittyDev/darkbloom-dashboard) | [SplittyDev](https://github.com/SplittyDev) | macOS, iOS and visionOS app, built from source | Shows network health, machine and account statistics and local logs; warm-up and provider restart | Yes | MIT |
 | [Darkbloom Live & Stats](https://github.com/jordglob/darkbloom-live-stats) | [jordglob](https://github.com/jordglob) | Local web dashboard with LaunchAgents | Shows hardware gauges, electricity cost against revenue and account payouts; keeps configured models warm | No | MIT |

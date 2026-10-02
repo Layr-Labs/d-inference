@@ -1,0 +1,611 @@
+--- a/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedEngineFactory.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedEngineFactory.swift
+@@ -1,19 +1,23 @@
+ import Foundation
+ import MLXLMCommon
+ 
+-/// Explicit opt-in only. No model loading, default factory registration, local
+-/// endpoint wiring or MTP casts are changed by this experimental seam.
++/// Explicit opt-in only. The caller starts and verifies its owner and supplies
++/// a tokenizer; these factories never load a local model container or weights.
+ public enum DistributedEngineFactory {
+     public static func makeBridge(
+         owner: any DistributedResidentExecutionOwner,
+         expectedIdentity: DistributedResidentIdentity,
+         profile: DistributedResidentExecutionProfile,
+         tokenizer: TokenizerHandle,
+-        eosTokenIDs: Set<Int>
++        eosTokenIDs: Set<Int>,
++        firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
++        publicModelID: String? = nil
+     ) throws -> EngineV2Bridge {
++        if let publicModelID { try validatePublicModelID(publicModelID) }
+         guard eosTokenIDs.allSatisfy({ 0 <= $0 && $0 < profile.vocabularySize }) else {
+             throw DistributedEngineError.invalidConfiguration("invalid EOS vocabulary")
+         }
++        try firstTokenBudgetPolicy?.validate(maximumPromptTokens: profile.maxPromptTokens)
+         let engine = try DistributedCBv2Engine(
+             owner: owner, expectedIdentity: expectedIdentity,
+             profile: profile, detokenizers: CBv2TextDetokenizerFactory(tokenizer: tokenizer.inner))
+@@ -21,8 +25,42 @@
+         // not measure remote allocations, so no invented parent byte charges are
+         // attached here. The engine reports its owner's conservative capacity.
+         return EngineV2Bridge(
+-            engine: engine, modelId: expectedIdentity.modelID, tokenizer: tokenizer,
++            engine: engine, modelId: publicModelID ?? expectedIdentity.modelID, tokenizer: tokenizer,
+             eosTokenIds: eosTokenIDs, defaultMaxTokens: profile.maxOutputTokens,
+-            maxConcurrentRequests: 1, kvBackendKind: .contiguous)
++            maxConcurrentRequests: 1, kvBackendKind: .contiguous,
++            distributedFirstTokenBudgetPolicy: firstTokenBudgetPolicy)
++    }
++
++    /// Text-only registry construction for a successfully started installed
++    /// session. The bridge takes owner ownership exactly as makeBridge does;
++    /// the registry caller supplies acquisition/release pins and retains it
++    /// through shutdown. A failed factory call leaves cleanup with the caller.
++    public static func makeRegistryEntry(
++        owner: any DistributedResidentExecutionOwner,
++        expectedIdentity: DistributedResidentIdentity,
++        publicModelID: String,
++        profile: DistributedResidentExecutionProfile,
++        tokenizer: TokenizerHandle,
++        eosTokenIDs: Set<Int>,
++        modelType: String? = nil,
++        firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil
++    ) throws -> MultiModelBatchSchedulerEngine.ModelRegistryEntry {
++        let bridge = try makeBridge(
++            owner: owner, expectedIdentity: expectedIdentity, profile: profile,
++            tokenizer: tokenizer, eosTokenIDs: eosTokenIDs,
++            firstTokenBudgetPolicy: firstTokenBudgetPolicy, publicModelID: publicModelID)
++        return .init(tokenizer: tokenizer, modelType: modelType, container: nil,
++                     isVLM: false, engineV2Bridge: bridge, visionGate: nil)
++    }
++
++    /// Same public-route bounds as saved cluster configuration. The installed
++    /// session must separately verify this ID against product ModelManifest.model_id.
++    /// Native CheckpointManifest has no public ID; neither a rewrite nor equality
++    /// with the native runtime's model identity is implied.
++    private static func validatePublicModelID(_ value: String) throws {
++        guard !value.isEmpty, value.utf8.count <= 512,
++              !value.unicodeScalars.contains(where: { $0.value < 33 || $0.value == 127 }) else {
++            throw DistributedEngineError.invalidConfiguration("invalid public model identity")
++        }
+     }
+ }
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedFirstTokenBudgetPolicy.swift
+@@ -0,0 +1,54 @@
++import Foundation
++
++/// Explicit policy for a distributed bridge only. The input count is the actual
++/// tokenized prompt; the allowance starts at trusted handler/frame receipt.
++/// This is a server deadline, not a measurement of external client TTFT.
++public struct DistributedFirstTokenBudgetPolicy: Sendable, Equatable {
++    public let baseMilliseconds: Int64
++    public let millisecondsPerInputToken: Int64
++
++    public init(baseMilliseconds: Int64, millisecondsPerInputToken: Int64) throws {
++        guard baseMilliseconds > 0, millisecondsPerInputToken >= 0 else {
++            throw DistributedFirstTokenBudgetError.invalidPolicy
++        }
++        self.baseMilliseconds = baseMilliseconds
++        self.millisecondsPerInputToken = millisecondsPerInputToken
++    }
++
++    /// The factory validates its full admitted input range before taking owner
++    /// ownership, so valid requests cannot overflow after reserving resources.
++    func validate(maximumPromptTokens: Int) throws {
++        _ = try milliseconds(inputTokenCount: maximumPromptTokens)
++    }
++
++    func restricting(_ context: DistributedRequestDeadlineContext,
++                     receivedAt: ContinuousClock.Instant,
++                     inputTokenCount: Int) throws -> DistributedRequestDeadlineContext {
++        let amount = try milliseconds(inputTokenCount: inputTokenCount)
++        let available = receivedAt.duration(to: context.generationDeadline)
++        // Clamp the duration before advancing the clock. A very large policy
++        // value cannot overflow a clock instant or extend the generation cap.
++        let first = available <= .zero ? context.generationDeadline
++            : receivedAt.advanced(by: min(.milliseconds(amount), available))
++        return context.restricted(to: .init(
++            generationDeadline: context.generationDeadline, firstTokenDeadline: first))
++    }
++
++    private func milliseconds(inputTokenCount: Int) throws -> Int64 {
++        guard inputTokenCount >= 0, let count = Int64(exactly: inputTokenCount) else {
++            throw DistributedFirstTokenBudgetError.invalidTokenCount
++        }
++        let product = millisecondsPerInputToken.multipliedReportingOverflow(by: count)
++        let sum = baseMilliseconds.addingReportingOverflow(product.partialValue)
++        guard !product.overflow, !sum.overflow else {
++            throw DistributedFirstTokenBudgetError.overflow
++        }
++        return sum.partialValue
++    }
++}
++
++public enum DistributedFirstTokenBudgetError: Error, Sendable, Equatable {
++    case invalidPolicy
++    case invalidTokenCount
++    case overflow
++}
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedRequestOrigin.swift
+@@ -0,0 +1,14 @@
++import Foundation
++
++/// A trusted local handler instant, never a client header or cross-host clock.
++/// The HTTP responder scopes it to one request. The scheduler copies it before
++/// its first suspension and then passes the value explicitly to the bridge.
++enum DistributedRequestOrigin {
++    @TaskLocal static var current: ContinuousClock.Instant?
++
++    static func earliest(handler: ContinuousClock.Instant?,
++                         profile: ContinuousClock.Instant?,
++                         now: ContinuousClock.Instant) -> ContinuousClock.Instant {
++        [handler, profile].compactMap { $0 }.reduce(now, min)
++    }
++}
+--- a/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift
+@@ -104,11 +104,14 @@
+         tokenConstraint: (any CBv2TokenConstraint)? = nil,
+         firstContentDeadline: FirstContentDeadline?,
+         profile: RequestProfileBuilder? = nil,
+-        distributedDeadlineContext: DistributedRequestDeadlineContext? = nil
++        distributedDeadlineContext: DistributedRequestDeadlineContext? = nil,
++        distributedRequestOrigin: ContinuousClock.Instant? = nil
+     ) async throws -> AsyncStream<GenerationEvent> {
+         // This is our frame-receipt clock when available, never an upstream wall
+         // timestamp. Local engines are unaffected by the distributed-only context.
+-        let distributedOrigin = profile?.continuousAnchor ?? ContinuousClock.now
++        let distributedOrigin = DistributedRequestOrigin.earliest(
++            handler: distributedRequestOrigin, profile: profile?.continuousAnchor,
++            now: ContinuousClock.now)
+         // Validate the caller-supplied id before it becomes a dictionary key /
+         // cancel-correlation handle: a nil / empty / over-long / non-printable
+         // id is replaced with a fresh generated one (it could never correlate
+@@ -478,10 +481,14 @@
+         let distributed = engine as? DistributedCBv2Engine
+         let originContext = distributed?.deadlineContext(receivedAt: distributedOrigin,
+                                                          firstTokenDeadline: firstContentDeadline?.instant)
+-        let selectedContext = originContext.map { original in
+-            distributedDeadlineContext.map { original.restricted(to: $0) } ?? original
+-        }
+         do {
++            let selectedContext = try originContext.map { original in
++                let bounded = distributedDeadlineContext.map { original.restricted(to: $0) } ?? original
++                return try distributedFirstTokenBudgetPolicy.map { policy in
++                    try policy.restricting(bounded, receivedAt: distributedOrigin,
++                                           inputTokenCount: promptTokens.count)
++                } ?? bounded
++            }
+             if let admission = deadlineAdmission {
+                 // The engine's serialized closure compares projection against
+                 // this same absolute deadline. A second task-group race would
+--- a/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift
+@@ -70,6 +70,8 @@
+     /// construction so B=1 and batched behavior stay identical.
+     let stopTokenIds: Set<Int>
+     let defaultMaxTokens: Int
++    /// Opt-in distributed policy; ignored by ordinary local engines.
++    let distributedFirstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy?
+     let maxConcurrentRequests: Int
+     /// Operational control for atomic first-token deadline admission.
+     /// Parsed once per bridge so runtime behavior cannot change mid-request.
+@@ -313,6 +315,7 @@
+         prefixCacheStatus: PrefixCacheModelStatus? = nil,
+         kvBackendKind: EngineV2KVBackendKind = .contiguous,
+         kvBackendFallbackReason: String? = nil,
++        distributedFirstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
+         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
+     ) {
+         self.ownedEngine = engine
+@@ -329,6 +332,7 @@
+             convertTokenToId: { [inner = tokenizer.inner] in inner.convertTokenToId($0) }
+         )
+         self.defaultMaxTokens = defaultMaxTokens
++        self.distributedFirstTokenBudgetPolicy = distributedFirstTokenBudgetPolicy
+         self.maxConcurrentRequests = maxConcurrentRequests
+         self.prefillDeadlineMode = prefillDeadlineMode
+         self.prefillDeadlineProjectionEnabled = prefillDeadlineProjectionEnabled
+--- a/provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift
+@@ -220,6 +220,9 @@
+     public func streamChatCompletion(
+         request: OpenAIChatCompletionRequest
+     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
++        // Capture before acquisition/tokenization; the outer HTTP task scope
++        // may end once a response is returned, so carry this value explicitly.
++        let distributedRequestOrigin = DistributedRequestOrigin.current
+         let templateControls = self.templateControls.resolvingPromptDate()
+         try checkFirstContentDeadline()
+ 
+@@ -445,7 +448,8 @@
+                         multimodal: visionPrepared.multimodalInput(),
+                         mediaKind: visionPrepared.mediaKind,
+                         firstContentDeadline: firstContentDeadline,
+-                        profile: profile
++                        profile: profile,
++                        distributedRequestOrigin: distributedRequestOrigin
+                     )
+                     do {
+                         try checkFirstContentDeadline()
+@@ -713,7 +717,8 @@
+                     usageSignal: engineV2Usage,
+                     tokenConstraint: tokenConstraint,
+                     firstContentDeadline: firstContentDeadline,
+-                    profile: profile
++                    profile: profile,
++                    distributedRequestOrigin: distributedRequestOrigin
+                 )
+                 do {
+                     try checkFirstContentDeadline()
+--- a/provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift
++++ b/provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift
+@@ -33,15 +33,15 @@
+ }
+ 
+ /// The concrete responder stack the local endpoint always uses:
+-/// auth (outermost) → CORS → MTP-augmented /metrics → chat-upload
++/// receipt origin (outermost) → auth → CORS → MTP-augmented /metrics → chat-upload
+ /// interception (32 MiB body ceiling for the media-bearing chat routes, see
+ /// `LocalChatUploadResponder`) → upstream MLXLMServer router.
+ public typealias LocalInferenceApplication =
+     Application<
+-        LocalAuthResponder<
++        LocalRequestOriginResponder<LocalAuthResponder<
+             CORSResponder<
+                 LocalMetricsResponder<
+-                    LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>
++                    LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>>
+ 
+ /// Builds the local OpenAI-compatible Hummingbird application from a model
+ /// registry expressed as three closures. Shared by `StandaloneServer` and the
+@@ -107,12 +107,12 @@
+     let metricsResponder = LocalMetricsResponder(
+         inner: uploadResponder, service: service, mtpSlots: mtpSlots)
+     let corsResponder = CORSResponder(inner: metricsResponder)
+-    // Auth is the outermost layer so an unauthenticated request is rejected
++    // Auth rejects an unauthenticated request
+     // before reaching the engine. Pass-through when no token is configured.
+     let authedResponder = LocalAuthResponder(inner: corsResponder, token: config.authToken)
+ 
+     return Application(
+-        responder: authedResponder,
++        responder: LocalRequestOriginResponder(inner: authedResponder),
+         configuration: .init(
+             address: .hostname(config.host, port: Int(config.port)),
+             serverName: "darkbloom-provider"
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Server/LocalRequestOriginResponder.swift
+@@ -0,0 +1,19 @@
++import Foundation
++import Hummingbird
++
++/// Capture before auth, body collection, decoding, tokenization or acquisition.
++/// Task-local scope covers upstream routes too; no wall-clock/client field can
++/// replace this origin. Only the distributed engine uses it for deadlines.
++public struct LocalRequestOriginResponder<Inner: HTTPResponder>: HTTPResponder {
++    public typealias Context = Inner.Context
++    public let inner: Inner
++
++    public init(inner: Inner) { self.inner = inner }
++
++    public func respond(to request: Request, context: Context) async throws -> Response {
++        let receivedAt = ContinuousClock.now
++        return try await DistributedRequestOrigin.$current.withValue(receivedAt) {
++            try await inner.respond(to: request, context: context)
++        }
++    }
++}
+--- a/provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift
++++ b/provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift
+@@ -140,6 +140,13 @@
+                 message: ProviderLoop.sanitizedInferenceFailure(
+                     from: error, phase: .generation).message
+             )
++        } catch let error as PreContentDeadlineFailure {
++            // Opt-in distributed HTTP budgets use the existing pre-content
++            // refusal mapping, before any SSE headers or content are returned.
++            return Self.openAIErrorResponse(
++                status: HTTPResponse.Status(code: Int(ProviderLoop.mapInferenceErrorToStatus(error))),
++                message: ProviderLoop.sanitizedInferenceFailure(
++                    from: error, phase: .generation).message)
+         } catch let error as MLXOpenAIServiceError {
+             return Self.openAIErrorResponse(
+                 status: HTTPResponse.Status(
+--- /dev/null
++++ b/provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPOriginTestSupport.swift
+@@ -0,0 +1,119 @@
++import Foundation
++import Hummingbird
++import MLXLMCommon
++import NIOCore
++@testable import ProviderCore
++
++final class HTTPOriginCapture: @unchecked Sendable {
++    private let lock = NSLock()
++    private var instants: [String: ContinuousClock.Instant] = [:]
++    private var origin: ContinuousClock.Instant?
++    private var text = ""
++    private var releases = 0
++    func bodyEntered() {
++        lock.withLock {
++            origin = DistributedRequestOrigin.current
++            instants["body"] = .now
++        }
++    }
++    func mark(_ name: String) { lock.withLock { instants[name] = .now } }
++    func instant(_ name: String) -> ContinuousClock.Instant? { lock.withLock { instants[name] } }
++    var receivedAt: ContinuousClock.Instant? { lock.withLock { origin } }
++    func append(_ value: String) { lock.withLock { text += value } }
++    var output: String { lock.withLock { text } }
++    func release() { lock.withLock { releases += 1 } }
++    var releaseCount: Int { lock.withLock { releases } }
++}
++
++/// Consumption is delayed inside the actual Hummingbird collectBody path.
++struct HTTPOriginBody: AsyncSequence, Sendable {
++    typealias Element = ByteBuffer
++    let json: String
++    let delay: Duration
++    let capture: HTTPOriginCapture
++    struct AsyncIterator: AsyncIteratorProtocol {
++        let body: HTTPOriginBody
++        var delivered = false
++        mutating func next() async throws -> ByteBuffer? {
++            guard !delivered else { return nil }
++            delivered = true
++            body.capture.bodyEntered()
++            try await Task.sleep(for: body.delay)
++            body.capture.mark("bodyReady")
++            return ByteBuffer(string: body.json)
++        }
++    }
++    func makeAsyncIterator() -> AsyncIterator { .init(body: self) }
++}
++
++struct HTTPOriginWriter: ResponseBodyWriter {
++    let capture: HTTPOriginCapture
++    mutating func write(_ buffer: ByteBuffer) async throws {
++        capture.append(String(buffer: buffer))
++    }
++    consuming func finish(_ trailingHeaders: HTTPFields?) async throws {}
++}
++
++struct HTTPOriginTokenizer: MLXLMCommon.Tokenizer {
++    let capture: HTTPOriginCapture
++    private let base = DistributedTestTokenizer()
++    func encode(text: String, addSpecialTokens: Bool) -> [Int] {
++        base.encode(text: text, addSpecialTokens: addSpecialTokens)
++    }
++    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String {
++        base.decode(tokenIds: tokenIds, skipSpecialTokens: skipSpecialTokens)
++    }
++    func convertTokenToId(_ token: String) -> Int? { base.convertTokenToId(token) }
++    func convertIdToToken(_ id: Int) -> String? { base.convertIdToToken(id) }
++    var bosToken: String? { base.bosToken }
++    var eosToken: String? { base.eosToken }
++    var unknownToken: String? { base.unknownToken }
++    func applyChatTemplate(messages: [[String: any Sendable]],
++                           tools: [[String: any Sendable]]?,
++                           additionalContext: [String: any Sendable]?) throws -> [Int] {
++        capture.mark("tokenize")
++        Thread.sleep(forTimeInterval: 0.010)
++        return [1, 2, 3]
++    }
++}
++
++final class HTTPOriginOwner: DistributedDeadlineExecutionOwner, @unchecked Sendable {
++    let base = DistributedTestOwner()
++    private let lock = NSLock()
++    private var captured: DistributedRequestDeadlineContext?
++    var context: DistributedRequestDeadlineContext? { lock.withLock { captured } }
++    func readiness() -> DistributedResidentReadiness? { base.readiness() }
++    func setReadinessInvalidationHandler(_ handler: @escaping @Sendable () -> Void) {
++        base.setReadinessInvalidationHandler(handler)
++    }
++    func projectFirstToken(_ request: CBv2Request, admission: CBv2FirstTokenDeadlineAdmission) -> CBv2FirstTokenProjectedWork {
++        base.projectFirstToken(request, admission: admission)
++    }
++    func reserve(_ request: CBv2Request, identity: DistributedResidentIdentity,
++                 profileID: String, capacityLimit: Int) throws -> any DistributedResidentRequestLease {
++        throw DistributedEngineError.invalidConfiguration("lost HTTP-origin context")
++    }
++    func reserve(_ request: CBv2Request, identity: DistributedResidentIdentity,
++                 profileID: String, capacityLimit: Int,
++                 deadlineContext: DistributedRequestDeadlineContext) throws -> any DistributedResidentRequestLease {
++        lock.withLock { captured = deadlineContext }
++        return try base.reserve(request, identity: identity, profileID: profileID, capacityLimit: capacityLimit)
++    }
++    func shutdown() async { await base.shutdown() }
++}
++
++final class HTTPOriginSoloEngine: CBv2Engine, @unchecked Sendable {
++    private let lock = NSLock()
++    private var submissions = 0
++    var submissionCount: Int { lock.withLock { submissions } }
++    func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
++        lock.withLock { submissions += 1 }
++        return AsyncStream { $0.finish() }
++    }
++    func cancel(_ id: CBv2RequestID) {}
++    func capacity() -> CBv2CapacitySnapshot {
++        .init(activeRequests: 0, waitingRequests: 0, kvBytesInUse: 0,
++              kvBytesCapacity: 0, activeTokens: 0)
++    }
++    func shutdown() async {}
++}
+--- /dev/null
++++ b/provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPOriginTests.swift
+@@ -0,0 +1,168 @@
++import Foundation
++import Hummingbird
++import Logging
++import MLXLMCommon
++import NIOCore
++import NIOEmbedded
++import Testing
++@testable import ProviderCore
++
++@Suite(.timeLimit(.minutes(1)))
++struct DistributedHTTPOriginTests {
++    private let publicModelID = "local/Verified-Example"
++    @Test func streamingHandlerRetainsReceiptAcrossBodyAcquireAndTokenization() async throws {
++        let policy = try DistributedFirstTokenBudgetPolicy(
++            baseMilliseconds: 10_000, millisecondsPerInputToken: 1)
++        let result = try await runHTTP(policy: policy, bodyDelay: .milliseconds(25))
++        let origin = try #require(result.capture.receivedAt)
++        let context = try #require(result.context)
++        #expect(context.generationDeadline == origin.advanced(by: .seconds(30)))
++        #expect(context.firstTokenDeadline == origin.advanced(by: .milliseconds(10_003)))
++        #expect(origin <= result.capture.instant("body")!)
++        #expect(result.capture.instant("bodyReady")! <= result.capture.instant("acquire")!)
++        #expect(result.capture.instant("acquire")! < result.capture.instant("tokenize")!)
++        #expect(result.status == .ok && result.reservations == 1)
++        #expect(result.capture.output.contains("t4") && result.capture.output.contains("[DONE]"))
++        #expect(result.capture.releaseCount == 1)
++        #expect(DistributedRequestOrigin.current == nil)
++    }
++
++    @Test func delayedBodyExhaustsExplicitBudgetWithoutNativeReservation() async throws {
++        let policy = try DistributedFirstTokenBudgetPolicy(
++            baseMilliseconds: 20, millisecondsPerInputToken: 0)
++        let result = try await runHTTP(policy: policy, bodyDelay: .milliseconds(60))
++        #expect(result.status == .serviceUnavailable)
++        #expect(result.reservations == 0 && result.context == nil)
++        #expect(result.capture.output.contains("error"))
++        #expect(!result.capture.output.contains("data:"))
++        #expect(result.capture.releaseCount == 1)
++        #expect(DistributedRequestOrigin.current == nil)
++    }
++
++    @Test func absentPolicyKeepsFirstTokenDeadlineAbsent() async throws {
++        let result = try await runHTTP(policy: nil, bodyDelay: .milliseconds(40))
++        let context = try #require(result.context)
++        #expect(context.firstTokenDeadline == nil)
++        #expect(context.generationDeadline == result.capture.receivedAt!.advanced(by: .seconds(30)))
++        #expect(result.status == .ok && result.capture.releaseCount == 1)
++    }
++
++    @Test func ordinarySoloSubmissionDoesNotUseDistributedOriginOrPolicy() async throws {
++        let engine = HTTPOriginSoloEngine()
++        let bridge = EngineV2Bridge(
++            engine: engine, modelId: "solo", tokenizer: TokenizerHandle(DistributedTestTokenizer()),
++            eosTokenIds: [], distributedFirstTokenBudgetPolicy: try .init(
++                baseMilliseconds: 1, millisecondsPerInputToken: 0))
++        let stream = try await bridge.submitTokenized(
++            promptTokens: [1, 2, 3], request: .init(model: "solo", messages: [], max_tokens: 2),
++            firstContentDeadline: nil,
++            distributedRequestOrigin: ContinuousClock.now.advanced(by: .seconds(-600)))
++        for await _ in stream {}
++        #expect(engine.submissionCount == 1)
++        await bridge.shutdown()
++    }
++
++    @Test func registryRejectsUnreadyOwnerAndOverflowBeforeTakingOwnership() throws {
++        let owner = HTTPOriginOwner()
++        owner.base.available = false
++        #expect(throws: DistributedEngineError.unavailable) {
++            _ = try DistributedEngineFactory.makeRegistryEntry(
++                owner: owner, expectedIdentity: owner.base.identity, publicModelID: publicModelID, profile: profile(),
++                tokenizer: TokenizerHandle(DistributedTestTokenizer()), eosTokenIDs: [99])
++        }
++        owner.base.available = true
++        #expect(throws: DistributedFirstTokenBudgetError.overflow) {
++            _ = try DistributedEngineFactory.makeRegistryEntry(
++                owner: owner, expectedIdentity: owner.base.identity, publicModelID: publicModelID, profile: profile(),
++                tokenizer: TokenizerHandle(DistributedTestTokenizer()), eosTokenIDs: [99],
++                firstTokenBudgetPolicy: .init(baseMilliseconds: .max, millisecondsPerInputToken: 1))
++        }
++        #expect(owner.base.reserveCount == 0 && owner.base.shutdownCount == 0)
++    }
++
++    @Test func registryRejectsInvalidPublicRoutingIdentity() throws {
++        let owner = HTTPOriginOwner()
++        for invalid in ["", "space here", "newline\n", "delete\u{7f}", String(repeating: "a", count: 513)] {
++            #expect(throws: DistributedEngineError.self) {
++                _ = try DistributedEngineFactory.makeRegistryEntry(
++                    owner: owner, expectedIdentity: owner.base.identity, publicModelID: invalid,
++                    profile: profile(), tokenizer: TokenizerHandle(DistributedTestTokenizer()), eosTokenIDs: [99])
++            }
++        }
++        #expect(owner.base.reserveCount == 0 && owner.base.shutdownCount == 0)
++    }
++
++    @Test func explicitEarlierContextCannotBeExtendedByFactoryPolicy() async throws {
++        let owner = HTTPOriginOwner()
++        let bridge = try DistributedEngineFactory.makeBridge(
++            owner: owner, expectedIdentity: owner.base.identity, profile: profile(),
++            tokenizer: TokenizerHandle(DistributedTestTokenizer()), eosTokenIDs: [99],
++            firstTokenBudgetPolicy: .init(baseMilliseconds: 10_000, millisecondsPerInputToken: 1))
++        let now = ContinuousClock.now
++        let earlier = DistributedRequestDeadlineContext(
++            generationDeadline: now.advanced(by: .seconds(10)),
++            firstTokenDeadline: now.advanced(by: .seconds(2)))
++        let stream = try await bridge.submitTokenized(
++            promptTokens: [1, 2, 3], request: .init(model: owner.base.identity.modelID,
++                messages: [], temperature: 0, max_tokens: 2),
++            firstContentDeadline: nil, distributedDeadlineContext: earlier,
++            distributedRequestOrigin: now.advanced(by: .seconds(-1)))
++        owner.base.last.send(.token(4)); owner.base.last.send(.token(5)); owner.base.last.acknowledge()
++        for await _ in stream {}
++        #expect(owner.context == earlier)
++        await bridge.shutdown()
++    }
++
++    private func profile() throws -> DistributedResidentExecutionProfile {
++        try .init(id: "fabricated-greedy", vocabularySize: 100, maxPromptTokens: 16,
++                  maxOutputTokens: 2, maxContextTokens: 18, requestTimeout: .seconds(30))
++    }
++
++    private func runHTTP(policy: DistributedFirstTokenBudgetPolicy?, bodyDelay: Duration) async throws
++        -> (capture: HTTPOriginCapture, context: DistributedRequestDeadlineContext?,
++            status: HTTPResponse.Status, reservations: Int) {
++        let publicModelID = self.publicModelID
++        let capture = HTTPOriginCapture(), owner = HTTPOriginOwner()
++        let tokenizer = TokenizerHandle(HTTPOriginTokenizer(capture: capture))
++        let entry = try DistributedEngineFactory.makeRegistryEntry(
++            owner: owner, expectedIdentity: owner.base.identity, publicModelID: publicModelID, profile: profile(),
++            tokenizer: tokenizer, eosTokenIDs: [99], firstTokenBudgetPolicy: policy)
++        let bridge = try #require(entry.engineV2Bridge)
++        #expect(entry.container == nil && !entry.isVLM && entry.visionGate == nil)
++        #expect(bridge.modelId == publicModelID && publicModelID != owner.base.identity.modelID)
++        let application = makeLocalInferenceApplication(
++            config: .init(), defaultMaxTokens: 2,
++            acquire: { modelID in
++                guard modelID == publicModelID else {
++                    throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelID)
++                }
++                capture.mark("acquire")
++                try await Task.sleep(for: .milliseconds(15))
++                return .init(tokenizer: entry.tokenizer,
++                    releaseToken: OneShotRelease(release: { _ in capture.release() },
++                                                 modelId: publicModelID),
++                    container: nil, isVLM: false, engineV2Bridge: bridge)
++            },
++            tokenizerProvider: { _ in .init(tokenizer: entry.tokenizer, modelType: nil) },
++            availableModels: { [publicModelID] }, mtpSlots: { [] })
++        let json = "{\"model\":\"\(publicModelID)\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true,\"temperature\":0,\"max_tokens\":2}"
++        let request = Request(
++            head: .init(method: .post, scheme: "http", authority: "localhost", path: "/v1/chat/completions"),
++            body: .init(asyncSequence: HTTPOriginBody(json: json, delay: bodyDelay, capture: capture)))
++        let context = BasicRequestContext(source: ApplicationRequestContextSource(
++            channel: EmbeddedChannel(), logger: Logger(label: "distributed-http-origin")))
++        do {
++            let response = try await application.responder.respond(to: request, context: context)
++            if owner.base.reserveCount > 0 {
++                owner.base.last.send(.token(4)); owner.base.last.send(.token(5)); owner.base.last.acknowledge()
++            }
++            try await response.body.write(HTTPOriginWriter(capture: capture))
++            await bridge.shutdown()
++            return (capture, owner.context, response.status, owner.base.reserveCount)
++        } catch {
++            if owner.base.reserveCount > 0 { owner.base.last.acknowledge() }
++            await bridge.shutdown()
++            throw error
++        }
++    }
++}

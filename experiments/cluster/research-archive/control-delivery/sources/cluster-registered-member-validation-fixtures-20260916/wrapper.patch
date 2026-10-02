@@ -1,0 +1,125 @@
+--- a/guards.py
++++ b/guards.py
+@@ -42,11 +42,29 @@
+     p = OVERLAY / 'proposed' / relative
+     return p if p.exists() else SOURCE / relative
+ 
++def go_fixture_inputs():
++    expected = {
++        'fixtures/prompt-contract/v1/production_vectors.json',
++        'deploy/gcp/prod/release-env-defaults',
++        'deploy/environments/prod.env',
++        'deploy/gcp/prod/required-env-keys.txt',
++        'scripts/install.sh',
++    }
++    rows = json.loads((BASE / 'fixture-inputs.json').read_text())['files']
++    if len(rows) != len(expected) or {row['path'] for row in rows} != expected:
++        raise ValueError('Explicit Go fixture closure differs')
++    for row in rows:
++        p = SOURCE / row['path']
++        if not p.is_file() or p.is_symlink() or p.stat().st_size != row['sizeBytes'] or sha(p) != row['sha256']:
++            raise ValueError('Pinned Go fixture changed: ' + row['path'])
++    return rows
++
+ def go_snapshot():
+     # Conservative local import closure, including test imports on every host.
+     # No go list/tool download/compiler is needed to construct this snapshot.
+     prefix = 'github.com/eigeninference/d-inference/'
+     pending, seen, paths = list(GO_PACKAGES), set(), {'go.mod', 'go.sum'}
++    paths.update(row['path'] for row in go_fixture_inputs())
+     pattern = re.compile(r'(?m)^import[ \t]+(?:\(([\s\S]*?)^\)|([^\n]+))')
+     while pending:
+         package = pending.pop()
+@@ -99,9 +117,13 @@
+     return {'packages': sorted(seen), 'files': rows}
+ 
+ def verify_go(snapshot, workspace=None):
++    # Rediscover the full local source/fixture closure, so an old 1091-file
++    # preparation cannot silently omit the newly pinned repository fixtures.
++    if go_snapshot() != snapshot:
++        raise ValueError('Go source/fixture closure changed or incomplete')
+     for row in snapshot['files']:
+         for p in [source_for(row['path'])] + ([workspace / row['path']] if workspace is not None else []):
+-            if p.stat().st_size != row['sizeBytes'] or sha(p) != row['sha256']:
++            if not p.is_file() or p.is_symlink() or p.stat().st_size != row['sizeBytes'] or sha(p) != row['sha256']:
+                 raise ValueError('Go source changed: ' + row['path'])
+ 
+ def isolated_environment():
+--- a/check_process.py
++++ b/check_process.py
+@@ -8,9 +8,11 @@
+ from owned_process import invoke_controller
+ 
+ 
+-def run_owned(argv, output, name, timeout):
++def run_owned(argv, output, name, timeout, *, diagnostic_limit=4_194_304):
++    if diagnostic_limit not in (4_194_304, 16_777_216):
++        raise ValueError('Unexpected diagnostic cap')
+     output = Path(output)
+-    record = {'argv': argv, 'timeoutSeconds': timeout, 'timedOut': False}
++    record = {'argv': argv, 'timeoutSeconds': timeout, 'timedOut': False, 'diagnosticLimitBytes': diagnostic_limit}
+     start = time.monotonic()
+     try:
+         with (output / (name + '.stdout')).open('xb') as stdout, (output / (name + '.stderr')).open('xb') as stderr:
+@@ -23,7 +25,7 @@
+     finally:
+         record['elapsedSeconds'] = time.monotonic() - start
+         (output / (name + '.json')).write_text(json.dumps(record, indent=2, sort_keys=True) + '\n')
+-    if any((output / (name + '.' + suffix)).stat().st_size > 4_194_304 for suffix in ('stdout', 'stderr')):
++    if any((output / (name + '.' + suffix)).stat().st_size > diagnostic_limit for suffix in ('stdout', 'stderr')):
+         raise ValueError('Diagnostic output exceeds cap')
+     if record.get('exitCode') != 0 or record['timedOut'] or not record.get('reaped') or not record.get('groupAbsent'):
+         raise ValueError(name + ' failed; raw evidence retained')
+--- a/run.py
++++ b/run.py
+@@ -40,7 +40,8 @@
+     if go:
+         if sha(Path(GO)) != GO_SHA:
+             raise ValueError('Go toolchain changed')
+-        command = [GO, 'test', '-json', '-race', '-p', '2', '-count=1', '-timeout=120s']
++        test_timeout = '180s' if args.phase == 'go-all' else '120s'
++        command = [GO, 'test', '-json', '-race', '-p', '2', '-count=1', '-timeout=' + test_timeout]
+         if args.phase == 'go-focused': command += ['-run', GO_FILTER]
+         command += ['./' + p for p in GO_PACKAGES]
+         timeout = 300
+@@ -55,7 +56,8 @@
+     old_limit = resource.getrlimit(resource.RLIMIT_FSIZE)
+     resource.setrlimit(resource.RLIMIT_FSIZE, (512 * 1024 * 1024, old_limit[1]))
+     try:
+-        result = run_owned(command, output, 'execution', timeout)
++        result = run_owned(command, output, 'execution', timeout,
++            diagnostic_limit=16_777_216 if go else 4_194_304)
+     finally:
+         resource.setrlimit(resource.RLIMIT_FSIZE, old_limit)
+         recheck()
+--- a/helper-lineage.json
++++ b/helper-lineage.json
+@@ -1,20 +1,22 @@
+ [
+   {
++    "exact": true,
+     "local": "owned_process.py",
+     "original": "/Users/developer/DarkbloomDev/cluster-research/coordinator-verified-pair-draft-v2-20260915/Tests/owned_process.py",
+-    "sha256": "c3910bf16a0fbe4d68ab6349e862ef5a2c92fe64e79a68d2ccfc700daf4fa2bf",
+-    "exact": true
++    "sha256": "c3910bf16a0fbe4d68ab6349e862ef5a2c92fe64e79a68d2ccfc700daf4fa2bf"
+   },
+   {
++    "baseSHA256": "414ab6ae2f8931a26d5e98af059a94c5fbaeb04bf3ca9ff47e24f08fa0041ee3",
++    "change": "Optional bounded diagnostic cap; default4MiB unchanged, Go16MiB explicitly selected; owned-process logic unchanged",
++    "exact": false,
+     "local": "check_process.py",
+     "original": "/Users/developer/DarkbloomDev/cluster-research/cluster-session-quota-rotation-draft-20260915/PrivateChecks/check_process.py",
+-    "sha256": "414ab6ae2f8931a26d5e98af059a94c5fbaeb04bf3ca9ff47e24f08fa0041ee3",
+-    "exact": true
++    "sha256": "5a447d967a3ded0eefce5be1f5bf5615ca3978e2568b10e0625fb390e25b391b"
+   },
+   {
++    "exact": true,
+     "local": "source_inventory.py",
+     "original": "/Users/developer/DarkbloomDev/cluster-research/distributed-http-terminal-delivery-integration-plan/prepare-private.py",
+-    "sha256": "b2c3fda0210baa7105033eb587a54fcaa68a7279a7888e6b0b64d3e87c8d4b6d",
+-    "exact": true
++    "sha256": "b2c3fda0210baa7105033eb587a54fcaa68a7279a7888e6b0b64d3e87c8d4b6d"
+   }
+ ]

@@ -1,0 +1,11 @@
+# Registered reference parent handoff
+
+Root may copy this frozen directory's declared members to the 48 GB Mac and run the exact example job after its source review. No physical reference has been run by the author. Current 18 CPU tests pass with 17 fabricated Python children; every launched child is reaped and its process group fenced. The original runner, pipe/process owner, resource gate and five supporting files are byte-identical (nine inherited runtime files total).
+
+The installed native and source/bundle identities are bound in `reference_inputs.py`, `example-job.json` and `source-checks.json`. Root's actual request packet is copied byte-exact under `request-input/`. The example targets P32/C16/O128/cut32/empty stops, UUID20801ced-ca29-4faf-b71a-9ebbe1886a14, on the registered 27B model. Root has already placed runtime/inputs on48; the run output must remain new.
+
+Concrete review scope is the five runtime files in `runtime.patch`: closed profiles, request/build/file admission, two-record joins, selected-output completion and full final-state metadata. No worker protocol, resource policy or native code changes. New state checks validate exact 72/144 component coverage, dtype/shape/byte geometry and metadata/digest fingerprint; per-component native values, Plan/layout hashes and final BF16 logit bytes remain unverified by Python. All existing independent-numerical/physical/throughput flags stay false.
+
+Exact example job SHA: 984b013420e00c620842446af1d22b28eca941a50994875d3e64c809b5fc1e85. `README.md` gives the command. Use the final manifest SHA as --launcher-sha256. For a subsequent request, write a separate canonical job outside the frozen supervisor directory with a fresh run_dir and hash; never overwrite the frozen example or prior results.
+
+`native-source-pins.json` binds 14 current native source copies. `source-checks.json` confirms the closed table against the literal registered catalog and the matching build/bundle references. Copied cpu-check-1/cpu-check-2 and predecessor-manifest preserve historical evidence only. The new validation is cpu-check-registered-1. Independent source review is pending at this freeze. Root owns launch/copy/model execution.

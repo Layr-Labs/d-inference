@@ -1,0 +1,13 @@
+# Compiler-tested shared runtime and generation driver
+
+The isolated package at `workspace/libs/darkbloom-cluster` now typechecks as an ordinary `DarkbloomClusterRuntime` SwiftPM library. It contains66 Swift sources, all internal: the selected52-source runtime plus the unchanged finalized generation overlay and two required shared helpers. No public owner facade or worker entry is claimed yet.
+
+* Build1:52 sources,94.750s,exit0;42 original whole files byte-identical,10 small file/member extractions, no compiler fixes.
+* Build2:66 sources,4.468s,exit0; all15 finalized generation runtime files byte-identical to handoff f6dec17afe5a6bd1743388150c36ba2bc9859d999299ef04a5c9226cf8e591b6. Added unchanged QwenLayerStageWireExpectation and QwenLongPrefillReadinessExchange. No driver changes.
+* Apple Swift6.3.2, jobs2, macOS14 package target. Dependency automatic resolution/updates disabled. Existing SwiftPM MLX identity/exclusion and skip-update warnings retained; no new runtime-source compiler errors.
+
+`tested-move-list.json` preserves the initial52-source compiler receipt and exact move mapping. `generation-library-handoff.json` is the final66-source mapping, origin pins, both compile receipts and module archive pins. The first compiled module is preserved under build-1/compiled-module; the final one under build-2/compiled-module. The original source proposal, frozen JACCL workspace, main repository and provider cache remain unchanged. The integration cache is an APFS clone; only its relocated ModuleCache was removed.
+
+The new generation request path is compiler-validated against the actual MLX APIs and selected stage/session ownership code, including its16 MiB pre-state transport admission. No model/GPU/native worker/physical network ran; no numerical or performance qualification follows from compilation. The actual JACCL worker still needs a separate26.2 SDK/deployment build for Cmlx as well as Swift, plus source-matched metallib packaging.
+
+Next concrete integration: a small value-only resident facade/native worker, typed two-peer load and request resource admission, a Swift provider owner implementing the tested lease contract, and mapped package tests/diagnostic adapters for old internal callers. Keep the real generation driver synchronous on its private executor, publish only rank0 committed tokens, and distinguish callback false clean-stop from abnormal cancellation. Return lease retirement only after both acknowledgements/fences. Pipeline's forthcoming aligned-reader overlay remains separate; this package intentionally retains the frozen original checkpoint/cache policy until root selects that reviewed revision.

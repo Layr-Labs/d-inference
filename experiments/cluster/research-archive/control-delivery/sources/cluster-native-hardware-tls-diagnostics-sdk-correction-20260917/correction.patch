@@ -1,0 +1,11 @@
+--- 7f0/Tests/PrivateClusterTLSCheck.swift
++++ sdk/Tests/PrivateClusterTLSCheck.swift
+@@ -51,7 +51,7 @@
+                     case .tls(let status): diagnostic = "tls OSStatus=\(status) " + String(reflecting:error)
+                     case .posix(let status): diagnostic = "posix errno=\(status.rawValue) " + String(reflecting:error)
+                     case .dns(let status): diagnostic = "dns code=\(status) " + String(reflecting:error)
+-                    @unknown default: diagnostic = String(reflecting:error)
++                    default: diagnostic = String(reflecting:error)
+                     }
+                     if case .tls = error { result.finish("tls-refused",diagnostic:diagnostic) } else { result.finish("other-failure",diagnostic:diagnostic) }
+                 default:break

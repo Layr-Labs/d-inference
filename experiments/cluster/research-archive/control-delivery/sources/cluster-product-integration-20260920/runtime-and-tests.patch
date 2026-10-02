@@ -1,0 +1,772 @@
+--- a/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberControl.swift
++++ b/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberControl.swift
+@@ -64,17 +64,24 @@
+         } catch { detach(expected); throw NativePairMemberError.binding }
+     }
+     func cancelRequests() {let current=lock.withLock{session};current?.cancel(notify:true)}
+-    func requestOwner(profile:DistributedResidentExecutionProfile,until deadline:UInt64) throws -> NativePairRequestExecutionOwner {
++    func requestOwner(profile: DistributedResidentExecutionProfile, until deadline: UInt64) throws -> NativePairRequestExecutionOwner {
++        try retainedSessionClaim().claim(profile: profile, until: deadline).requestOwner
++    }
++    // Capture a specific session before asynchronous preparation. Cancellation
++    // and the post-claim check never consult a replacement generation.
++    func retainedSessionClaim() throws -> NativePairRetainedSessionClaim {
+         let current = try lock.withLock { () throws -> NativePairMemberSession in
+-            guard installation.rank==0, installation.protectedRuntime != nil, let session,
+-                  connection === session.connection, session.connection.isLive else {throw NativePairMemberError.inactive}
++            guard installation.rank == 0, installation.protectedRuntime != nil, let session,
++                  connection === session.connection, session.connection.isLive else { throw NativePairMemberError.inactive }
+             return session
+         }
+-        let owner=try current.requestOwner(profile:profile,until:deadline)
+-        try lock.withLock {
+-            guard session === current, connection === current.connection,current.connection.isLive else {throw NativePairMemberError.inactive}
++        return NativePairRetainedSessionClaim(session: current) { [weak self] in
++            guard let self else { throw NativePairMemberError.inactive }
++            try self.lock.withLock {
++                guard self.session === current, self.connection === current.connection,
++                      current.connection.isLive else { throw NativePairMemberError.inactive }
++            }
+         }
+-        return owner
+     }
+     private func finished(_ old: NativePairMemberSession, reusable: Bool) {
+         lock.withLock {
+--- a/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberSession.swift
++++ b/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberSession.swift
+@@ -12,6 +12,7 @@
+     let prepareDeadline, lifetimeDeadline, cleanupDeadline: UInt64
+     let prepareUnixNanoseconds, expiresUnixNanoseconds: Int64
+     private let cancellationPublication = DispatchGroup()
++    let completion = NativePairSessionCompletionSignal()
+     let connection: NativePairMemberConnection
+     private let installation: NativePairMemberInstallation
+     private let condition = NSCondition()
+@@ -130,6 +131,7 @@
+     }
+     private func runOwned() {
+         var clean = false
++        var requestTransportJoined = false, localReleasePublished = false
+         var requestViewsReleased = installation.protectedRuntime == nil
+         do {
+             let pins = try installation.prepare(start: start, deadline: prepareDeadline)
+@@ -180,10 +182,12 @@
+             guard clean, created.nativeCleanupObserved, created.ownerDeviceLeaseReleasedObserved,
+                   created.ownerTermination == .exited(0) else { throw NativePairMemberError.inactive }
+             guard bridge?.localOwnerReleased(until:cleanupDeadline) ?? true else {throw NativePairMemberError.deadline}
++            requestTransportJoined = true
+             condition.lock(); outcome = "releasing"; condition.unlock()
+             guard cancellationPublication.wait(timeout: .init(uptimeNanoseconds: cleanupDeadline)) == .success else { throw NativePairMemberError.deadline }
+             var receipt = Data([68, 66, 78, 82, 1]); receipt.append(contentsOf: SHA256.hash(data: start.canonicalBytes)); receipt.append(contentsOf: [1, 1, 1])
+             try send("native_pair_owner_released", receipt, cleanup: true)
++            localReleasePublished = true
+             condition.lock(); outcome = "released"; condition.unlock()
+             requestViewsReleased = bridge?.waitAllOwnersReleased(until:cleanupDeadline) ?? true
+             guard requestViewsReleased else {throw NativePairMemberError.deadline}
+@@ -196,6 +200,15 @@
+         let reusable = cancelJoined && ((!committed && !launched) || (clean && outcome == "released" && requestViewsReleased))
+         timer?.cancel(); timer = nil
+         condition.unlock()
++        condition.lock(); let actual = endpoint; condition.unlock()
++        completion.complete(.init(membershipEpoch: start.common.epoch,
++            nativeCleanupObserved: actual?.nativeCleanupObserved == true,
++            ownerReleaseAcknowledged: actual?.ownerDeviceLeaseReleasedObserved == true,
++            ownerExitedNormally: actual?.ownerTermination == .exited(0),
++            requestTransportJoined: requestTransportJoined,
++            cancellationPublicationJoined: cancelJoined,
++            localReleasePublished: localReleasePublished,
++            aggregateReleaseObserved: installation.protectedRuntime != nil && requestViewsReleased))
+         onFinished(self, reusable)
+     }
+     private func requestBinding() throws -> ClusterNativeKeyBinding {
+--- a/provider-swift/Sources/ProviderCore/Coordinator/NativePairRequestBridge.swift
++++ b/provider-swift/Sources/ProviderCore/Coordinator/NativePairRequestBridge.swift
+@@ -130,7 +130,7 @@
+         do {
+             let pair=try ClusterWorkerPair(workers:[local,remote],startupDeadline:min(deadline,lifetime),maximumRequests:1)
+             guard profile.requestTimeout <= .seconds(300) else {throw NativePairMemberError.binding}
+-            let owner=NativePairRequestExecutionOwner(try DistributedPipeExecutionOwner(pair:pair,profile:profile,chunkSize:16))
++            let owner=NativePairRequestExecutionOwner(try DistributedPipeExecutionOwner(pair:pair,profile:profile,chunkSize:16), pair:pair)
+             condition.lock();guard !invalid else {condition.unlock();throw NativePairMemberError.inactive};self.pair=pair;condition.unlock()
+             return owner
+         } catch {cancel();throw error}
+--- a/provider-swift/Sources/ProviderCore/Coordinator/NativePairRequestExecutionOwner.swift
++++ b/provider-swift/Sources/ProviderCore/Coordinator/NativePairRequestExecutionOwner.swift
+@@ -1,11 +1,16 @@
+ import Foundation
+ import MLXLMCommon
++import DarkbloomClusterProcess
+ 
+ /// Thin fixed-workload gate before the unchanged bilateral owner reserves any
+ /// state or consumes its one experimental request slot. It owns no process.
+ public final class NativePairRequestExecutionOwner: DistributedDeadlineExecutionOwner, @unchecked Sendable {
+     private let owner: DistributedPipeExecutionOwner
+-    init(_ owner: DistributedPipeExecutionOwner) {self.owner=owner}
++    private let pair: ClusterWorkerPair
++    init(_ owner: DistributedPipeExecutionOwner, pair: ClusterWorkerPair) {self.owner=owner; self.pair=pair}
++    var admissionState: ClusterWorkerPairAdmissionState { pair.admissionState }
++    func closeAdmissions() { pair.stopAcceptingRequests() }
++    func drain() async { await pair.drainAndShutdown() }
+     public func readiness() -> DistributedResidentReadiness? {owner.readiness()}
+     public func setReadinessInvalidationHandler(_ handler:@escaping @Sendable ()->Void) {owner.setReadinessInvalidationHandler(handler)}
+     public func projectFirstToken(_ request:CBv2Request,admission:CBv2FirstTokenDeadlineAdmission)->CBv2FirstTokenProjectedWork {
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Coordinator/NativePairRetainedSession.swift
+@@ -0,0 +1,58 @@
++import Foundation
++
++/// Internal lifecycle seam. The product implementation below wraps only the
++/// already-claimed owner and exact original member session; fixtures own no child.
++protocol ProtectedMemberSessionBackend: AnyObject, Sendable {
++    var owner: any DistributedDeadlineExecutionOwner { get }
++    var epoch: UUID { get }
++    var lifetime: UInt64 { get }
++    var canAdmit: Bool { get }
++    var invalid: Bool { get }
++    var exhausted: Bool { get }
++    var completion: NativePairSessionCompletion? { get }
++    func closeAdmissions()
++    func cancel()
++    func drain() async
++    func waitForCompletion() async -> NativePairSessionCompletion
++}
++
++final class NativePairRetainedSession: ProtectedMemberSessionBackend, @unchecked Sendable {
++    let session: NativePairMemberSession
++    let requestOwner: NativePairRequestExecutionOwner
++    init(session: NativePairMemberSession, owner: NativePairRequestExecutionOwner) {
++        self.session = session; requestOwner = owner
++    }
++    var owner: any DistributedDeadlineExecutionOwner { requestOwner }
++    var epoch: UUID { session.start.common.epoch }
++    var lifetime: UInt64 { session.lifetimeDeadline }
++    var canAdmit: Bool { requestOwner.admissionState.canAdmit() }
++    var invalid: Bool { !requestOwner.admissionState.isValid }
++    var exhausted: Bool {
++        let state = requestOwner.admissionState
++        return state.admissionsRemaining == 0 && !state.hasActiveRequest
++    }
++    var completion: NativePairSessionCompletion? { session.completion.observation }
++    func closeAdmissions() { requestOwner.closeAdmissions() }
++    func cancel() { session.cancel(notify: true) }
++    func drain() async { await requestOwner.drain() }
++    func waitForCompletion() async -> NativePairSessionCompletion { await session.completion.wait() }
++}
++
++/// A cancellation handle exists before claim waits for readiness. It retains the
++/// exact original session even after Control disconnects or changes generation.
++final class NativePairRetainedSessionClaim: @unchecked Sendable {
++    private let session: NativePairMemberSession
++    private let requireCurrent: @Sendable () throws -> Void
++    init(session: NativePairMemberSession, requireCurrent: @escaping @Sendable () throws -> Void) {
++        self.session = session; self.requireCurrent = requireCurrent
++    }
++    func cancel() { session.cancel(notify: true) }
++    func claim(profile: DistributedResidentExecutionProfile, until deadline: UInt64) throws -> NativePairRetainedSession {
++        do {
++            try requireCurrent()
++            let owner = try session.requestOwner(profile: profile, until: deadline)
++            try requireCurrent()
++            return .init(session: session, owner: owner)
++        } catch { cancel(); throw error }
++    }
++}
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Coordinator/NativePairSessionCompletion.swift
+@@ -0,0 +1,37 @@
++import Foundation
++
++/// Observation of the original member session's terminal barriers. Not Codable,
++/// a saved approval, or evidence synthesized by a request owner's shutdown.
++struct NativePairSessionCompletion: Equatable, Sendable {
++    let membershipEpoch: UUID
++    let nativeCleanupObserved: Bool
++    let ownerReleaseAcknowledged: Bool
++    let ownerExitedNormally: Bool
++    let requestTransportJoined: Bool
++    let cancellationPublicationJoined: Bool
++    let localReleasePublished: Bool
++    let aggregateReleaseObserved: Bool
++
++    var released: Bool {
++        nativeCleanupObserved && ownerReleaseAcknowledged && ownerExitedNormally
++            && requestTransportJoined && cancellationPublicationJoined
++            && localReleasePublished && aggregateReleaseObserved
++    }
++}
++
++/// The session publishes once, after its existing final cancellation join.
++final class NativePairSessionCompletionSignal: @unchecked Sendable {
++    private let lock = NSLock(), done = DispatchGroup()
++    private var result: NativePairSessionCompletion?
++    init() { done.enter() }
++    var observation: NativePairSessionCompletion? { lock.withLock { result } }
++    func complete(_ value: NativePairSessionCompletion) {
++        let first = lock.withLock { if result != nil { return false }; result = value; return true }
++        if first { done.leave() }
++    }
++    func wait() async -> NativePairSessionCompletion {
++        await withCheckedContinuation { continuation in
++            done.notify(queue: .global()) { continuation.resume(returning: self.observation!) }
++        }
++    }
++}
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedProtectedMemberPreparation.swift
+@@ -0,0 +1,49 @@
++import Foundation
++import DarkbloomClusterProtocol
++
++/// Fresh read-only metadata for attaching to an existing protected member. It
++/// never takes the already-owned device gate, loads payloads, or mints a policy.
++struct DistributedProtectedMemberPreparation: Sendable {
++    let validation: DistributedInstalledValidation
++    let attachment: DistributedInstalledNativeAttachment
++    let reference: ClusterConfigurationReference
++    let providerConfiguration: URL
++
++    static func prepare(reference: ClusterConfigurationReference, providerConfiguration: URL,
++                        installation: NativePairMemberInstallation, deadline: UInt64) throws -> Self {
++        try requireCurrent(reference, providerConfiguration)
++        let validation = try DistributedInstalledValidation.validate(reference: reference,
++            paths: ClusterUserPaths(), deadline: deadline)
++        guard let attachment = try DistributedInstalledNativeAttachment.prepare(validation: validation, deadline: deadline) else {
++            throw NativePairMemberError.unconfigured
++        }
++        let plan = validation.plan
++        guard plan.configuration.role == .leader, plan.configuration.localRank == 0,
++              installation.rank == 0, installation.bootstrapProfile == .nativeKeyPreludeMesh2,
++              installation.clusterID == plan.configuration.clusterID,
++              installation.identity == plan.identity(epoch: installation.identity.membershipEpoch),
++              installation.profile == plan.capability.profile,
++              installation.protectedRuntime?.attachment == attachment.attachment,
++              try installation.policy.bytes == attachment.attachment.policyBytes,
++              installation.ownerSHA256 == attachment.attachment.ownerSHA256,
++              installation.localOwner.installedDarkbloom.path == plan.localPeer.ownerExecutable,
++              installation.artifacts.map(\.path) == [plan.localPeer.workerExecutable,
++                attachment.attachment.metallib.path, attachment.attachment.resourceLibrary.path] else {
++            throw NativePairMemberError.binding
++        }
++        let result = Self(validation: validation, attachment: attachment,
++            reference: reference, providerConfiguration: providerConfiguration)
++        try result.requireUnchanged()
++        return result
++    }
++    func requireUnchanged() throws {
++        try Self.requireCurrent(reference, providerConfiguration)
++        try validation.requireUnchanged(); try attachment.requireUnchanged()
++    }
++    private static func requireCurrent(_ reference: ClusterConfigurationReference, _ providerConfiguration: URL) throws {
++        guard try ClusterConfigurationStore.installedReference(providerConfiguration: providerConfiguration) == reference,
++              try ClusterConfigurationStore.installedReference(providerConfiguration: ConfigManager.defaultConfigPath()) == reference else {
++            throw ClusterConfigurationError.invalid("Protected member and installed owner's current setup differ")
++        }
++    }
++}
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/ProviderLoop+ProtectedSession.swift
+@@ -0,0 +1,39 @@
++import Foundation
++import DarkbloomClusterProtocol
++
++extension ProviderLoop {
++    /// Internal attachment only. The existing signed coordinator transaction must
++    /// already own the session. This does not create a replacement or enable an
++    /// HTTP route whose token/stop contract exceeds the closed native workload.
++    func protectedMemberSession(reference: ClusterConfigurationReference, providerConfiguration: URL,
++                                deadlineUptimeNanoseconds: UInt64) async throws -> DistributedProtectedMemberSession {
++        guard isClusterMember, let control = nativePairMemberControl else { throw NativePairMemberError.unconfigured }
++        let claim = try control.retainedSessionClaim()
++        return try await withTaskCancellationHandler {
++            do {
++                try Task.checkCancellation()
++                let session = try await Task.detached(priority: .userInitiated) {
++                    let prepared = try DistributedProtectedMemberPreparation.prepare(reference: reference,
++                        providerConfiguration: providerConfiguration, installation: control.installation,
++                        deadline: deadlineUptimeNanoseconds)
++                    let plan = prepared.validation.plan, p = plan.capability.profile
++                    let profile = try DistributedResidentExecutionProfile(id: p.id, vocabularySize: p.vocabularySize,
++                        maxPromptTokens: p.maximumPromptTokens, maxOutputTokens: p.maximumOutputTokens,
++                        maxContextTokens: p.maximumContextTokens,
++                        requestTimeout: .seconds(plan.configuration.requestTimeoutSeconds))
++                    let retained = try claim.claim(profile: profile, until: deadlineUptimeNanoseconds)
++                    let identity = plan.identity(epoch: retained.epoch)
++                    return try DistributedProtectedMemberSession(model: prepared.validation.model,
++                        identity: .init(membershipEpoch: identity.membershipEpoch, modelID: identity.modelID,
++                            artifactSHA256: identity.artifactSHA256, configurationSHA256: identity.configurationSHA256,
++                            peers: identity.peers.map { .init(id: $0.id, buildSHA256: $0.buildSHA256) }),
++                        profile: profile, backend: retained, retainMemberLoop: self,
++                        installedBinding: try ClusterStatusBinding(configuration: plan.configuration, capability: plan.capability),
++                        validateInputs: { try prepared.requireUnchanged() })
++                }.value
++                try Task.checkCancellation()
++                return session
++            } catch { claim.cancel(); throw error }
++        } onCancel: { claim.cancel() }
++    }
++}
+--- a/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServerGeneration.swift
++++ b/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServerGeneration.swift
+@@ -39,7 +39,7 @@
+     let requestTimeout: Duration
+ 
+     init(_ session: any DistributedLocalServerSession) {
+-        installed = session.httpDiagnosticObservation?.binding
++        installed = session.httpInstalledBinding
+         publicModelID = session.model.publicModelID; directory = session.model.directory
+         modelType = session.model.modelType; eosTokenIDs = session.model.eosTokenIDs
+         modelVocabularySize = session.model.vocabularySize
+--- a/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServerSession.swift
++++ b/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServerSession.swift
+@@ -4,6 +4,7 @@
+ // initializer accepts the installed session; it has the sole device ownership.
+ protocol DistributedLocalServerSession: DistributedDeadlineExecutionOwner {
+     var httpDiagnosticObservation: ClusterSessionObservation? { get }
++    var httpInstalledBinding: ClusterStatusBinding? { get }
+     var model: DistributedInstalledModel { get }
+     var expectedIdentity: DistributedResidentIdentity { get }
+     var profile: DistributedResidentExecutionProfile { get }
+@@ -21,6 +22,7 @@
+ 
+ extension DistributedLocalServerSession {
+     var httpDiagnosticObservation: ClusterSessionObservation? { nil }
++    var httpInstalledBinding: ClusterStatusBinding? { httpDiagnosticObservation?.binding }
+     var httpCanRotate: Bool { status == .released }
+ }
+ 
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedProtectedMemberSession.swift
+@@ -0,0 +1,158 @@
++import Foundation
++import MLXLMCommon
++
++/// Closed adapter for an already-authorized, already-loaded member session.
++/// It launches no processes and retains the same member loop through retirement.
++/// No public initializer or CLI/HTTP route enables this experimental workload.
++final class DistributedProtectedMemberSession: DistributedLocalServerSession, @unchecked Sendable {
++    let model: DistributedInstalledModel
++    let expectedIdentity: DistributedResidentIdentity
++    let profile: DistributedResidentExecutionProfile
++    let httpInstalledBinding: ClusterStatusBinding?
++    private let backend: any ProtectedMemberSessionBackend
++    private let retainMemberLoop: any Sendable
++    private let validateInputs: @Sendable () throws -> Void
++    private let lock = NSLock(), stopped = NativePairSessionCompletionSignal()
++    private var phase: DistributedInstalledSessionStatus = .prepared
++    private var teardown: Task<Void, Never>?
++    private var interrupt: Task<Void, Never>?
++    private var ownerJoined = false
++    private var joined = false
++    private var handler: (@Sendable () -> Void)?
++    private var notified = false
++
++    // This internal injection seam is also used by model-free lifecycle tests.
++    // The product factory supplies verified metadata and NativePairRetainedSession.
++    init(model: DistributedInstalledModel, identity: DistributedResidentIdentity,
++         profile: DistributedResidentExecutionProfile, backend: any ProtectedMemberSessionBackend,
++         retainMemberLoop: any Sendable, installedBinding: ClusterStatusBinding? = nil, validateInputs: @escaping @Sendable () throws -> Void) throws {
++        guard backend.epoch == identity.membershipEpoch, let ready = backend.owner.readiness(),
++              ready.identity == identity, ready.profileID == profile.id, ready.requestCapacityBytes > 0,
++              backend.lifetime > DispatchTime.now().uptimeNanoseconds else {
++            throw DistributedEngineError.unavailable
++        }
++        try validateInputs()
++        self.model = model; expectedIdentity = identity; self.profile = profile
++        httpInstalledBinding = installedBinding
++        self.backend = backend; self.retainMemberLoop = retainMemberLoop; self.validateInputs = validateInputs
++        backend.owner.setReadinessInvalidationHandler { [weak self] in self?.beginStop(drain: false) }
++    }
++
++    var status: DistributedInstalledSessionStatus { lock.withLock { phase } }
++    var httpAdmissionAvailable: Bool { status == .ready && backend.canAdmit }
++    var httpSessionInvalid: Bool { status == .quarantined || backend.invalid }
++    var httpSessionExhausted: Bool { status == .ready && backend.exhausted }
++    var httpCanRotate: Bool {
++        let local = lock.withLock { phase == .released && joined }
++        guard local, let value = backend.completion else { return false }
++        return value.membershipEpoch == expectedIdentity.membershipEpoch && value.released
++    }
++    var lifetimeDeadlineUptimeNanoseconds: UInt64? { backend.lifetime }
++    func validateModelInputs() throws { try validateInputs() }
++
++    func start() async throws {
++        try lock.withLock {
++            guard phase == .prepared else { throw DistributedEngineError.unavailable }
++            phase = .starting
++        }
++        do {
++            try Task.checkCancellation(); try validateInputs(); try Task.checkCancellation()
++            try lock.withLock {
++                guard phase == .starting else { throw DistributedEngineError.shuttingDown }
++            }
++            guard let ready = backend.owner.readiness(), ready.identity == expectedIdentity,
++                  ready.profileID == profile.id, backend.canAdmit,
++                  backend.lifetime > DispatchTime.now().uptimeNanoseconds else { throw DistributedEngineError.unavailable }
++            try lock.withLock {
++                guard phase == .starting else { throw DistributedEngineError.shuttingDown }
++                phase = .ready
++            }
++        } catch { beginStop(drain: false); throw error }
++    }
++
++    func readiness() -> DistributedResidentReadiness? {
++        guard status == .ready || status == .draining else { return nil }
++        guard let value = backend.owner.readiness(), value.identity == expectedIdentity else { return nil }
++        return value
++    }
++    func setReadinessInvalidationHandler(_ handler: @escaping @Sendable () -> Void) {
++        let notify = lock.withLock { () -> Bool in
++            self.handler = handler
++            guard [.stopping, .quarantined, .released].contains(phase), !notified else { return false }
++            notified = true; return true
++        }
++        if notify { DispatchQueue.global().async(execute: handler) }
++    }
++    func projectFirstToken(_ request: CBv2Request, admission: CBv2FirstTokenDeadlineAdmission) -> CBv2FirstTokenProjectedWork {
++        backend.owner.projectFirstToken(request, admission: admission)
++    }
++    func reserve(_ request: CBv2Request, identity: DistributedResidentIdentity, profileID: String,
++                 capacityLimit: Int) throws -> any DistributedResidentRequestLease {
++        try requireAdmission(identity: identity, profileID: profileID)
++        return try backend.owner.reserve(request, identity: identity, profileID: profileID, capacityLimit: capacityLimit)
++    }
++    func reserve(_ request: CBv2Request, identity: DistributedResidentIdentity, profileID: String,
++                 capacityLimit: Int, deadlineContext: DistributedRequestDeadlineContext) throws -> any DistributedResidentRequestLease {
++        try requireAdmission(identity: identity, profileID: profileID)
++        return try backend.owner.reserve(request, identity: identity, profileID: profileID,
++            capacityLimit: capacityLimit, deadlineContext: deadlineContext)
++    }
++    private func requireAdmission(identity: DistributedResidentIdentity, profileID: String) throws {
++        guard identity == expectedIdentity, profileID == profile.id, httpAdmissionAvailable else {
++            throw DistributedEngineError.unavailable
++        }
++    }
++
++    func stop(until deadline: UInt64) async -> DistributedInstalledSessionStatus {
++        beginStop(drain: false); return await wait(until: deadline)
++    }
++    func drain(until deadline: UInt64) async -> DistributedInstalledSessionStatus {
++        beginStop(drain: true); return await wait(until: deadline)
++    }
++    func shutdown() async {
++        let active = lock.withLock { teardown != nil }
++        if !active { beginStop(drain: false) }
++        _ = await stopped.wait()
++    }
++    private func wait(until deadline: UInt64) async -> DistributedInstalledSessionStatus {
++        while DispatchTime.now().uptimeNanoseconds < deadline {
++            if lock.withLock({ joined }) { return status }
++            do { try await Task.sleep(for: .milliseconds(5)) }
++            catch { beginStop(drain: false); break }
++        }
++        lock.withLock { if phase != .released { phase = .quarantined } }
++        return status
++    }
++    private func beginStop(drain: Bool) {
++        // Close the original Pair's atomic reserve gate before scheduling any
++        // asynchronous drain. A racing reservation is either retained or refused.
++        backend.closeAdmissions()
++        let callback = lock.withLock { () -> (@Sendable () -> Void)? in
++            guard phase != .released else { return nil }
++            if phase != .quarantined { phase = drain && interrupt == nil ? .draining : .stopping }
++            if teardown == nil { teardown = Task { await self.finishStop(drain: drain) } }
++            if !drain && interrupt == nil && !ownerJoined {
++                // Interrupt a previously started graceful drain without waiting
++                // on its active-request hold. The original Pair owns cancellation.
++                interrupt = Task { self.backend.cancel(); await self.backend.owner.shutdown() }
++            }
++            guard !drain, !notified, let handler else { return nil }
++            notified = true; return handler
++        }
++        if let callback { DispatchQueue.global().async(execute: callback) }
++    }
++    private func finishStop(drain: Bool) async {
++        if drain { await backend.drain() } else { await backend.owner.shutdown() }
++        // No new interrupt task may start after this join. This makes the later
++        // interrupt snapshot stable before publishing reusable completion.
++        lock.withLock { ownerJoined = true }
++        let value = await backend.waitForCompletion()
++        let interrupted = lock.withLock { interrupt }
++        await interrupted?.value
++        lock.withLock {
++            joined = true
++            phase = value.membershipEpoch == expectedIdentity.membershipEpoch && value.released ? .released : .quarantined
++        }
++        stopped.complete(value)
++    }
++}
+--- /dev/null
++++ b/provider-swift/Tests/ProviderCoreTests/Server/ProtectedMemberSessionCompletionTests.swift
+@@ -0,0 +1,54 @@
++import Foundation
++import Testing
++@testable import ProviderCore
++
++@Suite struct ProtectedMemberSessionCompletionTests {
++    @Test func everyOriginalBarrierIsRequired() {
++        let epoch = UUID()
++        for mask in 0...127 { #expect(protectedCompletion(epoch, mask: mask).released == (mask == 127)) }
++    }
++    @Test func terminalObservationIsSinglePublication() async {
++        let signal = NativePairSessionCompletionSignal(), epoch = UUID()
++        let failed = protectedCompletion(epoch, mask: 63)
++        async let first = signal.wait()
++        async let second = signal.wait()
++        signal.complete(failed); signal.complete(protectedCompletion(epoch))
++        let values = await (first, second)
++        #expect(values.0 == failed); #expect(values.1 == failed)
++        #expect(signal.observation == failed)
++    }
++    @Test func requestOwnerShutdownAloneNeverAllowsRotation() async throws {
++        let backend = ProtectedMemberTestBackend(), session = try protectedTestSession(backend)
++        try await session.start()
++        let status = await session.stop(until: localHostDeadline(20))
++        #expect(status == .quarantined); #expect(!session.httpCanRotate)
++        #expect(backend.actualOwner.base.shutdownCount > 0)
++        backend.publish(protectedCompletion(backend.epoch, mask: 63)) // aggregate proof absent
++        await session.shutdown()
++        #expect(session.status == .quarantined); #expect(!session.httpCanRotate)
++    }
++    @Test func missingACKAbnormalExitAndUnjoinedSignerEachStayQuarantined() async throws {
++        for missing in [2, 4, 16] {
++            let backend = ProtectedMemberTestBackend(), session = try protectedTestSession(backend)
++            try await session.start()
++            backend.publish(protectedCompletion(backend.epoch, mask: 127 ^ missing))
++            let status = await session.stop(until: localHostDeadline())
++            await session.shutdown()
++            #expect(status == .quarantined); #expect(!session.httpCanRotate)
++        }
++    }
++    @Test func completeProofFromAnotherEpochIsRejected() async throws {
++        let backend = ProtectedMemberTestBackend(), session = try protectedTestSession(backend)
++        try await session.start(); backend.publish(protectedCompletion(UUID()))
++        _ = await session.stop(until: localHostDeadline()); await session.shutdown()
++        #expect(session.status == .quarantined); #expect(!session.httpCanRotate)
++    }
++    @Test func lateActualCompletionCanResolveTimeoutWithoutSynthesizingProof() async throws {
++        let backend = ProtectedMemberTestBackend(), session = try protectedTestSession(backend)
++        try await session.start()
++        _ = await session.stop(until: localHostDeadline(10))
++        #expect(!session.httpCanRotate)
++        backend.publish(); await session.shutdown()
++        #expect(session.status == .released); #expect(session.httpCanRotate)
++    }
++}
+--- /dev/null
++++ b/provider-swift/Tests/ProviderCoreTests/Server/ProtectedMemberSessionLifecycleTests.swift
+@@ -0,0 +1,110 @@
++import Foundation
++import Testing
++@testable import ProviderCore
++
++@Suite struct ProtectedMemberSessionLifecycleTests {
++    @Test func savedBindingSurvivesWithoutInventingTransportDiagnostics() throws {
++        let first = ProtectedMemberTestBackend(), second = ProtectedMemberTestBackend()
++        let a = try protectedTestSession(first, binding: protectedTestBinding(first, configurationPin: "a"))
++        let b = try protectedTestSession(second, binding: protectedTestBinding(second, configurationPin: "b"))
++        #expect(a.httpDiagnosticObservation == nil)
++        #expect(DistributedLocalSessionBinding(a).installed != nil)
++        #expect(DistributedLocalSessionBinding(a) != DistributedLocalSessionBinding(b))
++    }
++    @Test func admissionDelegatesToSameOwnerAndIdentity() async throws {
++        let backend = ProtectedMemberTestBackend(), session = try protectedTestSession(backend)
++        #expect(!session.httpAdmissionAvailable)
++        try await session.start()
++        let ready = try #require(session.readiness()), original = try #require(backend.actualOwner.readiness())
++        #expect(ready.identity == original.identity && ready.profileID == original.profileID
++            && ready.requestCapacityBytes == original.requestCapacityBytes)
++        #expect(session.httpAdmissionAvailable)
++        _ = try session.reserve(distributedTestRequest(), identity: session.expectedIdentity,
++            profileID: session.profile.id, capacityLimit: 1024)
++        #expect(backend.actualOwner.base.reserveCount == 1)
++        backend.actualOwner.base.last.acknowledge()
++        backend.publish(); _ = await session.stop(until: localHostDeadline()); await session.shutdown()
++    }
++    @Test func foreignIdentityOrProfileRefusesBeforeOriginalOwnerReserve() async throws {
++        let backend = ProtectedMemberTestBackend(), session = try protectedTestSession(backend)
++        try await session.start()
++        #expect(throws: DistributedEngineError.unavailable) {
++            try session.reserve(distributedTestRequest(), identity: DistributedTestOwner().identity,
++                profileID: session.profile.id, capacityLimit: 1024)
++        }
++        #expect(throws: DistributedEngineError.unavailable) {
++            try session.reserve(distributedTestRequest(), identity: session.expectedIdentity,
++                profileID: "changed", capacityLimit: 1024)
++        }
++        #expect(backend.actualOwner.base.reserveCount == 0)
++        backend.publish(); _ = await session.stop(until: localHostDeadline()); await session.shutdown()
++    }
++    @Test func changedMetadataDuringStartClosesCapturedSession() async throws {
++        let backend = ProtectedMemberTestBackend(), validation = ProtectedMemberValidationLatch()
++        validation.rejectSecond = true
++        let session = try protectedTestSession(backend, validate: { try validation.check() })
++        await #expect(throws: DistributedEngineError.unavailable) { try await session.start() }
++        let cancelled = try await localHostEventually { backend.cancelCount > 0 }
++        #expect(cancelled); #expect(!session.httpAdmissionAvailable)
++        backend.publish(protectedCompletion(backend.epoch, mask: 0)); await session.shutdown()
++        #expect(!session.httpCanRotate)
++    }
++    @Test func stopWhileStartupValidationIsPausedCannotReopenAdmissions() async throws {
++        let backend = ProtectedMemberTestBackend(), validation = ProtectedMemberValidationLatch()
++        validation.holdSecond()
++        let session = try protectedTestSession(backend, validate: { try validation.check() })
++        let startup = Task.detached { try await session.start() }
++        defer { validation.release() }
++        await validation.entered.wait()
++        _ = await session.stop(until: localHostDeadline(10))
++        validation.release()
++        await #expect(throws: DistributedEngineError.shuttingDown) { try await startup.value }
++        #expect(!session.httpAdmissionAvailable)
++        backend.publish(); await session.shutdown()
++        #expect(session.httpCanRotate)
++    }
++    @Test func cancellationDuringValidationCannotPublishReady() async throws {
++        let backend = ProtectedMemberTestBackend(), validation = ProtectedMemberValidationLatch()
++        validation.holdSecond()
++        let session = try protectedTestSession(backend, validate: { try validation.check() })
++        let startup = Task.detached { try await session.start() }
++        defer { validation.release() }
++        await validation.entered.wait(); startup.cancel(); validation.release()
++        await #expect(throws: CancellationError.self) { try await startup.value }
++        #expect(!session.httpAdmissionAvailable)
++        backend.publish(); await session.shutdown()
++    }
++    @Test func gracefulQuotaDrainWaitsAndExplicitStopInterruptsSameBackend() async throws {
++        let backend = ProtectedMemberTestBackend(), session = try protectedTestSession(backend)
++        backend.holdDrain(); try await session.start(); backend.exhaust()
++        #expect(session.httpSessionExhausted); #expect(!session.httpAdmissionAvailable)
++        let draining = Task { await session.drain(until: localHostDeadline()) }
++        let entered = try await localHostEventually { backend.drainCount == 1 }
++        #expect(entered); #expect(backend.cancelCount == 0)
++        #expect(!session.httpCanRotate)
++        backend.publish()
++        _ = await session.stop(until: localHostDeadline()); _ = await draining.value
++        await session.shutdown()
++        #expect(backend.cancelCount == 1); #expect(session.httpCanRotate)
++    }
++    @Test func normalQuotaDrainNeedsCompletionButDoesNotCancelTheMember() async throws {
++        let backend = ProtectedMemberTestBackend(), session = try protectedTestSession(backend)
++        try await session.start(); backend.exhaust()
++        let draining = Task { await session.drain(until: localHostDeadline()) }
++        let entered = try await localHostEventually { backend.drainCount == 1 }
++        #expect(entered); #expect(!backend.canAdmit); #expect(!session.httpCanRotate)
++        #expect(backend.cancelCount == 0)
++        backend.publish(); _ = await draining.value; await session.shutdown()
++        #expect(backend.cancelCount == 0); #expect(session.httpCanRotate)
++    }
++    @Test func disconnectedGenerationCannotBorrowReplacementCompletion() async throws {
++        let old = ProtectedMemberTestBackend(), replacement = ProtectedMemberTestBackend()
++        let session = try protectedTestSession(old)
++        try await session.start(); old.disconnect(); replacement.publish()
++        let cancelled = try await localHostEventually { old.cancelCount > 0 }
++        #expect(cancelled); #expect(replacement.cancelCount == 0)
++        #expect(session.httpSessionInvalid); #expect(!session.httpCanRotate)
++        old.publish(protectedCompletion(old.epoch, mask: 63)); await session.shutdown()
++        #expect(!session.httpCanRotate)
++    }
++}
+--- /dev/null
++++ b/provider-swift/Tests/ProviderCoreTests/Server/ProtectedMemberSessionTestSupport.swift
+@@ -0,0 +1,102 @@
++import Foundation
++import MLXLMCommon
++@testable import ProviderCore
++
++/// Model-free lifecycle backend. Completion flags are fabricated explicitly;
++/// this fixture never claims native, transport, signing, or resource evidence.
++final class ProtectedMemberTestOwner: DistributedDeadlineExecutionOwner, @unchecked Sendable {
++    let base = DistributedTestOwner()
++    func readiness() -> DistributedResidentReadiness? { base.readiness() }
++    func setReadinessInvalidationHandler(_ handler: @escaping @Sendable () -> Void) { base.setReadinessInvalidationHandler(handler) }
++    func projectFirstToken(_ request: CBv2Request, admission: CBv2FirstTokenDeadlineAdmission) -> CBv2FirstTokenProjectedWork {
++        base.projectFirstToken(request, admission: admission)
++    }
++    func reserve(_ request: CBv2Request, identity: DistributedResidentIdentity, profileID: String,
++                 capacityLimit: Int) throws -> any DistributedResidentRequestLease {
++        try base.reserve(request, identity: identity, profileID: profileID, capacityLimit: capacityLimit)
++    }
++    func reserve(_ request: CBv2Request, identity: DistributedResidentIdentity, profileID: String,
++                 capacityLimit: Int, deadlineContext: DistributedRequestDeadlineContext) throws -> any DistributedResidentRequestLease {
++        try reserve(request, identity: identity, profileID: profileID, capacityLimit: capacityLimit)
++    }
++    func shutdown() async { await base.shutdown() }
++}
++
++final class ProtectedMemberTestBackend: ProtectedMemberSessionBackend, @unchecked Sendable {
++    let actualOwner = ProtectedMemberTestOwner()
++    private let lock = NSLock(), terminal = NativePairSessionCompletionSignal()
++    let drainGate = LocalHostLatch()
++    var owner: any DistributedDeadlineExecutionOwner { actualOwner }
++    var epoch: UUID { actualOwner.base.identity.membershipEpoch }
++    let lifetime = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
++    private var available = true, invalidated = false, spent = false, drainHeld = false
++    private var cancels = 0, drains = 0
++    var canAdmit: Bool { lock.withLock { available && !invalidated && !spent } }
++    var invalid: Bool { lock.withLock { invalidated } }
++    var exhausted: Bool { lock.withLock { spent } }
++    var completion: NativePairSessionCompletion? { terminal.observation }
++    var cancelCount: Int { lock.withLock { cancels } }
++    var drainCount: Int { lock.withLock { drains } }
++    func exhaust() { lock.withLock { spent = true } }
++    func holdDrain() { lock.withLock { drainHeld = true } }
++    func closeAdmissions() { lock.withLock { available = false } }
++    func cancel() { lock.withLock { cancels += 1; available = false }; drainGate.complete() }
++    func disconnect() { lock.withLock { invalidated = true }; actualOwner.base.losePeer() }
++    func drain() async {
++        let wait = lock.withLock { drains += 1; available = false; return drainHeld }
++        if wait { await drainGate.wait() }
++        await actualOwner.shutdown()
++    }
++    func publish(_ value: NativePairSessionCompletion? = nil) {
++        terminal.complete(value ?? protectedCompletion(epoch))
++    }
++    func waitForCompletion() async -> NativePairSessionCompletion { await terminal.wait() }
++}
++
++func protectedCompletion(_ epoch: UUID, mask: Int = 127) -> NativePairSessionCompletion {
++    .init(membershipEpoch: epoch, nativeCleanupObserved: mask & 1 != 0,
++        ownerReleaseAcknowledged: mask & 2 != 0, ownerExitedNormally: mask & 4 != 0,
++        requestTransportJoined: mask & 8 != 0, cancellationPublicationJoined: mask & 16 != 0,
++        localReleasePublished: mask & 32 != 0, aggregateReleaseObserved: mask & 64 != 0)
++}
++
++func protectedTestSession(_ backend: ProtectedMemberTestBackend,
++                          binding: ClusterStatusBinding? = nil,
++                          validate: @escaping @Sendable () throws -> Void = {}) throws -> DistributedProtectedMemberSession {
++    try .init(model: .init(publicModelID: "public/example", directory: URL(fileURLWithPath: "/fabricated"),
++        modelType: "qwen3_5", eosTokenIDs: [], vocabularySize: 100),
++        identity: backend.actualOwner.base.identity, profile: distributedTestProfile(), backend: backend,
++        retainMemberLoop: UUID(), installedBinding: binding, validateInputs: validate)
++}
++
++func protectedTestBinding(_ backend: ProtectedMemberTestBackend, configurationPin: Character) throws -> ClusterStatusBinding {
++    let id = backend.actualOwner.base.identity, pin = String(repeating: "a", count: 64)
++    let object: [String: Any] = ["clusterID": "fixture-cluster", "memberID": id.peers[0].id, "role": "leader",
++        "configurationSHA256": String(repeating: String(configurationPin), count: 64), "capabilitySHA256": pin,
++        "publicModelID": "public/example", "runtimeModelID": id.modelID, "artifactSHA256": id.artifactSHA256,
++        "configurationModelSHA256": id.configurationSHA256, "planSHA256": pin, "prefillSchedule": "serial_v1",
++        "maximumLifetimeSeconds": 5, "maximumRequests": 1,
++        "peers": id.peers.enumerated().map { ["id": $0.element.id, "rank": $0.offset,
++            "runtimeBinarySHA256": $0.element.buildSHA256] as [String: Any] }]
++    return try JSONDecoder().decode(ClusterStatusBinding.self, from: JSONSerialization.data(withJSONObject: object))
++}
++
++/// Synchronous validation can be paused from a detached startup task. Tests
++/// release it on every path; async test methods never block on DispatchGroup.
++final class ProtectedMemberValidationLatch: @unchecked Sendable {
++    private let condition = NSCondition()
++    private var count = 0, held = false, proceed = false
++    let entered = LocalHostLatch()
++    var rejectSecond = false
++    func holdSecond() { condition.lock(); held = true; condition.unlock() }
++    func check() throws {
++        condition.lock(); defer { condition.unlock() }
++        count += 1
++        if count == 2 {
++            entered.complete()
++            while held && !proceed { condition.wait() }
++            if rejectSecond { throw DistributedEngineError.unavailable }
++        }
++    }
++    func release() { condition.lock(); proceed = true; condition.broadcast(); condition.unlock() }
++}

@@ -1,0 +1,20 @@
+CPU-only independent audit of saved Qwen FFN output worker/failure evidence
+
+Passed with one metadata erratum. The original receipts and drivers are unchanged. The binary fingerprint is `74ab08e0d55dbb00b7f5603ec7b686ef7dab2021fcdc790bc816d29c03b3fcb1`. Both archived source manifests, 130 worker-source files and 130 failure-source files, all referenced bundle resources, and 482 evidence files were SHA256 checked. No native program, GPU operation, build, SSH connection, or process signal was executed by this audit.
+
+The six BF16 cohorts cover tiny and qwen27-heads, each in solo, FFN TP and full TP, with CBv2 contiguous execution and both attention/FFN output precision set to Float32. All 24 logical requests are supported by 40 per-rank completed events, 290 raw worker frames and 97,280 finite captured logit values. Ten workers each emit one ready frame, retain their original load ID across all four requests, and emit stopped at sequence 5. Exact canonical request hashes, common rank identities/storage commitments, callback order, peer results and actual decode histories validate against the archived protocol5 contract.
+
+All six A/B/A comparisons and all six fresh one-shot A controls match exactly in saved numerical values and independently reconstructed Float32 bytes, generated tokens, local argmax and decode-input history. The fresh controls cover A, not B or the single-token workload. Every single-token request has zero decode forwards, empty decode history/step timings, zero decode seconds and no decode TPS. All ten actual fresh reports are schema9. Each independently mutated schema8 report is rejected; no schema8 report was observed or accepted.
+
+Solo, FFN TP and full TP cancellation recordings each end after the first agreed token, with no completed result and permanently failed session/request manifests. The hash-bound driver recorded all five native workers and five supervisors reaped, with epoch reuse rejected; recorded cancellation-to-reaped intervals were 12.212, 11.412 and 11.899 ms. Historical PID death and reuse rejection are contemporaneous driver assertions, not independently re-observed process state. The raw streams independently support the one-token/no-completion result. These failure runs use tiny Float32 with Float32 FFN output and native attention policy.
+
+The request mismatch produces two ready frames followed by both rank exits 1 before accepted/token/completed; the only command difference is one prompt token. Native versus Float32 FFN-output identity mismatch produces no ready frame, and both ranks exit 1. Four raw CLI rejection cases verify unsupported CBv2 families/path; the separate six-case FFN-output/diagnostic-bound receipt binds the same binary and reports empty stdout/exit 1 with errors matching archived Options guards, which execute before MLX initialization. Those six extra cases have summary evidence only, without separately retained raw streams.
+
+The failure receipt's `report_schema_version: 8` is a stale annotation; report9/worker5 is correct. A separate erratum records its original hashes and the source/raw-report basis. This is a bounded synthetic lifecycle/exactness audit, not model-quality, real-artifact, scheduler, RDMA or performance qualification. Archived fingerprints are integrity evidence, not a reproducible-build attestation.
+
+Reproduce the CPU audit: `python3 /Users/developer/DarkbloomDev/cluster-research/audit-qwen-ffn-output-workers.py`.
+
+Artifacts:
+- Audit JSON: `/Users/developer/DarkbloomDev/cluster-research/runs/qwen-ffn-output-workers-20260913/independent-worker-failure-cpu-audit.json` — SHA256 `0d86e0eadabe0aa8f88c9c5d84a7cb92dd902c7245f2b98698413476e60cc6de`.
+- Erratum: `/Users/developer/DarkbloomDev/cluster-research/runs/qwen-ffn-output-failures-20260913/report-schema-erratum.json` — SHA256 `9c944f59aa717c4718655fb47479e4889fa9c1c419a89ba5f7d163ecda928736`.
+- Audit script: `/Users/developer/DarkbloomDev/cluster-research/audit-qwen-ffn-output-workers.py` — SHA256 `0542e9497d8d38ddbd7fe1a0327fcce5aa189394a9f83ebf0e73b45bed43772a`.

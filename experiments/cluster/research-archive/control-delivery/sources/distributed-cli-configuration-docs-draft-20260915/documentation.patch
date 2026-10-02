@@ -1,0 +1,184 @@
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,4 +1,10 @@
+ # Changelog
++
++## Unreleased — experimental local distributed serving (2026-09-15)
++
++- Add `cluster configure` for pinned per-member setup and the authenticated `cluster worker-owner --stdio` entry. Saving setup does not install software, connect to peers or enable serving.
++- Add explicit `start --local --distributed` for the saved leader configuration, with matching default-provider references, bounded native ownership and cleanup failure propagation. Ordinary solo startup remains the default.
++- Limit the current adapter to registered Qwen3.5 9B 4-bit greedy text with MTP off. This source integration is experimental; live provider HTTP qualification and release acceptance remain open. See the [CLI reference](docs/provider/cli-reference.md#darkbloom-cluster-experimental) and [configuration limits](docs/reference/configuration.md#saved-distributed-setup-experimental).
+ 
+ ## Release candidate v0.9.4 — App Attest recovery and retirement readiness (not shipped; 2026-09-14)
+ 
+--- a/docs/provider/cli-reference.md
++++ b/docs/provider/cli-reference.md
+@@ -1,6 +1,6 @@
+ # Provider CLI reference
+ 
+-> Last updated: 2026-09-13 · commit `d4bab49a9`
++> Last updated: 2026-09-15 · commit `605651bb9`
+ 
+ Reference for the `darkbloom` command-line tool: every subcommand and flag, the
+ files and identifiers it creates, the `provider.toml` keys it reads with their
+@@ -26,7 +26,7 @@
+ 
+ ## Subcommands
+ 
+-Declaration order of `Darkbloom.configuration.subcommands` (21):
++Commands follow the declaration order in `Darkbloom.configuration.subcommands`:
+ 
+ | Command | Purpose | `--config` | Source (`provider-swift/Sources/darkbloom/…`) |
+ |---|---|---|---|
+@@ -37,6 +37,7 @@
+ | `doctor` | Diagnostics (see [troubleshooting](./troubleshooting.md#doctor-checks)) | ✓ | `DoctorCommand.swift` (`Doctor`) |
+ | `models` | `list`, `catalog`, `download`, `remove` | ✓ | `ModelsCommand.swift` (`Models`) |
+ | `local` | Print the direct-mode endpoint and API key | | `LocalCommand.swift` (`Local`) |
++| `cluster` | Experimental saved setup (`configure`) and authenticated worker-owner entry (`worker-owner`) | `configure` only | `ClusterCommand.swift` (`Cluster`); `ClusterWorkerOwnerCommand.swift` (`Cluster.WorkerOwner`) |
+ | `login` | Link the machine to an account (RFC 8628 device code) | ✓ | `LoginCommand.swift` (`Login`) |
+ | `logout` | Delete the device token | | `LogoutCommand.swift` (`Logout`) |
+ | `benchmark` | Inference benchmarks and harnesses | ✓ | `BenchmarkCommand.swift` (`Benchmark`) |
+@@ -62,10 +63,23 @@
+ | `--idle-timeout <mins>` | `UInt64?` | `backend.idle_timeout_mins` (`60`) | Override the idle unload timeout for this run |
+ | `--foreground` / `--no-foreground` | flag, **hidden** | `false` | Serve in this process instead of installing the LaunchAgent; launchd passes it |
+ | `--local` | flag | `false` | Coordinator-less OpenAI-compatible server ([direct mode](./direct-mode.md)) |
++| `--distributed` | flag | `false` | Experimental saved-cluster serving; requires `--local` (`Start.validate`) |
+ | `--local-endpoint` | flag | `false` | Local endpoint alongside the coordinator; mutually exclusive with `--local` |
+ | `--port <n>` | `UInt16` | `8000` | Local server port |
+ | `--bind <addr>` | `String` | `127.0.0.1` | Local server bind address |
+ | `--no-auth` | flag | `false` | Disable the local bearer-token check |
++
++`--local --distributed` starts the configured leader in this process. It refuses
++`--foreground`, `--local-endpoint`, `--model`, `--all`, `--idle-timeout` and
++`--coordinator-url`. An alternate `--config` must contain the same `[cluster]`
++reference as `~/.config/darkbloom/provider.toml`, which the installed local owner
++reads. Only the current registered Qwen3.5 9B 4-bit greedy text profile with MTP
++off is supported; see [saved-cluster limits](../reference/configuration.md#saved-distributed-setup-experimental).
++Startup failure, runtime failure or unresolved cleanup exits unsuccessfully.
++This opt-in path is experimental; live product qualification remains pending.
++Without `--distributed`, the command selects ordinary solo startup
++(`provider-swift/Sources/darkbloom/StartCommand.swift`, `Start.validate`;
++`provider-swift/Sources/darkbloom/StartCommand+Distributed.swift`, `Start.runLocalDistributed`).
+ 
+ Exit 1 (`ExitCode.failure`) when `--local` and `--local-endpoint` are combined,
+ a debugger is attached, RAM is below 8 GB, Metal is unavailable, hardware
+@@ -148,6 +162,24 @@
+ 
+ Exit 1 (and `{}` in JSON mode) when no live local server is recorded
+ (`LocalEndpoint.readLiveInfo`, `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift`).
++
++### `darkbloom cluster` (experimental)
++
++| Command / option | Default | Effect | Source (`provider-swift/Sources/darkbloom/…`) |
++|---|---|---|---|
++| `configure --input <path>` | Required | Absolute path to the cluster setup JSON | `ClusterCommand.swift` (`Cluster.Configure`) |
++| `configure --capability <path>` | Required | Absolute path to canonical capability JSON from the installed native worker | `ClusterCommand.swift` (`Cluster.Configure`) |
++| `configure --capability-sha256 <sha256>` | Required | Lowercase SHA-256 of those exact capability bytes | `ClusterCommand.swift` (`Cluster.Configure.validate`) |
++| `configure --json` | `false` | Print saved references and the limited verification scope as JSON | `ClusterCommand.swift` (`Cluster.Configure.run`) |
++| `worker-owner --stdio` | Required | Fixed entry used by the authenticated supervisor; reads the local default provider configuration, with no `--config` override | `ClusterWorkerOwnerCommand.swift` (`Cluster.WorkerOwner`) |
++
++`configure` accepts `--config` with an absolute path and saves the `[cluster]`
++reference there; by default it uses `~/.config/darkbloom/provider.toml`. It checks
++the setup, capability and existing local SSH trust-file inputs, but does not
++install software, contact peers, load a model or enable distributed startup.
++Configure each member's own leader/follower setup before explicit startup.
++The [configuration schema](../reference/configuration.md#saved-distributed-setup-experimental)
++defines the required pins, installed paths and bounded session behavior.
+ 
+ ### `darkbloom login` / `darkbloom logout`
+ 
+@@ -753,6 +785,7 @@
+ 
+ | Key | Default | Effect |
+ |---|---|---|
++| `[cluster] configuration`, `sha256` | absent | Saved setup reference only; see [cluster configuration](../reference/configuration.md#saved-distributed-setup-experimental). Requires explicit `start --local --distributed` |
+ | `[provider] memory_reserve_gb` | `4` | Unified memory withheld from model admission |
+ | `[provider] auto_update` | `true` | Startup + periodic self-update |
+ | `[provider] auto_restart` | `true` | Arm the watchdog LaunchAgent |
+--- a/docs/reference/configuration.md
++++ b/docs/reference/configuration.md
+@@ -1,10 +1,10 @@
+ # Configuration reference
+ 
+-> Last updated: 2026-09-14 · commit `b725a72a8`
+-
+-Every environment variable read by the coordinator, the provider CLI
+-(`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
+-the code that reads it, and its effect. Defaults are the fallbacks at the cited
++> Last updated: 2026-09-15 · commit `605651bb9`
++
++Environment variables read by the coordinator, the provider CLI (`darkbloom`),
++console-ui and admin-ui, plus the experimental saved cluster setup: accepted
++values, defaults, readers and effects. Defaults are the fallbacks at the cited
+ symbol; a production or dev host may pin a different value in its environment
+ file. Secrets are named, never valued. Unless a row says *live*, the variable is
+ read once at process start and a restart applies a change.
+@@ -342,6 +342,68 @@
+ 
+ Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative values `0`/`false`/`no`/`off`, case-insensitive. Only the variables named in the LaunchAgent allow-list above reach an installed daemon; everything else applies to `darkbloom start --foreground` and to the benchmark and test binaries.
+ 
++### Saved distributed setup (experimental)
++
++[`darkbloom cluster configure`](../provider/cli-reference.md#darkbloom-cluster-experimental)
++saves setup without enabling it. The optional `[cluster]` table has exactly two
++keys; omission preserves ordinary solo startup. Each installed `worker-owner`
++reads its own default `~/.config/darkbloom/provider.toml`. A leader started with
++an alternate `--config` must select that same saved reference
++(`provider-swift/Sources/darkbloom/StartCommand+Distributed.swift`, `Start.runLocalDistributed`).
++
++| TOML key | Default | Meaning | Source |
++|---|---|---|---|
++| `[cluster] configuration` | Absent | Absolute path to the saved canonical cluster JSON | `provider-swift/Sources/ProviderCore/Config/ClusterConfigurationPaths.swift` (`ClusterConfigurationReference`) |
++| `[cluster] sha256` | Absent | Lowercase SHA-256 of that saved JSON | `provider-swift/Sources/ProviderCore/Config/ClusterConfigurationPaths.swift` (`ClusterConfigurationReference`) |
++
++The required setup JSON fields below are validated by
++`provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift`
++(`ClusterConfiguration.validate`) and its closed codec in
++`provider-swift/Sources/ProviderCore/Config/ClusterConfigurationCodec.swift`.
++There are no field defaults. Unknown fields and unsupported capability adapters,
++profiles or partitions are refused.
++
++| Field | Accepted value / effect | Source symbol |
++|---|---|---|
++| `schema` | `darkbloom_cluster_configuration_v1` | `ClusterConfiguration.schemaName` |
++| `clusterID`, `memberID`, `role` | Cluster/member labels; local `leader` (rank 0) or `follower` (rank 1) | `ClusterConfiguration.validate` |
++| `publicModelID`, `capabilitySHA256`, `selectedPlanSHA256` | Public model route, exact capability-byte pin and a partition already described by that capability | `ClusterConfiguration.validate` |
++| `chunkTokens`, `requestTimeoutSeconds` | Positive integers within capability limits; current maxima 512 tokens and 300 seconds | `ClusterConfiguration.validate` |
++| `peers` | Exactly two distinct peers in rank order, with `id`, `rank`, `host`, `port`, `user`, `ownerExecutable`, `workerExecutable`, `modelDirectory`, `runtimeBinarySHA256`, `jacclDevice`; both worker hashes match the capability | `ClusterConfiguration.Peer`, `ClusterConfiguration.validate` |
++| `coordinator` | JACCL `address` (IPv4) and `port`; not the Darkbloom coordinator URL | `ClusterConfiguration.Coordinator`, `ClusterConfiguration.validate` |
++| `trust` | Existing local SSH `identityFile`, `knownHostsFile`, `knownHostsSHA256`; private-key contents are not embedded | `ClusterConfiguration.Trust`, `ClusterConfigurationStore.validateTrust` |
++| `tokenizerFiles` | Unique relative `path`, SHA-256 and `purpose` (`tokenizer` or `chatTemplate`) entries. Startup requires pinned `tokenizer.json`, `tokenizer_config.json` and `chat_template.jinja` or `chat_template.json` | `ClusterConfiguration.TokenizerFile`; `DistributedInstalledModel.make` |
++
++The current adapter describes only registered Qwen3.5 9B 4-bit
++(`registered_qwen35_9b_greedy_generation_v1`): two ranks, B1, one active request,
++greedy text, serial prefill, MTP off and no prefix reuse. Its ceilings are 8,192
++prompt tokens, 128 output tokens, 512-token chunks and 8,320 total context tokens.
++A resident session allows at most 16 admitted requests and a fixed 300-second
++lifetime including startup. Request deadlines are also bounded by remaining
++session lifetime and earlier HTTP budgets. The host stops at lifetime or request
++exhaustion without automatic epoch rotation. These are software limits, not
++promised memory capacity or live product qualification
++(`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdapterDefinition.swift`;
++`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift`,
++`DistributedInstalledSession.launch`;
++`provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer.swift`).
++
++Saved configuration and capability files live under
++`~/.config/darkbloom/clusters/`; the device lease and unresolved ownership journal
++use `~/.darkbloom/cluster-device/`. An active lease or unresolved journal refuses
++configuration changes. Saving verifies local input pins, not remote installation,
++model payloads or readiness. Startup separately checks the installed worker and
++model/tokenizer metadata; serving readiness requires both loaded peers
++(`provider-swift/Sources/ProviderCore/Config/ClusterConfigurationStore.swift`,
++`ClusterConfigurationStore.save`;
++`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPreparation.swift`,
++`DistributedInstalledPreparation.prepare`).
++
++The saved JACCL settings and fixed admitted arithmetic policy determine the
++native worker environment
++(`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPlan.swift`,
++`DistributedInstalledPlan.nativeEnvironment`).
++
+ ### Operator-facing: daemon, paths, updates
+ 
+ | Variable | Values / type | Default | Read in | Effect |

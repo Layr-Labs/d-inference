@@ -1,0 +1,125 @@
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenDenseRegisteredResourceProfile.swift
+@@ -0,0 +1,79 @@
++import Foundation
++
++/// Exact registered metadata limits, not an execution, payload or OS permit.
++/// Legacy callers keep their original limits. The resident execution allowlist
++/// remains a separate admission decision and currently still admits only 9B.
++struct QwenDenseRegisteredResourceProfile {
++    static let maximumContextTokens = 8320
++    static let maximumChunkTokens = 512
++
++    let model: QwenRegisteredDenseModel
++    let configurationSHA256: String, manifestSHA256: String, artifactAggregateSHA256: String
++    let geometry: QwenLongPrefillBudgetGeometry
++    let maximumManifestPayloadBytes: Int
++    let namedTensorByteCeiling: Int
++    let maximumNamedStateBudget: QwenLongPrefillTensorBudget
++    let runtimeExecutionAuthorized = false
++    let actualPayloadVerificationEstablished = false
++    let independentResourcePolicyRequired = true
++
++    init(specification: QwenDenseRegisteredSpecification) throws {
++        let expectedMaximumStateBytes: Int
++        switch specification.model {
++        case .qwen35NineB:
++            // Preserve the resident's prior legacy manifest limit and unchanged
++            // exact-9B long-prefill ceiling; this does not alter that receipt.
++            maximumManifestPayloadBytes = 8 * 1024 * 1024 * 1024
++            namedTensorByteCeiling = QwenRegistered9BLongPrefillAdmission.namedTensorByteCeiling
++            expectedMaximumStateBytes = 754_188_320
++        case .qwen38TwentySevenB:
++            // Independent registered metadata scope. No legacy constant grows,
++            // and selecting these values grants no 27B execution permission.
++            maximumManifestPayloadBytes = 16_320_415_757
++            namedTensorByteCeiling = 1_616_248_896
++            expectedMaximumStateBytes = 1_616_248_896
++        }
++        model = specification.model
++        configurationSHA256 = specification.configurationSHA256
++        manifestSHA256 = specification.manifestSHA256
++        artifactAggregateSHA256 = specification.artifactSHA256
++        geometry = try specification.expectedGeometry()
++        maximumNamedStateBudget = try QwenLongPrefillTensorBudget.estimate(geometry: geometry,
++            maximumTokens: Self.maximumContextTokens, chunkSize: Self.maximumChunkTokens)
++        guard specification.manifestBytes > 0,
++              specification.manifestBytes <= maximumManifestPayloadBytes,
++              maximumNamedStateBudget.conservativeStateAndBoundaryBytes == expectedMaximumStateBytes,
++              expectedMaximumStateBytes <= namedTensorByteCeiling else {
++            throw QwenDenseProfileError("Registered resource profile differs from its exact byte vector")
++        }
++    }
++
++    init(profile: QwenRegisteredDenseModelProfile) throws {
++        guard let specification = QwenDenseRegisteredSpecification.all.first(where: { $0.model == profile.model }),
++              profile.configurationSHA256 == specification.configurationSHA256,
++              profile.manifestSHA256 == specification.manifestSHA256,
++              profile.artifactAggregateSHA256 == specification.artifactSHA256,
++              profile.canonicalInventorySHA256 == specification.inventorySHA256,
++              profile.manifestPayloadBytes == specification.manifestBytes,
++              profile.sourceTensorBytes == specification.sourceBytes,
++              profile.largestSourceTensorBytes == specification.largestTensorBytes,
++              profile.geometry == (try specification.expectedGeometry()) else {
++            throw QwenDenseProfileError("Registered resource profile uses different admitted metadata")
++        }
++        try self.init(specification: specification)
++    }
++
++    /// Bounded calculation for the selected model, never a runtime admission.
++    func namedStateBudget(maximumTokens: Int, chunkSize: Int) throws -> QwenLongPrefillTensorBudget {
++        guard (1...Self.maximumContextTokens).contains(maximumTokens),
++              (1...Self.maximumChunkTokens).contains(chunkSize), chunkSize <= maximumTokens else {
++            throw QwenDenseProfileError("Registered resource request exceeds its context/chunk calculation scope")
++        }
++        let budget = try QwenLongPrefillTensorBudget.estimate(geometry: geometry,
++            maximumTokens: maximumTokens, chunkSize: chunkSize)
++        guard budget.conservativeStateAndBoundaryBytes <= namedTensorByteCeiling else {
++            throw QwenDenseProfileError("Registered resource request exceeds its named-state ceiling")
++        }
++        return budget
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdmission.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdmission.swift
+@@ -71,9 +71,10 @@
+         profile = try QwenResidentAdapterDefinition.profile(specification: spec)
+         // Recalculate the existing named-state formula at the generation cap;
+         // never relabel the separate exact 8192/512/output1 admission receipt.
++        let resources = try QwenDenseRegisteredResourceProfile(specification: spec)
+         let maximum = try QwenLongPrefillTensorBudget.estimate(geometry: spec.expectedGeometry(),
+             maximumTokens: profile.maximumContextTokens, chunkSize: profile.maximumChunkTokens)
+-        guard maximum.conservativeStateAndBoundaryBytes <= QwenRegistered9BLongPrefillAdmission.namedTensorByteCeiling else {
++        guard maximum.conservativeStateAndBoundaryBytes <= resources.namedTensorByteCeiling else {
+             throw ProbeError("Resident generation exceeds the unchanged named-state ceiling")
+         }
+     }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRequestResources.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRequestResources.swift
+@@ -17,10 +17,11 @@
+         guard plan.stages.count == 2, (0...1).contains(rank), profile.model == .qwen35NineB else {
+             throw ProbeError("Resident request allowance requires the admitted 9B stage")
+         }
++        let resources = try QwenDenseRegisteredResourceProfile(profile: profile)
+         let g = profile.geometry
+         let b = try QwenLongPrefillTensorBudget.estimate(geometry: g,
+             maximumTokens: maximumTokens, chunkSize: chunkSize)
+-        guard b.conservativeStateAndBoundaryBytes <= QwenRegistered9BLongPrefillAdmission.namedTensorByteCeiling else {
++        guard b.conservativeStateAndBoundaryBytes <= resources.namedTensorByteCeiling else {
+             throw ProbeError("Resident request exceeds the unchanged named-state byte ceiling")
+         }
+         let sum = QwenLongPrefillCheckedBytes.sum, product = QwenLongPrefillCheckedBytes.product
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentSource.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentSource.swift
+@@ -17,9 +17,10 @@
+ func prepareQwenResidentSource(_ admission: QwenResidentAdmission,
+                               check: () throws -> Void) throws -> QwenResidentSource {
+     guard !_qwen35MTPEnabled else { throw ProbeError("Resident generation requires MTP disabled") }
++    let resources = try QwenDenseRegisteredResourceProfile(specification: admission.specification)
+     let checkpoint = try VerifiedCheckpoint(directory: admission.configuration.modelDirectory,
+         configurationData: admission.configBytes, expectedAggregateSHA256: admission.specification.artifactSHA256,
+-        maximumPayloadBytes: LocalCorrectnessStorage.maximumManifestPayloadBytes,
++        maximumPayloadBytes: resources.maximumManifestPayloadBytes,
+         expectedManifestSHA256: admission.specification.manifestSHA256)
+     try checkpoint.requireConfiguration(admission.configBytes)
+     let base = try JSONDecoder().decode(BaseConfiguration.self, from: admission.configBytes)

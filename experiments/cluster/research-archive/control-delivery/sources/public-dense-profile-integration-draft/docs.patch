@@ -1,0 +1,30 @@
+--- a/experiments/cluster/inference/README.md
++++ b/experiments/cluster/inference/README.md
+@@ -159,6 +159,10 @@
+ ownership, with compute costs explicitly unknown. The metadata helper preserves
+ the original configuration bytes and does not load weights, select a device,
+ rank cuts or admit a new execution profile.
++
++The [registered dense-profile API](QWEN_DENSE_PROFILE.md) binds retained 9B/27B
++metadata to plan- and role-specific storage requirements. Its pure fixtures
++preserve existing loader gates and provide no execution permission.
+ 
+ | Stage | Active weights | Inactive components that the loader must handle |
+ |---|---|---|
+--- a/docs/developer/test.md
++++ b/docs/developer/test.md
+@@ -19,6 +19,14 @@
+ The [candidate metadata fixtures](../../experiments/cluster/inference/Tests/LayerStageCandidates/README.md)
+ compile production planning code without MLX and cover unequal splits,
+ parameter/state ownership, quantization remapping and supported output gates.
++
++Run the [registered dense-profile fixtures](../../experiments/cluster/inference/QWEN_DENSE_PROFILE.md)
++without MLX or model payloads:
++
++```sh
++bash experiments/cluster/inference/Tests/RegisteredDenseProfiles/run.sh
++```
++
+ The `--stage-cut` admission checks passed eight accepted/50 rejected comparison
+ cases and eight accepted/47 rejected rank cases, including stale plan binding
+ and foreign modes that reuse preflight. The public short `ranks` launcher

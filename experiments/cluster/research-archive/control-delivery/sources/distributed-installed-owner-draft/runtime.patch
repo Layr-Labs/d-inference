@@ -1,0 +1,1227 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerPair.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerPair.swift
+@@ -20,11 +20,14 @@
+     public let identity: ClusterWorkerIdentity
+     public let profile: ClusterWorkerProfile
+     public let executionPlanSHA256: String
++    public let maximumRequests: Int
+     let workers: [any ClusterWorkerEndpoint]
+     private let lock = NSLock()
+     private var active: ClusterWorkerRequest?
+     private var invalid = false
+     private var stopping = false
++    private var draining = false
++    private var activeReleased: WorkerCompletion?
+     private let shutdownFinished = WorkerCompletion()
+     private var handler: (@Sendable () -> Void)?
+     private var notificationSent = false
+@@ -38,7 +41,8 @@
+     }
+     public var readiness: ClusterWorkerPairReadiness? {
+         lock.withLock {
+-            guard !invalid && !stopping, let a = workers[0].readiness, let b = workers[1].readiness else { return nil }
++            guard !invalid && !stopping && (!draining || active != nil) && (admittedCount < maximumRequests || active != nil)
++                && DispatchTime.now().uptimeNanoseconds < localLifetimeDeadlineUptimeNanoseconds, let a = workers[0].readiness, let b = workers[1].readiness else { return nil }
+             let sum = a.requestCapacityBytes.addingReportingOverflow(b.requestCapacityBytes)
+             guard !sum.overflow, sum.partialValue <= ClusterWorkerLimits.capacityBytes else { return nil }
+             return .init(identity: identity, profile: profile, executionPlanSHA256: executionPlanSHA256,
+@@ -46,13 +50,15 @@
+         }
+     }
+ 
+-    public init(workers: [any ClusterWorkerEndpoint], startupDeadline: UInt64) throws {
+-        guard workers.count == 2, workers[0] !== workers[1], workers.map(\.rank) == [0, 1],
++    public init(workers: [any ClusterWorkerEndpoint], startupDeadline: UInt64,
++                maximumRequests: Int = ClusterWorkerLimits.requestsPerEpoch) throws {
++        guard (1...ClusterWorkerLimits.requestsPerEpoch).contains(maximumRequests), workers.count == 2, workers[0] !== workers[1], workers.map(\.rank) == [0, 1],
+               workers[0].expectedIdentity == workers[1].expectedIdentity,
+               workers[0].expectedProfile == workers[1].expectedProfile,
+               workers[0].executionPlanSHA256 == workers[1].executionPlanSHA256 else {
+             throw ClusterWorkerOwnerError.invalid("Expected two ordered workers with one identity/profile/plan")
+         }
++        self.maximumRequests = maximumRequests
+         self.workers = workers; identity = workers[0].expectedIdentity; profile = workers[0].expectedProfile
+         executionPlanSHA256 = workers[0].executionPlanSHA256
+         do {
+@@ -95,7 +101,7 @@
+         _ = try ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(membershipEpoch: identity.membershipEpoch,
+             sequence: 0, requestID: requestID, command: .reserve(reservation)))
+         let lease = try lock.withLock { () -> ClusterWorkerRequest in
+-            guard !invalid && !stopping && active == nil, admittedCount < ClusterWorkerLimits.requestsPerEpoch, !requestIDs.contains(requestID),
++            guard !invalid && !stopping && !draining && active == nil, admittedCount < maximumRequests, !requestIDs.contains(requestID),
+                   reservation.profileID == profile.id,
+                   reservation.promptTokenIDs.count <= profile.maximumPromptTokens,
+                   reservation.outputCount <= profile.maximumOutputTokens,
+@@ -109,7 +115,7 @@
+                 throw ClusterWorkerOwnerError.unavailable
+             }
+             let value = ClusterWorkerRequest(owner: self, requestID: requestID, reservation: reservation)
+-            active = value; admittedCount += 1; requestIDs.insert(requestID); return value
++            active = value; activeReleased = WorkerCompletion(); admittedCount += 1; requestIDs.insert(requestID); return value
+         }
+         do { try lease.admit(until: admissionDeadline); return lease }
+         catch {
+@@ -122,7 +128,34 @@
+     }
+ 
+     func release(_ lease: ClusterWorkerRequest) {
+-        lock.withLock { if active === lease { active = nil } }
++        let completion = lock.withLock { () -> WorkerCompletion? in
++            guard active === lease else { return nil }
++            active = nil; let value = activeReleased; activeReleased = nil; return value
++        }
++        completion?.complete()
++    }
++
++    /// This snapshot reports policy/admission state, not an estimate of how
++    /// long a particular prompt or output will take.
++    public var admissionState: ClusterWorkerPairAdmissionState {
++        lock.withLock {
++            let now = DispatchTime.now().uptimeNanoseconds
++            let deadline = localLifetimeDeadlineUptimeNanoseconds
++            return .init(remainingLifetimeNanoseconds: deadline > now ? deadline - now : 0,
++                admissionsRemaining: max(0, maximumRequests - admittedCount),
++                hasActiveRequest: active != nil, isDraining: draining || stopping,
++                isValid: !invalid && !stopping && !draining)
++        }
++    }
++
++    /// Stops new reservations atomically with the normal reserve guard. It does
++    /// not cancel the current request or treat retirement as resource release.
++    public func stopAcceptingRequests() { lock.withLock { draining = true } }
++
++    public func drainAndShutdown() async {
++        let completion = lock.withLock { draining = true; return activeReleased }
++        if let completion { await completion.value() }
++        await shutdown()
+     }
+ 
+     public func shutdown() async {
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerPairAdmissionState.swift
+@@ -0,0 +1,16 @@
++import Foundation
++
++public struct ClusterWorkerPairAdmissionState: Sendable, Equatable {
++    public let remainingLifetimeNanoseconds: UInt64
++    public let admissionsRemaining: Int
++    public let hasActiveRequest: Bool
++    public let isDraining: Bool
++    public let isValid: Bool
++
++    /// A caller's explicit minimum budget is an admission requirement, not a
++    /// predicted completion time. The actual reserve still revalidates it.
++    public func canAdmit(minimumRemainingNanoseconds: UInt64 = 1) -> Bool {
++        isValid && !hasActiveRequest && admissionsRemaining > 0 && minimumRemainingNanoseconds > 0
++            && remainingLifetimeNanoseconds >= minimumRemainingNanoseconds
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterDeviceLease.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterDeviceLease.swift
+@@ -1,45 +1,13 @@
+ import Foundation
+-import Darwin
++@_spi(OwnerService) import DarkbloomClusterProcess
+ 
+-/// One configured per-user device lock, shared by every cluster on that device.
+-/// An unresolved nonempty journal is sticky. This class never probes a saved PID
+-/// or automatically recovers ownership after owner death.
++/// Typed native-owner journal wrapper over the same exclusion used by solo.
++/// Service lifecycle guards remain authoritative for resolving this journal.
+ final class ClusterDeviceLease {
+-    private let directory: Int32
+-    private let descriptor: Int32
+-    private let directoryPath: String
+-    private let directoryIdentity: stat
+-    private var identity: stat
+-    private var resolved = false
+-
+-    init(directoryURL: URL) throws {
+-        guard directoryURL.isFileURL, directoryURL.path.hasPrefix("/"),
+-              !directoryURL.pathComponents.contains("..") && !directoryURL.pathComponents.contains(".") else { throw OwnerWire.invalid("Invalid lease directory") }
+-        let dir = Darwin.open(directoryURL.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+-        guard dir >= 0 else { throw OwnerWire.invalid("Cannot open lease directory") }
+-        var dirStat = stat()
+-        guard fstat(dir, &dirStat) == 0, dirStat.st_uid == geteuid(),
+-              dirStat.st_mode & S_IFMT == S_IFDIR, dirStat.st_mode & 0o077 == 0 else {
+-            Darwin.close(dir); throw OwnerWire.invalid("Lease directory must be private and owned")
+-        }
+-        let fd = openat(dir, "native-device.lease", O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, 0o600)
+-        guard fd >= 0 else { Darwin.close(dir); throw OwnerWire.invalid("Cannot open device lease") }
+-        var s = stat(), path = stat()
+-        guard fstat(fd, &s) == 0, fstatat(dir, "native-device.lease", &path, AT_SYMLINK_NOFOLLOW) == 0,
+-              s.st_dev == path.st_dev, s.st_ino == path.st_ino, s.st_uid == geteuid(), s.st_nlink == 1,
+-              s.st_mode & S_IFMT == S_IFREG, s.st_mode & 0o077 == 0,
+-              flock(fd, LOCK_EX | LOCK_NB) == 0 else {
+-            Darwin.close(fd); Darwin.close(dir); throw OwnerWire.invalid("Device lease unavailable or unsafe")
+-        }
+-        guard fstat(fd, &s) == 0, s.st_size == 0 else {
+-            Darwin.close(fd); Darwin.close(dir); throw OwnerWire.invalid("Unresolved native ownership journal; explicit recovery required")
+-        }
+-        self.directory = dir; descriptor = fd; identity = s
+-        directoryPath = directoryURL.path; directoryIdentity = dirStat
+-    }
++    private let gate: ClusterDeviceExclusion
++    init(directoryURL: URL) throws { gate = try ClusterDeviceExclusion(directoryURL: directoryURL) }
+ 
+     func record(binding: ClusterOwnerBinding, launchID: UUID) throws {
+-        try requireSameFile()
+         var data = try JSONSerialization.data(withJSONObject: ["schema": "darkbloom_native_lease_v1",
+             "clusterID": binding.route.clusterID, "leaseID": binding.route.leaseID.uuidString.lowercased(),
+             "ownerIncarnation": binding.route.ownerIncarnation.uuidString.lowercased(),
+@@ -47,37 +15,10 @@
+             "nativeLaunchID": launchID.uuidString.lowercased(), "peerID": binding.route.ownerPeerID,
+             "rank": binding.rank], options: [.sortedKeys])
+         data.append(10)
+-        guard data.count <= 16_384 else { throw OwnerWire.invalid("Lease journal exceeded bound") }
+-        var offset = 0
+-        while offset < data.count {
+-            let count = data.withUnsafeBytes { Darwin.pwrite(descriptor, $0.baseAddress!.advanced(by: offset), data.count - offset, off_t(offset)) }
+-            if count < 0 && errno == EINTR { continue }
+-            guard count > 0 else { throw OwnerWire.invalid("Lease journal write failed") }; offset += count
+-        }
+-        guard fsync(descriptor) == 0, fsync(directory) == 0 else { throw OwnerWire.invalid("Lease journal sync failed") }
+-        try requireSameFile()
++        try gate.recordNativeOwnership(data)
+     }
+ 
+-    /// Only after independently observed native cleanup and owner release ACK.
+-    func resolve() throws {
+-        guard !resolved else { throw OwnerWire.invalid("Device lease already released") }
+-        try requireSameFile()
+-        guard ftruncate(descriptor, 0) == 0, fsync(descriptor) == 0 else { throw OwnerWire.invalid("Lease clear failed") }
+-        resolved = true
+-    }
+-
+-    private func requireSameFile() throws {
+-        var current = stat(), path = stat(), directoryNow = stat(), directoryName = stat()
+-        guard fstat(directory, &directoryNow) == 0, lstat(directoryPath, &directoryName) == 0,
+-              directoryNow.st_dev == directoryIdentity.st_dev, directoryNow.st_ino == directoryIdentity.st_ino,
+-              directoryName.st_dev == directoryIdentity.st_dev, directoryName.st_ino == directoryIdentity.st_ino,
+-              directoryNow.st_uid == geteuid(), directoryNow.st_mode & 0o077 == 0, directoryNow.st_nlink > 0,
+-              fstat(descriptor, &current) == 0, fstatat(directory, "native-device.lease", &path, AT_SYMLINK_NOFOLLOW) == 0,
+-              current.st_dev == identity.st_dev, current.st_ino == identity.st_ino,
+-              path.st_dev == identity.st_dev, path.st_ino == identity.st_ino, current.st_nlink == 1,
+-              current.st_uid == geteuid(), current.st_mode & S_IFMT == S_IFREG, current.st_mode & 0o077 == 0 else {
+-            throw OwnerWire.invalid("Lease journal replaced")
+-        }
+-    }
+-    deinit { Darwin.close(descriptor); Darwin.close(directory) }
++    /// Called only after existing service checks prove actual native cleanup and
++    /// receipt of the current connection's release acknowledgement.
++    func resolve() throws { try gate.resolveNativeOwnership() }
+ }
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterLocalOwnerConfiguration.swift
+@@ -0,0 +1,30 @@
++import Foundation
++import Darwin
++import DarkbloomClusterProcess
++
++/// The local equivalent of the fixed installed SSH owner command. No caller
++/// arguments, environment, script or shell expression crosses this API.
++public struct ClusterLocalOwnerConfiguration: Sendable {
++    public let installedDarkbloom: URL
++
++    public init(installedDarkbloom: URL) throws {
++        let path = installedDarkbloom.path
++        guard installedDarkbloom.isFileURL, path.hasPrefix("/"), path.utf8.count <= 1024,
++              path.split(separator: "/", omittingEmptySubsequences: false).dropFirst().allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
++              !path.utf8.contains(where: { $0 < 32 || $0 == 127 }) else {
++            throw ClusterOwnerStateError.invalid("Invalid installed local owner path")
++        }
++        self.installedDarkbloom = installedDarkbloom
++    }
++
++    func launch() throws -> ClusterWorkerLaunch {
++        var information = stat()
++        guard lstat(installedDarkbloom.path, &information) == 0, information.st_mode & S_IFMT == S_IFREG,
++              information.st_uid == geteuid(), information.st_nlink == 1,
++              information.st_mode & 0o022 == 0, information.st_mode & 0o111 != 0 else {
++            throw ClusterOwnerStateError.invalid("Installed local owner is unsafe or not executable")
++        }
++        return .init(executable: installedDarkbloom, arguments: ["cluster", "worker-owner", "--stdio"],
++            environment: ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C"])
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift
+@@ -22,6 +22,8 @@
+     private let lock = NSLock()
+     private let arrivals = DispatchSemaphore(value: 0)
+     private let nativeEnded = DispatchGroup()
++    private let ownerEnded = DispatchGroup()
++    private var ownerTerminationValue: ClusterWorkerProcessTermination?
+     private let notifications = DispatchQueue(label: "darkbloom.remote-owner.invalidation")
+     private var handler: (@Sendable () -> Void)?
+     private var notified = false
+@@ -44,6 +46,29 @@
+     /// Authenticated current-owner acknowledgment that its device lease journal was resolved.
+     public var ownerDeviceLeaseReleasedObserved: Bool { lock.withLock { ownerReleased } }
+     public var diagnosticTail: Data { lock.withLock { stderr } }
++    public var ownerTermination: ClusterWorkerProcessTermination? { lock.withLock { ownerTerminationValue } }
++
++    /// Actual local owner/SSH transport exit plus the authenticated release ACK.
++    /// Timeout or EOF without that ACK returns false and grants no cleanup proof.
++    public func waitUntilOwnerReleased(deadline: UInt64) async -> Bool {
++        await withCheckedContinuation { continuation in
++            DispatchQueue.global().async {
++                let finished = self.ownerEnded.wait(timeout: .init(uptimeNanoseconds: deadline)) == .success
++                continuation.resume(returning: finished && self.lock.withLock {
++                    self.cleanup && self.ownerReleased && self.ownerTerminationValue == .exited(0)
++                })
++            }
++        }
++    }
++
++    public convenience init(localOwner: ClusterLocalOwnerConfiguration, clusterID: String,
++                            expectedIdentity: ClusterWorkerIdentity, profile: ClusterWorkerProfile, rank: Int,
++                            executionPlanSHA256: String, lifetimeDeadlineUptimeNanoseconds: UInt64,
++                            bootstrapRelay: ClusterOwnerBootstrapRelay) throws {
++        try self.init(transport: localOwner.launch(), clusterID: clusterID, expectedIdentity: expectedIdentity,
++            profile: profile, rank: rank, executionPlanSHA256: executionPlanSHA256,
++            lifetimeDeadlineUptimeNanoseconds: lifetimeDeadlineUptimeNanoseconds, bootstrapRelay: bootstrapRelay)
++    }
+ 
+     public convenience init(configuration: ClusterSSHConfiguration, clusterID: String,
+                             expectedIdentity: ClusterWorkerIdentity, profile: ClusterWorkerProfile, rank: Int,
+@@ -74,8 +99,8 @@
+         let pipe = try ClusterOwnerPipe(input: output.fileHandleForReading.fileDescriptor, output: input.fileHandleForWriting.fileDescriptor, readingCommands: false)
+         let err = diagnostics.fileHandleForReading.fileDescriptor
+         guard fcntl(err, F_SETFL, fcntl(err, F_GETFL) | O_NONBLOCK) == 0 else { throw OwnerWire.invalid("Cannot bound SSH diagnostics") }
+-        nativeEnded.enter()
+-        try process.run()
++        nativeEnded.enter(); ownerEnded.enter()
++        do { try process.run() } catch { nativeEnded.leave(); ownerEnded.leave(); throw error }
+         try? input.fileHandleForReading.close(); try? output.fileHandleForWriting.close(); try? diagnostics.fileHandleForWriting.close()
+         DispatchQueue(label: "darkbloom.remote-owner.writer").async { self.writeLoop(pipe) }
+         DispatchQueue(label: "darkbloom.remote-owner.reader").async { self.readLoop(pipe) }
+@@ -171,12 +196,17 @@
+     private func readLoop(_ pipe: ClusterOwnerPipe) {
+         defer {
+             // Reaping ssh owns transport only; this never leaves nativeEnded.
+-            if process.isRunning { process.terminate() }
++            // A valid release ACK precedes normal owner return. Give that
++            // return the same bounded exit grace; do not race it with SIGTERM.
++            if process.isRunning && !lock.withLock({ ownerReleased }) { process.terminate() }
+             let limit = DispatchTime.now().uptimeNanoseconds + 2_000_000_000
+             while process.isRunning && DispatchTime.now().uptimeNanoseconds < limit { Thread.sleep(forTimeInterval: 0.01) }
+             if process.isRunning { _ = Darwin.kill(process.processIdentifier, SIGKILL) }
+             process.waitUntilExit()
++            lock.withLock { ownerTerminationValue = process.terminationReason == .exit
++                ? .exited(process.terminationStatus) : .signalled(process.terminationStatus) }
+             try? input.fileHandleForWriting.close(); try? output.fileHandleForReading.close(); try? diagnostics.fileHandleForReading.close()
++            ownerEnded.leave()
+         }
+         do {
+             while true {
+--- a/provider-swift/Package.swift
++++ b/provider-swift/Package.swift
+@@ -128,6 +128,7 @@
+                 "ProviderMetallibControl",
+                 .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),
+                 .product(name: "DarkbloomClusterProcess", package: "darkbloom-cluster"),
++                .product(name: "DarkbloomClusterRemote", package: "darkbloom-cluster"),
+                 .product(name: "MLX", package: "mlx-swift"),
+                 .product(name: "MLXNN", package: "mlx-swift"),
+                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Config/ClusterConfigurationInstalledReference.swift
+@@ -0,0 +1,14 @@
++import Foundation
++
++extension ClusterConfigurationStore {
++    /// Strict bounded read for an installed owner. It does not migrate, rewrite,
++    /// fall back to defaults, inspect models or acquire the native device lease.
++    public static func installedReference(providerConfiguration: URL) throws -> ClusterConfigurationReference {
++        let bytes = try ClusterConfigurationFiles.read(providerConfiguration, maximum: 1_048_576, privateMode: true)
++        guard let text = String(data: bytes, encoding: .utf8),
++              let reference = try ConfigManager.parseValidating(text).cluster else {
++            throw ClusterConfigurationError.invalid("Installed owner requires saved cluster setup")
++        }
++        return reference
++    }
++}
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedCapabilityProbe.swift
+@@ -0,0 +1,79 @@
++import Foundation
++import Darwin
++import DarkbloomClusterProtocol
++
++/// The installed worker already provides a bounded metadata-only command. Run
++/// that exact command privately and compare its complete canonical response.
++/// This direct child is not a generation owner and acquires no device lease.
++enum DistributedCapabilityProbe {
++    static func verify(plan: DistributedInstalledPlan, executable: DistributedInstalledFiles.Identity,
++                       deadline: UInt64) throws {
++        try executable.requireUnchanged()
++        let arguments = ["--describe-runtime", "--config", plan.configurationURL.path,
++            "--manifest", plan.manifestURL.path, "--expected-executable-sha256", plan.capability.runtimeBinarySHA256]
++        let bytes = try run(executable: executable.url, arguments: arguments, deadline: deadline)
++        guard try ClusterRuntimeCapabilityCodec.decode(bytes) == plan.capability,
++              ClusterConfigurationCodec.sha256(bytes) == plan.configuration.capabilitySHA256 else {
++            throw ClusterConfigurationError.invalid("Installed runtime description differs from the saved capability")
++        }
++        try executable.requireUnchanged()
++        try DistributedInstalledFiles.check(deadline)
++    }
++
++    // Internal actual-child fixture seam. Production supplies only the fixed
++    // describe-runtime command above after verifying its executable pin.
++    static func run(executable: URL, arguments: [String], deadline: UInt64) throws -> Data {
++        try DistributedInstalledFiles.check(deadline)
++        let child = Process(), output = Pipe(), error = Pipe()
++        child.executableURL = executable; child.arguments = arguments
++        child.environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C"]
++        child.standardInput = FileHandle.nullDevice
++        child.standardOutput = output; child.standardError = error
++        let handles = [output.fileHandleForReading, error.fileHandleForReading]
++        for handle in handles {
++            let descriptor = handle.fileDescriptor, flags = fcntl(handle.fileDescriptor, F_GETFL)
++            guard flags >= 0, fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0,
++                  fcntl(descriptor, F_SETFD, FD_CLOEXEC) == 0 else {
++                throw ClusterConfigurationError.invalid("Cannot bound installed capability pipes")
++            }
++        }
++        var launched = false
++        defer {
++            if launched {
++                if child.isRunning { _ = Darwin.kill(child.processIdentifier, SIGKILL) }
++                child.waitUntilExit()
++            }
++            for handle in handles { try? handle.close() }
++            try? output.fileHandleForWriting.close(); try? error.fileHandleForWriting.close()
++        }
++        try child.run(); launched = true
++        try output.fileHandleForWriting.close(); try error.fileHandleForWriting.close()
++        var data = [Data(), Data()], open = [true, true]
++        let limits = [ClusterRuntimeCapabilityCodec.maximumBytes, 4096]
++        while open.contains(true) || child.isRunning {
++            try DistributedInstalledFiles.check(deadline)
++            var descriptors = handles.enumerated().map { index, handle in
++                pollfd(fd: open[index] ? handle.fileDescriptor : -1, events: Int16(POLLIN), revents: 0)
++            }
++            let status = descriptors.withUnsafeMutableBufferPointer { Darwin.poll($0.baseAddress, nfds_t($0.count), 50) }
++            if status < 0 && errno == EINTR { continue }
++            guard status >= 0 else { throw ClusterConfigurationError.invalid("Capability output poll failed") }
++            for index in 0..<2 where descriptors[index].revents != 0 {
++                var buffer = [UInt8](repeating: 0, count: 4096)
++                let count = Darwin.read(handles[index].fileDescriptor, &buffer, buffer.count)
++                if count < 0 && (errno == EINTR || errno == EAGAIN) { continue }
++                guard count >= 0, count <= limits[index] - data[index].count else {
++                    throw ClusterConfigurationError.invalid("Capability output exceeded its bound")
++                }
++                if count == 0 { open[index] = false }
++                else { data[index].append(contentsOf: buffer.prefix(count)) }
++            }
++        }
++        child.waitUntilExit()
++        try DistributedInstalledFiles.check(deadline)
++        guard child.terminationReason == .exit, child.terminationStatus == 0, data[1].isEmpty else {
++            throw ClusterConfigurationError.invalid("Installed capability command failed")
++        }
++        return data[0]
++    }
++}
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledFiles.swift
+@@ -0,0 +1,78 @@
++import Foundation
++import CryptoKit
++import Darwin
++
++/// Streaming verification of installed executables and bounded public metadata.
++/// Checkpoint payload verification remains in the native loader. This is a
++/// filesystem identity check, not executable-code or library attestation.
++enum DistributedInstalledFiles {
++    struct Identity: @unchecked Sendable {
++        let url: URL
++        let information: stat
++
++        func requireUnchanged() throws {
++            let parent = try ClusterConfigurationFiles.directory(url.deletingLastPathComponent())
++            defer { Darwin.close(parent.descriptor) }
++            var current = stat()
++            guard fstatat(parent.descriptor, url.lastPathComponent, &current, AT_SYMLINK_NOFOLLOW) == 0,
++                  DistributedInstalledFiles.same(information, current) else {
++                throw ClusterConfigurationError.invalid("Verified installed input changed")
++            }
++            try parent.check()
++        }
++    }
++
++    static func verify(_ url: URL, expectedSHA256: String, maximumBytes: Int,
++                       executable: Bool = false, deadline: UInt64) throws -> Identity {
++        guard ClusterConfigurationSyntax.hash(expectedSHA256), (1...(256 * 1024 * 1024)).contains(maximumBytes) else {
++            throw ClusterConfigurationError.invalid("Invalid installed input bound or pin")
++        }
++        try check(deadline)
++        let parent = try ClusterConfigurationFiles.directory(url.deletingLastPathComponent())
++        defer { Darwin.close(parent.descriptor) }
++        let descriptor = openat(parent.descriptor, url.lastPathComponent, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
++        guard descriptor >= 0 else { throw ClusterConfigurationError.invalid("Cannot open installed input") }
++        defer { Darwin.close(descriptor) }
++        var before = stat(), after = stat(), named = stat()
++        guard fstat(descriptor, &before) == 0, before.st_mode & S_IFMT == S_IFREG,
++              before.st_uid == geteuid(), before.st_nlink == 1, before.st_mode & 0o022 == 0,
++              before.st_size > 0, before.st_size <= maximumBytes,
++              !executable || before.st_mode & 0o111 != 0 else {
++            throw ClusterConfigurationError.invalid("Installed input is unsafe, empty, oversized or not executable")
++        }
++        var digest = SHA256(), total = 0
++        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
++        while true {
++            try check(deadline)
++            let count = Darwin.read(descriptor, &buffer, buffer.count)
++            if count < 0 && errno == EINTR { continue }
++            guard count >= 0, count <= maximumBytes - total else {
++                throw ClusterConfigurationError.invalid("Installed input read exceeded its bound")
++            }
++            if count == 0 { break }
++            digest.update(data: Data(buffer.prefix(count))); total += count
++        }
++        try check(deadline)
++        guard fstat(descriptor, &after) == 0,
++              fstatat(parent.descriptor, url.lastPathComponent, &named, AT_SYMLINK_NOFOLLOW) == 0,
++              same(before, after), same(after, named), total == before.st_size,
++              digest.finalize().map({ String(format: "%02x", $0) }).joined() == expectedSHA256 else {
++            throw ClusterConfigurationError.invalid("Installed input identity or SHA-256 differs")
++        }
++        try parent.check()
++        return .init(url: url, information: after)
++    }
++
++    static func check(_ deadline: UInt64) throws {
++        guard DispatchTime.now().uptimeNanoseconds < deadline else {
++            throw ClusterConfigurationError.invalid("Installed preflight deadline expired")
++        }
++    }
++
++    private static func same(_ a: stat, _ b: stat) -> Bool {
++        a.st_dev == b.st_dev && a.st_ino == b.st_ino && a.st_uid == b.st_uid && a.st_mode == b.st_mode &&
++        a.st_nlink == b.st_nlink && a.st_size == b.st_size &&
++        a.st_mtimespec.tv_sec == b.st_mtimespec.tv_sec && a.st_mtimespec.tv_nsec == b.st_mtimespec.tv_nsec &&
++        a.st_ctimespec.tv_sec == b.st_ctimespec.tv_sec && a.st_ctimespec.tv_nsec == b.st_ctimespec.tv_nsec
++    }
++}
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledManifest.swift
+@@ -0,0 +1,75 @@
++import Foundation
++import CryptoKit
++import ProviderCoreFoundation
++import DarkbloomClusterProtocol
++
++enum DistributedInstalledManifest {
++    /// The native decoder reads a subset of ModelManifest. Validate the full
++    /// product record from the same pinned raw bytes before publishing its route.
++    /// Recomputing metadata digests does not verify checkpoint payload contents.
++    static func validate(_ data: Data, configuration: ClusterConfiguration,
++                         capability: ClusterRuntimeCapability) throws -> ModelManifest {
++        guard !data.isEmpty, data.count <= 65_536,
++              ClusterConfigurationCodec.sha256(data) == capability.manifestSHA256 else {
++            throw ClusterConfigurationError.invalid("Product manifest raw pin or bound differs")
++        }
++        var scan = Data(), quoted = false, escaped = false
++        for byte in data {
++            if quoted {
++                scan.append(byte)
++                if escaped { escaped = false }
++                else if byte == 92 { escaped = true }
++                else if byte == 34 { quoted = false }
++            } else {
++                if byte == 34 { quoted = true }
++                scan.append([9, 10, 13].contains(byte) ? 32 : byte)
++            }
++        }
++        scan.append(10)
++        try validateClusterWorkerEnvelope(scan, commandStream: true)
++        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
++              Set(object.keys) == Set(["schema_version", "model_id", "version", "r2_prefix", "aggregate_sha256",
++                "total_size_bytes", "file_count", "files", "created_at"]),
++              let entries = object["files"] as? [[String: Any]], (1...4096).contains(entries.count),
++              entries.allSatisfy({ Set($0.keys) == Set(["path", "size_bytes", "sha256", "role"]) }) else {
++            throw ClusterConfigurationError.invalid("Product manifest fields differ")
++        }
++        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
++        let value = try decoder.decode(ModelManifest.self, from: data)
++        guard value.schemaVersion == 1, value.modelID == configuration.publicModelID,
++              value.aggregateSHA256 == capability.artifactSHA256,
++              value.fileCount == value.files.count, Set(value.files.map(\.path)).count == value.files.count,
++              value.totalSizeBytes > 0,
++              [value.version, value.r2Prefix].allSatisfy({ !$0.isEmpty && $0.utf8.count <= 4096 }),
++              value.files.allSatisfy({ ClusterConfigurationSyntax.relativePath($0.path)
++                && ClusterConfigurationSyntax.hash($0.sha256) && $0.sizeBytes >= 0
++                && ["weight", "tokenizer", "config", "template", "preprocessor", "index", "other"].contains($0.role) }) else {
++            throw ClusterConfigurationError.invalid("Product model identity or inventory differs")
++        }
++        var sum: Int64 = 0, digest = SHA256()
++        for entry in value.files.sorted(by: { $0.path < $1.path }) {
++            let next = sum.addingReportingOverflow(entry.sizeBytes)
++            guard !next.overflow else { throw ClusterConfigurationError.invalid("Product manifest byte sum overflow") }
++            sum = next.partialValue
++            let hex = Array(entry.sha256.utf8)
++            func nibble(_ value: UInt8) -> UInt8 { value <= 57 ? value - 48 : value - 87 }
++            let raw = stride(from: 0, to: 64, by: 2).map { nibble(hex[$0]) * 16 + nibble(hex[$0 + 1]) }
++            digest.update(data: Data(raw))
++        }
++        let aggregate = digest.finalize().map { String(format: "%02x", $0) }.joined()
++        guard sum == value.totalSizeBytes, aggregate == value.aggregateSHA256,
++              let config = value.files.first(where: { $0.path == "config.json" }),
++              config.role == "config", config.sha256 == capability.configurationSHA256 else {
++            throw ClusterConfigurationError.invalid("Product manifest config or aggregate differs")
++        }
++        let tokenizer = value.files.filter { ["tokenizer", "template"].contains($0.role) }
++        guard Set(tokenizer.map(\.path)) == Set(configuration.tokenizerFiles.map(\.path)),
++              configuration.tokenizerFiles.allSatisfy({ pin in
++                tokenizer.contains(where: { $0.path == pin.path && $0.sha256 == pin.sha256
++                    && $0.role == (pin.purpose == .tokenizer ? "tokenizer" : "template") })
++              }) else {
++            throw ClusterConfigurationError.invalid("Tokenizer/template pins must cover the exact product inventory")
++        }
++        return value
++    }
++}
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledModel.swift
+@@ -0,0 +1,71 @@
++import Foundation
++import ProviderCoreFoundation
++import DarkbloomClusterProtocol
++
++/// Verified metadata for tokenizer-only registry construction. The server must
++/// recheck session.validateModelInputs() before and after loading its tokenizer.
++public struct DistributedInstalledModel: Sendable {
++    public let publicModelID: String
++    public let directory: URL
++    public let modelType: String
++    public let eosTokenIDs: Set<Int>
++    public let vocabularySize: Int
++
++    static func make(configurationData: Data, manifest: ModelManifest,
++                     plan: DistributedInstalledPlan) throws -> Self {
++        guard ClusterConfigurationCodec.sha256(configurationData) == plan.capability.configurationSHA256 else {
++            throw ClusterConfigurationError.invalid("Tokenizer model configuration differs")
++        }
++        let raw = try JSONDecoder().decode(Configuration.self, from: configurationData)
++        let metadata = raw.text_config ?? raw.generation
++        guard !raw.model_type.isEmpty, raw.model_type.utf8.count <= 128,
++              metadata.vocab_size == plan.capability.profile.vocabularySize,
++              let eos = metadata.eos_token_id, !eos.values.isEmpty, eos.values.count <= 16,
++              Set(eos.values).count == eos.values.count,
++              eos.values.allSatisfy({ 0 <= $0 && $0 < plan.capability.profile.vocabularySize }) else {
++            throw ClusterConfigurationError.invalid("Pinned model type, EOS or vocabulary is unsupported")
++        }
++        let paths = Set(plan.configuration.tokenizerFiles.map(\.path))
++        guard paths.contains("tokenizer.json"), paths.contains("tokenizer_config.json"),
++              paths.contains("chat_template.jinja") || paths.contains("chat_template.json") else {
++            throw ClusterConfigurationError.invalid("Installed text serving requires pinned local tokenizer and chat template")
++        }
++        return .init(publicModelID: manifest.modelID, directory: URL(fileURLWithPath: plan.localPeer.modelDirectory),
++            modelType: raw.model_type, eosTokenIDs: Set(eos.values), vocabularySize: plan.capability.profile.vocabularySize)
++    }
++
++    /// LocalTokenizerLoader's verified tokenizer may expose an additional EOS.
++    /// The caller supplies only that loaded tokenizer's conversion, not a wire value.
++    public func stopTokenIDs(tokenizerEOS: Int?) throws -> Set<Int> {
++        var result = eosTokenIDs
++        if let tokenizerEOS {
++            guard (0..<vocabularySize).contains(tokenizerEOS) else {
++                throw ClusterConfigurationError.invalid("Loaded tokenizer EOS exceeds the native vocabulary")
++            }
++            result.insert(tokenizerEOS)
++        }
++        return result
++    }
++
++    private struct Configuration: Decodable {
++        let model_type: String
++        let text_config: Generation?
++        let generation: Generation
++        private enum CodingKeys: String, CodingKey { case model_type, text_config }
++        init(from decoder: Decoder) throws {
++            let object = try decoder.container(keyedBy: CodingKeys.self)
++            model_type = try object.decode(String.self, forKey: .model_type)
++            text_config = try object.decodeIfPresent(Generation.self, forKey: .text_config)
++            generation = try Generation(from: decoder)
++        }
++    }
++    private struct Generation: Decodable { let eos_token_id: IDs?; let vocab_size: Int? }
++    private struct IDs: Decodable {
++        let values: [Int]
++        init(from decoder: Decoder) throws {
++            let value = try decoder.singleValueContainer()
++            if let scalar = try? value.decode(Int.self) { values = [scalar] }
++            else { values = try value.decode([Int].self) }
++        }
++    }
++}
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledOwner.swift
+@@ -0,0 +1,42 @@
++import Foundation
++import Darwin
++import DarkbloomClusterProcess
++import DarkbloomClusterRemote
++
++/// Blocking entry for the fixed authenticated `cluster worker-owner --stdio`
++/// command. Both leader-local and follower owners load their own saved setup.
++/// The parent does not hold this owner's native-device exclusion.
++public enum DistributedInstalledOwner {
++    public static func serve(reference: ClusterConfigurationReference) throws {
++        let prepared = try DistributedInstalledPreparation.prepare(reference: reference,
++            paths: ClusterUserPaths(), deadline: DispatchTime.now().uptimeNanoseconds + 15_000_000_000)
++        try serve(prepared: prepared, input: STDIN_FILENO, output: STDOUT_FILENO)
++    }
++
++    static func serve(prepared: DistributedInstalledPreparation, input: Int32, output: Int32) throws {
++        let plan = prepared.plan
++        try prepared.requireUnchanged()
++        try ClusterWorkerOwnerService.serveConfigured(input: input, output: output,
++            clusterID: plan.configuration.clusterID, leaseDirectory: plan.paths.deviceDirectory,
++            maximumLifetimeNanoseconds: plan.maximumLifetimeNanoseconds, bootstrapProfile: .mesh2,
++            binding: { epoch, lease, incarnation in
++                try plan.binding(epoch: epoch, lease: lease, incarnation: incarnation)
++            }, native: { binding, deadline, attachment in
++                // No native path accepts a nil attachment, injected environment,
++                // wire-supplied executable or claimed memory allowance.
++                guard let attachment, attachment.profile == .mesh2 else {
++                    throw ClusterConfigurationError.invalid("Authenticated installed bootstrap is required")
++                }
++                try prepared.requireUnchanged()
++                try DistributedInstalledFiles.check(deadline)
++                return try ClusterWorkerProcess(launch: .init(
++                    executable: URL(fileURLWithPath: plan.localPeer.workerExecutable),
++                    arguments: plan.nativeArguments(binding: binding, deadline: deadline, attachment: attachment),
++                    environment: plan.nativeEnvironment(matrix: prepared.matrixURL)),
++                    expectedIdentity: binding.identity, rank: binding.rank, profile: binding.profile,
++                    executionPlanSHA256: binding.executionPlanSHA256,
++                    startupDeadline: min(deadline, DispatchTime.now().uptimeNanoseconds + 90_000_000_000),
++                    lifetimeDeadline: deadline)
++            })
++    }
++}
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPlan.swift
+@@ -0,0 +1,76 @@
++import Foundation
++import DarkbloomClusterProtocol
++import DarkbloomClusterProcess
++import DarkbloomClusterRemote
++
++/// Installed choices and exact capability values. There is deliberately no
++/// Ready value or capacity field until both native children report readiness.
++struct DistributedInstalledPlan: Sendable {
++    let configuration: ClusterConfiguration
++    let capability: ClusterRuntimeCapability
++    let partition: ClusterRuntimePartition
++    let paths: ClusterUserPaths
++
++    init(saved: ClusterConfigurationStore.Saved, paths: ClusterUserPaths) throws {
++        configuration = saved.configuration; capability = saved.capability; self.paths = paths
++        partition = try capability.selection(planSHA256: configuration.selectedPlanSHA256)
++        guard capability.arithmeticPolicyID == "qwen_cbv2_query128_bf16_tf32_default_v1",
++              capability.stateSemantics == "requestOwnedKVAndRecurrent",
++              capability.schedulingPolicy == "serial", capability.selectionPolicy == "greedy",
++              configuration.peers.allSatisfy({ $0.jacclDevice.utf8.count <= 63 }) else {
++            throw ClusterConfigurationError.invalid("Installed worker policy or device geometry differs")
++        }
++    }
++
++    var localPeer: ClusterConfiguration.Peer { configuration.peers[configuration.localRank] }
++    var maximumLifetimeNanoseconds: UInt64 { UInt64(capability.maxLifetimeSeconds) * 1_000_000_000 }
++    var configurationURL: URL { URL(fileURLWithPath: localPeer.modelDirectory).appendingPathComponent("config.json") }
++    var manifestURL: URL { URL(fileURLWithPath: localPeer.modelDirectory).appendingPathComponent("manifest.json") }
++
++    func identity(epoch: UUID) -> ClusterWorkerIdentity {
++        .init(membershipEpoch: epoch, modelID: capability.runtimeModelID,
++            artifactSHA256: capability.artifactSHA256, configurationSHA256: capability.configurationSHA256,
++            peers: configuration.peers.map { .init(id: $0.id, buildSHA256: $0.runtimeBinarySHA256) })
++    }
++
++    func binding(epoch: UUID, lease: UUID, incarnation: UUID) throws -> ClusterOwnerBinding {
++        try .init(clusterID: configuration.clusterID, ownerIncarnation: incarnation, leaseID: lease,
++            identity: identity(epoch: epoch), profile: capability.profile, rank: configuration.localRank,
++            executionPlanSHA256: partition.planSHA256)
++    }
++
++    func matrix() throws -> Data {
++        let names = configuration.peers.map(\.jacclDevice)
++        let rows: [[Any]] = [[NSNull(), names[0]], [names[1], NSNull()]]
++        var result = try JSONSerialization.data(withJSONObject: rows,
++            options: [.sortedKeys, .withoutEscapingSlashes])
++        result.append(10)
++        guard result.count <= 4096 else { throw ClusterConfigurationError.invalid("Installed matrix exceeds its bound") }
++        return result
++    }
++
++    func nativeEnvironment(matrix: URL) -> [String: String] {
++        ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C",
++         "DARKBLOOM_CBV2_ATTN_QUERY_BLOCK": "128", "DARKBLOOM_BF16_WEIGHTS": "1", "MLX_ENABLE_TF32": "1",
++         "JACCL_RANK": String(configuration.localRank), "JACCL_IBV_DEVICES": matrix.path,
++         "JACCL_COORDINATOR": "\(configuration.coordinator.address):\(configuration.coordinator.port)"]
++    }
++
++    func nativeArguments(binding: ClusterOwnerBinding, deadline: UInt64,
++                         attachment: ClusterOwnerBootstrapAttachment) throws -> [String] {
++        guard binding.identity == identity(epoch: binding.identity.membershipEpoch),
++              binding.rank == configuration.localRank, binding.profile == capability.profile,
++              binding.executionPlanSHA256 == partition.planSHA256,
++              deadline > DispatchTime.now().uptimeNanoseconds else {
++            throw ClusterConfigurationError.invalid("Native launch differs from installed owner binding")
++        }
++        let id = binding.identity
++        return ["--model-dir", localPeer.modelDirectory, "--rank", String(binding.rank),
++            "--stage-cut", String(partition.stages[0].sourceLayerEnd),
++            "--membership-epoch", id.membershipEpoch.uuidString.lowercased(), "--model-id", id.modelID,
++            "--artifact-sha256", id.artifactSHA256, "--configuration-sha256", id.configurationSHA256,
++            "--peer0-id", id.peers[0].id, "--peer0-build-sha256", id.peers[0].buildSHA256,
++            "--peer1-id", id.peers[1].id, "--peer1-build-sha256", id.peers[1].buildSHA256,
++            "--deadline-uptime-nanoseconds", String(deadline)] + attachment.workerArguments
++    }
++}
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPreparation.swift
+@@ -0,0 +1,76 @@
++import Foundation
++import Darwin
++import DarkbloomClusterProtocol
++import ProviderCoreFoundation
++
++struct DistributedInstalledPreparation: Sendable {
++    let plan: DistributedInstalledPlan
++    let verifiedInputs: [DistributedInstalledFiles.Identity]
++    let matrixURL: URL
++    let manifest: ModelManifest
++    let model: DistributedInstalledModel
++
++    static func prepare(reference: ClusterConfigurationReference, paths: ClusterUserPaths,
++                        deadline: UInt64) throws -> Self {
++        let saved = try ClusterConfigurationStore(paths: paths).load(reference: reference)
++        let plan = try DistributedInstalledPlan(saved: saved, paths: paths)
++        let local = plan.localPeer
++        var inputs = [DistributedInstalledFiles.Identity]()
++        let executable = try DistributedInstalledFiles.verify(URL(fileURLWithPath: local.workerExecutable),
++            expectedSHA256: plan.capability.runtimeBinarySHA256, maximumBytes: 256 * 1024 * 1024,
++            executable: true, deadline: deadline)
++        inputs.append(executable)
++        inputs.append(try DistributedInstalledFiles.verify(plan.configurationURL,
++            expectedSHA256: plan.capability.configurationSHA256, maximumBytes: 1_048_576, deadline: deadline))
++        inputs.append(try DistributedInstalledFiles.verify(plan.manifestURL,
++            expectedSHA256: plan.capability.manifestSHA256, maximumBytes: 65_536, deadline: deadline))
++        let manifest = try DistributedInstalledManifest.validate(
++            ClusterConfigurationFiles.read(plan.manifestURL, maximum: 65_536),
++            configuration: plan.configuration, capability: plan.capability)
++        let model = try DistributedInstalledModel.make(
++            configurationData: ClusterConfigurationFiles.read(plan.configurationURL, maximum: 1_048_576),
++            manifest: manifest, plan: plan)
++        for file in plan.configuration.tokenizerFiles {
++            inputs.append(try DistributedInstalledFiles.verify(URL(fileURLWithPath: local.modelDirectory).appendingPathComponent(file.path),
++                expectedSHA256: file.sha256, maximumBytes: 64 * 1024 * 1024, deadline: deadline))
++        }
++        let trust = plan.configuration.trust
++        try ClusterConfigurationFiles.credentialMetadata(URL(fileURLWithPath: trust.identityFile), privateMode: true)
++        inputs.append(try DistributedInstalledFiles.verify(URL(fileURLWithPath: trust.knownHostsFile),
++            expectedSHA256: trust.knownHostsSHA256, maximumBytes: 64 * 1024, deadline: deadline))
++        // Recompute native profile/Plan/arithmetic metadata using the verified
++        // installed worker. The command does not construct a model or request.
++        try DistributedCapabilityProbe.verify(plan: plan, executable: executable, deadline: deadline)
++        for input in inputs { try input.requireUnchanged() }
++
++        let bytes = try plan.matrix(), hash = ClusterConfigurationCodec.sha256(bytes)
++        let directoryURL = paths.deviceDirectory.appendingPathComponent("configuration", isDirectory: true)
++        let directory = try ClusterConfigurationFiles.directory(directoryURL, create: true, privateMode: true)
++        defer { Darwin.close(directory.descriptor) }
++        let name = hash + ".matrix.json"
++        try ClusterConfigurationFiles.publish(bytes, parent: directory, name: name, maximum: 4096)
++        try DistributedInstalledFiles.check(deadline)
++        let result = Self(plan: plan, verifiedInputs: inputs, matrixURL: directoryURL.appendingPathComponent(name), manifest: manifest, model: model)
++        try result.requireUnchanged()
++        return result
++    }
++
++    func requireUnchanged() throws {
++        for input in verifiedInputs { try input.requireUnchanged() }
++        let expected = try plan.matrix()
++        guard try ClusterConfigurationFiles.read(matrixURL, maximum: 4096, privateMode: true) == expected else {
++            throw ClusterConfigurationError.invalid("Installed matrix changed")
++        }
++        try ClusterConfigurationFiles.credentialMetadata(URL(fileURLWithPath: plan.configuration.trust.identityFile), privateMode: true)
++        // These are the exact file candidates opened by the existing local
++        // tokenizer loader. An unpinned fallback must not become active.
++        let allowed = Set(plan.configuration.tokenizerFiles.map(\.path))
++        for name in ["chat_template.jinja", "chat_template.json"] where !allowed.contains(name) {
++            var value = stat()
++            let path = model.directory.appendingPathComponent(name).path
++            guard lstat(path, &value) != 0, errno == ENOENT else {
++                throw ClusterConfigurationError.invalid("Unpinned local tokenizer template exists")
++            }
++        }
++    }
++}
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession+Execution.swift
+@@ -0,0 +1,20 @@
++import Foundation
++import MLXLMCommon
++
++extension DistributedInstalledSession: DistributedDeadlineExecutionOwner {
++    public func readiness() -> DistributedResidentReadiness? { (try? activeOwner())?.readiness() }
++    public func setReadinessInvalidationHandler(_ handler: @escaping @Sendable () -> Void) { installInvalidationHandler(handler) }
++    public func projectFirstToken(_ request: CBv2Request, admission: CBv2FirstTokenDeadlineAdmission) -> CBv2FirstTokenProjectedWork {
++        (try? activeOwner())?.projectFirstToken(request, admission: admission) ?? .unbounded
++    }
++    public func reserve(_ request: CBv2Request, identity: DistributedResidentIdentity,
++                        profileID: String, capacityLimit: Int) throws -> any DistributedResidentRequestLease {
++        try activeOwner(forReservation: true).reserve(request, identity: identity, profileID: profileID, capacityLimit: capacityLimit)
++    }
++    public func reserve(_ request: CBv2Request, identity: DistributedResidentIdentity, profileID: String,
++                        capacityLimit: Int, deadlineContext: DistributedRequestDeadlineContext) throws -> any DistributedResidentRequestLease {
++        try activeOwner(forReservation: true).reserve(request, identity: identity, profileID: profileID,
++            capacityLimit: capacityLimit, deadlineContext: deadlineContext)
++    }
++    public func shutdown() async { await waitForStop() }
++}
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift
+@@ -0,0 +1,240 @@
++import Foundation
++import DarkbloomClusterProtocol
++import DarkbloomClusterProcess
++import DarkbloomClusterRemote
++
++public enum DistributedInstalledSessionStatus: String, Sendable {
++    case prepared, starting, ready, draining, stopping, quarantined, released
++}
++
++/// One start attempt and its retained cleanup obligation. Missing peer proof is
++/// quarantine, never an empty slot or authority to start another cohort.
++public final class DistributedInstalledSession: @unchecked Sendable {
++    public let configuration: ClusterConfiguration
++    public let capability: ClusterRuntimeCapability
++    public let expectedIdentity: DistributedResidentIdentity
++    public let profile: DistributedResidentExecutionProfile
++    public let model: DistributedInstalledModel
++    private let prepared: DistributedInstalledPreparation
++    private let wireIdentity: ClusterWorkerIdentity
++    typealias EndpointFactory = @Sendable (DistributedInstalledPlan, ClusterWorkerIdentity, Int, UInt64, ClusterOwnerBootstrapRelay) throws -> ClusterRemoteWorkerEndpoint
++    private let endpointFactory: EndpointFactory
++    private let lock = NSLock()
++    private let startup = InstalledCompletion(), stopped = InstalledCompletion()
++    private let notifications = DispatchQueue(label: "darkbloom.installed-session.invalidation")
++    private var phase: DistributedInstalledSessionStatus = .prepared
++    private var endpoints: [ClusterRemoteWorkerEndpoint] = []
++    private var relay: ClusterOwnerBootstrapRelay?
++    private var pair: ClusterWorkerPair?
++    private var owner: DistributedPipeExecutionOwner?
++    private var stoppingTask: Task<Void, Never>?
++    private var lifetime: UInt64 = 0
++    private var handler: (@Sendable () -> Void)?
++    private var notified = false
++    private var draining = false
++
++    public var status: DistributedInstalledSessionStatus { lock.withLock { phase } }
++    public var admissionState: ClusterWorkerPairAdmissionState? { lock.withLock { pair }?.admissionState }
++    public var lifetimeDeadlineUptimeNanoseconds: UInt64? { lock.withLock { lifetime == 0 ? nil : lifetime } }
++    /// A fresh epoch is permitted only after all owned native and owner cleanup
++    /// and both release acknowledgements. There is no implicit journal recovery.
++    public var canRotate: Bool { status == .released }
++
++    /// Call before and after LocalTokenizerLoader.load(from: model.directory).
++    /// Metadata inputs remain pinned; this does not load a model container.
++    public func validateModelInputs() throws { try prepared.requireUnchanged() }
++
++    /// Metadata-only preflight, bounded independently of request deadlines. This
++    /// synchronous IO belongs on the caller's startup/preparation queue.
++    public static func prepare(reference: ClusterConfigurationReference) throws -> DistributedInstalledSession {
++        let deadline = DispatchTime.now().uptimeNanoseconds + 15_000_000_000
++        let prepared = try DistributedInstalledPreparation.prepare(reference: reference, paths: ClusterUserPaths(), deadline: deadline)
++        guard prepared.plan.configuration.role == .leader else {
++            throw ClusterConfigurationError.invalid("Only the configured leader starts a provider session")
++        }
++        return try .init(prepared: prepared)
++    }
++
++    init(prepared: DistributedInstalledPreparation, endpointFactory: @escaping EndpointFactory = DistributedInstalledSession.installedEndpoint) throws {
++        self.endpointFactory = endpointFactory
++        self.prepared = prepared; configuration = prepared.plan.configuration; capability = prepared.plan.capability
++        model = prepared.model
++        wireIdentity = prepared.plan.identity(epoch: UUID())
++        expectedIdentity = .init(membershipEpoch: wireIdentity.membershipEpoch, modelID: wireIdentity.modelID,
++            artifactSHA256: wireIdentity.artifactSHA256, configurationSHA256: wireIdentity.configurationSHA256,
++            peers: wireIdentity.peers.map { .init(id: $0.id, buildSHA256: $0.buildSHA256) })
++        let p = capability.profile
++        profile = try .init(id: p.id, vocabularySize: p.vocabularySize, maxPromptTokens: p.maximumPromptTokens,
++            maxOutputTokens: p.maximumOutputTokens, maxContextTokens: p.maximumContextTokens,
++            requestTimeout: .seconds(configuration.requestTimeoutSeconds))
++    }
++
++    public func start() async throws {
++        try lock.withLock {
++            guard phase == .prepared else { throw DistributedEngineError.unavailable }
++            phase = .starting
++        }
++        try await withTaskCancellationHandler {
++            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
++                DispatchQueue.global().async {
++                    defer { self.startup.complete() }
++                    do { try self.launch(); continuation.resume() }
++                    catch { self.beginStop(abnormal: true); continuation.resume(throwing: error) }
++                }
++            }
++            try Task.checkCancellation()
++        } onCancel: { self.beginStop(abnormal: true) }
++    }
++
++    private func requireStarting() throws {
++        guard lock.withLock({ phase == .starting }) else { throw DistributedEngineError.shuttingDown }
++    }
++
++    private func launch() throws {
++        try requireStarting(); try prepared.requireUnchanged()
++        let now = DispatchTime.now().uptimeNanoseconds
++        let lifetime = now + prepared.plan.maximumLifetimeNanoseconds
++        let startupDeadline = min(lifetime, now + 90_000_000_000)
++        let relay = try ClusterOwnerBootstrapRelay(identity: wireIdentity,
++            executionPlanSHA256: prepared.plan.partition.planSHA256,
++            deadlineUptimeNanoseconds: min(startupDeadline, now + 30_000_000_000))
++        lock.withLock { self.lifetime = lifetime; self.relay = relay }
++        for rank in 0..<2 {
++            try requireStarting()
++            let endpoint = try endpointFactory(prepared.plan, wireIdentity, rank, lifetime, relay)
++            let stopped = lock.withLock { endpoints.append(endpoint); return phase != .starting }
++            if stopped { endpoint.requestNativeCleanup(); throw DistributedEngineError.shuttingDown }
++        }
++        let values = lock.withLock { endpoints }
++        let pair = try ClusterWorkerPair(workers: values, startupDeadline: startupDeadline, maximumRequests: capability.maxRequests)
++        lock.withLock { self.pair = pair }
++        let owner = try DistributedPipeExecutionOwner(pair: pair, profile: profile, chunkSize: configuration.chunkTokens)
++        owner.setReadinessInvalidationHandler { [weak self] in self?.beginStop(abnormal: true) }
++        try lock.withLock {
++            guard phase == .starting, owner.readiness() != nil else { throw DistributedEngineError.unavailable }
++            self.owner = owner; phase = .ready
++        }
++    }
++
++    private static func installedEndpoint(plan: DistributedInstalledPlan, wireIdentity: ClusterWorkerIdentity,
++        rank: Int, lifetime: UInt64, relay: ClusterOwnerBootstrapRelay) throws -> ClusterRemoteWorkerEndpoint {
++        let peer = plan.configuration.peers[rank]
++        let endpoint: ClusterRemoteWorkerEndpoint
++        if rank == plan.configuration.localRank {
++            endpoint = try .init(localOwner: .init(installedDarkbloom: URL(fileURLWithPath: peer.ownerExecutable)),
++                clusterID: plan.configuration.clusterID, expectedIdentity: wireIdentity, profile: plan.capability.profile, rank: rank,
++                executionPlanSHA256: plan.partition.planSHA256,
++                lifetimeDeadlineUptimeNanoseconds: lifetime, bootstrapRelay: relay)
++        } else {
++            let ssh = try ClusterSSHConfiguration(host: peer.host, user: peer.user, port: peer.port,
++                knownHostsFile: URL(fileURLWithPath: plan.configuration.trust.knownHostsFile),
++                identityFile: URL(fileURLWithPath: plan.configuration.trust.identityFile), installedDarkbloom: peer.ownerExecutable)
++            endpoint = try .init(configuration: ssh, clusterID: plan.configuration.clusterID,
++                expectedIdentity: wireIdentity, profile: plan.capability.profile, rank: rank,
++                executionPlanSHA256: plan.partition.planSHA256,
++                lifetimeDeadlineUptimeNanoseconds: lifetime, bootstrapRelay: relay)
++        }
++        return endpoint
++    }
++
++    /// Bound the caller's wait only. Work and ownership continue if proof is
++    /// missing; the retained session must remain in the registry's quarantine.
++    public func stop(until deadline: UInt64) async -> DistributedInstalledSessionStatus {
++        lock.withLock { draining = false }
++        beginStop(abnormal: false)
++        let finished = await stopped.wait(until: deadline)
++        if !finished { lock.withLock { if phase != .released { phase = .quarantined } } }
++        return status
++    }
++
++    /// Remove from routing first, then wait for the current request's normal
++    /// retirement AND explicit resource release before shutting down the owners.
++    public func drain(until deadline: UInt64) async -> DistributedInstalledSessionStatus {
++        let value = lock.withLock { () -> ClusterWorkerPair? in
++            if phase == .ready { phase = .draining; draining = true }
++            return pair
++        }
++        value?.stopAcceptingRequests()
++        beginStop(abnormal: false)
++        let finished = await stopped.wait(until: deadline)
++        if !finished { lock.withLock { if phase != .released { phase = .quarantined } } }
++        return status
++    }
++
++    func beginStop(abnormal: Bool) {
++        let result = lock.withLock { () -> ([ClusterRemoteWorkerEndpoint], ClusterOwnerBootstrapRelay?, (@Sendable () -> Void)?) in
++            if phase == .released { return ([], nil, nil) }
++            let wasPrepared = phase == .prepared
++            if abnormal { draining = false }
++            phase = abnormal ? .quarantined : (phase == .quarantined ? .quarantined : (draining ? .draining : .stopping))
++            if wasPrepared { startup.complete() }
++            if stoppingTask == nil { stoppingTask = Task { await self.finishStop() } }
++            let notify: (@Sendable () -> Void)?
++            if !draining, !notified, let handler { notified = true; notify = handler } else { notify = nil }
++            return (abnormal || pair == nil ? endpoints : [], relay, notify)
++        }
++        result.1?.cancel()
++        for endpoint in result.0 { endpoint.requestNativeCleanup() }
++        // An abnormal stop can interrupt a previously started graceful drain.
++        // Pair.shutdown owns cancellation/actual retirement and is idempotent.
++        if let pair = lock.withLock({ draining ? nil : self.pair }) {
++            Task { await pair.shutdown() }
++        }
++        if let notify = result.2 { notifications.async(execute: notify) }
++    }
++
++    private func finishStop() async {
++        await startup.value()
++        let values = lock.withLock { (pair, endpoints, lifetime, draining) }
++        if let pair = values.0 {
++            if values.3 { await pair.drainAndShutdown() } else { await pair.shutdown() }
++        }
++        else {
++            for endpoint in values.1 { endpoint.requestNativeCleanup() }
++            for endpoint in values.1 { await endpoint.waitUntilNativeCleanup() }
++        }
++        var released = true
++        for endpoint in values.1 {
++            let deadline = max(values.2, DispatchTime.now().uptimeNanoseconds) + 3_000_000_000
++            if !(await endpoint.waitUntilOwnerReleased(deadline: deadline)) { released = false }
++        }
++        lock.withLock { phase = released ? .released : .quarantined }
++        stopped.complete()
++    }
++
++    func activeOwner(forReservation: Bool = false) throws -> DistributedPipeExecutionOwner {
++        try lock.withLock {
++            guard let owner, let pair else { throw DistributedEngineError.unavailable }
++            let state = pair.admissionState
++            guard phase == .ready || (!forReservation && phase == .draining && state.hasActiveRequest),
++                  state.remainingLifetimeNanoseconds > 0,
++                  state.admissionsRemaining > 0 || (!forReservation && state.hasActiveRequest),
++                  !forReservation || state.canAdmit() else { throw DistributedEngineError.unavailable }
++            return owner
++        }
++    }
++
++    func installInvalidationHandler(_ value: @escaping @Sendable () -> Void) {
++        let notify = lock.withLock { () -> Bool in
++            handler = value
++            if [.stopping, .quarantined, .released].contains(phase), !notified { notified = true; return true }
++            return false
++        }
++        if notify { notifications.async(execute: value) }
++    }
++
++    func waitForStop() async { beginStop(abnormal: false); await stopped.value() }
++}
++
++private final class InstalledCompletion: @unchecked Sendable {
++    private let lock = NSLock(), group = DispatchGroup()
++    private var finished = false
++    init() { group.enter() }
++    func complete() { if lock.withLock({ if finished { return false }; finished = true; return true }) { group.leave() } }
++    func value() async { await withCheckedContinuation { continuation in group.notify(queue: .global()) { continuation.resume() } } }
++    func wait(until deadline: UInt64) async -> Bool {
++        await withCheckedContinuation { continuation in
++            DispatchQueue.global().async { continuation.resume(returning: self.group.wait(timeout: .init(uptimeNanoseconds: deadline)) == .success) }
++        }
++    }
++}
+--- a/provider-swift/Sources/darkbloom/ClusterCommand.swift
++++ b/provider-swift/Sources/darkbloom/ClusterCommand.swift
+@@ -4,7 +4,7 @@
+ 
+ struct Cluster: AsyncParsableCommand {
+     static let configuration = CommandConfiguration(commandName: "cluster",
+-        abstract: "Manage saved distributed-cluster setup.", subcommands: [Configure.self])
++        abstract: "Manage saved distributed-cluster setup.", subcommands: [Configure.self, WorkerOwner.self])
+ 
+     struct Configure: AsyncParsableCommand {
+         static let configuration = CommandConfiguration(commandName: "configure",
+--- /dev/null
++++ b/provider-swift/Sources/darkbloom/ClusterWorkerOwnerCommand.swift
+@@ -0,0 +1,24 @@
++import Foundation
++import ArgumentParser
++import ProviderCore
++
++extension Cluster {
++    struct WorkerOwner: ParsableCommand {
++        static let configuration = CommandConfiguration(commandName: "worker-owner",
++            abstract: "Serve one configured authenticated worker-owner connection.")
++        @Flag(help: "Use the authenticated supervisor's standard input and output.")
++        var stdio = false
++
++        func validate() throws {
++            guard stdio else { throw ValidationError("Expected cluster worker-owner --stdio.") }
++        }
++
++        mutating func run() throws {
++            // The fixed installed command takes no model, environment, ready
++            // template, lease path, config override or capacity from its caller.
++            let reference = try ClusterConfigurationStore.installedReference(
++                providerConfiguration: ConfigManager.defaultConfigPath())
++            try DistributedInstalledOwner.serve(reference: reference)
++        }
++    }
++}
+--- /dev/null
++++ b/provider-swift/Tests/DarkbloomCLITests/ClusterWorkerOwnerCommandTests.swift
+@@ -0,0 +1,22 @@
++import ArgumentParser
++import Testing
++@testable import darkbloom
++
++@Suite("Installed worker-owner CLI")
++struct ClusterWorkerOwnerCommandTests {
++    @Test("fixed stdio command parses without IO")
++    func fixedCommand() throws {
++        let command = try Cluster.WorkerOwner.parse(["--stdio"])
++        #expect(command.stdio)
++        #expect(try Darkbloom.parseAsRoot(["cluster", "worker-owner", "--stdio"]) is Cluster.WorkerOwner)
++    }
++
++    @Test("worker-owner does not accept runtime settings or an alternate config path")
++    func refusedOverrides() {
++        for arguments in [[], ["--stdio", "--config", "/tmp/other"], ["--stdio", "--model-dir", "/model"],
++            ["--stdio", "--environment", "KEY=VALUE"], ["--stdio", "--capacity", "1"],
++            ["--stdio", "--ready-template", "fixture"], ["--stdio", "--lease-directory", "/tmp/other"]] {
++            #expect(throws: (any Error).self) { _ = try Cluster.WorkerOwner.parse(arguments) }
++        }
++    }
++}
+--- /dev/null
++++ b/provider-swift/Tests/ProviderCoreTests/Config/ClusterInstalledReferenceTests.swift
+@@ -0,0 +1,33 @@
++import Foundation
++import Darwin
++import Testing
++@testable import ProviderCore
++
++@Suite("Installed owner configuration reference")
++struct ClusterInstalledReferenceTests {
++    @Test("strict read preserves exact provider bytes and requires a saved pointer")
++    func reference() throws {
++        let directory = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
++            .appendingPathComponent("installed-reference-" + UUID().uuidString)
++        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
++            attributes: [.posixPermissions: 0o700])
++        defer { try? FileManager.default.removeItem(at: directory) }
++        let file = directory.appendingPathComponent("config.toml")
++        let expected = try ClusterConfigurationReference(configuration: "/Users/developer/setup.cluster.json",
++            sha256: String(repeating: "a", count: 64))
++        let data = Data("# preserved\n[cluster]\nconfiguration = '\(expected.configuration)'\nsha256 = '\(expected.sha256)'\n".utf8)
++        try data.write(to: file); #expect(chmod(file.path, 0o600) == 0)
++        #expect(try ClusterConfigurationStore.installedReference(providerConfiguration: file) == expected)
++        #expect(try Data(contentsOf: file) == data)
++        for invalid in [Data("[broken".utf8), Data("[provider]\nname='fixture'\n".utf8), Data([255])] {
++            try invalid.write(to: file)
++            #expect(throws: (any Error).self) { _ = try ClusterConfigurationStore.installedReference(providerConfiguration: file) }
++            #expect(try Data(contentsOf: file) == invalid)
++        }
++        try data.write(to: file); #expect(chmod(file.path, 0o644) == 0)
++        #expect(throws: (any Error).self) { _ = try ClusterConfigurationStore.installedReference(providerConfiguration: file) }
++        let alias = directory.appendingPathComponent("alias")
++        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: file)
++        #expect(throws: (any Error).self) { _ = try ClusterConfigurationStore.installedReference(providerConfiguration: alias) }
++    }
++}

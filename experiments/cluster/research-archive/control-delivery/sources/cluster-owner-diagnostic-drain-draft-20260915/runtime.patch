@@ -1,0 +1,160 @@
+--- a/Entries/controller/Controller.swift
++++ b/Entries/controller/Controller.swift
+@@ -135,6 +135,21 @@
+             success = false
+             failure = failure ?? "Missing authenticated device lease release acknowledgment"
+         }
++        // An ACK precedes owner return and its final stderr. Wait for the
++        // endpoint's bounded transport reaping/drain before taking the snapshot.
++        let transportDrainDeadline = min(ownerDrainLimit, DispatchTime.now().uptimeNanoseconds + 2_000_000_000)
++        var ownerTransportReleased: [Bool] = []
++        for endpoint in endpoints {
++            ownerTransportReleased.append(await endpoint.waitUntilOwnerReleased(deadline: transportDrainDeadline))
++        }
++        if !ownerTransportReleased.allSatisfy({ $0 }) {
++            success = false
++            failure = failure ?? "Missing natural owner transport exit after release acknowledgment"
++        }
++        if !endpoints.allSatisfy(\.diagnosticDrainComplete) {
++            success = false
++            failure = failure ?? "Owner diagnostic drain did not complete within bounds"
++        }
+         timer?.cancel()
+         let (tokens, reason, error) = captured.snapshot
+         var result: [String: Any] = ["schema": "owner_qualification_result_v1", "configurationSHA256": configSHA,
+@@ -142,6 +157,9 @@
+             "performanceQualification": false, "numericalQualification": false,
+             "nativeCleanupObserved": endpoints.map(\.nativeCleanupObserved),
+             "ownerDeviceLeaseReleasedObserved": endpoints.map(\.ownerDeviceLeaseReleasedObserved),
++            "ownerTransportReleased": ownerTransportReleased,
++            "ownerTermination": endpoints.map { qualificationOwnerTermination($0.ownerTermination) },
++            "endpointDiagnosticDrainComplete": endpoints.map(\.diagnosticDrainComplete),
+             "endpointDiagnosticsBase64": endpoints.map { $0.diagnosticTail.base64EncodedString() },
+             "journalRelease": "Authenticated owner acknowledgment; separate remote journal/process observation remains useful",
+             "elapsedControllerNanoseconds": DispatchTime.now().uptimeNanoseconds - began]
+--- a/Entries/controller/OwnerTransportObservation.swift
++++ b/Entries/controller/OwnerTransportObservation.swift
+@@ -0,0 +1,11 @@
++import Foundation
++import DarkbloomClusterProcess
++
++func qualificationOwnerTermination(_ value: ClusterWorkerProcessTermination?) -> [String: Any] {
++    switch value {
++    case .none: return ["kind": "unobserved"]
++    case .launchFailed?: return ["kind": "launchFailed"]
++    case .exited(let status)?: return ["kind": "exited", "status": status]
++    case .signalled(let signal)?: return ["kind": "signalled", "signal": signal]
++    }
++}
+--- a/Sources/DarkbloomClusterRemote/ClusterOwnerDiagnostics.swift
++++ b/Sources/DarkbloomClusterRemote/ClusterOwnerDiagnostics.swift
+@@ -0,0 +1,54 @@
++import Foundation
++import Darwin
++
++/// One nonblocking pipe reader. EOF is diagnostic completeness only; it is
++/// never evidence of native retirement or authenticated owner lease release.
++final class ClusterOwnerDiagnostics: @unchecked Sendable {
++    private let lock = NSLock()
++    private var bytes = Data()
++    private var reachedEOF = false
++    private var failed = false
++    static let maximumBytes = 1_048_576
++
++    var snapshot: Data { lock.withLock { bytes } }
++    var isComplete: Bool { lock.withLock { reachedEOF && !failed } }
++    private var isTerminal: Bool { lock.withLock { reachedEOF || failed } }
++
++    /// At most one bounded read; false also covers a temporarily empty pipe.
++    @discardableResult
++    func readAvailable(from descriptor: Int32) throws -> Bool {
++        guard !isTerminal else { return false }
++        var buffer = [UInt8](repeating: 0, count: 65_536)
++        let count = Darwin.read(descriptor, &buffer, buffer.count)
++        if count > 0 {
++            try lock.withLock {
++                guard bytes.count <= Self.maximumBytes - count else {
++                    failed = true
++                    throw OwnerWire.invalid("SSH stderr exceeded bound")
++                }
++                bytes.append(contentsOf: buffer.prefix(count))
++            }
++            return true
++        }
++        if count == 0 { lock.withLock { reachedEOF = true }; return false }
++        if errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR { return false }
++        lock.withLock { failed = true }
++        throw OwnerWire.invalid("SSH stderr read failed")
++    }
++
++    /// Retain buffered bytes after transport exit. A leaked writer or a read
++    /// error leaves isComplete false; neither extends the supplied deadline.
++    func drain(_ descriptor: Int32, until deadline: UInt64) {
++        repeat {
++            do {
++                let madeProgress = try readAvailable(from: descriptor)
++                if isTerminal { return }
++                if !madeProgress {
++                    let now = DispatchTime.now().uptimeNanoseconds
++                    guard now < deadline else { return }
++                    Thread.sleep(forTimeInterval: min(0.005, Double(deadline - now) / 1_000_000_000))
++                }
++            } catch { return }
++        } while DispatchTime.now().uptimeNanoseconds < deadline
++    }
++}
+--- a/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift
++++ b/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift
+@@ -40,12 +40,15 @@
+     private var nextWireEvent: UInt64 = 0
+     private var fenceRequested = false
+     private var releaseRequested = false
+-    private var stderr = Data()
++    private let diagnosticCapture = ClusterOwnerDiagnostics()
+     public var readiness: ClusterWorkerReady? { lock.withLock { invalid ? nil : ready } }
+     public var nativeCleanupObserved: Bool { lock.withLock { cleanup } }
+     /// Authenticated current-owner acknowledgment that its device lease journal was resolved.
+     public var ownerDeviceLeaseReleasedObserved: Bool { lock.withLock { ownerReleased } }
+-    public var diagnosticTail: Data { lock.withLock { stderr } }
++    public var diagnosticTail: Data { diagnosticCapture.snapshot }
++    /// True only after the diagnostic pipe reaches EOF within its byte/time
++    /// bounds. Independent of native cleanup, release ACK and transport exit.
++    public var diagnosticDrainComplete: Bool { diagnosticCapture.isComplete }
+     public var ownerTermination: ClusterWorkerProcessTermination? { lock.withLock { ownerTerminationValue } }
+ 
+     /// Actual local owner/SSH transport exit plus the authenticated release ACK.
+@@ -199,12 +202,19 @@
+             // A valid release ACK precedes normal owner return. Give that
+             // return the same bounded exit grace; do not race it with SIGTERM.
+             if process.isRunning && !lock.withLock({ ownerReleased }) { process.terminate() }
+-            let limit = DispatchTime.now().uptimeNanoseconds + 2_000_000_000
+-            while process.isRunning && DispatchTime.now().uptimeNanoseconds < limit { Thread.sleep(forTimeInterval: 0.01) }
++            let limit = min(localLifetimeDeadlineUptimeNanoseconds + 2_000_000_000,
++                DispatchTime.now().uptimeNanoseconds + 2_000_000_000)
++            while process.isRunning && DispatchTime.now().uptimeNanoseconds < limit {
++                // The owner may emit its final diagnostic after the released
++                // ACK. Keep reading during the existing bounded exit grace.
++                do { try diagnosticCapture.readAvailable(from: diagnostics.fileHandleForReading.fileDescriptor) } catch { fail() }
++                Thread.sleep(forTimeInterval: 0.01)
++            }
+             if process.isRunning { _ = Darwin.kill(process.processIdentifier, SIGKILL) }
+             process.waitUntilExit()
+             lock.withLock { ownerTerminationValue = process.terminationReason == .exit
+                 ? .exited(process.terminationStatus) : .signalled(process.terminationStatus) }
++            diagnosticCapture.drain(diagnostics.fileHandleForReading.fileDescriptor, until: limit)
+             try? input.fileHandleForWriting.close(); try? output.fileHandleForReading.close(); try? diagnostics.fileHandleForReading.close()
+             ownerEnded.leave()
+         }
+@@ -213,11 +223,7 @@
+                 let now = DispatchTime.now().uptimeNanoseconds
+                 if now >= localLifetimeDeadlineUptimeNanoseconds { fail() }
+                 if now >= localLifetimeDeadlineUptimeNanoseconds + 2_000_000_000 { throw ClusterWorkerOwnerError.deadline }
+-                var buffer = [UInt8](repeating: 0, count: 65_536)
+-                let count = Darwin.read(diagnostics.fileHandleForReading.fileDescriptor, &buffer, buffer.count)
+-                if count > 0 {
+-                    try lock.withLock { guard stderr.count <= 1_048_576 - count else { throw OwnerWire.invalid("SSH stderr exceeded bound") }; stderr.append(contentsOf: buffer.prefix(count)) }
+-                }
++                try diagnosticCapture.readAvailable(from: diagnostics.fileHandleForReading.fileDescriptor)
+                 if let bytes = try pipe.read(until: now + 50_000_000) { try accept(OwnerWire.decode(bytes, commandStream: false)) }
+                 if lock.withLock({ ownerReleased }) { return }
+                 if !process.isRunning { throw ClusterWorkerOwnerError.closed }

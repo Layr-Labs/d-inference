@@ -1,0 +1,129 @@
+--- /Users/developer/DarkbloomDev/cluster-research/installed-product-http-delivery-qualification-20260915/run.py
++++ /Users/developer/DarkbloomDev/cluster-research/installed-product-balanced-http-qualification-20260915/harness/run.py
+@@ -9,7 +9,7 @@
+ from status_capture import capture as capture_status
+ 
+ BASE=Path(__file__).resolve().parent
+-ROOT=BASE.parent
++ROOT=BASE.parent.parent
+ 
+ def main():
+     parser=argparse.ArgumentParser()
+@@ -24,7 +24,7 @@
+     assert args.declared_prompt_tokens is None or 1<=args.declared_prompt_tokens<=8192
+     assert (args.rendered_prompt is None)==(args.expected_token_ids is None)
+     output=BASE/('physical-'+str(args.attempt));output.mkdir(mode=0o700)
+-    remote_run=REMOTE+'/qualification/attempt'+str(args.attempt)
++    remote_run=REMOTE+'/qualification/balanced-attempt'+str(args.attempt)
+     record={'schema':'installed_distributed_http_attempt_v1','startedUnix':time.time(),
+             'representativePerformanceQualified':False,'openRouterQualified':False,
+             'numericalReferenceCompared':False,'requestCount':1}
+--- /Users/developer/DarkbloomDev/cluster-research/installed-product-http-delivery-qualification-20260915/status_validation.py
++++ /Users/developer/DarkbloomDev/cluster-research/installed-product-balanced-http-qualification-20260915/harness/status_validation.py
+@@ -2,8 +2,8 @@
+ import json
+ import uuid
+ 
+-EXPECTED_CLUSTER = 'darkbloom-product-qwen9b-http-delivery-20260915'
+-EXPECTED_CONFIGURATION_SHA256 = 'd787ce64ed4249048c195ab02cedefcda50558fe69b7d7063e08c33f373da588'
++EXPECTED_CLUSTER = 'darkbloom-product-qwen9b-balanced-20260915'
++EXPECTED_CONFIGURATION_SHA256 = '5d70c80944fb12b8cd12bb9d28e85368aea355a66538c3cf8f2bad26f5475d3f'
+ EXPECTED_PREFILL_SCHEDULE = 'one_chunk_lookahead_v1'
+ EXPECTED_PEERS = ('darkbloom-24', 'darkbloom-48')
+ MAXIMUM_STDOUT = 65536
+--- /Users/developer/DarkbloomDev/cluster-research/installed-http-configured-deadline-qualification-20260915/configuration_remote.py
++++ /Users/developer/DarkbloomDev/cluster-research/installed-product-balanced-http-qualification-20260915/configuration_remote.py
+@@ -15,9 +15,9 @@
+ PROVIDER_BINARY = 'c4083695c07ed7da819284e48de3aeb8786940b43271fa6e974b469c26f10350'
+ EXPECTED = {
+     'darkbloom-24': ('leader', 'dea0e291200e111d0fbc5f8e549db5054546aeeaf963a854519804e3c5c675d6',
+-                    '7f2a82af486b2b58ed17a620b51e8ceceaf187e7a1f781f91d36bf1aa9a9c536'),
++                    '5d70c80944fb12b8cd12bb9d28e85368aea355a66538c3cf8f2bad26f5475d3f'),
+     'darkbloom-48': ('follower', '47c083ac6eb0d7926b4bd468437e3d6dea1dc92e9bc44e63a133c4cc907f941e',
+-                    '8d895c8217ea0896e406069faa92770bbe6d651d7ea4de8c866274fde4df967c'),
++                    '3ec61ea9ca5ac279d8b6994e8bf36f216bbd7f33bc723a12de7936460f148cc4'),
+ }
+ 
+ 
+@@ -39,7 +39,7 @@
+     role, original_hash, selected_hash = expected
+     raw = base64.b64decode(request['configuration'], validate=True)
+     if len(raw) > 65536 or digest(raw) != selected_hash:
+-        raise ValueError('Derived two-second configuration differs')
++        raise ValueError('Derived balanced configuration differs')
+     require_idle()
+     original, mode = read_private(PROVIDER)
+     if digest(original) != original_hash or mode != 0o600:
+@@ -127,7 +127,7 @@
+         raise ValueError('Invalid postimage pin')
+     if request['action'] == 'prepare' and pin is not None:
+         raise ValueError('Preparation cannot adopt an old transaction')
+-    transaction = ROOT / 'configuration-transactions' / ('configured-deadline-' + str(request['attempt']))
++    transaction = ROOT / 'configuration-transactions' / ('balanced-http-' + str(request['attempt']))
+     if request['action'] == 'prepare':
+         return prepare(transaction, request, EXPECTED[request['host']])
+     return swap(transaction, request, EXPECTED[request['host']], request['action'] == 'restore')
+--- /Users/developer/DarkbloomDev/cluster-research/installed-http-configured-deadline-qualification-20260915/configuration_transaction.py
++++ /Users/developer/DarkbloomDev/cluster-research/installed-product-balanced-http-qualification-20260915/configuration_transaction.py
+@@ -28,5 +28,5 @@
+                 record['restorationErrors'][host] = type(error).__name__ + ': ' + str(error)
+         record['defaultsRestored'] = len(record['restored']) == 2 and not record['restorationErrors']
+     record['qualified'] = (record['defaultsRestored'] and record['error'] is None
+-                           and (restore_only or (record['physical'] or {}).get('terminalObservationQualified') is True))
++                           and (restore_only or (record['physical'] or {}).get('httpObservationQualified') is True))
+     return record
+--- /Users/developer/DarkbloomDev/cluster-research/installed-http-configured-deadline-qualification-20260915/run_configured.py
++++ /Users/developer/DarkbloomDev/cluster-research/installed-product-balanced-http-qualification-20260915/run_configured.py
+@@ -1,4 +1,4 @@
+-"""Root-run only: stage both defaults, run one negative check, restore exact bytes."""
++"""Root-run only: stage both defaults, run one balanced HTTP request, restore exact bytes."""
+ import argparse
+ import base64
+ import hashlib
+@@ -53,7 +53,7 @@
+     payload = dict(host=host, action=action, attempt=attempt, postimageSHA256=pin,
+                    configuration=base64.b64encode((BASE / 'configuration' / (role + '.configure.json')).read_bytes()).decode())
+     code = bundled_remote()
+-    command = SSH + [host, shlex.join(['/usr/bin/python3', '-B', '-c', code])]
++    command = SSH + ['-S', 'none', host, shlex.join(['/usr/bin/python3', '-B', '-c', code])]
+     result = subprocess.run(command, input=json.dumps(payload).encode(), capture_output=True, timeout=45)
+     if len(result.stdout) > 65536 or len(result.stderr) > 16384:
+         raise ValueError('Configuration command output exceeded bound')
+@@ -75,8 +75,8 @@
+     command = ['/usr/bin/python3', '-B', str(BASE / 'harness/run.py'), '--attempt', str(attempt),
+                '--prompt-file', str(fixtures / 'prompt-8192.txt'), '--declared-prompt-tokens', '8192',
+                '--rendered-prompt', str(fixtures / 'prompt-8192.rendered.txt'),
+-               '--expected-token-ids', str(fixtures / 'prompt-8192.ids.json'), '--client', str(BASE / 'client.py')]
+-    environment = dict(os.environ, PYTHONPATH=str(BASE))
++               '--expected-token-ids', str(fixtures / 'prompt-8192.ids.json'), '--client', str(BASE.parent / 'installed-http-client-draft-20260915/client.py')]
++    environment = dict(os.environ, PYTHONPATH=str(BASE.parent / 'installed-http-client-draft-20260915'))
+     with (output / 'harness.stdout').open('xb') as out, (output / 'harness.stderr').open('xb') as err:
+         process = subprocess.Popen(command, cwd=BASE, env=environment, stdout=out, stderr=err, start_new_session=True)
+         try:
+@@ -95,9 +95,10 @@
+     raw = receipt.read_bytes()
+     if len(raw) > 1024 * 1024: raise ValueError('Harness receipt exceeds bound')
+     value = json.loads(raw)
+-    return dict(terminalObservationQualified=process.returncode == 0 and value.get('terminalObservationQualified') is True,
++    return dict(httpObservationQualified=process.returncode == 0 and value.get('completed') is True,
+                 harnessExitCode=process.returncode, receipt=str(receipt), receiptSHA256=hashlib.sha256(raw).hexdigest(),
+-                inferenceRequestSucceeded=value.get('inferenceRequestSucceeded'), slaPassed=value.get('slaPassed'))
++                inferenceRequestSucceeded=value.get('clientExitCode') == 0,
++                slaPassed=(json.loads((BASE / 'harness' / ('physical-' + str(attempt)) / 'client/receipt.json').read_bytes())['measurement']['content_sla']['reported_prompt_tokens']['request_passed']))
+ 
+ 
+ def main():
+@@ -129,9 +130,10 @@
+     signal.signal(signal.SIGINT, interrupt); signal.signal(signal.SIGTERM, interrupt)
+     record = transact(lambda host, action, pin: remote_action(host, action, pin, args.attempt, output),
+                       lambda: physical(args.attempt, output), prepared=pins, restore_only=args.restore_only)
+-    record.update(schema='installed_configured_deadline_transaction_v1', attempt=args.attempt,
+-                  configuredRequestTimeoutSeconds=2, ordinaryRequestTimeoutSeconds=120,
+-                  externalContentSLANanoseconds=18_192_000_000, naturalContentMissReproduced=False,
++    record.update(schema='installed_balanced_http_transaction_v1', attempt=args.attempt,
++                  configuredRequestTimeoutSeconds=120, ordinaryRequestTimeoutSeconds=120,
++                  selectedPlanSHA256='2b5aa52cab49c12cfa44f2348326f956127d2ca15b1c55b5632f447901e56293',
++                  externalContentSLANanoseconds=18_192_000_000, representativePerformanceQualified=False,
+                   restoreOnly=args.restore_only, interrupted=interrupted, recoveryReceiptErrors=recovery_errors)
+     if recovery_errors: record['qualified'] = False
+     publish(output / 'execution.json', (json.dumps(record, indent=2) + '\n').encode())

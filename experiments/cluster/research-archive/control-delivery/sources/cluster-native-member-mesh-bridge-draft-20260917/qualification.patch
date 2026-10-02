@@ -1,0 +1,184 @@
+--- a/Tests/context.py
++++ b/Tests/context.py
+@@ -8,9 +8,15 @@
+ SOURCE = Path('/Users/developer/DarkbloomDev/d-inference')
+ A = BASE.parent / 'cluster-native-key-prelude-validation-3-20260916/source'
+ A_SHA = '61f28887e6165c6f488071882868216c6e92bb1f1f6f81cec826c7de0349c5bf'
+-SWIFT_FILTER = 'ClusterMemberRegistrationTests|ClusterMemberLoopTests|DistributedStartCommandTests|DistributedStartSessionFactoryTests|CoordinatorClient|StartupPreload|EngineV2SupportedSetGateTests|MetallibHashTests|NativePairMessageTests|NativePairMemberInvocationTests|NativePairMemberControlTests'
++SWIFT_FILTER = 'ClusterMemberRegistrationTests|ClusterMemberLoopTests|DistributedStartCommandTests|DistributedStartSessionFactoryTests|CoordinatorClient|StartupPreload|EngineV2SupportedSetGateTests|MetallibHashTests|NativePairMessageTests|NativePairMemberInvocationTests|NativePairMemberControlTests|NativePairMemberMeshTests'
+ NATIVE_PAIR_METHODS = ('publicSigningBytesMatchIndependentGoAndPythonFixture', 'ambiguousOrUnknownPublicRecordsAreRefused')
+ INVOCATION_METHODS = (
++    'meshPublicVectorAndClosedBoundsMatchGo',
++    'onlyCombinedOwnerProfileAdmitsExtendedPublicSequence',
++    'actualMeshFourRoundsUseAuthenticatedSocketAndRetireWithoutReady',
++    'meshCancellationJoinsActualNativeOwnersAtPendingRound',
++    'meshWrongLocalEchoClosesControlAndNeverReturnsCapacity',
++    'combinedMeshOwnerStillRefusesNativeReady',
+     'actualBilateralNativePreludeRequiresCommitAndReleasesOnlyAfterOwners',
+     'committedCancellationWaitsForActualNativeExitAndOwnerLeaseRelease',
+     'keyOnlyOwnerRejectsActualNativeReadyInsteadOfPublishingModelCapacity',
+@@ -32,6 +38,11 @@
+         for row in json.loads((root / 'manifest.json').read_text())['files']:
+             path = root / row['path']
+             if path.is_symlink() or sha(path) != row['sha256']: raise ValueError('Frozen member differs: ' + str(path))
++    for source in json.loads((BASE / 'upstream-freezes.json').read_text()):
++        root = Path(source['root'])
++        if sha(root / 'manifest.json') != source['sha256']: raise ValueError('Lineage manifest differs')
++        for item in json.loads((root / 'manifest.json').read_text())['files']:
++            if sha(root / item['path']) != item['sha256']: raise ValueError('Lineage member differs')
+     for row in json.loads((BASE / 'context-pins.json').read_text()):
+         if sha(row['path']) != row['sha256']: raise ValueError('Integration context differs: ' + row['path'])
+     integration = json.loads((BASE / 'integration.json').read_text())
+--- a/GoChecks/inputs.py
++++ b/GoChecks/inputs.py
+@@ -1,20 +1,18 @@
+ """Frozen member + native approval overlays and bounded Go inputs; no import IO."""
+ from pathlib import Path
+-BASE = Path(__file__).resolve().parent
++BASE = Path(__file__).resolve().parent.parent
+ SOURCE = Path('/Users/developer/DarkbloomDev/d-inference')
+-OVERLAY = BASE.parent / 'cluster-registered-member-draft-20260915'
+-OVERLAY_SHA = '4ae431c60990ff9e4dfe319b8b5387ac8fb6bffcd54eac0213d3f85ed60ef965'
+ GO = '/Users/developer/.local/share/mise/installs/go/1.25.0/bin/go'
+ GO_SHA = 'c812de5f1e8307431c5bce8ebc4887c180827abc5834a72cd640a8a14200a93b'
+ GO_PACKAGES = ('coordinator/registry', 'coordinator/protocol', 'coordinator/api')
+ GO_FILTER = '^Test(NativePair|VerifiedPair|ClusterMember|MemberRole)'
+-B_OVERLAY = BASE.parent / 'coordinator-native-pair-authorization-draft-20260916'
+-B_OVERLAY_SHA = '69189730ac9df0ced27006c2b00606583a20f905a7140cfc8fff5f24ff9dc500'
+-CORRECTION = BASE.parent / 'coordinator-native-pair-cancel-order-correction-20260916'
+-CORRECTION_SHA = '4339ee6034187060459c11b4879f722318aee2578f2d44bbf6936e3715e80745'
+-UPSTREAM = BASE.parent / 'cluster-registered-member-validation-fixtures-20260916'
+-UPSTREAM_SHA = '0550d8fb270ac4dbef474fc0585497d7bf8c612ca35812cca6f76ac6ade2be06'
+ NATIVE_PAIR_METHODS = frozenset((
++    'TestNativePairMeshActualReadLoopRefusesWithoutGrant',
++    'TestNativePairMeshFourRoundsPreserveOrderAndGrant',
++    'TestNativePairMeshRefusesEarlyWrongContextAndSequence',
++    'TestNativePairMeshWrongKeyConfirmationNeverStartsMesh',
++    'TestNativePairMeshIndependentPublicVector',
++    'TestNativePairMeshClosedSizesAndDirections',
+     'TestNativePairNoSelfApprovalAndNoSoloAttachment',
+     'TestNativePairCommitPrecedesStartAndBindingUsesExactHello',
+     'TestNativePairCancellationRetainsUntilActualOriginalRelease',
+--- a/GoChecks/guards.py
++++ b/GoChecks/guards.py
+@@ -5,11 +5,8 @@
+ from pathlib import Path
+ import re
+ import shlex
+-from inputs import (BASE, SOURCE, OVERLAY, OVERLAY_SHA, B_OVERLAY, B_OVERLAY_SHA,
+-                    CORRECTION, CORRECTION_SHA, UPSTREAM, UPSTREAM_SHA, GO_PACKAGES)
+-
+-# First existing file wins. No overlay ever mutates the lower layer.
+-SOURCE_ROOTS = (CORRECTION / 'proposed', B_OVERLAY / 'proposed', OVERLAY / 'proposed', SOURCE)
++from inputs import BASE, SOURCE, GO_PACKAGES
++SOURCE_ROOTS = (BASE / 'proposed', SOURCE)
+ 
+ def sha(path):
+     return hashlib.sha256(path.read_bytes()).hexdigest()
+@@ -33,38 +30,13 @@
+         raise ValueError('Preimage/absence changed: ' + str(path))
+ 
+ def verify_overlay():
+-    for root, expected in ((UPSTREAM, UPSTREAM_SHA), (OVERLAY, OVERLAY_SHA),
+-                           (B_OVERLAY, B_OVERLAY_SHA), (CORRECTION, CORRECTION_SHA)):
+-        verify_frozen(root, expected)
+-    integration = json.loads((OVERLAY / 'integration.json').read_text())
+-    for row in integration['files']:
+-        check_preimage(SOURCE / row['path'], row['baseSHA256'])
+-        if sha(OVERLAY / 'proposed' / row['path']) != row['proposedSHA256']:
+-            raise ValueError('Candidate differs from integration')
+-    for row in json.loads((B_OVERLAY / 'integration.json').read_text())['files']:
+-        member = OVERLAY / 'proposed' / row['path']
+-        effective = member if member.exists() or member.is_symlink() else SOURCE / row['path']
+-        check_preimage(effective, row['baseSHA256'])
++    for row in json.loads((BASE / 'manifest.json').read_text())['files']:
++        p = BASE / row['path']
++        if p.is_symlink() or sha(p) != row['sha256']: raise ValueError('Frozen mesh source differs')
++    for row in json.loads((BASE / 'go-integration.json').read_text())['files']:
+         check_preimage(SOURCE / row['path'], row['mainSHA256'])
+-        if sha(B_OVERLAY / 'proposed' / row['path']) != row['proposedSHA256']:
+-            raise ValueError('B candidate differs from integration')
+-    for row in json.loads((CORRECTION / 'integration.json').read_text())['files']:
+-        lower = next((root / row['path'] for root in SOURCE_ROOTS[1:]
+-                      if (root / row['path']).exists() or (root / row['path']).is_symlink()), SOURCE / row['path'])
+-        check_preimage(lower, row['baseSHA256'])
+-        if sha(CORRECTION / 'proposed' / row['path']) != row['proposedSHA256']:
+-            raise ValueError('Cancellation correction differs from integration')
+-    for row in json.loads((B_OVERLAY / 'source-pins.json').read_text())['files']:
+-        p = Path(row['path'])
+-        if not p.is_file() or p.is_symlink() or p.stat().st_size != row['sizeBytes'] or sha(p) != row['sha256']:
+-            raise ValueError('B source dependency changed: ' + str(p))
+-    for row in json.loads((BASE / 'helper-lineage.json').read_text()):
+-        if sha(BASE / row['local']) != row['sha256']:
+-            raise ValueError('Owned/inventory helper changed')
+-    for row in json.loads((BASE / 'binder-review.json').read_text())['sources']:
+-        if sha(SOURCE / row['path']) != row['sha256']:
+-            raise ValueError('Reviewed binder context changed')
+-    return integration
++        if sha(Path(row['sourcePath'])) != row['proposedSHA256']: raise ValueError('Go mesh candidate changed')
++    return json.loads((BASE / 'go-integration.json').read_text())
+ 
+ def source_for(relative):
+     return next((root / relative for root in SOURCE_ROOTS
+@@ -148,7 +120,7 @@
+         p = source_for(relative)
+         if not p.is_file() or p.is_symlink():
+             raise ValueError('Nonregular Go input')
+-        origin = next(label for root, label in zip(SOURCE_ROOTS, ('correction', 'native-B', 'member', 'main')) if p.is_relative_to(root))
++        origin = next(label for root, label in zip(SOURCE_ROOTS, ('mesh', 'main')) if p.is_relative_to(root))
+         rows.append({'path': relative, 'source': origin,
+                      'sizeBytes': p.stat().st_size, 'sha256': sha(p)})
+     return {'packages': sorted(seen), 'files': rows}
+@@ -156,7 +128,7 @@
+ def verify_go(snapshot, workspace=None):
+     # Rediscover all layers, including the B public vector and correction test;
+     # an earlier member-only preparation cannot satisfy this inventory.
+-    if snapshot != json.loads((BASE / 'source-preview.json').read_text()):
++    if snapshot != json.loads((BASE / 'go-source-preview.json').read_text()):
+         raise ValueError('Go inventory differs from the reviewed source freeze')
+     if go_snapshot() != snapshot:
+         raise ValueError('Go source/fixture closure changed or incomplete')
+--- a/GoChecks/prepare.py
++++ b/GoChecks/prepare.py
+@@ -5,7 +5,7 @@
+ import sys
+ sys.dont_write_bytecode = True
+ from guards import save, sha, verify_overlay, go_snapshot, source_for, verify_go
+-from inputs import BASE, SOURCE, OVERLAY_SHA, B_OVERLAY_SHA, CORRECTION_SHA
++from inputs import BASE, SOURCE
+ 
+ 
+ def main():
+@@ -27,8 +27,7 @@
+             stream.write(source_for(row['path']).read_bytes())
+     verify_overlay(); verify_go(snapshot, workspace)
+     receipt = {'phase': 'go', 'sourceFiles': len(snapshot['files']), 'packages': snapshot['packages'],
+-               'workspace': str(workspace), 'source': str(SOURCE), 'overlayManifestSHA256': OVERLAY_SHA,
+-               'nativeOverlayManifestSHA256': B_OVERLAY_SHA, 'correctionManifestSHA256': CORRECTION_SHA,
++               'workspace': str(workspace), 'source': str(SOURCE), 'wrapperManifestSHA256': sha(BASE / 'manifest.json'),
+                'sourceInventorySHA256': sha(output / 'source-before.json'),
+                'mainUnchanged': True, 'compilerRun': False}
+     save(output / 'preparation.json', receipt)
+--- a/GoChecks/run.py
++++ b/GoChecks/run.py
+@@ -9,8 +9,7 @@
+ from check_process import run_owned
+ from go_coverage import API, completed, combine, discover, exact_filter, require_feature_passes
+ from guards import sha, save, verify_overlay, verify_go, isolated_environment
+-from inputs import (BASE, SOURCE, OVERLAY_SHA, B_OVERLAY_SHA, CORRECTION_SHA,
+-                    GO, GO_SHA, GO_PACKAGES, GO_FILTER)
++from inputs import BASE, SOURCE, GO, GO_SHA, GO_PACKAGES, GO_FILTER
+ 
+ 
+ def main():
+@@ -26,9 +25,7 @@
+         raise ValueError('Expected the private Go preparation sibling')
+     preparation = json.loads((prepared / 'preparation.json').read_text())
+     inventory_sha = sha(prepared / 'source-before.json')
+-    if (preparation['overlayManifestSHA256'] != OVERLAY_SHA or
+-        preparation.get('nativeOverlayManifestSHA256') != B_OVERLAY_SHA or
+-        preparation.get('correctionManifestSHA256') != CORRECTION_SHA or
++    if (preparation['wrapperManifestSHA256'] != sha(BASE / 'manifest.json') or
+         preparation['workspace'] != str(workspace) or preparation['source'] != str(SOURCE) or
+         preparation['phase'] != 'go' or preparation['sourceInventorySHA256'] != inventory_sha):
+         raise ValueError('Prepared source identity differs')

@@ -1,0 +1,76 @@
+--- a/provider-swift/Sources/ProviderCore/Server/LocalDisconnectResponder.swift
++++ b/provider-swift/Sources/ProviderCore/Server/LocalDisconnectResponder.swift
+@@ -1,4 +1,5 @@
+ import Hummingbird
++import NIOCore
+ 
+ /// Capture transport ownership without changing the upstream router's basic
+ /// context, authentication, body limits, response framing, or model registry.
+@@ -6,11 +7,13 @@
+     public typealias Source = ApplicationRequestContextSource
+     public var coreContext: CoreRequestContextStorage
+     private let base: BasicRequestContext
++    let channel: any Channel
+     let connection: LocalHTTPConnectionCancellation
+ 
+     public init(source: Source) {
+         base = BasicRequestContext(source: source)
+         coreContext = base.coreContext
++        channel = source.channel
+         connection = LocalHTTPConnectionCancellationRegistry.shared.connection(for: source.channel)
+     }
+ 
+@@ -25,12 +28,25 @@
+ where Inner.Context == BasicRequestContext {
+     public typealias Context = LocalDisconnectContext
+     let inner: Inner
++    let observeConnection: Bool
++
++    init(inner: Inner, observeConnection: Bool = false) {
++        self.inner = inner
++        self.observeConnection = observeConnection
++    }
+ 
+     public func respond(to request: Request, context: Context) async throws -> Response {
+         let scope = context.connection.makeScope()
+         let task = Task<Response, Error> {
+             try await LocalRequestCancellation.$current.withValue(scope) {
+-                try await inner.respond(to: request, context: context.basic)
++                // Only distributed HTTP retains the actual channel for its
++                // owned response hold; cancellation keeps the upstream scope.
++                if observeConnection {
++                    return try await LocalHTTPConnectionScope.$current.withValue(context.channel) {
++                        try await inner.respond(to: request, context: context.basic)
++                    }
++                }
++                return try await inner.respond(to: request, context: context.basic)
+             }
+         }
+         let preparation = scope.register { task.cancel() }
+--- a/provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPOriginTests.swift
++++ b/provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPOriginTests.swift
+@@ -150,8 +150,9 @@
+         let request = Request(
+             head: .init(method: .post, scheme: "http", authority: "localhost", path: "/v1/chat/completions"),
+             body: .init(asyncSequence: HTTPOriginBody(json: json, delay: bodyDelay, capture: capture)))
+-        let context = LocalConnectionRequestContext(source: ApplicationRequestContextSource(
+-            channel: EmbeddedChannel(), logger: Logger(label: "distributed-http-origin")))
++        let channel = NIOAsyncTestingChannel()
++        let context = LocalDisconnectContext(source: ApplicationRequestContextSource(
++            channel: channel, logger: Logger(label: "distributed-http-origin")))
+         do {
+             let response = try await application.responder.respond(to: request, context: context)
+             if owner.base.reserveCount > 0 {
+@@ -159,10 +160,12 @@
+             }
+             try await response.body.write(HTTPOriginWriter(capture: capture))
+             await bridge.shutdown()
++            _ = try await channel.finish()
+             return (capture, owner.context, response.status, owner.base.reserveCount)
+         } catch {
+             if owner.base.reserveCount > 0 { owner.base.last.acknowledge() }
+             await bridge.shutdown()
++            _ = try? await channel.finish()
+             throw error
+         }
+     }

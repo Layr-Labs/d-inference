@@ -1,0 +1,11 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift
+@@ -226,7 +226,7 @@
+                 try diagnosticCapture.readAvailable(from: diagnostics.fileHandleForReading.fileDescriptor)
+                 if let bytes = try pipe.read(until: now + 50_000_000) { try accept(OwnerWire.decode(bytes, commandStream: false)) }
+                 if lock.withLock({ ownerReleased }) { return }
+-                if !process.isRunning { throw ClusterWorkerOwnerError.closed }
++                // Drain queued owner frames through actual pipe EOF, even after owner exit.
+             }
+         } catch { fail() }
+     }

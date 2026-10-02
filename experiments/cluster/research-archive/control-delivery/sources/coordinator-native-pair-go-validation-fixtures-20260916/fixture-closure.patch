@@ -1,0 +1,399 @@
+--- a/guards.py
++++ b/guards.py
+@@ -77,6 +77,9 @@
+         'deploy/environments/prod.env',
+         'deploy/gcp/prod/required-env-keys.txt',
+         'scripts/install.sh',
++        'provider-swift/Sources/ProviderCore/ProviderCore.swift',
++        'provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift',
++        'console-ui/src/lib/telemetry-types.ts',
+     }
+     rows = json.loads((BASE / 'fixture-inputs.json').read_text())['files']
+     if len(rows) != len(expected) or {row['path'] for row in rows} != expected:
+@@ -85,6 +88,9 @@
+         p = SOURCE / row['path']
+         if not p.is_file() or p.is_symlink() or p.stat().st_size != row['sizeBytes'] or sha(p) != row['sha256']:
+             raise ValueError('Pinned Go fixture changed: ' + row['path'])
++        reader = source_for(row['reader'])
++        if not reader.is_file() or reader.is_symlink() or sha(reader) != row['readerSHA256']:
++            raise ValueError('Pinned Go fixture reader changed: ' + row['reader'])
+     return rows
+ 
+ def go_snapshot():
+--- a/run.py
++++ b/run.py
+@@ -1,4 +1,4 @@
+-"""One bounded granted Go phase; preserve actual failures and exact source pins."""
++"""Bounded Go qualification with exhaustive compiled-name API batches."""
+ import argparse
+ import json
+ import os
+@@ -7,9 +7,10 @@
+ import sys
+ sys.dont_write_bytecode = True
+ from check_process import run_owned
++from go_coverage import API, completed, combine, discover, exact_filter, require_feature_passes
+ from guards import sha, save, verify_overlay, verify_go, isolated_environment
+ from inputs import (BASE, SOURCE, OVERLAY_SHA, B_OVERLAY_SHA, CORRECTION_SHA,
+-                    GO, GO_SHA, GO_PACKAGES, GO_FILTER, NATIVE_PAIR_METHODS)
++                    GO, GO_SHA, GO_PACKAGES, GO_FILTER)
+ 
+ 
+ def main():
+@@ -24,56 +25,78 @@
+     if prepared.parent != BASE.parent or prepared == BASE or workspace.is_symlink():
+         raise ValueError('Expected the private Go preparation sibling')
+     preparation = json.loads((prepared / 'preparation.json').read_text())
++    inventory_sha = sha(prepared / 'source-before.json')
+     if (preparation['overlayManifestSHA256'] != OVERLAY_SHA or
+         preparation.get('nativeOverlayManifestSHA256') != B_OVERLAY_SHA or
+         preparation.get('correctionManifestSHA256') != CORRECTION_SHA or
+         preparation['workspace'] != str(workspace) or preparation['source'] != str(SOURCE) or
+-        preparation['phase'] != 'go' or
+-        preparation['sourceInventorySHA256'] != sha(prepared / 'source-before.json')):
++        preparation['phase'] != 'go' or preparation['sourceInventorySHA256'] != inventory_sha):
+         raise ValueError('Prepared source identity differs')
+     before = json.loads((prepared / 'source-before.json').read_text())
+ 
+     def recheck():
+-        verify_overlay()
+-        verify_go(before, workspace)
++        verify_overlay(); verify_go(before, workspace)
+ 
+     recheck()
++    if args.phase == 'go-all':
++        focused = json.loads((prepared / ('go-focused-' + str(args.attempt)) / 'checks.json').read_text())
++        if not focused.get('passed') or focused.get('phase') != 'go-focused' or focused.get('sourceInventorySHA256') != inventory_sha:
++            raise ValueError('Full batches require matching focused PASS first')
+     output = prepared / (args.phase + '-' + str(args.attempt)); output.mkdir(mode=0o700, exist_ok=False)
+     if sha(Path(GO)) != GO_SHA:
+         raise ValueError('Go toolchain changed')
+-    test_timeout = '180s' if args.phase == 'go-all' else '120s'
+-    command = [GO, 'test', '-json', '-race', '-p', '2', '-count=1', '-timeout=' + test_timeout]
+-    if args.phase == 'go-focused':
+-        command += ['-run', GO_FILTER]
+-    command += ['./' + p for p in GO_PACKAGES]
++    base_command = [GO, 'test', '-json', '-race', '-p', '2', '-count=1']
+     os.chdir(workspace)
+     isolated_environment()
++    executions = []
++
++    def execute(name, options, packages):
++        recheck()
++        command = base_command + options + ['./' + package for package in packages]
++        print(json.dumps({'starting': name, 'packages': packages, 'parentSeconds': 300}), flush=True)
++        try:
++            run_owned(command, output, name, 300, diagnostic_limit=16_777_216)
++        finally:
++            recheck()
++            save(output / (name + '.source-recheck.json'), {'sourcePinsUnchanged': True, 'mainUnchanged': True})
++        executions.append({'name': name, 'executionSHA256': sha(output / (name + '.json'))})
++        return [json.loads(line) for line in (output / (name + '.stdout')).read_text().splitlines() if line]
++
+     old_limit = resource.getrlimit(resource.RLIMIT_FSIZE)
+     resource.setrlimit(resource.RLIMIT_FSIZE, (512 * 1024 * 1024, old_limit[1]))
+     try:
+-        run_owned(command, output, 'execution', 300, diagnostic_limit=16_777_216)
++        if args.phase == 'go-focused':
++            coverage = completed(execute('execution', ['-timeout=120s', '-run', GO_FILTER], GO_PACKAGES))
++            details = require_feature_passes(coverage)
++        else:
++            catalog = discover(execute('compiled-list', ['-timeout=180s', '-list', '.'], GO_PACKAGES))
++            catalog['sourceInventorySHA256'] = inventory_sha
++            save(output / 'discovery.json', catalog)
++            # Core packages keep normal unfiltered go test behavior. API batches
++            # select every compiled Test/Example/Fuzz seed entry exactly once.
++            core_expected = {package: names for package, names in catalog['packages'].items() if package != API}
++            core = completed(execute('registry-protocol', ['-timeout=180s'], GO_PACKAGES[:2]), core_expected)
++            save(output / 'registry-protocol.coverage.json', core)
++            parts = [core]
++            for index, names in enumerate(catalog['apiBatches'], 1):
++                name = 'api-' + str(index)
++                part = completed(execute(name, ['-timeout=180s', '-run', exact_filter(names)], [GO_PACKAGES[2]]), {API: names})
++                save(output / (name + '.coverage.json'), part)
++                parts.append(part)
++            coverage = combine(parts, catalog['packages'])
++            details = require_feature_passes(coverage, full=True)
++            details.update(compiledDiscoverySHA256=sha(output / 'discovery.json'), apiBatches=4,
++                           exactDisjointCoverage=True, excludedBenchmarks=catalog['excludedBenchmarks'])
+     finally:
+         resource.setrlimit(resource.RLIMIT_FSIZE, old_limit)
+         recheck()
+         save(output / 'source-recheck.json', {'sourcePinsUnchanged': True, 'mainUnchanged': True})
+-    stdout = (output / 'execution.stdout').read_text()
+-    events = [json.loads(line) for line in stdout.splitlines() if line]
+-    packages = {'github.com/eigeninference/d-inference/' + p for p in GO_PACKAGES}
+-    complete = {e.get('Package') for e in events if e.get('Action') == 'pass' and 'Test' not in e}
+-    passed = {(e['Package'], e['Test']) for e in events if e.get('Action') == 'pass' and 'Test' in e and '/' not in e['Test']}
+-    verified = {t for _, t in passed if t.startswith('TestVerifiedPair')}
+-    member = {t for _, t in passed if t.startswith(('TestClusterMember', 'TestMemberRole'))}
+-    native = {t for _, t in passed if t.startswith('TestNativePair')}
+-    if not packages.issubset(complete) or len(verified) != 15 or len(member) != 4 or native != NATIVE_PAIR_METHODS:
+-        raise ValueError('Go package/test completion is incomplete')
+-    details = {'verifiedPairMethods': len(verified), 'memberMethods': len(member),
+-               'nativePairMethods': len(native), 'nativePairPassed': sorted(native), 'totalMethods': len(passed),
+-               'apiHandlerPackageCompiled': True, 'apiTestsSelected': True, 'raceDetector': True}
++    save(output / 'coverage.json', coverage)
+     save(output / 'checks.json', {'passed': True, 'phase': args.phase, 'details': details,
+-        'sourcePinsUnchanged': True, 'mainChanged': False, 'modelOrRemoteExecuted': False,
+-        'providerNativeInvocationQualified': False, 'encryptedRDMAQualified': False,
+-        'executionSHA256': sha(output / 'execution.json')})
+-    print(json.dumps(details, sort_keys=True))
++        'sourceInventorySHA256': inventory_sha, 'sourcePinsUnchanged': True, 'mainChanged': False,
++        'modelOrRemoteExecuted': False, 'providerNativeInvocationQualified': False,
++        'encryptedRDMAQualified': False, 'executions': executions})
++    print(json.dumps(details, sort_keys=True), flush=True)
+ 
+ 
+ if __name__ == '__main__':
+--- a/fixture-inputs.json
++++ b/fixture-inputs.json
+@@ -44,6 +44,33 @@
+       "reason": "TestEmbeddedInstallerMatchesCanonicalSource",
+       "sha256": "d795bd04a1d9917989fcd39f6e3a42982d538c95edbb4e615a248afeb37a0fa9",
+       "sizeBytes": 22828
++    },
++    {
++      "path": "provider-swift/Sources/ProviderCore/ProviderCore.swift",
++      "sha256": "36bb9d30f531c3b2564efb70c5225cd2b95115be39a2d09d08bdc5fdc7d2302f",
++      "sizeBytes": 17472,
++      "reader": "coordinator/api/provider_version_sync_test.go",
++      "readerSHA256": "368eb6b5819db19e0887a98ed63e11ffc9c84e165143753cc287cd4c61b5b487",
++      "priorV2Fixture": false,
++      "reason": "TestLatestProviderVersionMatchesProviderCore exact version source"
++    },
++    {
++      "path": "provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift",
++      "sha256": "cbb0c8bc1bec4d21d2f8c5eb3dbe9210c45bc2574c877e0072710bed67163273",
++      "sizeBytes": 12970,
++      "reader": "coordinator/api/telemetry_allowlist_parity_test.go",
++      "readerSHA256": "6039023399a1080416f216fd43d1106488052bdd16598e27ae6a68e6e4eaebac",
++      "priorV2Fixture": false,
++      "reason": "actual Swift allowlist parity mirror; no missing-file skip"
++    },
++    {
++      "path": "console-ui/src/lib/telemetry-types.ts",
++      "sha256": "f9683d63d10b6708f13f39b6cd9f3064429e5cc8f5fb1da7d7dc1bf715048455",
++      "sizeBytes": 5901,
++      "reader": "coordinator/api/telemetry_allowlist_parity_test.go",
++      "readerSHA256": "6039023399a1080416f216fd43d1106488052bdd16598e27ae6a68e6e4eaebac",
++      "priorV2Fixture": false,
++      "reason": "actual TypeScript allowlist parity mirror; no missing-file skip"
+     }
+   ],
+   "schema": "darkbloom_member_go_explicit_fixture_inputs_v1"
+--- /dev/null
++++ b/go_coverage.py
+@@ -0,0 +1,107 @@
++"""Pure Go test discovery/coverage checks; no execution or filesystem mutation."""
++import re
++from inputs import GO_PACKAGES, NATIVE_PAIR_METHODS
++
++PREFIX = 'github.com/eigeninference/d-inference/'
++PACKAGES = tuple(PREFIX + package for package in GO_PACKAGES)
++API = PREFIX + 'coordinator/api'
++API_BATCHES = 4
++
++
++def package_completion(events, packages):
++    if any(event.get('Action') == 'fail' for event in events):
++        raise ValueError('Go reported a failure')
++    complete = {event.get('Package') for event in events
++                if event.get('Action') == 'pass' and 'Test' not in event}
++    if complete != set(packages):
++        raise ValueError('Go package completion differs from selection')
++
++
++def discover(events):
++    package_completion(events, PACKAGES)
++    names = {package: [] for package in PACKAGES}
++    benchmarks = {package: [] for package in PACKAGES}
++    for event in events:
++        if 'Test' in event:
++            raise ValueError('Discovery unexpectedly ran a test')
++        if event.get('Action') != 'output' or event.get('Package') not in names:
++            continue
++        for line in event.get('Output', '').splitlines():
++            if not line.startswith(('Test', 'Example', 'Fuzz', 'Benchmark')):
++                continue
++            if not line.isidentifier():
++                raise ValueError('Ambiguous compiled test-list output')
++            selected = benchmarks if line.startswith('Benchmark') else names
++            selected[event['Package']].append(line)
++    for package in PACKAGES:
++        if not names[package] or len(set(names[package])) != len(names[package]):
++            raise ValueError('Empty or duplicate compiled discovery')
++        if len(set(benchmarks[package])) != len(benchmarks[package]):
++            raise ValueError('Duplicate compiled benchmark discovery')
++        names[package].sort(); benchmarks[package].sort()
++    # Round-robin a stable sorted list: exhaustive, disjoint and balanced by
++    # entry count. No inferred source-name inventory or elapsed-time timeout growth.
++    batches = [names[API][index::API_BATCHES] for index in range(API_BATCHES)]
++    if any(not batch for batch in batches) or sorted(name for batch in batches for name in batch) != names[API]:
++        raise ValueError('API batch partition is incomplete')
++    for batch in batches:
++        exact_filter(batch)
++    return {'packages': names, 'excludedBenchmarks': benchmarks, 'apiBatches': batches}
++
++
++def exact_filter(names):
++    if not names or len(names) != len(set(names)) or any(not name.isidentifier() for name in names):
++        raise ValueError('Invalid exact test selection')
++    expression = '^(' + '|'.join(re.escape(name) for name in names) + ')$'
++    if len(expression.encode()) > 65_536:
++        raise ValueError('Exact test selection exceeds bounded argument')
++    return expression
++
++
++def completed(events, expected=None):
++    packages = set(expected) if expected is not None else set(PACKAGES)
++    package_completion(events, packages)
++    result = {package: {} for package in packages}
++    for event in events:
++        name, action = event.get('Test'), event.get('Action')
++        if not name or '/' in name or action not in ('pass', 'skip'):
++            continue
++        package = event.get('Package')
++        if package not in result or name in result[package]:
++            raise ValueError('Unexpected or duplicate top-level test result')
++        result[package][name] = action
++    if expected is not None and any(set(result[package]) != set(names) for package, names in expected.items()):
++        raise ValueError('Discovered top-level test omitted or unintended test executed')
++    return result
++
++
++def combine(parts, expected):
++    result = {package: {} for package in expected}
++    for part in parts:
++        for package, entries in part.items():
++            if package not in result or set(entries) & set(result[package]):
++                raise ValueError('Overlapping or unexpected batch coverage')
++            result[package].update(entries)
++    if any(set(result[package]) != set(names) for package, names in expected.items()):
++        raise ValueError('Aggregate does not cover every compiled top-level entry')
++    return result
++
++
++def require_feature_passes(coverage, *, full=False):
++    passed = {name for entries in coverage.values() for name, status in entries.items() if status == 'pass'}
++    verified = {name for name in passed if name.startswith('TestVerifiedPair')}
++    member = {name for name in passed if name.startswith(('TestClusterMember', 'TestMemberRole'))}
++    native = {name for name in passed if name.startswith('TestNativePair')}
++    if len(verified) != 15 or len(member) != 4 or native != NATIVE_PAIR_METHODS:
++        raise ValueError('Required pair/member/native tests did not all pass')
++    if full and not {'TestLatestProviderVersionMatchesProviderCore',
++                     'TestTelemetryAllowlistThreeWayParity',
++                     'TestTelemetryAllowlistKnownGapsAreStillReal'}.issubset(passed):
++        raise ValueError('Real cross-language source checks did not pass')
++    return {'verifiedPairMethods': len(verified), 'memberMethods': len(member),
++            'nativePairMethods': len(native), 'nativePairPassed': sorted(native),
++            'totalMethods': sum(len(entries) for entries in coverage.values()),
++            'passedMethods': sum(status == 'pass' for entries in coverage.values() for status in entries.values()),
++            'ordinaryExplicitSkips': [{'package': package, 'name': name} for package, entries in sorted(coverage.items())
++                                      for name, status in sorted(entries.items()) if status == 'skip'],
++            'apiHandlerPackageCompiled': True, 'apiTestsSelected': True, 'raceDetector': True}
+--- /dev/null
++++ b/coverage_checks.py
+@@ -0,0 +1,47 @@
++"""Small in-memory wrapper contracts; no compiler, children or filesystem writes."""
++from go_coverage import API, PACKAGES, combine, completed, discover, exact_filter
++
++
++def refused(body):
++    try:
++        body()
++    except ValueError:
++        return
++    raise AssertionError('malformed or incomplete coverage admitted')
++
++
++def run_checks():
++    events = []
++    for package in PACKAGES:
++        names = ['TestAlpha', 'ExampleBeta', 'FuzzGamma', 'TestDelta', 'BenchmarkIgnored']
++        events += [{'Action': 'output', 'Package': package, 'Output': name + '\n'} for name in names]
++        events += [{'Action': 'pass', 'Package': package}]
++    catalog = discover(events)
++    assert catalog['packages'][API] == ['ExampleBeta', 'FuzzGamma', 'TestAlpha', 'TestDelta']
++    assert catalog['excludedBenchmarks'][API] == ['BenchmarkIgnored']
++    assert all(len(batch) == 1 for batch in catalog['apiBatches'])
++    assert exact_filter(['TestA', 'TestAB']) == '^(TestA|TestAB)$'
++    refused(lambda: exact_filter(['TestA', 'TestA']))
++    refused(lambda: exact_filter(['TestA|TestB']))
++    refused(lambda: discover(events + [{'Action': 'output', 'Package': API, 'Output': 'TestAlpha\n'}]))
++    expected = {API: ['TestAlpha', 'ExampleBeta', 'FuzzGamma']}
++    outcomes = [{'Action': status, 'Package': API, 'Test': name}
++                for name, status in [('TestAlpha', 'pass'), ('ExampleBeta', 'skip'), ('FuzzGamma', 'pass')]]
++    outcomes += [{'Action': 'pass', 'Package': API}]
++    result = completed(outcomes, expected)
++    assert result[API]['ExampleBeta'] == 'skip'
++    refused(lambda: completed(outcomes[1:], expected))
++    refused(lambda: completed(outcomes + [{'Action': 'pass', 'Package': API, 'Test': 'TestOther'}], expected))
++    refused(lambda: completed(outcomes + [outcomes[0]], expected))
++    refused(lambda: completed(outcomes + [{'Action': 'fail', 'Package': API}], expected))
++    assert combine([{API: {'TestAlpha': 'pass'}}, {API: {'ExampleBeta': 'skip', 'FuzzGamma': 'pass'}}], expected) == result
++    refused(lambda: combine([result, result], expected))
++    refused(lambda: combine([{API: {'TestAlpha': 'pass'}}], expected))
++    return {'passed': True, 'testExampleFuzzIncluded': True, 'benchmarksExcluded': True,
++            'skipRetained': True, 'missingUnexpectedDuplicateFailOverlappingRefused': True,
++            'compilerOrChildExecuted': False}
++
++
++if __name__ == '__main__':
++    import json
++    print(json.dumps(run_checks(), sort_keys=True))
+--- a/HANDOFF.md
++++ b/HANDOFF.md
+@@ -1,30 +1,35 @@
+ # Corrected coordinator native-pair Go qualification
+ 
+-Source-only successor of the member validation wrapper `0550d8fb270ac4dbef474fc0585497d7bf8c612ca35812cca6f76ac6ade2be06`. No workspace, compiler, child process, model, remote operation or MAIN mutation has been performed by this package. The original member wrapper, prepared workspaces and failed attempts remain unchanged.
++Source-only successor of B wrapper `7622fa3f75281937b34c8debfd88fd93947a55e6a9b462be73180de0d27d572d`, derived from member wrapper `0550d8fb270ac4dbef474fc0585497d7bf8c612ca35812cca6f76ac6ade2be06`. No workspace, compiler, child process, model, remote operation or MAIN mutation has been performed by this package. Both frozen wrappers, earlier prepared workspaces and failed attempts remain unchanged.
+ 
+-Composition, in order:
++Apply current dirty MAIN, the member overlay `4ae431c60990ff9e4dfe319b8b5387ac8fb6bffcd54eac0213d3f85ed60ef965`, original B `69189730ac9df0ced27006c2b00606583a20f905a7140cfc8fff5f24ff9dc500`, then cancellation correction `4339ee6034187060459c11b4879f722318aee2578f2d44bbf6936e3715e80745`. The guarded preparation performs exactly that composition in a new private source tree.
+ 
+-1. Current dirty MAIN, exactly pinned by `source-preview.json` and all overlay preimages.
+-2. Registered member overlay `4ae431c60990ff9e4dfe319b8b5387ac8fb6bffcd54eac0213d3f85ed60ef965`.
+-3. Native-pair coordinator B `69189730ac9df0ced27006c2b00606583a20f905a7140cfc8fff5f24ff9dc500`.
+-4. Cancellation publication correction `4339ee6034187060459c11b4879f722318aee2578f2d44bbf6936e3715e80745`.
++The complete reviewed Go import/test/embedded-resource closure is 1,114 files: 1,082 MAIN, 11 member, 18 original B and three correction sources. The original 1,111 rows are unchanged. Protocol/testdata includes the real public transcript vector. Eight explicit repository fixtures are pinned together with their actual test-reader source hashes: prompt-contract production vectors; three production deployment inputs; scripts/install.sh; ProviderCore.swift; TelemetryEvent.swift; and telemetry-types.ts. The last three fix the actual missing-file version failure and previously skipped telemetry parity checks. No generated stand-ins, assertions or known-gap policies change.
+ 
+-The complete conservative Go import/test/embedded-resource closure is 1,111 files: 1,079 MAIN, 11 member, 18 original B and three correction sources. The public transcript vector under protocol/testdata is included. The five prior real repository fixtures remain byte-exact: prompt-contract production vectors, three production deployment inputs, and scripts/install.sh. All MAIN/effective overlay preimages, every manifest member, B's 29 contextual dependencies, exact inherited owned-process helpers and the unchanged anonymous-metallib binder context are checked before copying. The reviewed complete inventory must match before preparation and before/after execution; an old member-only workspace is refused. No source reset, checkout, tracked-file write or global cache copying occurs.
++Before copying, the wrapper checks all member/B/correction manifest members, effective preimages and MAIN absences, B's 29 contextual dependencies, exact owned-process helper bytes and the unchanged anonymous-metallib binder context. The entire reviewed source inventory must match before preparation and before/after every executed child. Old member-only or 1,111-file workspaces are refused. No reset, checkout, tracked-file write or global-cache copying occurs.
+ 
+-Only inputs.py, guards.py, prepare.py and run.py differ from the upstream wrapper. The scoped entrypoints expose Go preparation/focused/all phases; the original Swift runner remains in its unchanged package. `check_process.py`, `owned_process.py`, `source_inventory.py`, helper-lineage, binder-review and fixture-inputs are exact upstream bytes. In particular, compiler ownership/reaping and unreaped-only group signal behavior are inherited unchanged.
+-
+-After explicit root grant, use a fresh output sibling and run these commands sequentially from this directory. Run the full phase only if focused checks report PASS; preserve a failed directory and do not overwrite it.
++After explicit root grant, run these commands sequentially from this directory. The full phase requires the focused PASS from the same attempt and source inventory. A failed attempt remains intact; use a fresh successor or attempt as reviewed.
+ 
+ ```sh
+-/usr/bin/python3 -B prepare.py --phase go --output /Users/developer/DarkbloomDev/cluster-research/coordinator-native-pair-go-build-1-20260916
+-/usr/bin/python3 -B run.py --phase go-focused --prepared /Users/developer/DarkbloomDev/cluster-research/coordinator-native-pair-go-build-1-20260916 --attempt 1
+-/usr/bin/python3 -B run.py --phase go-all --prepared /Users/developer/DarkbloomDev/cluster-research/coordinator-native-pair-go-build-1-20260916 --attempt 1
++/usr/bin/python3 -B prepare.py --phase go --output /Users/developer/DarkbloomDev/cluster-research/coordinator-native-pair-go-build-2-20260916
++/usr/bin/python3 -B run.py --phase go-focused --prepared /Users/developer/DarkbloomDev/cluster-research/coordinator-native-pair-go-build-2-20260916 --attempt 1
++/usr/bin/python3 -B run.py --phase go-all --prepared /Users/developer/DarkbloomDev/cluster-research/coordinator-native-pair-go-build-2-20260916 --attempt 1
+ ```
+ 
+-Each execution uses pinned Go 1.25.0, `-race -p 2 -count=1`, `GOMAXPROCS=2`, offline locked dependencies (`GOPROXY=off`, `GOSUMDB=off`, `GOTOOLCHAIN=local`, `GOWORK=off`, `-mod=readonly`), and the actual registry, protocol and API test packages. Focused selection is `^Test(NativePair|VerifiedPair|ClusterMember|MemberRole)`. Focused package timeout stays 120 seconds; full package timeout stays 180 seconds; each owned parent stays 300 seconds. Diagnostic retention/parsing stays 16 MiB and process file size stays 512 MiB. No native/model/request deadline changes.
++Execution uses pinned Go 1.25.0, `-json -race -p 2 -count=1`, `GOMAXPROCS=2`, and the existing offline locked dependency cache (`GOPROXY=off`, `GOSUMDB=off`, `GOTOOLCHAIN=local`, `GOWORK=off`, `-mod=readonly`). Focused selection remains `^Test(NativePair|VerifiedPair|ClusterMember|MemberRole)` across registry, protocol and API, with a 120-second package timeout. It requires all 15 VerifiedPair, four member and 16 exact NativePair methods to pass.
+ 
+-Both phases require complete package PASS events plus all 15 VerifiedPair methods, four member methods and the exact 16 NativePair methods listed in inputs.py. That includes two actual API handler tests and the deterministic pending-cancellation publication/reuse regression. Full output retains every other package method result; no assertions or skips are rewritten. The runner preserves raw stdout/stderr, launch observation, natural return code and owned-child reaping/group absence, then checks all source pins again before declaring success.
++Full qualification uses six sequential owned children, each retaining the existing 180-second package / 300-second parent bounds:
+ 
+-Qualification scope is coordinator CPU behavior and public protocol binding only. It does not qualify the new Swift mirror, provider-side owned-child invocation, native file/gate verification, production membership deployment, key confirmation over a real relay, GPU inference or encrypted RDMA. Those remain separate increments; default native approval stays disabled, current hardware/model gates remain unchanged, and no public hash confers runtime approval.
++1. `compiled-list`: `go test -list .` over all three packages after focused compilation. Actual compiled Test, Example and Fuzz seed entry names are authoritative. Benchmark entries are retained as explicitly excluded, matching normal go test behavior. Duplicate/ambiguous discovery fails.
++2. `registry-protocol`: normal unfiltered tests for those two packages.
++3. `api-1` through `api-4`: stable sorted API names distributed round-robin into four disjoint batches balanced by count. Each uses a regex-escaped, fully anchored exact name set, with a bounded 64 KiB argument. No broad prefix selection, omitted examples/fuzz seeds or guessed source count.
+ 
+-Independent corrected B source review is retained separately at `coordinator-native-pair-authorization-review-20260916/source-review.json` (`695bf3dce75e96a9caa61bed3d28c2aef2c9bd28a9989af355d199859f237133`). Wrapper review is pending at freeze. Local preparation checks performed here are Python AST, exact manifest/preimage/helper checks, complete source-inventory discovery and equality, and exact test-method discovery; they do not execute Go tests.
++Raw list execution files are named `compiled-list.*`; the separately retained `discovery.json` contains the exact exhaustive partition. Each batch records its actual coverage. The final aggregate requires every discovered top-level entry exactly once, either passed or explicitly skipped by its ordinary test body; unexpected, missing, duplicated or overlapping entries fail. All 35 pair/member/native feature methods must pass. The real version and two telemetry mirror checks must also pass. Subtests remain governed by their actual parent test outcome. No API test deadline is increased to accommodate the suite; failed batches remain visible.
++
++Every child retains raw stdout/stderr, launch observation, natural return code and actual reaping/group absence. The process file ceiling remains 512 MiB and diagnostic parsing/retention remains 16 MiB per stream per child. Source rechecks occur even on child failure. The full phase can take multiple bounded children; it does not claim a 300-second bound on their combined duration. No native/model/request deadline changes.
++
++Relative to frozen B wrapper 7622, operational changes are guards.py (three fixtures and reader checks), fixture-inputs.json (three real rows), run.py (compiled exhaustive batching), and the new pure go_coverage.py. coverage_checks.py supplies small in-memory parser/coverage controls. inputs.py and prepare.py remain exact 7622 bytes. Owned/check-process helpers, source_inventory.py, helper-lineage and binder-review remain exact upstream bytes; only the unchanged Go helpers are executed by this scoped entrypoint. Process ownership/termination behavior is not reimplemented.
++
++Qualification covers coordinator CPU behavior and public protocol binding. It does not qualify the new Swift mirror, provider-side child invocation, native file/gate verification, production membership deployment, real relay key confirmation, GPU inference or encrypted RDMA. Those remain separate increments; native approval defaults disabled and current hardware/model gates remain unchanged.
++
++Corrected B runtime review is bound separately by `coordinator-native-pair-authorization-review-20260916/source-review.json` (`695bf3dce75e96a9caa61bed3d28c2aef2c9bd28a9989af355d199859f237133`). This wrapper awaits root review at freeze. Completed local checks are Python AST, exact manifest/preimage/helper/reader verification, full inventory equality, exact feature-method discovery, and in-memory compiled-discovery/coverage controls. No actual compiled discovery or Go tests have run here.

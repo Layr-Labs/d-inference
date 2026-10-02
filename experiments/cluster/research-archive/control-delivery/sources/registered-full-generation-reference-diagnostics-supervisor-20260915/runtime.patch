@@ -1,0 +1,34 @@
+--- before/reference_inputs.py
++++ after/reference_inputs.py
+@@ -11,9 +11,9 @@
+ from reference_profiles import registered_profile
+ from worker_contract import WorkerSpec, workers
+ 
+-NATIVE = '0b734e2c74c848f5a5a9dd9b8cd1df1d2fc35b761914950d242a3cf00fe8427b'
++NATIVE = '3dd4353bbde17860dd5c309eb59b0371d221c368fc995f7e452a94f300a3cc0e'
+ METALLIB = '2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2'
+-SOURCE = 'e1f084798764bf9851512d8acb50ff62982e5e3d3b04cd947c165ff19d4396c1'
++SOURCE = '84590fc7446649a65610089db35409023dc514c6a487072382af40335f2abbdf'
+ PAGED = '4ad3ff17d8c6e0a3b5b8a91e9151447f84e36cb3688ed204e1e7eb6838dd9149'
+ 
+ 
+--- before/example-job.json
++++ after/example-job.json
+@@ -1 +1 @@
+-{"bundle_sha256":"c96dce44ca3e23d276ae2810e08abb5a3fac966606b00fbdebccf166d2c9b27e","chunk_size":16,"deployment":"/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/native","metallib_sha256":"2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2","model_dir":"/Users/developer/DarkbloomDev/models/Qwen3.8-27B","native_seconds":300,"native_sha256":"0b734e2c74c848f5a5a9dd9b8cd1df1d2fc35b761914950d242a3cf00fe8427b","output_count":128,"parent_seconds":315,"prompt_count":32,"prompt_file":"/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/inputs/prompt.ids.json","prompt_sha256":"6d4c8898c3d6f01ddd8c3e712cde5005c647db64937977dd907935146442e81e","registered_model":"registered_qwen38_27b","request_id":"20801ced-ca29-4faf-b71a-9ebbe1886a14","run_dir":"/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/runs/short-27b-1","schema":"private_registered_full_generation_reference_job_v1","source_manifest_sha256":"e1f084798764bf9851512d8acb50ff62982e5e3d3b04cd947c165ff19d4396c1","stage_cut":32,"stop_token_ids":[]}
++{"bundle_sha256":"31edaba87f91f72ab22a1ff1c1ad94842d2c3cc3129a1b4a0ea91382b6f1bdec","chunk_size":16,"deployment":"/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/native-diagnostics","metallib_sha256":"2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2","model_dir":"/Users/developer/DarkbloomDev/models/Qwen3.8-27B","native_seconds":300,"native_sha256":"3dd4353bbde17860dd5c309eb59b0371d221c368fc995f7e452a94f300a3cc0e","output_count":128,"parent_seconds":315,"prompt_count":32,"prompt_file":"/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/inputs/prompt.ids.json","prompt_sha256":"6d4c8898c3d6f01ddd8c3e712cde5005c647db64937977dd907935146442e81e","registered_model":"registered_qwen38_27b","request_id":"20801ced-ca29-4faf-b71a-9ebbe1886a14","run_dir":"/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/runs/short-27b-2","schema":"private_registered_full_generation_reference_job_v1","source_manifest_sha256":"84590fc7446649a65610089db35409023dc514c6a487072382af40335f2abbdf","stage_cut":32,"stop_token_ids":[]}
+--- before/native-contract/QwenFullGenerationReferenceResources.swift
++++ after/native-contract/QwenFullGenerationReferenceResources.swift
+@@ -46,7 +46,11 @@
+                 active: native.activeBytes, cache: native.cacheBytes)
+             guard os.actualFreeBytes >= free, os.physicalMemoryBytes >= free,
+                   native.allocatorLimitBytes >= allocator else {
+-                throw ProbeError("Full reference exceeds its actual-free or allocator allowance")
++                throw ProbeError("Full reference exceeds its actual-free or allocator allowance: "
++                    + "authorizedTensors=\(nextTensor)/\(budget.sourceNames.count) loaded=\(loaded) requestAdmitted=\(requestAdmitted) "
++                    + "actualFreeBytes=\(os.actualFreeBytes) requiredActualFreeBytes=\(free) "
++                    + "physicalMemoryBytes=\(os.physicalMemoryBytes) allocatorLimitBytes=\(native.allocatorLimitBytes) "
++                    + "requiredAllocatorBytes=\(allocator) activeBytes=\(native.activeBytes) cacheBytes=\(native.cacheBytes)")
+             }
+         }
+         observations = try QwenLongPrefillCheckedBytes.sum([observations, 1])

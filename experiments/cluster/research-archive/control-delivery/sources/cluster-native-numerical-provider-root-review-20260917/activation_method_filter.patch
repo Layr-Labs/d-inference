@@ -1,0 +1,20 @@
+--- c7/activation.py
++++ root/activation_method_filter.py
+@@ -1,6 +1,8 @@
+ """Bind the actual failed c43 candidate and preserve its unqualified binary."""
+ import argparse,json,re,os
+ from pathlib import Path
++import sys
++sys.path.insert(0, '/Users/developer/DarkbloomDev/cluster-research/cluster-native-numerical-provider-build-draft-20260917')
+ from context import BASE,ELIGIBILITY_SHA,PRIOR,NUMERICAL_SHA,WORKSPACE
+ from guards import verify,sha,save,require
+ 
+@@ -34,7 +36,7 @@
+             require(record['passed'] is False and record['executionSHA256']==sha(directory/'execution.json'),'Known failed test evidence differs')
+             natural(json.loads((directory/'execution.json').read_text()),1)
+             raw=(directory/'execution.stdout').read_text()+'\n'+(directory/'execution.stderr').read_text()
+-            failed=re.findall(r'(?m)^✘ Test (.+?) failed after \d+(?:\.\d+)? seconds with 1 issue\.$',raw)
++            failed=re.findall(r'(?m)^✘ Test (?!run with )(.+?) failed after \d+(?:\.\d+)? seconds with 1 issue\.$',raw)
+             passed=re.findall(r'(?m)^✔ Test (.+?) passed after \d+(?:\.\d+)? seconds\.$',raw)
+             wanted=json.loads((BASE/'discovered-coverage.json').read_text())['completionLabels']
+             require(failed==['combinedMeshOwnerStillRefusesNativeReady()'] and sorted(passed+failed)==wanted

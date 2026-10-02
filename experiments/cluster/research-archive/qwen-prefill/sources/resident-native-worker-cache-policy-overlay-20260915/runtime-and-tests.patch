@@ -1,0 +1,397 @@
+--- a/Sources/DarkbloomClusterRuntime/QwenResidentAdmission.swift
++++ b/Sources/DarkbloomClusterRuntime/QwenResidentAdmission.swift
+@@ -9,12 +9,15 @@
+     public let rank: Int
+     public let stageCut: Int
+     public let deadlineUptimeNanoseconds: UInt64
++    public let allocatorPolicy: QwenResidentAllocatorPolicy
+ 
+     public init(identity: ClusterWorkerIdentity, modelDirectory: URL, rank: Int,
+-                stageCut: Int, deadlineUptimeNanoseconds: UInt64) {
++                stageCut: Int, deadlineUptimeNanoseconds: UInt64,
++                allocatorPolicy: QwenResidentAllocatorPolicy = .unchanged) {
+         self.identity = identity; self.modelDirectory = modelDirectory
+         self.rank = rank; self.stageCut = stageCut
+         self.deadlineUptimeNanoseconds = deadlineUptimeNanoseconds
++        self.allocatorPolicy = allocatorPolicy
+     }
+ }
+ 
+@@ -35,7 +38,7 @@
+          environment: [String: String], now: UInt64,
+          read: (URL, Int) throws -> Data) throws {
+         let identity = configuration.identity
+-        guard (0...1).contains(configuration.rank), [8, 12, 16].contains(configuration.stageCut),
++        guard (0...1).contains(configuration.rank), [4, 8, 12, 16].contains(configuration.stageCut),
+               configuration.modelDirectory.isFileURL,
+               identity.modelID == QwenRegisteredDenseModel.qwen35NineB.rawValue,
+               identity.peers.count == 2, identity.peers[0].id != identity.peers[1].id,
+@@ -50,7 +53,7 @@
+               identity.artifactSHA256 == spec.artifactSHA256,
+               sha256(configBytes) == spec.configurationSHA256,
+               sha256(manifestBytes) == spec.manifestSHA256 else {
+-            throw ProbeError("Resident load requires the closed 9B identity, cut8|12|16 and bounded local lifetime")
++            throw ProbeError("Resident load requires the closed 9B identity, cut4|8|12|16 and bounded local lifetime")
+         }
+         // Before any model construction or native environment cache is used.
+         arithmetic = try QwenLongPrefillArithmeticEnvironment.admit(environment)
+@@ -84,6 +87,18 @@
+             chunkSize: value.chunkSize, outputCount: value.outputCount, stopTokenIDs: Set(value.stopTokenIDs))
+     }
+ 
++    /// Rank, local path and local uptime are intentionally absent. The explicit
++    /// allocator policy is common and must agree before either stage is loaded.
++    func loadAgreementFingerprint() throws -> String {
++        let identity = configuration.identity
++        return sha256(try canonicalJSONData([
++            "qwen-resident-load-v1", identity.membershipEpoch.uuidString.lowercased(), identity.modelID,
++            identity.configurationSHA256, identity.artifactSHA256, specification.manifestSHA256,
++            plan.fingerprint, profile.fingerprint, arithmeticSHA256, jaccl.fingerprint,
++            configuration.allocatorPolicy.rawValue,
++        ] + identity.peers.flatMap { [$0.id, $0.buildSHA256] }))
++    }
++
+     var wireProfile: ClusterWorkerProfile {
+         .init(id: profile.identifier, vocabularySize: profile.vocabularySize,
+             maximumPromptTokens: profile.maximumPromptTokens, maximumOutputTokens: profile.maximumOutputTokens,
+--- /dev/null
++++ b/Sources/DarkbloomClusterRuntime/QwenResidentAllocatorPolicy.swift
+@@ -0,0 +1,44 @@
++import Foundation
++
++/// Explicit process policy. Default facade callers preserve MLX's existing
++/// cache setting; the separately launched dedicated worker selects zero.
++public enum QwenResidentAllocatorPolicy: String, Sendable {
++    case unchanged = "unchanged_v1"
++    case disableFreedBufferCache = "disable_freed_buffer_cache_v1"
++
++    func configure(setCacheLimit: (Int) throws -> Void, check: () throws -> Void) throws {
++        guard self == .disableFreedBufferCache else { return }
++        try check()
++        try setCacheLimit(0)
++        try check()
++    }
++
++    /// The caller owns the native-error scope and supplies actual operations.
++    /// These callbacks permit CPU tests without invoking MLX or fabricating an
++    /// admission permit. All live resource gates remain outside this policy.
++    func prepareReady(synchronize: () throws -> Void,
++                      snapshot: () -> QwenResidentAllocatorSnapshot,
++                      clearCache: () throws -> Void,
++                      check: () throws -> Void) throws {
++        guard self == .disableFreedBufferCache else { return }
++        try check()
++        try synchronize()
++        try check()
++        let before = snapshot()
++        try clearCache()
++        try check()
++        let after = snapshot()
++        guard before.activeBytes >= 0, before.cachedBytes >= 0,
++              before.peakBytes >= before.activeBytes,
++              after.cachedBytes == 0, after.activeBytes == before.activeBytes,
++              after.peakBytes == before.peakBytes else {
++            throw ProbeError("Resident cache clearing changed active/peak storage or retained cached buffers")
++        }
++    }
++}
++
++struct QwenResidentAllocatorSnapshot: Equatable {
++    let activeBytes: Int
++    let cachedBytes: Int
++    let peakBytes: Int
++}
+--- a/Sources/DarkbloomClusterRuntime/QwenResidentLoading.swift
++++ b/Sources/DarkbloomClusterRuntime/QwenResidentLoading.swift
+@@ -9,7 +9,7 @@
+     let selectedRequirement: QwenDenseStorageRequirement
+ }
+ 
+-/// A private ordered-load gate for this separately admitted resident cut8|12|16
++/// A private ordered-load gate for this separately admitted resident cut4|8|12|16
+ /// scope. The existing default-half-only StageLoadBudget policy is untouched.
+ private final class QwenResidentLoadGate {
+     let active: [QwenStageActiveTensor], bounds: [Int], inert: Int, host: Int
+--- a/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift
++++ b/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift
+@@ -19,19 +19,21 @@
+             try control.check(); try QwenResidentResourceEnvironment.require()
+             try admission.jaccl.requireUnchanged(environment: ProcessInfo.processInfo.environment,
+                 read: { try BoundedProbeInput.data($0, maximumBytes: $1) })
++            // The dedicated worker opts in only after typed and actual gates.
++            // Default facade loads never change the process cache setting.
++            if configuration.allocatorPolicy == .disableFreedBufferCache {
++                try MLX.withError { nativeError in
++                    func checked() throws { try nativeError.check(); try control.check(); try nativeError.check() }
++                    do {
++                        try configuration.allocatorPolicy.configure(setCacheLimit: { Memory.cacheLimit = $0 }, check: checked)
++                    } catch { try nativeError.check(); throw error }
++                }
++            }
+             let collective = try Collective(transport: .jaccl)
+             try admission.jaccl.requireUnchanged(environment: ProcessInfo.processInfo.environment,
+                 read: { try BoundedProbeInput.data($0, maximumBytes: $1) })
+             try admission.jaccl.requireInitialized(rank: collective.rank, worldSize: collective.size, transport: collective.transport)
+-            let identity = configuration.identity
+-            // Rank, local path and local uptime deadline are deliberately absent
+-            // from this cross-host digest; ordered membership/builds are common.
+-            let common = sha256(try canonicalJSONData([
+-                "qwen-resident-load-v1", identity.membershipEpoch.uuidString.lowercased(), identity.modelID,
+-                identity.configurationSHA256, identity.artifactSHA256, admission.specification.manifestSHA256,
+-                admission.plan.fingerprint, admission.profile.fingerprint, admission.arithmeticSHA256,
+-                admission.jaccl.fingerprint,
+-            ] + identity.peers.flatMap { [$0.id, $0.buildSHA256] }))
++            let common = try admission.loadAgreementFingerprint()
+             let capacity = try MLX.withError { nativeError in
+                 func checked() throws { try nativeError.check(); try control.check(); try nativeError.check() }
+                 do {
+@@ -46,6 +48,13 @@
+                     let maximum = try QwenResidentRequestAllowance.derive(profile: loaded.profile, plan: admission.plan,
+                         rank: collective.rank, maximumTokens: admission.profile.maximumContextTokens,
+                         chunkSize: admission.profile.maximumChunkTokens, bound: QwenResidentResourceEnvironment.allocationBound)
++                    try configuration.allocatorPolicy.prepareReady(
++                        synchronize: { Stream.gpu.synchronize(); Stream.cpu.synchronize() },
++                        snapshot: {
++                            let value = Memory.snapshot()
++                            return .init(activeBytes: value.activeMemory, cachedBytes: value.cacheMemory,
++                                peakBytes: value.peakMemory)
++                        }, clearCache: { Memory.clearCache() }, check: checked)
+                     try maximum.requireLive(); try checked()
+                     let loadedIdentity = sha256(try canonicalJSONData([common,
+                         loaded.loaded.receipt.storageCommitmentSHA256, loaded.loaded.receipt.sourceParameterLayoutSHA256]))
+--- a/Sources/DarkbloomClusterWorker/WorkerConfiguration.swift
++++ b/Sources/DarkbloomClusterWorker/WorkerConfiguration.swift
+@@ -31,14 +31,14 @@
+             return value
+         }
+         let rank = try integer("--rank"), cut = try integer("--stage-cut")
+-        guard (0...1).contains(rank), [8, 12, 16].contains(cut), fields["--model-dir"]!.hasPrefix("/"),
++        guard (0...1).contains(rank), [4, 8, 12, 16].contains(cut), fields["--model-dir"]!.hasPrefix("/"),
+               fields["--model-id"] == "registered_qwen35_9b",
+               let epoch = UUID(uuidString: fields["--membership-epoch"]!),
+               epoch.uuidString.lowercased() == fields["--membership-epoch"],
+               let deadline = UInt64(fields["--deadline-uptime-nanoseconds"]!),
+               String(deadline) == fields["--deadline-uptime-nanoseconds"],
+               deadline > now, deadline - now <= 300_000_000_000 else {
+-            throw WorkerFailure.invalid("Worker requires registered9B, rank0|1, cut8|12|16 and a <=300-second local lifetime")
++            throw WorkerFailure.invalid("Worker requires registered9B, rank0|1, cut4|8|12|16 and a <=300-second local lifetime")
+         }
+         let peers = try (0...1).map { index -> ClusterWorkerPeer in
+             let label = fields["--peer\(index)-id"]!
+@@ -51,6 +51,6 @@
+         load = .init(identity: .init(membershipEpoch: epoch, modelID: fields["--model-id"]!,
+             artifactSHA256: try hash("--artifact-sha256"), configurationSHA256: try hash("--configuration-sha256"), peers: peers),
+             modelDirectory: URL(fileURLWithPath: fields["--model-dir"]!), rank: rank, stageCut: cut,
+-            deadlineUptimeNanoseconds: deadline)
++            deadlineUptimeNanoseconds: deadline, allocatorPolicy: .disableFreedBufferCache)
+     }
+ }
+--- a/Tests/DarkbloomClusterRuntimeTests/ResidentFacadeTests.swift
++++ b/Tests/DarkbloomClusterRuntimeTests/ResidentFacadeTests.swift
+@@ -17,14 +17,15 @@
+         return (config, manifest, tensors)
+     }
+     private func configuration(cut: Int = 12, rank: Int = 0, model: String = "registered_qwen35_9b",
+-                               deadline: UInt64 = 300_000_000_100) -> QwenResidentLoadConfiguration {
++                               deadline: UInt64 = 300_000_000_100,
++                               policy: QwenResidentAllocatorPolicy = .unchanged) -> QwenResidentLoadConfiguration {
+         let spec = QwenDenseRegisteredSpecification.all[0]
+         return .init(identity: .init(membershipEpoch: UUID(), modelID: model,
+             artifactSHA256: spec.artifactSHA256, configurationSHA256: spec.configurationSHA256,
+             peers: [.init(id: "a", buildSHA256: String(repeating: "a", count: 64)),
+                     .init(id: "b", buildSHA256: String(repeating: "b", count: 64))]),
+             modelDirectory: URL(fileURLWithPath: "/invented/model"), rank: rank,
+-            stageCut: cut, deadlineUptimeNanoseconds: deadline)
++            stageCut: cut, deadlineUptimeNanoseconds: deadline, allocatorPolicy: policy)
+     }
+     private func environment(rank: Int = 0) -> [String: String] {
+         QwenLongPrefillArithmeticEnvironment.requiredValues.merging([
+@@ -45,7 +46,7 @@
+     }
+ 
+     func testExactCutsAndBothLocalRanks() throws {
+-        for cut in [8, 12, 16] { for rank in [0, 1] {
++        for cut in [4, 8, 12, 16] { for rank in [0, 1] {
+             let value = try admission(cut: cut, rank: rank)
+             XCTAssertEqual(value.plan.stages[0].sourceRange.upperBound, cut)
+             XCTAssertEqual(value.jaccl.rank, rank)
+@@ -56,35 +57,41 @@
+         } }
+     }
+ 
+-    func testCut8UsesCompleteRegisteredPartitionAndIntervalPhase() throws {
++    func testCut4And8UseCompleteRegisteredPartitionAndIntervalPhase() throws {
+         let (config, _, tensors) = try fixture()
+-        let value = try admission(cut: 8)
+-        let plan = value.plan
+-        XCTAssertEqual(plan.fingerprint, "0f287a057042275470eeab37596b621d1134061db0c1fd9ef9b09022ea81da92")
+-        XCTAssertEqual(plan.stages.map(\.sourceRange), [0..<8, 8..<32])
+-        XCTAssertEqual(plan.stages.flatMap { $0.layers.map(\.globalIndex) }, Array(0..<32))
+-        for stage in plan.stages {
+-            XCTAssertEqual(stage.layers.map(\.localIndex), Array(0..<stage.sourceRange.count))
+-            for layer in stage.layers {
+-                XCTAssertEqual(layer.globalIndex, stage.sourceRange.lowerBound + layer.localIndex)
+-                XCTAssertEqual(layer.kind, (layer.localIndex + 1) % 4 == 0 ? "full_attention" : "linear_attention")
++        let expectedPlans = [
++            4: "67bf0b1bf94f229682df58ae1ae10c758e2a386d66d3e1b68146f5c090f6309f",
++            8: "0f287a057042275470eeab37596b621d1134061db0c1fd9ef9b09022ea81da92",
++        ]
++        for cut in [4, 8] {
++            let plan = try admission(cut: cut).plan
++            XCTAssertEqual(plan.fingerprint, expectedPlans[cut])
++            XCTAssertEqual(plan.stages.map(\.sourceRange), [0..<cut, cut..<32])
++            XCTAssertEqual(plan.stages.flatMap { $0.layers.map(\.globalIndex) }, Array(0..<32))
++            for stage in plan.stages {
++                XCTAssertEqual(stage.layers.map(\.localIndex), Array(0..<stage.sourceRange.count))
++                for layer in stage.layers {
++                    XCTAssertEqual(layer.globalIndex, stage.sourceRange.lowerBound + layer.localIndex)
++                    XCTAssertEqual(layer.kind, (layer.localIndex + 1) % 4 == 0 ? "full_attention" : "linear_attention")
++                }
+             }
+-        }
+-        let mapping = try plan.parameters(canonicalSourceNames: tensors.map(\.name))
+-        let byName = Dictionary(uniqueKeysWithValues: tensors.map { ($0.name, $0) })
+-        XCTAssertEqual(mapping.count, 927)
+-        XCTAssertEqual(Set(mapping.map(\.sourceName)), Set(tensors.map(\.name)))
+-        XCTAssertEqual(Set(mapping.map { "\($0.stage):\($0.localName)" }).count, 927)
+-        XCTAssertEqual([0, 1].map { rank in mapping.filter { $0.stage == rank }.count }, [233, 694])
+-        for rank in [0, 1] {
+-            let selected = try mapping.filter { $0.stage == rank }.map { try XCTUnwrap(byName[$0.sourceName]) }
+-            XCTAssertEqual(selected.reduce(0) { $0 + $1.byteCount }, [1_545_572_992, 3_492_468_608][rank])
+-            XCTAssertEqual(selected.filter { $0.sourceDType == "F32" }.count, [6, 18][rank])
+-        }
+-        XCTAssertEqual(try plan.parameter(canonicalSourceName: "language_model.model.embed_tokens.weight")?.stage, 0)
+-        XCTAssertEqual(try plan.parameter(canonicalSourceName: "language_model.model.norm.weight")?.stage, 1)
+-        XCTAssertEqual(try plan.parameter(canonicalSourceName: "language_model.lm_head.weight")?.stage, 1)
+-        for ranges in [[0..<7, 7..<32], [0..<9, 9..<32], [0..<8, 9..<32], [0..<8, 7..<32]] {
++            let mapping = try plan.parameters(canonicalSourceNames: tensors.map(\.name))
++            let byName = Dictionary(uniqueKeysWithValues: tensors.map { ($0.name, $0) })
++            XCTAssertEqual(mapping.count, 927)
++            XCTAssertEqual(Set(mapping.map(\.sourceName)), Set(tensors.map(\.name)))
++            XCTAssertEqual(Set(mapping.map { "\($0.stage):\($0.localName)" }).count, 927)
++            XCTAssertEqual([0, 1].map { rank in mapping.filter { $0.stage == rank }.count }, cut == 4 ? [118, 809] : [233, 694])
++            for rank in [0, 1] {
++                let selected = try mapping.filter { $0.stage == rank }.map { try XCTUnwrap(byName[$0.sourceName]) }
++                let bytes = cut == 4 ? [1_058_851_136, 3_979_190_464] : [1_545_572_992, 3_492_468_608]
++                XCTAssertEqual(selected.reduce(0) { $0 + $1.byteCount }, bytes[rank])
++                XCTAssertEqual(selected.filter { $0.sourceDType == "F32" }.count, (cut == 4 ? [3, 21] : [6, 18])[rank])
++            }
++            XCTAssertEqual(try plan.parameter(canonicalSourceName: "language_model.model.embed_tokens.weight")?.stage, 0)
++            XCTAssertEqual(try plan.parameter(canonicalSourceName: "language_model.model.norm.weight")?.stage, 1)
++            XCTAssertEqual(try plan.parameter(canonicalSourceName: "language_model.lm_head.weight")?.stage, 1)
++        }
++        for ranges in [[0..<3, 3..<32], [0..<5, 5..<32], [0..<7, 7..<32], [0..<9, 9..<32], [0..<8, 9..<32], [0..<8, 7..<32]] {
+             XCTAssertThrowsError(try QwenLayerStagePlan(configuration: config, ranges: ranges, activeMTP: false))
+         }
+     }
+@@ -93,7 +100,7 @@
+         let (config, manifest, _) = try fixture()
+         for value in [configuration(cut: 7), configuration(cut: 9), configuration(cut: 10),
+                       configuration(cut: 11), configuration(cut: 13), configuration(cut: 15),
+-                      configuration(cut: 17), configuration(cut: 4), configuration(cut: 20),
++                      configuration(cut: 17), configuration(cut: 20), configuration(cut: 28),
+                       configuration(cut: 0), configuration(cut: 32), configuration(rank: 2), configuration(model: "registered_qwen38_27b"),
+                       configuration(deadline: 100), configuration(deadline: 300_000_000_101)] {
+             var reads = 0
+@@ -154,6 +161,83 @@
+             maximumTokens: 8320, chunkSize: 512, bound: { $0 - 1 }))
+     }
+ 
++    func testDefaultAllocatorPolicyHasNoOperationsAndExplicitZeroOrdersChecks() throws {
++        XCTAssertEqual(configuration().allocatorPolicy, .unchanged)
++        var calls: [String] = []
++        try QwenResidentAllocatorPolicy.unchanged.configure(setCacheLimit: { _ in calls.append("set") }, check: { calls.append("check") })
++        try QwenResidentAllocatorPolicy.unchanged.prepareReady(synchronize: { calls.append("sync") },
++            snapshot: { calls.append("snapshot"); return .init(activeBytes: -1, cachedBytes: -1, peakBytes: -1) },
++            clearCache: { calls.append("clear") }, check: { calls.append("check") })
++        XCTAssertTrue(calls.isEmpty)
++        try QwenResidentAllocatorPolicy.disableFreedBufferCache.configure(
++            setCacheLimit: { limit in XCTAssertEqual(limit, 0); calls.append("set0") }, check: { calls.append("check") })
++        XCTAssertEqual(calls, ["check", "set0", "check"])
++        calls = []; var snapshots = 0
++        try QwenResidentAllocatorPolicy.disableFreedBufferCache.prepareReady(synchronize: { calls.append("sync") },
++            snapshot: {
++                calls.append("snapshot"); snapshots += 1
++                return .init(activeBytes: 100, cachedBytes: snapshots == 1 ? 200 : 0, peakBytes: 300)
++            }, clearCache: { calls.append("clear") }, check: { calls.append("check") })
++        XCTAssertEqual(calls, ["check", "sync", "check", "snapshot", "clear", "check", "snapshot"])
++    }
++
++    func testAllocatorPolicyRejectsChangedStorageAndInvalidSnapshots() throws {
++        let before = QwenResidentAllocatorSnapshot(activeBytes: 100, cachedBytes: 200, peakBytes: 300)
++        let valid = QwenResidentAllocatorSnapshot(activeBytes: 100, cachedBytes: 0, peakBytes: 300)
++        let pairs: [(QwenResidentAllocatorSnapshot, QwenResidentAllocatorSnapshot)] = [
++            (before, .init(activeBytes: 100, cachedBytes: 1, peakBytes: 300)),
++            (before, .init(activeBytes: 101, cachedBytes: 0, peakBytes: 300)),
++            (before, .init(activeBytes: 100, cachedBytes: 0, peakBytes: 301)),
++            (before, .init(activeBytes: 100, cachedBytes: 0, peakBytes: 99)),
++            (.init(activeBytes: -1, cachedBytes: 200, peakBytes: 300), valid),
++            (.init(activeBytes: 100, cachedBytes: -1, peakBytes: 300), valid),
++            (.init(activeBytes: 100, cachedBytes: 200, peakBytes: 99), valid),
++        ]
++        for pair in pairs {
++            var snapshots = 0
++            XCTAssertThrowsError(try QwenResidentAllocatorPolicy.disableFreedBufferCache.prepareReady(synchronize: {},
++                snapshot: { snapshots += 1; return snapshots == 1 ? pair.0 : pair.1 }, clearCache: {}, check: {}))
++        }
++    }
++
++    func testAllocatorPolicyPreservesFailureAndStopsSubsequentOperations() throws {
++        enum Marker: Error { case original }
++        var calls: [String] = []
++        XCTAssertThrowsError(try QwenResidentAllocatorPolicy.disableFreedBufferCache.configure(
++            setCacheLimit: { _ in calls.append("set"); throw Marker.original }, check: { calls.append("check") })) { error in
++                guard case Marker.original = error else { return XCTFail("Setter failure replaced") }
++        }
++        XCTAssertEqual(calls, ["check", "set"])
++        for failAt in 1...3 {
++            var checks = 0, clears = 0, snapshots = 0
++            XCTAssertThrowsError(try QwenResidentAllocatorPolicy.disableFreedBufferCache.prepareReady(synchronize: {},
++                snapshot: { snapshots += 1; return .init(activeBytes: 1, cachedBytes: 0, peakBytes: 1) },
++                clearCache: { clears += 1 }, check: { checks += 1; if checks == failAt { throw Marker.original } })) { error in
++                    guard case Marker.original = error else { return XCTFail("Native/deadline check failure replaced") }
++            }
++            XCTAssertEqual(checks, failAt)
++            XCTAssertEqual(clears, failAt == 3 ? 1 : 0)
++            XCTAssertEqual(snapshots, failAt == 3 ? 1 : 0)
++        }
++    }
++
++    func testLoadAgreementBindsAllocatorPolicyButExcludesLocalLabels() throws {
++        let (config, manifest, _) = try fixture()
++        let common = configuration(cut: 4).identity
++        func admitted(rank: Int, policy: QwenResidentAllocatorPolicy, path: String, deadline: UInt64) throws -> QwenResidentAdmission {
++            let value = QwenResidentLoadConfiguration(identity: common, modelDirectory: URL(fileURLWithPath: path),
++                rank: rank, stageCut: 4, deadlineUptimeNanoseconds: deadline, allocatorPolicy: policy)
++            var env = environment(rank: rank); env["MLX_IBV_DEVICES"] = path + "/devices.json"
++            return try .init(configuration: value, configBytes: config, manifestBytes: manifest, environment: env, now: 100,
++                read: { _, _ in Data("[[null,\"rdma_en1\"],[\"rdma_en1\",null]]".utf8) })
++        }
++        let rank0 = try admitted(rank: 0, policy: .disableFreedBufferCache, path: "/invented/left", deadline: 1000)
++        let rank1 = try admitted(rank: 1, policy: .disableFreedBufferCache, path: "/invented/right", deadline: 2000)
++        XCTAssertEqual(try rank0.loadAgreementFingerprint(), try rank1.loadAgreementFingerprint())
++        let defaultPolicy = try admitted(rank: 0, policy: .unchanged, path: "/invented/left", deadline: 1000)
++        XCTAssertNotEqual(try rank0.loadAgreementFingerprint(), try defaultPolicy.loadAgreementFingerprint())
++    }
++
+     func testCancellationCannotAffectAnotherRequestAndActiveCloseRefuses() throws {
+         let state = QwenResidentControl(deadline: DispatchTime.now().uptimeNanoseconds + 300_000_000_000)
+         let id = UUID()
+--- a/Tests/DarkbloomClusterWorkerTests/WorkerTests.swift
++++ b/Tests/DarkbloomClusterWorkerTests/WorkerTests.swift
+@@ -131,12 +131,13 @@
+             "--peer0-id", "one", "--peer0-build-sha256", String(repeating: "c", count: 64),
+             "--peer1-id", "two", "--peer1-build-sha256", String(repeating: "d", count: 64),
+             "--deadline-uptime-nanoseconds", "300000000100"]
+-        for cut in [8, 12, 16] { for rank in [0, 1] {
++        for cut in [4, 8, 12, 16] { for rank in [0, 1] {
+             var selected = args; selected[3] = String(rank); selected[5] = String(cut)
+             let value = try WorkerConfiguration(arguments: selected, now: 100)
+             XCTAssertEqual(value.load.rank, rank); XCTAssertEqual(value.load.stageCut, cut)
++            XCTAssertEqual(value.load.allocatorPolicy, .disableFreedBufferCache)
+         } }
+-        for cut in ["7", "9", "10", "11", "13", "15", "17", "4", "20", "0", "32", "08", "+8", "8.0"] {
++        for cut in ["7", "9", "10", "11", "13", "15", "17", "20", "28", "0", "32", "04", "+4", "4.0", "08", "+8", "8.0"] {
+             var selected = args; selected[5] = cut
+             XCTAssertThrowsError(try WorkerConfiguration(arguments: selected, now: 100))
+         }

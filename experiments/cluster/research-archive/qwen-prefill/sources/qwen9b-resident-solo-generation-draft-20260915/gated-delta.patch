@@ -1,0 +1,18 @@
+--- a/GatedDelta.swift
++++ b/GatedDelta.swift
+@@ -320,7 +320,14 @@
+         state = state.asType(.float32)
+     }
+ 
+-    if GatedDeltaKernelManager.shared.kernel != nil {
++    let usesNativeKernel = GatedDeltaKernelManager.shared.kernel != nil
++    if let counter = qwenGatedDeltaWarmupCounter {
++        counter.record(native: usesNativeKernel, tokenCount: q.dim(1), batch: B,
++            keyHeads: q.dim(2), valueHeads: Hv, keyDim: Dk, valueDim: Dv,
++            bf16: q.dtype == .bfloat16 && k.dtype == .bfloat16 && v.dtype == .bfloat16,
++            stateFP32: state.dtype == .float32)
++    }
++    if usesNativeKernel {
+         return gatedDeltaKernel(q: q, k: k, v: v, g: g, beta: beta, state: state, mask: mask)
+     }
+ 

@@ -1,0 +1,11 @@
+--- a/FullReference/QwenFullGenerationReferenceCheck.swift
++++ b/FullReference/QwenFullGenerationReferenceCheck.swift
+@@ -82,7 +82,7 @@
+         ("--prompt-count", "0"), ("--prompt-count", "8193"), ("--prompt-count", "01"),
+         ("--chunk-size", "0"), ("--chunk-size", "513"), ("--model-dir", "relative"), ("--tokens-file", "relative"),
+         ("--tokens-sha256", String(repeating: "A", count: 64)), ("--request-id", "not-a-uuid"),
+-        ("--stage-cut", "04"), ("--stage-cut", "5"), ("--stage-cut", "20"),
++        ("--stage-cut", "04"), ("--stage-cut", "5"), ("--stage-cut", "21"),
+         ("--output-count", "0"), ("--output-count", "129"), ("--output-count", "01"),
+         ("--timeout-seconds", "0"), ("--timeout-seconds", "301"),
+         ("--stop-token-ids", "[true]"), ("--stop-token-ids", "[01]"),

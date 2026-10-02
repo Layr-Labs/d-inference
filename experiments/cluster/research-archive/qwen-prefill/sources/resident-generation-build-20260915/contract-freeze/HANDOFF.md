@@ -1,0 +1,7 @@
+# Generation contract and session seam
+
+19-source Foundation Swift6 warnings-as-errors compile and CPU fixture PASS:11 accepted/25 rejected,2.261s/.293s,empty stderr. Source-only independent review found no blocker. All private original sources remain unchanged. Seven new generation core files plus three additive shared-session changes are in runtime.patch. Session decode/perform/input-validation bodies and CBv2OwnedRequestState are byte-identical to the frozen JACCL base.
+
+GenerationProfile is bounded adapter metadata, not a loader/resource permit. GenerationRequest binds UUID, actual prompt IDs, stops and output limit. For8192/512/128 it derives16 prefill+127 decode frames,capacity8320,final frontier8319. GenerationControl requires both frame commits, both token acknowledgements, one publication, then both decision acknowledgements before another frame. CleanEOS/length/clientStop permits Session.finishGeneration; abnormal cancel remains failed until both ranks report retirement or fencing. A fence cannot make a failed request successful.
+
+The following increment must provide actual Collective IO and private leased session ownership, finite target argmax, real resource/deadline checks, payload completion, out-of-band cancellation/fencing and provider callbacks. These pure ACK methods cannot establish native work or physical transfers. No generation driver or provider lease was attached in this snapshot.

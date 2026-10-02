@@ -1,0 +1,536 @@
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPrefillAllowance.swift
+@@ -0,0 +1,37 @@
++import Foundation
++
++/// Added named storage, never taken from the existing two-boundary reserve.
++/// The CPU bookkeeping allowance covers one bounded packet/token/summary slot;
++/// it is not a claim about the entire Swift heap or native workspace peak.
++struct QwenGenerationPrefillAllowance: Encodable, Equatable {
++    static let bookkeepingBytes = 65_536
++    let rank: Int
++    let extraNativeBytes: Int
++    let extraHostBytes: Int
++    var reservedBytes: Int { get throws { try QwenLongPrefillCheckedBytes.sum([extraNativeBytes, extraHostBytes]) } }
++
++    static func derive(rank: Int, promptCount: Int, chunkSize: Int, hiddenSize: Int,
++                       elementBytes: Int, bound: (Int) throws -> Int) throws -> Self {
++        guard (0...1).contains(rank), (1...32_768).contains(promptCount), (1...512).contains(chunkSize),
++              (1...8192).contains(hiddenSize), [2, 4].contains(elementBytes) else {
++            throw ProbeError("Invalid lookahead allowance geometry")
++        }
++        // No next prompt frame exists for a one-chunk request. Both ranks still
++        // reserve the fixed CPU summary/policy slot, and rank1 never prefetches.
++        guard rank == 0 && promptCount > chunkSize else {
++            return .init(rank: rank, extraNativeBytes: 0, extraHostBytes: bookkeepingBytes)
++        }
++        let bytes = try QwenLongPrefillCheckedBytes.product([chunkSize, hiddenSize, elementBytes])
++        let rounded = try bound(bytes)
++        guard rounded >= bytes else { throw ProbeError("Lookahead allocator bound is too small") }
++        return .init(rank: rank, extraNativeBytes: rounded,
++            extraHostBytes: try QwenLongPrefillCheckedBytes.sum([bytes, bookkeepingBytes]))
++    }
++    func requireCapacity(baseBytes: Int, ownerLimit: Int, readinessLimit: Int) throws {
++        let total = try QwenLongPrefillCheckedBytes.sum([baseBytes, reservedBytes])
++        guard baseBytes > 0, ownerLimit > 0, readinessLimit > 0,
++              total <= ownerLimit, total <= readinessLimit else {
++            throw ProbeError("Lookahead exceeds its additionally reserved owner/readiness capacity")
++        }
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPrefillPolicy.swift
+@@ -0,0 +1,76 @@
++import Foundation
++
++/// Experimental scheduling only. The ordinary resident facade stays serial.
++@_spi(Benchmark) public enum QwenResidentPrefillPolicy: String, Sendable {
++    case serial
++    case oneChunkLookahead
++}
++
++struct QwenGenerationPrefillSummary: Encodable {
++    let policy: String
++    let rank: Int
++    let preparedAheadFrames: Int
++    let maximumPreparedBoundaries: Int
++    let pendingConsumedAtCompletion = 0
++    let decodePrefetchCount = 0
++}
++
++/// CPU frontier/slot guard, not evidence of native execution. The private
++/// producer advances this only around actual Session/transport returns.
++struct QwenGenerationPrefillWindow {
++    struct Commit: Equatable { let sequence: Int, committedTokens: Int }
++    let promptCount: Int
++    let chunkSize: Int
++    let frameCount: Int
++    private(set) var nextSequence = 0
++    private(set) var preparing: Int?
++    private(set) var prepared: Commit?
++    private(set) var pending: Commit?
++    private(set) var sendCompleted = false
++    private(set) var preparedAheadFrames = 0
++    private(set) var maximumPreparedBoundaries = 0
++    private(set) var failed = false
++    var complete: Bool { !failed && nextSequence == frameCount && preparing == nil && prepared == nil && pending == nil }
++
++    init(promptCount: Int, chunkSize: Int) throws {
++        guard (1...32_768).contains(promptCount), (1...512).contains(chunkSize) else {
++            throw ProbeError("Invalid bounded prefill window geometry")
++        }
++        self.promptCount = promptCount; self.chunkSize = chunkSize
++        frameCount = (promptCount - 1) / chunkSize + 1
++    }
++    mutating func beginPreparation(sequence: Int, nativeCommittedTokens: Int) throws {
++        let expected = nextSequence + (pending == nil ? 0 : 1)
++        try require(sequence == expected && sequence < frameCount && preparing == nil && prepared == nil
++            && (pending == nil || sendCompleted) && nativeCommittedTokens == sequence * chunkSize,
++            "Prefill preparation exceeds one slot, unsent credit or exact native frontier")
++        preparing = sequence
++    }
++    mutating func commitPreparation(sequence: Int, nativeCommittedTokens: Int) throws {
++        try require(preparing == sequence && prepared == nil
++            && nativeCommittedTokens == min(promptCount, (sequence + 1) * chunkSize),
++            "Prepared prefill commit differs from its actual frame")
++        prepared = .init(sequence: sequence, committedTokens: nativeCommittedTokens); preparing = nil
++        maximumPreparedBoundaries = 1
++        if pending != nil { preparedAheadFrames += 1 }
++    }
++    mutating func beginSend(sequence: Int, nativeCommittedTokens: Int) throws -> Commit {
++        let value = Commit(sequence: sequence, committedTokens: nativeCommittedTokens)
++        try require(sequence == nextSequence && pending == nil && preparing == nil && prepared == value,
++            "Prefill send lacks its exact prepared commit or prior consumed credit")
++        prepared = nil; pending = value; sendCompleted = false; return value
++    }
++    mutating func completeSend(_ value: Commit) throws {
++        try require(pending == value && !sendCompleted, "Prefill send completion is stale or repeated")
++        sendCompleted = true
++    }
++    mutating func consume(_ value: Commit) throws {
++        try require(pending == value && sendCompleted && preparing == nil,
++            "Prefill consumed acknowledgment lacks its captured committed frontier")
++        pending = nil; sendCompleted = false; nextSequence += 1
++    }
++    mutating func cancel() { failed = true; preparing = nil; prepared = nil; pending = nil }
++    private mutating func require(_ value: Bool, _ message: String) throws {
++        guard !failed && value else { cancel(); throw ProbeError(message) }
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationAgreement.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationAgreement.swift
+@@ -17,22 +17,26 @@
+         let stageFingerprints: [String]
+         let rankBuildSHA256: [String]
+         let numericalPolicySHA256: String
++        let prefillSchedulingPolicy: String?
+         let mtpEnabled = false
+     }
+     let request: QwenLayerStageGenerationRequest
+     let descriptor: Descriptor
+     let fingerprint: String
+     let initialTokenChainSHA256: String
++    let prefillPolicy: QwenResidentPrefillPolicy
+ 
+     init(request: QwenLayerStageGenerationRequest, membershipEpoch: UUID,
+          source: QwenLayerStageWireSourceIdentity, consumerStageFingerprint: String,
+-         rankBuildSHA256: [String], numericalPolicySHA256: String) throws {
++         rankBuildSHA256: [String], numericalPolicySHA256: String,
++         prefillPolicy: QwenResidentPrefillPolicy = .serial) throws {
+         guard rankBuildSHA256.count == 2,
+               (rankBuildSHA256 + [consumerStageFingerprint, numericalPolicySHA256]).allSatisfy(qwenStageWireIsSHA256),
+               consumerStageFingerprint != source.producerStageFingerprint else {
+             throw ProbeError("Generation agreement requires two explicit stage/build identities")
+         }
+         self.request = request
++        self.prefillPolicy = prefillPolicy
+         descriptor = .init(membershipEpoch: membershipEpoch.uuidString.lowercased(),
+             requestID: request.requestID.uuidString.lowercased(), requestFingerprint: request.fingerprint,
+             profileFingerprint: request.profile.fingerprint,
+@@ -40,7 +44,8 @@
+             artifactAggregateSHA256: source.artifactAggregateSHA256,
+             storageCommitmentSHA256: source.storageCommitmentSHA256, planFingerprint: source.planFingerprint,
+             stageFingerprints: [source.producerStageFingerprint, consumerStageFingerprint],
+-            rankBuildSHA256: rankBuildSHA256, numericalPolicySHA256: numericalPolicySHA256)
++            rankBuildSHA256: rankBuildSHA256, numericalPolicySHA256: numericalPolicySHA256,
++            prefillSchedulingPolicy: prefillPolicy == .serial ? nil : prefillPolicy.rawValue)
+         fingerprint = try qwenGenerationFingerprint("agreement", descriptor)
+         initialTokenChainSHA256 = sha256(Data(("qwen-generation-history-v1|" + fingerprint + "|"
+             + qwenGenerationTokenHash(request.promptTokenIDs)).utf8))
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationDriver.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationDriver.swift
+@@ -71,17 +71,32 @@
+             let control = QwenLayerStageGenerationControl(agreement: agreement)
+             let transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: collective)
+             var session: QwenLayerStageSession?
++            var producer: QwenGenerationLookaheadProducer?
+             do {
+                 let owned = try QwenLayerStageSession(stage: loaded, plan: plan, generationRequest: agreement.request)
+                 session = owned
++                if agreement.prefillPolicy == .oneChunkLookahead, collective.rank == 0 {
++                    producer = try .init(request: agreement.request)
++                }
+                 var selectedTokens = [Int]()
+                 var finalDecision: QwenLayerStageGenerationDecisionPacket?
+                 while control.phase == .frame {
+                     try autoreleasepool {
+                         try checked()
+                         let expected = try control.beginFrame()
+-                        let (packet, row) = try runGenerationFrame(session: owned, control: control,
+-                            transport: transport, expected: expected, check: checked)
++                        let packet: QwenLayerStageGenerationBoundaryPacket
++                        let row: MLXArray?
++                        if let producer, expected.frame.phase == .prefill {
++                            packet = try producer.run(session: owned, control: control,
++                                transport: transport, expected: expected, check: checked)
++                            row = nil
++                        } else {
++                            guard producer == nil || producer!.isComplete else {
++                                throw ProbeError("Generation decode precedes lookahead prompt drain")
++                            }
++                            (packet, row) = try runGenerationFrame(session: owned, control: control,
++                                transport: transport, expected: expected, check: checked)
++                        }
+                         guard control.phase == .token else { return }
+                         let token = try agreeGenerationToken(row: row, boundary: packet, control: control,
+                             transport: transport, check: checked)
+@@ -123,6 +138,9 @@
+                     throw ProbeError("Generation ended without agreed clean stop")
+                 }
+                 try checked()
++                guard producer == nil || producer!.isComplete else {
++                    throw ProbeError("Generation ended with a prepared or pending prompt boundary")
++                }
+                 // Snapshot committed local state before finishGeneration retires it.
+                 // No extra collective is introduced: the existing retirement ACK
+                 // exchange cannot complete until both local captures have returned.
+@@ -142,12 +160,16 @@
+                     membershipEpoch: agreement.descriptor.membershipEpoch, identity: owned.identity,
+                     selectedTokenIDs: selectedTokens, tokenChainSHA256: control.tokenChainSHA256,
+                     completedFrames: control.completedFrames, committedTokens: control.committedTokens,
+-                    finishReason: reason)
++                    finishReason: reason, prefillSchedule: agreement.prefillPolicy == .serial ? nil
++                        : .init(policy: agreement.prefillPolicy.rawValue, rank: collective.rank,
++                            preparedAheadFrames: producer?.preparedAheadFrames ?? 0,
++                            maximumPreparedBoundaries: producer?.maximumPreparedBoundaries ?? 0))
+             } catch {
+                 // Prefer a recorded native fault before invoking any cleanup. The
+                 // normal withError epilogue is skipped when its body throws Swift.
+                 var primary: Error = error
+                 do { try nativeError.check() } catch { primary = error }
++                producer?.cancel()
+                 diagnostics?.discard()
+                 control.cancel(); transport.retire()
+                 do { try session?.cancel() }
+@@ -158,6 +180,74 @@
+             try nativeError.check()
+             throw error
+         }
++    }
++}
++
++/// One native prepared slot plus one CPU pending ticket. Only this private
++/// executor calls Session; no model evaluation overlaps a local P2P operation.
++private final class QwenGenerationLookaheadProducer {
++    struct Prepared {
++        let boundary: QwenLayerStageBoundary
++        let committedTokens: Int
++    }
++    let request: QwenLayerStageGenerationRequest
++    private var window: QwenGenerationPrefillWindow
++    private var prepared: Prepared?
++    var isComplete: Bool { window.complete && prepared == nil }
++    var preparedAheadFrames: Int { window.preparedAheadFrames }
++    var maximumPreparedBoundaries: Int { window.maximumPreparedBoundaries }
++    init(request: QwenLayerStageGenerationRequest) throws {
++        self.request = request
++        window = try .init(promptCount: request.promptCount, chunkSize: request.chunkSize)
++    }
++    func cancel() { prepared = nil; window.cancel() }
++    private func prepare(sequence: Int, session: QwenLayerStageSession, check: () throws -> Void) throws {
++        guard prepared == nil else { throw ProbeError("Generation already owns its prepared slot") }
++        let frame = try request.frame(sequence: sequence)
++        guard frame.phase == .prefill else { throw ProbeError("Generation lookahead cannot prepare decode") }
++        try window.beginPreparation(sequence: sequence, nativeCommittedTokens: session.committedTokens)
++        prepared = try autoreleasepool {
++            try check()
++            let tokens = Array(request.promptTokenIDs[frame.tokenOffset..<(frame.tokenOffset + frame.tokenCount)])
++            guard case .hidden(let boundary) = try session.prefillChunk(tokens, offset: frame.tokenOffset,
++                final: frame.finalPromptChunk, check: check), boundary.frame == frame else {
++                throw ProbeError("Generation prepared output differs from the admitted prompt frame")
++            }
++            try window.commitPreparation(sequence: sequence, nativeCommittedTokens: session.committedTokens)
++            return Prepared(boundary: boundary, committedTokens: session.committedTokens)
++        }
++    }
++    func run(session: QwenLayerStageSession, control: QwenLayerStageGenerationControl,
++             transport: QwenLayerStageGenerationTransport,
++             expected: QwenLayerStageGenerationBoundaryExpectation,
++             check: () throws -> Void) throws -> QwenLayerStageGenerationBoundaryPacket {
++        guard transport.rank == 0, expected.frame.phase == .prefill else { throw ProbeError("Invalid lookahead producer") }
++        if prepared == nil { try prepare(sequence: expected.frame.sequence, session: session, check: check) }
++        weak var original: MLXArray?
++        let sent: (QwenLayerStageGenerationTransport.BoundaryTicket, QwenGenerationPrefillWindow.Commit) = try autoreleasepool {
++            guard let value = prepared, value.boundary.frame == expected.frame,
++                  session.committedTokens == value.committedTokens else {
++                throw ProbeError("Generation prepared slot has a different native frontier")
++            }
++            let commit = try window.beginSend(sequence: expected.frame.sequence, nativeCommittedTokens: value.committedTokens)
++            let packet = try QwenLayerStageGenerationBoundaryPacket(expected: expected, payloadSHA256: value.boundary.payloadSHA256)
++            try control.acknowledgeFrame(rank: 0, packet: packet, nativeCommittedTokens: commit.committedTokens)
++            original = value.boundary.array
++            let ticket = try transport.sendBoundaryUntilSent(value.boundary, packet: packet, check: check)
++            prepared = nil
++            return (ticket, commit)
++        }
++        guard original == nil, prepared == nil else { throw ProbeError("Generation retained the sent boundary wrapper") }
++        try window.completeSend(sent.1)
++        if expected.frame.sequence + 1 < request.prefillFrameCount {
++            try prepare(sequence: expected.frame.sequence + 1, session: session, check: check)
++        }
++        try transport.finishBoundaryConsumed(sent.0, check: check)
++        // The local session may now be one chunk ahead. The shared control must
++        // acknowledge k with k's captured actual commit, never that newer value.
++        try control.acknowledgeFrame(rank: 1, packet: sent.0.packet, nativeCommittedTokens: sent.1.committedTokens)
++        try window.consume(sent.1)
++        return sent.0.packet
+     }
+ }
+ 
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationResult.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationResult.swift
+@@ -18,4 +18,6 @@
+     let physicalTransferQualified = false
+     let independentNumericalComparisonPerformed = false
+     let externalTTFTMeasured = false
++    // Nil is omitted, preserving the serial result's existing encoded shape.
++    var prefillSchedule: QwenGenerationPrefillSummary? = nil
+ }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationTransport.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationTransport.swift
+@@ -8,6 +8,11 @@
+     let collective: Collective
+     private(set) var isFailed = false
+     private var inOperation = false
++    struct BoundaryTicket {
++        let packet: QwenLayerStageGenerationBoundaryPacket
++        fileprivate init(packet: QwenLayerStageGenerationBoundaryPacket) { self.packet = packet }
++    }
++    private var pendingBoundaryFingerprint: String?
+     var rank: Int { collective.rank }
+ 
+     init(agreement: QwenLayerStageGenerationAgreement, collective: Collective) throws {
+@@ -16,11 +21,20 @@
+         }
+         self.agreement = agreement; self.collective = collective
+     }
+-    func retire() { isFailed = true }
++    func retire() { isFailed = true; pendingBoundaryFingerprint = nil }
+ 
+     func sendBoundary(_ boundary: QwenLayerStageBoundary,
+                       packet: QwenLayerStageGenerationBoundaryPacket,
+                       check: () throws -> Void) throws {
++        let ticket = try sendBoundaryUntilSent(boundary, packet: packet, check: check)
++        try finishBoundaryConsumed(ticket, check: check)
++    }
++
++    /// Only completed send credit: no claim that the peer validated/consumed it.
++    /// Caller releases the original wrapper before preparing one next chunk.
++    func sendBoundaryUntilSent(_ boundary: QwenLayerStageBoundary,
++                               packet: QwenLayerStageGenerationBoundaryPacket,
++                               check: () throws -> Void) throws -> BoundaryTicket {
+         try operation {
+             guard rank == 0 else { throw ProbeError("Only generation rank0 sends residuals") }
+             let expected = packet.content.expectation, source = agreement.descriptor
+@@ -43,7 +57,18 @@
+             try sendData(packet.encoded(), maximumBytes: QwenLayerStageGenerationBoundaryPacket.maximumEncodedBytes, check: check)
+             try receiveAck(.boundaryReady, packet.fingerprint, from: 1, check: check)
+             _ = try collective.sendCompleted(boundary.array, to: 1, maximumBytes: expected.byteCount, check: check)
+-            try receiveAck(.boundaryConsumed, packet.fingerprint, from: 1, check: check)
++            pendingBoundaryFingerprint = packet.fingerprint
++            return BoundaryTicket(packet: packet)
++        }
++    }
++
++    func finishBoundaryConsumed(_ ticket: BoundaryTicket, check: () throws -> Void) throws {
++        try operation(allowPendingBoundary: true) {
++            guard rank == 0, pendingBoundaryFingerprint == ticket.packet.fingerprint else {
++                throw ProbeError("Generation consumed ticket differs or was replayed")
++            }
++            try receiveAck(.boundaryConsumed, ticket.packet.fingerprint, from: 1, check: check)
++            pendingBoundaryFingerprint = nil
+         }
+     }
+ 
+@@ -170,8 +195,10 @@
+         try QwenLayerStageGenerationAcknowledgement.validate(receiveAckValues(check: check), agreement: agreement,
+             phase: phase, packetFingerprint: fingerprint, rank: peer)
+     }
+-    private func operation<T>(_ body: () throws -> T) throws -> T {
+-        guard !inOperation, !isFailed else { isFailed = true; throw ProbeError("Generation transport is failed or reentered") }
++    private func operation<T>(allowPendingBoundary: Bool = false, _ body: () throws -> T) throws -> T {
++        guard !inOperation, !isFailed, allowPendingBoundary || pendingBoundaryFingerprint == nil else {
++            isFailed = true; throw ProbeError("Generation transport is failed, reentered or has pending consumption")
++        }
+         inOperation = true; defer { inOperation = false }
+         do { let result = try body(); guard !isFailed else { throw ProbeError("Generation transport was poisoned") }; return result }
+         catch { isFailed = true; throw error }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRequestResources.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRequestResources.swift
+@@ -65,13 +65,17 @@
+         return .init(stateBytes: state, fusionBytes: fusion, reservedBytes: try sum([state, fusion]))
+     }
+ 
+-    func requireLive() throws {
++    func requireLive(additionalNativeBytes: Int = 0, additionalHostBytes: Int = 0) throws {
++        guard additionalNativeBytes >= 0, additionalHostBytes >= 0 else {
++            throw ProbeError("Invalid additional resident allowance")
++        }
+         try QwenResidentResourceEnvironment.require()
+         let os = try QwenDenseStageLoadResources.requireInitial()
+         let free = max(QwenDenseStageLoadPolicy.minimumActualFreeBytes,
+-            try QwenLongPrefillCheckedBytes.sum([reservedBytes, QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
++            try QwenLongPrefillCheckedBytes.sum([reservedBytes, additionalNativeBytes, additionalHostBytes,
++                QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
+         let allocator = try QwenLongPrefillCheckedBytes.sum([Memory.activeMemory, Memory.cacheMemory,
+-            reservedBytes, QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
++            reservedBytes, additionalNativeBytes, QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
+         guard os.actualFreeBytes >= free, Memory.memoryLimit >= allocator else {
+             throw ProbeError("Resident request exceeds live actual-free or allocator policy")
+         }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift
+@@ -40,6 +40,8 @@
+         let deadline: UInt64
+         let mode: QwenResidentRequestMode
+         let recordingCharge: QwenResidentRecordingCharge?
++        let prefillPolicy: QwenResidentPrefillPolicy
++        let prefillAllowance: QwenGenerationPrefillAllowance?
+     }
+     private var reservation: Reservation?
+     private var processLeaseOwned = true
+@@ -61,14 +63,29 @@
+     /// Named local recording ceiling, available only after the existing bilateral
+     /// load and while idle. This query allocates no request state and does not
+     /// replace live admission at reserve/start or the enclosing process fence.
+-    @_spi(Benchmark) public func recordingReadiness() throws -> ClusterWorkerReady? {
++    @_spi(Benchmark) public func recordingReadiness(prefillPolicy: QwenResidentPrefillPolicy = .serial) throws -> ClusterWorkerReady? {
+         guard operation.try() else { throw ProbeError("Resident native operation is already active") }
+         defer { operation.unlock() }
+         guard control.available, (try? control.check()) != nil else { return nil }
+-        let capacity = try maximumRecordingCharge().reservedBytes
++        let capacity = try recordingCapacity(prefillPolicy)
+         try control.check()
+         return .init(identity: baseReady.identity, rank: baseReady.rank, profile: baseReady.profile,
+             executionPlanSHA256: baseReady.executionPlanSHA256, requestCapacityBytes: capacity)
++    }
++
++    private func prefillAllowance(_ policy: QwenResidentPrefillPolicy, promptCount: Int,
++                                  chunkSize: Int) throws -> QwenGenerationPrefillAllowance? {
++        guard policy == .oneChunkLookahead else { return nil }
++        return try .derive(rank: collective.rank, promptCount: promptCount, chunkSize: chunkSize,
++            hiddenSize: admission.profile.hiddenSize,
++            elementBytes: qwenStageWireElementBytes(admission.profile.activationDType),
++            bound: QwenResidentResourceEnvironment.allocationBound)
++    }
++    private func recordingCapacity(_ policy: QwenResidentPrefillPolicy) throws -> Int {
++        let base = try maximumRecordingCharge().reservedBytes
++        let extra = try prefillAllowance(policy, promptCount: admission.profile.maximumPromptTokens,
++            chunkSize: admission.profile.maximumChunkTokens)
++        return try QwenLongPrefillCheckedBytes.sum([base, extra?.reservedBytes ?? 0])
+     }
+ 
+     private func maximumRecordingCharge() throws -> QwenResidentRecordingCharge {
+@@ -92,12 +109,13 @@
+     /// Charges the original state/fusion allowance plus both named host/native
+     /// capture terms. Both workers must use recording reservations; a serving
+     /// reservation cannot be upgraded at start or by a live resource check.
+-    @_spi(Benchmark) public func reserveRecording(requestID: UUID, request value: ClusterWorkerReservation) throws -> Int {
+-        try reserve(requestID: requestID, request: value, mode: .recording)
++    @_spi(Benchmark) public func reserveRecording(requestID: UUID, request value: ClusterWorkerReservation,
++        prefillPolicy: QwenResidentPrefillPolicy = .serial) throws -> Int {
++        try reserve(requestID: requestID, request: value, mode: .recording, prefillPolicy: prefillPolicy)
+     }
+ 
+     private func reserve(requestID: UUID, request value: ClusterWorkerReservation,
+-                         mode: QwenResidentRequestMode) throws -> Int {
++                         mode: QwenResidentRequestMode, prefillPolicy: QwenResidentPrefillPolicy = .serial) throws -> Int {
+         guard operation.try() else { throw ProbeError("Resident native operation is already active") }
+         defer { operation.unlock() }
+         let request = try admission.request(value, id: requestID, now: DispatchTime.now().uptimeNanoseconds)
+@@ -107,13 +125,19 @@
+             let allowance = try QwenResidentRequestAllowance.derive(profile: stage.profile,
+                 plan: admission.plan, rank: collective.rank, maximumTokens: request.maximumTokens,
+                 chunkSize: min(request.chunkSize, request.promptCount), bound: QwenResidentResourceEnvironment.allocationBound)
++            let prefill = try prefillAllowance(prefillPolicy, promptCount: request.promptCount, chunkSize: request.chunkSize)
+             let charge: QwenResidentRecordingCharge?
+             if mode == .recording {
+                 let recording = try QwenResidentRecordingCharge.derive(base: allowance, rank: collective.rank,
+                     vocabularySize: request.profile.vocabularySize, activationDType: request.profile.activationDType,
+                     bound: QwenResidentResourceEnvironment.allocationBound)
+-                try recording.requireCapacity(ownerLimit: value.capacityLimitBytes,
+-                    readinessLimit: maximumRecordingCharge().reservedBytes)
++                if let prefill {
++                    try prefill.requireCapacity(baseBytes: recording.reservedBytes, ownerLimit: value.capacityLimitBytes,
++                        readinessLimit: recordingCapacity(prefillPolicy))
++                } else {
++                    try recording.requireCapacity(ownerLimit: value.capacityLimitBytes,
++                        readinessLimit: maximumRecordingCharge().reservedBytes)
++                }
+                 // Reuse the actual diagnostic source/request/allocator binding
+                 // and live policy; no caller-supplied budget grants permission.
+                 let resources = try QwenGenerationDiagnosticResources(loaded: stage.loaded, profile: stage.profile,
+@@ -127,10 +151,17 @@
+                 }
+                 charge = nil
+             }
+-            try allowance.requireLive(); try control.check(deadline: value.deadlineUptimeNanoseconds)
++            if let prefill {
++                try allowance.requireLive(additionalNativeBytes: QwenLongPrefillCheckedBytes.sum([
++                    prefill.extraNativeBytes, charge?.capture.extraNativeBytes ?? 0]),
++                    additionalHostBytes: QwenLongPrefillCheckedBytes.sum([
++                        prefill.extraHostBytes, charge?.capture.extraHostBytes ?? 0]))
++            } else { try allowance.requireLive() }
++            try control.check(deadline: value.deadlineUptimeNanoseconds)
+             reservation = .init(request: request, allowance: allowance, deadline: value.deadlineUptimeNanoseconds,
+-                mode: mode, recordingCharge: charge)
+-            return charge?.reservedBytes ?? allowance.reservedBytes
++                mode: mode, recordingCharge: charge, prefillPolicy: prefillPolicy, prefillAllowance: prefill)
++            return try QwenLongPrefillCheckedBytes.sum([charge?.reservedBytes ?? allowance.reservedBytes,
++                prefill?.reservedBytes ?? 0])
+         } catch { control.fail(); throw error }
+     }
+ 
+@@ -163,6 +194,10 @@
+         }
+         try reserved.mode.require(mode)
+         do {
++            guard reserved.prefillAllowance == (try prefillAllowance(reserved.prefillPolicy,
++                promptCount: reserved.request.promptCount, chunkSize: reserved.request.chunkSize)) else {
++                throw ProbeError("Lookahead allowance changed since reservation")
++            }
+             let value = try QwenResidentRequestPublication.run(control: control, lifecycle: lifecycle,
+                 identity: .init(requestID: requestID, epoch: requestID,
+                     recordedRequestFingerprint: reserved.request.fingerprint), deadline: reserved.deadline, body: {
+@@ -178,13 +213,19 @@
+                         membershipEpoch: admission.configuration.identity.membershipEpoch,
+                         source: source, consumerStageFingerprint: admission.plan.stages[1].fingerprint,
+                         rankBuildSHA256: admission.configuration.identity.peers.map(\.buildSHA256),
+-                        numericalPolicySHA256: admission.arithmeticSHA256)
++                        numericalPolicySHA256: admission.arithmeticSHA256, prefillPolicy: reserved.prefillPolicy)
+                     var lastResourceCheck: UInt64 = 0, ordinal = 0
+                     func check() throws {
+                         try control.check(deadline: reserved.deadline)
+                         let now = DispatchTime.now().uptimeNanoseconds
+                         if lastResourceCheck == 0 || now - lastResourceCheck >= 250_000_000 {
+-                            try reserved.allowance.requireLive(); lastResourceCheck = DispatchTime.now().uptimeNanoseconds
++                            if let prefill = reserved.prefillAllowance {
++                                try reserved.allowance.requireLive(additionalNativeBytes: QwenLongPrefillCheckedBytes.sum([
++                                    prefill.extraNativeBytes, reserved.recordingCharge?.capture.extraNativeBytes ?? 0]),
++                                    additionalHostBytes: QwenLongPrefillCheckedBytes.sum([
++                                        prefill.extraHostBytes, reserved.recordingCharge?.capture.extraHostBytes ?? 0]))
++                            } else { try reserved.allowance.requireLive() }
++                            lastResourceCheck = DispatchTime.now().uptimeNanoseconds
+                         }
+                         try control.check(deadline: reserved.deadline)
+                     }

@@ -1,0 +1,107 @@
+--- a/run_checks.py
++++ b/run_checks.py
+@@ -29,8 +29,8 @@
+     out.mkdir(mode=0o700)
+     value, old, _, _, _ = inputs()
+     receipt = dict(phase=phase, status='started', steps=[], sourceManifestSHA256=value['candidateManifestSHA256'],
+-                   sourceSnapshotSHA256=sha(BASE / 'source-snapshot-2.json'),
+-                   dependencySnapshotSHA256=sha(BASE / 'dependency-snapshot-2.json'),
++                   sourceSnapshotSHA256=sha(BASE / 'source-snapshot-3.json'),
++                   dependencySnapshotSHA256=sha(BASE / 'dependency-snapshot-3.json'),
+                    modelExecuted=False, gpuExecuted=False, remoteExecuted=False,
+                    protectedTransportExecuted=False, servingEnabled=False)
+     print('Protected native build runner PID ' + str(os.getpid()) + ' phase ' + phase, flush=True)
+--- a/package_native.py
++++ b/package_native.py
+@@ -25,8 +25,8 @@
+             raise ValueError('A required actual phase did not pass')
+         if record.get('sourceManifestSHA256') != value['candidateManifestSHA256']:
+             raise ValueError('Tested source manifest differs')
+-        for filename, field in [('source-snapshot-2.json', 'sourceSnapshotSHA256'),
+-                                ('dependency-snapshot-2.json', 'dependencySnapshotSHA256')]:
++        for filename, field in [('source-snapshot-3.json', 'sourceSnapshotSHA256'),
++                                ('dependency-snapshot-3.json', 'dependencySnapshotSHA256')]:
+             if sha(BASE / filename) != record[field]:
+                 raise ValueError('Tested snapshot differs')
+         if not record['steps'] or any(step.get('exitCode') != 0 or not step.get('reaped') or
+--- a/prepare.py
++++ b/prepare.py
+@@ -7,7 +7,7 @@
+ if __name__ == '__main__':
+     os.umask(0o077)
+     inputs()
+-    output = BASE / 'prepare-command-2'
++    output = BASE / 'prepare-command-3'
+     output.mkdir(mode=0o700)
+     result = run_owned(['/usr/bin/env', 'TMPDIR=/private/tmp/', 'python3', '-B',
+         str(BASE / 'prepare_retry.py')], output, 'prepare', 60)
+--- a/prepare_retry.py
++++ b/prepare_retry.py
+@@ -7,12 +7,12 @@
+ 
+ 
+ def main():
+-    output = BASE / 'preparation-2'
++    output = BASE / 'preparation-3'
+     output.mkdir(mode=0o700)
+     receipt = dict(status='started', workspace=str(WORKSPACE),
+                    compilerExecuted=False, cacheCopied=False, remoteExecuted=False)
+     try:
+-        for name in ('source-snapshot-2.json', 'dependency-snapshot-2.json'):
++        for name in ('source-snapshot-3.json', 'dependency-snapshot-3.json'):
+             if (BASE / name).exists() or (BASE / name).is_symlink():
+                 raise ValueError('Retry snapshots already exist')
+         receipt['before'] = verify(before=True, require_snapshots=False)
+@@ -20,7 +20,7 @@
+         destination = WORKSPACE / row['path']
+         if destination.is_symlink() or sha(destination) != row['beforeSHA256']:
+             raise ValueError('Correction preimage changed')
+-        temporary = destination.with_name(destination.name + '.protected-result-correction')
++        temporary = destination.with_name(destination.name + '.protected-scope-fixture-correction')
+         raw = (BASE / 'proposed' / row['path']).read_bytes()
+         with temporary.open('xb') as stream:
+             stream.write(raw)
+@@ -31,12 +31,12 @@
+         os.replace(temporary, destination)
+         receipt['replacement'] = row
+         receipt['after'] = verify(require_snapshots=False)
+-        for name, rows in zip(('source-snapshot-2.json', 'dependency-snapshot-2.json'), expected()):
++        for name, rows in zip(('source-snapshot-3.json', 'dependency-snapshot-3.json'), expected()):
+             with (BASE / name).open('x') as stream:
+                 json.dump(dict(members=rows), stream, indent=2)
+                 stream.write('\n')
+         receipt['snapshots'] = {name: sha(BASE / name) for name in
+-            ('source-snapshot-2.json', 'dependency-snapshot-2.json')}
++            ('source-snapshot-3.json', 'dependency-snapshot-3.json')}
+         verify()
+         receipt['status'] = 'passed'
+     except BaseException as error:
+--- a/verify_retry.py
++++ b/verify_retry.py
+@@ -1,22 +1,22 @@
+ """Exact source/dependency union; no accepting a newly observed current tree."""
+ import json
+ import subprocess
+-from retry_inputs import BASE, WORKSPACE, SCRATCH, prior, expected
++from retry_inputs import BASE, OLD, WORKSPACE, SCRATCH, prior, expected
+ 
+ 
+ def verify(before=False, require_snapshots=True):
+     source, deps = expected(before)
+     counts = {}
+     for filename, root, rows in [
+-        ('source-snapshot-2.json', WORKSPACE, source),
+-        ('dependency-snapshot-2.json', SCRATCH / 'checkouts', deps),
++        ('source-snapshot-3.json', WORKSPACE, source),
++        ('dependency-snapshot-3.json', SCRATCH / 'checkouts', deps),
+     ]:
+         if prior.entries(root) != rows:
+             raise ValueError('Exact retry inventory differs: ' + filename)
+         if require_snapshots and json.loads((BASE / filename).read_bytes())['members'] != rows:
+             raise ValueError('Retry snapshot differs from its explicit source union')
+         counts[filename] = len(rows)
+-    audit = json.loads((BASE / 'dependency-audit.json').read_bytes())
++    audit = json.loads((OLD / 'dependency-audit.json').read_bytes())
+     for row in audit['allCheckoutPointers']:
+         directory = SCRATCH / 'checkouts' / row['directory']
+         head = subprocess.check_output(['git', '--no-optional-locks', '-C', str(directory),

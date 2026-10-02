@@ -1,0 +1,60 @@
+--- a/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/NativeWorkerRuntime.swift
++++ b/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/NativeWorkerRuntime.swift
+@@ -7,11 +7,18 @@
+ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
+     private let owner: QwenResidentRuntime
+     private let sink: ResidentEvidenceSink
++    private let prefillPolicy: QwenResidentPrefillPolicy
+     private var active: (id: UUID, deadline: UInt64)?
+ 
+     init(_ configuration: QwenResidentLoadConfiguration, bootstrap: WorkerBootstrapConfiguration? = nil) throws {
++        let environment = ProcessInfo.processInfo.environment
++        let selected = try BenchmarkPrefillPolicy.parse(environment[BenchmarkPrefillPolicy.environmentName])
++        switch selected {
++        case .serial: prefillPolicy = .serial
++        case .oneChunkLookahead: prefillPolicy = .oneChunkLookahead
++        }
+         guard let bootstrap,
+-              let path = ProcessInfo.processInfo.environment["DARKBLOOM_BENCHMARK_EVIDENCE_DIR"] else {
++              let path = environment["DARKBLOOM_BENCHMARK_EVIDENCE_DIR"] else {
+             throw WorkerFailure.invalid("Private benchmark requires owner bootstrap and an evidence directory")
+         }
+         sink = try ResidentEvidenceSink(path: path)
+@@ -19,11 +26,11 @@
+         owner = try .load(configuration, bootstrap: QwenResidentBootstrap(connection: attachment))
+     }
+ 
+-    var readiness: ClusterWorkerReady? { try? owner.recordingReadiness() }
++    var readiness: ClusterWorkerReady? { try? owner.recordingReadiness(prefillPolicy: prefillPolicy) }
+ 
+     func reserve(_ id: UUID, _ value: ClusterWorkerReservation) throws -> Int {
+         guard active == nil else { throw WorkerFailure.invalid("Benchmark request already active") }
+-        let bytes = try owner.reserveRecording(requestID: id, request: value)
++        let bytes = try owner.reserveRecording(requestID: id, request: value, prefillPolicy: prefillPolicy)
+         active = (id, value.deadlineUptimeNanoseconds)
+         return bytes
+     }
+--- /dev/null
++++ b/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/BenchmarkPrefillPolicy.swift
+@@ -0,0 +1,21 @@
++/// Private benchmark configuration; no environment lookup or native dependency.
++/// External spellings are deliberately separate from the experimental SPI's
++/// raw values. An omitted value preserves the original serial behavior.
++enum BenchmarkPrefillPolicy: String, Sendable {
++    case serial = "serial_v1"
++    case oneChunkLookahead = "one_chunk_lookahead_v1"
++
++    static let environmentName = "DARKBLOOM_BENCHMARK_PREFILL_POLICY"
++
++    struct InvalidValue: Error, CustomStringConvertible {
++        var description: String {
++            "DARKBLOOM_BENCHMARK_PREFILL_POLICY must be serial_v1 or one_chunk_lookahead_v1"
++        }
++    }
++
++    static func parse(_ value: String?) throws -> Self {
++        guard let value else { return .serial }
++        guard let policy = Self(rawValue: value) else { throw InvalidValue() }
++        return policy
++    }
++}

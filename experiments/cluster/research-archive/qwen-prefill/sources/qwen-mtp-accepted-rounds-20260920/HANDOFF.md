@@ -1,0 +1,29 @@
+# Private registered 9B accepted MTP rounds — 2026-09-20
+
+This source successor connects the real loaded Qwen assistant to the existing target verification transaction and bilateral generation protocol. It is uncompiled and unexecuted. It changes no MAIN file, default capability, public serving admission, activation floor, signing rule, or trust path.
+
+## Exact implementation
+
+`integration.json` is the complete 19-file overlay over the passed tiny Session workspace: seven modified Swift files, eight new Swift files, and the four byte-exact native tail-V2 headers. Ten destinations have exact preimages and nine must be absent. `lineage.json` binds the 3,075-source/8,755-dependency base and prior native receipt. These are source ancestry, not validation of this new driver. `controls.json` retains the loader, assistant implementation, request-state owner, target transaction, generation/retirement protocol, resource gates and default off capability.
+
+- `QwenResidentMTPRequest`: repeat real `draftStep` and `finalizeRound` on one exclusive assistant state. A kept seed supplies its raw target hidden as the next carry. If the draft input also commits, its token is paired with the seed's raw target hidden, while the draft's raw target hidden becomes the next carry. The assistant applies target final norm once. No duplicate `observeCommittedTarget` call follows finalization.
+- `QwenMTPAcceptedRoundControl` and `QwenMTPAcceptedWire`: canonical capped proposal, provisional-boundary and prefix-receipt frames; independently expected frontiers; no duplicate rounds; no second native commit before target-token equality and the client's bilateral continue decision. Identically wrong receipts from both ranks still fail.
+- `QwenMTPAcceptedTransport` and `QwenMTPAcceptedDriver`: completed IO on the original Collective. Both native prefixes must produce exact receipts before existing generation frame ACKs and output publication. Final reconciliation may discard an unused suffix but cannot commit an unpublished input. Only then does the real assistant finalize. Existing target token, stop decision and request-retirement exchanges remain authoritative.
+- `QwenMTPAcceptedResources` and `QwenMTPAcceptedRuntime`: one combined reservation retains target state/fusion, assistant state and graph roots, two provisional outputs, native control buffers, diagnostic capture and CPU publication. It remains charged through owner shutdown. Current allocator, actual-free, pressure, swap, AC, deadlines and original process lease remain mandatory.
+- Private `NativeWorkerRuntime`: explicit `DARKBLOOM_PRIVATE_QWEN_MTP_MODE=off|depth1`, same actual resident owner and PID-bound bootstrap in either arm, one request per worker, same existing exclusive evidence sink. Off uses the ordinary recording path. Depth1 uses the new component. There is no independent request owner.
+
+The closed experiment is registered W4/G64 Qwen3.5 9B, cut4, serial, BF16, P1–32/C1–16/O2–8 and empty stops. P32/C16/O8 is the first useful comparison: O2 has no room to consume a speculative draft and follows the ordinary final-input tail. Every load binds the explicit mode/policy in its load agreement. Default agreement encoding omits the new optional policy and retains `mtpEnabled=false`; the ordinary driver rejects an MTP-enabled agreement.
+
+This base uses the established private plaintext lab transport. It does not extend or bypass the separately qualified encrypted P32/C16/O2/cut16 profile. A later protected MTP mode needs explicit immutable operation scopes, counter/record budgets, artifact policy and measured resource qualification. No fallback between these paths is implemented.
+
+## Resource and lifetime limits
+
+The additional budget uses actual registered source/Plan/dtype, the assistant's existing allocation specs, and per-array native allocation bounds. The prior single-proposal graph bound remains charged. A second complete assistant graph at the maximum request context covers repeated rounds and P1's possible two-input feed. Target verification adds two provisional residual/hidden roots and two final-rank rows; finalization roots, control buffers, full-row capture and a 16 MiB JSON publication allowance coexist. Loaded weights and persistent parameter caches remain charged by active allocator memory.
+
+These are named live buffers plus operational headroom, not a proof of kernel workspace or Foundation JSON/whole-process peak. No existing 6 GiB actual-free floor, load/allocator headroom, zero-swap or pressure requirement is lowered. Physical observation remains required. A throw attempts assistant and target retirement independently, poisons both controls/transports and withdraws readiness. The external owner must still interrupt/fence blocked peers, join children and diagnostic drain, validate release ACKs and observe the real lease/journal before claiming reuse. Local request retirement is not process or peer retirement.
+
+## Validation status and next execution
+
+Only bounded source checks were performed here. `Tests/run.py` is a prospective Foundation-only 60-second compiler plus 10-second fixture runner, using the exact reviewed unreaped-child helper. Its 26 controls cover repeated keep2/keep1, client stop, expected receipt fields, missing/duplicate rank, stale round, publication order, cancellation and canonical wire refusal. They use fabricated receipts and cannot prove native commits.
+
+The unchanged prior 15-group tiny real Session check and 7-group native transaction check remain separate regression controls. Neither previously ran this assistant/transport bridge. The existing actual registered proposal only produced an unaccepted draft. See `AUDIT.md` for exact evidence limits and `BUILD.md` for the bounded next build and real off/on qualification. No numerical or performance pass is claimed for the new path.

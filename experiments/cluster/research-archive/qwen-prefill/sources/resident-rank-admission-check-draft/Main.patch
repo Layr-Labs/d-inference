@@ -1,0 +1,10 @@
+--- a/experiments/cluster/inference/Sources/ClusterInference/Main.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/Main.swift
+@@ -24,6 +24,7 @@
+             try checkQwenLongPrefillReferenceCLI()
+             try checkQwenLongPrefillPairCLI()
+             try checkQwenLongPrefillRankAdmission()
++            try checkQwenLongPrefillResidentRankAdmission()
+             try checkQwenLongPrefillSoloCLI()
+             try checkQwenPrefillPhaseCLI()
+             try checkQwenPrefillOwnerCLI()

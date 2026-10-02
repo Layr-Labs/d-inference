@@ -1,0 +1,194 @@
+--- a/experiments/cluster/runtime/stage_checks/cli.py
++++ b/experiments/cluster/runtime/stage_checks/cli.py
+@@ -4,10 +4,16 @@
+ import json
+ import signal
+ import uuid
+-from . import archive,baseline,configuration,inputs,p2p,prefill,ranks,supervision,long_cli
++from . import archive,baseline,configuration,inputs,p2p,prefill,ranks,supervision,long_cli,stage_ranges
+ from .prefill_resources import initial_free_screen
+ from .common import integer,require,sha
+ from .resources import MemoryGate,resource_preflight
++
++
++class StageCutArgument(argparse.Action):
++    def __call__(self, parser, namespace, value, option_string=None):
++        if getattr(namespace, self.dest, None) is not None:parser.error('--stage-cut may be specified only once')
++        setattr(namespace, self.dest, value)
+ 
+ 
+ def parser():
+@@ -23,6 +29,7 @@
+             command.add_argument('--tokens-file',type=Path,required=True)
+             command.add_argument('--tokens-sha256')
+             if name=='ranks':
++                command.add_argument('--stage-cut',type=int,action=StageCutArgument)
+                 command.add_argument('--teacher-tokens-file',type=Path)
+                 command.add_argument('--teacher-tokens-sha256')
+                 command.add_argument('--chunk-size',type=int,default=32)
+@@ -40,6 +47,7 @@
+ 
+ def main(argv=None):
+     args=parser().parse_args(argv)
++    stage_ranges.option(args.command,getattr(args,'stage_cut',None))
+     if args.command in long_cli.COMMANDS:return long_cli.run(args)
+     sha(args.expected_binary_sha256)
+     integer(args.timeout_seconds,1,60 if args.command=='p2p' else 180)
+--- a/experiments/cluster/runtime/stage_checks/inputs.py
++++ b/experiments/cluster/runtime/stage_checks/inputs.py
+@@ -4,6 +4,7 @@
+ import stat
+ from .common import digest,integer,parse,require,sha
+ from .request import make_request
++from . import stage_ranges
+ 
+ 
+ def retain(path,destination,maximum,expected=None):
+@@ -19,6 +20,7 @@
+ 
+ 
+ def prepare(args,output,epoch,artifacts):
++    cut=stage_ranges.option(args.command,getattr(args,'stage_cut',None))
+     if args.command=='p2p':return dict(mode='p2p')
+     model=args.model_dir.expanduser().resolve(strict=True);sha(args.artifact_aggregate_sha256)
+     folder=output/'inputs';folder.mkdir(mode=0o700)
+@@ -41,8 +43,7 @@
+             'linear_key_head_dim':512,'linear_value_head_dim':512,'linear_conv_kernel_dim':16,
+             'max_position_embeddings':1048576}
+     for key,bound in bounds.items():integer(text[key],1,bound)
+-    layers,interval=text['num_hidden_layers'],text['full_attention_interval']
+-    require(layers%2==0 and interval>1 and (layers//2)%interval==0,'Native half-stage split is not phase-aligned')
++    stage_ranges.ranges(text,cut)
+     # Native preflight remains authority on all quantization/topology/shape keys.
+     prompt=parse(retain(args.tokens_file,folder/'tokens.json',65536,args.tokens_sha256))
+     require(isinstance(prompt,list),'Tokens must be an integer JSON array')
+@@ -57,6 +58,7 @@
+         configuration=configuration,text=text,configuration_sha256=configuration_hash,
+         manifest_sha256=digest(raw_manifest),vocabulary=text['vocab_size'],request=request,
+         request_fingerprint=fingerprint)
++    if cut is not None:context['stage_cut']=cut
+     if args.baseline_jsonl is not None:
+         require(args.baseline_sha256 is not None,'Baseline comparison requires an explicit SHA256 pin')
+         retain(args.baseline_jsonl,folder/'baseline.jsonl',64*1024**2,args.baseline_sha256)
+--- a/experiments/cluster/runtime/stage_checks/configuration.py
++++ b/experiments/cluster/runtime/stage_checks/configuration.py
+@@ -1,10 +1,13 @@
+ """Exact mode-specific native argv, with no TP, persistent worker or remote path."""
+ import re
+ from .common import integer,require
++from . import stage_ranges
+ 
+ 
+ def build(rank,epoch,context,bundle,bundle_hash,hosts,timeout):
+     require(context['mode'] in ('p2p','ranks','prefill-ranks'),'Unsupported stage check mode')
++    cut=stage_ranges.option(context['mode'],context.get('stage_cut'))
++    if cut is not None:stage_ranges.for_context(context)
+     integer(rank,0,1);integer(timeout,1,60 if context['mode']=='p2p' else 180)
+     require(type(epoch)is str and re.fullmatch('[0-9a-f]{32}',epoch),'Invalid fresh cohort epoch')
+     require(isinstance(hosts,list) and len(hosts)==2,'Exactly two local endpoints are required')
+@@ -30,6 +33,7 @@
+         if request['teacherTokenIDs']:
+             files['teacher.json']=request['teacherTokenIDs'];arguments+=['--teacher-tokens-file','@rank/teacher.json']
+         config.update(model_directory=context['model'],artifact_aggregate_sha256=context['artifact'])
++        if cut is not None:arguments+=['--stage-cut',str(cut)]
+         if context['mode']=='prefill-ranks':
+             from .prefill import validate_options
+             validate_options(context['stage_prefill_policy'],context['stage_logits_dtype'])
+--- a/experiments/cluster/runtime/stage_checks/ranks.py
++++ b/experiments/cluster/runtime/stage_checks/ranks.py
+@@ -1,7 +1,7 @@
+ """qwen_layer_stage_rank_report v1: source, request, residual, state and logit namespaces."""
+ from .common import FLOATS,canonical,digest,envelope,exact,flags,integer,require,sha
+ from .evidence import logit_bytes,state_entries
+-from . import request,storage
++from . import request,storage,stage_ranges
+ 
+ READY='qwen_layer_stage_rank_ready'
+ TERMINAL='qwen_layer_stage_rank_report'
+@@ -10,6 +10,7 @@
+ 
+ 
+ def validate(record,rank,epoch,context):
++    start,end=stage_ranges.for_context(context)[integer(rank,0,1)]
+     kind=record.get('kind');require(kind in(READY,TERMINAL),'Wrong stage evidence namespace')
+     envelope(record,kind,rank,epoch)
+     if kind==READY:return
+@@ -27,8 +28,7 @@
+         exact(capture['frame'],step['frame'],'Wrong frame order/coordinates')
+         tokens=step['frame']['tokenOffset']+step['frame']['tokenCount']
+         require(integer(capture['committedTokens'])==tokens,'Wrong committed token frontier')
+-        half=text['num_hidden_layers']//2
+-        require(integer(capture['sourceLayerStart'])==rank*half and integer(capture['sourceLayerEnd'])==(rank+1)*half,'Wrong global stage range')
++        require(integer(capture['sourceLayerStart'])==start and integer(capture['sourceLayerEnd'])==end,'Wrong global stage range')
+         identity=capture['identity'];require(integer(identity['stageIndex'])==rank,'Wrong captured rank')
+         for key,value in [('requestFingerprint',context['request_fingerprint']),('artifactAggregateSHA256',context['artifact']),
+                           ('sourceConfigurationSHA256',context['configuration_sha256']),('storageCommitmentSHA256',source['storageCommitmentSHA256']),
+@@ -39,7 +39,7 @@
+         dtype=identity['activationDType'];shape=[1,step['frame']['tokenCount'],text['hidden_size']]
+         exact(capture['boundaryShape'],shape,'Residual shape differs');require(capture['boundaryDType']==dtype,'Residual dtype differs')
+         sha(item['headerSHA256']);sha(capture['boundaryPayloadSHA256'])
+-        total,fingerprint=state_entries(capture['stateEntries'],text,rank,tokens)
++        total,fingerprint=state_entries(capture['stateEntries'],text,rank,tokens,context.get('stage_cut'))
+         require(integer(capture['logicalStateBytes'])==total and sha(capture['stageStateSHA256'])==fingerprint,'State accounting/hash differs')
+         expects_logits=step['frame']['phase']=='decode' or step['frame']['finalPromptChunk']
+         expected_kind='hidden' if rank==0 else 'logits' if expects_logits else 'evaluation_handle'
+--- a/experiments/cluster/runtime/stage_checks/evidence.py
++++ b/experiments/cluster/runtime/stage_checks/evidence.py
+@@ -2,6 +2,7 @@
+ import math
+ import struct
+ from .common import FLOATS,WIDTH,canonical,digest,exact,integer,require,sha,shape_bytes
++from . import stage_ranges
+ 
+ 
+ def logit_bytes(record,vocabulary):
+@@ -28,10 +29,11 @@
+     return bytes(data)
+ 
+ 
+-def state_entries(entries,text,rank,tokens):
+-    layers=integer(text['num_hidden_layers'],2,128);half=layers//2
++def state_entries(entries,text,rank,tokens,stage_cut=None):
++    layers=integer(text['num_hidden_layers'],2,128)
++    start,end=stage_ranges.ranges(text,stage_cut)[integer(rank,0,1)]
+     expected={}
+-    for layer in range(rank*half,(rank+1)*half):
++    for layer in range(start,end):
+         if (layer+1)%text['full_attention_interval']==0:
+             kv=[1,text['num_key_value_heads'],tokens,text['head_dim']]
+             parts=[('kv.keys',kv,None),('kv.values',kv,None),('kv.position_offsets',[1],'int32')]
+--- a/experiments/cluster/runtime/stage_checks/storage.py
++++ b/experiments/cluster/runtime/stage_checks/storage.py
+@@ -1,6 +1,7 @@
+ """Generic source ownership and compact stage storage commitment consistency."""
+ import re
+ from .common import canonical,digest,exact,integer,require,sha,shape_bytes
++from . import stage_ranges
+ 
+ 
+ def layout(entries,name='localName',dtype='loadedDType'):
+@@ -8,11 +9,12 @@
+ 
+ 
+ def validate_pair(loads,context):
+-    text=context['text'];layers=text['num_hidden_layers'];half=layers//2
++    text=context['text'];ranges=stage_ranges.for_context(context)
+     namespace='language_model.' if context['configuration']['model_type']=='qwen3_5' else ''
+     common=loads[0]['storageCommitment'];all_active=[];seen=set();summaries=[]
+     require(integer(common['schemaVersion'])==1,'Unsupported stage storage commitment schema')
+     for rank,receipt in enumerate(loads):
++        start,end=ranges[rank]
+         require(integer(receipt['schemaVersion'])==1 and integer(receipt['stageIndex'])==rank,'Stage source schema/index differs')
+         require(receipt['verifiedAggregateSHA256']==context['artifact'] and receipt['sourceConfigurationSHA256']==context['configuration_sha256'],'Stage artifact/config pin differs')
+         require(receipt['bf16ConversionEnabled']is True,'Changed source conversion policy')
+@@ -27,8 +29,8 @@
+             name=tensor['sourceName'];require(type(name)is str and name not in seen,'Duplicate source tensor owner');seen.add(name)
+             match=re.fullmatch(re.escape(namespace)+r'model\.layers\.(\d+)\.(.+)',name)
+             if match:
+-                layer=int(match[1]);require(rank*half<=layer<(rank+1)*half,'Source layer assigned to wrong stage')
+-                mapped=namespace+f'model.layers.{layer-rank*half}.'+match[2]
++                layer=int(match[1]);require(start<=layer<end,'Source layer assigned to wrong stage')
++                mapped=namespace+f'model.layers.{layer-start}.'+match[2]
+             else:
+                 roots=[namespace+'model.embed_tokens.'] if rank==0 else [namespace+'lm_head.',namespace+'model.norm.']
+                 allowed={root+suffix for root in roots for suffix in ('weight','scales','biases') if not root.endswith('model.norm.') or suffix=='weight'}

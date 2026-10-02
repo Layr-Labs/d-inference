@@ -1,0 +1,453 @@
+--- originals/launch_remote_long_solo.py
++++ launch_remote_short_cut.py
+@@ -1,5 +1,5 @@
+ #!/usr/bin/env python3
+-"""Guarded one-process registered-9B 8K solo timer; root executes it."""
++"""Guarded one-process registered-9B short cut12 comparison; root executes it."""
+ import argparse
+ import json
+ from pathlib import Path
+@@ -17,14 +17,14 @@
+ 
+ def main(argv=None):
+     parser = argparse.ArgumentParser(description=__doc__)
+-    for name in ('release', 'runtime', 'output', 'prompt-file', 'prompt-origin-file'):
++    for name in ('release', 'runtime', 'output', 'prompt-file', 'teacher-file', 'prompt-origin-file', 'prompt-prefix-file', 'source-text-file'):
+         parser.add_argument('--' + name, type=Path, required=True)
+-    for name in ('long-prompt-sha256', 'prompt-origin-sha256', 'artifact-aggregate-sha256', 'expected-native-sha256'):
++    for name in ('prompt-sha256', 'teacher-sha256', 'prompt-origin-sha256', 'artifact-aggregate-sha256', 'expected-native-sha256'):
+         parser.add_argument('--' + name, required=True)
+     parser.add_argument('--host', type=host_alias, required=True)
+     parser.add_argument('--remote-model-dir', required=True)
+     parser.add_argument('--remote-run-root')
+-    parser.add_argument('--parent-timeout-seconds', type=int, default=330)
++    parser.add_argument('--parent-timeout-seconds', type=int, default=210)
+     args = parser.parse_args(argv)
+     timeout(args.parent_timeout_seconds)
+     absolute_path(args.remote_model_dir)
+@@ -39,19 +39,21 @@
+     output.mkdir(parents=True, mode=0o700)
+     run_id, gate, rank, modules = uuid.uuid4().hex, RemoteMemoryGate(), None, None
+     children, handlers = [], {}
+-    receipt = dict(kind='remote_qwen_long_prefill_solo_launcher', schema_version=1, run_id=run_id,
++    receipt = dict(kind='remote_qwen_short_stage_cut_launcher', schema_version=1, run_id=run_id,
+         passed=False, execution_host=args.host, native_execution_attempted=False, native_process_count=1,
+         physical_two_machine_execution=False, interprocess_model_transport=False, throughput_qualification=False,
+         independent_reference_oracle_run=False, parent_timeout_seconds=args.parent_timeout_seconds,
+         native_timeout_seconds=NATIVE_TIMEOUT_SECONDS, artifact_aggregate_sha256=ARTIFACT,
+         configuration_sha256=CONFIGURATION, primary_failure=None, cleanup_errors=[], post_run_errors=[],
+-        full_reference_forward_requested=False, full_solo_forward_requested=True, stage_model_forward_requested=False, timing_requested=True, timing_diagnostic_only=True)
++        full_reference_forward_requested=True, full_solo_forward_requested=False, stage_model_forward_requested=True,
++        selected_stage_cut=12, source_layer_ranges=[[0, 12], [12, 32]], timing_requested=False, timing_diagnostic_only=False,
++        independent_numerical_audit_passed=False)
+     try:
+         launcher = archive_launcher(output)
+         sources = archive_sources(runtime, output)
+         modules = load_archived_runtime(output, run_id)
+-        inputs = archive_inputs(args.prompt_file, args.long_prompt_sha256,
+-                                args.prompt_origin_file, args.prompt_origin_sha256, output)
++        inputs = archive_inputs(args.prompt_file, args.prompt_sha256, args.teacher_file, args.teacher_sha256,
++                                args.prompt_origin_file, args.prompt_origin_sha256, args.prompt_prefix_file, args.source_text_file, output)
+         receipt['inputs'] = inputs
+         bundle_hash = modules['bundle'].snapshot(args.release.resolve(strict=True), output / 'bundle')
+         require(digest(output / 'bundle/cluster-inference') == args.expected_native_sha256, 'Frozen native binary pin differs')
+@@ -61,10 +63,11 @@
+         receipt['remote_paths'] = layout
+         local = output / 'native'
+         local.mkdir(mode=0o700)
+-        write_json(local / 'rank.json', configuration(layout['bundle'], bundle_hash, layout['model'], args.long_prompt_sha256))
++        write_json(local / 'rank.json', configuration(layout['bundle'], bundle_hash, layout['model'], args.prompt_sha256, args.teacher_sha256))
+         config = dict(layout, run_id=run_id, bundle_sha256=bundle_hash, binary_sha256=args.expected_native_sha256,
+             rank_sha256=digest(local / 'rank.json'), artifact_sha256=ARTIFACT, configuration_sha256=CONFIGURATION,
+-            prompt_sha256=args.long_prompt_sha256, prompt_size_bytes=(output / 'inputs/prompt.json').stat().st_size,
++            prompt_sha256=args.prompt_sha256, prompt_size_bytes=(output / 'inputs/prompt.json').stat().st_size,
++            teacher_sha256=args.teacher_sha256, teacher_size_bytes=(output / 'inputs/teacher.json').stat().st_size,
+             required_environment=dict(REQUIRED_ENVIRONMENT))
+         control_hash = prepare_controls(output, layout, config)
+         upload_new(modules['processes'], args.host, output / 'controls', layout['controls'])
+@@ -80,6 +83,7 @@
+         upload_new(modules['processes'], args.host, output / 'bundle', layout['bundle'])
+         upload_new(modules['processes'], args.host, local / 'rank.json', layout['native'] + '/rank.json')
+         upload_new(modules['processes'], args.host, output / 'inputs/prompt.json', layout['native'] + '/prompt.json')
++        upload_new(modules['processes'], args.host, output / 'inputs/teacher.json', layout['native'] + '/teacher.json')
+         before = control.call('before')
+         receipt['remote_before'] = before
+         verified_remote(before, config, expected_files)
+@@ -138,7 +142,7 @@
+         receipt['observed_remote_native_pids'] = sorted({row['pid'] for sample in gate.samples
+             for row in sample.get('remote_pid_inventory', {}).get('observed_processes', []) if row['kind'] == 'native'})
+         receipt['remote_pid_observations_are_not_reaping_proof'] = True
+-        receipt['resource_policy'] = 'initial actual free>=6GiB before remote bundle/model reads; posthash reclaimable>=8GiB; pressure<=2; zero reported swap; fixed native300s and parent<=330s'
++        receipt['resource_policy'] = 'initial actual free>=6GiB before remote bundle/model reads; posthash reclaimable>=8GiB; pressure<=2; zero reported swap; fixed native180s and parent<=210s'
+         receipt['local_model_payload_verified'] = False
+         try:
+             receipt['native_files'] = native_file_receipts(output)
+--- originals/long_reference_artifacts.py
++++ long_reference_artifacts.py
+@@ -18,6 +18,10 @@
+             and type(record.get('prompt_size_bytes')) is int
+             and record['prompt_size_bytes'] == config['prompt_size_bytes']
+             and record.get('raw_prompt_reencoded') is False, 'Remote exact raw prompt differs')
++    require(record.get('teacher_sha256') == config['teacher_sha256']
++            and type(record.get('teacher_size_bytes')) is int
++            and record['teacher_size_bytes'] == config['teacher_size_bytes']
++            and record.get('raw_teacher_reencoded') is False, 'Remote exact raw teacher differs')
+ 
+ 
+ def verify_local(modules, output, sources, bundle_hash, launcher, inputs, config, controls_hash):
+@@ -26,7 +30,7 @@
+     require(path.stat().st_size <= 256 * 1024 and digest(path) == config['rank_sha256'],
+             'Local rank configuration changed')
+     require_rank_configuration(json.loads(path.read_text()), config['bundle'], bundle_hash,
+-                               config['model'], config['prompt_sha256'])
++                               config['model'], config['prompt_sha256'], config['teacher_sha256'])
+     for entry in inputs['files']:
+         path = output / entry['path']
+         require(path.stat().st_size == entry['size_bytes'] and digest(path) == entry['sha256'],
+--- originals/long_reference_configuration.py
++++ long_reference_configuration.py
+@@ -1,30 +1,30 @@
+ """Fixed native request and byte-preserving staging contract."""
+ from long_reference_inputs import ARTIFACT, is_sha256, require
+ 
+-NATIVE_TIMEOUT_SECONDS = 300
+-MAX_PARENT_SECONDS = 330
++NATIVE_TIMEOUT_SECONDS = 180
++MAX_PARENT_SECONDS = 210
+ REQUIRED_ENVIRONMENT = {'DARKBLOOM_BF16_WEIGHTS': '1',
+                         'DARKBLOOM_CBV2_ATTN_QUERY_BLOCK': '128', 'MLX_ENABLE_TF32': '1'}
+ 
+ 
+ def timeout(value):
+     require(type(value) is int and 1 <= value <= MAX_PARENT_SECONDS,
+-            'Parent timeout must be an integer from 1 through 330 seconds')
++            'Parent timeout must be an integer from 1 through 210 seconds')
+ 
+ 
+-def configuration(bundle, bundle_hash, model, prompt_sha256):
+-    require(is_sha256(bundle_hash) and is_sha256(prompt_sha256), 'Explicit bundle and raw prompt pins required')
++def configuration(bundle, bundle_hash, model, prompt_sha256, teacher_sha256):
++    require(is_sha256(bundle_hash) and is_sha256(prompt_sha256) and is_sha256(teacher_sha256), 'Explicit bundle, raw prompt and teacher pins required')
+     return dict(bundle=str(bundle), bundle_sha256=bundle_hash, rank=0, persistent=False,
+         model_directory=str(model), artifact_aggregate_sha256=ARTIFACT,
+         timeout_seconds=NATIVE_TIMEOUT_SECONDS, environment=dict(REQUIRED_ENVIRONMENT),
+         environment_files={}, input_files={},
+-        arguments=['--mode', 'qwen-long-prefill-solo-check', '--model-dir', '@model',
++        arguments=['--mode', 'qwen-layer-stage-compare', '--model-dir', '@model',
+             '--artifact-aggregate-sha256', ARTIFACT, '--execution-path', 'cbv2-contiguous',
+-            '--tokens-file', '@rank/prompt.json', '--long-prompt-sha256', prompt_sha256,
+-            '--prompt-tokens', '8192', '--chunk-size', '512', '--decode-tokens', '1',
++            '--tokens-file', '@rank/prompt.json', '--teacher-tokens-file', '@rank/teacher.json', '--stage-cut', '12',
++            '--prompt-tokens', '65', '--chunk-size', '32', '--decode-tokens', '4', '--seed', '7',
+             '--repeats', '1', '--warmups', '0', '--timeout-seconds', str(NATIVE_TIMEOUT_SECONDS)])
+ 
+ 
+-def require_rank_configuration(value, bundle, bundle_hash, model, prompt_sha256):
+-    require(value == configuration(bundle, bundle_hash, model, prompt_sha256),
+-            'Rank configuration differs from the fixed raw-prompt/environment/native contract')
++def require_rank_configuration(value, bundle, bundle_hash, model, prompt_sha256, teacher_sha256):
++    require(value == configuration(bundle, bundle_hash, model, prompt_sha256, teacher_sha256),
++            'Rank configuration differs from the fixed cut12 raw-prompt/teacher/environment/native contract')
+--- originals/long_reference_contract.py
++++ long_reference_contract.py
+@@ -1,11 +1,14 @@
+-"""Bounded outer records only; the independent oracle audits solo evidence."""
++"""Bounded short cut12 outer records only; independent numerical audit stays separate."""
+ import json
+ import math
+ from pathlib import Path
+-from long_reference_inputs import ARTIFACT, CONFIGURATION, PROFILE, PROFILE_SHA256, is_sha256, require
++from long_reference_inputs import ARTIFACT, CONFIGURATION, is_sha256, require
++from short_cut_request import equal, validate_request, expected_source
++from short_cut_expected import (PLAN_SHA256, SOURCE_LAYOUT_SHA256, SOURCE_MODEL_BYTES, STAGE_PLAN_SHA256,
++                                STAGE_CONFIGURATION_SHA256, NAMED_STATE_AND_BOUNDARY_BYTES)
+ 
+-FIRST, FINAL = 'qwen_long_prefill_solo_ready', 'qwen_long_prefill_solo_report'
+-MAX_STDOUT, MAX_STDERR, MAX_LINE = 8 * 1024**2, 64 * 1024, 8 * 1024**2
++FIRST, FINAL = 'qwen_layer_stage_baseline_checkpoint', 'qwen_layer_stage_comparison_report'
++MAX_STDOUT, MAX_STDERR, MAX_LINE = 64 * 1024**2, 64 * 1024, 60 * 1024**2
+ 
+ 
+ def parse(data):
+@@ -30,56 +33,73 @@
+         require(type(record.get(key)) is bool and record[key] is value, 'Wrong flag: ' + key)
+ 
+ 
++def memory_records(values, phases):
++    require(type(values) is list and len(values) == len(phases), 'Wrong native memory phase count')
++    for value, phase in zip(values, phases):
++        require(type(value) is dict and set(value) == {'phase', 'activeMLXBytes', 'cachedMLXBytes', 'peakMLXBytesSinceProcessStart'}
++                and value['phase'] == phase, 'Wrong native memory phase')
++        require(all(type(value[key]) is int and value[key] >= 0
++                    for key in ('activeMLXBytes', 'cachedMLXBytes', 'peakMLXBytesSinceProcessStart')),
++                'Invalid native memory counter')
++
++
+ def validate_first(record, inputs):
+-    keys = {'kind', 'schemaVersion', 'correctnessOnly', 'throughputMeasurementValid',
+-            'verifiedModelLoaded', 'freshRequestStateCreated', 'profile', 'profileFingerprint',
+-            'promptFileSHA256', 'arithmeticEnvironmentSHA256', 'recordedRequestFingerprint'}
+-    require(set(record) == keys and record['kind'] == FIRST
+-            and type(record['schemaVersion']) is int and record['schemaVersion'] == 1,
+-            'Expected exact loaded-model admitted-ready record first')
+-    flags(record, correctnessOnly=True, throughputMeasurementValid=False,
+-          verifiedModelLoaded=True, freshRequestStateCreated=False)
+-    require(record['profile'] == PROFILE and record['profileFingerprint'] == PROFILE_SHA256
+-            and record['promptFileSHA256'] == inputs['prompt_file_sha256']
+-            and is_sha256(record['arithmeticEnvironmentSHA256'])
+-            and is_sha256(record['recordedRequestFingerprint']), 'Ready input/profile identity differs')
++    require(type(record) is dict and set(record) == {'kind', 'baselineModelReleasedBeforeStageLoading', 'baseline', 'memory'}
++            and record['kind'] == FIRST, 'Expected the exact completed baseline checkpoint first')
++    flags(record, baselineModelReleasedBeforeStageLoading=True)
++    baseline = record['baseline']
++    require(type(baseline) is dict and set(baseline) == {'kind', 'correctnessOnly', 'throughputMeasurementValid',
++            'request', 'source', 'frames', 'fingerprint', 'allRequestStateRetired'}
++            and baseline['kind'] == 'qwen_layer_stage_recorded_baseline', 'Wrong recorded baseline namespace')
++    flags(baseline, correctnessOnly=True, throughputMeasurementValid=False, allRequestStateRetired=True)
++    validate_request(baseline['request'], inputs)
++    equal(baseline['source'], expected_source(), 'Wrong baseline artifact/configuration/cut-plan identity')
++    require(is_sha256(baseline['fingerprint']) and type(baseline['frames']) is list and len(baseline['frames']) == 6,
++            'Missing bounded baseline evidence')
++    memory_records(record['memory'], ['before_baseline_load', 'baseline_released_cache_cleared'])
+ 
+ 
+ def validate_final(record, first, inputs):
+-    keys = {'kind', 'schemaVersion', 'completed', 'correctnessOnly', 'throughputMeasurementValid',
+-            'interprocessTransportUsed', 'physicalTransferQualified', 'allRequestStateRetired',
+-            'modelReleased', 'profile', 'profileFingerprint', 'promptFileSHA256', 'promptTokenIDsSHA256',
+-            'arithmeticEnvironment', 'arithmeticEnvironmentSHA256', 'resourceAdmission', 'execution', 'memory'}
+-    require(set(record) == keys and record['kind'] == FINAL
+-            and type(record['schemaVersion']) is int and record['schemaVersion'] == 1,
+-            'Wrong terminal namespace/schema or unexpected timing field')
+-    flags(record, completed=True, correctnessOnly=True, throughputMeasurementValid=False,
+-          interprocessTransportUsed=False, physicalTransferQualified=False,
+-          allRequestStateRetired=True, modelReleased=True)
+-    evidence = record
+-    require(type(evidence.get('arithmeticEnvironment')) is dict and type(evidence.get('resourceAdmission')) is dict,
+-            'Missing solo arithmetic/resource evidence')
+-    # Bind the producer to this launch. Numerical rows, component inventories,
+-    # arithmetic receipt contents and inner fingerprints remain oracle-owned.
+-    for key in ('profile', 'profileFingerprint', 'promptFileSHA256', 'arithmeticEnvironmentSHA256'):
+-        require(evidence.get(key) == first[key], 'Evidence differs from admitted ready identity: ' + key)
+-    require(evidence.get('promptTokenIDsSHA256') == inputs['prompt_token_ids_sha256'], 'Wrong logical prompt identity')
+-    execution = evidence.get('execution')
+-    require(type(execution) is dict and type(execution.get('request')) is dict
+-            and execution['request'].get('fingerprint') == first['recordedRequestFingerprint'],
+-            'Producer request differs from ready request')
+-    source = execution.get('source', {})
+-    require(source.get('artifactAggregateSHA256') == ARTIFACT
+-            and source.get('sourceConfigurationSHA256') == CONFIGURATION, 'Wrong producer source artifact/configuration')
+-    memory = record['memory']
+-    require(type(memory) is list and len(memory) == 4, 'Missing native memory phases')
+-    for value, phase in zip(memory, ['before_full_model_load', 'full_model_loaded_no_request_state',
+-                                    'full_request_retired_weights_resident', 'full_model_released_cache_cleared']):
+-        require(type(value) is dict and set(value) == {'phase', 'activeMLXBytes', 'cachedMLXBytes', 'peakMLXBytesSinceProcessStart'}
+-                and value['phase'] == phase, 'Wrong native memory observation')
+-        require(all(type(value[key]) is int and value[key] >= 0
+-                    for key in ('activeMLXBytes', 'cachedMLXBytes', 'peakMLXBytesSinceProcessStart')),
+-                'Invalid native memory counters')
++    require(type(record) is dict and set(record) == {'kind', 'correctnessOnly', 'throughputMeasurementValid',
++            'baselineModelReleasedBeforeStageLoading', 'stageModelsReleasedAfterComparison',
++            'conservativeStateAndBoundaryBytes', 'stageLoads', 'comparison', 'memory'}
++            and record['kind'] == FINAL, 'Wrong short comparison terminal namespace')
++    flags(record, correctnessOnly=True, throughputMeasurementValid=False,
++          baselineModelReleasedBeforeStageLoading=True, stageModelsReleasedAfterComparison=True)
++    require(type(record['conservativeStateAndBoundaryBytes']) is int
++            and record['conservativeStateAndBoundaryBytes'] == NAMED_STATE_AND_BOUNDARY_BYTES,
++            'Wrong unchanged named-state/boundary estimate')
++    baseline, compared = first['baseline'], record['comparison']
++    require(type(compared) is dict and set(compared) == {'kind', 'correctnessOnly', 'throughputMeasurementValid',
++            'sequentialOneProcessOnly', 'nativeBoundaryBytesCopied', 'baselineEvidenceSHA256', 'requestSHA256',
++            'source', 'stageStorageCommitmentSHA256', 'frames', 'allRequestStateRetired'}
++            and compared['kind'] == 'qwen_layer_stage_recorded_comparison', 'Wrong inner comparison namespace')
++    flags(compared, correctnessOnly=True, throughputMeasurementValid=False,
++          sequentialOneProcessOnly=True, nativeBoundaryBytesCopied=True, allRequestStateRetired=True)
++    require(compared['baselineEvidenceSHA256'] == baseline['fingerprint']
++            and compared['requestSHA256'] == baseline['request']['fingerprint']
++            and is_sha256(compared['stageStorageCommitmentSHA256'])
++            and type(compared['frames']) is list and len(compared['frames']) == 6,
++            'Comparison is not bound to the completed baseline/request')
++    equal(compared['source'], baseline['source'], 'Comparison source differs from the completed baseline')
++    loads = record['stageLoads']
++    require(type(loads) is list and len(loads) == 2, 'Expected two loaded stage receipts')
++    for index, receipt in enumerate(loads):
++        require(type(receipt) is dict and type(receipt.get('schemaVersion')) is int and receipt['schemaVersion'] == 1
++                and type(receipt.get('stageIndex')) is int and receipt['stageIndex'] == index,
++                'Wrong ordered stage-load identity')
++        flags(receipt, bf16ConversionEnabled=True)
++        for key, expected in [('verifiedAggregateSHA256', ARTIFACT), ('sourceConfigurationSHA256', CONFIGURATION),
++            ('sourceParameterLayoutSHA256', SOURCE_LAYOUT_SHA256), ('sourceModelTensorBytes', SOURCE_MODEL_BYTES),
++            ('planSHA256', PLAN_SHA256), ('stagePlanSHA256', STAGE_PLAN_SHA256[index]),
++            ('constructionConfigurationSHA256', STAGE_CONFIGURATION_SHA256[index]),
++            ('embeddingActivationDType', 'bfloat16'), ('storageCommitmentSHA256', compared['stageStorageCommitmentSHA256'])]:
++            equal(receipt.get(key), expected, 'Wrong source or explicit cut stage identity: ' + key)
++    memory_records(record['memory'], ['before_baseline_load', 'baseline_released_cache_cleared',
++        'both_stages_loaded', 'stage_requests_retired', 'stage_models_released_cache_cleared'])
++    equal(record['memory'][:2], first['memory'], 'Baseline memory prefix changed')
++    # No state/logit arithmetic, row-byte equality or nested fingerprint replay
++    # is claimed here. Those require the separately frozen numerical auditor.
+ 
+ 
+ class Records:
+@@ -91,10 +111,10 @@
+         err = self.directory / 'stderr.log'
+         error_size = err.stat().st_size if err.exists() else 0
+         require(error_size <= MAX_STDERR, 'stderr exceeds 64 KiB')
+-        require(error_size == 0, 'Solo process emitted stderr')
++        require(error_size == 0, 'Short comparison emitted stderr')
+         path = self.directory / 'stdout.jsonl'
+         size = path.stat().st_size if path.exists() else 0
+-        require(self.offset <= size <= MAX_STDOUT, 'stdout shrank or exceeded 8 MiB')
++        require(self.offset <= size <= MAX_STDOUT, 'stdout shrank or exceeded 64 MiB')
+         if size > self.offset:
+             with path.open('rb') as stream:
+                 stream.seek(self.offset)
+--- originals/long_reference_inputs.py
++++ long_reference_inputs.py
+@@ -1,4 +1,4 @@
+-"""Pinned raw prompt and opaque tokenization provenance; no model reads."""
++"""Pinned short natural prefix/teacher provenance; no import-time file reads."""
+ import hashlib
+ import json
+ from pathlib import Path
+@@ -7,9 +7,12 @@
+ 
+ ARTIFACT = '127de76b4ef82b7aaa0acaac0ee31c784cff066eda64291f521f051469b7c24b'
+ CONFIGURATION = 'c8e767de4953e58352fbc1acbf6615329075ed02fe16a36b8065714d85ee4423'
+-PROFILE = 'long_prefill_8k_v1'
+-PROFILE_SHA256 = '2b7f484488df61c4f6042acfb472a8099828c8a6246819501c88d4f6e07bcc0b'
+-VOCABULARY, PROMPT_COUNT, CHUNK_SIZE = 248320, 8192, 512
++PROMPT_SHA256 = '667b2e8232e3fc941469be79c3a178469b7d90c23d6f3ef1de4bd8bd87a813fc'
++TEACHER_SHA256 = 'aad3b6387a197e052f32d75bd3d0aead834da80e577279665e04966e81c27fbc'
++ORIGIN_SHA256 = '0afffd9b1863f785f4f3880f71c21305177f36cb825e29e506983ff0f745cfc1'
++PREFIX96_SHA256 = '36b9329c650a57fb8c5a30c13aeafc8155047d14527f62d824c3e7e104a968d2'
++SOURCE_TEXT_SHA256 = '6a76e63af205e75c3e702a7e85be76d1d0575133d9deffd171d6de6e7b3db920'
++VOCABULARY, PROMPT_COUNT, CHUNK_SIZE = 248320, 65, 32
+ MAX_PROMPT_BYTES, MAX_ORIGIN_BYTES = 65536, 2 * 1024**2
+ 
+ 
+@@ -33,39 +36,57 @@
+     return raw
+ 
+ 
+-def parse_prompt(raw):
+-    require(0 < len(raw) <= MAX_PROMPT_BYTES, 'Prompt exceeds 64 KiB')
++def parse_tokens(raw, count):
++    require(0 < len(raw) <= MAX_PROMPT_BYTES, 'Token input exceeds 64 KiB')
+     def reject(value):
+-        raise ValueError('Prompt admits only strict JSON integers')
++        raise ValueError('Tokens admit only strict JSON integers')
+     def integer(value):
+-        require(value != '-0', 'Prompt rejects negative-zero integer spelling')
++        require(value != '-0', 'Tokens reject negative-zero integer spelling')
+         return int(value)
+     values = json.loads(raw, parse_float=reject, parse_constant=reject, parse_int=integer)
+-    require(type(values) is list and len(values) == PROMPT_COUNT
++    require(type(values) is list and len(values) == count
+             and all(type(x) is int and 0 <= x < VOCABULARY for x in values),
+-            'Prompt must contain exactly 8192 in-vocabulary integers')
++            'Wrong fixed token count/type/vocabulary')
+     return values
+ 
+ 
+-def archive_inputs(prompt_file, prompt_sha256, origin_file, origin_sha256, output):
+-    raw = read_pinned(prompt_file, prompt_sha256, MAX_PROMPT_BYTES)
+-    prompt = parse_prompt(raw)
+-    # The caller independently audited tokenization. Preserve the origin bytes
+-    # and explicit pin without inventing or trusting a provenance JSON schema.
+-    origin = read_pinned(origin_file, origin_sha256, MAX_ORIGIN_BYTES)
+-    directory = output / 'inputs'
+-    directory.mkdir(mode=0o700)
+-    for name, content in [('prompt.json', raw), ('prompt-origin.json', origin)]:
+-        target = directory / name
+-        with target.open('xb') as stream:
+-            stream.write(content)
+-        target.chmod(0o400)
+-    require(read_pinned(prompt_file, prompt_sha256, MAX_PROMPT_BYTES) == raw
+-            and read_pinned(origin_file, origin_sha256, MAX_ORIGIN_BYTES) == origin,
+-            'Pinned input changed during archive')
+-    return dict(prompt=prompt, teacher=[], prompt_file_sha256=prompt_sha256,
+-                prompt_token_ids_sha256=hashlib.sha256(','.join(map(str, prompt)).encode()).hexdigest(),
+-                prompt_origin_file_sha256=origin_sha256, prompt_origin_schema_audited_by_launcher=False,
+-                raw_prompt_reencoded=False,
+-                files=[dict(path=p.relative_to(output).as_posix(), sha256=digest(p), size_bytes=p.stat().st_size)
+-                       for p in sorted(directory.iterdir())])
++def archive_inputs(prompt_file, prompt_sha256, teacher_file, teacher_sha256,
++                   origin_file, origin_sha256, prefix_file, text_file, output):
++    require((prompt_sha256, teacher_sha256, origin_sha256) == (PROMPT_SHA256, TEACHER_SHA256, ORIGIN_SHA256),
++            'Only the registered short prompt/teacher/origin pins are admitted')
++    sources = [('prompt.json', prompt_file, prompt_sha256, MAX_PROMPT_BYTES),
++               ('teacher.json', teacher_file, teacher_sha256, MAX_PROMPT_BYTES),
++               ('origin-receipt.json', origin_file, origin_sha256, MAX_ORIGIN_BYTES),
++               ('origin-prompt-96.json', prefix_file, PREFIX96_SHA256, MAX_PROMPT_BYTES),
++               ('source-text.txt', text_file, SOURCE_TEXT_SHA256, MAX_PROMPT_BYTES)]
++    retained = {name: read_pinned(path, pin, cap) for name, path, pin, cap in sources}
++    prompt, teacher = parse_tokens(retained['prompt.json'], 65), parse_tokens(retained['teacher.json'], 3)
++    prefix = parse_tokens(retained['origin-prompt-96.json'], 96)
++    origin = json.loads(retained['origin-receipt.json'])
++    require(type(origin) is dict and type(origin.get('tokenization')) is dict
++            and type(origin.get('native_calls')) is list, 'Wrong pinned origin structure')
++    tokenization = origin['tokenization']
++    require(type(tokenization.get('prompt_ids')) is list and prompt == tokenization['prompt_ids'][:65]
++            and prompt == prefix[:65] and tokenization.get('source_text_sha256') == SOURCE_TEXT_SHA256
++            and teacher == [4087, 13, 271] and origin.get('baseline_teacher_tokens') == teacher,
++            'Natural-text prefix/teacher history differs from pinned origin')
++    calls = [c for c in origin['native_calls'] if type(c) is dict and c.get('name') == 'cbv2-native']
++    require(len(calls) == 1 and calls[0].get('status') == 'validated'
++            and type(calls[0].get('exit_code')) is int and calls[0]['exit_code'] == 0
++            and calls[0].get('rank_evidence_sha256', {}).get('rank-0/teacher.json') == teacher_sha256,
++            'Named original CBv2 teacher evidence differs')
++    directory = output / 'inputs'; directory.mkdir(mode=0o700)
++    for name, path, pin, cap in sources:
++        with (directory / name).open('xb') as stream:
++            stream.write(retained[name])
++        (directory / name).chmod(0o400)
++        require(read_pinned(path, pin, cap) == retained[name], 'Pinned input changed during archive')
++    logical = lambda values: hashlib.sha256(json.dumps(values, separators=(',', ':')).encode()).hexdigest()
++    return dict(prompt=prompt, teacher=teacher, prompt_file_sha256=prompt_sha256,
++        teacher_file_sha256=teacher_sha256, prompt_token_ids_sha256=logical(prompt),
++        teacher_token_ids_sha256=logical(teacher), token_ids_hash_encoding='compact_json_integer_array_utf8',
++        prompt_origin_file_sha256=origin_sha256,
++        prompt_origin_schema_audited_by_launcher=True, named_teacher_call='cbv2-native',
++        raw_prompt_reencoded=False, raw_teacher_reencoded=False,
++        files=[dict(path=p.relative_to(output).as_posix(), sha256=digest(p), size_bytes=p.stat().st_size)
++               for p in sorted(directory.iterdir())])
+--- originals/remote_prefill_client.py
++++ remote_prefill_client.py
+@@ -108,7 +108,8 @@
+             require(item['remote_path'] == expected_remote, 'Unexpected remote metadata path')
+             requested.append((expected_remote, phase + '-' + name, item['sha256']))
+     requested += [(layout['native'] + '/rank.json', 'rank.final.json', after['rank_configuration_sha256']),
+-                  (layout['native'] + '/prompt.json', 'prompt.final.json', after['prompt_sha256'])]
++                  (layout['native'] + '/prompt.json', 'prompt.final.json', after['prompt_sha256']),
++                  (layout['native'] + '/teacher.json', 'teacher.final.json', after['teacher_sha256'])]
+     for remote, name, expected in requested:
+         target = destination / name
+         require(not target.exists(), 'Refusing metadata overwrite')
+--- originals/remote_prefill_control.py
++++ remote_prefill_control.py
+@@ -72,6 +72,13 @@
+     # unchanged worker. Seal the owned copy before native execution.
+     if phase == 'before':
+         prompt.chmod(0o400)
++    teacher = native / 'teacher.json'
++    require(teacher.is_file() and not teacher.is_symlink()
++            and 0 < teacher.stat().st_size <= 65536
++            and teacher.stat().st_size == config['teacher_size_bytes']
++            and file_sha256(teacher) == config['teacher_sha256'], 'Remote raw teacher changed')
++    if phase == 'before':
++        teacher.chmod(0o400)
+     require(file_sha256(model / 'config.json') == config['configuration_sha256'], 'Remote model configuration changed')
+     aggregate = verify_model(model, config['artifact_sha256'])
+     metadata = {}
+@@ -91,7 +98,9 @@
+                   bundle_file_sha256=bundle_files, model_metadata=metadata,
+                   rank_configuration_sha256=file_sha256(native / 'rank.json'),
+                   prompt_sha256=file_sha256(prompt), prompt_size_bytes=prompt.stat().st_size,
+-                  raw_prompt_reencoded=False)
++                  raw_prompt_reencoded=False,
++                  teacher_sha256=file_sha256(teacher), teacher_size_bytes=teacher.stat().st_size,
++                  raw_teacher_reencoded=False)
+     if phase == 'before':
+         result['posthash_preflight'] = resource_preflight(root)
+     result['memory'] = observation(config)

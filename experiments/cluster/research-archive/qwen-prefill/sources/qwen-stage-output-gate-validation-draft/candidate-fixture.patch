@@ -1,0 +1,11 @@
+--- a/QwenLayerStageCandidatesCheck.swift
++++ b/QwenLayerStageCandidatesCheck.swift
+@@ -86,7 +86,7 @@
+     try require(withExclusions[0].excludedCanonicalSourceNames == excluded.sorted()
+         && withExclusions[0].ownership.flatMap(\.parameters).count == tenNames.count,
+         "explicit exclusions changed text ownership")
+-    text["output_gate_type"] = "swish"; root["text_config"] = text
++    text["output_gate_type"] = "sigmoid"; root["text_config"] = text
+     try reject { _ = try QwenLayerStageCandidates.enumerate(configuration: QwenStageMetadata.json(root),
+         canonicalSourceNames: tenNames) }
+     try reject { _ = try QwenLayerStageCandidates.enumerate(configuration: ten,

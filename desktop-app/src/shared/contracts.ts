@@ -103,6 +103,7 @@ export interface NetworkData {
   total_tokens?: string;
   total_requests?: string;
   total_macs?: number;
+  provider_regions?: unknown;
   error?: string;
 }
 export interface CoolingData {

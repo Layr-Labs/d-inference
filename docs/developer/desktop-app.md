@@ -103,6 +103,15 @@ requires the release qualifications below.
 
 ## Verify
 
+The primary sidebar contains Home, My Macs, Leaderboard, and Updates. The current
+Mac's detail page retains Models, Cooling, Analysis, Studio, and Settings;
+Home retains the Earnings entry. These pages remain implemented, not deleted.
+Leaderboard combines the reference's pixel world map and featured top three with
+compact rows. It ranks actual 24-hour earnings from the native API and displays
+annualized pace; expanding a provider shows the underlying earnings and tokens.
+Missing location data never lights illustrative locations in production.
+
+
 Home includes live model activity from the Swift event stream and settled-token
 milestones. **View earnings** opens the desktop Earnings screen, which supports
 7/30-day periods, earnings/output-token/request metrics, model/Mac breakdowns,

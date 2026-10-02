@@ -44,7 +44,10 @@ extension DesktopBackend {
     components.query = nil
     components.fragment = nil
     if name == "leaderboard" {
-      components.queryItems = [URLQueryItem(name: "metric", value: "tokens")]
+      components.queryItems = [
+        URLQueryItem(name: "metric", value: "earnings"),
+        URLQueryItem(name: "window", value: "24h"),
+      ]
     }
     if name.hasPrefix("insights-") {
       components.queryItems = [URLQueryItem(name: "window", value: name == "insights-week" ? "7d" : "30d")]
@@ -74,17 +77,21 @@ extension DesktopBackend {
         "total_tokens": Self.integerText(value.field("total_tokens")),
         "total_requests": Self.integerText(value.field("total_requests")),
         "total_macs": value.field("active_providers"),
+        "provider_regions": value.field("provider_regions"),
       ])
     }
     if name == "leaderboard" {
-      return .array(
-        value.field("entries").values.map { entry in
-          .dict([
-            "rank": entry.field("rank"), "name": entry.field("pseudonym"),
-            "tokens": Self.integerText(entry.field("tokens")),
-            "earnings_micro_usd": Self.integerText(entry.field("earnings_micro_usd")),
-          ])
-        })
+      let entries: [JSONValue] = value.field("entries").values.map { entry in
+        .dict([
+          "rank": entry.field("rank"), "name": entry.field("pseudonym"),
+          "tokens": Self.integerText(entry.field("tokens")),
+          "earnings_micro_usd": Self.integerText(entry.field("earnings_micro_usd")),
+        ])
+      }
+      return .dict([
+        "metric": value.field("metric"), "window": value.field("window"),
+        "entries": .array(entries),
+      ])
     }
     if name == "release" {
       return .dict([

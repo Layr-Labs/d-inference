@@ -63,8 +63,8 @@ credential (`desktop-app/src/main/backend.ts`, `Backend`; `DesktopHTTP.authorize
 | `POST /control/v1/actions` | Validated operation; JSON body limited to 16 KiB; returns `202` and its operation ID | `DesktopAction.validate`, `DesktopBackend.submit` |
 | `GET /control/v1/cloud` | Account and owned fleet projection through the coordinator; separates This Mac using native identity | `DesktopBackend.resource` |
 | `GET /control/v1/insights-week`, `GET /control/v1/insights-month` | Settled earnings, lifetime output tokens, and 7/30-calendar-day analytics through the provider-token-authenticated coordinator endpoint | `DesktopBackend.resource` |
-| `GET /control/v1/network` | Normalized public totals from `/v1/stats` | `DesktopBackend.resource` |
-| `GET /control/v1/leaderboard` | Public ranking by generated tokens | `DesktopBackend.resource` |
+| `GET /control/v1/network` | Normalized public totals and approximate `provider_regions` from `/v1/stats` | `DesktopBackend.resource` |
+| `GET /control/v1/leaderboard` | Public earnings ranking over 24 hours (`metric=earnings&window=24h`); response includes `metric`, `window`, and `entries`; money and token counts remain decimal strings | `DesktopBackend.resource` |
 | `GET /control/v1/release` | Latest registered runtime version and changelog | `DesktopBackend.resource` |
 | `GET /control/v1/cooling` | Native fan diagnostics and helper state; concurrent and repeat reads within 10 s share one `fan status` run; a finished `cooling` action clears it | `DesktopBackend.cooling` |
 | `GET /control/v1/endpoint-key` | Existing local inference credential for explicit reveal | `DesktopBackend.resource` |

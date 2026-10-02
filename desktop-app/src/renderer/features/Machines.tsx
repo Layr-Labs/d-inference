@@ -90,7 +90,7 @@ export function Machines({
               <ActivityChart backend={backend} />
             </section>
             <div className="setting-links">
-              {(['cooling', 'analysis', 'settings'] as Route[]).map((route) => (
+              {(['cooling', 'analysis', 'studio', 'settings'] as Route[]).map((route) => (
                 <button key={route} onClick={() => navigate(route)}>
                   <span>{route[0].toUpperCase() + route.slice(1)}</span>
                   <ArrowUpRight size={18} />

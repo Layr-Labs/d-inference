@@ -1,20 +1,5 @@
 import { useEffect, useState } from 'react';
-import {
-  Activity,
-  ArrowUpRight,
-  Box,
-  ChevronRight,
-  CircleHelp,
-  Fan,
-  Home as HomeIcon,
-  Layers3,
-  Monitor,
-  Settings2,
-  Terminal,
-  Trophy,
-  Zap,
-  Wallet,
-} from 'lucide-react';
+import { Box, ChevronRight, Home as HomeIcon, Monitor, Trophy, Zap } from 'lucide-react';
 import type { Route } from '../shared/contracts';
 import { api, isPreview, useBackend } from './useBackend';
 import { Home } from './features/Home';
@@ -28,11 +13,8 @@ import { Appearance } from './components/Appearance';
 const navigation = [
   { id: 'home', label: 'Home', icon: HomeIcon },
   { id: 'machines', label: 'My Macs', icon: Monitor },
-  { id: 'models', label: 'Models', icon: Layers3 },
-  { id: 'studio', label: 'Studio', icon: Terminal },
-  { id: 'analysis', label: 'Analysis', icon: Activity },
-  { id: 'earnings', label: 'Earnings', icon: Wallet },
-  { id: 'cooling', label: 'Cooling', icon: Fan },
+  { id: 'leaderboard', label: 'Leaderboard', icon: Trophy },
+  { id: 'updates', label: 'Updates', icon: Box },
 ] as const;
 export default function App() {
   const [route, setRoute] = useState<Route>('home');
@@ -47,9 +29,12 @@ export default function App() {
   useEffect(() => api?.onNavigate(setRoute), []);
   const title = [
     ...navigation,
-    { id: 'leaderboard', label: 'Leaderboard' },
-    { id: 'updates', label: 'Updates' },
     { id: 'settings', label: 'Settings' },
+    { id: 'models', label: 'Models' },
+    { id: 'studio', label: 'Studio' },
+    { id: 'analysis', label: 'Analysis' },
+    { id: 'earnings', label: 'Earnings' },
+    { id: 'cooling', label: 'Cooling' },
   ].find((item) => item.id === route)?.label;
   if (!backend.state || onboarding)
     return (
@@ -70,11 +55,11 @@ export default function App() {
         <div className="brand">
           <img src="./brand/logo.svg" alt="Darkbloom" />
         </div>
-        <div className="workspace-label">Your workspace</div>
         <nav aria-label="Main navigation">
           {navigation.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
+              aria-label={label}
               aria-current={route === id ? 'page' : undefined}
               className={route === id ? 'active' : ''}
               onClick={() => setRoute(id)}
@@ -86,28 +71,6 @@ export default function App() {
           ))}
         </nav>
         <div className="sidebar-bottom">
-          <div className="workspace-label">The network</div>
-          <nav>
-            {[
-              { id: 'leaderboard' as const, label: 'Leaderboard', icon: Trophy },
-              { id: 'updates' as const, label: 'Updates', icon: Box },
-              { id: 'settings' as const, label: 'Settings', icon: Settings2 },
-            ].map(({ id, label, icon: Icon }) => (
-              <button
-                className={route === id ? 'active' : ''}
-                aria-current={route === id ? 'page' : undefined}
-                onClick={() => setRoute(id)}
-                key={id}
-              >
-                <Icon size={18} strokeWidth={1.55} />
-                {label}
-              </button>
-            ))}
-            <button onClick={() => void api?.openExternal('docs')}>
-              <CircleHelp size={18} strokeWidth={1.55} /> Help & resources{' '}
-              <ArrowUpRight size={13} />
-            </button>
-          </nav>
           <button className="local-profile" onClick={() => setOnboarding(true)}>
             <div className="profile-icon">
               <Monitor size={17} />

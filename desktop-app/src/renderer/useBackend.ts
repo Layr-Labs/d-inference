@@ -12,6 +12,7 @@ import type {
   Snapshot,
 } from '../shared/contracts';
 import { previewAPI } from './preview';
+import { parseLeaderboard } from './features/leaderboard/data';
 
 export const isPreview = import.meta.env.DEV && new URLSearchParams(location.search).has('preview');
 export const api: DesktopAPI | undefined = isPreview ? previewAPI : window.darkbloom;
@@ -26,6 +27,7 @@ export function useBackend(route: Route = 'home') {
   const [cooling, setCooling] = useState<CoolingData>();
   const [release, setRelease] = useState<ReleaseData>();
   const [leaders, setLeaders] = useState<Leader[]>([]);
+  const [leaderError, setLeaderError] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const coolingVisible = useRef(showsCooling(route));
@@ -71,8 +73,12 @@ export function useBackend(route: Route = 'home') {
         .then(setRelease)
         .catch(() => setRelease({ error: 'Release information is unavailable.' })),
       api
-        .read<{ entries?: Leader[] } | Leader[]>('leaderboard')
-        .then((data) => setLeaders(Array.isArray(data) ? data : data.entries || [])),
+        .read<unknown>('leaderboard')
+        .then((data) => {
+          setLeaders(parseLeaderboard(data));
+          setLeaderError('');
+        })
+        .catch(() => setLeaderError('Rankings could not refresh.')),
     ]);
   }, [readCooling]);
   useEffect(() => {
@@ -150,6 +156,7 @@ export function useBackend(route: Route = 'home') {
     cooling,
     release,
     leaders,
+    leaderError,
     error,
     setError,
     busy:

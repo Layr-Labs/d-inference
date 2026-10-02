@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 let App: typeof import('../src/renderer/App').default;
 beforeAll(async () => {
@@ -14,16 +14,14 @@ describe('desktop operator journeys', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'Your contribution' });
     expect(screen.getByText('Development preview')).toBeVisible();
-    for (const name of [
-      'Models',
-      'Studio',
-      'Analysis',
-      'Cooling',
-      'Leaderboard',
-      'Updates',
-      'Settings',
-    ]) {
-      fireEvent.click(screen.getByRole('button', { name }));
+    const nav = screen.getByRole('navigation', { name: 'Main navigation' });
+    expect(
+      within(nav)
+        .getAllByRole('button')
+        .map((button) => button.textContent),
+    ).toEqual(['Home', 'My Macs2', 'Leaderboard', 'Updates']);
+    for (const name of ['Leaderboard', 'Updates']) {
+      fireEvent.click(within(nav).getByRole('button', { name }));
       expect(await screen.findByRole('heading', { name, level: 1 })).toBeVisible();
     }
   });
@@ -40,7 +38,8 @@ describe('desktop operator journeys', () => {
   it('filters catalog entries and blocks selecting an undownloaded model', async () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'Your contribution' });
-    fireEvent.click(screen.getByRole('button', { name: 'Models' }));
+    await openLocalMac();
+    fireEvent.click(screen.getByRole('button', { name: 'Manage models' }));
     fireEvent.change(screen.getByRole('textbox', { name: 'Search models' }), {
       target: { value: 'Qwen 3.5' },
     });
@@ -54,6 +53,7 @@ describe('desktop operator journeys', () => {
   it('does not overwrite a concurrent CLI settings change with a stale draft', async () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'Your contribution' });
+    await openLocalMac();
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
     fireEvent.change(screen.getByRole('textbox', { name: 'Mac name' }), {
       target: { value: 'My unsaved draft' },
@@ -73,4 +73,19 @@ describe('desktop operator journeys', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Reload settings' }));
     expect(screen.getByRole('textbox', { name: 'Mac name' })).toHaveValue('Changed from CLI');
   });
+});
+
+async function openLocalMac() {
+  fireEvent.click(screen.getByRole('button', { name: /My Macs/ }));
+  fireEvent.click(await screen.findByRole('button', { name: /MacBook Pro.*This Mac/ }));
+}
+
+it('preserves Cooling, Analysis, Studio, and Settings through This Mac', async () => {
+  render(<App />);
+  await screen.findByRole('heading', { name: 'Your contribution' });
+  for (const name of ['Cooling', 'Analysis', 'Studio', 'Settings']) {
+    await openLocalMac();
+    fireEvent.click(screen.getByRole('button', { name }));
+    expect(await screen.findByRole('heading', { name, level: 1 })).toBeVisible();
+  }
 });

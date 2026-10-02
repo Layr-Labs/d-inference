@@ -424,57 +424,6 @@ label.setting-row,
   line-height: 1.8;
 }
 
-.leaderboard-head {
-  display: flex;
-  justify-content: space-between;
-  font-size: 11px;
-  color: var(--muted);
-  padding: 15px 0;
-  border-bottom: 1px solid var(--line);
-}
-
-.leader-row {
-  display: flex;
-  align-items: center;
-  gap: 22px;
-  padding: 26px 0;
-  border-bottom: 1px solid var(--line);
-}
-
-.rank {
-  color: var(--muted);
-  width: 24px;
-  font-size: 12px;
-}
-
-.leader-avatar {
-  background: var(--blue-wash);
-  color: var(--accent-brand);
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  display: grid;
-  place-items: center;
-  font-size: 12px;
-}
-
-.leader-row strong {
-  font-size: 14px;
-  font-weight: 500;
-}
-
-.leader-row > span:last-child {
-  margin-left: auto;
-  font-size: 20px;
-}
-
-.leader-footer {
-  padding: 30px 0;
-  text-align: center;
-  color: var(--muted);
-  font-size: 12px;
-}
-
 .link-code {
   margin-top: 25px;
   padding: 20px;

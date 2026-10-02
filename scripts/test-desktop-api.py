@@ -35,6 +35,18 @@ class Catalog(http.server.BaseHTTPRequestHandler):
             pass
 
     def do_GET(self):
+        if self.path in ("/v1/stats", "/v1/leaderboard?metric=earnings&window=24h"):
+            assert self.headers.get("Authorization") is None
+            payload = {"total_tokens": 9007199254740993, "active_providers": 7,
+                       "provider_regions": [{"region": "Tokyo", "country": "Japan",
+                                             "latitude": 35, "longitude": 139, "providers": 7}]} if self.path == "/v1/stats" else {
+                "metric": "earnings", "window": "24h", "entries": [{"rank": 1, "pseudonym": "fixture-provider", "tokens": 9007199254740993,
+                             "earnings_micro_usd": 12345678}]}
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(payload).encode())
+            return
         if self.path.startswith("/v1/provider/desktop/insights?window="):
             assert self.headers.get("Authorization") == "Bearer fixture-provider-token"
             if self.server.hold_insights:
@@ -154,6 +166,13 @@ idle_timeout_mins = 60
                 code, snapshot = request()
                 assert code == 200 and snapshot["machine"]["name"] == "Desktop fixture", snapshot
                 assert snapshot["state"] == "stopped" and not snapshot["linked"]
+                code, network = request("network")
+                assert code == 200 and network["total_tokens"] == "9007199254740993", network
+                assert network["provider_regions"][0]["region"] == "Tokyo", network
+                code, leaders = request("leaderboard")
+                assert code == 200 and leaders["entries"][0]["earnings_micro_usd"] == "12345678", leaders
+                assert leaders["metric"] == "earnings" and leaders["window"] == "24h", leaders
+                assert leaders["entries"][0]["tokens"] == "9007199254740993", leaders
                 initial_account = snapshot["account_revision"]
                 assert request("insights-week")[0] == 401
                 (root / "auth").write_text("fixture-provider-token")

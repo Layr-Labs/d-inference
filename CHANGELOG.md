@@ -2,6 +2,8 @@
 
 ## Unreleased — macOS desktop app
 
+- Simplify the desktop sidebar to Home, My Macs, Leaderboard, and Updates while retaining detailed controls under This Mac and Earnings from Home. Bring the desktop reference's pixel map and top-three design to Leaderboard, with compact annualized earnings, expandable actual 24-hour totals, and explicit stale-data handling.
+
 - Show live per-model request activity from Swift snapshots, lifetime settled output-token milestones, and an in-app Earnings dashboard with daily charts, model/Mac breakdowns, exact CSV copying, and separate inference/base-reward income. Add Light, Dark, and System appearance. Keep account credentials and analytics requests in the Swift backend.
 - Add a fresh Electron frontend using the landing brand, with onboarding, Home, My Macs, Models, Studio, Analysis, Cooling, Settings, Leaderboard and Updates. Closing its window retains menu-bar access and provider activity. It starts hidden when macOS opens it at login, and GUI updates use only a feed configured at build time (`DARKBLOOM_DESKTOP_UPDATE_URL`), never provider releases.
 - Expose authenticated desktop control from the Swift CLI, preserving native lifecycle/configuration/model operations and automatic update ownership. `darkbloom desktop ensure` replaces a stale or mismatched control service, the service restarts itself after its binary is replaced, and `darkbloom stop --uninstall` removes it. Add a scoped, read-only provider account/fleet projection with exact money strings, rate-limited and cached per account.

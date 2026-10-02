@@ -18,7 +18,8 @@ struct NativeToolStreamRouter {
     init(handler: BatchedToolStreamHandler?, requiresToolCall: Bool, nativePrefix: String?,
          preserveInnerReasoningSpans: Bool = false, nativeGemmaChannels: Bool = false,
          nativeGemmaReasoningEnabled: Bool = true, nativeMiMoChannels: Bool = false,
-         nativeMiMoThinkingEnabled: Bool = true, nativeMiMoRequiresConstraint: Bool = false) {
+         nativeMiMoThinkingEnabled: Bool = true, nativeMiMoRequiresConstraint: Bool = false,
+         absorbStrayThinkClose: Bool = false) {
         self.handler = handler
         self.requiresToolCall = requiresToolCall
         self.nativeGemmaReasoningEnabled = nativeGemmaReasoningEnabled
@@ -30,7 +31,8 @@ struct NativeToolStreamRouter {
         } else if let nativePrefix {
             self.parser = NativeChannelSplitter(prefix: nativePrefix, protectToolFrames: handler != nil,
                 qwenStructuredFrames: handler?.format == .qwen35 || handler?.format == .mimoV2,
-                preserveInnerReasoningSpans: preserveInnerReasoningSpans)
+                preserveInnerReasoningSpans: preserveInnerReasoningSpans,
+                absorbStrayThinkClose: absorbStrayThinkClose)
         }
     }
 

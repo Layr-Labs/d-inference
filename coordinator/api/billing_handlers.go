@@ -16,7 +16,6 @@ package api
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -49,13 +48,12 @@ func (s *Server) handleStripeCreateSession(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	amountFloat, err := strconv.ParseFloat(req.AmountUSD, 64)
-	if err != nil || amountFloat < 0.50 {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "amount_usd must be at least $0.50"))
+	amountCents, err := checkoutUSDCents(req.AmountUSD)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "amount_usd must be at least $0.50 with at most two decimals"))
 		return
 	}
 
-	amountCents := int64(amountFloat * 100)
 	accountID := s.resolveAccountID(r)
 
 	if req.ReferralCode != "" {
@@ -66,7 +64,7 @@ func (s *Server) handleStripeCreateSession(w http.ResponseWriter, r *http.Reques
 	}
 
 	sessionID := uuid.New().String()
-	amountMicroUSD := int64(amountFloat * 1_000_000)
+	amountMicroUSD := amountCents * 10_000
 
 	billingSession := &store.BillingSession{
 		ID:             sessionID,
@@ -102,6 +100,8 @@ func (s *Server) handleStripeCreateSession(w http.ResponseWriter, r *http.Reques
 	billingSession.ExternalID = stripeResp.SessionID
 	if err := s.billing.Store().CreateBillingSession(billingSession); err != nil {
 		s.logger.Error("stripe: save billing session failed", "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("billing_error", "Could not save Checkout. Please try again."))
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -111,91 +111,6 @@ func (s *Server) handleStripeCreateSession(w http.ResponseWriter, r *http.Reques
 		"amount_usd":       req.AmountUSD,
 		"amount_micro_usd": amountMicroUSD,
 	})
-}
-
-// handleStripeWebhook handles POST /v1/billing/stripe/webhook.
-func (s *Server) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
-	if s.billing == nil || s.billing.Stripe() == nil {
-		http.Error(w, "Stripe not configured", http.StatusServiceUnavailable)
-		return
-	}
-
-	payload, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil {
-		http.Error(w, "failed to read body", http.StatusBadRequest)
-		return
-	}
-
-	sigHeader := r.Header.Get("Stripe-Signature")
-	event, err := s.billing.Stripe().VerifyWebhookSignature(payload, sigHeader)
-	if err != nil {
-		s.logger.Error("stripe: webhook signature verification failed", "error", err)
-		http.Error(w, "invalid signature", http.StatusBadRequest)
-		return
-	}
-
-	if event.Type != "checkout.session.completed" {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-
-	session, err := s.billing.Stripe().ParseCheckoutSession(event)
-	if err != nil {
-		s.logger.Error("stripe: parse checkout session failed", "error", err)
-		http.Error(w, "invalid event data", http.StatusBadRequest)
-		return
-	}
-
-	billingSessionID := session.Object.Metadata["billing_session_id"]
-	consumerKey := session.Object.Metadata["consumer_key"]
-	referralCode := session.Object.Metadata["referral_code"]
-
-	if consumerKey == "" {
-		s.logger.Error("stripe: webhook missing consumer_key in metadata")
-		http.Error(w, "missing metadata", http.StatusBadRequest)
-		return
-	}
-
-	if billingSessionID != "" {
-		bs, err := s.billing.Store().GetBillingSession(billingSessionID)
-		if err == nil && bs.Status == "completed" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-	}
-
-	amountMicroUSD := session.Object.AmountTotal * 10_000
-
-	if err := s.billing.CreditDeposit(consumerKey, amountMicroUSD, store.LedgerStripeDeposit,
-		"stripe:"+session.Object.ID); err != nil {
-		s.logger.Error("stripe: credit balance failed", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
-	if billingSessionID != "" {
-		// Best-effort: the deposit is already credited above, but a failure here
-		// leaves the session marked incomplete (and replayable). Surface it.
-		if err := s.billing.Store().CompleteBillingSession(billingSessionID); err != nil {
-			s.logger.Error("stripe: failed to mark billing session complete",
-				"billing_session_id", billingSessionID, "error", err)
-			s.ddIncr("billing.session_complete_failed", nil)
-		}
-	}
-	if referralCode != "" {
-		// Best-effort: a failure here means the referrer is not credited for this
-		// deposit; never silently swallow it.
-		if err := s.billing.Referral().Apply(consumerKey, referralCode); err != nil {
-			s.logger.Error("stripe: failed to apply referral credit", "error", err)
-			s.ddIncr("billing.referral_apply_failed", nil)
-		}
-	}
-
-	s.logger.Info("stripe: deposit credited",
-		"consumer_key", consumerKey[:min(8, len(consumerKey))]+"...",
-		"amount_micro_usd", amountMicroUSD,
-	)
-	w.WriteHeader(http.StatusOK)
 }
 
 // handleStripeSessionStatus handles GET /v1/billing/stripe/session?id=...

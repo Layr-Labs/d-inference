@@ -6,6 +6,7 @@ import MLXLMCommon
 /// Leases have no timeout: cancellation releases only after engine retirement.
 final class WholeMacServiceBudget: @unchecked Sendable {
     private let lock = NSLock()
+    let idleCalibration = IdleCalibrationCoordinator()
     struct Work: Sendable {
         let modelID: String
         let profileID: String?
@@ -19,7 +20,7 @@ final class WholeMacServiceBudget: @unchecked Sendable {
         let activityEpoch: UInt64
     }
     private struct Charge {
-        let fraction: Double
+        var fraction: Double
         let reservationID: String?
         let lifetime: ServiceReservationLifetime?
         let work: Work?
@@ -44,6 +45,7 @@ final class WholeMacServiceBudget: @unchecked Sendable {
     private var activityEpoch: UInt64 = 0
     private var advertisedEligibility: [DeadlineApplicability: Bool] = [:]
     private var charges: [String: Charge] = [:]
+    private var retirementWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
     private var unboundedActivities: Set<UUID> = []
     private var evidenceGuard = CBv2FirstContentEvidenceGuard()
     private var observerID: UUID?
@@ -68,6 +70,23 @@ final class WholeMacServiceBudget: @unchecked Sendable {
 
     func captureDeadlineRateEvidence(at now: ContinuousClock.Instant = .now) -> DeadlineRateEvidence? {
         posture.captureRateEvidence(at: now)
+    }
+
+    /// Observed native rates are usable only while this request is the sole
+    /// owner and no load, encoder preparation or cache transfer is in flight.
+    /// Every ownership change invalidates the token before engine admission.
+    func captureNativeMediaRateEvidence(ownerID: String, modelID: String) -> NativeMediaRateEvidence? {
+        lock.withLock {
+            guard charges.count == 1, charges[ownerID]?.work?.modelID == modelID,
+                unboundedActivities.isEmpty else { return nil }
+            let now = clockNow()
+            guard let snapshot = posture.nativeMediaSnapshot(at: now,
+                registering: evidenceGuard),
+                let rate = posture.captureRateEvidence(at: now), rate.epoch == snapshot.epoch
+            else { return nil }
+            return NativeMediaRateEvidence(rate: rate, guardToken: evidenceGuard,
+                validUntil: snapshot.validUntil)
+        }
     }
 
     func deadlineEligibleForAdvertisement(_ requirement: DeadlineApplicability) -> Bool {
@@ -102,13 +121,14 @@ final class WholeMacServiceBudget: @unchecked Sendable {
 
     func acquire(ownerID: String, concurrency: Int, serviceReservationID: String? = nil,
         serviceReservation: ServiceReservationLifetime? = nil, work: Work? = nil,
-        deadlineApplicability: DeadlineApplicability? = nil) -> Bool {
+        deadlineApplicability: DeadlineApplicability? = nil, requiresIdle: Bool = false) -> Bool {
         // Correlation is optional. Malformed input gets no overlap credit; it
         // never bypasses the actual provider-side service allowance.
         let reservationID = serviceReservation?.id
             ?? ServiceReservationLifetime.normalizedID(serviceReservationID)
         let (acquired, notification) = lock.withLock { () -> (Bool, AsyncStream<Void>.Continuation?) in
             guard charges[ownerID] == nil, concurrency > 0 else { return (false, nil) }
+            if requiresIdle, !charges.isEmpty || !unboundedActivities.isEmpty { return (false, nil) }
             if let reservationID, charges.values.contains(where: { $0.reservationID == reservationID }) {
                 return (false, nil)
             }
@@ -135,14 +155,28 @@ final class WholeMacServiceBudget: @unchecked Sendable {
     }
 
     func release(ownerID: String) {
-        let (charge, notification) = lock.withLock { () -> (Charge?, AsyncStream<Void>.Continuation?) in
-            guard let charge = charges.removeValue(forKey: ownerID) else { return (nil, nil) }
+        let (charge, notification, waiters) = lock.withLock { () -> (Charge?, AsyncStream<Void>.Continuation?, [CheckedContinuation<Void, Never>]) in
+            guard let charge = charges.removeValue(forKey: ownerID) else { return (nil, nil, []) }
             if charges.isEmpty && unboundedActivities.isEmpty { idleSince = clockNow() }
             invalidateEvidenceLocked()
-            return (charge, observer)
+            return (charge, observer, retirementWaiters.removeValue(forKey: ownerID) ?? [])
         }
         charge?.lifetime?.releaseLease()
+        for waiter in waiters { waiter.resume() }
         notification?.yield()
+    }
+
+    /// Also covers a committed submission transferred before a pump exists.
+    /// Owners release only on refusal or actual native/resource retirement.
+    func waitForRelease(ownerID: String) async {
+        await withCheckedContinuation { continuation in
+            let released = lock.withLock {
+                guard charges[ownerID] != nil else { return true }
+                retirementWaiters[ownerID, default: []].append(continuation)
+                return false
+            }
+            if released { continuation.resume() }
+        }
     }
 
     /// One provider-loop observer sees changes from all shared model bridges.
@@ -189,6 +223,47 @@ final class WholeMacServiceBudget: @unchecked Sendable {
 
     var usedFraction: Double { lock.withLock { charges.values.reduce(0, { $0 + $1.fraction }) } }
     var count: Int { lock.withLock { charges.count } }
+    var isIdle: Bool { lock.withLock { charges.isEmpty && unboundedActivities.isEmpty } }
+
+    func calibrationEvidenceGuard(ownerID: String) -> CBv2FirstContentEvidenceGuard? {
+        lock.withLock {
+            guard charges.count == 1, charges[ownerID] != nil, unboundedActivities.isEmpty else { return nil }
+            return evidenceGuard
+        }
+    }
+
+    func exclusiveEvidenceGuard(ownerID: String) -> CBv2FirstContentEvidenceGuard? {
+        lock.withLock {
+            guard charges.count == 1 && charges[ownerID]?.fraction == 1 && unboundedActivities.isEmpty
+            else { return nil }
+            return evidenceGuard
+        }
+    }
+
+    /// Serialize the last idle check and synchronous native registration with
+    /// device-activity starts. The body must not reenter this service budget.
+    func withExclusiveEvidence<T>(ownerID: String, guardValue: CBv2FirstContentEvidenceGuard,
+        submit: () throws -> T) rethrows -> T? {
+        try lock.withLock {
+            guard charges.count == 1 && charges[ownerID]?.fraction == 1,
+                unboundedActivities.isEmpty, evidenceGuard === guardValue, guardValue.isValid
+            else { return nil }
+            return try submit()
+        }
+    }
+
+    /// Prompt completion ends the isolation interval, not device ownership.
+    /// Keep the same reservation/lifetime at the ordinary serving fraction.
+    func reduceExclusiveAllowance(ownerID: String, concurrency: Int) {
+        let notification = lock.withLock { () -> AsyncStream<Void>.Continuation? in
+            guard concurrency > 1, var charge = charges[ownerID], charge.fraction == 1 else { return nil }
+            charge.fraction = 1 / Double(concurrency)
+            charges[ownerID] = charge
+            invalidateEvidenceLocked()
+            return observer
+        }
+        notification?.yield()
+    }
 
     /// Preparation, model loading and cache device transfers cannot borrow a
     /// token-work calibration. Each independent owner invalidates old guards;
@@ -200,6 +275,7 @@ final class WholeMacServiceBudget: @unchecked Sendable {
             invalidateEvidenceLocked()
             return observer
         }
+        idleCalibration.cancel()
         notification?.yield()
         return WholeMacUnboundedActivity { [self] in endUnboundedActivity(id) }
     }

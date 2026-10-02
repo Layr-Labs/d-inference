@@ -34,6 +34,7 @@ func TestRequestOutcomeFinalizesAfterRecoveryWrite(t *testing.T) {
 					req := httptest.NewRequest("POST", endpoint, strings.NewReader(`{"stream":true}`))
 					req.Header.Set("X-Request-ID", "public-id")
 					srv.Handler().ServeHTTP(w, req)
+					srv.requestOutcomes.close()
 					row := awaitRequestOutcomes(t, st, 1)[0]
 					wantStatus, wantTermination := http.StatusInternalServerError, "rejected"
 					if committed {
@@ -80,6 +81,7 @@ func TestRequestOutcomeRecoveryPreservesAbortHandler(t *testing.T) {
 		srv.Handler().ServeHTTP(w, httptest.NewRequest("POST", "/v1/chat/completions", nil))
 		t.Fatal("abort handler returned normally")
 	}()
+	srv.requestOutcomes.close()
 	row := awaitRequestOutcomes(t, st, 1)[0]
 	if row.HTTPStatus != 0 || row.ResponseTerminal != "unknown" || row.EgressCompleted || row.RawReason != "handler_aborted" || w.Body.Len() != 0 {
 		t.Fatalf("abort fabricated recovery response: %+v", row)
@@ -99,15 +101,17 @@ func TestRequestOutcomePopulationUsesMatchedEscapedRoute(t *testing.T) {
 			t.Fatalf("unmatched path counted: %s status=%d", path, w.Code)
 		}
 	}
-	for i, path := range []string{"/v1/messages", "/v1/%6dessages"} {
+	for _, path := range []string{"/v1/messages", "/v1/%6dessages"} {
 		w := httptest.NewRecorder()
 		srv.Handler().ServeHTTP(w, httptest.NewRequest("POST", path, nil))
 		if w.Code != 400 {
 			t.Fatalf("matched path behavior changed: %s status=%d", path, w.Code)
 		}
-		rows := awaitRequestOutcomes(t, st, i+1)
-		if rows[i].Endpoint != "/v1/messages" {
-			t.Fatalf("matched path not normalized: %+v", rows[i])
+	}
+	srv.requestOutcomes.close()
+	for _, row := range awaitRequestOutcomes(t, st, 2) {
+		if row.Endpoint != "/v1/messages" {
+			t.Fatalf("matched path not normalized: %+v", row)
 		}
 	}
 }
@@ -118,6 +122,7 @@ func TestRequestOutcomeRecoveryAfterRejectedHeader(t *testing.T) {
 	srv.mux.HandleFunc("POST /v1/chat/completions", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(9999) })
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, httptest.NewRequest("POST", "/v1/chat/completions", nil))
+	srv.requestOutcomes.close()
 	row := awaitRequestOutcomes(t, st, 1)[0]
 	if w.Code != 500 || row.HTTPStatus != 500 || row.ResponseTerminal != "error" || row.Termination != "rejected" {
 		t.Fatalf("rejected header replaced actual recovery result: status=%d %+v", w.Code, row)
@@ -159,6 +164,7 @@ func TestRequestOutcomeRecoveryDoesNotInventSSETerminal(t *testing.T) {
 				srv.mux.HandleFunc("POST /v1/chat/completions", handler)
 				w := httptest.NewRecorder()
 				srv.Handler().ServeHTTP(w, req)
+				srv.requestOutcomes.close()
 				row := awaitRequestOutcomes(t, st, 1)[0]
 				if w.Result().Header.Get("Content-Type") != "text/event-stream" || row.HTTPStatus != 200 || row.ResponseTerminal != "unknown" || row.EgressCompleted || row.ContentWriteCompleted != content || row.Termination != "interrupted_response" || row.RawReason != "handler_panic" {
 					t.Fatalf("raw recovery JSON was counted as an SSE terminal: %+v", row)

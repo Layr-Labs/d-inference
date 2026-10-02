@@ -26,8 +26,9 @@ public enum DeadlineProjection: String, ProfilerFoldingEnum {
     case other
 }
 
-/// Why the provider used ordinary submit. Engine projection failures are
-/// reported separately in `unboundedReason`.
+/// Why no service-time prediction was used. This includes ordinary submit and
+/// a guarded idle native-media observation with bounded work but unknown time.
+/// Engine projection failures are reported separately in `unboundedReason`.
 public enum DeadlineProjectionReason: String, ProfilerFoldingEnum {
     case noDeadline = "no_deadline"
     case modeOff = "mode_off"

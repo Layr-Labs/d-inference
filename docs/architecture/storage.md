@@ -123,7 +123,8 @@ ordered slice of idempotent statements — `CREATE TABLE IF NOT EXISTS`,
 for retired tables — on every start, followed by
 `checkRetiredBackfills` (`postgres_retired_backfills.go`),
 `ensureProviderRestoreIndexes` (`postgres_startup.go`) and
-`ensureProviderEarningsJobIndex`. One-shot *data* migrations are gated by a row
+`ensureProviderEarningsJobIndex`, then `ensureProviderEarningsWindowIndex`
+(`coordinator/store/postgres_earnings_window_index.go`). One-shot *data* migrations are gated by a row
 in `schema_migrations` so they run at most once. Two SQL files under
 `coordinator/store/migrations/` are deliberately **not** on that path and are
 applied by hand with `psql`: `dedupe_provider_earnings.sql` (an offline cleanup
@@ -207,7 +208,8 @@ flowchart LR
   C --> D[migrate: idempotent DDL slice]
   D --> E[one-shot data migrations\ngated by schema_migrations;\nretired-backfill guard]
   E --> F[ensureProviderEarningsJobIndex\nCONCURRENTLY, fast-path if present]
-  F --> G[SeedKey admin key]
+  F --> F2[ensureProviderEarningsWindowIndex\nBRIN CONCURRENTLY + analyze cadence]
+  F2 --> G[SeedKey admin key]
   B -- no, ALLOW_MEMORY_STORE=true --> H[NewMemory + 15 min pruner]
   B -- no --> X[exit 1]
   D -. any error .-> X
@@ -297,7 +299,13 @@ KV blocks under a per-model key, not tokens.
    `provider_earnings(job_id)` unique index is built `CONCURRENTLY`, only after
    a duplicate check, and skipped when already valid; the dedupe that violated
    this lives in `coordinator/store/migrations/dedupe_provider_earnings.sql` and
-   is manual (`ensureProviderEarningsJobIndex`).
+   is manual (`ensureProviderEarningsJobIndex`). The time index
+   `idx_provider_earnings_created_at_brin` is also built `CONCURRENTLY`, with
+   `autosummarize=on`; a valid index is retained and an interrupted invalid
+   build fails startup pending operator repair. The table's
+   `autovacuum_analyze_scale_factor` is `0.005` so planner statistics track
+   ingestion (`ensureProviderEarningsWindowIndex`,
+   `coordinator/store/postgres_earnings_window_index.go`).
 5. **Money is micro-USD integers in an append-only ledger.** `LedgerStore`
    and `balances` never store floats; see
    [`billing.md#invariants`](billing.md#invariants).
@@ -329,6 +337,7 @@ KV blocks under a per-model key, not tokens.
 | Concern | Location |
 |---|---|
 | Interface and record types | `coordinator/store/interface.go`, `coordinator/store/interface_domains.go` |
+| Earnings rankings and startup time index | `coordinator/store/postgres_leaderboard.go` (`Leaderboard`), `coordinator/store/postgres_earnings_window_index.go` (`ensureProviderEarningsWindowIndex`), `coordinator/store/postgres_startup.go` (`ensureConcurrentIndex`) |
 | Backend selection and validation | `coordinator/store/config.go`, `coordinator/cmd/coordinator/main.go` |
 | Postgres pool, schema, one-shot migrations | `coordinator/store/postgres.go`, `coordinator/store/postgres_log_report_privacy.go`, `coordinator/store/postgres_retired_backfills.go` |
 | Provider identity and usage reads | `coordinator/store/postgres_provider_read.go` (`providerRecordColumns`, `scanProviderRecord`, `GetProviderRecord`); `coordinator/store/provider_restore.go` (`GetProviderForRestore`, using the same projection); `coordinator/store/postgres_usage_read.go` (`readUsageRecords`, `UsageRecords`); `coordinator/store/postgres_row.go` (`rowScanner`) |

@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-01
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -14,6 +14,19 @@ and defaults are the ArgumentParser declarations; `—` means required.
 outside cached Autopilot consent. Enrollment remains saved, ordinary serving
 continues, and `darkbloom autopilot models` refreshes inventory before control
 can resume. Waiting and shadow Autopilot preserve the normal picker and `--model` serving selection. Other verified cached models are reported separately for planning and cannot be loaded by ordinary routing. See [Autopilot architecture](../architecture/model-autopilot.md).
+
+## Desktop frontend control
+
+`darkbloom desktop serve --config <path>` runs the authenticated loopback API.
+`darkbloom desktop ensure --config <path>` installs/starts its user LaunchAgent.
+The desktop frontend sends validated actions to existing CLI operations and
+keeps the provider independent of its window lifetime. Internal
+`desktop start-local --model <id>`, `stop-local`, and `restart-local` commands
+retain the native provider owner and termination handler. Cooling uses
+`desktop configure-cooling --enabled <bool> --speed <percent> --temperature <celsius>`
+to request macOS administrator authorization for the existing signed helper.
+See [desktop control](../reference/desktop-control.md) for the exact routes,
+credentials, outcomes, and limits (`Desktop`, `DesktopBackend`).
 
 ## Global options
 

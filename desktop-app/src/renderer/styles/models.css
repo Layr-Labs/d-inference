@@ -1,0 +1,163 @@
+.model-memory {
+  display: flex;
+  align-items: center;
+  gap: 30px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 22px 24px;
+  margin-bottom: 30px;
+  background: #111113;
+}
+
+.model-memory > div:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 160px;
+}
+
+.model-memory strong {
+  font-weight: 400;
+  font-size: 24px;
+}
+
+.model-memory .muted {
+  font-size: 11px;
+}
+
+.model-memory > .memory-track {
+  flex: 1;
+  margin: 0;
+  max-width: 260px;
+}
+
+.model-memory > p {
+  font-size: 11px;
+  margin-left: auto;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 20px 0;
+}
+
+.segmented {
+  display: flex;
+  border: 1px solid var(--line);
+  padding: 3px;
+  border-radius: 5px;
+  gap: 2px;
+}
+
+.segmented button {
+  font-size: 11px;
+  padding: 7px 12px;
+  color: var(--muted);
+  border-radius: 3px;
+}
+
+.segmented button.selected {
+  background: #242426;
+  color: white;
+}
+
+.search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #64646d;
+}
+
+.search input {
+  background: none;
+  border: 0;
+  outline: 0;
+  font-size: 12px;
+  width: 180px;
+}
+
+.model-row {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 24px 0;
+  border-top: 1px solid var(--line);
+}
+
+.model-selection {
+  position: relative;
+}
+
+.model-selection input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--blue);
+}
+
+.model-glyph {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  background: #1a1a1d;
+  border-radius: 9px;
+  font-size: 25px;
+  color: #c8c8d0;
+}
+
+.model-description {
+  flex: 1;
+  min-width: 0;
+}
+
+.model-description > div:first-child {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+
+.model-description h3 {
+  font-size: 15px;
+}
+
+.model-description p {
+  color: var(--muted);
+  font-size: 11px;
+  margin: 7px 0;
+}
+
+.model-meta {
+  display: flex;
+  gap: 16px;
+  color: #686871;
+  font-size: 10px;
+}
+
+.model-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.model-actions > .muted {
+  font-size: 10px;
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.list-footer {
+  border-top: 1px solid var(--line);
+  padding-top: 20px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.warning-text {
+  color: #d8b879;
+}

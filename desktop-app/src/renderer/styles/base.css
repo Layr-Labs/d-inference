@@ -1,0 +1,117 @@
+@font-face {
+  font-family: Telegraf;
+  src: url('/fonts/PPTelegraf-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: Telegraf;
+  src: url('/fonts/PPTelegraf-Medium.woff2') format('woff2');
+  font-weight: 500;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: Telegraf;
+  src: url('/fonts/PPTelegraf-Semibold.woff2') format('woff2');
+  font-weight: 600;
+  font-display: swap;
+}
+
+:root {
+  font-family: Telegraf, Arial, sans-serif;
+  color: #f5f5f5;
+  background: var(--brand-ink);
+  font-size: 14px;
+  font-synthesis: none;
+  --blue: var(--brand-blue);
+  --muted: #89898e;
+  --line: #ffffff17;
+  --surface: var(--brand-card);
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+button {
+  background: none;
+  border: 0;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid #6487ff;
+  outline-offset: 4px;
+}
+
+::selection {
+  background: var(--blue);
+  color: white;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 34px;
+  font-weight: 500;
+  letter-spacing: -1.1px;
+  line-height: 1.18;
+}
+
+h2 {
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: -0.25px;
+}
+
+h3 {
+  font-size: 16px;
+  font-weight: 500;
+}
+
+p {
+  line-height: 1.65;
+}
+
+small {
+  font-size: 12px;
+}
+
+a {
+  color: inherit;
+}
+
+svg {
+  flex-shrink: 0;
+}

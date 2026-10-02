@@ -405,6 +405,14 @@ the fixture preparation script.
 Use `prepare-mimo-audio-fixtures.py --cache <cache> --output <new-directory>`;
 its public codec download is about 1.87 GB and is checked against fixed hashes.
 
+## Desktop control and frontend
+
+`make desktop-test` exercises the frontend journeys and bridge validation.
+`make desktop-api-test` runs the compiled Swift CLI API with a temporary config,
+model cache, credentials, daemon state, discovery directory, and local catalog.
+`DesktopControlTests` and `TestDesktopAccountTokenIsolationAndRevocation` cover
+native authentication and account separation. See [desktop development](desktop-app.md).
+
 ## Provider lifecycle regression checks
 
 Serving measurements and profile admission have focused suites

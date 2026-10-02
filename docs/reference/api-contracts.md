@@ -1,8 +1,8 @@
 # HTTP API contracts
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-01
 
-The complete public HTTP surface of the coordinator, derived from the 118 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
+The complete public HTTP surface of the coordinator, derived from the 119 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
 Production base URL: `https://api.darkbloom.dev`. Unless a file is named, handler symbols below live in `coordinator/api/server.go`.
 
@@ -20,6 +20,17 @@ waiting or observing; enrollment alone does not change the operator's selected
 models. This uses `Provider.ServingModelsLocked` in
 `coordinator/registry/autopilot_inventory.go`; see
 [model Autopilot](../architecture/model-autopilot.md).
+
+## Desktop provider account projection
+
+`GET /v1/provider/desktop` calls `handleDesktopAccount` in
+`coordinator/api/desktop_handlers.go`. It accepts an active linked provider token,
+rejects consumer API keys, and returns only its owner's status/earnings projection.
+Revocation is checked before reading the account cache. Monetary values are
+integer micro-USD strings. Per-machine amounts are seven-day organic usage earnings
+and are omitted if attribution is unknown. Device keys and attestation records
+are excluded. See [desktop control](desktop-control.md) for this shape and the
+separate Swift loopback API.
 
 ## Graceful provider lifecycle
 

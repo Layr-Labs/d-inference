@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — macOS desktop app
+
+- Add a fresh Electron frontend using the landing brand, with onboarding, Home, My Macs, Models, Studio, Analysis, Cooling, Settings, Leaderboard and Updates. Closing its window retains menu-bar access and provider activity.
+- Expose authenticated desktop control from the Swift CLI, preserving native lifecycle/configuration/model operations and automatic update ownership. Add a scoped, read-only provider account/fleet projection with exact money strings.
+- Add isolated control-API tests, frontend journey tests, desktop packaging and CI. Public distribution remains subject to signed-runtime, update-feed and notarization qualification.
+
 ## Unreleased — provider 0.9.17
 
 - Keep the normal startup selection and explicit `--model` override authoritative while Autopilot is waiting or observing in shadow. Cached planning inventory can no longer make ordinary routing load unselected models.

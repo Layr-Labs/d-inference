@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""Exercise the real CLI HTTP API using temporary state and a local catalog.
+
+No provider is started; the only mutation changes a temporary TOML file.
+"""
+import argparse
+import hashlib
+import http.server
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+import threading
+import time
+import urllib.error
+import urllib.request
+import uuid
+
+
+class Catalog(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"models":[]}')
+
+    def log_message(self, *_):
+        pass
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("binary", type=Path)
+    parser.add_argument("--hold", action="store_true", help="Keep the isolated API available for a manual Electron bridge check")
+    args = parser.parse_args()
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Catalog)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    with tempfile.TemporaryDirectory(prefix="darkbloom-desktop-test-") as temporary:
+        root = Path(temporary)
+        cache = root / "models"
+        cache.mkdir()
+        config = root / "provider.toml"
+        config.write_text(f'''[provider]
+name = "Desktop fixture"
+auto_update = false
+[coordinator]
+url = "http://127.0.0.1:{server.server_port}"
+[backend]
+model_cache_directory = "{cache}"
+idle_timeout_mins = 60
+''')
+        env = dict(os.environ, DARKBLOOM_DESKTOP_DIR=str(root / "desktop"),
+                   DARKBLOOM_AUTH_TOKEN_PATH=str(root / "auth"),
+                   DARKBLOOM_STATE_FILE=str(root / "state.json"),
+                   DARKBLOOM_LOCAL_DIR=str(root / "local"),
+                   DARKBLOOM_NO_UPDATE_CHECK="1")
+        with (root / "log").open("w") as log:
+            process = subprocess.Popen([str(args.binary.resolve()), "desktop", "serve", "--config", str(config)], env=env, stdout=log, stderr=log)
+            try:
+                discovery = root / "desktop/connection.json"
+                for _ in range(100):
+                    if discovery.exists():
+                        break
+                    if process.poll() is not None:
+                        raise AssertionError((root / "log").read_text())
+                    time.sleep(.1)
+                connection = json.loads(discovery.read_text())
+                assert discovery.stat().st_mode & 0o077 == 0
+
+                def request(path="state", body=None, auth=True, origin=None):
+                    headers = {"Content-Type": "application/json"}
+                    if auth:
+                        headers["Authorization"] = "Bearer " + connection["token"]
+                    if origin:
+                        headers["Origin"] = origin
+                    req = urllib.request.Request(f'http://127.0.0.1:{connection["port"]}/control/v1/{path}',
+                                                 data=json.dumps(body).encode() if body else None, headers=headers)
+                    try:
+                        with urllib.request.urlopen(req, timeout=15) as response:
+                            return response.status, json.load(response)
+                    except urllib.error.HTTPError as error:
+                        return error.code, json.load(error)
+
+                assert request(auth=False)[0] == 401
+                assert request(origin="https://untrusted.example")[0] == 401
+                code, snapshot = request()
+                assert code == 200 and snapshot["machine"]["name"] == "Desktop fixture", snapshot
+                assert snapshot["state"] == "stopped" and not snapshot["linked"]
+                assert request("actions", {"id": str(uuid.uuid4()), "action": "start", "models": ["--force"]})[0] == 400
+                action = {"id": str(uuid.uuid4()), "action": "settings", "revision": snapshot["settings"]["revision"],
+                          "name": "Updated fixture", "idle_minutes": 15, "auto_update": False}
+                code, operation = request("actions", action)
+                assert code == 202, operation
+                for _ in range(40):
+                    snapshot = request()[1]
+                    if snapshot["operations"][0]["state"] != "running":
+                        break
+                    time.sleep(.1)
+                assert snapshot["operations"][0]["state"] == "succeeded", snapshot
+                assert snapshot["settings"]["name"] == "Updated fixture"
+                before = hashlib.sha256(config.read_bytes()).hexdigest()
+                assert request("actions", action)[1]["id"] == operation["id"]
+                assert hashlib.sha256(config.read_bytes()).hexdigest() == before
+                conflict = dict(action, name="Unexpected overwrite")
+                assert request("actions", conflict)[0] == 400
+                print("desktop-api: authentication, isolation, state, settings, idempotency, and validation passed")
+                if args.hold:
+                    print("DARKBLOOM_DESKTOP_DIR=" + str(root / "desktop"), flush=True)
+                    input("Press Enter to stop the isolated API: ")
+            finally:
+                process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+    server.shutdown()
+
+
+if __name__ == "__main__":
+    main()

@@ -70,6 +70,24 @@ benchmark-wrapper-test: ## Unit-test the Gemma benchmark wrapper (no GPU or weig
 benchmark-gemma-contbatch: ## Build and benchmark Gemma 4 26B continuous batching
 	python3 scripts/benchmark-gemma-contbatch.py $(GEMMA_BENCHMARK_ARGS)
 
+# ---- Desktop frontend ------------------------------------------------------
+.PHONY: desktop-install desktop-build desktop-test desktop-package desktop-api-test
+
+desktop-install: ## Install Electron app dependencies
+	cd desktop-app && npm ci
+
+desktop-build: ## Build the Electron frontend and native bridge
+	cd desktop-app && npm run build
+
+desktop-test: ## Test desktop user journeys and IPC boundaries
+	cd desktop-app && npm test
+
+desktop-package: ## Create a macOS app for review without publishing
+	cd desktop-app && npm run package
+
+desktop-api-test: ## Test the real Swift desktop API with isolated local fixtures
+	python3 scripts/test-desktop-api.py provider-swift/.build/debug/darkbloom
+
 # ---- Console UI (Next.js 16) ----------------------------------------------
 
 ui-install: ## npm install for console-ui

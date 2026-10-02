@@ -54,6 +54,9 @@ it('does not animate or claim stale native model counts', () => {
   rerender(<LiveModels state={{ ...state, activity: { ...state.activity, sampled_at: 1 } }} />);
   expect(screen.queryByText('5 running')).not.toBeInTheDocument();
   expect(container.querySelectorAll('[data-active="true"]')).toHaveLength(0);
+  rerender(<LiveModels state={{ ...state, state: 'stopped' }} />);
+  expect(screen.queryByText('5 running')).not.toBeInTheDocument();
+  expect(container.querySelectorAll('[data-active="true"]')).toHaveLength(0);
   rerender(
     <LiveModels
       state={{

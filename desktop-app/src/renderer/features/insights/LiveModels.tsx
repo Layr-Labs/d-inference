@@ -13,6 +13,7 @@ export function LiveModels({ state }: { state: Snapshot }) {
     return () => clearInterval(timer);
   }, []);
   const stale =
+    !['running', 'draining'].includes(state.state) ||
     !state.activity.sampled_at ||
     now - state.activity.sampled_at > 10 ||
     now - state.observed_at > 10 ||

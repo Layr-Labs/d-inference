@@ -223,7 +223,9 @@ struct CatalogPickerFlowTests {
 
     @Test("a pick that does not fit stops start before any download")
     func wontFitAnswerExits() async throws {
-        // Larger rows sort first, so row 1 is the 14 GB model (budget 12 GB).
+        // Larger rows sort first, so row 1 is the 14 GB model. A row to
+        // download is budgeted at its size x 1.2 in GiB (about 15.6 GiB);
+        // the 16 GB budget is 7.5 GiB.
         let fixture = try Fixture(models: [
             model("org/small", sizeGb: 4),
             model("org/too-big", sizeGb: 14),
@@ -333,11 +335,19 @@ struct PickerCatalogRowTests {
         #expect(Start.pickerCatalogRows(catalog: catalog).map(\.displayName) == ["Plain"])
     }
 
-    @Test("the fit budget keeps 4 GB for the OS")
+    @Test("the fit budget is the load cap less the load headroom")
     func fitBudgetBoundary() {
-        #expect(Start.pickerOSReserveGb == 4.0)
-        #expect(Start.modelFitsBudget(sizeGb: 12, memoryGb: 16))
-        #expect(!Start.modelFitsBudget(sizeGb: 12.1, memoryGb: 16))
+        // 16 GiB: cap = min(0.9 x 16, 16 - 2) = 14 GiB, less 5.5 GiB for
+        // activations and 1 GiB minimum KV = 7.5 GiB. This assumes that
+        // DARKBLOOM_MEM_CAP_FRACTION and DARKBLOOM_ACTIVATION_RESERVE_GB are
+        // not set.
+        #expect(Start.pickerLoadBudgetGiB(memoryGb: 16) == 7.5)
+        #expect(Start.modelFitsBudget(sizeGb: 7.5, memoryGb: 16))
+        #expect(!Start.modelFitsBudget(sizeGb: 7.6, memoryGb: 16))
+        #expect(!Start.modelFitsBudget(sizeGb: 0, memoryGb: 16))
+        #expect(!Start.modelFitsBudget(sizeGb: .nan, memoryGb: 16))
+        #expect(Start.pickerLoadBudgetGiB(memoryGb: 0) == 0)
+        #expect(Start.pickerLoadBudgetGiB(memoryGb: 5000) == 0)
     }
 
     @Test("fallback rejections name the reason and the limits")
@@ -349,16 +359,17 @@ struct PickerCatalogRowTests {
         }
         let small = entry("org/small", "Small", 4)
         let huge = entry("org/huge", "Huge", 20)
+        let usable = String(format: "%.1f", Start.pickerLoadBudgetGiB(memoryGb: 16))
 
         #expect(Start.resolveFallbackSelection(input: "all", entries: [huge], memoryGb: 16)
-            == .rejected("No model fits in 16 GB RAM (need \u{2264} 12.0 GB per model)."))
+            == .rejected("No model fits in 16 GB RAM (need \u{2264} \(usable) GB per model)."))
         #expect(Start.resolveFallbackSelection(input: "1, x", entries: [small], memoryGb: 16)
             == .rejected("Invalid selection: 'x' is not a number."))
         #expect(Start.resolveFallbackSelection(input: "0", entries: [small, huge], memoryGb: 16)
             == .rejected("Invalid selection: 0 (must be 1-2)."))
         #expect(Start.resolveFallbackSelection(input: "2", entries: [small, huge], memoryGb: 16)
             == .rejected(
-                "Huge (20.0 GB) needs more memory than this Mac has (16 GB RAM, ~12.0 GB usable). Choose a smaller model."))
+                "Huge (20.0 GB) needs more memory than this Mac has (16 GB RAM, ~\(usable) GB usable). Choose a smaller model."))
         #expect(Start.resolveFallbackSelection(input: " ALL ", entries: [small, huge], memoryGb: 16)
             == .selected(["org/small"]))
     }

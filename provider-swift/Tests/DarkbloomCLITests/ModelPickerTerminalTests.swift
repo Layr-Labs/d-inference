@@ -26,16 +26,20 @@ struct ModelPickerTerminalTests {
     private static let ansiCyan = "\u{1B}[36m"
     private static let ansiDimRed = "\u{1B}[2;31m"
 
+    /// `sizeGb` is the load estimate the picker budgets with. `downloadGb`
+    /// is the catalog size shown for rows to download; it defaults to the
+    /// load estimate.
     private func entry(
         _ name: String,
         sizeGb: Double,
+        downloadGb: Double? = nil,
         downloaded: Bool,
         resumable: Bool = false
     ) -> Start.PickerEntry {
         let id = "fixture/\(name.lowercased().replacingOccurrences(of: " ", with: "-"))"
         return Start.PickerEntry(
             id: id,
-            catalogModel: CatalogModel(id: id, s3Name: id, displayName: name, sizeGb: sizeGb),
+            catalogModel: CatalogModel(id: id, s3Name: id, displayName: name, sizeGb: downloadGb ?? sizeGb),
             displayName: name,
             sizeGb: sizeGb,
             minRamGb: nil,
@@ -44,12 +48,18 @@ struct ModelPickerTerminalTests {
         )
     }
 
-    /// Six rows on a 16 GB Mac (12 GB budget): two ready, four to download.
+    /// The tests use a 32 GB Mac. `Start.pickerLoadBudgetGiB` gives about
+    /// 22.3 GiB for it (a 28.8 GiB cap less 6.5 GiB load headroom). The
+    /// `budgetSitsBetweenTheFixtureSizes` test checks that every fixture size
+    /// below is on the side of the budget that the tests expect.
+    private static let memoryGb = 32.0
+
+    /// Six rows: two downloaded, four to download.
     private var mixedEntries: [Start.PickerEntry] {
         [
             entry("Big Ready", sizeGb: 30, downloaded: true),
             entry("Small Ready", sizeGb: 8, downloaded: true),
-            entry("Fits Later", sizeGb: 6, downloaded: false),
+            entry("Fits Later", sizeGb: 6, downloadGb: 5.4, downloaded: false),
             entry("Huge Partial", sizeGb: 40, downloaded: false, resumable: true),
             entry("Small Partial", sizeGb: 5, downloaded: false, resumable: true),
             entry("Huge New", sizeGb: 50, downloaded: false),
@@ -68,7 +78,7 @@ struct ModelPickerTerminalTests {
 
     private func runPicker(
         entries: [Start.PickerEntry],
-        memoryGb: Double,
+        preselectDownloaded: Bool = true,
         keys: [[UInt8]]
     ) throws -> PickerRun {
         var sockets: [Int32] = [-1, -1]
@@ -101,7 +111,8 @@ struct ModelPickerTerminalTests {
         let start = try Start.parse([])
         let selection = try start.runModelPicker(
             entries: entries,
-            memoryGb: memoryGb,
+            memoryGb: Self.memoryGb,
+            preselectDownloaded: preselectDownloaded,
             inputFD: sockets[0],
             outputFD: outputFD
         )
@@ -109,9 +120,19 @@ struct ModelPickerTerminalTests {
         return PickerRun(selection: selection, output: output)
     }
 
+    @Test("the 32 GB budget sits between the fixture sizes that fit and those that do not")
+    func budgetSitsBetweenTheFixtureSizes() throws {
+        let budget = Start.pickerLoadBudgetGiB(memoryGb: Self.memoryGb)
+        // Single rows that must fit: 3, 4, 5, 6, 8 and 12 GiB.
+        // Rows that must not fit: 30, 40 and 50 GiB.
+        // Selections that must fit together: 8, 11 and 7 GiB.
+        // A selection that must not fit together: 12 + 12 = 24 GiB.
+        try #require(budget >= 12 && budget < 24, "budget \(budget) GiB")
+    }
+
     @Test("Enter confirms the largest downloaded model that fits, which is preselected")
     func enterConfirmsPreselection() throws {
-        let run = try runPicker(entries: mixedEntries, memoryGb: 16, keys: [Self.enter])
+        let run = try runPicker(entries: mixedEntries, keys: [Self.enter])
 
         #expect(run.selection == [1])
         #expect(run.frameCount == 1)
@@ -121,20 +142,20 @@ struct ModelPickerTerminalTests {
 
     @Test("the first frame shows both sections and marks rows that do not fit")
     func firstFrameLayout() throws {
-        let run = try runPicker(entries: mixedEntries, memoryGb: 16, keys: [Self.escape])
+        let run = try runPicker(entries: mixedEntries, keys: [Self.escape])
         let expectedFrame =
             "\r\u{1B}[J"
-            + "  Select models (RAM: 16 GB)  \u{2191}\u{2193} navigate \u{00B7} Space toggle \u{00B7} Enter confirm\r\n"
-            + "  \(Self.ansiDim)1 selected \u{00B7} 8.0 GB total \u{00B7} all models can be served simultaneously\(Self.ansiReset)\r\n\r\n"
-            + "  \u{1B}[1mReady to serve:\u{1B}[0m\r\n"
-            + "    \(Self.ansiCyan)\u{25B8} [ ] Big Ready (30.0 GB) \u{26A0} won't fit\(Self.ansiReset)\r\n"
-            + "      [\u{2713}] Small Ready (8.0 GB)\r\n"
+            + "  Select models (RAM: 32 GB)  \u{2191}\u{2193} navigate \u{00B7} Space toggle \u{00B7} Enter confirm\r\n"
+            + "  \(Self.ansiDim)1 selected \u{00B7} 8.0 GiB load estimate \u{00B7} models are loaded as capacity allows\(Self.ansiReset)\r\n\r\n"
+            + "  \u{1B}[1mDownloaded:\u{1B}[0m\r\n"
+            + "    \(Self.ansiCyan)\u{25B8} [ ] Big Ready (~30.0 GiB load) \u{26A0} won't fit\(Self.ansiReset)\r\n"
+            + "      [\u{2713}] Small Ready (~8.0 GiB load)\r\n"
             + "\r\n"
             + "  \u{1B}[1mAvailable to download:\u{1B}[0m\r\n"
-            + "    \(Self.ansiDim)  [ ] \u{2193} Fits Later (6.0 GB)\u{1B}[0m\r\n"
-            + "    \(Self.ansiDimRed)  [ ] \u{2193} Huge Partial (40.0 GB) \u{21BB} resuming \u{00B7} \u{26A0} exceeds RAM\u{1B}[0m\r\n"
-            + "    \(Self.ansiDim)  [ ] \u{2193} Small Partial (5.0 GB) \u{21BB} resuming\u{1B}[0m\r\n"
-            + "    \(Self.ansiDimRed)  [ ] \u{2193} Huge New (50.0 GB) \u{26A0} exceeds RAM\u{1B}[0m\r\n"
+            + "    \(Self.ansiDim)  [ ] \u{2193} Fits Later (5.4 GB download; ~6.0 GiB load)\u{1B}[0m\r\n"
+            + "    \(Self.ansiDimRed)  [ ] \u{2193} Huge Partial (40.0 GB download; ~40.0 GiB load) \u{21BB} resuming \u{00B7} \u{26A0} exceeds RAM\u{1B}[0m\r\n"
+            + "    \(Self.ansiDim)  [ ] \u{2193} Small Partial (5.0 GB download; ~5.0 GiB load) \u{21BB} resuming\u{1B}[0m\r\n"
+            + "    \(Self.ansiDimRed)  [ ] \u{2193} Huge New (50.0 GB download; ~50.0 GiB load) \u{26A0} exceeds RAM\u{1B}[0m\r\n"
 
         #expect(run.selection == [])
         #expect(run.output == "\u{1B}[?25l" + expectedFrame + "\u{1B}[?25h")
@@ -149,7 +170,7 @@ struct ModelPickerTerminalTests {
             Self.down, Self.space,  // cursor 4: select Small Partial
             Self.lineFeed,
         ]
-        let run = try runPicker(entries: mixedEntries, memoryGb: 16, keys: keys)
+        let run = try runPicker(entries: mixedEntries, keys: keys)
 
         #expect(run.selection == [2, 4])
         #expect(run.frameCount == 9)
@@ -158,37 +179,37 @@ struct ModelPickerTerminalTests {
 
         let lastFrame = try #require(run.output.components(separatedBy: "\u{1B}[12A").last)
         #expect(lastFrame.contains(
-            "2 selected \u{00B7} 11.0 GB total \u{00B7} all models can be served simultaneously"))
-        #expect(lastFrame.contains("      [ ] Small Ready (8.0 GB)\r\n"))
-        #expect(lastFrame.contains("\(Self.ansiDim)  [\u{2713}] \u{2193} Fits Later (6.0 GB)"))
-        #expect(lastFrame.contains("\(Self.ansiDimRed)  [ ] \u{2193} Huge Partial (40.0 GB)"))
+            "2 selected \u{00B7} 11.0 GiB load estimate \u{00B7} models are loaded as capacity allows"))
+        #expect(lastFrame.contains("      [ ] Small Ready (~8.0 GiB load)\r\n"))
+        #expect(lastFrame.contains("\(Self.ansiDim)  [\u{2713}] \u{2193} Fits Later (5.4 GB download; ~6.0 GiB load)"))
+        #expect(lastFrame.contains("\(Self.ansiDimRed)  [ ] \u{2193} Huge Partial (40.0 GB download; ~40.0 GiB load)"))
         #expect(lastFrame.contains(
-            "\(Self.ansiYellow)\u{25B8} [\u{2713}] \u{2193} Small Partial (5.0 GB) \u{21BB} resuming\u{1B}[0m"))
+            "\(Self.ansiYellow)\u{25B8} [\u{2713}] \u{2193} Small Partial (5.0 GB download; ~5.0 GiB load) \u{21BB} resuming\u{1B}[0m"))
     }
 
     @Test("Space on a downloaded model that does not fit leaves it unselected")
     func wontFitDownloadedCannotBeSelected() throws {
         let run = try runPicker(
-            entries: mixedEntries, memoryGb: 16, keys: [Self.space, Self.enter])
+            entries: mixedEntries, keys: [Self.space, Self.enter])
 
         #expect(run.selection == [1])
         let lastFrame = try #require(run.output.components(separatedBy: "\u{1B}[12A").last)
-        #expect(lastFrame.contains("\u{25B8} [ ] Big Ready (30.0 GB) \u{26A0} won't fit"))
+        #expect(lastFrame.contains("\u{25B8} [ ] Big Ready (~30.0 GiB load) \u{26A0} won't fit"))
     }
 
-    @Test("a selection larger than the budget reports one active model at a time")
+    @Test("a selection larger than the budget reports that models may share memory or take turns")
     func overBudgetSelectionSwapsOnDemand() throws {
         let entries = [
-            entry("Ready A", sizeGb: 8, downloaded: true),
-            entry("Ready B", sizeGb: 8, downloaded: true),
+            entry("Ready A", sizeGb: 12, downloaded: true),
+            entry("Ready B", sizeGb: 12, downloaded: true),
         ]
         let run = try runPicker(
-            entries: entries, memoryGb: 16, keys: [Self.down, Self.space, Self.enter])
+            entries: entries, keys: [Self.down, Self.space, Self.enter])
 
         #expect(run.selection == [0, 1])
         #expect(run.output.contains(
-            "  \(Self.ansiDim)2 selected \u{00B7} 16.0 GB on disk \u{00B7} \(Self.ansiReset)"
-                + "\(Self.ansiYellow)one model active at a time (swap on demand)\(Self.ansiReset)\r\n\r\n"))
+            "  \(Self.ansiDim)2 selected \u{00B7} 24.0 GiB load estimate \u{00B7} \(Self.ansiReset)"
+                + "\(Self.ansiYellow)selected models may share memory or take turns\(Self.ansiReset)\r\n\r\n"))
         #expect(!run.output.contains("Available to download:"))
         // Two ready rows plus the three header lines and the section title.
         #expect(run.output.contains("\u{1B}[6A\r\u{1B}[J"))
@@ -200,20 +221,20 @@ struct ModelPickerTerminalTests {
             entry("Remote One", sizeGb: 4, downloaded: false),
             entry("Remote Two", sizeGb: 3, downloaded: false),
         ]
-        let run = try runPicker(entries: entries, memoryGb: 16, keys: [Self.enter, Self.quit])
+        let run = try runPicker(entries: entries, keys: [Self.enter, Self.quit])
 
         #expect(run.selection == [])
         #expect(run.frameCount == 2)
-        #expect(!run.output.contains("Ready to serve:"))
-        #expect(run.output.contains("0 selected \u{00B7} 0.0 GB total"))
+        #expect(!run.output.contains("Downloaded:"))
+        #expect(run.output.contains("0 selected \u{00B7} 0.0 GiB load estimate"))
         #expect(run.output.contains(
             "\r\n\r\n  \u{1B}[1mAvailable to download:\u{1B}[0m\r\n"
-                + "    \(Self.ansiYellow)\u{25B8} [ ] \u{2193} Remote One (4.0 GB)\u{1B}[0m\r\n"))
+                + "    \(Self.ansiYellow)\u{25B8} [ ] \u{2193} Remote One (4.0 GB download; ~4.0 GiB load)\u{1B}[0m\r\n"))
     }
 
     @Test("Escape cancels even when a model is selected")
     func escapeCancelsSelection() throws {
-        let run = try runPicker(entries: mixedEntries, memoryGb: 16, keys: [Self.escape])
+        let run = try runPicker(entries: mixedEntries, keys: [Self.escape])
         #expect(run.selection == [])
         #expect(run.frameCount == 1)
     }
@@ -234,13 +255,24 @@ struct ModelPickerTerminalTests {
             Self.space,  // select Ready B
             Self.enter,
         ]
-        let run = try runPicker(entries: entries, memoryGb: 16, keys: keys)
+        let run = try runPicker(entries: entries, keys: keys)
 
         #expect(run.selection == [0, 1])
         #expect(run.frameCount == 8)
         let lastFrame = try #require(run.output.components(separatedBy: "\u{1B}[6A").last)
-        #expect(lastFrame.contains("      [\u{2713}] Ready A (4.0 GB)\r\n"))
-        #expect(lastFrame.contains("    \(Self.ansiCyan)\u{25B8} [\u{2713}] Ready B (3.0 GB)\(Self.ansiReset)\r\n"))
-        #expect(lastFrame.contains("2 selected \u{00B7} 7.0 GB total"))
+        #expect(lastFrame.contains("      [\u{2713}] Ready A (~4.0 GiB load)\r\n"))
+        #expect(lastFrame.contains("    \(Self.ansiCyan)\u{25B8} [\u{2713}] Ready B (~3.0 GiB load)\(Self.ansiReset)\r\n"))
+        #expect(lastFrame.contains("2 selected \u{00B7} 7.0 GiB load estimate"))
+    }
+
+    @Test("without preselection nothing starts selected, so Enter does not confirm")
+    func noPreselection() throws {
+        let run = try runPicker(
+            entries: mixedEntries, preselectDownloaded: false, keys: [Self.enter, Self.quit])
+
+        #expect(run.selection == [])
+        #expect(run.frameCount == 2)
+        #expect(run.output.contains("0 selected \u{00B7} 0.0 GiB load estimate"))
+        #expect(run.output.contains("      [ ] Small Ready (~8.0 GiB load)\r\n"))
     }
 }

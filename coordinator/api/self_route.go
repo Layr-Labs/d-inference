@@ -34,6 +34,8 @@ type selfRoutePolicy struct {
 	prefer bool
 	// ownerAccountID is the account that must own the serving provider.
 	ownerAccountID string
+	// providerID optionally pins exclusive self-route to one provider session.
+	providerID string
 }
 
 // resolveSelfRoutePolicy derives the self-route decision from the request's
@@ -78,11 +80,18 @@ func (s *Server) resolveSelfRoutePolicy(r *http.Request) selfRoutePolicy {
 // real cause. Returns false (no write) when at least one owned, online
 // machine can serve this request.
 func (s *Server) selfRouteUnavailable(w http.ResponseWriter, r *http.Request, owner, model string, traits registry.RequestTraits, requiresVision bool) bool {
+	traits.TargetProviderID = strings.TrimSpace(r.Header.Get(selfRouteMachineHeader))
 	online, servesRequest := s.registry.OwnedProviderSummary(owner, model, traits, requiresVision)
 	if servesRequest > 0 {
 		return false
 	}
 	if online == 0 {
+		if traits.TargetProviderID != "" {
+			w.Header().Set("Retry-After", "30")
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("machine_offline",
+				"the selected machine is offline; refresh its id from /v1/me/providers after reconnecting", withCode("machine_offline")))
+			return true
+		}
 		linked := 0
 		if recs, err := s.store.ListProvidersByAccount(r.Context(), owner); err == nil {
 			linked = len(recs)
@@ -103,7 +112,7 @@ func (s *Server) selfRouteUnavailable(w http.ResponseWriter, r *http.Request, ow
 	// request's shape: the machine lacks a request-shape capability (tools,
 	// tool constraints) or the build isn't vision-capable (media). Deterministic for this machine, so
 	// say the real cause rather than "not loaded".
-	if _, servesBase := s.registry.OwnedProviderSummary(owner, model, registry.RequestTraits{}, false); servesBase > 0 {
+	if _, servesBase := s.registry.OwnedProviderSummary(owner, model, registry.RequestTraits{TargetProviderID: traits.TargetProviderID}, false); servesBase > 0 {
 		var reason string
 		switch {
 		case requiresVision && !traits.HasTools:

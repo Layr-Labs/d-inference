@@ -6,10 +6,13 @@ import (
 	"time"
 )
 
-// RequestTraits captures request-shape attributes that affect provider
+// RequestTraits captures request attributes that affect provider
 // eligibility beyond the model id. Stamped onto PendingRequest by the consumer
 // handler and enforced in the scheduler's candidate filter and final admit.
 type RequestTraits struct {
+	// TargetProviderID is an optional hard session filter for exclusive owner
+	// routing. It stays attached through aliases, queued requests and retries.
+	TargetProviderID string
 	// HasTools is true when the request carries an OpenAI tools/functions
 	// schema. Tool schemas are rendered through the model's chat template on
 	// the provider. It selects the "tools" inference-error cooldown shape
@@ -162,6 +165,9 @@ func providerTemplateRenderBrokenLocked(p *Provider, model string) bool {
 //
 // Caller holds r.mu and p.mu (same discipline as providerServesVisionModelLocked).
 func (r *Registry) providerEligibleForTraitsLocked(p *Provider, model string, t RequestTraits) bool {
+	if t.TargetProviderID != "" && p.ID != t.TargetProviderID {
+		return false
+	}
 	if !providerMeetsQwen4CatalogPolicyLocked(p, model) {
 		return false
 	}

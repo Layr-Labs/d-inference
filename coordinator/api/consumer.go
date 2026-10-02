@@ -1841,9 +1841,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// "Use my own machine, for free" opt-in. The signal is the
 	// X-Darkbloom-Route header (OpenAI-client-safe: invisible to the body
 	// schema) OR a per-key hard ceiling. The header can only *request*
-	// self-routing; it cannot name a machine — ownership is matched on the
-	// coordinator-stamped provider AccountID, so nothing here is forgeable.
-	policy := s.resolveSelfRoutePolicy(r)
+	// self-routing; an optional machine selector is ownership-checked against
+	// the coordinator-stamped provider AccountID.
+	policy, machineOK := s.resolveSelfRouteMachine(w, r, s.resolveSelfRoutePolicy(r))
+	if !machineOK {
+		return
+	}
 
 	isResponsesAPI := input != nil && len(messages) == 0
 	// Tool-constraint validation must judge the PRE-normalization tools (a
@@ -1887,6 +1890,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	requiresToolConstraint := validatedMode.requiresInferenceConstraint()
 	requiresNativeMediaTools := requiresVision && (requiresToolConstraint || requestHasMediaToolResults(parsed))
 	aliasTraits := registry.RequestTraits{
+		TargetProviderID:         policy.providerID,
 		HasTools:                 hasTools,
 		RequiresToolConstraint:   requiresToolConstraint,
 		RequiresNativeMediaTools: requiresNativeMediaTools,
@@ -2064,6 +2068,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			traits = registry.RequestTraits{HasTools: hasTools}
 		}
+		traits.TargetProviderID = policy.providerID
 		traits.RequiresToolConstraint = requiresToolConstraint
 		traits.RequiresNativeMediaTools = requiresNativeMediaTools
 		traits.ToolChoiceMode = string(validatedMode)
@@ -2626,7 +2631,10 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	applyMetadataDetailsRequest(r, parsed)
 
 	// "Use my own machine, for free" opt-in (see handleChatCompletions).
-	policy := s.resolveSelfRoutePolicy(r)
+	policy, machineOK := s.resolveSelfRouteMachine(w, r, s.resolveSelfRoutePolicy(r))
+	if !machineOK {
+		return
+	}
 
 	// Constraint validation needs the lowered chat shape. Endpoint-native
 	// shapes the contract lowering cannot express — multi-prompt completions,
@@ -2663,6 +2671,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	hasTools := requestHasTools(parsed)
 	requiresNativeMediaTools := requiresVision && (requiresToolConstraint || requestHasMediaToolResults(parsed))
 	aliasTraits := registry.RequestTraits{
+		TargetProviderID:         policy.providerID,
 		HasTools:                 hasTools,
 		RequiresToolConstraint:   requiresToolConstraint,
 		RequiresNativeMediaTools: requiresNativeMediaTools,
@@ -2818,6 +2827,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		_, candidateBody, _ := lowerGenericBodyForModel(candidateModel)
 		traits, _ := routingTraitsForProviderBody(
 			hasTools, candidateBody)
+		traits.TargetProviderID = policy.providerID
 		traits.RequiresToolConstraint = requiresToolConstraint
 		traits.RequiresNativeMediaTools = requiresNativeMediaTools
 		traits.ToolChoiceMode = string(validatedMode)
@@ -2854,6 +2864,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		endpointBody, inferenceBody, loweringErr = lowerGenericBodyForModel(newModel)
 		routingTraits, _ = routingTraitsForProviderBody(
 			hasTools, inferenceBody)
+		routingTraits.TargetProviderID = policy.providerID
 		routingTraits.RequiresToolConstraint = requiresToolConstraint
 		routingTraits.RequiresNativeMediaTools = requiresNativeMediaTools
 		routingTraits.ToolChoiceMode = string(validatedMode)

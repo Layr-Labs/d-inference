@@ -9,17 +9,19 @@ import (
 )
 
 func TestAutopilotProjectionPreservesEveryHardRoutingTrait(t *testing.T) {
-	traits := RequestTraits{ToolChoiceName: "private-tool", ParallelToolCalls: true, AvoidVersion: "soft-retry-hint"}
-	soft := map[string]bool{"ToolChoiceName": true, "ParallelToolCalls": true, "AvoidVersion": true}
+	traits := RequestTraits{TargetProviderID: "private-machine", ToolChoiceName: "private-tool", ParallelToolCalls: true, AvoidVersion: "soft-retry-hint"}
+	// TargetProviderID belongs only to exclusive self-route, which is excluded
+	// from public Autopilot demand before this projection. Keep machine ids out.
+	omitted := map[string]bool{"TargetProviderID": true, "ToolChoiceName": true, "ParallelToolCalls": true, "AvoidVersion": true}
 	value := reflect.ValueOf(&traits).Elem()
 	requirements := reflect.TypeOf(autopilot.Requirements{})
 	for i := 0; i < value.NumField(); i++ {
 		name := value.Type().Field(i).Name
-		if soft[name] {
+		if omitted[name] {
 			continue
 		}
 		if _, ok := requirements.FieldByName(name); !ok {
-			t.Fatalf("new request trait %s needs an explicit hard/soft classification", name)
+			t.Fatalf("new request trait %s needs an explicit projected/omitted classification", name)
 		}
 		switch value.Field(i).Kind() {
 		case reflect.Bool:
@@ -39,9 +41,9 @@ func TestAutopilotProjectionPreservesEveryHardRoutingTrait(t *testing.T) {
 	roundtrip := reflect.ValueOf(requestTraitsForAutopilot(projected))
 	for i := 0; i < value.NumField(); i++ {
 		name := value.Type().Field(i).Name
-		if soft[name] {
+		if omitted[name] {
 			if !roundtrip.Field(i).IsZero() {
-				t.Fatalf("non-eligibility data %s retained", name)
+				t.Fatalf("non-demand data %s retained", name)
 			}
 		} else if !reflect.DeepEqual(value.Field(i).Interface(), roundtrip.Field(i).Interface()) {
 			t.Fatalf("hard trait %s was lost", name)

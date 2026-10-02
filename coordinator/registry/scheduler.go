@@ -1469,7 +1469,8 @@ func (r *Registry) OwnedProviderSummary(accountID, model string, traits RequestT
 	defer r.mu.RUnlock()
 	for _, p := range r.providers {
 		p.mu.Lock()
-		if p.AccountID == "" || p.AccountID != accountID {
+		if p.AccountID == "" || p.AccountID != accountID ||
+			(traits.TargetProviderID != "" && p.ID != traits.TargetProviderID) {
 			p.mu.Unlock()
 			continue
 		}

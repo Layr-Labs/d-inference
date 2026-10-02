@@ -341,7 +341,7 @@ struct FanServiceManager {
     func runProcess(
         _ executable: String,
         arguments: [String],
-        timeout: TimeInterval = 15
+        timeout: TimeInterval = FanProcessRunner.defaultTimeout
     ) -> FanProcessResult {
         host.runProcess(executable, arguments, timeout)
     }

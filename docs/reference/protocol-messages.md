@@ -1204,7 +1204,11 @@ State validation and malformed-report fencing are in
 replace the paired heartbeat, clear an uncertain operation by age alone or
 make unconfirmed slots routable.
 
-Provider `enabled` is configured consent, not activation. It does not itself
+Provider `enabled` reports eligible consent, not activation. Saved consent stays
+local when an ordinary successor extends serving permission beyond cached
+consent: the provider reports `enabled=false` and local phase `waiting_inventory`
+until explicit inventory refresh, preserving ordinary serving with old peers.
+It does not itself
 activate warm-only network admission. The default shadow rollout sends leases for
 explicit mode/status but no residency commands. Shadow lease acknowledgement is
 not live ownership or actual capacity credit.

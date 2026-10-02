@@ -6,7 +6,7 @@ extension ProviderLoop {
     }
 
     var autopilotControlIsValid: Bool {
-        guard autopilotConsented, !autopilotSettings.paused, let control = autopilotControl else { return false }
+        guard autopilotConsented, !autopilotNeedsInventoryRefresh, !autopilotSettings.paused, let control = autopilotControl else { return false }
         return control.enabled && control.revision == autopilotSettings.revision
             && control.expiresAtMs > Int64(Date().timeIntervalSince1970 * 1_000)
     }
@@ -27,7 +27,7 @@ extension ProviderLoop {
             autopilotResidentSince[id] = now
         }
         state.modelAutopilot = ModelAutopilotSnapshot(
-            enabled: autopilotConsented,
+            enabled: autopilotConsented && !autopilotNeedsInventoryRefresh,
             minDwellSeconds: autopilotSettings.effectiveMinDwellSeconds,
             pinnedModels: autopilotPinnedModels.sorted(), maxModelSlots: autopilotPlanningMaxModelSlots,
             residentModels: modelSlots.keys.sorted().map { id in

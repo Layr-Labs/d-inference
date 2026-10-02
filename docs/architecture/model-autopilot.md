@@ -107,7 +107,12 @@ the optional detail while reading heartbeat health; new readers also accept old
 Unrelated desired-build updates outside the recorded set are ignored. A declared
 successor of an ordinary selected model retains the existing artifact-update
 workflow even when its new build ID is absent from the Autopilot inventory;
-this does not add that ID to cached-only Autopilot consent. While enrolled,
+this does not add that ID to cached-only Autopilot consent. When that extends
+ordinary permission beyond cached consent, wire participation is suspended
+(`enabled=false`) until explicit inventory refresh. Saved enrollment stays on;
+`waiting_inventory` explains the required refresh. This prevents older
+coordinators from applying their cached-selection routing fence to the new
+ordinary successor and grants no additional Autopilot command permission. While enrolled,
 `darkbloom switch` directs the operator to `darkbloom autopilot models` or opt-out
 so a manual hosted-model transaction cannot bypass the approved selection.
 Both operation owners reject overlap, including model-switch validation. Pause, resume, pins and

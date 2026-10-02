@@ -211,6 +211,7 @@ public actor ProviderLoop {
     internal var appAttestStallRetryAt: ContinuousClock.Instant?
     internal let loopConfig: ProviderLoopConfig
     internal var ordinaryServingModelIDs: Set<String>
+    internal var autopilotSuccessorNeedsInventoryRefresh = false
     internal var autopilotInventoryModels: [String: ModelInfo]
     internal let keyPair: NodeKeyPair
     internal let signer: (any AttestationSigner)?

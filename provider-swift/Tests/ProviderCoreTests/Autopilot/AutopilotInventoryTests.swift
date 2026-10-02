@@ -62,6 +62,12 @@ struct AutopilotInventoryTests {
             .init(modelName: "unrelated-alias", desiredBuild: unrelated, previousBuild: cached.id),
         ], send: SendHandle { _ in })
         #expect(await loop.autopilotAllowsModel(successor))
+        #expect(await loop.autopilotSettings.enabled)
+        #expect(await loop.state.modelAutopilot?.enabled == false)
+        #expect(await loop.autopilotPhase == "waiting_inventory")
+        #expect(await loop.autopilotControl == nil)
+        await loop.handleAutopilotControl(control(shadow: false))
+        #expect(await loop.modelAutopilotEnabled == false)
         #expect(await loop.desiredPrefetchTargets.contains(successor))
         #expect(await loop.desiredSwapDrop[successor] == selected.id)
         #expect(await loop.autopilotAllowsModel(unrelated) == false)

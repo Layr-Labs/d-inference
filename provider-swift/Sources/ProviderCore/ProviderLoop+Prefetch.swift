@@ -338,7 +338,17 @@ extension ProviderLoop {
             if let previous = entry.previousBuild, ordinaryServingModelIDs.contains(previous),
                 !entry.desiredBuild.isEmpty {
                 ordinaryServingModelIDs.insert(entry.desiredBuild)
+                if autopilotConsented && !autopilotSettings.allows(entry.desiredBuild) {
+                    autopilotSuccessorNeedsInventoryRefresh = true
+                }
             }
+        }
+        if autopilotNeedsInventoryRefresh {
+            clearAutopilotControl()
+            await updateAggregateCapacity()
+            // Publish the opt-in suspension before advertising the successor:
+            // legacy coordinators must not apply their cached-selection fence.
+            await coordinatorClient?.sendEventHeartbeat()
         }
         let requestedDesired = Set(entries.map(\.desiredBuild).filter { !$0.isEmpty })
         let currentDesired = Set(requestedDesired.filter {

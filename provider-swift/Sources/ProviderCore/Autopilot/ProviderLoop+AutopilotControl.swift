@@ -9,6 +9,14 @@ extension ProviderLoop {
         autopilotSettings.hasConsent && !loopConfig.config.coordinator.privateOnly
     }
 
+    /// Keep exact cached consent separate from ordinary selected-model updates.
+    /// Older coordinators inspect enabled/selected_models even when they do not
+    /// understand protocol 3, so suspend wire participation until refresh.
+    var autopilotNeedsInventoryRefresh: Bool {
+        autopilotConsented && autopilotSuccessorNeedsInventoryRefresh
+            && !ordinaryServingModelIDs.isSubset(of: Set(autopilotSettings.selectedModels))
+    }
+
     var autopilotManagesResidency: Bool {
         modelAutopilotEnabled || (autopilotConsented && autopilotSettings.paused)
     }
@@ -30,6 +38,7 @@ extension ProviderLoop {
         if autopilotCommand != nil { return modelAutopilotEnabled ? "transitioning" : "recovering" }
         if !autopilotConsented { return "off" }
         if autopilotSettings.paused { return "paused" }
+        if autopilotNeedsInventoryRefresh { return "waiting_inventory" }
         if autopilotControlIsValid && autopilotControl?.observeOnly == true { return "shadow" }
         return modelAutopilotEnabled ? "active" : "waiting"
     }
@@ -67,6 +76,9 @@ extension ProviderLoop {
         let previouslyManaged = autopilotManagesResidency
         let hadControl = autopilotControl != nil
         autopilotSettingsOverride = settings
+        if ordinaryServingModelIDs.isSubset(of: Set(settings.selectedModels)) {
+            autopilotSuccessorNeedsInventoryRefresh = false
+        }
         autopilotControl = nil
         withdrawInactiveAutopilotModels()
         autopilotGeneration &+= 1
@@ -78,6 +90,10 @@ extension ProviderLoop {
 
     func handleAutopilotControl(_ control: ModelAutopilotControl) async {
         refreshAutopilotSettings()
+        if autopilotNeedsInventoryRefresh {
+            clearAutopilotControl()
+            return
+        }
         let now = Int64(Date().timeIntervalSince1970 * 1_000)
         guard autopilotConsented, control.revision == autopilotSettings.revision,
               !control.sessionId.isEmpty, control.sessionId.utf8.count <= 128,

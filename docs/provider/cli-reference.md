@@ -10,7 +10,10 @@ version `ProviderCore.version` in
 `provider-swift/Sources/ProviderCore/ProviderCore.swift`). For operators; types
 and defaults are the ArgumentParser declarations; `—` means required.
 
-Waiting and shadow Autopilot preserve the normal picker and `--model` serving selection. Other verified cached models are reported separately for planning and cannot be loaded by ordinary routing. See [Autopilot architecture](../architecture/model-autopilot.md).
+`waiting_inventory` means a selected model's ordinary update introduced an ID
+outside cached Autopilot consent. Enrollment remains saved, ordinary serving
+continues, and `darkbloom autopilot models` refreshes inventory before control
+can resume. Waiting and shadow Autopilot preserve the normal picker and `--model` serving selection. Other verified cached models are reported separately for planning and cannot be loaded by ordinary routing. See [Autopilot architecture](../architecture/model-autopilot.md).
 
 ## Global options
 

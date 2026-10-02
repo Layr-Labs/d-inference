@@ -25,6 +25,7 @@ actor DesktopBackend {
   var link: JSONValue = .null
   var samples: [JSONValue] = []
   var sampleSession: Double?
+  var accountSession = DesktopAccountSession()
   /// Shared `fan status` read; `coolingReadAt` is nil while it is in flight.
   var coolingRead: Task<JSONValue, Never>?
   var coolingReadAt: Date?

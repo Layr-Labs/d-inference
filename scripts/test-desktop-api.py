@@ -35,6 +35,19 @@ class Catalog(http.server.BaseHTTPRequestHandler):
             pass
 
     def do_GET(self):
+        if self.path.startswith("/v1/provider/desktop/insights?window="):
+            assert self.headers.get("Authorization") == "Bearer fixture-provider-token"
+            if self.server.hold_insights:
+                self.server.insights_started.set()
+                self.server.insights_release.wait(10)
+            window = self.path.split("window=")[1]
+            assert window in ("7d", "30d")
+            body = json.dumps({"window": window, "lifetime": {"completion_tokens": "9007199254740993"}}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
@@ -86,6 +99,9 @@ def main():
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Catalog)
     server.link_started = threading.Event()
     server.link_release = threading.Event()
+    server.hold_insights = False
+    server.insights_started = threading.Event()
+    server.insights_release = threading.Event()
     threading.Thread(target=server.serve_forever, daemon=True).start()
     with tempfile.TemporaryDirectory(prefix="darkbloom-desktop-test-") as temporary:
         root = Path(temporary)
@@ -138,6 +154,29 @@ idle_timeout_mins = 60
                 code, snapshot = request()
                 assert code == 200 and snapshot["machine"]["name"] == "Desktop fixture", snapshot
                 assert snapshot["state"] == "stopped" and not snapshot["linked"]
+                initial_account = snapshot["account_revision"]
+                assert request("insights-week")[0] == 401
+                (root / "auth").write_text("fixture-provider-token")
+                (root / "auth").chmod(0o600)
+                linked_snapshot = request()[1]
+                assert linked_snapshot["account_revision"] != initial_account
+                assert "fixture-provider-token" not in json.dumps(linked_snapshot)
+                for resource, window in (("insights-week", "7d"), ("insights-month", "30d")):
+                    code, insights = request(resource)
+                    assert code == 200 and insights["window"] == window, insights
+                    assert insights["lifetime"]["completion_tokens"] == "9007199254740993"
+                server.hold_insights = True
+                inflight_result = []
+                inflight = threading.Thread(target=lambda: inflight_result.append(request("insights-week")))
+                inflight.start()
+                assert server.insights_started.wait(5), "insights request did not reach fixture"
+                (root / "auth").unlink()
+                server.insights_release.set()
+                inflight.join(10)
+                assert inflight_result and inflight_result[0][0] == 401, inflight_result
+                server.hold_insights = False
+                assert request()[1]["account_revision"] != linked_snapshot["account_revision"]
+                assert request("insights-week")[0] == 401
                 code, rejected = request("actions", {"id": str(uuid.uuid4()), "action": "start", "models": ["--force"]})
                 assert code == 400 and rejected["error"] == "Invalid model ID", rejected
                 code, malformed = request("actions", {"action": "start"})
@@ -189,7 +228,7 @@ idle_timeout_mins = 60
                 assert snapshot["operations"][0]["state"] == "cancelled", snapshot
                 assert not snapshot["linked"] and snapshot["link"] is None, snapshot
                 check_replacement_exit(args.binary.resolve(), root, config, env)
-                print("desktop-api: authentication, isolation, state, settings, idempotency, cancellation, validation, error statuses, and replaced-executable exit passed")
+                print("desktop-api: authentication, isolation, account insights, exact counters, state, settings, idempotency, cancellation, validation, error statuses, and replaced-executable exit passed")
                 if args.hold:
                     print("DARKBLOOM_DESKTOP_DIR=" + str(root / "desktop"), flush=True)
                     input("Press Enter to stop the isolated API: ")

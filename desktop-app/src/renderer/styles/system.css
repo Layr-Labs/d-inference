@@ -3,7 +3,7 @@
 }
 
 .blue-label {
-  color: #7898ff;
+  color: var(--accent-brand);
 }
 
 .icon-button {
@@ -15,8 +15,8 @@
 }
 
 .icon-button:hover {
-  background: #ffffff08;
-  color: white;
+  background: rgba(var(--contrast-rgb), 0.031);
+  color: var(--text-primary);
 }
 
 .metric-row {
@@ -64,7 +64,7 @@
 
 .table-head {
   font-size: 10px;
-  color: #73737d;
+  color: var(--muted);
   padding: 15px 12px;
   border-bottom: 1px solid var(--line);
 }
@@ -77,7 +77,7 @@
 }
 
 .machine-table-row:hover {
-  background: #ffffff04;
+  background: rgba(var(--contrast-rgb), 0.016);
 }
 
 .machine-name {
@@ -98,7 +98,7 @@
 }
 
 .machine-name > svg {
-  color: #aaa;
+  color: var(--text-secondary);
 }
 
 .action-row {
@@ -152,7 +152,7 @@
   gap: 20px;
   justify-content: space-between;
   min-height: 84px;
-  border-bottom: 1px solid #ffffff09;
+  border-bottom: 1px solid rgba(var(--contrast-rgb), 0.035);
   padding: 18px 0;
   font-size: 12px;
 }
@@ -174,8 +174,8 @@
 
 .setting-row > input:not(.switch),
 select {
-  background: #151517;
-  border: 1px solid #ffffff1b;
+  background: var(--panel-bg);
+  border: 1px solid rgba(var(--contrast-rgb), 0.106);
   border-radius: 4px;
   padding: 10px 12px;
   min-width: 180px;
@@ -184,7 +184,7 @@ select {
 
 .setting-row > code {
   font-size: 11px;
-  color: #a1a1aa;
+  color: var(--text-secondary);
   max-width: 55%;
   overflow-wrap: anywhere;
 }
@@ -203,7 +203,7 @@ select {
 }
 
 .cooling-hero > svg {
-  color: #aaa;
+  color: var(--text-secondary);
   margin-left: 40px;
 }
 
@@ -261,14 +261,14 @@ select {
   align-items: center;
   gap: 22px;
   padding: 25px;
-  background: #101525;
+  background: var(--blue-wash);
   border: 1px solid #355eff22;
   border-radius: 6px;
   margin-bottom: 32px;
 }
 
 .studio-intro > svg {
-  color: #7090ff;
+  color: var(--accent-brand);
 }
 
 .studio-intro p {
@@ -319,14 +319,14 @@ select {
 }
 
 .code-block {
-  background: #101012;
+  background: var(--panel-bg);
   border: 1px solid var(--line);
   border-radius: 5px;
   padding: 24px;
   overflow: auto;
   font-size: 11px;
   line-height: 1.9;
-  color: #b2b9d3;
+  color: var(--accent-brand);
 }
 
 .version-panel {
@@ -334,14 +334,14 @@ select {
   align-items: center;
   gap: 28px;
   border: 1px solid var(--line);
-  background: #111113;
+  background: var(--panel-bg);
   border-radius: 6px;
   padding: 32px;
 }
 
 .version-symbol {
   font-size: 60px;
-  color: #7190ff;
+  color: var(--accent-brand);
 }
 
 .version-panel h2 {
@@ -356,7 +356,7 @@ select {
 
 .release-notes {
   font-size: 13px;
-  color: #aaa;
+  color: var(--text-secondary);
   white-space: pre-wrap;
   line-height: 1.8;
 }
@@ -379,14 +379,14 @@ select {
 }
 
 .rank {
-  color: #64646d;
+  color: var(--muted);
   width: 24px;
   font-size: 12px;
 }
 
 .leader-avatar {
-  background: #181b2a;
-  color: #8299ed;
+  background: var(--blue-wash);
+  color: var(--accent-brand);
   width: 36px;
   height: 36px;
   border-radius: 50%;
@@ -415,7 +415,7 @@ select {
 .link-code {
   margin-top: 25px;
   padding: 20px;
-  border: 1px solid #ffffff20;
+  border: 1px solid rgba(var(--contrast-rgb), 0.125);
   display: flex;
   align-items: center;
   gap: 20px;
@@ -457,12 +457,12 @@ select {
 
 .schedule-days input:checked + span {
   background: var(--blue);
-  color: white;
+  color: var(--text-primary);
   border-color: var(--blue);
 }
 
 .schedule-days input:focus-visible + span {
-  outline: 2px solid #7899ff;
+  outline: 2px solid var(--accent-brand);
   outline-offset: 3px;
 }
 
@@ -475,7 +475,7 @@ select {
 }
 
 .schedule-time input {
-  background: #151517;
+  background: var(--panel-bg);
   border: 1px solid var(--line);
   padding: 9px;
   border-radius: 4px;

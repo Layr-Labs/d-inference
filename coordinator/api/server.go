@@ -2699,6 +2699,7 @@ func (s *Server) routes() {
 
 	s.mux.HandleFunc("GET /v1/provider/account-earnings", s.requireAuth(s.handleAccountEarnings))
 	s.mux.HandleFunc("GET /v1/provider/desktop", s.requireDesktopProviderToken(s.rateLimitDesktop(s.handleDesktopAccount)))
+	s.mux.HandleFunc("GET /v1/provider/desktop/insights", s.requireDesktopProviderToken(s.rateLimitDesktop(s.handleDesktopInsights)))
 
 	// Account-scoped provider dashboard.
 	s.mux.HandleFunc("GET /v1/me/providers", s.requirePrivyAuth(s.handleMyProviders))

@@ -52,8 +52,8 @@
 
 .onboarding-grid i {
   height: 18px;
-  background: #121c3b;
-  border: 1px solid #253154;
+  background: var(--blue-wash);
+  border: 1px solid var(--blue-wash);
 }
 
 .onboarding-grid i.lit {
@@ -73,7 +73,7 @@
   padding: 0;
   margin: 0 0 42px;
   font-size: 10px;
-  color: #666;
+  color: var(--muted);
 }
 
 .steps li {
@@ -85,7 +85,7 @@
 .steps li > span {
   width: 20px;
   height: 20px;
-  border: 1px solid #ffffff20;
+  border: 1px solid rgba(var(--contrast-rgb), 0.125);
   border-radius: 50%;
   display: grid;
   place-items: center;
@@ -93,7 +93,7 @@
 }
 
 .steps li.current {
-  color: white;
+  color: var(--text-primary);
 }
 
 .steps li.current > span {
@@ -102,7 +102,7 @@
 }
 
 .steps li.complete {
-  color: #9eb1ff;
+  color: var(--accent-brand);
 }
 
 .onboarding-form h2 {
@@ -148,12 +148,12 @@
 }
 
 .setup-machine > svg {
-  color: #a5b5f5;
+  color: var(--accent-brand);
 }
 
 .setup-machine > svg:last-child {
   margin-left: auto;
-  color: #80cba2;
+  color: var(--positive);
 }
 
 .choice {
@@ -194,7 +194,7 @@
 }
 
 .setup-models .choice.selected {
-  background: #ffffff05;
+  background: rgba(var(--contrast-rgb), 0.02);
 }
 
 .setup-code {
@@ -214,7 +214,7 @@
   justify-content: space-between;
   border-top: 1px solid var(--line);
   padding-top: 23px;
-  color: #616169;
+  color: var(--muted);
   font-size: 11px;
 }
 

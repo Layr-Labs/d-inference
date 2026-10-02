@@ -3687,9 +3687,11 @@ func (s *PostgresStore) GetAccountEarningsSummary(accountID string) (ProviderEar
 		 WHERE key = $1 AND key_type = 'account'`,
 		accountID,
 	).Scan(&summary.Count, &summary.TotalMicroUSD, &summary.PromptTokens, &summary.CompletionTokens)
-	if err != nil {
-		// No rows = no earnings yet, return zeros (not an error).
+	if errors.Is(err, pgx.ErrNoRows) {
 		return ProviderEarningsSummary{}, nil
+	}
+	if err != nil {
+		return ProviderEarningsSummary{}, fmt.Errorf("store: account earnings summary: %w", err)
 	}
 
 	return summary, nil

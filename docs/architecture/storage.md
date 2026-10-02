@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-02
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -42,6 +42,15 @@ no SQL migration.
 The additive `app_attest_build_qualifications` table stores immutable signed-artifact approval, test evidence and server-attributed operator/time, plus permanent revocation tombstones. `coordinator/store/app_attest_builds_postgres.go` (`SetQualifiedRelease`) locks the same row used for revocation and atomically checks the exact identity before writing the active release. `store.As[AppAttestBuildStore]` unwraps the store decorator; qualification reads are deliberately uncached there. Service snapshots have a separate bounded lifetime, and stored approval never restores a live serving lease. See the [qualification runbook](../operations/app-attest-build-qualification.md).
 
 ## Context
+
+The desktop earnings reader (`ProviderInsightsReader` in
+`coordinator/store/provider_insights.go`) groups the account's settled earnings
+by UTC day, model and historical provider ID. `store.As` discovers it through
+decorators. PostgreSQL uses the existing account/time index, a bounded window,
+a five-second deadline and a 10,000-group output limit. Oversized results fail
+rather than truncate. Lifetime progress reads `earnings_summary`; only a missing
+row means zero, while other read errors propagate. No schema or writer changes
+are required. See the [desktop insights contract](../reference/api-contracts.md#desktop-earnings-insights).
 
 The coordinator is a single Go process whose in-memory registry is rebuilt from
 provider connections after every restart. Everything that must outlive a

@@ -4,6 +4,9 @@ import { api } from '../useBackend';
 import type { Route } from '../../shared/contracts';
 import { compact, gb, money } from '../format';
 import { Button, External, Header, Status } from '../components/UI';
+import { LiveModels } from './insights/LiveModels';
+import { Contribution } from './insights/Contribution';
+import styles from './insights/insights.module.css';
 
 export function ActivityChart({ backend }: { backend: BackendState }) {
   const samples = backend.state?.activity.samples || [];
@@ -51,13 +54,15 @@ export function Home({
       />
       <div className="home-lead">
         <section className="earnings-lead">
-          <span className="muted">Earned this week</span>
+          <span className="muted">Earned over the last 7 days</span>
           <div className="large-number">{money(backend.cloud?.week_micro_usd)}</div>
           <div className="lead-foot">
             <span>
               {money(backend.cloud?.lifetime_micro_usd)} <span className="muted">all time</span>
             </span>
-            <External target="console">View earnings</External>
+            <button className="text-link" onClick={() => navigate('earnings')}>
+              View earnings
+            </button>
           </div>
           {backend.cloud?.error && <small>{backend.cloud.error}</small>}
           {!state.linked && (
@@ -80,6 +85,10 @@ export function Home({
             <small>{compact(backend.network?.total_tokens)} tokens processed</small>
           </div>
         </section>
+      </div>
+      <div className={styles.experience}>
+        <LiveModels state={state} />
+        <Contribution state={state} onEarnings={() => navigate('earnings')} />
       </div>
       <section className="section">
         <div className="section-title">

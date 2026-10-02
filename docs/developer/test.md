@@ -1,6 +1,11 @@
 # Test
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-02
+
+Desktop activity and earnings tests are described in the
+[desktop verification guide](desktop-app.md#verify). `make desktop-api-test`
+also checks authenticated insights relay, decimal-string preservation, and
+account-session revision changes against an isolated local coordinator fixture.
 
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the

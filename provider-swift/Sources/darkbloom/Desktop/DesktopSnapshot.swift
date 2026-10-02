@@ -91,6 +91,7 @@ extension DesktopBackend {
       "installation_id": .string(instance),
       "observed_at": .number(now.timeIntervalSince1970),
       "linked": .bool(AuthTokenStore.load() != nil),
+      "account_revision": .string(accountSession.observe(AuthTokenStore.load())),
       "state": .string(phase),
       "readiness": .string(
         fresh
@@ -106,6 +107,8 @@ extension DesktopBackend {
         "free_for_load_gb": .number(fresh ? daemon?.capacity?.freeForLoadGb : nil),
       ]),
       "activity": .dict([
+        "models": Self.modelActivity(daemon?.capacity, fresh: fresh, now: now.timeIntervalSince1970),
+        "sampled_at": .number(fresh ? daemon?.capacity?.activityObservedAt : nil),
         "requests": fresh ? .string(String(requestCount)) : .null,
         "tokens": fresh ? .string(String(tokens)) : .null,
         "started_at": .number(fresh ? daemon?.startedAt : nil), "samples": .array(samples),

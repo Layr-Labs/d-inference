@@ -62,6 +62,7 @@ credential (`desktop-app/src/main/backend.ts`, `Backend`; `DesktopHTTP.authorize
 | `GET /control/v1/events` | Full `state` snapshots as SSE every two seconds; connection renews after 30 snapshots; maximum eight streams | `DesktopHTTP.respond`, `DesktopStreamLimiter` |
 | `POST /control/v1/actions` | Validated operation; JSON body limited to 16 KiB; returns `202` and its operation ID | `DesktopAction.validate`, `DesktopBackend.submit` |
 | `GET /control/v1/cloud` | Account and owned fleet projection through the coordinator; separates This Mac using native identity | `DesktopBackend.resource` |
+| `GET /control/v1/insights-week`, `GET /control/v1/insights-month` | Settled earnings, lifetime output tokens, and 7/30-calendar-day analytics through the provider-token-authenticated coordinator endpoint | `DesktopBackend.resource` |
 | `GET /control/v1/network` | Normalized public totals from `/v1/stats` | `DesktopBackend.resource` |
 | `GET /control/v1/leaderboard` | Public ranking by generated tokens | `DesktopBackend.resource` |
 | `GET /control/v1/release` | Latest registered runtime version and changelog | `DesktopBackend.resource` |
@@ -84,6 +85,32 @@ Failures return `{"error": "<message>"}` (`DesktopHTTP.errorResponse`):
 Snapshots replace client state rather than applying deltas. Reconnection always
 obtains a full snapshot. Normal snapshots omit credentials. Missing/stale native
 observations are not evidence of zero memory usage or zero historical activity.
+
+### Live model activity and account insights
+
+`DaemonState.Capacity.modelActivity` and `activityObservedAt` are additive local
+state-file fields, produced from the accepted native backend capacity in
+`ProviderLoop.currentDaemonState`. They contain only model ID, state, running
+and waiting counts. They do not change the provider/coordinator wire protocol.
+`DesktopBackend.modelActivity` exposes them as `activity.models` in the local
+snapshot only when daemon identity/liveness is valid and the capacity sample is
+at most ten seconds old. The separate `activity.sampled_at` preserves the real
+observation time; refreshing the control API cannot make old capacity fresh.
+Missing fields on older runtimes remain unknown, rather than becoming zero.
+
+`account_revision` is an opaque process-local session marker that changes when
+the linked credential changes. It contains no token or token hash. The renderer
+uses it to discard old account analytics; `DesktopBackend.resource` also rejects
+an in-flight private response if the credential changed while awaiting it.
+
+The insights resources map to
+`GET /v1/provider/desktop/insights?window=7d|30d`. The Swift backend supplies the
+provider token; Electron receives no credential or configurable request URL.
+All money and token counters in the insights response cross the boundary as decimal strings. The renderer
+uses `BigInt` for totals, shares, averages, milestones, and CSV serialization;
+only normalized chart geometry and abbreviated labels use floating point.
+The [HTTP contract](api-contracts.md#desktop-earnings-insights) defines data scope,
+retention and the distinction between running work and settled inference.
 
 ## Actions
 

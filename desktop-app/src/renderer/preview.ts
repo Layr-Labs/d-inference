@@ -1,4 +1,5 @@
 import type { Action, DesktopAPI, Snapshot, Resource } from '../shared/contracts';
+import { previewInsights } from './previewInsights';
 
 // Explicit development-only fixture. Never used as a fallback for failed live data.
 const now = Date.now() / 1000;
@@ -8,6 +9,7 @@ let snapshot: Snapshot = {
   observed_at: now,
   installation_id: 'preview',
   linked: true,
+  account_revision: 'preview-account',
   state: 'running',
   readiness: 'Connected and ready for requests',
   machine: {
@@ -41,8 +43,8 @@ let snapshot: Snapshot = {
       size_gb: 15.6,
       memory_gb: 21.4,
       downloaded: true,
-      serving: false,
-      loaded: false,
+      serving: true,
+      loaded: true,
       eligible: true,
       description: 'Versatile understanding, built for a wide range of tasks.',
       context_length: 131072,
@@ -79,6 +81,11 @@ let snapshot: Snapshot = {
   operations: [],
   memory: { total_gb: 64, active_gb: 16.4, cache_gb: 3.4, free_for_load_gb: 34 },
   activity: {
+    sampled_at: now,
+    models: [
+      { model: 'gpt-oss-20b', state: 'running', running: 18, waiting: 0 },
+      { model: 'gemma-4-26b', state: 'running', running: 7, waiting: 1 },
+    ],
     requests: '1203',
     tokens: '1290344',
     started_at: now - 86400,
@@ -102,8 +109,8 @@ const cloud = {
   linked: true,
   account_id: 'preview',
   observed_at: now,
-  lifetime_micro_usd: '146200000',
-  week_micro_usd: '19600000',
+  lifetime_micro_usd: '2146200000',
+  week_micro_usd: '46100000',
   balance_micro_usd: '146200000',
   machines: [
     {
@@ -121,7 +128,11 @@ const cloud = {
 };
 export const previewAPI: DesktopAPI = {
   async read<T>(resource: Resource) {
+    snapshot.observed_at = Date.now() / 1000;
+    snapshot.activity.sampled_at = snapshot.observed_at;
     const data: Record<Resource, unknown> = {
+      'insights-week': previewInsights('7d'),
+      'insights-month': previewInsights('30d'),
       state: structuredClone(snapshot),
       cloud,
       network: { total_tokens: '646572000000', total_requests: '195820000', total_macs: 1143 },
@@ -195,7 +206,15 @@ export const previewAPI: DesktopAPI = {
   async applyUpdate() {},
   onState(callback) {
     listeners.add(callback);
-    return () => listeners.delete(callback);
+    const timer = setInterval(() => {
+      snapshot.observed_at = Date.now() / 1000;
+      snapshot.activity.sampled_at = snapshot.observed_at;
+      callback(structuredClone(snapshot));
+    }, 2000);
+    return () => {
+      clearInterval(timer);
+      listeners.delete(callback);
+    };
   },
   onStatus() {
     return () => {};

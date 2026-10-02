@@ -20,6 +20,7 @@ export function createTray(backend: Backend, show: (route?: Route) => void) {
         { label: 'Open Darkbloom', click: () => show() },
         { label: 'Models', click: () => show('models') },
         { label: 'Studio', click: () => show('studio') },
+        { label: 'Earnings', click: () => show('earnings') },
         { type: 'separator' },
         {
           label: 'Start provider',

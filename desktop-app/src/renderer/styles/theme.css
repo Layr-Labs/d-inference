@@ -1,0 +1,101 @@
+:root {
+  --text-primary: #f5f5f5;
+  --text-secondary: #b7b7bf;
+  --text-tertiary: #92929c;
+  --muted: #92929c;
+  --sidebar-bg: #0c0c0d;
+  --panel-bg: #151517;
+  --raised-bg: #242427;
+  --blue-wash: #141c3a;
+  --contrast-rgb: 255, 255, 255;
+  --bg-primary: var(--brand-ink);
+  --bg-secondary: var(--panel-bg);
+  --bg-tertiary: #242427;
+  --bg-hover: #29292e;
+  --border-dim: var(--line);
+  --border-default: #414149;
+  --accent-brand: #91aaff;
+  --purple: #b69ade;
+  --positive: #83d9a7;
+  --negative: #ffa3a3;
+  --warning: #e3cda5;
+}
+:root[data-theme='light'] {
+  color-scheme: light;
+  --brand-ink: #fff;
+  --brand-card: #f6f6f8;
+  --text-primary: #17171b;
+  --text-secondary: #52525c;
+  --text-tertiary: #696973;
+  --muted: #696973;
+  --line: #e3e3e8;
+  --sidebar-bg: #f7f7f9;
+  --panel-bg: #f4f4f7;
+  --raised-bg: #e8e8ee;
+  --blue-wash: #edf1ff;
+  --contrast-rgb: 0, 0, 0;
+  --bg-tertiary: #eaeaee;
+  --bg-hover: #ededf3;
+  --border-default: #c8c8d0;
+  --accent-brand: #0b41ff;
+  --purple: #7957a9;
+  --positive: #187451;
+  --negative: #b42e38;
+  --warning: #8a5919;
+}
+:root {
+  color: var(--text-primary);
+}
+[data-theme='light'] .brand img,
+[data-theme='light'] .onboarding-brand img {
+  filter: invert(1);
+}
+.button.primary {
+  color: white;
+}
+.appearance-select {
+  -webkit-app-region: no-drag;
+  border: 1px solid var(--line);
+  background: var(--panel-bg);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  padding: 5px 8px;
+  font-size: 11px;
+}
+.sidebar {
+  overflow-y: auto;
+}
+@media (max-height: 760px) {
+  .brand {
+    padding-bottom: 20px;
+  }
+  .sidebar nav {
+    gap: 0;
+  }
+  .sidebar nav button {
+    min-height: 36px;
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+  .sidebar-bottom {
+    padding-top: 16px;
+  }
+  .local-profile {
+    margin-top: 12px;
+    padding-top: 12px;
+  }
+}
+.empty-state {
+  padding: 50px 0;
+  color: var(--muted);
+  display: grid;
+  gap: 20px;
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

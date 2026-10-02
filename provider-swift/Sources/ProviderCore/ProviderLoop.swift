@@ -582,6 +582,7 @@ public actor ProviderLoop {
     /// choke point every material slot-state change already flows through.
     /// Loop-actor state; the pure policy lives in `CapacityEventHeartbeats`.
     internal var capacityHeartbeatThrottle = CapacityHeartbeatThrottle()
+    internal var desktopActivityObservedAt: Double?
 
     /// The one in-flight trailing-edge timer servicing a
     /// `CapacityHeartbeatThrottle.Verdict.scheduled` verdict. Cancelled on

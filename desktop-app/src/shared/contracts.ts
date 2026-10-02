@@ -5,6 +5,7 @@ export type Route =
   | 'models'
   | 'cooling'
   | 'analysis'
+  | 'earnings'
   | 'settings'
   | 'studio'
   | 'leaderboard'
@@ -54,13 +55,21 @@ export interface Snapshot {
   observed_at: number;
   installation_id: string;
   linked: boolean;
+  account_revision?: string;
   state: 'stopped' | 'starting' | 'running' | 'draining' | 'stale';
   readiness: string;
   machine: Machine;
   models: NativeModel[];
   operations: Operation[];
   memory: { total_gb: number; active_gb?: number; cache_gb?: number; free_for_load_gb?: number };
-  activity: { requests?: string; tokens?: string; started_at?: number; samples: ActivitySample[] };
+  activity: {
+    requests?: string;
+    tokens?: string;
+    started_at?: number;
+    samples: ActivitySample[];
+    sampled_at?: number;
+    models?: { model: string; state: string; running: number; waiting: number }[] | null;
+  };
   settings: {
     revision: string;
     name: string;
@@ -132,7 +141,15 @@ export type Action =
     }
   | { action: 'cooling'; enabled: boolean; speed?: number; temperature?: number };
 export type Resource =
-  'state' | 'cloud' | 'network' | 'cooling' | 'release' | 'leaderboard' | 'endpoint-key';
+  | 'state'
+  | 'cloud'
+  | 'network'
+  | 'cooling'
+  | 'release'
+  | 'leaderboard'
+  | 'endpoint-key'
+  | 'insights-week'
+  | 'insights-month';
 export interface DesktopStatus {
   state: 'connecting' | 'ready' | 'missing' | 'incompatible' | 'error' | 'installing';
   message?: string;

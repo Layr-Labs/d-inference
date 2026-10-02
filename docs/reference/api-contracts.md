@@ -2,7 +2,7 @@
 
 > Last updated: 2026-10-02
 
-The complete public HTTP surface of the coordinator, derived from the 119 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
+The complete public HTTP surface of the coordinator, derived from the 120 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
 Production base URL: `https://api.darkbloom.dev`. Unless a file is named, handler symbols below live in `coordinator/api/server.go`.
 
@@ -48,6 +48,34 @@ Monetary values are integer micro-USD strings. Per-machine amounts are seven-day
 organic usage earnings and are omitted if attribution is unknown. Device keys and
 attestation records are excluded. See [desktop control](desktop-control.md) for
 this shape and the separate Swift loopback API.
+
+### Desktop earnings insights
+
+`GET /v1/provider/desktop/insights` uses the same active-provider-token guard and
+per-account `desktop` limiter as the projection above. `window` accepts `7d`
+(default) or `30d`; other values return 400. No caller-supplied account selector
+is used. The account is checked before every cache read, including revocation.
+
+`coordinator/api/desktop_insights.go` (`desktopInsights`) returns `account_id`,
+`window`, `since`, `as_of`, `lifetime`, `totals`, `days`, `models`, and `machines`.
+Windows begin at UTC midnight six or 29 days before today and end exclusively
+at `as_of`; today is partial. Daily rows include measured zeros. Model and
+historical machine rows are ranked by earnings; an empty machine ID means
+unattributed/account-level income, including base rewards.
+
+Every amount/count is an exact decimal string. `lifetime` contains `count`,
+`total_micro_usd`, `prompt_tokens`, and `completion_tokens`. `totals` and each
+breakdown row contain `work_micro_usd`, `base_reward_micro_usd`, `jobs`,
+`prompt_tokens`, and `completion_tokens`. Breakdown rows also carry `id`.
+Rows with model `base_reward` contribute money but no inference jobs/tokens.
+Lifetime totals include removed machines and are independent settlement reads,
+not a transactionally simultaneous balance quote.
+
+Responses use `Cache-Control: private, no-store`; coordinator caching is per
+account/window for 30 seconds. Queries have five-second storage deadlines and
+a 10,000 day/model/machine-group bound. Timeout, unsupported storage, or excess
+groups return 503, never truncated totals. No migration, pricing, settlement,
+remote-control, or payout changes are introduced.
 
 ## Graceful provider lifecycle
 
@@ -257,6 +285,7 @@ Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInter
 | GET | `/v1/billing/methods` | `handleBillingMethods` (`coordinator/api/billing_handlers.go`) | `—` | — | Which top-up methods are enabled |
 | GET | `/v1/provider/account-earnings` | `handleAccountEarnings` (`coordinator/api/billing_handlers.go`) | `key` | — | Earnings across the account's providers |
 | GET | `/v1/provider/desktop` | `handleDesktopAccount` (`coordinator/api/desktop_handlers.go`) | `provider-token` | `desktop` | Owner-only fleet status and earnings for the desktop app, cached 20 s per account; `is_this_mac` per request ([details](#desktop-provider-account-projection)) |
+| GET | `/v1/provider/desktop/insights` | `handleDesktopInsights` (`coordinator/api/desktop_insights.go`) | `provider-token` | `desktop` | Owner-only 7/30-day earnings and lifetime token progress ([contract](#desktop-earnings-insights)) |
 | GET | `/v1/me/token-promotions` | `handleMyModelTokenPromotions` (`coordinator/api/model_token_promotions.go`) | `privy` | — | Account-scoped grants and eligible offers |
 | POST | `/v1/me/token-promotions/claim` | `handleMyModelTokenPromotions` (`coordinator/api/model_token_promotions.go`) | `privy` | `fin` | Claim a capped grant; [campaign procedure](../operations/model-token-promotions.md) |
 | GET | `/v1/me/summary` | `handleMySummary` (`coordinator/api/me_handlers.go`) | `user` | — | Console account summary; includes `latest_provider_version` |

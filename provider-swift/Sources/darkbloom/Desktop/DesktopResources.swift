@@ -21,10 +21,17 @@ extension DesktopBackend {
     let paths = [
       "cloud": "/v1/provider/desktop", "network": "/v1/stats", "leaderboard": "/v1/leaderboard",
       "release": "/v1/releases/latest",
+      "insights-week": "/v1/provider/desktop/insights",
+      "insights-month": "/v1/provider/desktop/insights",
     ]
     guard let path = paths[name] else { throw HTTPError(.notFound, message: "Unknown resource") }
     let config = try configuration().config
-    if name == "cloud", AuthTokenStore.load() == nil {
+    let privateResource = name == "cloud" || name.hasPrefix("insights-")
+    let accountToken = privateResource ? AuthTokenStore.load() : nil
+    if name.hasPrefix("insights-"), accountToken == nil {
+      throw HTTPError(.unauthorized, message: "Link your account to view earnings")
+    }
+    if name == "cloud", accountToken == nil {
       return .dict([
         "linked": .bool(false), "observed_at": .number(Date().timeIntervalSince1970),
         "machines": .array([]),
@@ -39,16 +46,22 @@ extension DesktopBackend {
     if name == "leaderboard" {
       components.queryItems = [URLQueryItem(name: "metric", value: "tokens")]
     }
+    if name.hasPrefix("insights-") {
+      components.queryItems = [URLQueryItem(name: "window", value: name == "insights-week" ? "7d" : "30d")]
+    }
     guard let url = components.url else { throw URLError(.badURL) }
     var request = URLRequest(url: url)
     request.timeoutInterval = 15
-    if name == "cloud", let token = AuthTokenStore.load() {
+    if privateResource, let token = accountToken {
       request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
     }
     if name == "cloud", let identity = DaemonStateFile.read()?.attestationPublicKey {
       request.setValue(identity, forHTTPHeaderField: "X-Darkbloom-Device-Identity")
     }
     let (data, response) = try await URLSession.shared.data(for: request)
+    if privateResource, AuthTokenStore.load() != accountToken {
+      throw HTTPError(.unauthorized, message: "Account changed; refresh to continue")
+    }
     guard let http = response as? HTTPURLResponse, http.statusCode == 200, data.count <= 4_000_000
     else {
       throw URLError(.badServerResponse)

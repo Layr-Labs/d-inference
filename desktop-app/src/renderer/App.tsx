@@ -13,6 +13,7 @@ import {
   Terminal,
   Trophy,
   Zap,
+  Wallet,
 } from 'lucide-react';
 import type { Route } from '../shared/contracts';
 import { api, isPreview, useBackend } from './useBackend';
@@ -22,12 +23,15 @@ import { Machines } from './features/Machines';
 import { Analysis, Cooling, Leaderboard, Settings, Studio, Updates } from './features/System';
 import { Notice, OperationFeed } from './components/UI';
 import { Onboarding } from './components/Onboarding';
+import { Earnings } from './features/Earnings';
+import { Appearance } from './components/Appearance';
 const navigation = [
   { id: 'home', label: 'Home', icon: HomeIcon },
   { id: 'machines', label: 'My Macs', icon: Monitor },
   { id: 'models', label: 'Models', icon: Layers3 },
   { id: 'studio', label: 'Studio', icon: Terminal },
   { id: 'analysis', label: 'Analysis', icon: Activity },
+  { id: 'earnings', label: 'Earnings', icon: Wallet },
   { id: 'cooling', label: 'Cooling', icon: Fan },
 ] as const;
 export default function App() {
@@ -125,6 +129,7 @@ export default function App() {
           </span>
           <span>
             {isPreview && <b className="preview-label">Development preview</b>}
+            <Appearance />
             <i className={backend.status.state === 'ready' ? 'online-dot' : ''} />
             {backend.status.state === 'ready' ? 'Runtime connected' : 'Reconnecting'}
           </span>
@@ -139,6 +144,7 @@ export default function App() {
           {route === 'models' && <Models backend={backend} />}
           {route === 'studio' && <Studio backend={backend} />}
           {route === 'analysis' && <Analysis backend={backend} />}
+          {route === 'earnings' && <Earnings backend={backend} />}
           {route === 'cooling' && <Cooling backend={backend} />}
           {route === 'settings' && <Settings backend={backend} />}
           {route === 'updates' && <Updates backend={backend} />}

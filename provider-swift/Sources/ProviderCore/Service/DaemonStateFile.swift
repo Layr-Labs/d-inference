@@ -133,6 +133,9 @@ public struct DaemonState: Codable, Sendable, Equatable {
     }
 
     public struct Capacity: Codable, Sendable, Equatable {
+        /// Absent on older daemons; never infer zero activity from absence.
+        public var modelActivity: [ModelActivity]?
+        public var activityObservedAt: Double?
         public var totalMemoryGb: Double
         public var gpuMemoryActiveGb: Double
         /// Live MLX GPU cache (buffer pool) memory. Optional for backward
@@ -151,7 +154,10 @@ public struct DaemonState: Codable, Sendable, Equatable {
         public var loadTransitionActive: Bool?
         public init(totalMemoryGb: Double, gpuMemoryActiveGb: Double, gpuMemoryCacheGb: Double? = nil,
                     loadUsableGb: Double? = nil, loadHeadroomGb: Double? = nil,
-                    freeForLoadGb: Double? = nil, loadTransitionActive: Bool? = nil) {
+                    freeForLoadGb: Double? = nil, loadTransitionActive: Bool? = nil,
+                    modelActivity: [ModelActivity]? = nil, activityObservedAt: Double? = nil) {
+            self.modelActivity = modelActivity
+            self.activityObservedAt = activityObservedAt
             self.totalMemoryGb = totalMemoryGb
             self.gpuMemoryActiveGb = gpuMemoryActiveGb
             self.gpuMemoryCacheGb = gpuMemoryCacheGb

@@ -21,13 +21,12 @@
 
 :root {
   font-family: Telegraf, Arial, sans-serif;
-  color: #f5f5f5;
+  color: var(--text-primary);
   background: var(--brand-ink);
   font-size: 14px;
   font-synthesis: none;
   --blue: var(--brand-blue);
-  --muted: #89898e;
-  --line: #ffffff17;
+  --line: rgba(var(--contrast-rgb), 0.09);
   --surface: var(--brand-card);
   color-scheme: dark;
 }
@@ -72,7 +71,7 @@ select:focus-visible {
 
 ::selection {
   background: var(--blue);
-  color: white;
+  color: var(--text-primary);
 }
 
 h1,

@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-02
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -98,6 +98,11 @@ lag by the per-account cache interval
 (`coordinator/api/me_summary_cache.go`, `mySummaryWindowsCacheTTL`).
 
 ### 4. Understand what a request costs you
+
+Provider operators can inspect settled earnings by model and Mac in the
+desktop app's **Earnings** screen. See the [desktop guide](../developer/desktop-app.md#verify)
+for its time windows, token milestones, and CSV copying. Withdrawal eligibility
+and balance operations remain separate from these reporting charts.
 
 Each request is charged
 `(prompt_tokens − cached_tokens) × input_price + cached_tokens × cache_read_price + completion_tokens × output_price`

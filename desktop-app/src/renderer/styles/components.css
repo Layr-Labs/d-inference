@@ -18,7 +18,7 @@
   justify-content: center;
   gap: 9px;
   padding: 11px 16px;
-  border: 1px solid #ffffff20;
+  border: 1px solid rgba(var(--contrast-rgb), 0.125);
   border-radius: 5px;
   font-size: 12px;
   font-weight: 500;
@@ -30,7 +30,7 @@
 }
 
 .button:hover {
-  background: #ffffff0d;
+  background: rgba(var(--contrast-rgb), 0.051);
 }
 
 .button:active {
@@ -40,7 +40,7 @@
 .button.primary {
   background: var(--blue);
   border-color: var(--blue);
-  color: white;
+  color: var(--text-primary);
 }
 
 .button.primary:hover {
@@ -55,7 +55,7 @@
 .button.danger {
   background: #d04c4c20;
   border-color: #d04c4c55;
-  color: #ffa3a3;
+  color: var(--negative);
 }
 
 .status {
@@ -63,7 +63,7 @@
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  color: #a0a0a6;
+  color: var(--text-secondary);
 }
 
 .status i {
@@ -74,15 +74,15 @@
 }
 
 .status.online {
-  color: #b5d7c3;
+  color: var(--text-secondary);
 }
 
 .tag {
   font-size: 9px;
   font-weight: 400;
   letter-spacing: 0;
-  background: #ffffff09;
-  color: #9999a3;
+  background: rgba(var(--contrast-rgb), 0.035);
+  color: var(--text-secondary);
   padding: 4px 6px;
   border-radius: 3px;
   vertical-align: middle;
@@ -93,19 +93,19 @@
   align-items: center;
   gap: 7px;
   padding: 0;
-  color: #c6c6cc;
+  color: var(--text-secondary);
   font-size: 12px;
   text-decoration: none;
 }
 
 .text-link:hover {
-  color: white;
+  color: var(--text-primary);
 }
 
 .notice {
   background: #ae884e10;
   border: 1px solid #ae884e30;
-  color: #e3cda5;
+  color: var(--warning);
   padding: 13px 16px;
   border-radius: 4px;
   margin-bottom: 20px;
@@ -128,7 +128,7 @@
 }
 
 .empty h3 {
-  color: #ddd;
+  color: var(--text-primary);
 }
 
 .empty p {
@@ -147,8 +147,8 @@
   align-items: flex-start;
   gap: 12px;
   padding: 14px 17px;
-  background: #202023f0;
-  border: 1px solid #ffffff1f;
+  background: var(--raised-bg);
+  border: 1px solid rgba(var(--contrast-rgb), 0.122);
   border-radius: 7px;
   box-shadow: 0 10px 50px #0008;
   backdrop-filter: blur(15px);
@@ -156,11 +156,11 @@
 }
 
 .operation.succeeded > svg {
-  color: #83d9a7;
+  color: var(--positive);
 }
 
 .operation.failed > svg {
-  color: #ff9b9b;
+  color: var(--negative);
 }
 
 .operation summary {
@@ -198,8 +198,8 @@
 }
 
 .modal {
-  background: #151517;
-  border: 1px solid #ffffff20;
+  background: var(--panel-bg);
+  border: 1px solid rgba(var(--contrast-rgb), 0.125);
   max-width: 480px;
   width: calc(100% - 40px);
   padding: 28px;

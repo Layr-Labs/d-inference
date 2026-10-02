@@ -25,3 +25,5 @@ export function age(at?: number) {
 export function gb(n?: number) {
   return n == null ? '—' : `${n.toFixed(1)} GB`;
 }
+
+export const shortModelName = (id: string) => id.split('/').pop() || id;

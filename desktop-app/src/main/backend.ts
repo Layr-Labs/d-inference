@@ -19,6 +19,8 @@ const resources = new Set<Resource>([
   'release',
   'leaderboard',
   'endpoint-key',
+  'insights-week',
+  'insights-month',
 ]);
 export function validateDiscovery(value: unknown): {
   port: number;

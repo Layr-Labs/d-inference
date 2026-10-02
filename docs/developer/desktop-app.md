@@ -103,6 +103,22 @@ requires the release qualifications below.
 
 ## Verify
 
+Home includes live model activity from the Swift event stream and settled-token
+milestones. **View earnings** opens the desktop Earnings screen, which supports
+7/30-day periods, earnings/output-token/request metrics, model/Mac breakdowns,
+and exact **Copy CSV**. Failed reads retain a labeled prior observation only
+within the same account session. New milestone crossings are celebrated once
+while mounted; old achievements do not replay on navigation. Appearance is a
+frontend preference with Light, Dark, and System options. Reduced motion and
+the activity panel's pause control stop animation without stopping the provider.
+
+`desktop-app/tests/insights.test.tsx` covers live/stale/crashed activity, exact
+large integers, milestone boundaries, account-switch races, earnings navigation,
+period/metric/breakdown controls, and appearance. `DesktopActivityTests` covers
+the additive native state fields and opaque account revision. Coordinator tests
+exercise token ownership/revocation and exact decimal-string responses; store
+parity runs with `DATABASE_URL` set to a disposable local PostgreSQL database.
+
 ```bash
 make desktop-test
 make desktop-api-test

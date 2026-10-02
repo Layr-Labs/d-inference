@@ -5,7 +5,7 @@
 }
 
 .sidebar {
-  background: #0c0c0d;
+  background: var(--sidebar-bg);
   border-right: 1px solid var(--line);
   padding: 63px 14px 14px;
   display: flex;
@@ -33,7 +33,7 @@
 
 .workspace-label {
   font-size: 11px;
-  color: #64646b;
+  color: var(--muted);
   margin: 0 16px 13px;
 }
 
@@ -50,7 +50,7 @@
   text-align: left;
   padding: 11px 14px;
   border-radius: 6px;
-  color: #99999f;
+  color: var(--text-secondary);
   font-size: 13px;
   transition:
     background 0.16s,
@@ -59,13 +59,13 @@
 }
 
 .sidebar nav button:hover {
-  background: #ffffff07;
-  color: #eee;
+  background: rgba(var(--contrast-rgb), 0.027);
+  color: var(--text-primary);
 }
 
 .sidebar nav button.active {
-  background: #ffffff0c;
-  color: white;
+  background: rgba(var(--contrast-rgb), 0.047);
+  color: var(--text-primary);
 }
 
 .sidebar nav button.active svg {
@@ -74,7 +74,7 @@
 
 .sidebar nav button small {
   margin-left: auto;
-  background: #ffffff0a;
+  background: rgba(var(--contrast-rgb), 0.039);
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 10px;
@@ -99,7 +99,7 @@
 .profile-icon {
   height: 32px;
   width: 32px;
-  background: #ffffff08;
+  background: rgba(var(--contrast-rgb), 0.031);
   display: grid;
   place-items: center;
   border-radius: 6px;
@@ -124,7 +124,7 @@
 
 .online-dot,
 .status.online i {
-  background: #7bd8a2 !important;
+  background: var(--positive) !important;
   box-shadow: 0 0 7px #7bd8a218;
 }
 
@@ -141,7 +141,7 @@
   align-items: center;
   justify-content: space-between;
   font-size: 11px;
-  color: #696970;
+  color: var(--muted);
   -webkit-app-region: drag;
 }
 
@@ -152,7 +152,7 @@
 }
 
 .topbar strong {
-  color: #c4c4c9;
+  color: var(--text-secondary);
   font-weight: 400;
 }
 
@@ -162,13 +162,13 @@
   height: 5px;
   border-radius: 50%;
   display: inline-block;
-  background: #555;
+  background: var(--muted);
 }
 
 .preview-label {
   font-size: 10px;
   font-weight: 400;
-  color: #d9b56e;
+  color: var(--warning);
   background: #d9b56e12;
   padding: 4px 8px;
   border-radius: 3px;
@@ -184,11 +184,11 @@
 .page-footer {
   display: flex;
   justify-content: space-between;
-  color: #48484f;
+  color: var(--muted);
   font-size: 10px;
   margin-top: 42px;
   padding: 18px 0 0;
-  border-top: 1px solid #ffffff08;
+  border-top: 1px solid rgba(var(--contrast-rgb), 0.031);
 }
 
 .page-footer span {

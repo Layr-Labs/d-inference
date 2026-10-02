@@ -6,7 +6,7 @@
   border-radius: 6px;
   padding: 22px 24px;
   margin-bottom: 30px;
-  background: #111113;
+  background: var(--panel-bg);
 }
 
 .model-memory > div:first-child {
@@ -59,15 +59,15 @@
 }
 
 .segmented button.selected {
-  background: #242426;
-  color: white;
+  background: var(--raised-bg);
+  color: var(--text-primary);
 }
 
 .search {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #64646d;
+  color: var(--muted);
 }
 
 .search input {
@@ -101,10 +101,10 @@
   height: 44px;
   display: grid;
   place-items: center;
-  background: #1a1a1d;
+  background: var(--panel-bg);
   border-radius: 9px;
   font-size: 25px;
-  color: #c8c8d0;
+  color: var(--text-secondary);
 }
 
 .model-description {
@@ -131,7 +131,7 @@
 .model-meta {
   display: flex;
   gap: 16px;
-  color: #686871;
+  color: var(--muted);
   font-size: 10px;
 }
 
@@ -159,5 +159,5 @@
 }
 
 .warning-text {
-  color: #d8b879;
+  color: var(--warning);
 }

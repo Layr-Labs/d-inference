@@ -3045,7 +3045,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 	// re-latch is a no-op by design: the terminal response will be the
 	// primary's 4xx/422/429, so the primary keeps the attribution even
 	// though the backup keeps racing (noteServingSlotFor's freeze rule).
-	d.noteServingSlotFor(backupPR)
+	d.noteServingSlotFor(backupProvider, backupPR)
 	backupDeadline := d.newFirstContentTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
 	for {
 		select {

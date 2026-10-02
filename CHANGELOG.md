@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased — provider service replacement
+
+- Wait for launchd to confirm removal of the previous provider service before installing or starting its replacement. Preserve stop/uninstall intent and report failed or timed-out removal without starting another service.
+- Treat bootstrap operation-in-progress errors as failures instead of reporting a successful start.
+
 ## Unreleased — provider 0.9.17
 
 - Keep the normal startup selection and explicit `--model` override authoritative while Autopilot is waiting or observing in shadow. Cached planning inventory can no longer make ordinary routing load unselected models.

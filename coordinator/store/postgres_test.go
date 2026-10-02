@@ -413,10 +413,9 @@ func TestPoolExhaustion_SmallPool(t *testing.T) {
 	}
 }
 
-// TestPoolExhaustion_SimulatedLatency reproduces the prod failure:
-// 2 pool connections + 40 goroutines each holding a connection for 500ms
-// (simulating EigenCloud→RDS network latency). Most goroutines timeout
-// waiting in the pool queue — exactly what happens in production.
+// TestPoolExhaustion_SimulatedLatency reproduces pool acquisition timeouts
+// under slow queries by holding both connections until a waiter times out.
+// Explicit occupancy avoids relying on pg_sleep workers winning a timing race.
 func TestPoolExhaustion_SimulatedLatency(t *testing.T) {
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
@@ -438,28 +437,40 @@ func TestPoolExhaustion_SimulatedLatency(t *testing.T) {
 	}
 	defer pool.Close()
 
-	const numWorkers = 40
-	errs := make(chan error, numWorkers)
-
-	for i := 0; i < numWorkers; i++ {
-		go func() {
-			qctx, qcancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer qcancel()
-			_, err := pool.Exec(qctx, "SELECT pg_sleep(0.5)")
-			errs <- err
-		}()
-	}
-
-	var failures int
-	for i := 0; i < numWorkers; i++ {
-		if err := <-errs; err != nil {
-			failures++
+	var held []*pgxpool.Conn
+	defer func() {
+		for _, conn := range held {
+			conn.Release()
 		}
+	}()
+	for range cfg.MaxConns {
+		conn, err := pool.Acquire(ctx)
+		if err != nil {
+			t.Fatalf("occupy pool connection: %v", err)
+		}
+		held = append(held, conn)
+	}
+	if got := pool.Stat().AcquiredConns(); got != cfg.MaxConns {
+		t.Fatalf("acquired connections = %d, want %d", got, cfg.MaxConns)
 	}
 
-	t.Logf("pool_max_conns=2 + 500ms latency: %d/%d queries failed", failures, numWorkers)
-	if failures == 0 {
-		t.Error("expected some failures with only 2 connections and 500ms queries")
+	canceledBefore := pool.Stat().CanceledAcquireCount()
+	qctx, qcancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer qcancel()
+	if _, err := pool.Exec(qctx, "SELECT 1"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("query against exhausted pool = %v, want acquisition deadline exceeded", err)
+	}
+	if got := pool.Stat().CanceledAcquireCount(); got != canceledBefore+1 {
+		t.Errorf("canceled acquisitions = %d, want %d", got, canceledBefore+1)
+	}
+
+	// A returned connection must serve subsequent work; a timed-out waiter
+	// must not leak the pool slot or poison the live database connection.
+	held[0].Release()
+	held = held[1:]
+	var value int
+	if err := pool.QueryRow(ctx, "SELECT 1").Scan(&value); err != nil || value != 1 {
+		t.Fatalf("query after releasing a connection: value=%d err=%v", value, err)
 	}
 }
 

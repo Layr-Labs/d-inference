@@ -226,7 +226,7 @@ func (r *Registry) persistProviderNow(p *Provider) {
 
 		p.mu.Lock()
 		hardwareJSON, _ := json.Marshal(p.Hardware)
-		modelsJSON, _ := json.Marshal(p.Models)
+		modelsJSON, _ := json.Marshal(p.selectedModelsLocked())
 		var attestJSON json.RawMessage
 		if p.AttestationResult != nil {
 			attestJSON, _ = json.Marshal(p.AttestationResult)

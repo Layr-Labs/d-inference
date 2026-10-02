@@ -15,7 +15,8 @@ extension Start {
         config: ProviderConfig,
         coordinatorURL: String,
         configPath: URL?,
-        runtimeCapabilities: Set<ProviderRuntimeCapability>
+        runtimeCapabilities: Set<ProviderRuntimeCapability>,
+        scheduleEdit: (current: ScheduleSettings, draft: ScheduleSettings)? = nil
     ) async throws {
         // Run critical checks before downloading models or prompting.
         try runPreflightChecks(snapshot: snapshot)
@@ -23,32 +24,21 @@ extension Start {
         // Offer account linking before the model picker.
         await offerInlineLogin(coordinatorURL: coordinatorURL)
 
-        let selectedModelIDs: [String]
+        let enableAutopilot = try resolveAutopilotChoice(config)
+        let selection = try await Self.prepareModelSelection(autopilot: enableAutopilot,
+            select: {
+                try await selectStartupModels(snapshot: snapshot, config: config,
+                    coordinatorURL: coordinatorURL, runtimeCapabilities: runtimeCapabilities)
+            }, inventory: { selected in
+                try await downloadedAutopilotInventory(snapshot: snapshot, coordinatorURL: coordinatorURL,
+                    runtimeCapabilities: runtimeCapabilities, selectedStartupModels: selected)
+            })
+        let selectedModelIDs = selection.hostedModels
 
-        if !model.isEmpty {
-            let known = Set(snapshot.models.map(\.id))
-            selectedModelIDs = model.filter {
-                known.contains($0)
-                    && ModelRuntimeRequirements.isEligible(
-                        modelID: $0, available: runtimeCapabilities)
-            }
-        } else if all {
-            selectedModelIDs = snapshot.models.compactMap {
-                ModelRuntimeRequirements.isEligible(
-                    modelID: $0.id, available: runtimeCapabilities) ? $0.id : nil
-            }
-        } else {
-            selectedModelIDs = try await interactiveCatalogPicker(
-                snapshot: snapshot,
-                config: config,
-                coordinatorURL: coordinatorURL,
-                runtimeCapabilities: runtimeCapabilities
-            )
-        }
-
-        guard !selectedModelIDs.isEmpty else {
-            printError("No models selected.")
-            throw ExitCode.failure
+        // Do not persist the schedule until model selection has succeeded.
+        // Reload under the config lock so unrelated edits survive the wizard.
+        if let scheduleEdit {
+            try scheduleEdit.draft.save(configPath: snapshot.configPath.path, expected: scheduleEdit.current)
         }
 
         // Idle-memory policy: asked on the same interactive path as the model
@@ -64,20 +54,24 @@ extension Start {
 
         // Resolve selection before closing admission; a cancelled picker never
         // disturbs the existing provider. Keep the update lease through install.
+        try Task.checkCancellation()
         let replacement = try await ServiceDrain.prepare(options: drain, withConfigurationChange: { setup in
             try ProviderModelSelection.withReplacement(selectedModelIDs, configPath: snapshot.configPath,
                 fallbackConfig: config, body: setup)
         })
         defer { replacement.release() }
-        try await ServiceDrain.stopDrainedProvider()
-        try LaunchAgent.installAndStart(
-            coordinatorURL: coordinatorURL,
-            models: selectedModelIDs,
-            configPath: configPath,
-            localEndpoint: LaunchAgent.LocalEndpointOptions(
-                enabled: localEndpoint, port: port, bind: bind, noAuth: noAuth
+        try await Self.completeDaemonReplacement(autopilot: enableAutopilot,
+            models: selection.autopilotModels ?? selectedModelIDs,
+            configPath: configOptions.config) {
+            try LaunchAgent.installAndStart(
+                coordinatorURL: coordinatorURL,
+                models: selectedModelIDs,
+                configPath: configPath,
+                localEndpoint: LaunchAgent.LocalEndpointOptions(
+                    enabled: localEndpoint, port: port, bind: bind, noAuth: noAuth
+                )
             )
-        )
+        }
 
         // Arm the crash-recovery watchdog (relaunches ~5 min after a crash;
         // `stop` disarms, `auto_restart = false` opts out — including
@@ -104,11 +98,18 @@ extension Start {
 
         let logPath = LaunchAgent.logPath().path
         print("Provider started as background service.")
+        print(ScheduleSettings(config: config).summary())
         print("  Models:  \(selectedModelIDs.count)")
         for id in selectedModelIDs {
             print("    \(id)")
         }
-        print("  Memory:  \(IdleUnloadPolicy.describe(minutes: idleMinutes)) — `darkbloom idle` to change")
+        if enableAutopilot {
+            print("  Autopilot: enrolled (Experimental; shadow rollout by default)")
+            print("  Reporting downloaded network models; your selected startup and memory preferences apply.")
+            print("  Enrollment is not activation. Run `darkbloom autopilot status` for the current mode.")
+            print("  Manage: darkbloom autopilot status | pause | disable")
+        }
+        print("  Memory:  \(IdleUnloadPolicy.describe(minutes: idleMinutes)) - `darkbloom idle` to change")
         if localEndpoint {
             let shownURL = "http://\(bind == "0.0.0.0" ? "127.0.0.1" : bind):\(port)/v1"
             print("  Local:   \(shownURL) (unified mode — run `darkbloom local` for the API key)")

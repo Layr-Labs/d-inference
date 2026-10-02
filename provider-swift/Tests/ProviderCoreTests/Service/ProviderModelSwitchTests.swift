@@ -700,3 +700,20 @@ private struct SwitchSlotProcessor: UserInputProcessor {
         throw ModelSelectionFailure("Weight-free lifecycle fixture cannot generate.")
     }
 }
+
+@Suite("Autopilot and manual model-switch ownership")
+struct AutopilotModelSwitchOwnershipTests {
+    @Test func manualSwitchCannotExpandAutopilotSelection() async throws {
+        var config = ProviderConfig(provider:ProviderSettings(name:"selection-owner"))
+        config.backend.modelAutopilot = .init(enabled:true,consentRecorded:true,selectedModels:["old-model"],revision:"approved")
+        let (loop,root) = try await switchLoop(initialConfig:config)
+        defer { try? FileManager.default.removeItem(at:root) }
+        let identity = try #require(ProcessIdentity.current())
+        let status = await loop.switchModels(request:.init(target:identity,models:["new-model"],timeoutSeconds:0))
+        #expect(status.outcome == .busy)
+        #expect(status.message?.contains("autopilot models") == true)
+        let saved = try ConfigManager.load(from:root.appendingPathComponent("provider.toml"))
+        #expect(saved.backend.modelAutopilot.selectedModels == ["old-model"])
+        #expect(await loop.modelSwitchTask == nil)
+    }
+}

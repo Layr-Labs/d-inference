@@ -2829,7 +2829,7 @@ threats:
     affected_assets: [A-014]
     affected_files:
       - provider-swift/Sources/darkbloom/FanActivityLease.swift
-      - provider-swift/Sources/darkbloom/StartCommand+Modes.swift
+      - provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift
       - provider-swift/Sources/DarkbloomFanHelper/FanDaemon.swift
     mitigations:
       - description: >
@@ -3101,7 +3101,7 @@ threats:
       - provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift
       - provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift
       - provider-swift/Sources/ProviderCore/Service/ProcessLifecycle.swift
-      - provider-swift/Sources/darkbloom/StartCommand+Modes.swift
+      - provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift
       - libs/mlx-swift-lm/Libraries/MLXLMCommon/MemoryBackedVideoAsset.swift
       - libs/mlx-swift-lm/Libraries/MLXLMCommon/UserInput.swift
       - libs/mlx-swift-lm/Libraries/MLXVLM/MediaProcessing.swift

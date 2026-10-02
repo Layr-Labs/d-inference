@@ -310,8 +310,10 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(field(go[0], "go-version-file", indent=10), "go.mod")
         runs = [step for step in steps if field(step, "run")]
         self.assertEqual([run_command(step) for step in runs],
-                         [MIMO_PREPARE, "./scripts/verify-prompt-parity.sh"])
-        self.assertEqual(field(runs[-1], "if"), MIMO_READY)
+                         [MIMO_PREPARE, "./scripts/verify-prompt-parity.sh",
+                          "./scripts/verify-nemotron-prompt-parity.sh"])
+        self.assertEqual(field(runs[-2], "if"), MIMO_READY)
+        self.assertEqual(field(runs[-1], "if"), READY)
 
     def test_fixture_prerequisites_are_fail_closed_in_provider_and_parity(self):
         for job_id in ("test-provider", "test-provider-parity"):

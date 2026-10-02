@@ -99,6 +99,7 @@ extension ProviderLoop {
         defer { releaseResliceGate() }
         try checkModelSwitchOwnership()
         advertisedModels = next
+        ordinaryServingModelIDs = Set(next.keys)
         modelHashes = Dictionary(uniqueKeysWithValues: models.compactMap { model in
             model.weightHash.map { (model.id, $0) }
         })

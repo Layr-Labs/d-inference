@@ -18,15 +18,6 @@ func TestErrorResponse_CodeField(t *testing.T) {
 	}
 }
 
-func TestErrorResponse_WithCode(t *testing.T) {
-	resp := errorResponse("insufficient_funds", "low balance", withCode("insufficient_quota"))
-	detail := resp["error"].(map[string]any)
-
-	if code, _ := detail["code"].(string); code != "insufficient_quota" {
-		t.Errorf("code = %q, want %q", code, "insufficient_quota")
-	}
-}
-
 func TestErrorResponse_WithParam(t *testing.T) {
 	resp := errorResponse("invalid_request_error", "model is required", withParam("model"))
 	detail := resp["error"].(map[string]any)

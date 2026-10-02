@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-02
 
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the
@@ -262,9 +262,11 @@ bundle. A cache hit is not permission to skip these checks.
 Successful build jobs save their debug objects before assertions run, so an
 unrelated test failure does not force a complete rebuild on the next attempt.
 The parity job cleans local Rust products and saves its Cargo cache only after
-the real tokenizer/vector/load-proof script succeeds. The push-only release
-cache job no longer duplicates the SDK debug-test build. These caches contain
-unsigned build products, not release artifacts or signing material.
+the real tokenizer/vector/load-proof script succeeds. CI has no separate
+push-only Swift cache warmer: these lanes own their caches. Release preparation
+uses `.github/workflows/provider-release-cache.yml` and its separate release and
+qualification caches. These caches contain unsigned build products, not release
+artifacts or signing material.
 
 Parallel speedup requires capacity for three concurrent macOS runners. More
 jobs queued behind a provider quota do not shorten the critical path. See

@@ -370,15 +370,9 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         for path in ("~/.cargo/registry", "~/.cargo/git/db", "coordinator/promptsidecar/target"):
             self.assertIn(path, saves[0])
 
-    def test_push_only_release_build_no_longer_warms_sdk_debug_tests(self):
-        job = self.jobs["cache-swift"]
-        self.assertIn("    if: github.event_name == 'push'", job)
-        runs = [run_command(step) for step in step_blocks(job) if field(step, "run")]
-        self.assertIn("swift build -c release --product darkbloom\n"
-                      "swift build -c release --product darkbloom-fan-helper", runs)
-        self.assertNotIn("swift build --build-tests", job)
-        self.assertNotIn("working-directory: libs/mlx-swift-lm", job)
-        self.assertIn("actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57", job)
+    def test_obsolete_self_consuming_cache_warmer_is_absent(self):
+        self.assertNotIn("cache-swift", self.jobs)
+        self.assertNotIn("spm-v4-blacksmith-macos27-native-", self.workflow)
 
     def test_offline_workflow_test_runs_in_release_integrity(self):
         self.assertIn("python3 scripts/test-provider-ci-cache.py", self.jobs["release-integrity"])

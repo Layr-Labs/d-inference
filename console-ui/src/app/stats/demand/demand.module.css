@@ -1,0 +1,14 @@
+.panel { container-type: inline-size; }
+.row, .header { display: grid; grid-template-columns: minmax(0, 1fr) 20px; gap: 16px 24px; }
+.header { display: none; }
+.metrics { grid-column: 1 / -1; display: grid; gap: 16px 24px; min-width: 0; }
+.chevron { grid-column: 2; grid-row: 1; }
+@container (min-width: 560px) {
+  .metrics { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+}
+@container (min-width: 820px) {
+  .row, .header { grid-template-columns: minmax(160px, 1fr) minmax(190px, 1.15fr) minmax(250px, 1.25fr) 20px; }
+  .header { display: grid; }
+  .metrics { display: contents; }
+  .chevron { grid-column: 4; grid-row: 1; }
+}

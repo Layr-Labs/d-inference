@@ -160,6 +160,30 @@ The stats page renders a continuous overview without waiting for catalog or capa
 | Traffic boundaries | Every range, including `30m`, fetches `/api/network/series?window=<range>`; the response's explicit `end_at` anchors completed buckets for both request and token charts | `console-ui/src/app/stats/traffic/useTrafficSeries.ts` (`useTrafficSeries`), `console-ui/src/app/stats/traffic/TrafficPanel.tsx` (`TrafficPanel`) |
 | Displayed age and mock mode | The header labels source time as “Snapshot” and marks source snapshots at least 30 seconds old as stale, or labels fetch time as “Fetched” when the source timestamp is absent. `?mock=geo` returns `X-Stats-Cache: MOCK`, uses `no-store`, and displays a simulation notice | `console-ui/src/app/stats/StatsHeader.tsx` (`StatsHeader`), `console-ui/src/app/stats/page.tsx` (`StatsPage`), `console-ui/src/app/api/stats/route.ts` (`GET`) |
 
+### Published traffic by model
+
+On `/stats`, `ModelCapacityLandscape` precedes `ModelDemandPanel` so current
+capacity is followed by historical traffic. The demand panel opens with
+`TrafficComparisonPlot` (`console-ui/src/app/stats/demand/TrafficComparisonPlot.tsx`):
+the four models with the most published requests have separate series and the
+rest form one group. Selecting a model opens its existing outcome history,
+interval table, and CSV export in `DemandHistory`.
+
+`buildTrafficComparison` in `console-ui/src/app/stats/demand/traffic.ts` sums only
+non-null published observations. Fully unpublished intervals remain null and
+hatched; a dashed cap identifies intervals where only some listed models have
+published data. Group tooltips retain the count of contributing models. Wider
+intervals can still include only some constituent hours. Shares use the sum of
+published model requests as their denominator, not all network requests.
+`DemandRow` separates that volume share from a full-width outcome split for each
+model; exact outcome counts remain expandable. Container queries in
+`console-ui/src/app/stats/demand/demand.module.css` switch the rows according to
+available panel width, including when the sidebar is open.
+
+The [model-demand API contract](../../reference/api-contracts.md#public-stats-and-health-5)
+defines publication thresholds and excluded traffic. This frontend does not add
+new aggregation or infer unpublished traffic.
+
 ### Two credential paths
 
 | Path | Browser sends | Handler forwards | Used for |

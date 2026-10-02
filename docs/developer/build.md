@@ -718,6 +718,8 @@ make ui-build     # npm run build  (next build)
 make ui           # install + lint + test + build
 ```
 
+The PostCSS plugin map in `console-ui/postcss.config.mjs` is shared by Next.js and Vitest’s CSS-module transforms.
+
 Local dev server: `cd console-ui && npm run dev`. Bundle budget check:
 `npm run bundle:check` (`console-ui/scripts/analyze-bundle.mjs`). CI uses
 `npm ci`.

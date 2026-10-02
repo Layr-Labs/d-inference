@@ -75,6 +75,9 @@ describe("Continuous network overview",()=>{
       expect(screen.getByRole("heading",{name})).toBeInTheDocument();
     }
     expect(screen.queryByRole("searchbox",{name:"Search provider fleet"})).not.toBeInTheDocument();
+    const capacity = screen.getByRole("heading", { name: "Model capacity" });
+    const traffic = screen.getByRole("heading", { name: "Model traffic & fulfillment" });
+    expect(capacity.compareDocumentPosition(traffic) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
   it("opens the provider directory in place while retaining the graphs",async()=>{
     render(<StatsPage/>);

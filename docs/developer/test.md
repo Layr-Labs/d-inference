@@ -2009,6 +2009,8 @@ install/replace path of `scripts/install.sh` in a temp dir (and runs
 
 ### 5. Web UIs
 
+`console-ui/src/app/stats/demand/traffic.test.ts` covers cross-model sums, grouped-model coverage, missing intervals, and share denominators. `ModelDemandPanel.test.tsx` exercises comparison-to-model drill-down and existing privacy/error behavior; `stats/page.test.tsx` pins capacity before traffic. Check the responsive traffic rows with the sidebar visible, and verify both themes at narrow and wide widths.
+
 ```bash
 make ui-test                     # cd console-ui && npm test  (vitest run)
 make ui-lint                     # npx eslint src/

@@ -3,6 +3,8 @@ package store
 import (
 	"sort"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 var _ GlobalPayoutStore = (*MemoryStore)(nil)
@@ -40,7 +42,9 @@ func (s *MemoryStore) GetGlobalRecipient(accountID string) (*GlobalRecipient, er
 func (s *MemoryStore) RemoveGlobalRecipient(accountID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.globalRecipients, accountID)
+	if _, exists := s.globalRecipients[accountID]; exists {
+		s.globalRecipients[accountID] = GlobalRecipient{ID: uuid.NewString(), AccountID: accountID}
+	}
 	return nil
 }
 func (s *MemoryStore) CreateGlobalPayoutQuote(p GlobalPayout) error {

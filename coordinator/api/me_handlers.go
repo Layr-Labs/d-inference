@@ -22,6 +22,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/registry/autopilot"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -106,13 +107,14 @@ type myProvider struct {
 	// idle minutes and reloaded on demand. Omitted for offline machines and
 	// for providers too old to report it. Lets the dashboard render a missing
 	// slot as "sleeping, wakes on demand" instead of a warning.
-	IdleUnloadMins  *int     `json:"idle_unload_mins,omitempty"`
-	WarmModels      []string `json:"warm_models,omitempty"`
-	CurrentModel    string   `json:"current_model,omitempty"`
-	PendingRequests int      `json:"pending_requests"`
-	MaxConcurrency  int      `json:"max_concurrency"`
-	PrefillTPS      float64  `json:"prefill_tps,omitempty"`
-	DecodeTPS       float64  `json:"decode_tps,omitempty"`
+	IdleUnloadMins  *int                          `json:"idle_unload_mins,omitempty"`
+	ModelAutopilot  *protocol.ModelAutopilotState `json:"model_autopilot,omitempty"`
+	WarmModels      []string                      `json:"warm_models,omitempty"`
+	CurrentModel    string                        `json:"current_model,omitempty"`
+	PendingRequests int                           `json:"pending_requests"`
+	MaxConcurrency  int                           `json:"max_concurrency"`
+	PrefillTPS      float64                       `json:"prefill_tps,omitempty"`
+	DecodeTPS       float64                       `json:"decode_tps,omitempty"`
 
 	// Reputation
 	Reputation myReputation `json:"reputation"`
@@ -554,7 +556,7 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		// Hardware / models from the live snapshot are authoritative because
 		// the provider may have re-registered with new specs.
 		mp.Hardware = live.Hardware
-		mp.Models = append([]protocol.ModelInfo{}, live.Models...)
+		mp.Models = live.ServingModelsLocked()
 		if live.CapacityModelIDs != nil {
 			ids := append([]string{}, live.CapacityModelIDs...)
 			mp.CapacityModelIDs = &ids
@@ -618,6 +620,7 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 			mp.IdleUnloadMins = &v
 		}
 		mp.WarmModels = append([]string{}, live.WarmModels...)
+		mp.ModelAutopilot = autopilot.CloneState(live.ModelAutopilot)
 		mp.CurrentModel = live.CurrentModel
 		// Reputation snapshot.
 		mp.Reputation = myReputation{

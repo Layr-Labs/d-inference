@@ -7,9 +7,14 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/autopilot"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
+	"github.com/eigeninference/d-inference/coordinator/store"
 	"nhooyr.io/websocket"
 )
+
+// DefaultProviderHeartbeatTimeout is the normal serving liveness window.
+const DefaultProviderHeartbeatTimeout = 90 * time.Second
 
 // Register adds a new provider to the registry, returning its assigned ID.
 // Provider-reported model inventory is preserved even when the current catalog
@@ -53,6 +58,11 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	}
 
 	models := msg.Models
+	var inventory []protocol.ModelInfo
+	if msg.ModelAutopilot != nil && msg.ModelAutopilot.Protocol == protocol.ModelAutopilotProtocol {
+		inventory = validatedAutopilotInventory(msg.AutopilotInventory, msg.ModelAutopilot)
+	}
+	models, observerOnly := mergeAutopilotInventory(models, inventory)
 	modelInventory, _ := uniqueProviderModels(models)
 	cacheStatuses, cacheStatusReported := sanitizePrefixCacheStatuses(
 		msg.PrefixCacheStatuses, modelInventory)
@@ -81,10 +91,13 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	}
 
 	p := &Provider{
+		ModelAutopilot:              autopilot.CloneState(msg.ModelAutopilot),
 		ID:                          id,
 		stateRestorePending:         r.store != nil,
 		Hardware:                    msg.Hardware,
 		Models:                      models,
+		autopilotInventory:          inventory,
+		autopilotOnlyModels:         observerOnly,
 		Backend:                     msg.Backend,
 		appAttestProtocol:           msg.AppAttestProtocol,
 		ReportedRuntimeCapabilities: normalizeRuntimeCapabilities(msg.RuntimeCapabilities, msg.Hardware),
@@ -103,7 +116,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		PrefixCacheStatusReported:   cacheStatusReported,
 		PrefixCacheDonationOutcomes: cacheDonationOutcomes,
 		ToolConstraintProtocol:      msg.ToolConstraintProtocol,
-		ToolConstraintModels:        toolConstraintModelSet(msg.ToolConstraintModels, msg.Models),
+		ToolConstraintModels:        toolConstraintModelSet(msg.ToolConstraintModels, models),
 		TrustLevel:                  TrustNone,
 		RuntimeVerified:             true,  // default to verified; API layer sets false when manifest check fails
 		RuntimeManifestChecked:      true,  // default to true; API layer sets false when no manifest is configured
@@ -305,6 +318,16 @@ func (r *Registry) disconnectProvider(id string, expected *Provider, timeout tim
 			p.mu.Unlock()
 			r.mu.Unlock()
 			return false
+		}
+		if pending := p.autopilotPending; pending != nil {
+			// Losing the session cannot prove delivery, final residency or rollback.
+			// Queue only; the controller persists outside registry/provider locks.
+			now := time.Now()
+			r.queueAutopilotEvent(store.AutopilotRecord{CommandID: pending.Command.CommandID, At: now, ProviderID: p.ID,
+				Phase: "uncertain", Reason: pending.Command.Reason, Load: pending.Command.LoadModelID,
+				Unload: append([]string{}, pending.Command.UnloadModelIDs...), Before: append([]string{}, pending.Command.ExpectedResidentModels...),
+				ElapsedMS: max(0, now.Sub(pending.SentAt).Milliseconds())})
+			pending.Uncertain = true
 		}
 		delete(r.providers, id)
 		p.transport = transportMeasurement{}

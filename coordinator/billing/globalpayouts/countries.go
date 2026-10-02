@@ -110,7 +110,7 @@ var Countries = []Country{
 	{Code: "TR", Name: "Turkey", Rail: "global", Currency: "try", Capability: "wire"},
 	{Code: "AE", Name: "United Arab Emirates", Rail: "global", Currency: "aed", Capability: "wire"},
 	{Code: "GB", Name: "United Kingdom", Rail: "connect", Currency: "gbp", Capability: "local"},
-	{Code: "US", Name: "United States", Rail: "connect", Currency: "usd", Capability: "wire"},
+	{Code: "US", Name: "United States", Rail: "connect", Currency: "usd", Capability: "local"},
 	{Code: "UZ", Name: "Uzbekistan", Rail: "global", Currency: "uzs", Capability: "wire"},
 	{Code: "VN", Name: "Vietnam", Rail: "global", Currency: "vnd", Capability: "wire"},
 }

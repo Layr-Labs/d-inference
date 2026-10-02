@@ -161,7 +161,7 @@ func keyLimitResetFromContext(ctx context.Context) string {
 // assistant support; model-aware MTP defaults remain provider-side policy.
 // Keep this fallback in sync with ProviderCore.version so dev/in-memory
 // coordinators advertise the same floor as the Swift binary they expect.
-var LatestProviderVersion = "0.9.14"
+var LatestProviderVersion = "0.9.17"
 
 // latestReleasedVersion returns the highest active release version from
 // the store, falling back to the hardcoded LatestProviderVersion when
@@ -2779,6 +2779,7 @@ func (s *Server) routes() {
 	// keys on the account ID the auth middleware puts in the request context.
 	s.mux.HandleFunc("POST /v1/billing/stripe/dashboard", s.requirePrivyAuth(s.rateLimitFinancial(s.handleStripeDashboardLink)))
 	s.mux.HandleFunc("DELETE /v1/billing/stripe/account", s.requirePrivyAuth(s.handleStripeUnlink))
+	s.mux.HandleFunc("POST /v1/billing/stripe/connect/accounts/webhook", s.handleStripeConnectAccountsWebhook)
 	s.mux.HandleFunc("POST /v1/billing/stripe/connect/webhook", s.handleStripeConnectWebhook) // no auth — Stripe signs it
 
 	// Pricing — GET is public, PUT/DELETE require auth
@@ -2879,6 +2880,8 @@ func (s *Server) routes() {
 	// as a pseudo-account; handleAdminDrain then authorizes via isAdminAuthorized
 	// (admin key OR Privy admin). Registered before the /v1/ catch-all. Note:
 	// /readyz stays unauthenticated. See drain.go (DAR-327 Phase 1).
+	s.mux.HandleFunc("GET /v1/admin/autopilot", s.requireAuth(s.handleAdminAutopilot))
+	s.mux.HandleFunc("POST /v1/admin/autopilot", s.requireAuth(s.handleAdminAutopilot))
 	s.mux.HandleFunc("POST /v1/admin/drain", s.requireAuth(s.handleAdminDrain))
 
 	// Routing telemetry (admin-gated; metadata only — no prompt/response content).
@@ -3517,8 +3520,10 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 			ctx = context.WithValue(ctx, requestMetaKey{}, meta)
 		}
 		r = r.WithContext(ctx)
+		r, autopilotDemand := s.beginAutopilotDemand(r, start)
 
 		next.ServeHTTP(sw, r)
+		s.finishAutopilotDemand(r, autopilotDemand, sw.status)
 
 		dur := time.Since(start)
 

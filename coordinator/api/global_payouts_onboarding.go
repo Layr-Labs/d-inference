@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/billing/globalpayouts"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/google/uuid"
@@ -22,7 +21,13 @@ func (s *Server) payoutCountries() []globalpayouts.Country {
 	if s.billing == nil || !s.billing.GlobalPayoutsEnabled() {
 		return nil
 	}
-	return append([]globalpayouts.Country(nil), globalpayouts.Countries...)
+	countries := append([]globalpayouts.Country(nil), globalpayouts.Countries...)
+	if s.billing.GlobalPayoutsOnly() {
+		for i := range countries {
+			countries[i].Rail = "global"
+		}
+	}
+	return countries
 }
 func globalPayoutError(w http.ResponseWriter, err error) {
 	code, message, status := "payout_unavailable", "Bank withdrawals are temporarily unavailable. Please try again shortly.", http.StatusBadGateway
@@ -56,32 +61,41 @@ func globalPayoutError(w http.ResponseWriter, err error) {
 }
 
 // maybeGlobalOnboard is called after validating redirects, before any Express
-// account is created. Existing ready Connect destinations remain usable.
+// account is created. Existing Connect destinations remain usable only before
+// cutover and before this user has started Global Payouts.
 func (s *Server) maybeGlobalOnboard(w http.ResponseWriter, r *http.Request, user *store.User, country, returnURL, refreshURL string) bool {
 	repo, ok := s.globalPayoutStore()
 	if !ok {
-		return false
+		return s.rejectUnavailableGlobalPayouts(w)
 	}
 	active, err := repo.GetGlobalRecipient(user.AccountID)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		globalPayoutError(w, err)
 		return true
 	}
-	if !s.billing.GlobalPayoutsEnabled() && errors.Is(err, store.ErrNotFound) {
+	if !s.billing.GlobalPayoutsOnly() && !s.billing.GlobalPayoutsEnabled() && errors.Is(err, store.ErrNotFound) {
 		return false
 	}
 	if country == "" && err == nil {
 		country = active.Country
 	}
 	if country == "" {
-		return false
-	} // existing Connect onboarding handles default/required country
-	policy, known := globalpayouts.Lookup(country)
-	legacyReady := user.StripeAccountID != "" && user.StripeAccountStatus == stripeStatusReady && user.StripeAccountCountry == country && errors.Is(err, store.ErrNotFound)
-	if legacyReady || (known && policy.Rail == "connect") {
+		if s.billing.GlobalPayoutsOnly() || err == nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse("country_required", "Select your country to set up bank payouts."))
+			return true
+		}
 		return false
 	}
-	if !known || !s.billing.GlobalPayoutsEnabled() {
+	policy, known := globalpayouts.Lookup(country)
+	legacyReady := user.StripeAccountID != "" && user.StripeAccountStatus == stripeStatusReady && user.StripeAccountCountry == country && errors.Is(err, store.ErrNotFound)
+	if !s.billing.GlobalPayoutsOnly() && errors.Is(err, store.ErrNotFound) && (legacyReady || (known && policy.Rail == "connect")) {
+		return false
+	}
+	if !s.billing.GlobalPayoutsEnabled() {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("payouts_paused", "Bank payouts are temporarily paused. Your earnings remain in your account."))
+		return true
+	}
+	if !known {
 		writeJSON(w, http.StatusBadRequest, errorResponse("country_unavailable", "Bank withdrawals are not available in this country yet. Your earnings remain in your account."))
 		return true
 	}
@@ -156,34 +170,4 @@ func (s *Server) refreshGlobalRecipient(ctx context.Context, local *store.Global
 	}
 	*local = updated
 	return nil
-}
-
-func (s *Server) maybeGlobalStatus(w http.ResponseWriter, r *http.Request, user *store.User) bool {
-	repo, ok := s.globalPayoutStore()
-	if !ok {
-		return false
-	}
-	local, err := repo.GetGlobalRecipient(user.AccountID)
-	if errors.Is(err, store.ErrNotFound) {
-		return false
-	}
-	if err != nil {
-		globalPayoutError(w, err)
-		return true
-	}
-	configured := s.billing.GlobalPayoutsEnabled()
-	if configured && local.RecipientID != "" && r.URL.Query().Get("refresh") == "1" {
-		if err = s.refreshGlobalRecipient(r.Context(), local); err != nil {
-			s.logger.Warn("global payout recipient refresh failed", "error", err)
-			globalPayoutError(w, err)
-			return true
-		}
-	}
-	status := "pending"
-	if local.Ready && configured {
-		status = "ready"
-	}
-	policy, _ := globalpayouts.Lookup(local.Country)
-	writeJSON(w, http.StatusOK, map[string]any{"account_id": user.AccountID, "configured": true, "has_account": true, "stripe_account_id": local.RecipientID, "stripe_account_country": local.Country, "status": status, "destination_type": "bank", "destination_last4": local.Last4, "instant_eligible": false, "min_withdraw_micro_usd": billing.MinWithdrawMicroUSD, "payout_rail": "global", "payout_currency": policy.Currency, "recipient_limits": policy.Limits(), "countries": s.payoutCountries(), "payouts_available": configured})
-	return true
 }

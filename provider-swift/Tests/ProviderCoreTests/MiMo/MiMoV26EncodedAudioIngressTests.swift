@@ -65,7 +65,7 @@ final class MiMoV26EncodedAudioIngressTests: XCTestCase {
         let ledger = ProcessMemoryLedger(policy:.init(epoch:1,capBytes:64 << 20,reserveBytes:0),
             readUsage:{ .init(activeBytes:0,cacheBytes:0,systemAvailableBytes:128 << 20) })
         let reservation = try MiMoV26ManagedMediaReservation(initialBytes:value.initialBytes,hostBytes:value.hostBytes,
-            maximumBytes:policy.maximumReservationBytes,additionalSystemReserveBytes:1,ledger:ledger)
+            maximumBytes:policy.maximumReservationBytes,additionalSystemReserveBytes:1,ledger:ledger,serviceBudget:.init())
         defer {
             reservation.abortBeforeNativeAdoption()
             do { try reservation.completeHostOwnership() } catch { XCTFail("CPU-only exact owner settlement failed") }

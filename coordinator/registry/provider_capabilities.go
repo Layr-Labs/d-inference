@@ -291,6 +291,13 @@ func (r *Registry) providerMeetsModelRequirementsLocked(p *Provider, modelID str
 // capability gate. Unlike serving eligibility it does not require an existing
 // advertisement, so it is suitable for prefetch/desired targets.
 func (r *Registry) providerCanAcquireCatalogModelLocked(p *Provider, modelID string) bool {
+	if !providerOrdinaryModelAllowedLocked(p, modelID) {
+		return false
+	}
+	return r.providerCanAcquireCatalogArtifactLocked(p, modelID)
+}
+
+func (r *Registry) providerCanAcquireCatalogArtifactLocked(p *Provider, modelID string) bool {
 	if r.modelCatalog != nil {
 		if _, ok := r.modelCatalog[modelID]; !ok {
 			return false
@@ -300,7 +307,7 @@ func (r *Registry) providerCanAcquireCatalogModelLocked(p *Provider, modelID str
 }
 
 func (r *Registry) providerModelAllowedByCatalogLocked(p *Provider, model protocol.ModelInfo) bool {
-	return r.modelAllowedByCatalogLocked(model) &&
+	return providerOrdinaryModelAllowedLocked(p, model.ID) && r.modelAllowedByCatalogLocked(model) &&
 		r.providerMeetsModelRequirementsLocked(p, model.ID)
 }
 

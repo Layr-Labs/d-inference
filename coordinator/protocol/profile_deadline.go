@@ -48,7 +48,8 @@ func (v DeadlineContinuation) Fold() DeadlineContinuation {
 }
 
 // DeadlineProjection distinguishes a finite engine prediction from an unbounded
-// result or a provider policy that did not request a prediction.
+// result or a policy that did not predict service time (including a guarded
+// idle native-media observation with bounded work but unknown duration).
 type DeadlineProjection string
 
 const (

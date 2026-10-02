@@ -51,6 +51,27 @@ struct AutopilotInventoryTests {
         await loop.idleMonitorTask?.cancel()
     }
 
+    @Test func selectedModelSuccessorDoesNotRequireAutopilotInventoryConsent() async throws {
+        let loop = try loop()
+        await loop.handleAutopilotControl(control(shadow: true))
+        let successor = "selected-model-next-build"
+        let unrelated = "unrelated-next-build"
+        #expect(await loop.autopilotSettings.selectedModels.contains(successor) == false)
+        await loop.reconcileDesiredModels([
+            .init(modelName: "selected-alias", desiredBuild: successor, previousBuild: selected.id),
+            .init(modelName: "unrelated-alias", desiredBuild: unrelated, previousBuild: cached.id),
+        ], send: SendHandle { _ in })
+        #expect(await loop.autopilotAllowsModel(successor))
+        #expect(await loop.desiredPrefetchTargets.contains(successor))
+        #expect(await loop.desiredSwapDrop[successor] == selected.id)
+        #expect(await loop.autopilotAllowsModel(unrelated) == false)
+        #expect(await loop.autopilotAllowsModel(cached.id) == false)
+        #expect(await loop.advertisedModels[successor] == nil)
+        #expect(await loop.autopilotSettings.selectedModels.contains(successor) == false)
+        #expect(await loop.modelSlots.isEmpty)
+        await loop.idleMonitorTask?.cancel()
+    }
+
     @Test func encryptedNetworkAndLocalRequestsCannotLoadUnselectedInventory() async throws {
         let loop = try loop()
         await loop.handleAutopilotControl(control(shadow: true))

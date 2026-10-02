@@ -104,7 +104,10 @@ state decoder’s snake-case conversion, including residents and load history.
 The 0.9.16 local file writes `autopilot_state` so a 0.9.15 watchdog can ignore
 the optional detail while reading heartbeat health; new readers also accept old
 `autopilot` files. WebSocket encoding and required-field validation remain unchanged.
-Desired-build updates outside the recorded set are ignored. While enrolled,
+Unrelated desired-build updates outside the recorded set are ignored. A declared
+successor of an ordinary selected model retains the existing artifact-update
+workflow even when its new build ID is absent from the Autopilot inventory;
+this does not add that ID to cached-only Autopilot consent. While enrolled,
 `darkbloom switch` directs the operator to `darkbloom autopilot models` or opt-out
 so a manual hosted-model transaction cannot bypass the approved selection.
 Both operation owners reject overlap, including model-switch validation. Pause, resume, pins and

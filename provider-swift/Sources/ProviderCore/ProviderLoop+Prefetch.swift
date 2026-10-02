@@ -336,8 +336,7 @@ extension ProviderLoop {
         // inherits permission merely by appearing in desired state.
         for entry in entries {
             if let previous = entry.previousBuild, ordinaryServingModelIDs.contains(previous),
-                !entry.desiredBuild.isEmpty,
-                (!autopilotSettings.enabled || autopilotSettings.allows(entry.desiredBuild)) {
+                !entry.desiredBuild.isEmpty {
                 ordinaryServingModelIDs.insert(entry.desiredBuild)
             }
         }

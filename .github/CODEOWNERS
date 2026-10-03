@@ -1,0 +1,17 @@
+# Deliberately narrow: there is no catch-all owner, so this adds review
+# requests only on the CI and code-scanning config — not on every PR.
+#
+# Purpose is drift resistance. The CodeQL gate is enforced by required status
+# checks on master (ruleset "Branch Rules"), which is fail-closed against
+# *deleting* .github/workflows/codeql.yml — the contexts stop reporting and
+# nothing merges. It is NOT fail-closed against a PR that keeps the job names
+# but weakens what they scan (drops a matrix language, widens paths-ignore).
+# Owner review on these paths is the mitigation for that case.
+#
+# Note: ruleset "Branch Rules" currently has require_code_owner_review=false,
+# so these are review *requests*, not merge blockers. Flip that flag to make
+# them binding.
+
+/.github/workflows/    @Layr-Labs/darkbloom
+/.github/codeql/       @Layr-Labs/darkbloom
+/.github/dependabot.yml @Layr-Labs/darkbloom

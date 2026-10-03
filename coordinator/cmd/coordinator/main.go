@@ -931,6 +931,8 @@ func main() {
 	srv.StartGlobalPayoutReconciler(ctx)
 	// Account erasure: scrub requests whose grace period has ended.
 	srv.StartAccountErasureLoop(ctx)
+	// Deliver the erasure outbox: Stripe deletions and the erasure_log record.
+	srv.StartErasureOutboxLoop(ctx)
 
 	// HTTP server with graceful shutdown.
 	httpServer := &http.Server{

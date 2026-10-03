@@ -400,6 +400,25 @@ func (c *StripeConnect) GetAccount(accountID string) (*ExpressAccount, error) {
 	return parseAccount(body)
 }
 
+// DeleteAccount deletes a connected Express account (account erasure).
+// Stripe deletes a live account only when all its balances are zero; that
+// refusal is a definitive *APIError. A gone account is IsAccountGoneErr.
+func (c *StripeConnect) DeleteAccount(accountID string) error {
+	if c.secretKey == "" && !c.mockMode {
+		return errors.New("stripe connect: not configured")
+	}
+	if c.mockMode {
+		return nil
+	}
+	if err := validAccountID(accountID); err != nil {
+		return err
+	}
+	if _, err := c.do(http.MethodDelete, "/v1/accounts/"+accountID, nil, ""); err != nil {
+		return fmt.Errorf("stripe connect: delete account: %w", err)
+	}
+	return nil
+}
+
 // CreateTransferParams describes a transfer from the platform balance into a
 // connected account's balance. amountCents is the integer-cent amount net of
 // any user-facing fee.

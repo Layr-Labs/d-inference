@@ -920,8 +920,12 @@ as `admin_key` or `account:<id>` (`adminActor`).
 `wallet_address_count` and `created_at`. `ErasureOutboxItem` has `id`,
 `target` (`stripe_account` · `global_recipient` · `checkout_sessions` ·
 `erasure_log`), `state` (`pending` · `done` · `manual_action`), `attempts`,
-`next_at`, `last_error`, `done_at` and `has_external_id`; the Stripe ID itself
-is never returned. The plan returns the email and Stripe IDs for the admin to
+`next_at`, `last_error`, `done_at`, `has_external_id` (false once done) and
+`has_stripe_job` (a Stripe redaction job is in progress); the Stripe IDs
+themselves are never returned. The outbox worker (`StartErasureOutboxLoop`,
+`coordinator/api/erasure_outbox.go`) moves rows to `done` or
+`manual_action`; the per-target behavior is in the
+[runbook](../operations/account-erasure.md#steps). The plan returns the email and Stripe IDs for the admin to
 check; the stored plan has counts only.
 
 While a request is `pending`, a Privy login of the account answers 403

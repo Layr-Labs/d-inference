@@ -178,8 +178,9 @@ type MemoryStore struct {
 	floorDrawKeys      map[string]struct{} // "providerKey|epochID" → settled marker
 
 	// Account erasure requests and their outbox rows.
-	erasureRequests map[string]*memoryErasureRequest
-	erasureOutbox   []ErasureOutboxItem
+	erasureRequests    map[string]*memoryErasureRequest
+	erasureOutbox      []ErasureOutboxItem
+	erasureOutboxLease map[string]time.Time // outbox row ID → lease end
 	// Erased accounts refuse credits; refused ones are kept for review.
 	erasedAccounts        map[string]bool
 	erasureRefusedCredits []ErasureRefusedCredit
@@ -192,6 +193,7 @@ func NewMemory(scfg Config) *MemoryStore {
 	s := &MemoryStore{
 		modelDemandStartedAt:          time.Now().UTC(),
 		erasureRequests:               make(map[string]*memoryErasureRequest),
+		erasureOutboxLease:            make(map[string]time.Time),
 		erasedAccounts:                make(map[string]bool),
 		keyRecords:                    make(map[string]*APIKey),
 		keysByID:                      make(map[string]string),

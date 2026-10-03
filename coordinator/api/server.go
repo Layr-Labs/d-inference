@@ -246,6 +246,7 @@ type Server struct {
 	codeAttestThrottle            *codeAttestThrottle // per-device APNs push budget + reuse cache (v0.6.0)
 	trustReuseCache               *trustReuseCache    // per-device trust-reuse cache: skip a fleet-wide live MDM herd on restart (DAR-326)
 	erasureGrace                  time.Duration       // account erasure: soft delete to scrub (EIGENINFERENCE_ERASURE_GRACE)
+	erasureLog                    erasureLogSender    // erasure_log record sink; nil uses s.dd (tests replace it)
 	trustReuseJournal             hardUntrustJournal
 	trustRevocationMu             sync.Mutex
 	trustSafetyMu                 sync.RWMutex

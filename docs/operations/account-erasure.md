@@ -89,12 +89,48 @@ erasure forfeits the balance and cannot be undone after the scrub.
    the loop retries every hour.
 
 5. Follow the outbox. The scrub writes one `erasure_outbox` row for each
-   Stripe object (`stripe_account`, `global_recipient`, `checkout_sessions`)
-   and one `erasure_log` row. Until the outbox worker ships, each row stays
-   `pending`: delete the Express account, close the Global Payouts recipient
-   and redact the Checkout Sessions in the Stripe dashboard by hand. The
-   Stripe IDs are in `erasure_outbox.external_id`; read them with SQL, as the
-   API does not return them.
+   Stripe object and one `erasure_log` row; a worker (`StartErasureOutboxLoop`,
+   every minute) delivers them. `GET …/erasure` shows each row's `state`:
+
+   | Target | What the worker does | Done when |
+   |---|---|---|
+   | `stripe_account` | `DELETE /v1/accounts/{id}` with the Connect key | deleted, or Stripe says the account does not exist |
+   | `global_recipient` | `POST /v2/core/accounts/{id}/close` with `applied_configurations: ["recipient"]` | closed, or not found |
+   | `checkout_sessions` | a Stripe redaction job for up to 10 sessions (`validation_behavior=fix`): create, wait for `ready`, run, wait for `succeeded`; the job ID is kept on the row (`has_stripe_job`) | the job succeeded. A session Stripe cannot find is not done: it moves to its own `manual_action` row (see step 6), and the others continue in a new job |
+   | `erasure_log` | one Datadog log with tag `erasure_log:true`, or a `slog` line without Datadog | written |
+
+   A transient error (network, 5xx, 429) is retried with backoff from 1 min
+   up to 6 h; after 8 attempts the row moves to `manual_action`. A definitive
+   Stripe refusal moves it to `manual_action` at once with the error in
+   `last_error`: for example a live Express account whose balances are not
+   zero, a recipient with a cash balance, or "Redaction Jobs is not enabled
+   for this account" (the feature is in public preview and needs Stripe to
+   grant access). Most transactions can be redacted only 90 days after they
+   were created; when every validation error of a job says so, the row waits
+   7 days (`erasureRedactionWait`) and a new job is made, without counting an
+   attempt. Those waits end 105 days after the scrub
+   (`erasureRedactionDeadline`): the row then moves to `manual_action`. A job
+   that stays in one non-terminal status (for example `validating`) for more
+   than 31 days (`erasureRedactionStuck`; Stripe says a job can take up to 30
+   days) also moves to `manual_action`. When a job disappears at Stripe, the
+   next one is created with a new idempotency key. When the coordinator runs
+   in billing mock mode, Stripe rows end done without a call.
+
+6. Resolve `manual_action` rows by hand. A done row no longer holds its
+   Stripe ID; a `manual_action` row keeps it in `erasure_outbox.external_id`
+   (the API does not return it):
+
+   ```sql
+   SELECT id, target, external_id, attempts, last_error
+   FROM erasure_outbox WHERE state = 'manual_action';
+   ```
+
+   Fix the cause in Stripe (pay out or reverse the remaining balance, request
+   Redaction Jobs access, cancel a conflicting job), finish the deletion in
+   the Stripe dashboard, then clear the ID:
+   `UPDATE erasure_outbox SET external_id = '', last_error = 'resolved by hand' WHERE id = '<id>';`.
+   To let the worker try again instead, set `state = 'pending'`,
+   `attempts = 0` and `next_at = NOW()`.
 
 ## Cancel
 
@@ -134,7 +170,7 @@ can be canceled.
 | Trust-reuse, verification, code-attestation and push-budget rows of a Secure Enclave key that another account's provider also has; App Attest receipts of a key another account's session used | They belong to the other account too. The in-memory trust cache and MDM jobs of those keys also stay. The plan lists them under `retained`. |
 | `erasure_refused_credits` | Credits refused after the erasure, for manual review; IDs and amounts only. |
 | `erasure_requests` (state, actor, reason, row counts) | The record that the erasure happened. It holds no email, token or wallet address after the scrub. |
-| `erasure_outbox.external_id` | The Stripe ID waits here until Stripe confirms the deletion. |
+| `erasure_outbox.external_id` | The Stripe ID waits here until Stripe confirms the deletion; a `manual_action` row keeps it until an operator clears it. |
 
 ## Backups and logs
 
@@ -144,13 +180,21 @@ can be canceled.
   backup time is not in the restored database: plan and confirm it again,
   with `force`, for each account in the list of completed erasures. That list
   is the `erasure_log` record of each erasure (request ID, account ID,
-  `erased_at`), written by the outbox worker; it survives a restore only in a
-  Datadog log archive. Until the worker ships, keep the request ID and
-  account ID of each completed erasure in the support ticket.
+  `erased_at`), written by the outbox worker with the Datadog tag
+  `erasure_log:true`; it survives a restore only in a Datadog log archive.
+  Without Datadog the record is only a process log line. Set up a Datadog log archive (an
+  archive with the query `erasure_log:true`) that keeps these records longer
+  than the database backups.
 - Datadog logs written before the erasure keep any data they hold until
   their retention ends. The coordinator does not delete log events.
-- Stripe keeps its own data until the outbox (or the manual step 5) deletes
-  or redacts it.
+- Stripe keeps its own data until the outbox deletes or redacts it. A
+  redacted Checkout transaction can no longer be refunded or disputed.
+  Checkout Sessions made on the earlier Stripe account (before the
+  [Stripe migration](stripe-migration.md)) are not reachable with the current
+  key. The worker looks up each session of a batch that Stripe refused as not
+  found, keeps the found ones in the batch, and moves the missing ones to a
+  `manual_action` row whose `last_error` says so. Redact those sessions in the
+  old account's dashboard, then clear the row as in step 6.
 
 ## Verification
 

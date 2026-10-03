@@ -178,8 +178,40 @@ type ErasureOutboxItem struct {
 	LastError     string             `json:"last_error,omitempty"`
 	DoneAt        *time.Time         `json:"done_at,omitempty"`
 	HasExternalID bool               `json:"has_external_id"`
+	HasStripeJob  bool               `json:"has_stripe_job"`
 	CreatedAt     time.Time          `json:"created_at"`
 	ExternalID    string             `json:"-"`
+	StripeJobID   string             `json:"-"` // redaction job of a checkout_sessions row
+	// JobStatus is the last Stripe status seen for StripeJobID, since
+	// JobStatusSince; JobGeneration changes the job's idempotency key.
+	JobStatus      string     `json:"-"`
+	JobStatusSince *time.Time `json:"-"`
+	JobGeneration  int        `json:"-"`
+}
+
+// ErasureOutboxWork is a leased outbox row plus the request fields the
+// worker needs for the erasure_log record.
+type ErasureOutboxWork struct {
+	ErasureOutboxItem
+	AccountID string
+	ErasedAt  time.Time
+}
+
+// ErasureOutboxResult is the new state of a delivered outbox row. State done
+// clears the external ID and the job ID and sets done_at to NextAt.
+type ErasureOutboxResult struct {
+	State          ErasureOutboxState
+	Attempts       int
+	NextAt         time.Time
+	LastError      string
+	ExternalID     string // the row's IDs from now on; ignored when done
+	StripeJobID    string
+	JobStatus      string
+	JobStatusSince *time.Time
+	JobGeneration  int
+	// Split, when set, is a manual_action row written in the same
+	// transaction: Checkout Sessions Stripe cannot find with the current key.
+	Split *ErasureOutboxItem
 }
 
 // ErasureConfirm is the input of RequestAccountErasure.
@@ -246,6 +278,14 @@ type AccountErasureStore interface {
 
 	// RecordAccountErasureFailure stores the last scrub error of a request.
 	RecordAccountErasureFailure(ctx context.Context, requestID, message string) error
+
+	// LeaseDueErasureOutbox leases up to limit pending outbox rows whose
+	// next_at has passed, until now+lease.
+	LeaseDueErasureOutbox(ctx context.Context, now time.Time, lease time.Duration, limit int) ([]ErasureOutboxWork, error)
+
+	// SaveErasureOutboxResult stores the outcome of one delivery attempt and
+	// ends the lease. It changes only a pending row.
+	SaveErasureOutboxResult(ctx context.Context, id string, r ErasureOutboxResult) error
 
 	// PrivyUserPendingErasure reports whether a soft-deleted account holds
 	// this Privy user ID. Login refuses such an account.

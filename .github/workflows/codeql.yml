@@ -1,0 +1,123 @@
+name: CodeQL
+
+# Advanced setup, replacing GitHub's default setup for this repo.
+#
+# Two reasons this exists as a workflow rather than a settings toggle:
+#
+#   1. Coverage. Default setup cannot analyze Rust at all (the API rejects it:
+#      only actions, c-cpp, csharp, go, java-kotlin, javascript-typescript,
+#      python, ruby and swift are accepted), and in practice it was only
+#      running go, javascript-typescript and python — leaving provider-swift
+#      (the largest Swift surface in the repo) and coordinator/promptsidecar
+#      unanalyzed.
+#   2. Requireability. Default setup dispatched conditionally, so some PRs got
+#      no CodeQL run at all. A required status check that never reports blocks
+#      a PR forever, so the gate could not be made mandatory. Every job here
+#      runs on every pull_request, which is what makes it safe to require.
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  schedule:
+    # Weekly full-tree scan so alerts don't go stale between releases.
+    - cron: '27 4 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.workflow }}-${{ github.ref }}
+  # Superseded PR pushes are cancelled; the newer run reports the check.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  analyze:
+    name: CodeQL Analyze (${{ matrix.language }})
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: go
+            build-mode: autobuild
+          - language: javascript-typescript
+            build-mode: none
+          - language: python
+            build-mode: none
+          - language: rust
+            build-mode: none
+          - language: actions
+            build-mode: none
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # autobuild for Go needs the toolchain go.mod pins, not the runner default.
+      - name: Set up Go
+        if: matrix.language == 'go'
+        uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
+        with:
+          go-version-file: go.mod
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@42947a340483f03ba47bb1a039b2c519aab3df85 # v3.37.8
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@42947a340483f03ba47bb1a039b2c519aab3df85 # v3.37.8
+        with:
+          category: /language:${{ matrix.language }}
+
+  analyze-swift:
+    # Separate from the matrix above: the Swift extractor has to observe a real
+    # compile, and provider-swift only builds on macOS with the MLX submodules
+    # checked out.
+    name: CodeQL Analyze (swift)
+    runs-on: blacksmith-12vcpu-macos-latest
+    timeout-minutes: 90
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+
+      - name: Show toolchain versions
+        run: |
+          set -euo pipefail
+          swift --version
+          xcodebuild -version
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@42947a340483f03ba47bb1a039b2c519aab3df85 # v3.37.8
+        with:
+          languages: swift
+          build-mode: manual
+
+      # Debug rather than release: the extractor only needs to watch the
+      # compiler, and release adds optimization time the scan doesn't use.
+      - name: Build provider-swift
+        working-directory: provider-swift
+        run: |
+          set -euo pipefail
+          swift build --product darkbloom
+          swift build --product darkbloom-enclave
+          swift build --product darkbloom-fan-helper
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@42947a340483f03ba47bb1a039b2c519aab3df85 # v3.37.8
+        with:
+          category: /language:swift

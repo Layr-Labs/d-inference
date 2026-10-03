@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-03
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -9,6 +9,12 @@ does not, and which files an operator may touch. Configuration values are
 listed once in [`../reference/configuration.md`](../reference/configuration.md);
 the SSD cache file format is in
 [`../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md).
+
+Standalone PostgreSQL debits now use an explicit transaction without changing
+the schema. The statement must succeed before a commit is sent; see
+[debit cancellation and commit uncertainty](billing.md#postgresql-debit-cancellation)
+for the failure boundary and added round-trip cost. Callers already holding a
+transaction continue to use the transaction-neutral debit helper.
 
 Promoted, non-retired model versions remain accepted during automatic weight
 updates. `ModelRegistryRecord.ServingVersions` derives from existing

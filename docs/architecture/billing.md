@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-03
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -86,6 +86,23 @@ sequenceDiagram
 | 5. Record usage | `coordinator/api/completion_accounting.go` `completionAccounting` (called from `handleCompleteAt`) | In-memory `payments.Ledger.RecordUsage` always (bounded recent history, lazily allocated to the [usage history limit](../reference/pricing-model.md#constants)); a persistent `usage` row (`store.RecordUsage`) unless the request was free self-route. Both carry `cached_tokens` so a cache hit's cost can be reconciled against the published rates; a model-token promotion records `0`, because that path bills cached tokens at the input rate. |
 | 6. Pay out | `handleCompleteAt` | `feePercent` is the consumer's `users.platform_fee_percent` override, else the global default (invariant 4). `platformFee = PlatformFeeWithPercent(totalCost, feePercent)`; `DistributeReferralReward` carves the referrer's share out of it; `CreditProviderAccount` credits `totalCost − platformFee` to the provider's account as withdrawable earnings (only when the provider is linked and the payout is > 0); the remaining fee is credited to `platform` (`LedgerPlatformFee`). |
 | 7. Abort / disconnect | `coordinator/api/consumer.go` `refundReservedBalance`; `coordinator/api/settlement.go` `settlementHolder` | A request that fails before any provider terminal refunds the whole reservation (`LedgerRefund`, reference `reservation_refund:<request_id>`). If the consumer disconnects first, the billing record is parked for `defaultTerminalSettleGrace = 30 * time.Second` so a late terminal settles it; otherwise it is refunded. |
+
+### PostgreSQL debit cancellation
+
+`PostgresStore.Debit` runs the balance update and ledger insert inside an
+explicit transaction. It sends `COMMIT` only after receiving a successful
+statement result and checking the five-second operation context. If the
+statement times out while waiting for an account row lock, a late server-side
+completion remains uncommitted and is rolled back. Cleanup uses a fresh,
+bounded context because the operation context may already have expired.
+
+This adds `BEGIN` and `COMMIT` round trips and holds the account row lock until
+commit; it is a correctness boundary, not a contention or throughput improvement.
+The shared `debitBalance` helper remains transaction-neutral for callers that
+already own a transaction. A timeout or lost acknowledgement **after `COMMIT`
+has been sent** still leaves the result uncertain. Callers must not blindly
+retry or refund an arbitrary debit error; this change does not add an idempotent
+reservation identifier or change the ordinary-account funds check.
 
 ### Ledger
 

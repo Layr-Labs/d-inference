@@ -1,0 +1,42 @@
+name: Bedrock review smoke test
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  smoke:
+    if: ${{ github.ref == 'refs/heads/master' }}
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install pinned Bedrock dependencies
+        run: python3 -m pip install --require-hashes -r .github/scripts/requirements-bedrock.txt
+      - name: Obtain exact-workflow AWS session
+        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
+        with:
+          role-to-assume: ${{ vars.BEDROCK_SCAN_ROLE_ARN }}
+          aws-region: ${{ vars.BEDROCK_SCAN_AWS_REGION || 'us-east-1' }}
+          role-session-name: ghscan-${{ github.run_id }}-${{ github.run_attempt }}
+          unset-current-credentials: true
+          retry-max-attempts: 1
+      - name: Verify six bounded synthetic requests without fallback
+        env:
+          BEDROCK_SCAN_PROFILES: ${{ vars.BEDROCK_SCAN_PROFILES }}
+          BEDROCK_SCAN_AWS_REGION: ${{ vars.BEDROCK_SCAN_AWS_REGION || 'us-east-1' }}
+          BEDROCK_SCAN_USAGE_FILE: ${{ runner.temp }}/bedrock-usage.jsonl
+        run: python3 .github/scripts/threat-bedrock-smoke.py
+      - name: Preserve usage metadata
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bedrock-smoke-usage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bedrock-usage.jsonl
+          if-no-files-found: warn
+          retention-days: 90

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-03
 
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the
@@ -404,6 +404,12 @@ Set `MIMO_V26_MANAGED_AAC_VIDEO_FIXTURE` to the verified video file emitted by
 the fixture preparation script.
 Use `prepare-mimo-audio-fixtures.py --cache <cache> --output <new-directory>`;
 its public codec download is about 1.87 GB and is checked against fixed hashes.
+
+The optional Bedrock reviewer installs hash-locked dependencies from
+`.github/scripts/requirements-bedrock.txt` in its trusted workflow.
+`python3 .github/scripts/test-threat-bedrock.py` covers explicit provider fallback
+and conditional merge clearance without cloud calls. Live validation and activation
+are separate: see [the rollout runbook](../operations/threat-review-rollout.md).
 
 ## Provider lifecycle regression checks
 

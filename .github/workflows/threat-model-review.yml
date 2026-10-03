@@ -52,12 +52,22 @@ jobs:
     name: Threat Model Review (advisory)
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
-    # Operational failures as well as findings must never become merge gates.
-    continue-on-error: true
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+    env:
+      THREAT_REVIEW_REQUIRE_CLEARANCE: ${{ vars.THREAT_REVIEW_REQUIRE_CLEARANCE }}
+      # Untrusted forks keep the existing capped OpenRouter path unless a
+      # maintainer explicitly opts them into AWS or dispatches a review.
+      BEDROCK_SCAN_ENABLED: ${{ vars.BEDROCK_SCAN_ENABLED == 'true' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository || vars.BEDROCK_SCAN_ALLOW_FORKS == 'true') && 'true' || 'false' }}
+    # Conditional clearance is activated only after its exact workflow rule is installed.
+    continue-on-error: ${{ vars.THREAT_REVIEW_REQUIRE_CLEARANCE != 'true' }}
     if: >-
       ${{ (github.event_name == 'workflow_dispatch' && !inputs.preflight) || (github.event_name == 'pull_request_target' && !github.event.pull_request.draft &&
-          (github.event.action != 'edited' || github.event.changes.base.ref.from != '')) }}
-    # Skipped title/body edits never enter the review job's cancellation group.
+          (github.event.action != 'edited' || github.event.changes.base.ref.from != '' || vars.THREAT_REVIEW_REQUIRE_CLEARANCE == 'true')) }}
+    # In clearance mode an edited PR must not replace a failed required run with
+    # a skipped success. Advisory mode still ignores ordinary title/body edits.
     concurrency:
       group: threat-model-advisory-${{ github.event.pull_request.number || inputs.pr_number }}
       cancel-in-progress: true
@@ -99,11 +109,16 @@ jobs:
         with:
           ref: ${{ env.THREAT_REVIEW_BASE_SHA }}
           persist-credentials: false
+      - name: Check for an independent manual override
+        id: merge-policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/threat-review-gate.py before
       - name: Coalesce follow-up pushes
         if: ${{ github.event.action == 'synchronize' }}
         run: sleep 75
       - name: Create a short-lived state-writer token
-        if: ${{ vars.THREAT_REVIEW_APP_ID != '' }}
+        if: ${{ steps.merge-policy.outputs.overridden != 'true' && vars.THREAT_REVIEW_APP_ID != '' }}
         id: state-token
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
         with:
@@ -112,13 +127,50 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
           permission-contents: write
+      - name: Install pinned Bedrock client
+        if: ${{ steps.merge-policy.outputs.overridden != 'true' && env.BEDROCK_SCAN_ENABLED == 'true' }}
+        run: python3 -m pip install --require-hashes -r .github/scripts/requirements-bedrock.txt
+      - name: Obtain short-lived Bedrock credentials
+        id: bedrock-auth
+        if: ${{ steps.merge-policy.outputs.overridden != 'true' && env.BEDROCK_SCAN_ENABLED == 'true' }}
+        continue-on-error: true # Explicitly accounted OpenRouter fallback remains available.
+        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
+        with:
+          role-to-assume: ${{ vars.BEDROCK_SCAN_ROLE_ARN }}
+          aws-region: ${{ vars.BEDROCK_SCAN_AWS_REGION || 'us-east-1' }}
+          role-session-name: ghscan-${{ github.run_id }}-${{ github.run_attempt }}
+          role-duration-seconds: 3600
+          unset-current-credentials: true
+          retry-max-attempts: 1
       - name: Review PR patches as data
+        if: ${{ steps.merge-policy.outputs.overridden != 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           THREAT_REVIEW_STATE_TOKEN: ${{ steps.state-token.outputs.token || secrets.THREAT_REVIEW_STATE_TOKEN }}
+          THREAT_REVIEW_RESULT_FILE: ${{ runner.temp }}/threat-review-result.json
           THREAT_REVIEW_ENABLED: ${{ vars.THREAT_REVIEW_ENABLED }}
+          BEDROCK_SCAN_PROFILES: ${{ vars.BEDROCK_SCAN_PROFILES }}
+          BEDROCK_SCAN_AWS_REGION: ${{ vars.BEDROCK_SCAN_AWS_REGION || 'us-east-1' }}
+          BEDROCK_SCAN_MAX_CALLS: ${{ vars.BEDROCK_SCAN_MAX_CALLS || '12' }}
+          BEDROCK_SCAN_MAX_OUTPUT_TOKENS: ${{ vars.BEDROCK_SCAN_MAX_OUTPUT_TOKENS || '4096' }}
+          BEDROCK_SCAN_CREDENTIALS_READY: ${{ steps.bedrock-auth.outcome == 'success' && 'true' || 'false' }}
+          BEDROCK_SCAN_USAGE_FILE: ${{ runner.temp }}/bedrock-usage.jsonl
         run: python3 .github/scripts/threat-model-review.py
-      - name: Report infrastructure failure without blocking
+      - name: Preserve Bedrock usage metadata
+        if: ${{ always() && env.BEDROCK_SCAN_ENABLED == 'true' && steps.merge-policy.outputs.overridden != 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bedrock-usage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bedrock-usage.jsonl
+          if-no-files-found: warn
+          retention-days: 90
+      - name: Evaluate conditional merge clearance
+        if: ${{ always() && vars.THREAT_REVIEW_REQUIRE_CLEARANCE == 'true' }}
+        env:
+          THREAT_REVIEW_RESULT_FILE: ${{ runner.temp }}/threat-review-result.json
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/threat-review-gate.py after
+      - name: Report infrastructure failure
         if: ${{ failure() }}
-        run: echo 'Threat-model review unavailable; this advisory does not block merging.' >> "$GITHUB_STEP_SUMMARY"
+        run: echo 'Threat-model review incomplete; check the review and configured merge policy.' >> "$GITHUB_STEP_SUMMARY"

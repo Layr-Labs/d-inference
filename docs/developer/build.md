@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-03
 
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the
@@ -144,6 +144,12 @@ Provider signing, R2 staging and publication run in separate jobs in `.github/wo
 The revision publisher accepts optional per-version HF repo, commit and path-prefix flags. It runs the SwiftPM `darkbloom-publish` executable to hash
 artifacts. It also needs Python 3 and the AWS CLI; use the existing pinned tools.
 The [revision runbook](../operations/model-revisions.md) describes its invocation.
+
+The optional Bedrock reviewer installs hash-locked dependencies from
+`.github/scripts/requirements-bedrock.txt` in its trusted workflow.
+`python3 .github/scripts/test-threat-bedrock.py` covers explicit provider fallback
+and conditional merge clearance without cloud calls. Live validation and activation
+are separate: see [the rollout runbook](../operations/threat-review-rollout.md).
 
 ## SDK 27 release builds and caches
 

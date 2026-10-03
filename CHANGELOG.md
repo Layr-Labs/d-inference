@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — Bedrock review and conditional merge clearance
+
+- Add attributed Bedrock review with bounded OpenRouter fallback, explicit usage reporting, and optional current-revision merge clearance. Medium/high findings, incomplete scans, and review-control changes require an independent formal security override. Cloud and merge-policy activation remain a separate verified rollout.
+
 ## Unreleased — leaderboard availability
 
 - Add a concurrent BRIN time index for recent provider-earnings rankings, enable range autosummarization, and keep planner statistics current. Return an uncached 503 when ranking queries fail instead of showing and caching an empty leaderboard.

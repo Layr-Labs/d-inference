@@ -134,7 +134,7 @@ PostgreSQL URL; there is no memory-store fallback or schema-skip mode.
 | 14–16 | 14 Go (`indexMigrations`); `00015_…`, `00016_…` | Replaces the full unique key on `users.privy_user_id` with the partial unique index `idx_users_privy_live` (`WHERE deleted_at IS NULL`); drops `users_privy_user_id_key` and `idx_users_privy`. |
 | 17 | `00017_referrals_referrer_code_cascade.sql` | Replaces the `referrals.referrer_code` foreign key with `referrals_referrer_code_cascade_fkey` (`ON UPDATE CASCADE`), added `NOT VALID` and then validated. |
 | 18 | `00018_erasure_tables.sql` | Creates `erasure_requests` and `erasure_outbox` for [account erasure](#account-erasure). |
-| 19–20 | `00019_…`, `00020_…` | `CONCURRENTLY` indexes for account erasure: `billing_sessions(referral_code)` and `users(privy_user_id) WHERE deleted_at IS NOT NULL`. |
+| 19–20 | Go: `indexMigrations` | `CONCURRENTLY` indexes for account erasure: `billing_sessions(referral_code)` and `users(privy_user_id) WHERE deleted_at IS NOT NULL`. |
 
 Versions 2 to 5 are Go migrations (`goMigrations`). They keep the code they had
 before goose and run on the store pool. The SQL migrations run on a separate

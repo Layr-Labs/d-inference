@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
+	postgresstore "github.com/eigeninference/d-inference/coordinator/store/postgres"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -63,7 +64,7 @@ func TestPostgresAuditAndApprovedRefund(t *testing.T) {
 	u.Path = "/" + name
 	dsn = u.String()
 	t.Setenv("EIGENINFERENCE_DATABASE_URL", dsn)
-	s, err := store.NewPostgres(ctx, store.Config{DatabaseURL: dsn})
+	s, err := postgresstore.NewPostgres(ctx, store.Config{DatabaseURL: dsn})
 	if err != nil {
 		t.Fatal(err)
 	}

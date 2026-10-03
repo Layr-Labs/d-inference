@@ -5,13 +5,14 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"io"
 	"net/http"
-	"nhooyr.io/websocket"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"nhooyr.io/websocket"
 )
 
 // TestNormalCompletionSendsNoProviderCancel: a stream that ends with the

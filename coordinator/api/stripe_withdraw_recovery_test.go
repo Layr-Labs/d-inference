@@ -1,12 +1,13 @@
 package api
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/store"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 // TestStripeWithdrawAbortsWhenScheduleHealFails: a legacy manual-schedule
@@ -39,7 +40,7 @@ func TestStripeWithdrawAbortsWhenScheduleHealFails(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeWithdraw(w, req)
+	srv.payouts.HandleStripeWithdraw(w, req)
 
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("got %d, want 502: %s", w.Code, w.Body.String())
@@ -100,7 +101,7 @@ func TestStripeWithdrawAmbiguousTransferParksRowWithoutRefund(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeWithdraw(w, req)
+	srv.payouts.HandleStripeWithdraw(w, req)
 
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("got %d, want 502: %s", w.Code, w.Body.String())
@@ -141,7 +142,7 @@ func TestStripeWithdrawAmbiguousTransferRetryRecovers(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeWithdraw(w, req)
+	srv.payouts.HandleStripeWithdraw(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
@@ -175,7 +176,7 @@ func TestStripeWithdrawAmbiguousInstantPayoutKeepsFee(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeWithdraw(w, req)
+	srv.payouts.HandleStripeWithdraw(w, req)
 
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("got %d, want 202: %s", w.Code, w.Body.String())
@@ -226,7 +227,7 @@ func TestStripeWithdraw500TransferParksRowWithoutRefund(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeWithdraw(w, req)
+	srv.payouts.HandleStripeWithdraw(w, req)
 
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("got %d, want 502: %s", w.Code, w.Body.String())

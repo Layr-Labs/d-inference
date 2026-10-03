@@ -12,11 +12,12 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	memorystore "github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 func TestAppAttestShadowOldProvidersAndOffMode(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	st := store.NewMemory(store.Config{})
+	st := memorystore.NewMemory(store.Config{})
 	reg := registry.New(logger)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)

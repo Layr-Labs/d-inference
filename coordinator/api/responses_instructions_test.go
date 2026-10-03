@@ -3,6 +3,8 @@ package api
 import (
 	"strings"
 	"testing"
+
+	inreq "github.com/eigeninference/d-inference/coordinator/api/inference/request"
 )
 
 func TestResponsesInstructionsAdmissionEstimates(t *testing.T) {
@@ -13,18 +15,18 @@ func TestResponsesInstructionsAdmissionEstimates(t *testing.T) {
 		map[string]any{"role": "system", "content": instructions},
 		input[0],
 	}}
-	shape := introspectRequest(parsed)
-	if got, want := shape.routingPromptTokens(parsed), estimatePromptTokens(chat); got != want {
+	shape := inreq.IntrospectRequest(parsed)
+	if got, want := shape.RoutingPromptTokens(parsed), inreq.EstimatePromptTokens(chat); got != want {
 		t.Fatalf("routing tokens = %d, want equivalent chat estimate %d", got, want)
 	}
-	if got, want := shape.billingPromptTokens(parsed), estimateBillingPromptTokens(chat); got < want {
+	if got, want := shape.BillingPromptTokens(parsed), inreq.EstimateBillingPromptTokens(chat); got < want {
 		t.Fatalf("billing bound = %d, below equivalent chat bound %d", got, want)
 	}
-	if estimatePromptTokens(parsed) != shape.routingPromptTokens(parsed) ||
-		estimateBillingPromptTokens(parsed) != shape.billingPromptTokens(parsed) {
+	if inreq.EstimatePromptTokens(parsed) != shape.RoutingPromptTokens(parsed) ||
+		inreq.EstimateBillingPromptTokens(parsed) != shape.BillingPromptTokens(parsed) {
 		t.Fatal("standalone estimates disagree with admission introspection")
 	}
-	if shape.requiresVision() {
+	if shape.RequiresVision() {
 		t.Fatal("text instructions must not require vision")
 	}
 }
@@ -36,13 +38,13 @@ func TestUnusedResponsesInstructionsDoNotChangeEstimates(t *testing.T) {
 		`{"messages":[{"role":"user","content":"hello"}],"instructions":"unused"}`,
 		`{"messages":[{"role":"user","content":"hello"}],"input":"hello","instructions":"unused"}`,
 	} {
-		parsed, err := decodeInferenceJSONObject([]byte(body))
+		parsed, err := inreq.DecodeInferenceJSONObject([]byte(body))
 		if err != nil {
 			t.Fatal(err)
 		}
-		got := introspectRequest(parsed)
+		got := inreq.IntrospectRequest(parsed)
 		delete(parsed, "instructions")
-		if want := introspectRequest(parsed); got != want {
+		if want := inreq.IntrospectRequest(parsed); got != want {
 			t.Fatalf("unused instructions changed estimates: got %+v, want %+v", got, want)
 		}
 	}

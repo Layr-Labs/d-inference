@@ -8,10 +8,11 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	memorystore "github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 type lifecycleInventoryStore struct {
-	*store.MemoryStore
+	*memorystore.MemoryStore
 	observed chan store.MachineObservation
 }
 
@@ -24,7 +25,7 @@ func (s *lifecycleInventoryStore) ObserveMachine(ctx context.Context, o store.Ma
 func TestServiceLifetimeRetainsLegacyInventoryAndTerminalCapture(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	st := &lifecycleInventoryStore{MemoryStore: store.NewMemory(store.Config{}), observed: make(chan store.MachineObservation, 2)}
+	st := &lifecycleInventoryStore{MemoryStore: memorystore.NewMemory(store.Config{}), observed: make(chan store.MachineObservation, 2)}
 	s := New(ctx, Config{}, Dependencies{Store: st})
 	p := newSessionProvider("endpoint", "se")
 	if x := s.StartSession(context.Background(), p, &protocol.RegisterMessage{Version: "0.9.4"}, "account"); x != nil {

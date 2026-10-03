@@ -10,6 +10,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/appattest"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	memorystore "github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 func sessionForAuthorization(s *Service, p *registry.Provider, record *appAttestAuthorizationRecord) *Session {
@@ -41,7 +42,7 @@ func TestFreshRevokedCredentialFencesCurrentConnectionBeforeFirstGrant(t *testin
 				e.Revoked = true
 				x.updateServingAuthorization(&record.status, e, appattest.EvaluateAuthorization(e, time.Now()))
 			case "second readiness":
-				s.store = &statusReadinessStore{MemoryStore: store.NewMemory(store.Config{}), state: store.AppAttestReadiness{Revoked: true}}
+				s.store = &statusReadinessStore{MemoryStore: memorystore.NewMemory(store.Config{}), state: store.AppAttestReadiness{Revoked: true}}
 				x.updateServingAuthorization(&record.status, e, appattest.EvaluateAuthorization(e, time.Now()))
 			case "refresh readiness":
 				s.store = &authorizationBatchStore{Store: s.store, state: map[string]store.AppAttestReadiness{e.Binding.Credential: {Revoked: true}}}

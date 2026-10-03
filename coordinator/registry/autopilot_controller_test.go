@@ -13,6 +13,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry/autopilot"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 const (
@@ -23,7 +24,7 @@ const (
 func newAutopilotControllerTest(t *testing.T, observe bool) (*Registry, *modelAutopilotController, time.Time) {
 	t.Helper()
 	reg := New(testLogger())
-	reg.SetStore(store.NewMemory(store.Config{}))
+	reg.SetStore(memory.NewMemory(store.Config{}))
 	reg.SetModelCatalog([]CatalogEntry{{ID: autopilotTestTarget, SizeGB: 8, MinRAMGB: 16}, {ID: autopilotTestDonor, SizeGB: 8, MinRAMGB: 16}})
 	warmCfg := testWarmPoolConfig()
 	warmCfg.MinWarmByModel = map[string]int{autopilotTestTarget: 1}

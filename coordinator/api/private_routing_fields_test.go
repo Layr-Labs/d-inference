@@ -1,6 +1,10 @@
 package api
 
-import "testing"
+import (
+	"testing"
+
+	inreq "github.com/eigeninference/d-inference/coordinator/api/inference/request"
+)
 
 func TestStripProviderRoutingFieldsRemovesPrivateIdentity(t *testing.T) {
 	parsed := map[string]any{
@@ -9,7 +13,7 @@ func TestStripProviderRoutingFieldsRemovesPrivateIdentity(t *testing.T) {
 		"provider_serials": []any{"PRIVATE-SERIAL-B"},
 	}
 
-	if !stripProviderRoutingFields(parsed) {
+	if !inreq.StripProviderRoutingFields(parsed) {
 		t.Fatal("stripProviderRoutingFields returned false")
 	}
 	if _, ok := parsed["provider_serial"]; ok {

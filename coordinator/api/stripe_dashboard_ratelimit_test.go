@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
-
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 const dashboardTestPrivyAppID = "test-privy-app"
@@ -25,7 +25,7 @@ const dashboardTestPrivyAppID = "test-privy-app"
 // given already-seeded user. Seeding matters: GetOrCreateUser only reaches
 // Privy's REST API for a DID it has never seen, and tests must not touch the
 // network.
-func privySession(t *testing.T, srv *Server, st *store.MemoryStore, user *store.User) string {
+func privySession(t *testing.T, srv *Server, st *memory.MemoryStore, user *store.User) string {
 	t.Helper()
 
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

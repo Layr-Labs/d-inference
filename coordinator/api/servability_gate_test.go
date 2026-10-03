@@ -225,7 +225,7 @@ func TestServabilityGate_CalibrationShedsContextOversized(t *testing.T) {
 	}
 	files := []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}
 	if err := st.SetModelVersion(entry, &store.ModelVersion{
-		ModelID: model, Version: "v1", R2Prefix: modelR2Prefix(model, "v1"),
+		ModelID: model, Version: "v1", R2Prefix: testModelPrefix(model, "v1"),
 		AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready",
 	}, files); err != nil {
 		t.Fatalf("SetModelVersion: %v", err)

@@ -13,6 +13,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 	"nhooyr.io/websocket"
 )
 
@@ -21,10 +22,10 @@ import (
 // pricing from the platform price table.
 func TestListModelsOpenRouterFields(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
-	srv.challengeInterval = 500 * time.Millisecond
+	srv.SetChallengeInterval(500 * time.Millisecond)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -50,12 +51,12 @@ func TestListModelsOpenRouterFields(t *testing.T) {
 		Status:           "active",
 		Description:      "Balanced general-purpose model.",
 		Metadata: map[string]any{
-			"deprecation_date":       "2026-12-31",
-			huggingFaceIDMetadataKey: huggingFaceID,
+			"deprecation_date": "2026-12-31",
+			"hugging_face_id":  huggingFaceID,
 		},
 		CreatedAt: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
-	version := &store.ModelVersion{ModelID: modelID, Version: "v1", R2Prefix: modelR2Prefix(modelID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 9_000_000_000, FileCount: 1, Status: "ready"}
+	version := &store.ModelVersion{ModelID: modelID, Version: "v1", R2Prefix: testModelPrefix(modelID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 9_000_000_000, FileCount: 1, Status: "ready"}
 	files := []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}
 	if err := st.SetModelVersion(entry, version, files); err != nil {
 		t.Fatal(err)
@@ -77,7 +78,7 @@ func TestListModelsOpenRouterFields(t *testing.T) {
 
 	// Call the handler directly (bypasses requireAuth, like the existing test).
 	rec := httptest.NewRecorder()
-	srv.handleListModels(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	srv.catalog.HandleListModels(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
 	}

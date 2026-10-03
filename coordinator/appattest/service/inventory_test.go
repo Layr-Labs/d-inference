@@ -11,6 +11,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	memorystore "github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 type captureInventory struct{ observation store.MachineObservation }
@@ -48,7 +49,7 @@ func TestMachineInventoryRequiresSEBoundMDAForSerialAlias(t *testing.T) {
 }
 
 func TestAppAttestEnrollmentRecoveryUsesOriginalTranscriptAndOwner(t *testing.T) {
-	st := store.NewMemory(store.Config{})
+	st := memorystore.NewMemory(store.Config{})
 	now := time.Now()
 	x := &Session{s: &Service{store: st, config: Config{AppID: "TEST.app", Environment: "production"}}, owner: "owner", account: "account", id: "new", challenge: "new challenge", publicKey: "new endpoint", protocolVersion: 3, key: &store.AppAttestShadowKey{KeyID: "key"}}
 	e := store.AppAttestEnrollment{ProtocolVersion: 3, ID: "original", Owner: "owner", KeyID: "key", CreatedAt: now, AppID: "TEST.app", Environment: "production", Challenge: "old challenge", PublicKey: "old endpoint", AccountScope: x.accountScope()}
@@ -76,7 +77,7 @@ func (failedEvidenceArchive) CompleteAppAttestEvidence(context.Context, string, 
 }
 
 func TestAppAttestArchiveFailureDoesNotAdvanceCounter(t *testing.T) {
-	st := store.NewMemory(store.Config{})
+	st := memorystore.NewMemory(store.Config{})
 	key := &store.AppAttestShadowKey{KeyID: "key", Owner: "owner"}
 	_, _ = st.InsertAppAttestShadowKey(context.Background(), *key)
 	p := newSessionProvider("endpoint", "se")

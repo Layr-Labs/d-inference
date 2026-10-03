@@ -1,5 +1,7 @@
 package api
 
+import "github.com/eigeninference/d-inference/coordinator/api/observation"
+
 // End-to-end route test: the coordinator has no client telemetry ingestion.
 // The retired POST /v1/telemetry/events route is gone; a stale client gets a
 // plain not-found without its body being read, reflected or counted.
@@ -52,7 +54,7 @@ func TestTelemetryE2E_NoClientIngestionRoute(t *testing.T) {
 	if metricsResp.StatusCode != http.StatusOK {
 		t.Fatalf("metrics status: %d", metricsResp.StatusCode)
 	}
-	var snap MetricsSnapshot
+	var snap observation.MetricsSnapshot
 	if err := json.NewDecoder(metricsResp.Body).Decode(&snap); err != nil {
 		t.Fatalf("decode metrics: %v", err)
 	}

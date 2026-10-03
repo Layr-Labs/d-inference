@@ -3,7 +3,6 @@ package api
 import (
 	"bytes"
 	"encoding/json"
-	"strings"
 	"testing"
 )
 
@@ -76,38 +75,4 @@ func tsnType(t *testing.T, node map[string]any, what string) string {
 		t.Fatalf("%s type is %T (%v), want string", what, node["type"], node["type"])
 	}
 	return s
-}
-
-// tsnPadBody builds a valid, normalizable tool body of exactly total bytes
-// (a typeless enum-only property that WOULD gain a type if parsed).
-func tsnPadBody(t *testing.T, total int) []byte {
-	t.Helper()
-	const prefix = `{"pad":"`
-	const suffix = `","tools":[{"type":"function","function":{"name":"f","parameters":{"properties":{"u":{"enum":["c","f"]}}}}}]}`
-	pad := total - len(prefix) - len(suffix)
-	if pad < 0 {
-		t.Fatalf("total %d smaller than the fixed body parts", total)
-	}
-	body := prefix + strings.Repeat("a", pad) + suffix
-	if len(body) != total {
-		t.Fatalf("built %d bytes, want %d", len(body), total)
-	}
-	return []byte(body)
-}
-
-// tsnDeepPropertiesBody builds a tool body whose parameters schema is a chain
-// of `levels` nested objects, each {"properties":{"child": <next> }}, ending
-// in an enum-only leaf that WOULD gain a "string" type if it were reached. The
-// chain is built inside-out as raw JSON so the nesting is real (not a Go data
-// structure the test would have to walk by hand). The outermost object is the
-// parameters node itself (processed at depth 0); its first child sits at depth
-// 1, and so on, so the leaf lands at depth `levels`.
-func tsnDeepPropertiesBody(levels int) []byte {
-	// Leaf: an enum-only schema — a recognized schema node with no type, the
-	// canonical case that injectDefaultTypes repairs to "string".
-	node := `{"enum":["x"]}`
-	for i := 0; i < levels; i++ {
-		node = `{"properties":{"child":` + node + `}}`
-	}
-	return []byte(`{"tools":[{"type":"function","function":{"name":"f","parameters":` + node + `}}]}`)
 }

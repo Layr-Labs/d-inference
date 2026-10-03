@@ -15,6 +15,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 	"nhooyr.io/websocket"
 )
 
@@ -239,11 +240,11 @@ func readAttestationChallenge(t *testing.T, ctx context.Context, conn *websocket
 func setupTestServer(t *testing.T) (*Server, *registry.Registry, store.Store, *httptest.Server) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	t.Cleanup(srv.Close)
-	srv.challengeInterval = 200 * time.Millisecond
+	srv.SetChallengeInterval(200 * time.Millisecond)
 	ts := httptest.NewServer(srv.Handler())
 	return srv, reg, st, ts
 }

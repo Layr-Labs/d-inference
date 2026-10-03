@@ -36,10 +36,12 @@ import (
 	"testing"
 	"time"
 
+	inreq "github.com/eigeninference/d-inference/coordinator/api/inference/request"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 	"nhooyr.io/websocket"
 )
 
@@ -156,7 +158,7 @@ func seedBenchModel(tb testing.TB, st store.Store, model string, runtimeParamete
 	}
 	files := []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}
 	if err := st.SetModelVersion(entry, &store.ModelVersion{
-		ModelID: model, Version: "v1", R2Prefix: modelR2Prefix(model, "v1"),
+		ModelID: model, Version: "v1", R2Prefix: testModelPrefix(model, "v1"),
 		AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready",
 	}, files); err != nil {
 		tb.Fatal(err)
@@ -169,10 +171,10 @@ func seedBenchModel(tb testing.TB, st store.Store, model string, runtimeParamete
 // newBenchServer builds a coordinator with the desired/previous builds in the
 // registry store (desired carries catalog runtime defaults so the
 // runtime-defaults rewrite fires) and the alias pointing at them.
-func newBenchServer(tb testing.TB) (*Server, *registry.Registry, *store.MemoryStore) {
+func newBenchServer(tb testing.TB) (*Server, *registry.Registry, *memory.MemoryStore) {
 	tb.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	seedBenchModel(tb, st, benchDesiredBuild, map[string]any{
 		"reasoning_parser": "qwen3",
 		"tool_call_parser": "qwen3_coder",
@@ -180,7 +182,7 @@ func newBenchServer(tb testing.TB) (*Server, *registry.Registry, *store.MemorySt
 	seedBenchModel(tb, st, benchPreviousBuild, nil)
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
-	srv.challengeInterval = time.Hour
+	srv.SetChallengeInterval(time.Hour)
 	srv.SyncModelCatalog()
 	reg.SetModelAliases(map[string]registry.AliasTarget{
 		benchAlias: {Desired: benchDesiredBuild, Previous: benchPreviousBuild},
@@ -192,134 +194,26 @@ func newBenchServer(tb testing.TB) (*Server, *registry.Registry, *store.MemorySt
 // Helper-level benchmark
 // ---------------------------------------------------------------------------
 
-// benchPreprocess mirrors handleChatCompletions from the prelude through the
-// routing-trait derivation: traits for the resolved build (handler, then again
-// in the admission preflight), the resolved build's size verdict, and the
-// alias-fallback build's traits — the probe the preflight issues only when the
-// desired build is saturated, included here so the fallback candidate's cost
-// is always measured.
-func benchPreprocess(b *testing.B, srv *Server, body []byte) {
-	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
-	w := httptest.NewRecorder()
-	prelude, ok := srv.parseInferencePrelude(w, r)
-	if !ok {
-		b.Fatalf("prelude failed: %s", w.Body.String())
-	}
-	fb := &prelude.body
-	parsed := prelude.parsed
-	model := prelude.model
-	runtimeDefaults := newModelRuntimeDefaults(parsed)
-	_, reasoningProvided := parsed["reasoning"]
-
-	if stripProviderRoutingFields(parsed) {
-		fb.markDirty()
-	}
-	if applyMetadataDetailsRequest(r, parsed) {
-		fb.markDirty()
-	}
-	shape := introspectRequest(parsed)
-	hasTools := shape.hasTools
-	validatedPolicy, err := validateParsedToolConstraintPolicy(
-		constraintView(parsed, prelude.originalTools))
-	if err != nil {
-		b.Fatalf("constraint validation: %v", err)
-	}
-	traits := registry.RequestTraits{
-		HasTools:          hasTools,
-		ToolChoiceMode:    string(validatedPolicy.mode),
-		ToolChoiceName:    validatedPolicy.name,
-		ParallelToolCalls: validatedPolicy.parallel,
-	}
-	buildModel, _, rewrote, ok := srv.resolveRequestedBuild(
-		parsed, model, nil, selfRoutePolicy{}, traits)
-	if !ok {
-		b.Fatal("alias did not resolve")
-	}
-	model = buildModel
-	if rewrote {
-		fb.markDirty()
-	}
-	if applyResolvedModelReasoningPolicy(parsed, model, false, reasoningProvided) {
-		fb.markDirty()
-	}
-	maxOutputBound := defaultMaxOutputTokens
-	if rec, err := srv.store.GetModelRegistryRecord(model); err == nil {
-		if runtimeDefaults.apply(parsed, rec.RuntimeParameters) {
-			fb.markDirty()
-		}
-		if rec.MaxOutputLength > 0 {
-			maxOutputBound = rec.MaxOutputLength
-		}
-	}
-	if ensureMaxTokensBound(parsed, false, maxOutputBound) {
-		fb.markDirty()
-	}
-	estimatedPromptTokens := shape.routingPromptTokens(parsed)
-	billingPromptTokens := shape.billingPromptTokens(parsed)
-	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
-	if estimatedPromptTokens <= 0 || billingPromptTokens <= 0 || requestedMaxTokens <= 0 {
-		b.Fatal("estimates must be positive")
-	}
-
-	providerBody, err := fb.current()
-	if err != nil {
-		b.Fatal(err)
-	}
-	bodies := newProviderBodyMemo(func(candidateModel string) ([]byte, error) {
-		return srv.candidateProviderBody(parsed, runtimeDefaults, candidateModel,
-			false, reasoningProvided, false)
-	}, hasTools)
-	bodies.seed(model, providerBody)
-	// handleChatCompletions: routingTraits := routingTraitsForModel(model).
-	bodies.traits(model)
-	// runInferenceAdmission: modelTraits(model) for the capacity probe,
-	// fallbackTraits → traitsForModel(previous), providerBodyErrorForModel(model).
-	bodies.traits(model)
-	bodies.traits(benchPreviousBuild)
-	if err := bodies.sizeError(model); err != nil {
-		b.Fatal(err)
-	}
-	if shape.mediaParts < 0 || len(providerBody) == 0 {
-		b.Fatal("unexpected preprocessing state")
-	}
-}
-
-func BenchmarkChatPreprocessHelpers(b *testing.B) {
-	bodies := benchRequestBodies()
-	srv, _, _ := newBenchServer(b)
-	registerBuildsProvider(srv, "bench-provider", benchDesiredBuild, benchPreviousBuild)
-	for _, name := range benchBodyNames {
-		body := bodies[name]
-		b.Run(name, func(b *testing.B) {
-			b.ReportAllocs()
-			b.SetBytes(int64(len(body)))
-			for i := 0; i < b.N; i++ {
-				benchPreprocess(b, srv, body)
-			}
-		})
-	}
-}
-
 // BenchmarkRequestIntrospection measures the single-value wrappers the generic
 // handler calls individually (they must stay type-level walks, never
 // byte scans) against the fused pass and the billing byte count.
 func BenchmarkRequestIntrospection(b *testing.B) {
 	body := benchRequestBodies()["image_3MB"]
-	parsed, err := decodeInferenceJSONObject(body)
+	parsed, err := inreq.DecodeInferenceJSONObject(body)
 	if err != nil {
 		b.Fatal(err)
 	}
 	for name, fn := range map[string]func(map[string]any) int{
 		"detectMediaRequirement": func(p map[string]any) int {
-			if detectMediaRequirement(p) {
+			if inreq.DetectMediaRequirement(p) {
 				return 1
 			}
 			return 0
 		},
-		"countMediaParts":             countMediaParts,
-		"estimatePromptTokens":        estimatePromptTokens,
-		"estimateBillingPromptTokens": estimateBillingPromptTokens,
-		"introspectRequest":           func(p map[string]any) int { return introspectRequest(p).mediaParts },
+		"countMediaParts":             inreq.CountMediaParts,
+		"estimatePromptTokens":        inreq.EstimatePromptTokens,
+		"estimateBillingPromptTokens": inreq.EstimateBillingPromptTokens,
+		"introspectRequest":           func(p map[string]any) int { return inreq.IntrospectRequest(p).MediaParts },
 	} {
 		b.Run(name, func(b *testing.B) {
 			b.ReportAllocs()

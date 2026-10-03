@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 func TestPublishRevisionRetryAfter503PreservesStoredSource(t *testing.T) {
@@ -19,7 +20,7 @@ func TestPublishRevisionRetryAfter503PreservesStoredSource(t *testing.T) {
 			name = "pinned-hf"
 		}
 		t.Run(name, func(t *testing.T) {
-			backing := &revisionCatalogFailureStore{Store: store.NewMemory(store.Config{})}
+			backing := &revisionCatalogFailureStore{Store: memory.NewMemory(store.Config{})}
 			srv, st, manifest := revisionPublishFixture(t, backing)
 			body := map[string]any{"version": manifest.Version}
 			if original != nil {
@@ -57,7 +58,7 @@ func TestPublishRevisionRetryAfter503PreservesStoredSource(t *testing.T) {
 					t.Fatal(err)
 				}
 				record.ActiveVersion.HuggingFaceArtifact = editedSource
-				if err := st.SetModelVersion(registryEntryFromRecord(record), record.ActiveVersion, record.Files); err != nil {
+				if err := st.SetModelVersion(&record.ModelRegistryEntry, record.ActiveVersion, record.Files); err != nil {
 					t.Fatal(err)
 				}
 				if response := publishRevisionRequest(t, srv, manifest.ModelID, body); response.Code != http.StatusOK {

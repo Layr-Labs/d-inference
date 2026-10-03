@@ -11,12 +11,13 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	memorystore "github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 func TestEnrollmentExpiryCanRecoverWithoutRetryingBindingViolations(t *testing.T) {
 	for _, scenario := range []string{"expired", "wrong owner", "wrong key", "wrong app", "wrong account", "wrong environment", "future"} {
 		t.Run(scenario, func(t *testing.T) {
-			st := store.NewMemory(store.Config{})
+			st := memorystore.NewMemory(store.Config{})
 			x := &Session{s: &Service{store: st, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), config: Config{AppID: "TEST.app", Environment: "production"}}, store: st, provider: &registry.Provider{ID: "connection"}, id: "current", owner: "owner", account: "account", publicKey: "endpoint", challenge: "nonce", expected: "attestation", protocolVersion: 3, key: &store.AppAttestShadowKey{KeyID: "key"}}
 			// The server saved its context before the Apple call. A proof cached
 			// 25 seconds later can still be within the client's 24h TTL while the
@@ -75,7 +76,7 @@ func TestPreV3EnrollmentIsRefusedAndFreshV3EnrollmentStarts(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			st := store.NewMemory(store.Config{})
+			st := memorystore.NewMemory(store.Config{})
 			x := &Session{s: &Service{store: st, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), config: Config{AppID: "TEST.app", Environment: "production"}}, store: st, provider: &registry.Provider{ID: "connection"}, id: "current", owner: "owner", account: "account", publicKey: "endpoint", challenge: "nonce", expected: "attestation", protocolVersion: 3, key: &store.AppAttestShadowKey{KeyID: "key"}}
 			stale := store.AppAttestEnrollment{ProtocolVersion: tc.version, ID: "stale", Owner: x.owner, KeyID: "key", CreatedAt: time.Now().Add(-tc.age), AppID: "TEST.app", Environment: "production", Challenge: "stale nonce", PublicKey: "stale endpoint", AccountScope: x.accountScope()}
 			if err := st.SaveAppAttestEnrollment(ctx, stale); err != nil {

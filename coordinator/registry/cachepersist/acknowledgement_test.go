@@ -9,13 +9,14 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/store"
 	crs "github.com/eigeninference/d-inference/coordinator/store/cacheroutingstate"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 func TestUpsertAcknowledgementKeepsConcurrentMutation(t *testing.T) {
 	for _, invalidate := range []bool{false, true} {
 		t.Run(fmt.Sprintf("invalidate_%v", invalidate), func(t *testing.T) {
 			ctx, now := context.Background(), time.Now()
-			mem := store.NewMemory(store.Config{})
+			mem := memory.NewMemory(store.Config{})
 			hook := &upsertHookStore{Store: mem, passThrough: true}
 			p := New(hook, nil, Options{MaxPending: 10})
 			restoreForTest(t, p, now)
@@ -56,7 +57,7 @@ func TestUpsertAcknowledgementKeepsConcurrentMutation(t *testing.T) {
 
 func TestDeleteAcknowledgementKeepsConcurrentFreshEvidence(t *testing.T) {
 	ctx, now := context.Background(), time.Now()
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	hook := &deleteHookStore{Store: mem, passThrough: true}
 	p := New(hook, nil, Options{MaxPending: 10})
 	restoreForTest(t, p, now)
@@ -98,7 +99,7 @@ func (s *demandHookStore) UpsertCacheDemand(ctx context.Context, rows []crs.Dema
 
 func TestDemandAcknowledgementKeepsConcurrentObservation(t *testing.T) {
 	ctx, now := context.Background(), time.Now()
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	hook := &demandHookStore{Store: mem}
 	p := New(hook, nil, Options{MaxPending: 10})
 	restoreForTest(t, p, now)
@@ -140,7 +141,7 @@ func (s *chunkFailureStore) UpsertCacheHolders(ctx context.Context, rows []crs.H
 
 func TestFailedChunkRetriesOnlyUnacknowledgedRows(t *testing.T) {
 	ctx, now := context.Background(), time.Now()
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	st := &chunkFailureStore{Store: mem}
 	p := New(st, nil, Options{MaxPending: 1000})
 	restoreForTest(t, p, now)
@@ -165,7 +166,7 @@ func TestFailedChunkRetriesOnlyUnacknowledgedRows(t *testing.T) {
 
 func TestInFlightDeletesSurviveRetentionPressure(t *testing.T) {
 	ctx, now := context.Background(), time.Now()
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	hook := &deleteHookStore{Store: mem}
 	p := New(hook, nil, Options{MaxPending: 1500})
 	restoreForTest(t, p, now)

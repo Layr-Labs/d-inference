@@ -17,15 +17,17 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 	"nhooyr.io/websocket"
 )
 
 func TestServiceReasoningPolicyProviderBody(t *testing.T) {
+	const serviceReasoningOptInModel = "qwen3.6-35b-a3b-vl-mtp-mxfp8"
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
-	srv.challengeInterval = 200 * time.Millisecond
+	srv.SetChallengeInterval(200 * time.Millisecond)
 
 	const serviceAccount = "service-reasoning-test"
 	if err := st.CreateUser(&store.User{
@@ -215,6 +217,7 @@ func TestServiceReasoningPolicyProviderBody(t *testing.T) {
 }
 
 func TestServiceReasoningPolicyTracksAliasCapacityFallback(t *testing.T) {
+	const serviceReasoningOptInModel = "qwen3.6-35b-a3b-vl-mtp-mxfp8"
 	tests := []struct {
 		name          string
 		desiredModel  string
@@ -237,10 +240,10 @@ func TestServiceReasoningPolicyTracksAliasCapacityFallback(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-			st := store.NewMemory(store.Config{AdminKey: "test-key"})
+			st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 			reg := registry.New(logger)
 			srv := NewServer(reg, st, ServerConfig{}, logger)
-			srv.challengeInterval = 30 * time.Second
+			srv.SetChallengeInterval(30 * time.Second)
 
 			const serviceAccount = "service-reasoning-fallback"
 			if err := st.CreateUser(&store.User{
@@ -320,49 +323,6 @@ func TestServiceReasoningPolicyTracksAliasCapacityFallback(t *testing.T) {
 				}
 			} else if !exists || string(gotReasoning) != test.wantReasoning {
 				t.Errorf("fallback provider reasoning = %s (exists=%v), want %s", gotReasoning, exists, test.wantReasoning)
-			}
-		})
-	}
-}
-
-func TestApplyResolvedModelReasoningPolicyPreservesExplicitValuesAndUntouchedBytes(t *testing.T) {
-	tests := []struct {
-		name     string
-		body     string
-		model    string
-		service  bool
-		provided bool
-	}{
-		{name: "explicit null", body: `{"model":"qwen","reasoning":null}`, model: serviceReasoningOptInModel, service: true, provided: true},
-		{name: "explicit scalar", body: `{"model":"qwen","reasoning":"malformed"}`, model: serviceReasoningOptInModel, service: true, provided: true},
-		{name: "non-service target", body: `{ "model" : "qwen" }`, model: serviceReasoningOptInModel},
-		{name: "service other model", body: `{ "model" : "other" }`, model: "other", service: true},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			parsed, err := decodeInferenceJSONObject([]byte(test.body))
-			if err != nil {
-				t.Fatal(err)
-			}
-			before, err := marshalForwardBody(parsed)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if applyResolvedModelReasoningPolicy(parsed, test.model, test.service, test.provided) {
-				t.Fatal("policy reported a mutation")
-			}
-			after, err := marshalForwardBody(parsed)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(after) != string(before) {
-				t.Fatalf("parsed changed: got %s, want %s", after, before)
-			}
-			// A no-op policy leaves the forward body clean, so the caller's exact
-			// bytes reach the provider.
-			body := forwardBody{parsed: parsed, bytes: []byte(test.body)}
-			if got, _ := body.current(); string(got) != test.body {
-				t.Fatalf("forward body changed: got %q, want original %q", got, test.body)
 			}
 		})
 	}

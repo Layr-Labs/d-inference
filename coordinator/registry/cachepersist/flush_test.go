@@ -7,10 +7,11 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 func TestFlushRetriesUnwrittenRemainderAndDedupesDemand(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	flaky := &flakyStore{Store: mem, broken: true}
 	p := New(flaky, nil, Options{MaxPending: 1000})
 	now := time.Now()
@@ -45,7 +46,7 @@ func TestFlushRetriesUnwrittenRemainderAndDedupesDemand(t *testing.T) {
 }
 
 func TestFlushWritesInBoundedChunksAndKeepsPartialProgress(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	p := New(mem, nil, Options{MaxPending: 100_000})
 	now := time.Now()
 	restoreForTest(t, p, now)
@@ -69,7 +70,7 @@ func TestFlushWritesInBoundedChunksAndKeepsPartialProgress(t *testing.T) {
 // Nothing is written before Restore has established the key generation:
 // the next boot would treat such rows as foreign and reset them.
 func TestFlushWaitsForRestore(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	ctx := context.Background()
 	now := time.Now()
 	p := New(mem, nil, Options{MaxPending: 10, Fingerprint: "gen-1"})
@@ -108,7 +109,7 @@ func TestFlushWaitsForRestore(t *testing.T) {
 // for a row shared by overlapping sessions must not overwrite the newer
 // evidence already queued for the same (key, epoch).
 func TestMarkHolderUpsertKeepsTheNewerQueuedRecord(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	p := New(mem, nil, Options{MaxPending: 10})
 	now := time.Now()
 	newer := rec("a", "e", now, time.Minute)
@@ -129,7 +130,7 @@ func TestMarkHolderUpsertKeepsTheNewerQueuedRecord(t *testing.T) {
 func TestFailedUpsertKeepsNewestEvidence(t *testing.T) {
 	for _, newerFirst := range []bool{true, false} {
 		t.Run(fmt.Sprintf("newer_first_%v", newerFirst), func(t *testing.T) {
-			mem := store.NewMemory(store.Config{})
+			mem := memory.NewMemory(store.Config{})
 			st := &upsertHookStore{Store: mem}
 			now := time.Now()
 			p := New(st, nil, Options{MaxPending: 10})

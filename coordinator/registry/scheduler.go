@@ -8,6 +8,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/env"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/admission"
 )
 
 const (
@@ -42,8 +43,8 @@ const (
 	// leave headroom for larger models (70B class may be ~2x) without
 	// re-running the gate per architecture. Refine per-model via
 	// catalog metadata once more measurements exist.
-	kvCacheBytesPerToken = 400_000 // ~0.38 MB; covers 7-8B with slack
-	bytesPerGB           = 1 << 30
+	kvCacheBytesPerToken = admission.KVCacheBytesPerToken
+	bytesPerGB           = admission.BytesPerGB
 
 	// effectiveTPSLoadFactor controls how aggressively decode TPS
 	// degrades as a provider takes on more concurrent requests. The
@@ -265,15 +266,6 @@ const (
 	rejectVisionUnsupported
 )
 
-// modelMemoryHeadroomFactor is the FALLBACK multiple of the on-disk weight size
-// used to estimate a model's resident footprint ONLY when the catalog has no
-// authoritative min_ram_gb. Prefer min_ram_gb (see modelFitsHardware): a
-// synthetic multiple of the raw weight does not match what the operator
-// published or what the provider actually loads, and at 2.x it wrongly rejected
-// catalog-qualified nodes (e.g. gpt-oss-20b min_ram_gb=24 vs 12.1*2.x>24, and
-// gemma-4-26b min_ram_gb=36 vs 28*2.x rejecting the whole 64 GB tier).
-const modelMemoryHeadroomFactor = 2.0
-
 // modelFitsHardware reports whether a model can run on a node with the given
 // total unified memory (GB). It prefers the catalog's authoritative min_ram_gb
 // (the operator-published requirement) and only falls back to a heuristic
@@ -282,16 +274,7 @@ const modelMemoryHeadroomFactor = 2.0
 // load time; this gate only filters models that clearly cannot fit per the
 // catalog's own contract.
 func modelFitsHardware(minRAMGb int, modelSizeGB, totalMemoryGB float64) bool {
-	if totalMemoryGB <= 0 {
-		return true
-	}
-	if minRAMGb > 0 {
-		return float64(minRAMGb) <= totalMemoryGB
-	}
-	if modelSizeGB > 0 {
-		return modelSizeGB*modelMemoryHeadroomFactor <= totalMemoryGB
-	}
-	return true
+	return admission.ModelFitsHardware(minRAMGb, modelSizeGB, totalMemoryGB)
 }
 
 // costBreakdown decomposes the routing cost so callers can log or
@@ -1773,7 +1756,7 @@ func heartbeatAgeMs(now, lastHeartbeat time.Time) int32 {
 // (Codex #390). 1.2 mirrors the provider scanner's overhead factor; (1e9/2^30)
 // converts decimal GB → GiB. Conservative: if the scanner's factor ever drops,
 // this stays safe (slightly stricter); it must not be set BELOW the provider's.
-const coldLoadCatalogGBToMemGiB = 1.2 * (1e9 / float64(int64(1)<<30)) // ≈ 1.1176
+const coldLoadCatalogGBToMemGiB = admission.ColdLoadCatalogGBToMemGiB
 
 // backendFreeForLoadGB returns the provider-reported free_for_load_gb (nil-safe).
 // Caller must hold the provider lock when passing p.BackendCapacity.
@@ -1805,62 +1788,21 @@ func reportedFreeForLoadAdmits(catalogSizeGB float64, freeForLoadGB *float64) (a
 // Providers that report a token budget use budget-based admission;
 // legacy providers fall back to memory-based estimation.
 func freeMemoryAdmits(snap *routingSnapshot, reqPromptTokens, reqMaxTokens int) bool {
-	if snap.autopilotBlocked {
-		return false
-	}
-	// Gray-box budget clamp: a capacity-503 proved the provider's live gate
-	// rejects while the heartbeat budget below still advertises headroom
-	// (stale-optimistic). While the clamp holds, the slot is FULL — no
-	// request fits — until the provider proves recovery (fresh heartbeat with
-	// headroom + an accept) or the clamp TTL fail-opens. Checked BEFORE the
-	// budget branch: a clamped budget-reporting pair whose current session
-	// has no budget snapshot yet (reconnect before the first heartbeat) must
-	// reject here, not fall through to the legacy memory path below. See
-	// budget_clamp.go.
-	if snap.budgetClamped {
-		return false
-	}
 	requestTokens := int64(reqPromptTokens) + int64(reqMaxTokens)
-	// Engine V2 keeps reporting a positive KV rate when its live fleet clamp
-	// drives this model's budget to zero. That is authoritative known-full
-	// capacity, not the legacy "budget unavailable" shape (both fields absent).
-	// Bind it before consulting co-resident pooled headroom: another model's
-	// positive budget cannot widen this model-local zero.
-	if knownZeroTokenBudget(snap.activeTokenBudgetMax, snap.kvBytesPerToken) {
+	decision := admission.CheckSlot(admission.SlotBudget{
+		Blocked: snap.autopilotBlocked, Clamped: snap.budgetClamped,
+		Used: snap.activeTokenBudgetUsed, Queued: snap.queuedTokenBudget,
+		Maximum: snap.activeTokenBudgetMax, Potential: snap.maxTokensPotential,
+		Pending: int64(snap.pendingMaxTokens), KVBytesPerToken: snap.kvBytesPerToken,
+	}, requestTokens)
+	if decision == admission.Reject {
 		return false
 	}
-	if snap.activeTokenBudgetMax > 0 {
-		// Include coordinator-side pending tokens not yet reflected in the
-		// provider's heartbeat. Avoid double-counting active/queued backend
-		// budgets that are still present in the coordinator pending set until
-		// completion/cancellation removes them.
-		coordinatorExtra := int64(snap.pendingMaxTokens) - committedTokenBudget(snap)
-		if coordinatorExtra < 0 {
-			coordinatorExtra = 0
-		}
-		if snap.activeTokenBudgetUsed+snap.queuedTokenBudget+coordinatorExtra+requestTokens > snap.activeTokenBudgetMax {
-			return false
-		}
-		// The per-slot max encodes this model's own private re-sliced grant.
-		// The request must also fit the reconstructed whole-box pool with EVERY
-		// model's
-		// coordinator-pending tokens charged — byte-normalized per slot KV rate
-		// when reported, since co-resident models spend the pool at different
-		// bytes/token (see pooled_admission.go). Reduces exactly to the per-slot
-		// check for single-model providers.
+	if decision == admission.Admit {
 		return pooledBudgetAdmits(snap, requestTokens)
 	}
 
-	// Cold-slot pooled gate: this model reports no budget slot (not loaded
-	// here), but when ANY resident slot reports a token budget this request lands
-	// in the same box after load. In-gap pending on a resident model must not be double-spendable
-	// by a cold request that skips the budget branch above. The reconstructed
-	// pool charges all-models coordinator pending plus this request; a cold
-	// model has no reported KV rate (snap.kvBytesPerToken == 0), so on a
-	// byte-reconstructable pool it is priced conservatively in bytes at the
-	// bounded unknown-model default (resolvedPooledKVBytesPerToken),
-	// falling to token units only when the pool is not byte-reconstructable.
-	// No-op for legacy providers with neither budget nor KV-rate reports.
+	// A cold model still spends the same whole-box pool as resident models.
 	if !pooledBudgetAdmits(snap, requestTokens) {
 		return false
 	}
@@ -1871,53 +1813,16 @@ func freeMemoryAdmits(snap *routingSnapshot, reqPromptTokens, reqMaxTokens int) 
 		}
 	}
 
-	if snap.modelSizeGB <= 0 || snap.totalMemoryGB <= 0 {
-		return true
+	memory := admission.Memory{
+		ModelSizeGB: snap.modelSizeGB, TotalGB: snap.totalMemoryGB,
+		ActiveGB: snap.gpuMemoryActiveGB, NativeLoadGB: snap.estimatedOffloadedMemoryGB,
+		ModelLoaded: snap.modelLoaded, AvailableOnDisk: snap.availableOnDisk,
+		TotalPending: snap.totalPending, LoadReported: snap.freeForLoadGB != nil,
 	}
-	required := snap.modelSizeGB
-	if snap.modelLoaded {
-		required = 0
+	if memory.LoadReported {
+		memory.FreeForLoadGB = *snap.freeForLoadGB
 	}
-	tokens := int64(reqPromptTokens) + int64(reqMaxTokens)
-	if tokens < 0 {
-		tokens = 0
-	}
-	const maxTokensForCalc = 16 << 20
-	if tokens > maxTokensForCalc {
-		tokens = maxTokensForCalc
-	}
-	kvCacheGB := float64(tokens*kvCacheBytesPerToken) / float64(bytesPerGB)
-	required += kvCacheGB
-
-	// When the model is available on disk but not currently loaded, the
-	// provider will evict idle models to make room (LRU eviction), so we check
-	// whether the model can be loaded rather than requiring it to fit alongside
-	// existing loaded models. The provider handles the swap autonomously.
-	//
-	// However, if the provider has in-flight requests (totalPending > 0), it
-	// cannot evict the currently-serving model. In that case, fall through to the
-	// standard free-memory check which requires room alongside active models.
-	if snap.availableOnDisk && !snap.modelLoaded && snap.totalPending == 0 {
-		// Preferred: the provider reports freeForLoadGB — the max model WEIGHT it
-		// can load right now, already net of the 90% unified cap, OS/operator
-		// reserve, activation+min-KV headroom, real OS-available memory, and
-		// eviction of idle models. The single source of truth, normalized to the
-		// provider's padded-GiB load basis so it exactly mirrors the provider's own
-		// ModelLoadAdmission gate (no over-admit → OOM, no under-admit on evictable
-		// weights).
-		if admit, reported := reportedFreeForLoadAdmitsWithOffload(snap.modelSizeGB, snap.estimatedOffloadedMemoryGB, snap.freeForLoadGB); reported {
-			return admit
-		}
-		// Fallback for legacy providers that don't report freeForLoadGB: the old
-		// total-memory heuristic (provider evicts idle models, so compare against
-		// total rather than free). Coarser — can't see the unified cap or OS
-		// baseline — but only used until the fleet reports the field.
-		const osReserveGB = 4.0
-		return snap.modelSizeGB+kvCacheGB+osReserveGB <= snap.totalMemoryGB
-	}
-
-	free := snap.totalMemoryGB - snap.gpuMemoryActiveGB
-	return free >= required
+	return admission.MemoryAdmits(memory, requestTokens)
 }
 
 // fillSnapshotPendingAndPool populates snap's reconstructed pooled budget and
@@ -1976,14 +1881,7 @@ func pendingTokenBudget(pr *PendingRequest) int {
 }
 
 func committedTokenBudget(snap *routingSnapshot) int64 {
-	committed := snap.activeTokenBudgetUsed + snap.queuedTokenBudget
-	if snap.maxTokensPotential > committed {
-		committed = snap.maxTokensPotential
-	}
-	if committed < 0 {
-		return 0
-	}
-	return committed
+	return admission.CommittedTokens(snap.activeTokenBudgetUsed, snap.queuedTokenBudget, snap.maxTokensPotential)
 }
 
 // buildCandidateWithReason returns the candidate plus, on rejection,

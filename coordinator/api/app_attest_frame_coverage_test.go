@@ -14,11 +14,12 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 	"nhooyr.io/websocket"
 )
 
 type frameCoverageStore struct {
-	*store.MemoryStore
+	*memory.MemoryStore
 	observed chan store.MachineObservation
 	proofs   atomic.Int32
 }
@@ -38,7 +39,7 @@ func (s *frameCoverageStore) BeginAppAttestEvidence(ctx context.Context, e store
 
 func TestAppAttestOversizedFramesReachInventoryThroughWebSocket(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	st := &frameCoverageStore{MemoryStore: store.NewMemory(store.Config{}), observed: make(chan store.MachineObservation, 16)}
+	st := &frameCoverageStore{MemoryStore: memory.NewMemory(store.Config{}), observed: make(chan store.MachineObservation, 16)}
 	reg := registry.New(logger)
 	s := NewServer(reg, st, ServerConfig{AppAttestShadow: AppAttestShadowConfig{Enabled: true, AppID: "TEST.app", Environment: "production"}}, logger)
 	s.SetSkipChallenge(true)

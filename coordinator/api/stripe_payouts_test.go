@@ -30,15 +30,16 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 // stripePayoutsTestServer wires up a Server with an in-memory store and a
 // billing service whose Stripe Connect client points at the supplied fake
 // Stripe HTTP server. Pass mockMode=true to bypass Stripe entirely.
-func stripePayoutsTestServer(t *testing.T, mockMode bool, fakeStripe *httptest.Server, opts ...billing.Config) (*Server, *store.MemoryStore) {
+func stripePayoutsTestServer(t *testing.T, mockMode bool, fakeStripe *httptest.Server, opts ...billing.Config) (*Server, *memory.MemoryStore) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 
@@ -97,7 +98,7 @@ func healthyAccountJSON(id, country, agreement string, instantEligible bool) str
 }
 
 // seedUser inserts a Privy-linked user into the store and returns it.
-func seedUser(t *testing.T, st *store.MemoryStore, accountID, email string) *store.User {
+func seedUser(t *testing.T, st *memory.MemoryStore, accountID, email string) *store.User {
 	t.Helper()
 	u := &store.User{
 		AccountID:   accountID,
@@ -117,7 +118,7 @@ func TestStripeOnboardRequiresAuth(t *testing.T) {
 	srv, _ := stripePayoutsTestServer(t, true, nil)
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/stripe/onboard", strings.NewReader(`{"country":"US"}`))
 	w := httptest.NewRecorder()
-	srv.handleStripeOnboard(w, req)
+	srv.payouts.HandleStripeOnboard(w, req)
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("got %d, want 401", w.Code)
 	}
@@ -130,7 +131,7 @@ func TestStripeOnboardCreatesAccountAndPersistsID(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/stripe/onboard", strings.NewReader(`{"country":"US"}`))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeOnboard(w, req)
+	srv.payouts.HandleStripeOnboard(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
@@ -182,7 +183,7 @@ func TestStripeOnboardPassesCountryToStripe(t *testing.T) {
 		strings.NewReader(`{"country":"GB"}`))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeOnboard(w, req)
+	srv.payouts.HandleStripeOnboard(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
@@ -203,7 +204,7 @@ func TestStripeOnboardRequiresCountryForNewAccount(t *testing.T) {
 		strings.NewReader(`{}`))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeOnboard(w, req)
+	srv.payouts.HandleStripeOnboard(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("got %d, want 400: %s", w.Code, w.Body.String())
@@ -225,7 +226,7 @@ func TestStripeOnboardReusesExistingAccount(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/stripe/onboard", strings.NewReader(`{"country":"US"}`))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeOnboard(w, req)
+	srv.payouts.HandleStripeOnboard(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
@@ -272,7 +273,7 @@ func TestStripeOnboardCreatesNewAccountWhenCountryChanges(t *testing.T) {
 		strings.NewReader(`{"country":"GB"}`))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeOnboard(w, req)
+	srv.payouts.HandleStripeOnboard(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
@@ -312,7 +313,7 @@ func TestStripeOnboardCreatesNewAccountWhenExistingCountryUnknown(t *testing.T) 
 		strings.NewReader(`{"country":"GB"}`))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeOnboard(w, req)
+	srv.payouts.HandleStripeOnboard(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
@@ -337,7 +338,7 @@ func TestStripeStatusReportsCurrentState(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/v1/billing/stripe/status", nil)
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeStatus(w, req)
+	srv.payouts.HandleStripeStatus(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
@@ -369,7 +370,7 @@ func TestStripeWithdrawRejectsWithoutOnboarding(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeWithdraw(w, req)
+	srv.payouts.HandleStripeWithdraw(w, req)
 
 	if w.Code != http.StatusForbidden {
 		t.Errorf("got %d, want 403", w.Code)
@@ -385,7 +386,7 @@ func TestStripeWithdrawRejectsBelowMinimum(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeWithdraw(w, req)
+	srv.payouts.HandleStripeWithdraw(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("got %d, want 400", w.Code)
@@ -401,7 +402,7 @@ func TestStripeWithdrawRejectsInstantWithoutDebitCard(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeWithdraw(w, req)
+	srv.payouts.HandleStripeWithdraw(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("got %d, want 400: %s", w.Code, w.Body.String())
@@ -423,7 +424,7 @@ func TestStripeWithdrawStandardSuccess(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeWithdraw(w, req)
+	srv.payouts.HandleStripeWithdraw(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
@@ -469,7 +470,7 @@ func TestStripeWithdrawInstantAppliesFee(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeWithdraw(w, req)
+	srv.payouts.HandleStripeWithdraw(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
@@ -503,7 +504,7 @@ func TestStripeWithdrawSmallInstantHitsFloor(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeWithdraw(w, req)
+	srv.payouts.HandleStripeWithdraw(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
@@ -527,7 +528,7 @@ func TestStripeWithdrawInsufficientBalance(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeWithdraw(w, req)
+	srv.payouts.HandleStripeWithdraw(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("got %d, want 400", w.Code)
@@ -568,7 +569,7 @@ func TestStripeWithdrawTransferFailureRefunds(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeWithdraw(w, req)
+	srv.payouts.HandleStripeWithdraw(w, req)
 
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("got %d, want 502: %s", w.Code, w.Body.String())
@@ -592,7 +593,7 @@ func TestStripeWithdrawPersistsRowAsPendingFirst(t *testing.T) {
 	// Stripe that records when CreateTransfer is called and the test then
 	// asserts that the DB had a "pending" row at that moment.
 	var rowSeenAtTransferTime *store.StripeWithdrawal
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 
 	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/v1/accounts/") && r.Method == http.MethodGet {
@@ -636,7 +637,7 @@ func TestStripeWithdrawPersistsRowAsPendingFirst(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeWithdraw(w, req)
+	srv.payouts.HandleStripeWithdraw(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
@@ -684,7 +685,7 @@ func TestStripeWithdrawTransferFailureMarksRowFailedAndRefunded(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeWithdraw(w, req)
+	srv.payouts.HandleStripeWithdraw(w, req)
 
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("got %d, want 502", w.Code)
@@ -736,7 +737,7 @@ func TestStripeWithdrawTransferOkInstantPayoutFailRefundsFeeOnly(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeWithdraw(w, req)
+	srv.payouts.HandleStripeWithdraw(w, req)
 
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("got %d, want 202: %s", w.Code, w.Body.String())
@@ -776,7 +777,7 @@ func TestStripeOnboardRejectsForeignReturnURL(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/stripe/onboard", strings.NewReader(body))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeOnboard(w, req)
+	srv.payouts.HandleStripeOnboard(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("got %d, want 400 on foreign host: %s", w.Code, w.Body.String())
@@ -791,7 +792,7 @@ func TestStripeOnboardAllowsLocalhostForDev(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/stripe/onboard", strings.NewReader(body))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeOnboard(w, req)
+	srv.payouts.HandleStripeOnboard(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d, want 200 for localhost: %s", w.Code, w.Body.String())
@@ -806,7 +807,7 @@ func TestStripeOnboardRejectsJavascriptScheme(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/stripe/onboard", strings.NewReader(body))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeOnboard(w, req)
+	srv.payouts.HandleStripeOnboard(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("got %d, want 400 on non-http scheme", w.Code)
@@ -843,7 +844,7 @@ func TestConnectWebhookAccountUpdatedFlipsStatusToReady(t *testing.T) {
 	}`)
 	req := signedConnectRequest(t, payload, "whsec_test")
 	w := httptest.NewRecorder()
-	srv.handleStripeConnectWebhook(w, req)
+	srv.payouts.HandleStripeConnectWebhook(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
@@ -906,7 +907,7 @@ func TestConnectWebhookPayoutFailedKeepsFundsAndDoesNotRefund(t *testing.T) {
 	}`)
 	req := signedConnectRequest(t, payload, "whsec_test")
 	w := httptest.NewRecorder()
-	srv.handleStripeConnectWebhook(w, req)
+	srv.payouts.HandleStripeConnectWebhook(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
@@ -951,7 +952,7 @@ func TestConnectWebhookPayoutFailedNeverRefundsOnRedelivery(t *testing.T) {
 	for i := range 3 {
 		req := signedConnectRequest(t, payload, "whsec_test")
 		w := httptest.NewRecorder()
-		srv.handleStripeConnectWebhook(w, req)
+		srv.payouts.HandleStripeConnectWebhook(w, req)
 		if w.Code != http.StatusOK {
 			t.Fatalf("delivery %d: got %d", i, w.Code)
 		}
@@ -985,7 +986,7 @@ func TestConnectWebhookLegacyRefundedRowStaysTerminal(t *testing.T) {
 	}`)
 	req := signedConnectRequest(t, payload, "whsec_test")
 	w := httptest.NewRecorder()
-	srv.handleStripeConnectWebhook(w, req)
+	srv.payouts.HandleStripeConnectWebhook(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d", w.Code)
 	}
@@ -1031,7 +1032,7 @@ func TestConnectWebhookSweepPayoutPaidMarksTransferredRows(t *testing.T) {
 	}`)
 	req := signedConnectRequest(t, payload, "whsec_test")
 	w := httptest.NewRecorder()
-	srv.handleStripeConnectWebhook(w, req)
+	srv.payouts.HandleStripeConnectWebhook(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
 	}
@@ -1070,7 +1071,7 @@ func TestConnectWebhookSweepPayoutFailedLeavesRowsAlone(t *testing.T) {
 	}`)
 	req := signedConnectRequest(t, payload, "whsec_test")
 	w := httptest.NewRecorder()
-	srv.handleStripeConnectWebhook(w, req)
+	srv.payouts.HandleStripeConnectWebhook(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d", w.Code)
 	}
@@ -1107,7 +1108,7 @@ func TestConnectWebhookPayoutPaidIsIdempotent(t *testing.T) {
 	for i := range 3 {
 		req := signedConnectRequest(t, payload, "whsec_test")
 		w := httptest.NewRecorder()
-		srv.handleStripeConnectWebhook(w, req)
+		srv.payouts.HandleStripeConnectWebhook(w, req)
 		if w.Code != http.StatusOK {
 			t.Fatalf("delivery %d: got %d", i, w.Code)
 		}
@@ -1130,7 +1131,7 @@ func TestConnectWebhookRejectsBadSignature(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/stripe/connect/webhook", strings.NewReader(string(payload)))
 	req.Header.Set("Stripe-Signature", "t=1,v1=deadbeef")
 	w := httptest.NewRecorder()
-	srv.handleStripeConnectWebhook(w, req)
+	srv.payouts.HandleStripeConnectWebhook(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("got %d, want 400 on bad signature", w.Code)
@@ -1141,7 +1142,7 @@ func TestConnectWebhookRejectsBadSignature(t *testing.T) {
 
 // readyUser seeds a user that has finished Stripe onboarding. instantEligible
 // controls whether the destination is a debit card (true) or bank (false).
-func readyUser(t *testing.T, st *store.MemoryStore, accountID, email string, instantEligible bool) *store.User {
+func readyUser(t *testing.T, st *memory.MemoryStore, accountID, email string, instantEligible bool) *store.User {
 	t.Helper()
 	u := seedUser(t, st, accountID, email)
 	dest := "bank"
@@ -1188,7 +1189,7 @@ func TestStripeWithdrawRejectsExceedingWithdrawableViaDebit(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeWithdraw(w, req)
+	srv.payouts.HandleStripeWithdraw(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("got %d, want 400; body: %s", w.Code, w.Body.String())
@@ -1240,7 +1241,7 @@ func TestStripeWithdrawNoInflationOnFailedPayout(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeWithdraw(w, req)
+	srv.payouts.HandleStripeWithdraw(w, req)
 
 	// Transfer fails → refund should restore original balances exactly.
 	afterBalance := st.GetBalance(user.AccountID)
@@ -1299,7 +1300,7 @@ func TestStripeOnboardRecreatesAccountOnServiceAgreementMismatch(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/stripe/onboard", strings.NewReader(`{}`))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeOnboard(w, req)
+	srv.payouts.HandleStripeOnboard(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
@@ -1361,7 +1362,7 @@ func TestStripeOnboardRecreatesAccountWhenGone(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/stripe/onboard", strings.NewReader(`{}`))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeOnboard(w, req)
+	srv.payouts.HandleStripeOnboard(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
@@ -1408,7 +1409,7 @@ func TestStripeOnboardHealsManualPayoutSchedule(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/stripe/onboard", strings.NewReader(`{"country":"US"}`))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeOnboard(w, req)
+	srv.payouts.HandleStripeOnboard(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
@@ -1450,7 +1451,7 @@ func TestStripeWithdrawAccountGonePreCheckUnlinksWithoutDebit(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeWithdraw(w, req)
+	srv.payouts.HandleStripeWithdraw(w, req)
 
 	if w.Code != http.StatusConflict {
 		t.Fatalf("got %d, want 409: %s", w.Code, w.Body.String())
@@ -1499,7 +1500,7 @@ func TestStripeWithdrawServiceAgreementMismatchPreCheck(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeWithdraw(w, req)
+	srv.payouts.HandleStripeWithdraw(w, req)
 
 	if w.Code != http.StatusConflict {
 		t.Fatalf("got %d, want 409: %s", w.Code, w.Body.String())
@@ -1530,7 +1531,7 @@ func TestStripeDashboardLinkRequiresAuth(t *testing.T) {
 	srv, _ := stripePayoutsTestServer(t, true, nil)
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/stripe/dashboard", nil)
 	w := httptest.NewRecorder()
-	srv.handleStripeDashboardLink(w, req)
+	srv.payouts.HandleStripeDashboardLink(w, req)
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("got %d, want 401", w.Code)
 	}
@@ -1543,58 +1544,13 @@ func TestStripeDashboardLinkRequiresLinkedAccount(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/stripe/dashboard", nil)
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeDashboardLink(w, req)
+	srv.payouts.HandleStripeDashboardLink(w, req)
 
 	if w.Code != http.StatusConflict {
 		t.Fatalf("got %d, want 409: %s", w.Code, w.Body.String())
 	}
 	if got := errorTypeOf(t, w.Body.Bytes()); got != "not_onboarded" {
 		t.Errorf("error type = %q", got)
-	}
-}
-
-// Stripe has no Express Dashboard to log into until the account submits its
-// details, so a half-onboarded account must be told to finish setup rather
-// than handed a raw Stripe error suggesting a retry that can never work.
-// Restricted and rejected accounts DO have a dashboard and must get through.
-func TestStripeDashboardLinkStatusGate(t *testing.T) {
-	cases := []struct {
-		status   string
-		wantCode int
-	}{
-		{"", http.StatusConflict},
-		{stripeStatusPending, http.StatusConflict},
-		{stripeStatusReady, http.StatusOK},
-		{stripeStatusRestricted, http.StatusOK},
-		{stripeStatusRejected, http.StatusOK},
-	}
-	for _, tc := range cases {
-		name := tc.status
-		if name == "" {
-			name = "empty"
-		}
-		t.Run(name, func(t *testing.T) {
-			srv, st := stripePayoutsTestServer(t, true, nil)
-			user := seedUser(t, st, "acct-dash-"+name, name+"@example.com")
-			if err := st.SetUserStripeAccount(user.AccountID, "acct_dash_"+name, tc.status, "US", "bank", "6789", false); err != nil {
-				t.Fatal(err)
-			}
-			user, _ = st.GetUserByAccountID(user.AccountID)
-
-			req := httptest.NewRequest(http.MethodPost, "/v1/billing/stripe/dashboard", nil)
-			req = withPrivyUser(req, user)
-			w := httptest.NewRecorder()
-			srv.handleStripeDashboardLink(w, req)
-
-			if w.Code != tc.wantCode {
-				t.Fatalf("status %q: got %d, want %d: %s", tc.status, w.Code, tc.wantCode, w.Body.String())
-			}
-			if tc.wantCode == http.StatusConflict {
-				if got := errorTypeOf(t, w.Body.Bytes()); got != "not_onboarded" {
-					t.Errorf("error type = %q, want not_onboarded", got)
-				}
-			}
-		})
 	}
 }
 
@@ -1641,7 +1597,7 @@ func TestStripeDashboardLinkReturnsLoginURL(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/stripe/dashboard", nil)
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeDashboardLink(w, req)
+	srv.payouts.HandleStripeDashboardLink(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
@@ -1676,7 +1632,7 @@ func TestStripeDashboardLinkUnlinksGoneAccount(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/stripe/dashboard", nil)
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeDashboardLink(w, req)
+	srv.payouts.HandleStripeDashboardLink(w, req)
 
 	if w.Code != http.StatusConflict {
 		t.Fatalf("got %d, want 409: %s", w.Code, w.Body.String())
@@ -1705,7 +1661,7 @@ func TestStripeDashboardLinkKeepsAccountOnTransientError(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/stripe/dashboard", nil)
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeDashboardLink(w, req)
+	srv.payouts.HandleStripeDashboardLink(w, req)
 
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("got %d, want 502: %s", w.Code, w.Body.String())
@@ -1740,7 +1696,7 @@ func TestStripeUnlinkClearsAccount(t *testing.T) {
 	req := httptest.NewRequest(http.MethodDelete, "/v1/billing/stripe/account", nil)
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeUnlink(w, req)
+	srv.payouts.HandleStripeUnlink(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
@@ -1763,7 +1719,7 @@ func TestStripeUnlinkClearsAccount(t *testing.T) {
 	req2 := httptest.NewRequest(http.MethodDelete, "/v1/billing/stripe/account", nil)
 	req2 = withPrivyUser(req2, refreshed)
 	w2 := httptest.NewRecorder()
-	srv.handleStripeUnlink(w2, req2)
+	srv.payouts.HandleStripeUnlink(w2, req2)
 	if w2.Code != http.StatusOK {
 		t.Fatalf("second unlink got %d", w2.Code)
 	}
@@ -1778,62 +1734,13 @@ func TestStripeUnlinkRequiresAuth(t *testing.T) {
 	srv, _ := stripePayoutsTestServer(t, true, nil)
 	req := httptest.NewRequest(http.MethodDelete, "/v1/billing/stripe/account", nil)
 	w := httptest.NewRecorder()
-	srv.handleStripeUnlink(w, req)
+	srv.payouts.HandleStripeUnlink(w, req)
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("got %d, want 401", w.Code)
 	}
 }
 
 // --- Reconciler ---
-
-// TestStripeReconcilerHealsManualScheduleForStuckWithdrawals pins the
-// background unstick path: withdrawals stuck in "transferred" on an account
-// with the legacy manual payout schedule cause the reconciler to flip the
-// schedule to daily.
-func TestStripeReconcilerHealsManualScheduleForStuckWithdrawals(t *testing.T) {
-	var mu sync.Mutex
-	var scheduleUpdates []string
-
-	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case strings.HasPrefix(r.URL.Path, "/v1/accounts/") && r.Method == http.MethodGet:
-			acct := strings.Replace(healthyAccountJSON("acct_stuck_1", "FR", "full", false),
-				`"interval":"daily"`, `"interval":"manual"`, 1)
-			_, _ = w.Write([]byte(acct))
-		case strings.HasPrefix(r.URL.Path, "/v1/accounts/") && r.Method == http.MethodPost:
-			mu.Lock()
-			scheduleUpdates = append(scheduleUpdates, strings.TrimPrefix(r.URL.Path, "/v1/accounts/"))
-			mu.Unlock()
-			_, _ = w.Write([]byte(healthyAccountJSON("acct_stuck_1", "FR", "full", false)))
-		default:
-			t.Errorf("unexpected Stripe call: %s %s", r.Method, r.URL.Path)
-		}
-	}))
-	defer fakeStripe.Close()
-
-	srv, st := stripePayoutsTestServer(t, false, fakeStripe)
-	user := readyUser(t, st, "acct-stuck-user", "stuck@example.com", false)
-	// Stuck for 3 days — like the €10.57 sitting in a manual-schedule account.
-	seedWithdrawal(t, st, store.StripeWithdrawal{
-		ID: "wd-stuck-1", AccountID: user.AccountID, StripeAccountID: "acct_stuck_1",
-		TransferID: "tr_stuck_1", AmountMicroUSD: 10_570_000, NetMicroUSD: 10_570_000,
-		Method: "standard", Status: "transferred", CreatedAt: time.Now().Add(-72 * time.Hour),
-	})
-	// A fresh transferred row must NOT trigger reconciliation.
-	seedWithdrawal(t, st, store.StripeWithdrawal{
-		ID: "wd-fresh-1", AccountID: user.AccountID, StripeAccountID: "acct_fresh_ok",
-		TransferID: "tr_fresh_1", AmountMicroUSD: 1_000_000, NetMicroUSD: 1_000_000,
-		Method: "standard", Status: "transferred", CreatedAt: time.Now().Add(-1 * time.Hour),
-	})
-
-	srv.sweepStuckStripeWithdrawals()
-
-	mu.Lock()
-	defer mu.Unlock()
-	if len(scheduleUpdates) != 1 || scheduleUpdates[0] != "acct_stuck_1" {
-		t.Errorf("schedule updates = %v, want [acct_stuck_1]", scheduleUpdates)
-	}
-}
 
 // TestStripeWithdrawAgreementMismatchWithOmittedField pins the REAL Stripe
 // API shape, verified against the live platform: accounts under the full
@@ -1874,7 +1781,7 @@ func TestStripeWithdrawAgreementMismatchWithOmittedField(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeWithdraw(w, req)
+	srv.payouts.HandleStripeWithdraw(w, req)
 
 	if w.Code != http.StatusConflict {
 		t.Fatalf("got %d, want 409 (absent service_agreement must normalize to full): %s", w.Code, w.Body.String())

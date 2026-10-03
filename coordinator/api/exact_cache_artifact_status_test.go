@@ -2,12 +2,14 @@ package api
 
 import (
 	"encoding/json"
+	"github.com/eigeninference/d-inference/coordinator/api/observation"
 	"log/slog"
 	"strings"
 	"testing"
 
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 func TestExactCacheArtifactStatusPreservesEmptyWithoutExposingIdentities(t *testing.T) {
@@ -31,7 +33,7 @@ func TestExactCacheArtifactStatusPreservesEmptyWithoutExposingIdentities(t *test
 			if err := reg.ConfigureCacheRouting(cfg); err != nil {
 				t.Fatal(err)
 			}
-			srv := NewServer(reg, store.NewMemory(store.Config{}), ServerConfig{}, logger)
+			srv := NewServer(reg, memory.NewMemory(store.Config{}), ServerConfig{}, logger)
 			status := srv.ExactCacheStatusSnapshot()
 			if status.ArtifactAllowlist.Configured != tc.configured || status.ArtifactAllowlist.Count != len(tc.artifacts) {
 				t.Fatalf("artifact status=%+v", status.ArtifactAllowlist)
@@ -45,8 +47,8 @@ func TestExactCacheArtifactStatusPreservesEmptyWithoutExposingIdentities(t *test
 					t.Fatalf("status exposed %q", sensitive)
 				}
 			}
-			gauges := srv.metrics.Snapshot().Gauges
-			if gauges["exact_cache_artifact_allowlist_configured"] != boolGauge(tc.configured) ||
+			gauges := srv.observation.Metrics().Snapshot().Gauges
+			if gauges["exact_cache_artifact_allowlist_configured"] != observation.BoolGauge(tc.configured) ||
 				gauges["exact_cache_artifact_allowlist_count"] != float64(len(tc.artifacts)) {
 				t.Fatalf("artifact gauges=%v", gauges)
 			}

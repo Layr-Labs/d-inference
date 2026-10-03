@@ -17,13 +17,14 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	memorystore "github.com/eigeninference/d-inference/coordinator/store/memory"
 	"github.com/fxamacker/cbor/v2"
 )
 
 func TestShadowProofsNeverMutateLegacyTrust(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	st := store.NewMemory(store.Config{})
+	st := memorystore.NewMemory(store.Config{})
 	p := newSessionProvider(base64.StdEncoding.EncodeToString(make([]byte, 32)), "se")
 	p.Status, p.TrustLevel, p.CodeAttested, p.RuntimeVerified = registry.StatusOnline, registry.TrustHardware, true, true
 	s := &Service{store: st, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), config: Config{Enabled: true, AppID: "TEST.app", Environment: "production"}}

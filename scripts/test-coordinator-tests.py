@@ -44,6 +44,16 @@ class CoordinatorRunnerTests(unittest.TestCase):
             self.assertEqual(shards, partition(list(reversed(names)), workers))
         self.assertEqual(partition(["TestNew"], 4), [["TestNew"]])
 
+    def test_uninstrumented_numeric_gate_follows_its_test_owner(self):
+        name = "TestConstrainedExactNonnegativeIntBoundsAdversarialLiterals"
+        package = "coordinator/api/inference/request"
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        command = f"go test -race=false -cover=false ./{package} -run '^{name}$' -count=1"
+        self.assertTrue(command in workflow, "CI must run the numeric gate in its owning request package")
+        declarations = sum(f"func {name}(" in path.read_text()
+                           for path in (ROOT / package).glob("*_test.go"))
+        self.assertEqual(declarations, 1, "the CI selector must execute exactly one existing test")
+
     def test_empty_duplicate_and_invalid_partition_fail(self):
         for names, count in (([], 4), (["TestA", "TestA"], 4), (["TestA"], 0)):
             with self.assertRaises(ValueError):
@@ -120,6 +130,9 @@ class CoordinatorRunnerTests(unittest.TestCase):
     def test_selected_packages_flags_and_profiles_survive_sharding(self):
         store = API.rsplit("/", 1)[0] + "/store"
         nested = REGISTRY + "/routingsim"
+        contracts = API + "/tests/operations"
+        testkit = API + "/tests/internal/testkit"
+        selected_packages = [API, REGISTRY, store, nested, contracts, testkit]
         for race, jobs in ((True, 4), (True, 1), (False, 4)):
             with self.subTest(race=race, jobs=jobs):
                 output = self.root / f"{race}-{jobs}"
@@ -131,7 +144,7 @@ class CoordinatorRunnerTests(unittest.TestCase):
 
                 def checked(command, cwd, processes, env=None):
                     if command[:2] == ["go", "list"]:
-                        return "\n".join([API, REGISTRY, store, nested, API])
+                        return "\n".join([*selected_packages, API])
                     if command[:3] == ["go", "test", "-c"]:
                         self.assertTrue(aggregate_started.wait(5), "aggregate must start before compilation")
                         builds.append(command)
@@ -156,9 +169,11 @@ class CoordinatorRunnerTests(unittest.TestCase):
                 for command in builds:
                     self.assertEqual("-race" in command, race)
                     self.assertIn("-covermode=atomic", command)
+                    self.assertIn("-coverpkg=" + ",".join([API, REGISTRY, store, nested]), command)
                 aggregate = next(task for task in tasks if task[0] == "packages")
-                self.assertEqual(aggregate[3], [package for package in [API, REGISTRY, store, nested]
-                                                if package not in sharded])
+                self.assertIn("-coverpkg=" + ",".join([API, REGISTRY, store, nested]), aggregate[1])
+                self.assertEqual(aggregate[3], [package for package in selected_packages
+                                                 if package not in sharded])
                 for package in sharded:
                     selected = [task for task in tasks if task[3] == [package]]
                     self.assertEqual(len(selected), 1 if jobs == 1 else 3)
@@ -170,6 +185,34 @@ class CoordinatorRunnerTests(unittest.TestCase):
                 for label, command, expected, _ in tasks:
                     flag = "-test.coverprofile=" if expected else "-coverprofile="
                     self.assertIn(flag + str(output / f"{label}.cover"), command)
+
+    def test_contract_only_selection_instruments_owners_without_running_them(self):
+        contract = API + "/tests/operations"
+        testkit = API + "/tests/internal/testkit"
+        httpx = API + "/httpx"
+        args = SimpleNamespace(packages=[contract], race=True, jobs=1,
+                               coverprofile=str(self.root / "merged.cover"))
+        lists = []
+
+        def checked(command, cwd, processes, env=None):
+            lists.append(command)
+            if command == ["go", "list", contract]:
+                return contract
+            self.assertEqual(command, ["go", "list", API + "/..."])
+            return "\n".join([API, httpx, contract, testkit])
+
+        def task(label, command, cwd, output, expected, processes, packages):
+            self.assertEqual(label, "packages")
+            self.assertEqual(packages, [contract])
+            self.assertEqual(command[-1], contract)
+            self.assertIn(f"-coverpkg={API},{httpx}", command)
+            return {"task": label, "seconds": 0, "passed": True}
+
+        with unittest.mock.patch("coordinator_tests.runner.checked_output", side_effect=checked), \
+                unittest.mock.patch("coordinator_tests.runner.run_task", side_effect=task), \
+                unittest.mock.patch("coordinator_tests.runner.merge_coverage"):
+            self.assertEqual(run(args, self.root, Processes()), 0)
+        self.assertEqual(len(lists), 2)
 
     def test_preparation_failure_cancels_running_aggregate(self):
         started = threading.Event()

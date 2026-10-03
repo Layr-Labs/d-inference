@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
+	postgresstore "github.com/eigeninference/d-inference/coordinator/store/postgres"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -140,7 +141,7 @@ func applyRefund(ctx context.Context, pool *pgxpool.Pool, o options, out io.Writ
 	if err != nil || r.RowsAffected() != 1 {
 		return errors.New("withdrawal changed; rerun audit before applying")
 	}
-	applied, err := store.StripeSettlementForMaintenance(pool).RefundRejectedStripeWithdrawal(o.refundID)
+	applied, err := postgresstore.StripeSettlementForMaintenance(pool).RefundRejectedStripeWithdrawal(o.refundID)
 	if err != nil {
 		return errors.New("refund not confirmed; durable verified rejection retained for retry")
 	}

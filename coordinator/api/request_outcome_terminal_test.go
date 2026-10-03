@@ -9,9 +9,13 @@ import (
 	"strings"
 	"testing"
 
+	infer "github.com/eigeninference/d-inference/coordinator/api/inference"
+	inresp "github.com/eigeninference/d-inference/coordinator/api/inference/response"
+	"github.com/eigeninference/d-inference/coordinator/api/observation"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 type terminalOutcomeWriter struct {
@@ -44,17 +48,18 @@ func (w *terminalOutcomeWriter) Write(p []byte) (int, error) {
 
 // Synchronous fixtures can close the sink after their handler and attempt
 // finalizers return, draining all revisions without waiting for a periodic flush.
-func terminalOutcomeServer(t *testing.T) (*Server, *store.MemoryStore) {
+func terminalOutcomeServer(t *testing.T) (*Server, *memory.MemoryStore) {
 	t.Helper()
-	st := store.NewMemory(store.Config{})
-	srv := &Server{store: st, logger: quietLogger()}
-	srv.requestOutcomes = newRequestOutcomeSink(srv, 16)
-	t.Cleanup(srv.requestOutcomes.close)
+	st := memory.NewMemory(store.Config{})
+	t.Setenv(envProfiler, "off")
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
+	t.Cleanup(srv.Close)
 	return srv, st
 }
 
 func terminalOutcomePending(srv *Server, r *http.Request, provider string) *registry.PendingRequest {
-	rp := srv.newRequestProfile(r, "m", "m", true)
+	rp := srv.observation.NewRequestProfile(r, "m", "m", true)
 	ap := rp.NewAttempt("terminal-attempt", 0, "")
 	ap.Winning.Store(true)
 	status := "success"
@@ -69,11 +74,11 @@ func emitOutcomeTerminalError(endpoint string, w http.ResponseWriter, pr *regist
 	flusher := w.(http.Flusher)
 	switch endpoint {
 	case "/v1/chat/completions":
-		(&Server{}).writeChatStreamTerminalError(w, flusher, pr, "provider_error", "failed")
+		inresp.WriteChatStreamTerminalError(w, flusher, pr, "provider_error", "failed")
 	case "/v1/responses":
-		newResponsesStreamEmitter(w, flusher, pr, "response-id", 1).emitError("provider_error", "failed")
+		inresp.NewResponsesStreamEmitter(w, flusher, pr, "response-id", 1).EmitError("provider_error", "failed")
 	default:
-		newGenericEndpointStreamEmitter(w, flusher, pr).emitError("provider_error", "failed")
+		inresp.NewGenericEndpointStreamEmitter(w, flusher, pr).EmitError("provider_error", "failed")
 	}
 }
 
@@ -100,12 +105,12 @@ func TestRequestOutcomeStreamTerminalRequiresAcceptedWrite(t *testing.T) {
 							srv.SetCoordinatorKey(coord)
 							encrypted, _, _ := sealRequest(t, []byte(`{"model":"m"}`), coord.PublicKey, coord.KID)
 							req = httptest.NewRequest("POST", endpoint, bytes.NewReader(encrypted))
-							req.Header.Set("Content-Type", SealedContentType)
-							handler = srv.sealedTransport(handler)
+							req.Header.Set("Content-Type", infer.SealedContentType)
+							handler = srv.inference.SealedTransport(handler)
 						}
 						w := &terminalOutcomeWriter{header: make(http.Header), mode: mode}
-						srv.observeRequestOutcome(handler)(w, req)
-						srv.requestOutcomes.close()
+						srv.observation.ObserveRequestOutcome(handler)(w, req)
+						srv.observation.CloseProfilesAndOutcomes()
 						row := awaitRequestOutcomes(t, st, 1)[0]
 						accepted := mode == "full"
 						wantTerminal := "unknown"
@@ -133,15 +138,15 @@ func TestRequestOutcomeErrorTerminalPreservesEarlierWriteFailure(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			srv, st := terminalOutcomeServer(t)
 			w := &terminalOutcomeWriter{header: make(http.Header), mode: mode, failAt: 1}
-			srv.observeRequestOutcome(func(w http.ResponseWriter, r *http.Request) {
+			srv.observation.ObserveRequestOutcome(func(w http.ResponseWriter, r *http.Request) {
 				pr := terminalOutcomePending(srv, r, "error")
 				defer pr.Profile.CompleteHandler()
 				defer pr.Profile.CompleteTerminal()
 				pr.MetadataDetails = true
-				snapshotChatCompletionMetadata(pr, committedProviderInfo{ProviderID: "provider-id"})
+				inresp.SnapshotChatCompletionMetadata(pr, inresp.CommittedProviderInfo{ProviderID: "provider-id"})
 				emitOutcomeTerminalError(r.URL.Path, w, pr)
 			})(w, httptest.NewRequest("POST", "/v1/chat/completions", nil))
-			srv.requestOutcomes.close()
+			srv.observation.CloseProfilesAndOutcomes()
 			row := awaitRequestOutcomes(t, st, 1)[0]
 			if w.writes != 2 || row.ResponseTerminal != "error" || !row.ClientWriteError || row.EgressCompleted || row.ContentWriteCompleted || row.Termination != "interrupted_response" {
 				t.Fatalf("accepted error erased preceding failed metadata write: %+v", row)
@@ -157,31 +162,31 @@ func TestRequestOutcomeNativeResponseTerminalConflicts(t *testing.T) {
 				t.Run(fmt.Sprintf("%s/%s/preamble=%t", strings.Join(order, "_"), grouping, preamble), func(t *testing.T) {
 					srv, st := terminalOutcomeServer(t)
 					w := httptest.NewRecorder()
-					srv.observeRequestOutcome(func(w http.ResponseWriter, r *http.Request) {
+					srv.observation.ObserveRequestOutcome(func(w http.ResponseWriter, r *http.Request) {
 						pr := terminalOutcomePending(srv, r, "completed")
 						defer pr.Profile.CompleteHandler()
 						defer pr.Profile.CompleteTerminal()
-						relay := newChatStreamRelay(pr, w, w.(http.Flusher), newRelayStamps(pr.Profile.Parent()))
+						relay := inresp.NewChatStreamRelay(pr, w, w.(http.Flusher), observation.NewRelayStamps(pr.Profile.Parent()))
 						if preamble {
-							relay.handleChunk(`data: {"type":"response.created"}`)
+							relay.HandleChunk(`data: {"type":"response.created"}`)
 						}
 						var frames []string
 						for _, status := range order {
 							frames = append(frames, fmt.Sprintf("event: response.%s\ndata: {\"type\":\"response.%s\",\"response\":{\"status\":\"%s\"}}", status, status, status))
 						}
 						if grouping == "single_frame_group" {
-							relay.handleChunk(strings.Join(frames, "\n\n"))
+							relay.HandleChunk(strings.Join(frames, "\n\n"))
 						} else {
 							for _, frame := range frames {
-								relay.handleChunk(frame)
+								relay.HandleChunk(frame)
 								if grouping == "separate_flushes" {
-									relay.flush()
+									relay.Flush()
 								}
 							}
 						}
-						relay.flush()
+						relay.Flush()
 					})(w, httptest.NewRequest("POST", "/v1/chat/completions", nil))
-					srv.requestOutcomes.close()
+					srv.observation.CloseProfilesAndOutcomes()
 					row := awaitRequestOutcomes(t, st, 1)[0]
 					conflict := order[0] != order[1]
 					first := order[0]
@@ -215,14 +220,14 @@ func TestRequestOutcomeUnknownBodiesDoNotConfirmCompletion(t *testing.T) {
 	} {
 		t.Run(body, func(t *testing.T) {
 			srv, st := terminalOutcomeServer(t)
-			srv.observeRequestOutcome(func(w http.ResponseWriter, r *http.Request) {
+			srv.observation.ObserveRequestOutcome(func(w http.ResponseWriter, r *http.Request) {
 				pr := terminalOutcomePending(srv, r, "completed")
 				defer pr.Profile.CompleteHandler()
 				defer pr.Profile.CompleteTerminal()
 				w.Header().Set("Content-Type", "application/json")
 				w.Write([]byte(body))
 			})(httptest.NewRecorder(), httptest.NewRequest("POST", "/v1/chat/completions", nil))
-			srv.requestOutcomes.close()
+			srv.observation.CloseProfilesAndOutcomes()
 			row := awaitRequestOutcomes(t, st, 1)[0]
 			if row.ResponseTerminal != "unknown" || row.EgressCompleted || row.Termination != "unknown" {
 				t.Fatalf("unknown body confirmed completion: %+v", row)
@@ -236,16 +241,16 @@ func TestRequestOutcomeTerminalAndContentSurviveLaterFailedWrite(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			srv, st := terminalOutcomeServer(t)
 			w := &terminalOutcomeWriter{header: make(http.Header), mode: mode, failAt: 2}
-			srv.observeRequestOutcome(func(w http.ResponseWriter, r *http.Request) {
+			srv.observation.ObserveRequestOutcome(func(w http.ResponseWriter, r *http.Request) {
 				pr := terminalOutcomePending(srv, r, "completed")
 				defer pr.Profile.CompleteHandler()
 				defer pr.Profile.CompleteTerminal()
-				relay := newChatStreamRelay(pr, w, w.(http.Flusher), newRelayStamps(pr.Profile.Parent()))
-				relay.handleChunk("data: {\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}")
-				relay.flush()
+				relay := inresp.NewChatStreamRelay(pr, w, w.(http.Flusher), observation.NewRelayStamps(pr.Profile.Parent()))
+				relay.HandleChunk("data: {\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}")
+				relay.Flush()
 				emitOutcomeTerminalError(r.URL.Path, w, pr)
 			})(w, httptest.NewRequest("POST", "/v1/chat/completions", nil))
-			srv.requestOutcomes.close()
+			srv.observation.CloseProfilesAndOutcomes()
 			row := awaitRequestOutcomes(t, st, 1)[0]
 			if row.ResponseTerminal != "completed" || !row.ContentWriteCompleted || !row.ClientWriteError || row.EgressCompleted || row.EvidenceConflict || row.Termination != "interrupted_response" {
 				t.Fatalf("failed later terminal changed earlier accepted evidence: %+v", row)
@@ -269,9 +274,9 @@ func TestRequestOutcomeSSETerminalsParseCompleteEventData(t *testing.T) {
 					defer pr.Profile.CompleteHandler()
 					defer pr.Profile.CompleteTerminal()
 					w.Header().Set("Content-Type", "text/event-stream")
-					relay := newChatStreamRelay(pr, w, w.(http.Flusher), newRelayStamps(pr.Profile.Parent()))
-					relay.writeFrame(tc.frame)
-					relay.flush()
+					relay := inresp.NewChatStreamRelay(pr, w, w.(http.Flusher), observation.NewRelayStamps(pr.Profile.Parent()))
+					relay.WriteFrame(tc.frame)
+					relay.Flush()
 				}
 				req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 				if sealed {
@@ -282,11 +287,11 @@ func TestRequestOutcomeSSETerminalsParseCompleteEventData(t *testing.T) {
 					srv.SetCoordinatorKey(coord)
 					encrypted, _, _ := sealRequest(t, []byte(`{"model":"m"}`), coord.PublicKey, coord.KID)
 					req = httptest.NewRequest("POST", req.URL.Path, bytes.NewReader(encrypted))
-					req.Header.Set("Content-Type", SealedContentType)
-					handler = srv.sealedTransport(handler)
+					req.Header.Set("Content-Type", infer.SealedContentType)
+					handler = srv.inference.SealedTransport(handler)
 				}
-				srv.observeRequestOutcome(handler)(httptest.NewRecorder(), req)
-				srv.requestOutcomes.close()
+				srv.observation.ObserveRequestOutcome(handler)(httptest.NewRecorder(), req)
+				srv.observation.CloseProfilesAndOutcomes()
 				row := awaitRequestOutcomes(t, st, 1)[0]
 				if row.ResponseTerminal != tc.want || row.EgressCompleted != (tc.want == "completed") {
 					t.Fatalf("SSE event parsed differently from client: %+v", row)
@@ -298,13 +303,13 @@ func TestRequestOutcomeSSETerminalsParseCompleteEventData(t *testing.T) {
 
 func TestRequestOutcomeFullBodyTerminalConflict(t *testing.T) {
 	srv, st := terminalOutcomeServer(t)
-	srv.observeRequestOutcome(func(w http.ResponseWriter, r *http.Request) {
+	srv.observation.ObserveRequestOutcome(func(w http.ResponseWriter, r *http.Request) {
 		pr := terminalOutcomePending(srv, r, "completed")
 		defer pr.Profile.CompleteHandler()
 		defer pr.Profile.CompleteTerminal()
-		writeNonStreamBody(w, pr.Profile.Parent(), map[string]any{"object": "response", "status": "completed", "error": map[string]any{"code": "server_error"}})
+		observation.WriteNonStreamBody(w, pr.Profile.Parent(), map[string]any{"object": "response", "status": "completed", "error": map[string]any{"code": "server_error"}})
 	})(httptest.NewRecorder(), httptest.NewRequest("POST", "/v1/responses", nil))
-	srv.requestOutcomes.close()
+	srv.observation.CloseProfilesAndOutcomes()
 	row := awaitRequestOutcomes(t, st, 1)[0]
 	if !row.EvidenceConflict || row.ResponseTerminal != "error" || !row.EgressCompleted || row.Termination != "unknown" {
 		t.Fatalf("full body contradiction dropped: %+v", row)
@@ -315,18 +320,18 @@ func TestRequestOutcomeNativeFailureWithoutSnapshotIsNotFulfilled(t *testing.T) 
 	for _, status := range []string{"failed", "incomplete"} {
 		t.Run(status, func(t *testing.T) {
 			srv, st := terminalOutcomeServer(t)
-			srv.observeRequestOutcome(func(w http.ResponseWriter, r *http.Request) {
+			srv.observation.ObserveRequestOutcome(func(w http.ResponseWriter, r *http.Request) {
 				pr := terminalOutcomePending(srv, r, "completed")
 				defer pr.Profile.CompleteHandler()
 				defer pr.Profile.CompleteTerminal()
-				relay := newChatStreamRelay(pr, w, w.(http.Flusher), newRelayStamps(pr.Profile.Parent()))
+				relay := inresp.NewChatStreamRelay(pr, w, w.(http.Flusher), observation.NewRelayStamps(pr.Profile.Parent()))
 				// A legacy failure event must still conflict with a later DONE,
 				// including when both fit in one consumer write.
-				relay.writeFrame(fmt.Sprintf(`data: {"type":"response.%s"}`, status))
-				relay.writeFrame("data: [DONE]")
-				relay.flush()
+				relay.WriteFrame(fmt.Sprintf(`data: {"type":"response.%s"}`, status))
+				relay.WriteFrame("data: [DONE]")
+				relay.Flush()
 			})(httptest.NewRecorder(), httptest.NewRequest("POST", "/v1/chat/completions", nil))
-			srv.requestOutcomes.close()
+			srv.observation.CloseProfilesAndOutcomes()
 			row := awaitRequestOutcomes(t, st, 1)[0]
 			first := status
 			if first == "failed" {

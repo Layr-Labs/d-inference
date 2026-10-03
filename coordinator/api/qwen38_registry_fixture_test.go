@@ -11,10 +11,12 @@ import (
 	"testing"
 	"time"
 
+	inreq "github.com/eigeninference/d-inference/coordinator/api/inference/request"
 	"github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 	"nhooyr.io/websocket"
 )
 
@@ -53,8 +55,8 @@ func qwen38RegistryFixture() *store.ModelRegistryEntry {
 			"chat_template_required": true,
 		},
 		Metadata: map[string]any{
-			huggingFaceIDMetadataKey: qwen38ConcreteModel,
-			"source_revision":        qwen38TargetRev,
+			"hugging_face_id": qwen38ConcreteModel,
+			"source_revision": qwen38TargetRev,
 			// These deterministic values describe this test fixture only. The
 			// production spec-dec payload remains approval-gated and must use
 			// the reviewed R2 manifest/config digests and sizes.
@@ -82,8 +84,8 @@ func TestModelRuntimeDefaults(t *testing.T) {
 
 	t.Run("fills allowlisted parser defaults only", func(t *testing.T) {
 		parsed := map[string]any{"model": qwen38ConcreteModel}
-		defaults := newModelRuntimeDefaults(parsed)
-		if !defaults.apply(parsed, desired) {
+		defaults := inreq.NewModelRuntimeDefaults(parsed)
+		if !defaults.Apply(parsed, desired) {
 			t.Fatal("expected request defaults to change the body")
 		}
 		if parsed["reasoning_parser"] != "qwen3" || parsed["tool_call_parser"] != "qwen3_coder" {
@@ -96,8 +98,8 @@ func TestModelRuntimeDefaults(t *testing.T) {
 
 	t.Run("recomputes same different absent and retry defaults", func(t *testing.T) {
 		parsed := map[string]any{"model": "alias"}
-		defaults := newModelRuntimeDefaults(parsed)
-		if !defaults.apply(parsed, desired) {
+		defaults := inreq.NewModelRuntimeDefaults(parsed)
+		if !defaults.Apply(parsed, desired) {
 			t.Fatal("desired defaults were not injected")
 		}
 
@@ -105,7 +107,7 @@ func TestModelRuntimeDefaults(t *testing.T) {
 			"reasoning_parser": "qwen3",
 			"tool_call_parser": "qwen3_coder",
 		}
-		if defaults.apply(parsed, same) {
+		if defaults.Apply(parsed, same) {
 			t.Fatalf("same defaults unexpectedly changed request: %#v", parsed)
 		}
 
@@ -114,7 +116,7 @@ func TestModelRuntimeDefaults(t *testing.T) {
 			"tool_call_parser": "hermes",
 			"server_only":      "must-not-leak",
 		}
-		if !defaults.apply(parsed, different) {
+		if !defaults.Apply(parsed, different) {
 			t.Fatal("different fallback defaults were not applied")
 		}
 		if parsed["reasoning_parser"] != "deepseek_r1" || parsed["tool_call_parser"] != "hermes" {
@@ -124,7 +126,7 @@ func TestModelRuntimeDefaults(t *testing.T) {
 			t.Fatal("arbitrary runtime parameter leaked into request body")
 		}
 
-		if !defaults.apply(parsed, nil) {
+		if !defaults.Apply(parsed, nil) {
 			t.Fatal("absent fallback defaults did not remove injected values")
 		}
 		if _, exists := parsed["reasoning_parser"]; exists {
@@ -134,7 +136,7 @@ func TestModelRuntimeDefaults(t *testing.T) {
 			t.Fatalf("tool_call_parser survived absent defaults: %#v", parsed)
 		}
 
-		if !defaults.apply(parsed, desired) {
+		if !defaults.Apply(parsed, desired) {
 			t.Fatal("retrying desired build did not recompute defaults")
 		}
 		if parsed["reasoning_parser"] != "qwen3" || parsed["tool_call_parser"] != "qwen3_coder" {
@@ -147,13 +149,13 @@ func TestModelRuntimeDefaults(t *testing.T) {
 			"reasoning_parser": "deepseek_r1",
 			"tool_call_parser": "qwen_xml",
 		}
-		defaults := newModelRuntimeDefaults(parsed)
+		defaults := inreq.NewModelRuntimeDefaults(parsed)
 		for _, runtimeParameters := range []map[string]any{
 			desired,
 			{"reasoning_parser": "other_reasoning", "tool_call_parser": "other_tools"},
 			nil,
 		} {
-			if defaults.apply(parsed, runtimeParameters) {
+			if defaults.Apply(parsed, runtimeParameters) {
 				t.Fatalf("explicit request values changed for %#v", runtimeParameters)
 			}
 		}
@@ -164,8 +166,8 @@ func TestModelRuntimeDefaults(t *testing.T) {
 
 	t.Run("malformed metadata is ignored", func(t *testing.T) {
 		parsed := map[string]any{}
-		defaults := newModelRuntimeDefaults(parsed)
-		if defaults.apply(parsed, map[string]any{
+		defaults := inreq.NewModelRuntimeDefaults(parsed)
+		if defaults.Apply(parsed, map[string]any{
 			"reasoning_parser": 7,
 			"tool_call_parser": "  ",
 		}) {
@@ -180,10 +182,10 @@ func TestModelRuntimeDefaults(t *testing.T) {
 // launch-critical Qwen3.8 field.
 func TestQwen38RegistrySurfaceFixture(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
-	srv.challengeInterval = 500 * time.Millisecond
+	srv.SetChallengeInterval(500 * time.Millisecond)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -194,7 +196,7 @@ func TestQwen38RegistrySurfaceFixture(t *testing.T) {
 	}}
 	if err := st.SetModelVersion(entry, &store.ModelVersion{
 		ModelID: qwen38ConcreteModel, Version: version,
-		R2Prefix:        modelR2Prefix(qwen38ConcreteModel, version),
+		R2Prefix:        testModelPrefix(qwen38ConcreteModel, version),
 		AggregateSHA256: testHash, TotalSizeBytes: 17_000_000_000,
 		FileCount: len(files), Status: "ready",
 	}, files); err != nil {
@@ -328,7 +330,7 @@ func TestQwen38RegistrySurfaceFixture(t *testing.T) {
 
 	t.Run("consumer model alias", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		srv.handleListModels(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+		srv.catalog.HandleListModels(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 		}
@@ -354,7 +356,7 @@ func TestQwen38RegistrySurfaceFixture(t *testing.T) {
 
 	t.Run("OpenRouter feed", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		srv.handleListModelsOpenRouter(rec, httptest.NewRequest(
+		srv.catalog.HandleListModelsOpenRouter(rec, httptest.NewRequest(
 			http.MethodGet, "/v1/models/openrouter", nil))
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
@@ -382,12 +384,14 @@ func TestQwen38RegistrySurfaceFixture(t *testing.T) {
 
 	t.Run("live capacity", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		srv.handleModelsCapacity(rec, httptest.NewRequest(
+		srv.catalog.HandleModelsCapacity(rec, httptest.NewRequest(
 			http.MethodGet, "/v1/models/capacity", nil))
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 		}
-		var response modelsCapacityResponse
+		var response struct {
+			Models []registry.ModelCapacity `json:"models"`
+		}
 		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 			t.Fatal(err)
 		}

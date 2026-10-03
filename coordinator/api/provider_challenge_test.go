@@ -3,29 +3,30 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"github.com/eigeninference/d-inference/coordinator/api/releases"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"nhooyr.io/websocket"
 	"os"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/store"
-	"nhooyr.io/websocket"
 )
 
 // TestChallengeResponseSuccess tests the full challenge-response flow:
 // coordinator sends challenge, provider responds, verification passes.
 func TestChallengeResponseSuccess(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	// Use a very short challenge interval for testing.
-	srv.challengeInterval = 200 * time.Millisecond
+	srv.SetChallengeInterval(200 * time.Millisecond)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -102,10 +103,10 @@ func TestChallengeResponseSuccess(t *testing.T) {
 // the challenge under the registered-buffer RDMA policy.
 func TestChallengeResponseAllowsRDMAEnabled(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
-	srv.challengeInterval = 200 * time.Millisecond
+	srv.SetChallengeInterval(200 * time.Millisecond)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -189,165 +190,12 @@ func TestChallengeResponseAllowsRDMAEnabled(t *testing.T) {
 	}
 }
 
-func TestChallengeResponseRequiresBinaryHashWhenPolicyConfigured(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
-	reg := registry.New(logger)
-	srv := NewServer(reg, st, ServerConfig{}, logger)
-	srv.SetKnownBinaryHashes([]string{knownGoodBinaryHashForTest})
-	srv.SetBinaryHashEnforcement(true) // v0.6.0: binaryHash gating is off by default; exercise the legacy enforcement path
-
-	pubKey := testPublicKeyB64()
-	regMsg := &protocol.RegisterMessage{
-		Type:                    protocol.TypeRegister,
-		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
-		Models:                  []protocol.ModelInfo{{ID: "missing-challenge-binary-hash-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 registry.BackendMLXSwift,
-		PublicKey:               pubKey,
-		EncryptedResponseChunks: true,
-		PrivacyCapabilities:     testPrivacyCaps(),
-		Attestation:             createTestAttestationJSONWithBinaryHash(t, pubKey, knownGoodBinaryHashForTest),
-	}
-	p := reg.Register("provider-1", nil, regMsg)
-	srv.verifyProviderAttestation(context.Background(), "provider-1", p, regMsg)
-	sipEnabled := true
-	secureBootEnabled := true
-	rdmaDisabled := true
-	challengeTimestamp := "2026-04-24T12:00:00Z"
-
-	srv.verifyChallengeResponse("provider-1", p, &pendingChallenge{
-		nonce:     "nonce-1",
-		timestamp: challengeTimestamp,
-	}, withTestStatusSignature("nonce-1", challengeTimestamp, pubKey, &protocol.AttestationResponseMessage{
-		Type:              protocol.TypeAttestationResponse,
-		Nonce:             "nonce-1",
-		Signature:         testChallengeSignature("nonce-1", challengeTimestamp, pubKey),
-		PublicKey:         pubKey,
-		SIPEnabled:        &sipEnabled,
-		SecureBootEnabled: &secureBootEnabled,
-		RDMADisabled:      &rdmaDisabled,
-	}))
-
-	p.Mu().Lock()
-	defer p.Mu().Unlock()
-	if p.Status != registry.StatusUntrusted {
-		t.Fatalf("provider status = %q, want %q", p.Status, registry.StatusUntrusted)
-	}
-	if p.FailedChallenges != 1 {
-		t.Fatalf("failed challenges = %d, want 1", p.FailedChallenges)
-	}
-}
-
-func TestChallengeResponseRejectsHashChangedFromRegistrationAttestation(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
-	reg := registry.New(logger)
-	srv := NewServer(reg, st, ServerConfig{}, logger)
-	otherKnownHash := strings.Repeat("f", 64)
-	srv.SetKnownBinaryHashes([]string{knownGoodBinaryHashForTest, otherKnownHash})
-	srv.SetBinaryHashEnforcement(true) // v0.6.0: exercise the legacy enforcement path
-
-	pubKey := testPublicKeyB64()
-	regMsg := &protocol.RegisterMessage{
-		Type:                    protocol.TypeRegister,
-		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
-		Models:                  []protocol.ModelInfo{{ID: "changed-challenge-binary-hash-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 registry.BackendMLXSwift,
-		PublicKey:               pubKey,
-		EncryptedResponseChunks: true,
-		PrivacyCapabilities:     testPrivacyCaps(),
-		Attestation:             createTestAttestationJSONWithBinaryHash(t, pubKey, knownGoodBinaryHashForTest),
-	}
-	p := reg.Register("provider-1", nil, regMsg)
-	srv.verifyProviderAttestation(context.Background(), "provider-1", p, regMsg)
-	sipEnabled := true
-	secureBootEnabled := true
-	rdmaDisabled := true
-	challengeTimestamp := "2026-04-24T12:00:00Z"
-
-	srv.verifyChallengeResponse("provider-1", p, &pendingChallenge{
-		nonce:     "nonce-1",
-		timestamp: challengeTimestamp,
-	}, withTestStatusSignature("nonce-1", challengeTimestamp, pubKey, &protocol.AttestationResponseMessage{
-		Type:              protocol.TypeAttestationResponse,
-		Nonce:             "nonce-1",
-		Signature:         testChallengeSignature("nonce-1", challengeTimestamp, pubKey),
-		PublicKey:         pubKey,
-		SIPEnabled:        &sipEnabled,
-		SecureBootEnabled: &secureBootEnabled,
-		RDMADisabled:      &rdmaDisabled,
-		BinaryHash:        otherKnownHash,
-	}))
-
-	p.Mu().Lock()
-	defer p.Mu().Unlock()
-	if p.Status != registry.StatusUntrusted {
-		t.Fatalf("provider status = %q, want %q", p.Status, registry.StatusUntrusted)
-	}
-	if p.FailedChallenges != 1 {
-		t.Fatalf("failed challenges = %d, want 1", p.FailedChallenges)
-	}
-}
-
-func TestChallengeResponseAcceptsKnownBinaryHash(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
-	reg := registry.New(logger)
-	srv := NewServer(reg, st, ServerConfig{}, logger)
-	srv.SetKnownBinaryHashes([]string{knownGoodBinaryHashForTest})
-	srv.SetBinaryHashEnforcement(true) // v0.6.0: binaryHash gating is off by default; exercise the legacy enforcement path
-
-	pubKey := testPublicKeyB64()
-	regMsg := &protocol.RegisterMessage{
-		Type:                    protocol.TypeRegister,
-		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
-		Models:                  []protocol.ModelInfo{{ID: "known-challenge-binary-hash-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 registry.BackendMLXSwift,
-		PublicKey:               pubKey,
-		EncryptedResponseChunks: true,
-		PrivacyCapabilities:     testPrivacyCaps(),
-		Attestation:             createTestAttestationJSONWithBinaryHash(t, pubKey, knownGoodBinaryHashForTest),
-	}
-	p := reg.Register("provider-1", nil, regMsg)
-	srv.verifyProviderAttestation(context.Background(), "provider-1", p, regMsg)
-	sipEnabled := true
-	secureBootEnabled := true
-	rdmaDisabled := true
-	challengeTimestamp := "2026-04-24T12:00:00Z"
-
-	srv.verifyChallengeResponse("provider-1", p, &pendingChallenge{
-		nonce:     "nonce-1",
-		timestamp: challengeTimestamp,
-	}, withTestStatusSignature("nonce-1", challengeTimestamp, pubKey, &protocol.AttestationResponseMessage{
-		Type:              protocol.TypeAttestationResponse,
-		Nonce:             "nonce-1",
-		Signature:         testChallengeSignature("nonce-1", challengeTimestamp, pubKey),
-		PublicKey:         pubKey,
-		SIPEnabled:        &sipEnabled,
-		SecureBootEnabled: &secureBootEnabled,
-		RDMADisabled:      &rdmaDisabled,
-		BinaryHash:        knownGoodBinaryHashForTest,
-	}))
-
-	p.Mu().Lock()
-	defer p.Mu().Unlock()
-	if p.Status == registry.StatusUntrusted {
-		t.Fatal("provider should not be marked untrusted with a known binary hash")
-	}
-	if p.FailedChallenges != 0 {
-		t.Fatalf("failed challenges = %d, want 0", p.FailedChallenges)
-	}
-	if p.LastChallengeVerified.IsZero() {
-		t.Fatal("provider should record challenge success with a known binary hash")
-	}
-}
-
 func TestChallengeResponseRejectsMissingSIPStatus(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
-	srv.challengeInterval = 200 * time.Millisecond
+	srv.SetChallengeInterval(200 * time.Millisecond)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -428,61 +276,12 @@ func TestChallengeResponseRejectsMissingSIPStatus(t *testing.T) {
 	}
 }
 
-func TestChallengeResponseRejectsUnsignedBinaryHashWhenPolicyConfigured(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
-	reg := registry.New(logger)
-	srv := NewServer(reg, st, ServerConfig{}, logger)
-	srv.SetKnownBinaryHashes([]string{knownGoodBinaryHashForTest})
-	srv.SetBinaryHashEnforcement(true) // v0.6.0: binaryHash gating is off by default; exercise the legacy enforcement path
-
-	pubKey := testPublicKeyB64()
-	p := reg.Register("provider-1", nil, &protocol.RegisterMessage{
-		Type:                    protocol.TypeRegister,
-		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
-		Models:                  []protocol.ModelInfo{{ID: "unsigned-challenge-binary-hash-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "mlx-swift",
-		PublicKey:               pubKey,
-		EncryptedResponseChunks: true,
-		PrivacyCapabilities:     testPrivacyCaps(),
-	})
-	sipEnabled := true
-	secureBootEnabled := true
-	rdmaDisabled := true
-
-	srv.verifyChallengeResponse("provider-1", p, &pendingChallenge{
-		nonce:     "nonce-1",
-		timestamp: "2026-04-24T12:00:00Z",
-	}, &protocol.AttestationResponseMessage{
-		Type:              protocol.TypeAttestationResponse,
-		Nonce:             "nonce-1",
-		Signature:         "dGVzdHNpZ25hdHVyZQ==",
-		PublicKey:         pubKey,
-		SIPEnabled:        &sipEnabled,
-		SecureBootEnabled: &secureBootEnabled,
-		RDMADisabled:      &rdmaDisabled,
-		BinaryHash:        knownGoodBinaryHashForTest,
-	})
-
-	p.Mu().Lock()
-	defer p.Mu().Unlock()
-	if p.Status != registry.StatusUntrusted {
-		t.Fatalf("provider status = %q, want %q", p.Status, registry.StatusUntrusted)
-	}
-	if p.FailedChallenges != 1 {
-		t.Fatalf("failed challenges = %d, want 1", p.FailedChallenges)
-	}
-	if !p.LastChallengeVerified.IsZero() {
-		t.Fatal("provider should not record challenge success for an unsigned binary hash")
-	}
-}
-
 func TestChallengeResponseMissingSIPClearsExistingRoutingEligibility(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
-	srv.challengeInterval = 200 * time.Millisecond
+	srv.SetChallengeInterval(200 * time.Millisecond)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -596,12 +395,12 @@ func TestChallengeResponseMissingSIPClearsExistingRoutingEligibility(t *testing.
 
 func TestProviderBelowMinVersionStaysHiddenFromModelsAfterChallenge(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
-	srv.challengeInterval = 200 * time.Millisecond
-	srv.minProviderVersion = "0.3.9"
-	srv.SetRuntimeManifest(&RuntimeManifest{})
+	srv.SetChallengeInterval(200 * time.Millisecond)
+	srv.SetMinProviderVersion("0.3.9")
+	srv.SetRuntimeManifest(&releases.RuntimeManifest{})
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -677,10 +476,10 @@ func TestProviderBelowMinVersionStaysHiddenFromModelsAfterChallenge(t *testing.T
 // TestChallengeResponseWrongKey tests that a response with wrong public key fails.
 func TestChallengeResponseWrongKey(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
-	srv.challengeInterval = 200 * time.Millisecond
+	srv.SetChallengeInterval(200 * time.Millisecond)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -757,7 +556,7 @@ func TestChallengeResponseWrongKey(t *testing.T) {
 // is included in inference responses.
 func TestTrustLevelInResponseHeaders(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 
@@ -865,7 +664,7 @@ func TestTrustLevelInResponseHeaders(t *testing.T) {
 // TestTrustLevelInModelsList verifies that /v1/models includes trust_level.
 func TestTrustLevelInModelsList(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 
@@ -927,96 +726,5 @@ func TestTrustLevelInModelsList(t *testing.T) {
 	trustLevel := metadata["trust_level"]
 	if trustLevel != "hardware" {
 		t.Errorf("trust_level = %v, want hardware", trustLevel)
-	}
-}
-
-// Issue #239: hitting the failure threshold via missed-challenge timeouts marks
-// the provider untrusted but *recoverable* (the challenge loop keeps probing it).
-func TestHandleChallengeFailureThresholdTransientIsRecoverable(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
-	reg := registry.New(logger)
-	srv := NewServer(reg, st, ServerConfig{}, logger)
-
-	p := reg.Register("p1", nil, &protocol.RegisterMessage{
-		Type:     protocol.TypeRegister,
-		Hardware: protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
-		Models:   []protocol.ModelInfo{{ID: "test-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:  "mlx-swift",
-	})
-
-	for range registry.MaxFailedChallenges {
-		srv.handleChallengeFailure("p1", "timeout")
-	}
-
-	if p.Status != registry.StatusUntrusted {
-		t.Fatalf("status = %q, want %q after %d timeouts", p.Status, registry.StatusUntrusted, registry.MaxFailedChallenges)
-	}
-	if p.ChallengeShouldStop() {
-		t.Error("ChallengeShouldStop = true, want false (timeout-threshold deroute must be recoverable)")
-	}
-	if reg.OnlineCount() != 0 {
-		t.Errorf("OnlineCount = %d, want 0", reg.OnlineCount())
-	}
-}
-
-// handleChallengeFailure returns the running consecutive-failure count, which
-// drives the force-reconnect escalation in handleTransientChallengeFailure.
-// A provider whose outbound path is wedged heartbeats forever (never evicted)
-// while failing every challenge; the count is what lets the coordinator cycle
-// the connection. handleTransientChallengeFailure must also tolerate a nil conn.
-func TestHandleChallengeFailureReturnsConsecutiveCountAndNilConnSafe(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
-	reg := registry.New(logger)
-	srv := NewServer(reg, st, ServerConfig{}, logger)
-
-	reg.Register("p1", nil, &protocol.RegisterMessage{
-		Type:     protocol.TypeRegister,
-		Hardware: protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
-		Models:   []protocol.ModelInfo{{ID: "test-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:  "mlx-swift",
-	})
-
-	for i := 1; i <= MaxConsecutiveChallengeTimeoutsBeforeReconnect; i++ {
-		got := srv.handleChallengeFailure("p1", "timeout")
-		if got != i {
-			t.Fatalf("handleChallengeFailure call %d returned %d, want %d", i, got, i)
-		}
-	}
-
-	// A nil conn (e.g. provider already torn down) must not panic even though
-	// the count is past the force-reconnect threshold.
-	srv.handleTransientChallengeFailure(nil, "p1", "timeout")
-
-	if got := reg.GetProvider("p1"); got == nil || got.Status != registry.StatusUntrusted {
-		t.Fatalf("provider should be untrusted after repeated timeouts")
-	}
-}
-
-// Issue #239: a non-transient reason at the threshold is a hard deroute — the
-// challenge loop stops and it cannot self-recover.
-func TestHandleChallengeFailureThresholdSecurityIsHard(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
-	reg := registry.New(logger)
-	srv := NewServer(reg, st, ServerConfig{}, logger)
-
-	p := reg.Register("p1", nil, &protocol.RegisterMessage{
-		Type:     protocol.TypeRegister,
-		Hardware: protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
-		Models:   []protocol.ModelInfo{{ID: "test-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:  "mlx-swift",
-	})
-
-	for range registry.MaxFailedChallenges {
-		srv.handleChallengeFailure("p1", "nonce mismatch")
-	}
-
-	if p.Status != registry.StatusUntrusted {
-		t.Fatalf("status = %q, want %q", p.Status, registry.StatusUntrusted)
-	}
-	if !p.ChallengeShouldStop() {
-		t.Error("ChallengeShouldStop = false, want true (security-threshold deroute must be hard)")
 	}
 }

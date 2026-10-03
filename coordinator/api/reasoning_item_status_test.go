@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	inresp "github.com/eigeninference/d-inference/coordinator/api/inference/response"
 	"github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
@@ -26,8 +27,8 @@ func assertReasoningItemFinished(t *testing.T, response types.ResponsesResponse)
 func TestResponsesReasoningItemCompletionStatus(t *testing.T) {
 	for _, finish := range []string{"stop", "length"} {
 		t.Run(finish, func(t *testing.T) {
-			response := buildResponsesResponse("job", "model",
-				extractedMessage{Content: "4", Reasoning: "original reasoning", FinishReason: finish},
+			response := inresp.BuildResponsesResponse("job", "model",
+				inresp.ExtractedMessage{Content: "4", Reasoning: "original reasoning", FinishReason: finish},
 				protocol.UsageInfo{PromptTokens: 10, CompletionTokens: 5}, 32, "signature", "hash")
 			assertReasoningItemFinished(t, response)
 			want := "completed"
@@ -53,7 +54,7 @@ func TestConvertedChatReasoningItemCompletionStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response := chatCompletionToResponses(chat, "model", "signature", "hash")
+	response := inresp.ChatCompletionToResponses(chat, "model", "signature", "hash")
 	assertReasoningItemFinished(t, response)
 	if response.Status != "completed" {
 		t.Fatal("completed root changed")

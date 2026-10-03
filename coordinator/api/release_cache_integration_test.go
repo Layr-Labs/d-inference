@@ -33,7 +33,7 @@ func (s *releaseArtifactSet) handler(w http.ResponseWriter, r *http.Request) {
 func TestReleaseMutationsInvalidateImmediateReadsByPlatform(t *testing.T) {
 	srv, st := testServer(t)
 	srv.SetReleaseKey("release-key")
-	srv.adminKey = "admin-key"
+	srv.SetAdminKey("admin-key")
 
 	artifacts := &releaseArtifactSet{bundles: make(map[string][]byte)}
 	cdn := httptest.NewServer(http.HandlerFunc(artifacts.handler))
@@ -42,7 +42,7 @@ func TestReleaseMutationsInvalidateImmediateReadsByPlatform(t *testing.T) {
 	apiServer := httptest.NewServer(srv.Handler())
 	defer apiServer.Close()
 
-	setReleaseForCacheTest(t, st, "1.0.0", defaultReleasePlatform, "old")
+	setReleaseForCacheTest(t, st, "1.0.0", "macos-arm64", "old")
 	setReleaseForCacheTest(t, st, "0.9.0", "linux-amd64", "linux")
 	assertReleaseVersion(t, apiServer.URL+"/v1/releases/latest?platform=macos-arm64", "1.0.0")
 	linuxBefore := getReleaseBody(t, apiServer.URL+"/v1/releases/latest?platform=linux-amd64", http.StatusOK)
@@ -64,15 +64,15 @@ func TestReleaseMutationsInvalidateImmediateReadsByPlatform(t *testing.T) {
 		t.Fatalf("replacement was hidden by latest-release cache: %s", latest)
 	}
 
-	deactivateReleaseForCacheTest(t, apiServer.URL, "1.1.0", defaultReleasePlatform)
+	deactivateReleaseForCacheTest(t, apiServer.URL, "1.1.0", "macos-arm64")
 	assertReleaseVersion(t, apiServer.URL+"/v1/releases/latest?platform=macos-arm64", "1.0.0")
 	assertVersionEndpoint(t, apiServer.URL, "1.0.0")
 
 	registerReleaseForCacheTest(t, apiServer.URL, cdn.URL, artifacts, "1.1.0", "reactivated")
 	assertReleaseVersion(t, apiServer.URL+"/v1/releases/latest?platform=macos-arm64", "1.1.0")
 
-	deactivateReleaseForCacheTest(t, apiServer.URL, "1.1.0", defaultReleasePlatform)
-	deactivateReleaseForCacheTest(t, apiServer.URL, "1.0.0", defaultReleasePlatform)
+	deactivateReleaseForCacheTest(t, apiServer.URL, "1.1.0", "macos-arm64")
+	deactivateReleaseForCacheTest(t, apiServer.URL, "1.0.0", "macos-arm64")
 	_ = getReleaseBody(t, apiServer.URL+"/v1/releases/latest?platform=macos-arm64", http.StatusNotFound)
 }
 
@@ -102,7 +102,7 @@ func registerReleaseForCacheTest(
 	artifacts.bundles[path] = bundle
 	artifacts.mu.Unlock()
 	payload := map[string]string{
-		"version": version, "platform": defaultReleasePlatform, "backend": "mlx-swift",
+		"version": version, "platform": "macos-arm64", "backend": "mlx-swift",
 		"binary_hash": binaryHash, "bundle_hash": bundleHash,
 		"metallib_hash": strings.Repeat("f", 64), "url": cdnURL + path,
 		"changelog": changelog,

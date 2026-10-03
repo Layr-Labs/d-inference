@@ -20,10 +20,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/readcache"
 	"github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 	"nhooyr.io/websocket"
 )
 
@@ -47,21 +49,21 @@ func (c *catalogReadCountingStore) ListActiveModelRegistryWithError() ([]store.M
 
 func (c *catalogReadCountingStore) reads() int64 { return c.aliases.Load() + c.registry.Load() }
 
-// expireAllForTest backdates every entry so the next lookup misses —
-// deterministic TTL expiry without sleeping.
-func (c *ttlCache) expireAllForTest() {
-	c.mu.Lock()
-	for k, e := range c.data {
-		e.expiresAt = time.Now().Add(-time.Second)
-		c.data[k] = e
+// Expire through the public cache API; private expiry storage stays with its owner.
+func expireCacheForTest(c *readcache.Cache, keys ...string) {
+	for _, key := range keys {
+		if body, ok := c.Get(key); ok {
+			c.Set(key, body, -time.Second)
+		} else if value, ok := c.GetValue(key); ok {
+			c.SetValue(key, value, -time.Second)
+		}
 	}
-	c.mu.Unlock()
 }
 
 type cachedEndpointHarness struct {
 	srv *Server
 	reg *registry.Registry
-	mem *store.MemoryStore
+	mem *memory.MemoryStore
 	st  *catalogReadCountingStore
 	ts  *httptest.Server
 }
@@ -69,11 +71,11 @@ type cachedEndpointHarness struct {
 func newCachedEndpointHarness(t *testing.T) *cachedEndpointHarness {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mem := store.NewMemory(store.Config{AdminKey: "test-key"})
+	mem := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	st := &catalogReadCountingStore{Store: mem}
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
-	srv.challengeInterval = 500 * time.Millisecond
+	srv.SetChallengeInterval(500 * time.Millisecond)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return &cachedEndpointHarness{srv: srv, reg: reg, mem: mem, st: st, ts: ts}
@@ -95,7 +97,7 @@ func (h *cachedEndpointHarness) seedCatalogModel(t *testing.T, modelID string) {
 		Status:           "active",
 		CreatedAt:        time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
-	version := &store.ModelVersion{ModelID: modelID, Version: "v1", R2Prefix: modelR2Prefix(modelID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready"}
+	version := &store.ModelVersion{ModelID: modelID, Version: "v1", R2Prefix: testModelPrefix(modelID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready"}
 	files := []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}
 	if err := h.mem.SetModelVersion(entry, version, files); err != nil {
 		t.Fatal(err)
@@ -208,7 +210,7 @@ func TestModelsListCache_RepeatHitThenExpiry(t *testing.T) {
 		t.Fatalf("list changed inside the TTL; expected the cached body")
 	}
 
-	h.srv.readCache.expireAllForTest()
+	expireCacheForTest(h.srv.readCache, "models:entries:v1:include_builds=false", "models:list:v1:include_builds=false")
 	status, fresh := h.get(t, ctx, "/v1/models", "test-key")
 	mustOK(t, status, fresh)
 	if ids := modelIDs(t, fresh); !containsID(ids, modelA) || !containsID(ids, modelB) {
@@ -263,7 +265,8 @@ func TestModelsGetCache_SharesMemoizedEntries(t *testing.T) {
 		t.Fatalf("404 path re-read the catalog (reads %d -> %d)", reads, h.st.reads())
 	}
 
-	h.srv.readCache.expireAllForTest()
+	// Retrieval includes hidden builds, unlike the default list endpoint.
+	expireCacheForTest(h.srv.readCache, "models:entries:v1:include_builds=true", "models:list:v1:include_builds=true")
 	status, third := h.get(t, ctx, "/v1/models/"+modelA, "test-key")
 	mustOK(t, status, third)
 	if h.st.reads() <= reads {
@@ -370,7 +373,7 @@ func TestOpenRouterFeedCache_RepeatHitThenExpiry(t *testing.T) {
 	if !bytes.Equal(fresh, again) || h.st.reads() != reads {
 		t.Fatalf("refreshed feed repeat recomputed (reads %d -> %d)", reads, h.st.reads())
 	}
-	h.srv.readCache.expireAllForTest()
+	expireCacheForTest(h.srv.readCache, "models:openrouter:v1")
 	reads = h.st.reads()
 	status, expired := h.get(t, ctx, "/v1/models/openrouter", "test-key")
 	mustOK(t, status, expired)
@@ -409,50 +412,10 @@ func TestProviderAttestationCache_RepeatHitThenExpiry(t *testing.T) {
 		t.Fatal("attestation changed inside the TTL; expected the cached body")
 	}
 
-	h.srv.readCache.expireAllForTest()
+	expireCacheForTest(h.srv.readCache, providerAttestationCacheKey)
 	status, fresh := h.get(t, ctx, "/v1/providers/attestation", "")
 	mustOK(t, status, fresh)
 	if !strings.Contains(string(fresh), `"trust_level":"self_signed"`) {
 		t.Fatalf("post-expiry attestation still stale: %s", fresh)
-	}
-}
-
-// encodeCachedJSON renders exactly what writeJSON writes, so hits and misses
-// are byte-identical.
-func TestEncodeCachedJSONMatchesWriteJSON(t *testing.T) {
-	v := map[string]any{"b": []int{1, 2}, "a": "x<y&z", "n": nil}
-	rec := httptest.NewRecorder()
-	writeJSON(rec, http.StatusOK, v)
-	body, err := encodeCachedJSON(v)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(rec.Body.Bytes(), body) {
-		t.Fatalf("encodeCachedJSON = %q, writeJSON = %q", body, rec.Body.Bytes())
-	}
-}
-
-// Typed values share the map with byte entries: independent keys, TTL
-// expiry, and Get/GetValue never return the other kind.
-func TestTTLCacheTypedValues(t *testing.T) {
-	c := newTTLCache()
-	c.SetValue("entries", []string{"a"}, time.Minute)
-	c.Set("body", []byte("{}"), time.Minute)
-	if v, ok := c.GetValue("entries"); !ok || len(v.([]string)) != 1 {
-		t.Fatalf("GetValue = %v, %v", v, ok)
-	}
-	if _, ok := c.Get("entries"); ok {
-		t.Fatal("Get must not return a typed entry as bytes")
-	}
-	if _, ok := c.GetValue("body"); ok {
-		t.Fatal("GetValue must not return a byte entry as a value")
-	}
-	c.SetValue("stale", 1, -time.Second)
-	if _, ok := c.GetValue("stale"); ok {
-		t.Fatal("expired typed value returned")
-	}
-	c.PurgeExpired()
-	if c.Len() != 2 {
-		t.Fatalf("Len after purge = %d, want 2", c.Len())
 	}
 }

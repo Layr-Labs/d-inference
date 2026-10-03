@@ -8,10 +8,11 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	memorystore "github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 type statusReadinessStore struct {
-	*store.MemoryStore
+	*memorystore.MemoryStore
 	state store.AppAttestReadiness
 	err   error
 }
@@ -32,7 +33,7 @@ func TestAppAttestSignedStatusSurvivesReadinessFailureAndRevocation(t *testing.T
 		{"known active", false, nil, "current-key"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			st := &statusReadinessStore{MemoryStore: store.NewMemory(store.Config{}), state: store.AppAttestReadiness{Revoked: tc.revoked}, err: tc.err}
+			st := &statusReadinessStore{MemoryStore: memorystore.NewMemory(store.Config{}), state: store.AppAttestReadiness{Revoked: tc.revoked}, err: tc.err}
 			s := &Service{store: st}
 			p := newSessionProvider("endpoint", "se")
 			capture := &captureInventory{}

@@ -2,7 +2,6 @@ package registry
 
 import (
 	"fmt"
-	"math/rand"
 	"slices"
 	"testing"
 )
@@ -47,60 +46,19 @@ func BenchmarkSelectRoutingCandidate(b *testing.B) {
 	}
 }
 
-// The oracle sorts and filters independently of the production selector. Check
-// every permitted winner rather than requiring a particular random draw.
-func TestSelectRoutingCandidateMatchesRankingPolicy(t *testing.T) {
-	rng := rand.New(rand.NewSource(82427))
-	for trial := 0; trial < 2000; trial++ {
-		pool := make([]*routingCandidate, 1+rng.Intn(25))
-		for i := range pool {
-			discount := float64(rng.Intn(4) * 100)
-			pool[i] = mkCandidate(fmt.Sprint(i), float64(rng.Intn(20)*25), rng.Intn(4), rng.Intn(4), discount)
-			pool[i].cacheEvidenceWeight = float64(1+rng.Intn(4)) / 4
-			// Legacy generation/max-token costs must never become the primary
-			// ranking quantity again.
-			pool[i].costMs = float64(rng.Intn(100000))
-		}
-		original := slices.Clone(pool)
-		ordered := slices.Clone(pool)
-		slices.SortStableFunc(ordered, func(a, b *routingCandidate) int {
-			if a.firstContent.ExpectedMs < b.firstContent.ExpectedMs {
-				return -1
-			}
-			if a.firstContent.ExpectedMs > b.firstContent.ExpectedMs {
-				return 1
-			}
-			return 0
-		})
-		near := slices.DeleteFunc(slices.Clone(ordered), func(c *routingCandidate) bool {
-			return c.firstContent.ExpectedMs > ordered[0].firstContent.ExpectedMs+100
-		})
-		leastWork := near[0].firstContent.ServiceMs
-		for _, c := range near {
-			leastWork = min(leastWork, c.firstContent.ServiceMs)
-		}
-		choices := slices.DeleteFunc(slices.Clone(near), func(c *routingCandidate) bool { return c.firstContent.ServiceMs != leastWork })
-		credited := slices.DeleteFunc(slices.Clone(choices), func(c *routingCandidate) bool { return c.firstContent.CachedTokens <= 0 })
-		if len(credited) > 0 {
-			weight := 0.0
-			for _, c := range credited {
-				weight = max(weight, c.cacheEvidenceWeight)
-			}
-			choices = slices.DeleteFunc(credited, func(c *routingCandidate) bool { return c.cacheEvidenceWeight != weight })
-		}
-		winner, runnerUp, nearSize, _ := selectRoutingCandidate(pool)
-		if !slices.Contains(choices, winner) || nearSize != len(near) {
-			t.Fatalf("trial %d: winner outside allowed fast/work/affinity set", trial)
-		}
-		var expectedRunner *routingCandidate
-		for _, c := range ordered {
-			if c != winner {
-				expectedRunner = c
-				break
-			}
-		}
-		if runnerUp != expectedRunner || !slices.Equal(pool, original) {
-			t.Fatalf("trial %d: wrong runner-up or mutated pool", trial)
-		}
+// The policy oracle lives in selection; this verifies the registry projection
+// retains first-content inputs and does not substitute legacy total cost.
+func TestSelectRoutingCandidateProjection(t *testing.T) {
+	a, b := mkCandidate("a", 100, 0, 0, 0), mkCandidate("b", 201, 0, 0, 0)
+	a.costMs, b.costMs = 100000, 1
+	pool := []*routingCandidate{a, b}
+	winner, runner, near, path := selectRoutingCandidate(pool)
+	if winner != a || runner != b || near != 1 || path != SelectionUniqueMin {
+		t.Fatal("projection substituted legacy cost for first-content ranking")
+	}
+	a.breakdown.HealthMs = 202
+	winner, runner, near, path = selectRoutingCandidate(pool)
+	if winner != b || runner != a || near != 1 || path != SelectionUniqueMin || !slices.Equal(pool, []*routingCandidate{a, b}) {
+		t.Fatal("projection lost health penalty or changed the pool")
 	}
 }

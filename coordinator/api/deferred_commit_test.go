@@ -9,17 +9,14 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"net/http"
-	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
+	inreq "github.com/eigeninference/d-inference/coordinator/api/inference/request"
+	inresp "github.com/eigeninference/d-inference/coordinator/api/inference/response"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/store"
 	"nhooyr.io/websocket"
 )
 
@@ -181,7 +178,7 @@ func TestIsBoilerplateChunk(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := isBoilerplateChunk(tc.chunk); got != tc.want {
+			if got := inresp.IsBoilerplateChunk(tc.chunk); got != tc.want {
 				t.Errorf("isBoilerplateChunk(%q) = %v, want %v", tc.chunk, got, tc.want)
 			}
 		})
@@ -210,59 +207,11 @@ func TestRequestHasTools(t *testing.T) {
 			if err := json.Unmarshal([]byte(tc.body), &parsed); err != nil {
 				t.Fatalf("unmarshal test body: %v", err)
 			}
-			if got := requestHasTools(parsed); got != tc.want {
+			if got := inreq.RequestHasTools(parsed); got != tc.want {
 				t.Errorf("requestHasTools(%s) = %v, want %v", tc.body, got, tc.want)
 			}
 		})
 	}
-}
-
-// TestStreamingFirstChunksEmittedInOrder verifies the held-preamble plumbing:
-// every element of firstChunks is written in order ahead of the relay loop,
-// with the single-chunk special-casing ([DONE] swallowing, normalization)
-// applied per element, and exactly one coordinator-emitted [DONE] terminator.
-func TestStreamingFirstChunksEmittedInOrder(t *testing.T) {
-	srv := newDeferredCommitTestServer(t)
-
-	pr := &registry.PendingRequest{
-		RequestID:  "first-chunks-order",
-		Model:      "m",
-		ChunkCh:    make(chan registry.ProviderChunk, 1),
-		ErrorCh:    make(chan protocol.InferenceErrorMessage, 1),
-		CompleteCh: make(chan protocol.UsageInfo, 1),
-	}
-	close(pr.ChunkCh) // stream already complete; only firstChunks to write
-
-	roleChunk := `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`
-	contentChunk := `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}`
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	rec := httptest.NewRecorder()
-	srv.handleStreamingResponseWithFirstChunkAndError(rec, req, pr, []string{roleChunk, "data: [DONE]", contentChunk}, nil)
-
-	body := rec.Body.String()
-	roleIdx := strings.Index(body, `"role":"assistant"`)
-	contentIdx := strings.Index(body, `"content":"hello"`)
-	if roleIdx < 0 || contentIdx < 0 {
-		t.Fatalf("body missing held role chunk or content chunk:\n%s", body)
-	}
-	if roleIdx > contentIdx {
-		t.Errorf("held role chunk must precede the committing content chunk; body:\n%s", body)
-	}
-	if got := strings.Count(body, "data: [DONE]"); got != 1 {
-		t.Errorf("[DONE] count = %d, want exactly 1 (provider terminators swallowed); body:\n%s", got, body)
-	}
-	if strings.Contains(body, `"error"`) {
-		t.Errorf("clean stream must not contain an error event; body:\n%s", body)
-	}
-}
-
-func newDeferredCommitTestServer(t *testing.T) *Server {
-	t.Helper()
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
-	reg := registry.New(logger)
-	return NewServer(reg, st, ServerConfig{}, logger)
 }
 
 // runDeferredCommitProvider serves the fake-provider side of the failover

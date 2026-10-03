@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	inresp "github.com/eigeninference/d-inference/coordinator/api/inference/response"
 )
 
 // Each call's builder must remain independent as the accumulator grows, IDs
@@ -22,7 +24,7 @@ func TestExtractMessageLongInterleavedToolArguments(t *testing.T) {
 		tcDelta(8, "call_a", "first", `"}`),
 		tcDelta(2, "call_b", "", `"}`),
 	)
-	msg := extractMessage(chunks)
+	msg := inresp.ExtractMessage(chunks)
 	if len(msg.ToolCalls) != 2 {
 		t.Fatalf("got %d calls, want 2", len(msg.ToolCalls))
 	}
@@ -49,7 +51,7 @@ func TestExtractMessageLongInterleavedToolArguments(t *testing.T) {
 }
 
 func TestExtractMessageToolCallOptionalFields(t *testing.T) {
-	msg := extractMessage([]string{
+	msg := inresp.ExtractMessage([]string{
 		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{}},{"index":1,"id":"call_1","type":"function","function":{"name":"run"}}]}}]}`,
 	})
 	encoded, err := json.Marshal(msg.ToolCalls)
@@ -69,7 +71,7 @@ func TestExtractMessageMalformedToolDeltaDoesNotCorruptKeptCall(t *testing.T) {
 		`{"index":0,"function":{"arguments":42}}`,
 		`{"index":0,"id":42,"function":{"arguments":"LEAK"}}`,
 	} {
-		msg := extractMessage([]string{
+		msg := inresp.ExtractMessage([]string{
 			tcDelta(0, "call_a", "run", `{"n":`),
 			`data: {"choices":[{"delta":{"tool_calls":[` + invalid + `]}}]}`,
 			tcDelta(0, "", "", `1}`),
@@ -147,7 +149,7 @@ func TestExtractMessageTwoIndexZeroCallsWithDistinctIDs(t *testing.T) {
 		tcDelta(0, "", "", `{"tz":"PST"}`),
 	}
 
-	msg := extractMessage(chunks)
+	msg := inresp.ExtractMessage(chunks)
 	if len(msg.ToolCalls) != 2 {
 		t.Fatalf("tool_calls length = %d, want 2 (second index-0 id must not merge into the first call): %v", len(msg.ToolCalls), msg.ToolCalls)
 	}
@@ -176,7 +178,7 @@ func TestExtractMessageRepeatedSameIDDoesNotSplit(t *testing.T) {
 		tcDelta(0, "call_a", "", `{"a":`),
 		tcDelta(0, "call_a", "", `1}`),
 	}
-	msg := extractMessage(chunks)
+	msg := inresp.ExtractMessage(chunks)
 	if len(msg.ToolCalls) != 1 {
 		t.Fatalf("tool_calls length = %d, want 1", len(msg.ToolCalls))
 	}
@@ -195,7 +197,7 @@ func TestExtractMessageWellBehavedIndexedStreamUnchanged(t *testing.T) {
 		tcDelta(0, "", "", `{"x":1}`),
 		tcDelta(1, "", "", `{"y":2}`),
 	}
-	msg := extractMessage(chunks)
+	msg := inresp.ExtractMessage(chunks)
 	if len(msg.ToolCalls) != 2 {
 		t.Fatalf("tool_calls length = %d, want 2", len(msg.ToolCalls))
 	}
@@ -216,7 +218,7 @@ func TestExtractMessageSparseIndicesNotDropped(t *testing.T) {
 		tcDelta(0, "call_a", "first", `{}`),
 		tcDelta(2, "call_c", "third", `{}`),
 	}
-	msg := extractMessage(chunks)
+	msg := inresp.ExtractMessage(chunks)
 	if len(msg.ToolCalls) != 2 {
 		t.Fatalf("tool_calls length = %d, want 2 (sparse index dropped)", len(msg.ToolCalls))
 	}
@@ -232,7 +234,7 @@ func TestExtractMessageThreeIndexZeroCalls(t *testing.T) {
 		tcDelta(0, "c2", "f2", `{"n":2}`),
 		tcDelta(0, "c3", "f3", `{"n":3}`),
 	}
-	msg := extractMessage(chunks)
+	msg := inresp.ExtractMessage(chunks)
 	if len(msg.ToolCalls) != 3 {
 		t.Fatalf("tool_calls length = %d, want 3", len(msg.ToolCalls))
 	}

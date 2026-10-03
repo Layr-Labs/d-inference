@@ -3,15 +3,15 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 	"io"
 	"log/slog"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 type restoreTrackingStore struct {
@@ -26,7 +26,7 @@ func (s *restoreTrackingStore) GetProviderForRestore(ctx context.Context, serial
 
 func TestProviderRestoreLoadsAfterStartupAndNeverResurrectsHardware(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	st := &restoreTrackingStore{Store: store.NewMemory(store.Config{})}
+	st := &restoreTrackingStore{Store: memory.NewMemory(store.Config{})}
 	reg := registry.New(logger)
 	reg.SetStore(st)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
@@ -42,7 +42,7 @@ func TestProviderRestoreLoadsAfterStartupAndNeverResurrectsHardware(t *testing.T
 	}
 	p := reg.Register("current", nil, &protocol.RegisterMessage{})
 	p.SetAttested(true, registry.TrustSelfSigned)
-	srv.restorePersistedProviderState(context.Background(), p, "serial", "key")
+	srv.providers.RestorePersistedProviderState(context.Background(), p, "serial", "key")
 	p.Mu().Lock()
 	defer p.Mu().Unlock()
 	if p.TrustLevel != registry.TrustSelfSigned || p.MDAVerified || len(p.MDACertChain) != 0 {
@@ -55,12 +55,13 @@ func TestProviderRestoreLoadsAfterStartupAndNeverResurrectsHardware(t *testing.T
 
 func TestProviderRestoreNotReachedWithoutValidAttestation(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	st := &restoreTrackingStore{Store: store.NewMemory(store.Config{})}
+	st := &restoreTrackingStore{Store: memory.NewMemory(store.Config{})}
 	reg := registry.New(logger)
-	srv := &Server{registry: reg, store: st, logger: logger}
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+	t.Cleanup(srv.Close)
 	for _, evidence := range []json.RawMessage{nil, json.RawMessage(`{"bad":`)} {
 		p := reg.Register(string(evidence)+"p", nil, &protocol.RegisterMessage{})
-		srv.verifyProviderAttestation(context.Background(), p.ID, p, &protocol.RegisterMessage{Attestation: evidence})
+		srv.trust.VerifyProviderAttestation(context.Background(), p.ID, p, &protocol.RegisterMessage{Attestation: evidence})
 	}
 	if st.lookups != 0 {
 		t.Fatal("looked up durable state before live attestation verification")
@@ -85,7 +86,7 @@ func (s *concurrentRestoreStore) GetProviderForRestore(ctx context.Context, seri
 
 func TestProviderConcurrentReconnectsExcludeBothPartialRows(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	base := store.NewMemory(store.Config{})
+	base := memory.NewMemory(store.Config{})
 	now := time.Now()
 	for _, rec := range []store.ProviderRecord{
 		{ID: "history", SerialNumber: "serial", SEPublicKey: "se", LastSeen: now.Add(-time.Hour), LifetimeTokensGenerated: 700, AccountID: "owner", TrustLevel: string(registry.TrustHardware), MDAVerified: true},
@@ -98,17 +99,19 @@ func TestProviderConcurrentReconnectsExcludeBothPartialRows(t *testing.T) {
 	}
 	st := &concurrentRestoreStore{Store: store.NewCached(base, store.DefaultCacheConfig()), entered: make(chan struct{}, 2), release: make(chan struct{})}
 	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+	t.Cleanup(srv.Close)
 	// Leave persistence detached: the deliberately pre-seeded partial rows must
 	// remain visible until both concurrent lookup queries have their exclusions.
+	reg.SetStore(nil)
 	one := reg.Register("one", nil, &protocol.RegisterMessage{})
 	two := reg.Register("two", nil, &protocol.RegisterMessage{})
-	srv := &Server{store: st, registry: reg, logger: logger}
 	var wg sync.WaitGroup
 	for _, p := range []*registry.Provider{one, two} {
 		wg.Add(1)
 		go func(p *registry.Provider) {
 			defer wg.Done()
-			srv.restorePersistedProviderState(context.Background(), p, "serial", "se")
+			srv.providers.RestorePersistedProviderState(context.Background(), p, "serial", "se")
 		}(p)
 	}
 	for i := 0; i < 2; i++ {
@@ -144,7 +147,7 @@ func (s *arrivingRestoreStore) GetProviderForRestore(ctx context.Context, serial
 }
 func TestProviderRestoreRechecksSessionsRegisteredDuringLookup(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	base := store.NewMemory(store.Config{})
+	base := memory.NewMemory(store.Config{})
 	reg := registry.New(logger)
 	if err := base.UpsertProvider(context.Background(), store.ProviderRecord{ID: "history", SerialNumber: "serial", SEPublicKey: "se", LastSeen: time.Now().Add(-time.Hour), LifetimeTokensGenerated: 700}); err != nil {
 		t.Fatal(err)
@@ -156,8 +159,11 @@ func TestProviderRestoreRechecksSessionsRegisteredDuringLookup(t *testing.T) {
 			t.Fatal(err)
 		}
 	}}
-	srv := &Server{store: st, registry: reg, logger: logger}
-	srv.restorePersistedProviderState(context.Background(), p, "serial", "se")
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+	t.Cleanup(srv.Close)
+	// Keep registration from asynchronously overwriting the seeded late row.
+	reg.SetStore(nil)
+	srv.providers.RestorePersistedProviderState(context.Background(), p, "serial", "se")
 	if st.calls != 2 || p.Stats.TokensGenerated != 700 {
 		t.Fatalf("late active row accepted: calls=%d tokens=%d", st.calls, p.Stats.TokensGenerated)
 	}

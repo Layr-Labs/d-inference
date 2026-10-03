@@ -5,10 +5,11 @@ import (
 	"testing"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
+	memorystore "github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 func newTestLedger() *Ledger {
-	return NewLedger(store.NewMemory(store.Config{}))
+	return NewLedger(memorystore.NewMemory(store.Config{}))
 }
 
 // creditBalance funds a test account the way production does (Stripe webhook →

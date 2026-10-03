@@ -11,6 +11,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	memorystore "github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 func testLogger() *slog.Logger {
@@ -26,13 +27,13 @@ func testLogger() *slog.Logger {
 // SQL-level correctness is covered separately by store/base_rewards_test.go.
 type engineStore struct {
 	store.Store // embedded: any method the engine does not call panics if hit
-	inner       *store.MemoryStore
+	inner       *memorystore.MemoryStore
 	sessions    []store.ProviderSession
 	earnings    []store.ProviderEarning // organic earning rows, keyed by ProviderKey
 }
 
 func newEngineStore() *engineStore {
-	return &engineStore{inner: store.NewMemory(store.Config{})}
+	return &engineStore{inner: memorystore.NewMemory(store.Config{})}
 }
 
 func (s *engineStore) ListProviderSessionsOverlapping(_ context.Context, start, end time.Time, openSessionGrace time.Duration) ([]store.ProviderSession, error) {
@@ -513,7 +514,7 @@ func TestUptimeByProviderKey_OpenSessionGrace(t *testing.T) {
 // settlePriorFloor records an earlier settlement through the store's batch
 // path under a session no machine inventory knows, so the row keeps the draw's
 // own provider key.
-func settlePriorFloor(t *testing.T, inner *store.MemoryStore, draw store.ProviderFloorDraw) {
+func settlePriorFloor(t *testing.T, inner *memorystore.MemoryStore, draw store.ProviderFloorDraw) {
 	t.Helper()
 	item := store.FloorDrawBatchItem{SessionID: "prior-floor-" + draw.ProviderKey, Draw: draw}
 	result, err := inner.SettleProviderFloorDrawBatch(context.Background(), []store.FloorDrawBatchItem{item}, func(int) bool { return true })

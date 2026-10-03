@@ -14,11 +14,12 @@ import (
 	"strings"
 	"testing"
 
-	"golang.org/x/crypto/nacl/box"
-
+	infer "github.com/eigeninference/d-inference/coordinator/api/inference"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
+	"golang.org/x/crypto/nacl/box"
 )
 
 const senderTestMnemonic = "praise warfare warrior rebuild raven garlic kite blast crew impulse pencil hidden"
@@ -26,7 +27,7 @@ const senderTestMnemonic = "praise warfare warrior rebuild raven garlic kite bla
 func newEncryptedTestServer(t *testing.T) (*httptest.Server, *e2e.CoordinatorKey) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	// Seed a one-entry catalog so requests for any other model fast-fail with
 	// 404 model_not_found instead of queueing for 120s waiting on a provider.
@@ -80,7 +81,7 @@ func TestEncryptionKeyEndpoint(t *testing.T) {
 
 func TestEncryptionKeyEndpoint_Disabled(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	// No SetCoordinatorKey call → endpoint should report 503.
@@ -155,7 +156,7 @@ func TestSealedRequest_RoundTrip(t *testing.T) {
 	env, _, ephemPriv := sealRequest(t, plaintext, coordKey.PublicKey, coordKey.KID)
 
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+"/v1/chat/completions", bytes.NewReader(env))
-	req.Header.Set("Content-Type", SealedContentType)
+	req.Header.Set("Content-Type", infer.SealedContentType)
 	req.Header.Set("Authorization", "Bearer test-key")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -167,7 +168,7 @@ func TestSealedRequest_RoundTrip(t *testing.T) {
 
 	// The handler should have returned a model-not-found error (sealed).
 	// Verify the response is sealed and decrypts to a sane error JSON.
-	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, SealedContentType) {
+	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, infer.SealedContentType) {
 		t.Fatalf("response content-type = %q, want sealed; body=%s", got, body)
 	}
 	if got := resp.Header.Get("X-Eigen-Sealed"); got != "true" {
@@ -207,7 +208,7 @@ func TestSealedRequest_TamperedCiphertext(t *testing.T) {
 	env2, _ := json.Marshal(parsed)
 
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/chat/completions", bytes.NewReader(env2))
-	req.Header.Set("Content-Type", SealedContentType)
+	req.Header.Set("Content-Type", infer.SealedContentType)
 	req.Header.Set("Authorization", "Bearer test-key")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -232,7 +233,7 @@ func TestSealedRequest_WrongKID(t *testing.T) {
 	env, _, _ := sealRequest(t, plaintext, coordKey.PublicKey, "deadbeefdeadbeef")
 
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/chat/completions", bytes.NewReader(env))
-	req.Header.Set("Content-Type", SealedContentType)
+	req.Header.Set("Content-Type", infer.SealedContentType)
 	req.Header.Set("Authorization", "Bearer test-key")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -270,7 +271,7 @@ func TestSealedRequest_CaseInsensitiveContentType(t *testing.T) {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 
-	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(strings.ToLower(got), SealedContentType) {
+	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(strings.ToLower(got), infer.SealedContentType) {
 		t.Fatalf("middleware did not engage on mixed-case content-type: ct=%q body=%s", got, body)
 	}
 	pt := unsealResponse(t, body, coordKey.PublicKey, ephemPriv)
@@ -287,7 +288,7 @@ func TestSealedRequest_CaseInsensitiveContentType(t *testing.T) {
 // reader side and contains the original payload in order.
 func TestSealedTransport_SSE(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 
@@ -305,7 +306,7 @@ func TestSealedTransport_SSE(t *testing.T) {
 		`data: [DONE]`,
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/test-sse", srv.sealedTransport(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /v1/test-sse", srv.inference.SealedTransport(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		f, _ := w.(http.Flusher)
@@ -326,7 +327,7 @@ func TestSealedTransport_SSE(t *testing.T) {
 	env, _, ephemPriv := sealRequest(t, plaintext, coordKey.PublicKey, coordKey.KID)
 
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/test-sse", bytes.NewReader(env))
-	req.Header.Set("Content-Type", SealedContentType)
+	req.Header.Set("Content-Type", infer.SealedContentType)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -384,7 +385,7 @@ func TestSealedRequest_PlaintextStillWorks(t *testing.T) {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 
-	if got := resp.Header.Get("Content-Type"); strings.HasPrefix(got, SealedContentType) {
+	if got := resp.Header.Get("Content-Type"); strings.HasPrefix(got, infer.SealedContentType) {
 		t.Fatalf("plaintext request got sealed response: ct=%q body=%s", got, body)
 	}
 

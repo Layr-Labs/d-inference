@@ -7,6 +7,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	memorystore "github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 type sharedEpochEngineStore struct {
@@ -35,7 +36,7 @@ func (s *sharedEpochEngineStore) ListFloorDrawsForEpoch(ctx context.Context, epo
 
 func TestConcurrentDisjointRewardCohortsShareOneEpochBudget(t *testing.T) {
 	epoch, start, end, clock := closedEpoch()
-	shared := store.NewMemory(store.Config{})
+	shared := memorystore.NewMemory(store.Config{})
 	firstRead, release := make(chan struct{}), make(chan struct{})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()

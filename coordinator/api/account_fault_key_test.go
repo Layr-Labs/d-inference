@@ -21,6 +21,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 	"nhooyr.io/websocket"
 )
 
@@ -29,7 +30,7 @@ func TestAccountLinkedFaultStateSurvivesReconnect(t *testing.T) {
 	defer cancel()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	ts := httptest.NewServer(srv.Handler())
@@ -38,7 +39,7 @@ func TestAccountLinkedFaultStateSurvivesReconnect(t *testing.T) {
 	const acct = "acct-open-mode"
 	const rawToken = "eigeninference-pt-account-fault-key-test"
 	if err := st.CreateProviderToken(&store.ProviderToken{
-		TokenHash: sha256Hash(rawToken),
+		TokenHash: providerTokenHash(rawToken),
 		AccountID: acct,
 		Active:    true,
 	}); err != nil {

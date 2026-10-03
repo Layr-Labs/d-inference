@@ -9,10 +9,11 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	memorystore "github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 type blockedDiagnosticArchive struct {
-	*store.MemoryStore
+	*memorystore.MemoryStore
 	entered, release chan struct{}
 	reads, archives  atomic.Int32
 }
@@ -32,7 +33,7 @@ func (a *blockedDiagnosticArchive) BeginAppAttestEvidence(ctx context.Context, e
 }
 
 func TestLifecycleLookupDoesNotOccupyProofStorage(t *testing.T) {
-	a := &blockedDiagnosticArchive{MemoryStore: store.NewMemory(store.Config{}),
+	a := &blockedDiagnosticArchive{MemoryStore: memorystore.NewMemory(store.Config{}),
 		entered: make(chan struct{}, 2), release: make(chan struct{})}
 	s := &Service{store: a}
 	newSession := func() *Session {

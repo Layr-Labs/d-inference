@@ -11,10 +11,11 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 type disconnectAutopilotStore struct {
-	*store.MemoryStore
+	*memory.MemoryStore
 	calls       atomic.Int32
 	unavailable atomic.Bool
 }
@@ -46,7 +47,7 @@ func TestAutopilotDisconnectQueuesDurableUncertaintyWithoutLedgerIO(t *testing.T
 	for _, status := range []string{"reserved", protocol.LoadModelStatusStarted, protocol.LoadModelStatusSucceeded} {
 		t.Run(status, func(t *testing.T) {
 			r, c, now := newAutopilotControllerTest(t, false)
-			ledger := &disconnectAutopilotStore{MemoryStore: store.NewMemory(store.Config{})}
+			ledger := &disconnectAutopilotStore{MemoryStore: memory.NewMemory(store.Config{})}
 			r.SetStore(ledger)
 			p := autopilotControllerProvider(t, r, "disconnecting", now, autopilotTestDonor)
 			w := autopilotDisconnectWriter(t, p, false)

@@ -9,11 +9,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/eigeninference/d-inference/coordinator/api/access"
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 // quietLogger returns a logger that discards everything — for tests that
@@ -22,10 +24,10 @@ func quietLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard
 
 // testBillingServer creates a Server with mock billing enabled and returns it
 // along with the underlying store. Used by earnings, payout, and other billing tests.
-func testBillingServer(t *testing.T) (*Server, *store.MemoryStore) {
+func testBillingServer(t *testing.T) (*Server, *memory.MemoryStore) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	t.Cleanup(srv.Close)
@@ -39,26 +41,30 @@ func testBillingServer(t *testing.T) (*Server, *store.MemoryStore) {
 }
 
 // testWithdrawServer is an alias for testBillingServer for backward compatibility.
-func testWithdrawServer(t *testing.T) (*Server, *store.MemoryStore) {
+func testWithdrawServer(t *testing.T) (*Server, *memory.MemoryStore) {
 	return testBillingServer(t)
 }
 
 // withPrivyUser returns a request with the given user set in context, simulating
 // Privy authentication without requiring JWT verification.
 func withPrivyUser(r *http.Request, user *store.User) *http.Request {
-	ctx := context.WithValue(r.Context(), ctxKeyConsumer, user.AccountID)
+	ctx := access.WithConsumer(r.Context(), user.AccountID)
 	ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
 	return r.WithContext(ctx)
 }
 
-func testServer(t *testing.T) (*Server, *store.MemoryStore) {
+func withUser(ctx context.Context, accountID, email string) context.Context {
+	return context.WithValue(ctx, auth.CtxKeyUser, &store.User{AccountID: accountID, Email: email})
+}
+
+func testServer(t *testing.T) (*Server, *memory.MemoryStore) {
 	return testServerWithConfig(t, ServerConfig{})
 }
 
-func testServerWithConfig(t *testing.T, cfg ServerConfig) (*Server, *store.MemoryStore) {
+func testServerWithConfig(t *testing.T, cfg ServerConfig) (*Server, *memory.MemoryStore) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, cfg, logger)
 	t.Cleanup(srv.Close)

@@ -2,6 +2,8 @@ package api
 
 import (
 	"testing"
+
+	inreq "github.com/eigeninference/d-inference/coordinator/api/inference/request"
 )
 
 // Swift: collapsesNullableArrayTypeToConcreteMember
@@ -11,7 +13,7 @@ func TestNormalizeToolSchemas_CollapsesNullableArrayTypeToConcreteMember(t *test
 	    "city":{"type":["string","null"],"description":"city"}},
 	    "required":["city"]}}}]}`)
 
-	out := NormalizeToolSchemas(body)
+	out := inreq.NormalizeToolSchemas(body)
 	city := tsnMap(t, tsnProps(t, out)["city"], "city")
 	if got := tsnType(t, city, "city"); got != "string" {
 		t.Errorf("city type = %q, want string", got)
@@ -36,7 +38,7 @@ func TestNormalizeToolSchemas_CollapsesArrayTypeSkippingLeadingNull(t *testing.T
 	  "parameters":{"type":"object","properties":{
 	    "n":{"type":["null","integer"]}}}}}]}`)
 
-	n := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body))["n"], "n")
+	n := tsnMap(t, tsnProps(t, inreq.NormalizeToolSchemas(body))["n"], "n")
 	if got := tsnType(t, n, "n"); got != "integer" {
 		t.Errorf("n type = %q, want integer", got)
 	}
@@ -53,7 +55,7 @@ func TestNormalizeToolSchemas_CollapsesNullOnlyArrayTypeToNullString(t *testing.
 	  "parameters":{"type":"object","properties":{
 	    "x":{"type":["null"]}}}}}]}`)
 
-	x := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body))["x"], "x")
+	x := tsnMap(t, tsnProps(t, inreq.NormalizeToolSchemas(body))["x"], "x")
 	if got := tsnType(t, x, "x"); got != "null" {
 		t.Errorf("x type = %q, want null", got)
 	}
@@ -70,7 +72,7 @@ func TestNormalizeToolSchemas_CollapsesArrayTypeInNestedObjectAndItems(t *testin
 	    "opts":{"type":"object","properties":{"snooze":{"type":["integer","null"]}}},
 	    "tags":{"type":"array","items":{"type":["string","null"]}}}}}}]}`)
 
-	props := tsnProps(t, NormalizeToolSchemas(body))
+	props := tsnProps(t, inreq.NormalizeToolSchemas(body))
 	snooze := tsnMap(t, tsnMap(t, tsnMap(t, props["opts"], "opts")["properties"], "opts.properties")["snooze"], "snooze")
 	if got := tsnType(t, snooze, "snooze"); got != "integer" {
 		t.Errorf("snooze type = %q, want integer", got)
@@ -97,7 +99,7 @@ func TestNormalizeToolSchemas_MalformedNonStringTypeFallsBackToStructuralInferen
 	    "cfg":{"type":42,"properties":{"k":{"type":"string"}}},
 	    "v":{"type":7,"description":"v"}}}}}]}`)
 
-	props := tsnProps(t, NormalizeToolSchemas(body))
+	props := tsnProps(t, inreq.NormalizeToolSchemas(body))
 	cfg := tsnMap(t, props["cfg"], "cfg")
 	if got := tsnType(t, cfg, "cfg"); got != "object" {
 		t.Errorf("cfg type = %q, want object", got)
@@ -123,7 +125,7 @@ func TestNormalizeToolSchemas_UnionMemberWithArrayTypeStillDrivesParentInference
 	  "parameters":{"type":"object","properties":{
 	    "u":{"anyOf":[{"type":["string","null"]},{"type":"integer"}],"description":"u"}}}}}]}`)
 
-	u := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body))["u"], "u")
+	u := tsnMap(t, tsnProps(t, inreq.NormalizeToolSchemas(body))["u"], "u")
 	if got := tsnType(t, u, "u"); got != "string" {
 		t.Errorf("u type = %q, want string", got)
 	}
@@ -146,7 +148,7 @@ func TestNormalizeToolSchemas_CollapsesArrayTypeOnTopLevelParametersNode(t *test
 	body := []byte(`{"tools":[{"type":"function","function":{"name":"f",
 	  "parameters":{"type":["object","null"],"properties":{"q":{"type":"string"}}}}}]}`)
 
-	params := tsnParams(t, NormalizeToolSchemas(body))
+	params := tsnParams(t, inreq.NormalizeToolSchemas(body))
 	if got := tsnType(t, params, "parameters"); got != "object" {
 		t.Errorf("parameters type = %q, want object", got)
 	}
@@ -161,7 +163,7 @@ func TestNormalizeToolSchemas_CollapsesArrayTypeInsideAdditionalPropertiesSchema
 	  "parameters":{"type":"object","properties":{
 	    "kv":{"type":"object","additionalProperties":{"type":["number","null"]}}}}}}]}`)
 
-	kv := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body))["kv"], "kv")
+	kv := tsnMap(t, tsnProps(t, inreq.NormalizeToolSchemas(body))["kv"], "kv")
 	addl := tsnMap(t, kv["additionalProperties"], "kv.additionalProperties")
 	if got := tsnType(t, addl, "additionalProperties"); got != "number" {
 		t.Errorf("additionalProperties type = %q, want number", got)
@@ -178,7 +180,7 @@ func TestNormalizeToolSchemas_TypeUnionOverridesNullableFalse(t *testing.T) {
 	    "kept":{"type":["STRING","NULL"],"nullable":false},
 	    "set":{"type":["string","null"]}}}}}]}`)
 
-	props := tsnProps(t, NormalizeToolSchemas(body))
+	props := tsnProps(t, inreq.NormalizeToolSchemas(body))
 	kept := tsnMap(t, props["kept"], "kept")
 	if got := tsnType(t, kept, "kept"); got != "string" {
 		t.Errorf("kept type = %q, want string", got)
@@ -198,7 +200,7 @@ func TestNormalizeToolSchemas_CombinatorUnionPreservesNullability(t *testing.T) 
 	    "value":{"anyOf":[{"type":"string"},{"type":"null"}]},
 	    "explicit":{"type":"string","anyOf":[{"type":"string"},{"type":"null"}]}
 	  }}}}]}`)
-	properties := tsnProps(t, NormalizeToolSchemas(body))
+	properties := tsnProps(t, inreq.NormalizeToolSchemas(body))
 	value := tsnMap(t, properties["value"], "value")
 	if got := tsnType(t, value, "value"); got != "string" {
 		t.Fatalf("value type = %q, want string", got)
@@ -209,21 +211,6 @@ func TestNormalizeToolSchemas_CombinatorUnionPreservesNullability(t *testing.T) 
 	explicit := tsnMap(t, properties["explicit"], "explicit")
 	if explicit["nullable"] != nil {
 		t.Fatalf("explicit parent type was widened: nullable = %v", explicit["nullable"])
-	}
-}
-
-func TestNormalizeToolSchemas_PreservesBooleanSchemaSemantics(t *testing.T) {
-	body := []byte(`{"tools":[{"type":"function","function":{"name":"f",
-	  "parameters":{"type":"object","properties":{"allow":true,"deny":false}}}}]}`)
-	properties := tsnProps(t, NormalizeToolSchemas(body))
-	for name, want := range map[string]bool{"allow": true, "deny": false} {
-		schema := tsnMap(t, properties[name], name)
-		if got := tsnType(t, schema, name); got != "string" {
-			t.Fatalf("%s type = %q, want render-safe string", name, got)
-		}
-		if got, ok := schema[originalBooleanSchemaKey].(bool); !ok || got != want {
-			t.Fatalf("%s marker = %#v, want %v", name, schema[originalBooleanSchemaKey], want)
-		}
 	}
 }
 
@@ -252,7 +239,7 @@ func TestNormalizeToolSchemas_MultiConcreteTypeArrayPreservedViaAnyOf(t *testing
 	  "parameters":{"type":"object","properties":{
 	    "id":{"type":["string","integer"]}}}}}]}`)
 
-	id := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body))["id"], "id")
+	id := tsnMap(t, tsnProps(t, inreq.NormalizeToolSchemas(body))["id"], "id")
 	if got := tsnType(t, id, "id"); got != "string" {
 		t.Errorf("id type = %q, want first concrete member string", got)
 	}
@@ -270,7 +257,7 @@ func TestNormalizeToolSchemas_MultiConcreteNullableTypeArrayKeepsNullAndUnion(t 
 	  "parameters":{"type":"object","properties":{
 	    "id":{"type":["integer","string","null"]}}}}}]}`)
 
-	id := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body))["id"], "id")
+	id := tsnMap(t, tsnProps(t, inreq.NormalizeToolSchemas(body))["id"], "id")
 	if got := tsnType(t, id, "id"); got != "integer" {
 		t.Errorf("id type = %q, want first concrete member integer", got)
 	}
@@ -290,7 +277,7 @@ func TestNormalizeToolSchemas_MultiConcreteTypeArrayWithExistingCombinatorCollap
 	    "v":{"type":["string","integer"],"anyOf":[{"minLength":1}]},
 	    "w":{"type":["string","integer"],"allOf":[{"minLength":1}]}}}}}]}`)
 
-	props := tsnProps(t, NormalizeToolSchemas(body))
+	props := tsnProps(t, inreq.NormalizeToolSchemas(body))
 	v := tsnMap(t, props["v"], "v")
 	if got := tsnType(t, v, "v"); got != "string" {
 		t.Errorf("v type = %q, want string", got)
@@ -316,7 +303,7 @@ func TestNormalizeToolSchemas_DuplicateTypeMembersDedupedCaseInsensitively(t *te
 	  "parameters":{"type":"object","properties":{
 	    "id":{"type":["string","STRING","integer"]}}}}}]}`)
 
-	id := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body))["id"], "id")
+	id := tsnMap(t, tsnProps(t, inreq.NormalizeToolSchemas(body))["id"], "id")
 	if got := tsnType(t, id, "id"); got != "string" {
 		t.Errorf("id type = %q, want string", got)
 	}

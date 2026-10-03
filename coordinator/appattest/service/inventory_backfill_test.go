@@ -8,10 +8,11 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
+	memorystore "github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 type delayedHistoricalBackfill struct {
-	*store.MemoryStore
+	*memorystore.MemoryStore
 	calls atomic.Int32
 }
 
@@ -26,7 +27,7 @@ func TestBackfillRechecksAfterInitiallyEmptyBatch(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		st := &delayedHistoricalBackfill{MemoryStore: store.NewMemory(store.Config{})}
+		st := &delayedHistoricalBackfill{MemoryStore: memorystore.NewMemory(store.Config{})}
 		s := New(ctx, Config{}, Dependencies{Store: st})
 		s.startMachineInventoryBackfill(ctx)
 		time.Sleep(5 * time.Second)

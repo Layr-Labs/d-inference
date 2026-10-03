@@ -10,19 +10,21 @@ import (
 	"strings"
 	"testing"
 
+	httpx "github.com/eigeninference/d-inference/coordinator/api/httpx"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 func revisionPublishFixture(t *testing.T, backing store.Store) (*Server, *store.CachedStore, *store.ModelManifest) {
 	t.Helper()
 	manifest := validTestManifest()
 	manifest.Version = "v2"
-	manifest.R2Prefix = modelR2Prefix(manifest.ModelID, manifest.Version)
+	manifest.R2Prefix = testModelPrefix(manifest.ModelID, manifest.Version)
 	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/" + manifest.R2Prefix + "/manifest.json":
-			writeJSON(w, http.StatusOK, manifest)
+			httpx.WriteJSON(w, http.StatusOK, manifest)
 		case "/" + manifest.R2Prefix + "/config.json":
 			w.Header().Set("Content-Length", "123")
 			w.WriteHeader(http.StatusOK)
@@ -70,7 +72,7 @@ func TestPublishRevisionPinsOwnHFArtifactAndPublisher(t *testing.T) {
 			name = source.RepoID
 		}
 		t.Run(name, func(t *testing.T) {
-			srv, st, manifest := revisionPublishFixture(t, store.NewMemory(store.Config{}))
+			srv, st, manifest := revisionPublishFixture(t, memory.NewMemory(store.Config{}))
 			original, err := st.GetModelRegistryRecord(manifest.ModelID)
 			if err != nil {
 				t.Fatal(err)
@@ -78,7 +80,7 @@ func TestPublishRevisionPinsOwnHFArtifactAndPublisher(t *testing.T) {
 			oldSource := &store.HuggingFaceArtifact{RepoID: "EigenLabs/old-weights", Revision: strings.Repeat("a", 40)}
 			// Full registration can intentionally configure the rollback mirror.
 			original.ActiveVersion.HuggingFaceArtifact = oldSource
-			if err := st.SetModelVersion(registryEntryFromRecord(original), original.ActiveVersion, original.Files); err != nil {
+			if err := st.SetModelVersion(&original.ModelRegistryEntry, original.ActiveVersion, original.Files); err != nil {
 				t.Fatal(err)
 			}
 			body := map[string]any{"version": manifest.Version}
@@ -125,7 +127,7 @@ func TestPublishRevisionPinsOwnHFArtifactAndPublisher(t *testing.T) {
 }
 
 func TestPublishRevisionRejectsInvalidHFSourceBeforePromotion(t *testing.T) {
-	srv, st, manifest := revisionPublishFixture(t, store.NewMemory(store.Config{}))
+	srv, st, manifest := revisionPublishFixture(t, memory.NewMemory(store.Config{}))
 	original, err := st.GetModelRegistryRecord(manifest.ModelID)
 	if err != nil {
 		t.Fatal(err)
@@ -147,7 +149,7 @@ func TestPublishRevisionRejectsInvalidHFSourceBeforePromotion(t *testing.T) {
 }
 
 func TestPublishRevisionReturnsRetryableErrorUntilLivePolicyRefreshes(t *testing.T) {
-	base := store.NewMemory(store.Config{})
+	base := memory.NewMemory(store.Config{})
 	failing := &revisionCatalogFailureStore{Store: base}
 	srv, _, manifest := revisionPublishFixture(t, failing)
 	source := &store.HuggingFaceArtifact{RepoID: "EigenLabs/retry-weights", Revision: strings.Repeat("b", 40)}
@@ -175,7 +177,7 @@ func TestPublishRevisionReturnsRetryableErrorUntilLivePolicyRefreshes(t *testing
 }
 
 func TestPublishRevisionReturnsRetryableErrorUntilDesiredStateIsDelivered(t *testing.T) {
-	srv, st, manifest := revisionPublishFixture(t, store.NewMemory(store.Config{}))
+	srv, st, manifest := revisionPublishFixture(t, memory.NewMemory(store.Config{}))
 	// A registered provider with a stopped writer deterministically rejects the
 	// desired_models send after the catalog read and routing refresh succeed.
 	provider := registerBuildsProvider(srv, "unreachable-revision-provider", manifest.ModelID)

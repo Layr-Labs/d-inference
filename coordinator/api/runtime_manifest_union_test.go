@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,10 +11,14 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	trustapi "github.com/eigeninference/d-inference/coordinator/api/provider/trust"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"nhooyr.io/websocket"
 )
 
 // These tests pin the 2026-09-03 release brownout. Registering provider release
@@ -36,7 +41,11 @@ var (
 // unionReleaseRow is a production-shape active release row (family template
 // hashes, empty python/runtime hashes) carrying its own metallib hash.
 func unionReleaseRow(version, binaryHash, metallib string) *store.Release {
-	rel := productionShapeRelease(version, binaryHash)
+	rel := testRelease(version, binaryHash)
+	rel.TemplateHashes = "qwen3.5=" + strings.Repeat("4", 64) +
+		",trinity=" + strings.Repeat("5", 64) +
+		",gemma4=" + strings.Repeat("6", 64) +
+		",minimax=" + strings.Repeat("7", 64)
 	rel.MetallibHash = metallib
 	return rel
 }
@@ -45,34 +54,113 @@ func unionReleaseRow(version, binaryHash, metallib string) *store.Release {
 // runtime identity reported the given metallib — a connected fleet node between
 // challenges. Each provider serves its own model so routability is checked per
 // provider.
-func unionFleetProvider(t *testing.T, reg *registry.Registry, id, model, version, metallib string) *registry.Provider {
+type unionProvider struct {
+	*registry.Provider
+	peer *websocket.Conn
+}
+
+func unionFleetProvider(t *testing.T, reg *registry.Registry, id, model, version, metallib string) *unionProvider {
 	t.Helper()
-	provider := makeRoutableProvider(t, reg, id, model)
+	accepted := make(chan *websocket.Conn, 1)
+	stop := make(chan struct{})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		accepted <- conn
+		<-stop
+		_ = conn.CloseNow()
+	}))
+	t.Cleanup(func() { close(stop); ts.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	peer, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(ts.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var conn *websocket.Conn
+	select {
+	case conn = <-accepted:
+	case <-ctx.Done():
+		_ = peer.CloseNow()
+		t.Fatal("websocket was not accepted")
+	}
+	provider := makeRoutableProvider(t, reg, id, model, conn)
 	provider.Mu().Lock()
 	provider.Version = version
 	provider.MetallibVerified = true
 	provider.TemplateHashes = map[string]string{"mlx_metallib": metallib}
 	provider.Mu().Unlock()
-	return provider
+	t.Cleanup(func() {
+		_ = peer.CloseNow()
+		_ = conn.CloseNow()
+		reg.Disconnect(provider.ID)
+	})
+	return &unionProvider{Provider: provider, peer: peer}
 }
 
 // challengeWithMetallib drives the challenge-response runtime policy the way
 // the attestation handler does (policy application, then capability
 // reconciliation) and returns the policy verdict.
-func challengeWithMetallib(t *testing.T, srv *Server, provider *registry.Provider, metallib string) (policyActive, runtimeOK bool) {
+func challengeWithMetallib(t *testing.T, srv *Server, provider *unionProvider, metallib string) (policyActive, runtimeOK bool) {
 	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	done := make(chan struct{})
+	srv.SetSkipChallenge(false)
+	srv.SetChallengeInterval(time.Hour)
+	tracker := trustapi.NewChallengeTracker()
+	go func() {
+		defer close(done)
+		srv.trust.ChallengeLoop(ctx, provider.ID, provider.Provider, tracker)
+	}()
+	defer func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Error("challenge loop failed to stop")
+		}
+	}()
+	readChallenge := func() protocol.AttestationChallengeMessage {
+		for {
+			_, raw, err := provider.peer.Read(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var message protocol.AttestationChallengeMessage
+			if err := json.Unmarshal(raw, &message); err != nil {
+				t.Fatal(err)
+			}
+			if message.Type == protocol.TypeAttestationChallenge {
+				return message
+			}
+		}
+	}
+	challenge := readChallenge()
 	resp := &protocol.AttestationResponseMessage{
-		SIPEnabled: trBoolPtr(true), SecureBootEnabled: trBoolPtr(true),
+		Nonce: challenge.Nonce, PublicKey: provider.PublicKey, Signature: "open-mode-fixture",
+		RDMADisabled: trBoolPtr(true),
+		SIPEnabled:   trBoolPtr(true), SecureBootEnabled: trBoolPtr(true),
 		TemplateHashes: map[string]string{"mlx_metallib": metallib},
 	}
-	policyActive, runtimeOK, _ = srv.applyChallengeRuntimePolicy(provider, resp)
-	_ = srv.registry.ReconcileAttestedRuntimeCapabilities(provider.ID)
+	// The existing routable fixture has no attested key. Exercise the real
+	// challenge tracker and runtime policy, not the private policy helper.
+	srv.trust.HandleAttestationResponse(provider.ID, provider.Provider, resp, tracker)
+	provider.RequestImmediateChallenge()
+	// A second challenge proves the synchronous first verification completed,
+	// including the invalid-runtime branch, without inspecting tracker state.
+	_ = readChallenge()
+	provider.Mu().Lock()
+	runtimeOK = provider.RuntimeVerified
+	provider.Mu().Unlock()
+	policyActive = srv.releases.RuntimeConfigured()
 	return policyActive, runtimeOK
 }
 
 // assertRuntimeApproved checks every manifest-derived routing gate plus actual
 // routability for the provider's model.
-func assertRuntimeApproved(t *testing.T, srv *Server, provider *registry.Provider, model string, want bool, when string) {
+func assertRuntimeApproved(t *testing.T, srv *Server, provider *unionProvider, model string, want bool, when string) {
 	t.Helper()
 	provider.Mu().Lock()
 	verified, checked, metallib := provider.RuntimeVerified, provider.RuntimeManifestChecked, provider.MetallibVerified
@@ -107,9 +195,9 @@ func TestRuntimeManifestAcceptsEveryActiveReleaseMetallib(t *testing.T) {
 	if err := srv.SyncRuntimeManifest(); err != nil {
 		t.Fatalf("SyncRuntimeManifest: %v", err)
 	}
-	accepted := srv.knownRuntimeManifest.TemplateHashes["mlx_metallib"]
+	accepted := srv.releases.RuntimeManifest().TemplateHashes["mlx_metallib"]
 	if len(accepted) != 2 || !accepted[unionPreviousMetallib] || !accepted[unionNewestMetallib] {
-		t.Fatalf("mlx_metallib accepted set = %v, want both active releases' hashes", sortedTemplateHashes(accepted))
+		t.Fatalf("mlx_metallib accepted set = %v, want both active releases' hashes", accepted)
 	}
 
 	cases := []struct {
@@ -168,15 +256,15 @@ func TestRuntimeManifestDeactivationRemovesOnlyThatReleaseMetallib(t *testing.T)
 	assertRuntimeApproved(t, srv, previous, previousModel, true, "before deactivation")
 	assertRuntimeApproved(t, srv, newest, newestModel, true, "before deactivation")
 
-	if err := st.DeleteRelease("0.8.15", defaultReleasePlatform); err != nil {
+	if err := st.DeleteRelease("0.8.15", "macos-arm64"); err != nil {
 		t.Fatalf("DeleteRelease: %v", err)
 	}
 	if err := srv.SyncRuntimeManifest(); err != nil {
 		t.Fatalf("SyncRuntimeManifest after deactivation: %v", err)
 	}
-	accepted := srv.knownRuntimeManifest.TemplateHashes["mlx_metallib"]
+	accepted := srv.releases.RuntimeManifest().TemplateHashes["mlx_metallib"]
 	if len(accepted) != 1 || !accepted[unionNewestMetallib] {
-		t.Fatalf("mlx_metallib accepted set = %v, want only the remaining active release", sortedTemplateHashes(accepted))
+		t.Fatalf("mlx_metallib accepted set = %v, want only the remaining active release", accepted)
 	}
 
 	// Live revalidation inside the sync deroutes the pulled release's fleet…
@@ -200,78 +288,7 @@ func TestRuntimeManifestDeactivationRemovesOnlyThatReleaseMetallib(t *testing.T)
 // mlx_metallib — the family keys are CI fabrications no provider reports
 // (2026-08-31 incident) — so this exercises the manifest and the generic set
 // verifier directly.
-func TestRuntimeManifestUnionsPerFamilyTemplateHashes(t *testing.T) {
-	srv, st := runtimeManifestTestServer(t)
-	qwenOld, qwenNew, qwenUnknown := strings.Repeat("1", 64), strings.Repeat("2", 64), strings.Repeat("3", 64)
-	gemmaShared := strings.Repeat("6", 64)
 
-	older := testRelease("0.8.15", trHashA)
-	older.TemplateHashes = "qwen3.5=" + qwenOld + ",gemma4=" + gemmaShared
-	newer := testRelease("0.8.16", trHashB)
-	newer.TemplateHashes = "qwen3.5=" + qwenNew + ",gemma4=" + gemmaShared
-	for _, rel := range []*store.Release{older, newer} {
-		if err := st.SetRelease(rel); err != nil {
-			t.Fatalf("SetRelease(%s): %v", rel.Version, err)
-		}
-	}
-	if err := srv.SyncRuntimeManifest(); err != nil {
-		t.Fatalf("SyncRuntimeManifest: %v", err)
-	}
-	manifest := srv.knownRuntimeManifest
-	if got := manifest.TemplateHashes["qwen3.5"]; len(got) != 2 || !got[qwenOld] || !got[qwenNew] {
-		t.Fatalf("qwen3.5 accepted set = %v, want both releases' values", sortedTemplateHashes(got))
-	}
-	if got := manifest.TemplateHashes["gemma4"]; len(got) != 1 || !got[gemmaShared] {
-		t.Fatalf("gemma4 accepted set = %v, want the single shared value", sortedTemplateHashes(got))
-	}
-
-	report := func(qwen string) map[string]string {
-		return map[string]string{"qwen3.5": qwen, "gemma4": gemmaShared, "mlx_metallib": trHashC}
-	}
-	cases := []struct {
-		name   string
-		qwen   string
-		wantOK bool
-	}{
-		{"older release's family template", qwenOld, true},
-		{"newer release's family template", qwenNew, true},
-		{"family template no active release ships", qwenUnknown, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			ok, mismatches := srv.verifyRuntimeHashesAgainstManifest(manifest, report(tc.qwen))
-			if ok != tc.wantOK {
-				t.Fatalf("verify = %v (%+v), want %v", ok, mismatches, tc.wantOK)
-			}
-			if !tc.wantOK && (len(mismatches) != 1 || mismatches[0].Component != "template:qwen3.5") {
-				t.Fatalf("mismatches = %+v, want exactly one qwen3.5 mismatch", mismatches)
-			}
-		})
-	}
-
-	// Deactivating the older release removes only its value.
-	if err := st.DeleteRelease("0.8.15", defaultReleasePlatform); err != nil {
-		t.Fatalf("DeleteRelease: %v", err)
-	}
-	if err := srv.SyncRuntimeManifest(); err != nil {
-		t.Fatalf("SyncRuntimeManifest after deactivation: %v", err)
-	}
-	manifest = srv.knownRuntimeManifest
-	if got := manifest.TemplateHashes["qwen3.5"]; len(got) != 1 || !got[qwenNew] {
-		t.Fatalf("qwen3.5 accepted set after deactivation = %v, want only the newer value", sortedTemplateHashes(got))
-	}
-	if ok, _ := srv.verifyRuntimeHashesAgainstManifest(manifest, report(qwenOld)); ok {
-		t.Fatal("deactivated release's family template must no longer be accepted")
-	}
-	if ok, mismatches := srv.verifyRuntimeHashesAgainstManifest(manifest, report(qwenNew)); !ok {
-		t.Fatalf("remaining release's family template must still be accepted: %+v", mismatches)
-	}
-}
-
-// registerReleaseWithMetallibForTest registers a release through the real
-// POST /v1/releases handler (artifact verification against the fake CDN
-// included) with a caller-chosen metallib hash and production-shape family
-// template hashes.
 func registerReleaseWithMetallibForTest(
 	t *testing.T, baseURL, cdnURL string, artifacts *releaseArtifactSet, version, metallib string,
 ) {
@@ -282,7 +299,7 @@ func registerReleaseWithMetallibForTest(
 	artifacts.bundles[path] = bundle
 	artifacts.mu.Unlock()
 	payload := map[string]string{
-		"version": version, "platform": defaultReleasePlatform, "backend": "mlx-swift",
+		"version": version, "platform": "macos-arm64", "backend": "mlx-swift",
 		"binary_hash": binaryHash, "bundle_hash": bundleHash,
 		"metallib_hash": metallib, "url": cdnURL + path,
 		"template_hashes": "qwen3.5=" + strings.Repeat("4", 64) + ",gemma4=" + strings.Repeat("6", 64),
@@ -337,7 +354,7 @@ func publishedMetallibHashes(t *testing.T, baseURL string) []string {
 func TestRegisteringNewerReleaseKeepsPreviousReleaseFleetRuntimeVerified(t *testing.T) {
 	srv, _ := testServer(t)
 	srv.SetReleaseKey("release-key")
-	srv.adminKey = "admin-key"
+	srv.SetAdminKey("admin-key")
 	artifacts := &releaseArtifactSet{bundles: make(map[string][]byte)}
 	cdn := httptest.NewServer(http.HandlerFunc(artifacts.handler))
 	defer cdn.Close()
@@ -352,7 +369,7 @@ func TestRegisteringNewerReleaseKeepsPreviousReleaseFleetRuntimeVerified(t *test
 
 	// The connected fleet: every node registered and last challenged on 0.8.15.
 	type fleetNode struct {
-		provider *registry.Provider
+		provider *unionProvider
 		model    string
 	}
 	fleet := make([]fleetNode, 0, 3)
@@ -403,7 +420,7 @@ func TestRegisteringNewerReleaseKeepsPreviousReleaseFleetRuntimeVerified(t *test
 
 	// Retiring the previous release is an explicit operator action, not a side
 	// effect of registering the next one.
-	deactivateReleaseForCacheTest(t, apiServer.URL, "0.8.15", defaultReleasePlatform)
+	deactivateReleaseForCacheTest(t, apiServer.URL, "0.8.15", "macos-arm64")
 	if got := publishedMetallibHashes(t, apiServer.URL); !reflect.DeepEqual(got, []string{unionNewestMetallib}) {
 		t.Fatalf("published mlx_metallib after deactivation = %v, want only 0.8.16's", got)
 	}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -33,7 +34,7 @@ func TestModelRevisionPromotionClassifiesMissingModelAndDatabaseErrors(t *testin
 		{name: "postgres row lock failure", err: &pgconn.PgError{Code: "25006", Message: "cannot execute SELECT FOR UPDATE in a read-only transaction"}, want: http.StatusInternalServerError},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var st store.Store = store.NewMemory(store.Config{})
+			var st store.Store = memory.NewMemory(store.Config{})
 			if tc.err != nil {
 				st = &modelPromotionFailureStore{Store: st, err: tc.err}
 			}

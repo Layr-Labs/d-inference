@@ -9,6 +9,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/appattest"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	memorystore "github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 func TestFirstProofWaitsForRiskReceiptWithEarlyBoundedRetries(t *testing.T) {
@@ -44,7 +45,7 @@ func TestFirstProofWaitsForRiskReceiptWithEarlyBoundedRetries(t *testing.T) {
 		}
 		e.AssertionAt = time.Now()
 		applyAppAttestReadiness(&e, state)
-		st := &delayedHistoryStore{MemoryStore: store.NewMemory(store.Config{}), readiness: state, t: t,
+		st := &delayedHistoryStore{MemoryStore: memorystore.NewMemory(store.Config{}), readiness: state, t: t,
 			continuity: store.MachineContinuity{Machine: store.MachineIdentity{ID: "machine", Assurance: "key_bound"}}}
 		s.store = st
 		x.updateServingAuthorization(&record.status, e, appattest.EvaluateAuthorization(e, time.Now()))
@@ -108,7 +109,7 @@ func TestUnverifiedEnrollmentReceiptRetriesFirstGrantWithoutSkippingRiskCheck(t 
 		}
 	}
 	// A fresh assertion after independent receipt renewal may grant normally.
-	s.store = &statusReadinessStore{MemoryStore: store.NewMemory(store.Config{}), state: state}
+	s.store = &statusReadinessStore{MemoryStore: memorystore.NewMemory(store.Config{}), state: state}
 	e.AssertionAt = time.Now().UTC()
 	applyAppAttestReadiness(&e, state)
 	x.updateServingAuthorization(&record.status, e, appattest.EvaluateAuthorization(e, time.Now()))

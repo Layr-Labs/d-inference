@@ -10,6 +10,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/appattest"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	memorystore "github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 func TestAppleErrorRetriesExchangeWithBoundedBackoff(t *testing.T) {
@@ -89,7 +90,7 @@ func TestAppAttestAppleFailureRecoveryCadenceDoesNotAccelerateStorageFailures(t 
 func TestAppleErrorRecoveryRequiresFreshQualifiedProof(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		s, p, record, state := newAuthorizationFixture(t)
-		s.store = &statusReadinessStore{MemoryStore: store.NewMemory(store.Config{}), state: state}
+		s.store = &statusReadinessStore{MemoryStore: memorystore.NewMemory(store.Config{}), state: state}
 		x := sessionForAuthorization(s, p, record)
 		attempts := 0
 		ctx, cancel := context.WithCancel(context.Background())

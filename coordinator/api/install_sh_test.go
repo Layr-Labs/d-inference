@@ -14,6 +14,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 func TestEmbeddedInstallerMatchesCanonicalSource(t *testing.T) {
@@ -184,7 +185,7 @@ func TestInstallScriptTemplating(t *testing.T) {
 func newTestServerWithBaseURL(t *testing.T, baseURL string) *httptest.Server {
 	t.Helper()
 	logger := slog.New(slog.DiscardHandler)
-	st := store.NewMemory(store.Config{})
+	st := memory.NewMemory(store.Config{})
 	reg := registry.New(logger)
 	s := NewServer(reg, st, ServerConfig{}, logger)
 	if baseURL != "" {

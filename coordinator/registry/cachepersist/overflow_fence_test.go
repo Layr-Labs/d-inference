@@ -8,6 +8,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/store"
 	crs "github.com/eigeninference/d-inference/coordinator/store/cacheroutingstate"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 // A delayed receipt cannot resurrect evidence whose individual decision was
@@ -16,7 +17,7 @@ func TestOverflowRejectsDelayedInvalidatedEvidence(t *testing.T) {
 	for _, afterReset := range []bool{false, true} {
 		t.Run(fmt.Sprintf("after_reset_%v", afterReset), func(t *testing.T) {
 			ctx, now := context.Background(), time.Now()
-			mem := store.NewMemory(store.Config{})
+			mem := memory.NewMemory(store.Config{})
 			st := &resetCountingStore{Store: mem}
 			opts := Options{MaxPending: 2, Fingerprint: "generation"}
 			p := New(st, nil, opts)

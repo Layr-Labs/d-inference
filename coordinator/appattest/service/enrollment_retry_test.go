@@ -12,10 +12,11 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	memorystore "github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 type failingEnrollmentRead struct {
-	*store.MemoryStore
+	*memorystore.MemoryStore
 	reads  int
 	record store.AppAttestEnrollment
 }
@@ -29,7 +30,7 @@ func (s *failingEnrollmentRead) GetAppAttestEnrollment(context.Context, string) 
 }
 
 func TestAppAttestEnrollmentStoreFailureIsRetryableAndSnapshotReadOnce(t *testing.T) {
-	st := &failingEnrollmentRead{MemoryStore: store.NewMemory(store.Config{})}
+	st := &failingEnrollmentRead{MemoryStore: memorystore.NewMemory(store.Config{})}
 	x := &Session{s: &Service{store: st, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), config: Config{AppID: "TEST.app", Environment: "production"}}, store: st, provider: &registry.Provider{ID: "session"}, id: "current", owner: "owner", account: "account", publicKey: "endpoint", challenge: "nonce", expected: "attestation", protocolVersion: 3, key: &store.AppAttestShadowKey{KeyID: "key"}}
 	st.record = store.AppAttestEnrollment{ProtocolVersion: 3, ID: "original", Owner: x.owner, KeyID: "key", CreatedAt: time.Now(), AppID: "TEST.app", Environment: "production", Challenge: "original nonce", PublicKey: "original endpoint", AccountScope: x.accountScope()}
 	p := protocol.AppAttestShadowPayload{Action: "attestation", Result: "ok", Session: x.id, Challenge: x.challenge, KeyID: "key", ProtocolVersion: 3, EnrollmentSession: "original", Status: &protocol.AppAttestStatus{OSVersion: "27"}, Proof: base64.StdEncoding.EncodeToString([]byte{1})}
@@ -44,14 +45,14 @@ func TestAppAttestEnrollmentStoreFailureIsRetryableAndSnapshotReadOnce(t *testin
 	}
 }
 
-type failingEvidenceCompletion struct{ *store.MemoryStore }
+type failingEvidenceCompletion struct{ *memorystore.MemoryStore }
 
 func (s *failingEvidenceCompletion) CompleteAppAttestEvidence(context.Context, string, store.AppAttestDecision) (string, error) {
 	return "", errors.New("temporary commit failure")
 }
 
 func TestAppAttestCompletionFailureReentersRecovery(t *testing.T) {
-	st := &failingEvidenceCompletion{MemoryStore: store.NewMemory(store.Config{})}
+	st := &failingEvidenceCompletion{MemoryStore: memorystore.NewMemory(store.Config{})}
 	x := &Session{s: &Service{store: st, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}, archive: st, provider: &registry.Provider{ID: "serving"}, id: "original", evidenceID: "proof"}
 	attempts := 0
 	x.runRecovering(context.Background(), func(context.Context) {

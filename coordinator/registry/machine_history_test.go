@@ -8,6 +8,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 func TestMergeVerifiedMachineHistoryPreservesLiveSecurityAndDeltas(t *testing.T) {
@@ -15,7 +16,7 @@ func TestMergeVerifiedMachineHistoryPreservesLiveSecurityAndDeltas(t *testing.T)
 	if !r.GrantAppAttestServingAuthorization(p, lease) {
 		t.Fatal("grant")
 	}
-	st := store.NewMemory(store.Config{})
+	st := memory.NewMemory(store.Config{})
 	r.SetStore(st)
 	if err := st.UpsertReputation(context.Background(), "old-session", store.ReputationRecord{TotalJobs: 100, SuccessfulJobs: 90, FailedJobs: 10, TotalUptimeSeconds: 3600, AvgResponseTimeMs: 500, ChallengesPassed: 5, ChallengesFailed: 1}); err != nil {
 		t.Fatal(err)

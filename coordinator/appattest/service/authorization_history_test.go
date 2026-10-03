@@ -9,10 +9,11 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/appattest"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	memorystore "github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 type delayedHistoryStore struct {
-	*store.MemoryStore
+	*memorystore.MemoryStore
 	continuity store.MachineContinuity
 	readiness  store.AppAttestReadiness
 	t          *testing.T
@@ -34,7 +35,7 @@ func (s *delayedHistoryStore) GetAppAttestReadiness(context.Context, string) (st
 
 func TestLaterCanonicalIdentityDiscoversHistoryWithoutRepeatingBaseline(t *testing.T) {
 	s, p, record, readiness := newAuthorizationFixture(t)
-	st := &delayedHistoryStore{MemoryStore: store.NewMemory(store.Config{}), readiness: readiness, t: t,
+	st := &delayedHistoryStore{MemoryStore: memorystore.NewMemory(store.Config{}), readiness: readiness, t: t,
 		continuity: store.MachineContinuity{Machine: store.MachineIdentity{ID: "machine", Assurance: "key_bound"}}}
 	s.store = st
 	s.registry.SetStore(st)

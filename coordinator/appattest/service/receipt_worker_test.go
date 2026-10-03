@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
+	memorystore "github.com/eigeninference/d-inference/coordinator/store/memory"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -73,7 +74,7 @@ func TestAppAttestReceiptRenewalBoundsAndAuthentication(t *testing.T) {
 }
 
 type receiptWorkerStore struct {
-	*store.MemoryStore
+	*memorystore.MemoryStore
 	old   store.AppAttestReceipt
 	saved *store.AppAttestReceipt
 	stop  context.CancelFunc
@@ -94,7 +95,7 @@ func TestAppAttestReceiptWorkerRenewsWhenShadowDisabled(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	contextJSON, _ := json.Marshal(receiptVerificationContext{AppID: "SLDQ2GJ6TL.io.darkbloom.provider", Environment: "development"})
-	st := &receiptWorkerStore{MemoryStore: store.NewMemory(store.Config{}), stop: cancel,
+	st := &receiptWorkerStore{MemoryStore: memorystore.NewMemory(store.Config{}), stop: cancel,
 		old: store.AppAttestReceipt{ID: "previous", Body: []byte{1, 2, 3}, Context: contextJSON, ExpiresAt: time.Now().Add(time.Hour)}}
 	s := &Service{store: st, config: Config{Enabled: false, ReceiptKeyID: "TESTKEY", ReceiptKeyPath: path}}
 	worker := s.newAppAttestReceiptWorker()

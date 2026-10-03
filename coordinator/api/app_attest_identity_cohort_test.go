@@ -7,19 +7,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"log/slog"
-	"net/http/httptest"
-	"strings"
-	"sync/atomic"
-	"testing"
-	"time"
-
 	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
+	"io"
+	"log/slog"
+	"net/http/httptest"
 	"nhooyr.io/websocket"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
 )
 
 type identityCohortStore struct {
@@ -69,10 +69,10 @@ func TestIdentityCohortControlsLegacyRecoveryAndDuplicateEviction(t *testing.T) 
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-			st := &identityCohortStore{Store: store.NewMemory(store.Config{})}
+			st := &identityCohortStore{Store: memory.NewMemory(store.Config{})}
 			reg := registry.New(logger)
-			s := &Server{registry: reg, store: st, logger: logger,
-				appAttestShadow: AppAttestShadowConfig{ServingEnabled: true, Environment: tc.environment, RolloutPercent: tc.percent}}
+			s := NewServer(reg, st, ServerConfig{AppAttestShadow: AppAttestShadowConfig{ServingEnabled: true, Environment: tc.environment, RolloutPercent: tc.percent}}, logger)
+			t.Cleanup(s.Close)
 			key := testPublicKeyB64()
 			old := reg.Register("old", nil, &protocol.RegisterMessage{})
 			old.SetAttestationResult(&attestation.VerificationResult{Valid: true, SerialNumber: "same-serial", PublicKey: "old-se"})
@@ -80,13 +80,13 @@ func TestIdentityCohortControlsLegacyRecoveryAndDuplicateEviction(t *testing.T) 
 				Attestation: buildTestAttestationJSONWithFields(t, key, "", "same-serial", time.Now(), map[string]interface{}{"osVersion": tc.os})}
 			p := reg.Register("current", nil, r)
 			t.Cleanup(func() { reg.Disconnect("current"); reg.Disconnect("old") })
-			if got := s.appAttestIdentityCandidate(r, tc.account); got != tc.candidate {
+			if got := s.trust.AppAttestIdentityCandidate(r, tc.account); got != tc.candidate {
 				t.Fatal("candidate fixture")
 			}
 			if tc.candidate {
 				p.RequireVerifiedMachineIdentity()
 			}
-			if err := s.verifyProviderAttestation(context.Background(), p.ID, p, r, tc.account); err != nil {
+			if err := s.trust.VerifyProviderAttestation(context.Background(), p.ID, p, r, tc.account); err != nil {
 				t.Fatal(err)
 			}
 			if st.tokenReads.Load() != 0 {
@@ -110,7 +110,7 @@ func TestIdentityCohortControlsLegacyRecoveryAndDuplicateEviction(t *testing.T) 
 
 func TestRegistrationResolvesAccountOnceBeforeIdentityClassification(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	st := &identityCohortStore{Store: store.NewMemory(store.Config{})}
+	st := &identityCohortStore{Store: memory.NewMemory(store.Config{})}
 	reg := registry.New(logger)
 	s := NewServer(reg, st, ServerConfig{AppAttestShadow: AppAttestShadowConfig{ServingEnabled: true, Environment: "production", RolloutPercent: 100}}, logger)
 	s.SetSkipChallenge(true)

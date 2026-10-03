@@ -17,6 +17,8 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	crs "github.com/eigeninference/d-inference/coordinator/store/cacheroutingstate"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
+	"github.com/eigeninference/d-inference/coordinator/store/postgres"
 )
 
 // persistenceTestProvider registers a provider the way the wire path does:
@@ -62,7 +64,7 @@ func storedHolders(t *testing.T, st crs.Store) []crs.HolderRecord {
 }
 
 func TestCacheRoutingPersistenceSurvivesRestart(t *testing.T) {
-	t.Run("memory", func(t *testing.T) { testCacheRoutingPersistenceSurvivesRestart(t, store.NewMemory(store.Config{})) })
+	t.Run("memory", func(t *testing.T) { testCacheRoutingPersistenceSurvivesRestart(t, memory.NewMemory(store.Config{})) })
 	t.Run("postgres", func(t *testing.T) {
 		testCacheRoutingPersistenceSurvivesRestart(t, isolatedPostgresStore(t))
 	})
@@ -95,7 +97,7 @@ func isolatedPostgresStore(t *testing.T) store.Store {
 	}
 	isolated := *parsed
 	isolated.Path = "/" + name
-	pg, err := store.NewPostgres(ctx, store.Config{DatabaseURL: isolated.String()})
+	pg, err := postgres.NewPostgres(ctx, store.Config{DatabaseURL: isolated.String()})
 	if err != nil {
 		_, _ = admin.Exec(ctx, "DROP DATABASE "+name+" WITH (FORCE)")
 		admin.Close(ctx)
@@ -231,7 +233,7 @@ func testCacheRoutingPersistenceSurvivesRestart(t *testing.T, st store.Store) {
 }
 
 func TestCacheRoutingPersistenceRemovalSemantics(t *testing.T) {
-	st := store.NewMemory(store.Config{})
+	st := memory.NewMemory(store.Config{})
 	r, _, capability := exactTestRegistry(t)
 	removeTestProvider(r, "provider-a")
 	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
@@ -312,7 +314,7 @@ func TestCacheRoutingPersistenceOffWithoutStore(t *testing.T) {
 // heartbeat that follows re-applies the same set, so nothing "changes". A
 // restored holder must bind on that path, not only on a capability change.
 func TestCacheRoutingPersistenceBindsOnWireRegistration(t *testing.T) {
-	st := store.NewMemory(store.Config{})
+	st := memory.NewMemory(store.Config{})
 	r1, _, capability := exactTestRegistry(t)
 	removeTestProvider(r1, "provider-a")
 	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
@@ -368,7 +370,7 @@ func TestCacheRoutingPersistenceBindsOnWireRegistration(t *testing.T) {
 // A capability change on a provider drops the rows parked for its previous
 // capability instead of re-binding stale evidence, and deletes them durably.
 func TestCacheRoutingPersistenceCapabilityChangeDropsParkedRows(t *testing.T) {
-	st := store.NewMemory(store.Config{})
+	st := memory.NewMemory(store.Config{})
 	r, _, capability := exactTestRegistry(t)
 	removeTestProvider(r, "provider-a")
 	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
@@ -428,7 +430,7 @@ func TestCacheRoutingPersistenceCapabilityChangeDropsParkedRows(t *testing.T) {
 // A new session can take fresh receipts before the old session's rows are
 // parked; binding the parked rows must not roll the live holder back.
 func TestCacheRoutingPersistenceParkedRowNeverOverwritesNewerLiveHolder(t *testing.T) {
-	st := store.NewMemory(store.Config{})
+	st := memory.NewMemory(store.Config{})
 	r, _, capability := exactTestRegistry(t)
 	removeTestProvider(r, "provider-a")
 	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
@@ -491,7 +493,7 @@ func TestCacheRoutingPersistenceParkedRowNeverOverwritesNewerLiveHolder(t *testi
 // The registry decides what is persistable: resident (memory-tier) holders
 // never reach the store.
 func TestCacheRoutingPersistenceSkipsMemoryTier(t *testing.T) {
-	st := store.NewMemory(store.Config{})
+	st := memory.NewMemory(store.Config{})
 	r, _, capability := exactTestRegistry(t)
 	startPersistence(t, r, st)
 	now := time.Now()
@@ -514,7 +516,7 @@ func TestCacheRoutingPersistenceSkipsMemoryTier(t *testing.T) {
 // different prompt contract is deleted durably at bind, not reloaded and
 // rejected again on every boot.
 func TestCacheRoutingPersistenceDeletesMismatchedRestoredRows(t *testing.T) {
-	st := store.NewMemory(store.Config{})
+	st := memory.NewMemory(store.Config{})
 	r1, _, capability := exactTestRegistry(t)
 	removeTestProvider(r1, "provider-a")
 	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
@@ -572,7 +574,7 @@ func TestCacheRoutingPersistenceDeletesMismatchedRestoredRows(t *testing.T) {
 // epoch). Invalidating the older session's holder must not delete the row that
 // is now the newer session's evidence.
 func TestCacheRoutingPersistenceKeepsRowOwnedByOtherLiveSession(t *testing.T) {
-	st := store.NewMemory(store.Config{})
+	st := memory.NewMemory(store.Config{})
 	r, _, capability := exactTestRegistry(t)
 	removeTestProvider(r, "provider-a")
 	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
@@ -628,7 +630,7 @@ func TestCacheRoutingPersistenceKeepsRowOwnedByOtherLiveSession(t *testing.T) {
 // bumped promptcontract.BlockHashVersion while the provider's epoch stayed)
 // is rejected at bind without deleting the row the same session holds live.
 func TestCacheRoutingPersistenceMismatchAtBindKeepsLiveRow(t *testing.T) {
-	st := store.NewMemory(store.Config{})
+	st := memory.NewMemory(store.Config{})
 	r, _, capability := exactTestRegistry(t)
 	removeTestProvider(r, "provider-a")
 	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
@@ -677,7 +679,7 @@ func TestCacheRoutingPersistenceMismatchAtBindKeepsLiveRow(t *testing.T) {
 // parked row with newer evidence on a live session of the same machine must
 // survive as that session's evidence.
 func TestCacheRoutingPersistenceCapabilityChangeKeepsRowOwnedByLiveSession(t *testing.T) {
-	st := store.NewMemory(store.Config{})
+	st := memory.NewMemory(store.Config{})
 	r, _, capability := exactTestRegistry(t)
 	removeTestProvider(r, "provider-a")
 	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
@@ -756,7 +758,7 @@ func TestCacheRoutingPersistenceCapabilityChangeKeepsRowOwnedByLiveSession(t *te
 // deadline. The durable row carries it, so a restart inside that window keeps
 // routing on the measured value instead of flipping to the estimate.
 func TestCacheRoutingPersistenceRestoresMeasuredStage(t *testing.T) {
-	st := store.NewMemory(store.Config{})
+	st := memory.NewMemory(store.Config{})
 	r1, _, capability := exactTestRegistry(t)
 	removeTestProvider(r1, "provider-a")
 	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
@@ -876,7 +878,7 @@ func TestCacheDemandRestoreReportsAcceptedEntries(t *testing.T) {
 // fingerprintFlakyStore fails the key-generation read while fail is set, the
 // way a busy database at boot does.
 type fingerprintFlakyStore struct {
-	*store.MemoryStore
+	*memory.MemoryStore
 	fail atomic.Bool
 }
 
@@ -891,7 +893,7 @@ func (f *fingerprintFlakyStore) CacheRoutingKeyFingerprint(ctx context.Context) 
 // nothing (the next boot would reset such rows as foreign) until a retried
 // restore succeeds; then the run's evidence is flushed under the generation.
 func TestCacheRoutingPersistenceRetriesRestoreBeforeWriting(t *testing.T) {
-	st := &fingerprintFlakyStore{MemoryStore: store.NewMemory(store.Config{})}
+	st := &fingerprintFlakyStore{MemoryStore: memory.NewMemory(store.Config{})}
 	st.fail.Store(true)
 	r, _, capability := exactTestRegistry(t)
 	removeTestProvider(r, "provider-a")
@@ -956,7 +958,7 @@ func TestCacheRoutingPersistenceRetriesRestoreBeforeWriting(t *testing.T) {
 // Repeated because map order is random.
 func TestCacheRoutingPersistenceKeepsNewestSurvivingHolder(t *testing.T) {
 	for round := 0; round < 10; round++ {
-		st := store.NewMemory(store.Config{})
+		st := memory.NewMemory(store.Config{})
 		r, _, capability := exactTestRegistry(t)
 		removeTestProvider(r, "provider-a")
 		capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
@@ -1017,7 +1019,7 @@ func TestPersistFingerprintPinsDerivationInputs(t *testing.T) {
 // another ready-boundary mode does not reclaim rows produced under the old
 // mode, exactly as an in-session mode change invalidates them.
 func TestCacheRoutingPersistenceModeChangeDropsRestoredRows(t *testing.T) {
-	st := store.NewMemory(store.Config{})
+	st := memory.NewMemory(store.Config{})
 	r1, _, capability := exactTestRegistry(t)
 	removeTestProvider(r1, "provider-a")
 	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
@@ -1137,7 +1139,7 @@ func TestCacheDemandRestoreMergesBySeenTimeUnderTheCap(t *testing.T) {
 // tombstone queued; a retried restore that still finds the old durable row
 // must not resurrect the holder or discard the tombstone.
 func TestCacheRoutingPersistenceRetriedRestoreKeepsTombstones(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	r1, _, capability := exactTestRegistry(t)
 	removeTestProvider(r1, "provider-a")
 	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
@@ -1217,7 +1219,7 @@ func TestCacheRoutingPersistenceRetriedRestoreKeepsTombstones(t *testing.T) {
 // A bucket larger than one bind chunk binds completely, across several
 // tracker-lock holds, at the provider's registration.
 func TestCacheRoutingPersistenceBindsLargeBucketInChunks(t *testing.T) {
-	st := store.NewMemory(store.Config{})
+	st := memory.NewMemory(store.Config{})
 	r, _, capability := exactTestRegistry(t)
 	removeTestProvider(r, "provider-a")
 	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
@@ -1246,7 +1248,7 @@ func TestCacheRoutingPersistenceBindsLargeBucketInChunks(t *testing.T) {
 
 // Shutdown joins the persistence loop after cancelling its context.
 func TestCacheRoutingPersistenceLoopJoinsOnCancel(t *testing.T) {
-	st := store.NewMemory(store.Config{})
+	st := memory.NewMemory(store.Config{})
 	r, _, _ := exactTestRegistry(t)
 	r.SetStore(st)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1269,7 +1271,7 @@ func TestCacheRoutingPersistenceLoopJoinsOnCancel(t *testing.T) {
 // One tracker-lock hold binds at most one chunk across all of a provider's
 // capabilities; the rest is reported as remaining for the next hold.
 func TestCacheRoutingPersistenceChunkBudgetSpansCapabilities(t *testing.T) {
-	st := store.NewMemory(store.Config{})
+	st := memory.NewMemory(store.Config{})
 	r, _, capability := exactTestRegistry(t)
 	removeTestProvider(r, "provider-a")
 	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
@@ -1310,7 +1312,7 @@ func TestCacheRoutingPersistenceChunkBudgetSpansCapabilities(t *testing.T) {
 // on the next capability snapshot, the heartbeat path, not one chunk per
 // heartbeat.
 func TestCacheRoutingPersistenceHeartbeatBindsLargeBucketCompletely(t *testing.T) {
-	st := store.NewMemory(store.Config{})
+	st := memory.NewMemory(store.Config{})
 	r, _, capability := exactTestRegistry(t)
 	removeTestProvider(r, "provider-a")
 	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
@@ -1342,7 +1344,7 @@ func TestCacheRoutingPersistenceHeartbeatBindsLargeBucketCompletely(t *testing.T
 // leaves the rows parked for its unchanged SSD capability alone: they bind
 // on that same apply instead of being settled as stale.
 func TestCacheRoutingPersistenceMemoryOnlyChangeKeepsParkedRows(t *testing.T) {
-	st := store.NewMemory(store.Config{})
+	st := memory.NewMemory(store.Config{})
 	r, _, capability := exactTestRegistry(t)
 	removeTestProvider(r, "provider-a")
 	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
@@ -1377,7 +1379,7 @@ func TestCacheRoutingPersistenceMemoryOnlyChangeKeepsParkedRows(t *testing.T) {
 // A capability change settles a large parked bucket for the old capability
 // completely, in chunks outside the apply's locks.
 func TestCacheRoutingPersistenceCapabilityChangeSettlesLargeBucket(t *testing.T) {
-	st := store.NewMemory(store.Config{})
+	st := memory.NewMemory(store.Config{})
 	r, _, capability := exactTestRegistry(t)
 	removeTestProvider(r, "provider-a")
 	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
@@ -1409,7 +1411,7 @@ func TestCacheRoutingPersistenceCapabilityChangeSettlesLargeBucket(t *testing.T)
 // An overflow wakes the persistence loop: the reset lands well inside the
 // flush tick rather than at the next one.
 func TestCacheRoutingPersistenceOverflowWakesTheLoop(t *testing.T) {
-	st := store.NewMemory(store.Config{})
+	st := memory.NewMemory(store.Config{})
 	r, _, _ := exactTestRegistry(t)
 	r.cacheRouting.mu.Lock()
 	r.cacheRouting.maxEntries = 8 // the persister's dirty cap follows: 32
@@ -1457,7 +1459,7 @@ func TestCacheRoutingPersistenceOverflowWakesTheLoop(t *testing.T) {
 // still holds the key under the same epoch, their invalidation is a delete
 // decision that outranks the older parked evidence, whatever its identity.
 func TestCacheRoutingPersistenceSameEpochChangeBindsNewCapabilityRows(t *testing.T) {
-	st := store.NewMemory(store.Config{})
+	st := memory.NewMemory(store.Config{})
 	r, _, capability := exactTestRegistry(t)
 	removeTestProvider(r, "provider-a")
 	capability.ReadyBoundaryMode = "" // the old capability: floor boundaries
@@ -1520,7 +1522,7 @@ func TestCacheRoutingPersistenceSameEpochChangeBindsNewCapabilityRows(t *testing
 // A's rows, must leave the rest for the bind rather than delete them. A
 // session that lost its ID leaves the rows parked.
 func TestCacheRoutingPersistenceStaleDropYieldsToRepublishedEpoch(t *testing.T) {
-	st := store.NewMemory(store.Config{})
+	st := memory.NewMemory(store.Config{})
 	r, _, capability := exactTestRegistry(t)
 	removeTestProvider(r, "provider-a")
 	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
@@ -1584,7 +1586,7 @@ func TestCacheRoutingPersistenceStaleDropYieldsToRepublishedEpoch(t *testing.T) 
 // evidence: invalidating the newer session's holder deletes the durable
 // row instead of refreshing it from the expired one.
 func TestCacheRoutingPersistenceExpiredSessionDoesNotPreserveRow(t *testing.T) {
-	st := store.NewMemory(store.Config{})
+	st := memory.NewMemory(store.Config{})
 	r, _, capability := exactTestRegistry(t)
 	removeTestProvider(r, "provider-a")
 	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint

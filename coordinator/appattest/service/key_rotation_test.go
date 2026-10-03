@@ -11,6 +11,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	memorystore "github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 func rotationKeyID(fill byte) string {
@@ -19,13 +20,13 @@ func rotationKeyID(fill byte) string {
 
 type rotationHarness struct {
 	s      *Service
-	mem    *store.MemoryStore
+	mem    *memorystore.MemoryStore
 	events []map[string]any
 }
 
 func newRotationHarness(t *testing.T, percent int) *rotationHarness {
 	t.Helper()
-	h := &rotationHarness{mem: store.NewMemory(store.Config{})}
+	h := &rotationHarness{mem: memorystore.NewMemory(store.Config{})}
 	h.s = &Service{store: h.mem, logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		config: Config{AppID: "TEST.app", Environment: "production", KeyRotationPercent: percent}}
 	h.s.emitEvent = func(fields map[string]any) { h.events = append(h.events, fields) }

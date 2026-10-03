@@ -3,19 +3,19 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 // Model a successful commit that consumes the request's remaining deadline.
 // Any subsequent storage call observes cancellation, but local fencing must
 // still complete for both first-time and idempotent revocations.
 type revocationDeadlineStore struct {
-	*store.MemoryStore
+	*memory.MemoryStore
 	cancel context.CancelFunc
 }
 
@@ -39,9 +39,11 @@ func TestAppAttestAdminRevocationFencesAfterCommitConsumesDeadline(t *testing.T)
 			name = "idempotent_revocation"
 		}
 		t.Run(name, func(t *testing.T) {
-			s, p, _ := newAuthorizationFixture(t)
-			s.adminKey = "admin-secret"
-			memory := s.store.(*store.MemoryStore)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			memory := memory.NewMemory(store.Config{})
+			s, p, _ := newAuthorizationFixtureWithStore(t, &revocationDeadlineStore{MemoryStore: memory, cancel: cancel})
+			s.SetAdminKey("admin-secret")
 			if _, err := memory.InsertAppAttestShadowKey(context.Background(), store.AppAttestShadowKey{KeyID: "credential", AccountID: "account"}); err != nil {
 				t.Fatal(err)
 			}
@@ -50,13 +52,13 @@ func TestAppAttestAdminRevocationFencesAfterCommitConsumesDeadline(t *testing.T)
 					t.Fatal(err)
 				}
 			}
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			s.store = &revocationDeadlineStore{MemoryStore: memory, cancel: cancel}
 			r := httptest.NewRequest(http.MethodPost, "/v1/admin/app-attest/revoke", strings.NewReader(`{"key_id":"credential","account_id":"account","reason":"operator_revoked"}`)).WithContext(ctx)
 			r.Header.Set("Authorization", "Bearer admin-secret")
 			w := httptest.NewRecorder()
-			s.handleAdminAppAttestRevoke(w, r)
+			s.trust.HandleAdminAppAttestRevoke(w, r)
+			if ctx.Err() != context.Canceled {
+				t.Fatal("durable revocation did not consume the request deadline")
+			}
 			if w.Code != http.StatusOK {
 				t.Fatalf("successful durable revocation returned %d: %s", w.Code, w.Body.String())
 			}

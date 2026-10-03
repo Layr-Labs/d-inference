@@ -84,7 +84,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Check adversarial numeric parsing without instrumentation
-        run: go test -race=false -cover=false ./coordinator/api -run '^TestConstrainedExactNonnegativeIntBoundsAdversarialLiterals$' -count=1
+        run: go test -race=false -cover=false ./coordinator/api/inference/request -run '^TestConstrainedExactNonnegativeIntBoundsAdversarialLiterals$' -count=1
       - name: Test coordinator runner guards
         run: python3 scripts/test-coordinator-tests.py
       - name: Run tests

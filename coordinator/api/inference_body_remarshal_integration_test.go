@@ -30,17 +30,18 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 func TestAliasCapacityFallbackForwardsUnescapedBody(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	// Keep the challenge ticker quiet for the test window: the saturated desired
 	// provider is registered with a nil conn (it never receives a dispatch) and
 	// shouldn't be challenged over the wire.
-	srv.challengeInterval = 30 * time.Second
+	srv.SetChallengeInterval(30 * time.Second)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 

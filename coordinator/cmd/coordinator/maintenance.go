@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/eigeninference/d-inference/coordinator/store"
 	"log/slog"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/store"
+	postgresstore "github.com/eigeninference/d-inference/coordinator/store/postgres"
 )
 
 // Runs before app startup: no admin seeding, listeners, workers or MDM clients.
@@ -20,7 +22,7 @@ func runMaintenanceCommand(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 	started := time.Now()
-	st, err := store.NewPostgres(ctx, cfg)
+	st, err := postgresstore.NewPostgres(ctx, cfg)
 	if err != nil {
 		return err
 	}

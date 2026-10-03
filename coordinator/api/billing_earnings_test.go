@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/access"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -59,10 +59,10 @@ func TestAccountEarningsUsesLifetimeTotalsAndCurrentBalance(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/provider/account-earnings?limit=1", nil)
-	req = req.WithContext(context.WithValue(req.Context(), ctxKeyConsumer, accountID))
+	req = req.WithContext(access.WithConsumer(req.Context(), accountID))
 	w := httptest.NewRecorder()
 
-	srv.handleAccountEarnings(w, req)
+	srv.billingHTTP.HandleAccountEarnings(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())

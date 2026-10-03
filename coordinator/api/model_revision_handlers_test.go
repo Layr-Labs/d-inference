@@ -11,17 +11,19 @@ import (
 	"sync/atomic"
 	"testing"
 
+	httpx "github.com/eigeninference/d-inference/coordinator/api/httpx"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 func TestPublishModelRevisionPreservesMetadataAndApprovesTransition(t *testing.T) {
 	manifest := validTestManifest()
 	manifest.Version = "v2"
-	manifest.R2Prefix = modelR2Prefix(manifest.ModelID, manifest.Version)
+	manifest.R2Prefix = testModelPrefix(manifest.ModelID, manifest.Version)
 	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/manifest.json") {
-			writeJSON(w, http.StatusOK, manifest)
+			httpx.WriteJSON(w, http.StatusOK, manifest)
 			return
 		}
 		if strings.HasSuffix(r.URL.Path, "/config.json") && r.Method == http.MethodHead {
@@ -34,7 +36,7 @@ func TestPublishModelRevisionPreservesMetadataAndApprovesTransition(t *testing.T
 	defer cdn.Close()
 	t.Setenv("MODEL_REGISTRY_CDN_BASE_URL", cdn.URL)
 	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
-	st := store.NewCached(store.NewMemory(store.Config{}), store.DefaultCacheConfig())
+	st := store.NewCached(memory.NewMemory(store.Config{}), store.DefaultCacheConfig())
 	reg := registry.New(slog.Default())
 	srv := NewServer(reg, st, ServerConfig{}, slog.Default())
 	t.Cleanup(srv.Close)
@@ -44,7 +46,7 @@ func TestPublishModelRevisionPreservesMetadataAndApprovesTransition(t *testing.T
 		t.Fatal(err)
 	}
 	before.RuntimeParameters = map[string]any{"temperature": 0.7}
-	if err := st.UpsertModelRegistryEntry(registryEntryFromRecord(before)); err != nil {
+	if err := st.UpsertModelRegistryEntry(&before.ModelRegistryEntry); err != nil {
 		t.Fatal(err)
 	}
 	cacheReadPrice := int64(37)
@@ -123,7 +125,7 @@ func (s *revisionCatalogFailureStore) ListActiveModelRegistryWithError() ([]stor
 
 func TestRevisionRetirementDoesNotAcknowledgeFailedPolicyRefresh(t *testing.T) {
 	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
-	base := store.NewMemory(store.Config{})
+	base := memory.NewMemory(store.Config{})
 	seedActiveModel(t, base, "revision-refresh-test", "Test model")
 	original, err := base.GetModelRegistryRecord("revision-refresh-test")
 	if err != nil {

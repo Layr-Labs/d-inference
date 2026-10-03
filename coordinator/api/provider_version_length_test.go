@@ -46,7 +46,7 @@ func TestProviderRegistrationRejectsOversizedVersion(t *testing.T) {
 		return conn, err
 	}
 
-	conn, err := register(strings.Repeat("9.", maxProviderVersionLength) + "0")
+	conn, err := register(strings.Repeat("9.", 128) + "0")
 	if err == nil {
 		t.Fatal("oversized version was accepted")
 	}

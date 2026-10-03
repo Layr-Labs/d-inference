@@ -9,12 +9,13 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	memorystore "github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 // Hold both archive transactions separately: returning from Begin must not
 // release admission while the deferred Complete is still using the database.
 type blockedShadowArchive struct {
-	*store.MemoryStore
+	*memorystore.MemoryStore
 	begin, complete                          chan struct{}
 	releaseBegin, releaseComplete            chan struct{}
 	begins, completions, events, enrollments atomic.Int32
@@ -55,7 +56,7 @@ func (s *blockedShadowArchive) SaveAppAttestEnrollment(context.Context, store.Ap
 }
 
 func TestAppAttestStorageBoundsBusyAndStoppedSessionsThroughCompletion(t *testing.T) {
-	st := &blockedShadowArchive{MemoryStore: store.NewMemory(store.Config{}), begin: make(chan struct{}, 4), complete: make(chan struct{}, 4), releaseBegin: make(chan struct{}), releaseComplete: make(chan struct{})}
+	st := &blockedShadowArchive{MemoryStore: memorystore.NewMemory(store.Config{}), begin: make(chan struct{}, 4), complete: make(chan struct{}, 4), releaseBegin: make(chan struct{}), releaseComplete: make(chan struct{})}
 	s := &Service{store: st}
 	newSession := func(reason string) *Session {
 		p := newSessionProvider("endpoint", "se")

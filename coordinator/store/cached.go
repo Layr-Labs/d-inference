@@ -132,8 +132,6 @@ func (c *CachedStore) Stats() CacheStats {
 	return CacheStats{Users: c.users.counters(), Models: c.models.counters()}
 }
 
-// --- Users: cached lookups ---
-
 func (c *CachedStore) GetUserByAccountID(accountID string) (*User, error) {
 	return c.users.get("account\x00"+accountID, func() (*User, error) {
 		return c.Store.GetUserByAccountID(accountID)
@@ -146,11 +144,8 @@ func (c *CachedStore) GetUserByPrivyID(privyUserID string) (*User, error) {
 	}, cloneUser)
 }
 
-// --- Users: every writer of the users table invalidates the whole domain.
-// Invalidation happens even when the inner write fails: GetOrCreateUser
-// re-reads by Privy ID after a duplicate-key CreateUser and must not be served
-// the negative entry it just recorded.
-
+// Every user writer invalidates the domain even when the write fails:
+// duplicate-key recovery must not receive a cached negative lookup.
 func (c *CachedStore) CreateUser(user *User) error {
 	err := c.Store.CreateUser(user)
 	c.users.invalidate()
@@ -175,8 +170,6 @@ func (c *CachedStore) SetUserPlatformFeePercent(accountID string, feePercent *in
 	return err
 }
 
-// --- Model registry: cached lookups ---
-
 func (c *CachedStore) GetModelRegistryRecord(modelID string) (*ModelRegistryRecord, error) {
 	return c.models.get(modelID, func() (*ModelRegistryRecord, error) {
 		return c.Store.GetModelRegistryRecord(modelID)
@@ -193,15 +186,11 @@ func (c *CachedStore) GetModelManifest(modelID string) (*ModelManifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	return manifestFromRecord(rec), nil
+	return ManifestFromRecord(rec), nil
 }
 
-// --- Model registry: every writer that can change an active record (entry
-// fields, versions and their files, the active-version pointer, status)
-// invalidates the whole domain. Alias and publishing-key writers are left
-// alone: the record query joins only model_registry, model_active_versions and
-// model_versions.
-
+// Writers that can change the active record invalidate the model domain.
+// Alias and publishing-key writes do not affect the record query.
 func (c *CachedStore) UpsertModelRegistryEntry(entry *ModelRegistryEntry) error {
 	err := c.Store.UpsertModelRegistryEntry(entry)
 	c.models.invalidate()

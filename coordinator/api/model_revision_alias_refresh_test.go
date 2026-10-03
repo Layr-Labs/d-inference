@@ -14,6 +14,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 	"nhooyr.io/websocket"
 )
 
@@ -32,9 +33,9 @@ func (s *revisionAliasFailureStore) ListModelAliases() ([]store.ModelAlias, erro
 func TestPublishRevisionRetriesAliasRefreshBeforeDeliveringDesiredTarget(t *testing.T) {
 	for _, lineage := range []string{"previous", "retired"} {
 		t.Run(lineage, func(t *testing.T) {
-			backing := &revisionAliasFailureStore{Store: store.NewMemory(store.Config{})}
+			backing := &revisionAliasFailureStore{Store: memory.NewMemory(store.Config{})}
 			srv, st, manifest := revisionPublishFixture(t, backing)
-			srv.challengeInterval = time.Hour
+			srv.SetChallengeInterval(time.Hour)
 			const oldBuild = "old-alias-build"
 			seedActiveModel(t, st, oldBuild, "Old build")
 			alias := &store.ModelAlias{
@@ -112,7 +113,7 @@ func TestPublishRevisionRetriesAliasRefreshBeforeDeliveringDesiredTarget(t *test
 func TestRevisionRollbackAndRetirementRetryAliasRefresh(t *testing.T) {
 	for _, action := range []string{"promote", "retire-revision"} {
 		t.Run(action, func(t *testing.T) {
-			backing := &revisionAliasFailureStore{Store: store.NewMemory(store.Config{})}
+			backing := &revisionAliasFailureStore{Store: memory.NewMemory(store.Config{})}
 			srv, st, manifest := revisionPublishFixture(t, backing)
 			original, err := st.GetModelRegistryRecord(manifest.ModelID)
 			if err != nil {

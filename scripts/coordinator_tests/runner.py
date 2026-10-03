@@ -112,7 +112,18 @@ def run(args, output, processes):
         raise ValueError("no Go packages selected")
     flags = ["-race"] if args.race else []
     if args.coverprofile:
-        flags += ["-cover", "-covermode=atomic"]
+        # Contract suites live outside their implementations. Instrument the
+        # same production packages in every binary so their imported behavior
+        # remains covered and overlapping profiles have identical counters.
+        sources = list(packages)
+        contract_roots = sorted({package.split("/tests", 1)[0] for package in packages
+                                 if "/tests/" in package or package.endswith("/tests")})
+        if contract_roots:
+            sources += checked_output(["go", "list", *(root + "/..." for root in contract_roots)],
+                                      ROOT, processes).splitlines()
+        covered = [package for package in dict.fromkeys(sources)
+                   if not {"tests", "testkit", "testdb"}.intersection(package.split("/"))]
+        flags += ["-cover", "-covermode=atomic", "-coverpkg=" + ",".join(covered)]
     # Registry has process-wide allocation/throughput guards. The throughput
     # guard already excludes race builds; retain ordinary execution otherwise.
     sharded = [REGISTRY, API] if args.race else [API]

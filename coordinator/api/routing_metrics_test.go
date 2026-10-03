@@ -7,16 +7,19 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"nhooyr.io/websocket"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/access"
 	"github.com/eigeninference/d-inference/coordinator/datadog"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 // udpCollector listens on a random UDP port and collects DogStatsD packets.
@@ -117,7 +120,7 @@ func newTestDD(t *testing.T, collector *udpCollector) *datadog.Client {
 	return client
 }
 
-func makeRoutableProvider(t *testing.T, reg *registry.Registry, id, model string) *registry.Provider {
+func makeRoutableProvider(t *testing.T, reg *registry.Registry, id, model string, connections ...*websocket.Conn) *registry.Provider {
 	t.Helper()
 	msg := &protocol.RegisterMessage{
 		Type: protocol.TypeRegister,
@@ -144,7 +147,11 @@ func makeRoutableProvider(t *testing.T, reg *registry.Registry, id, model string
 			EnvScrubbed:          true,
 		},
 	}
-	p := reg.Register(id, nil, msg)
+	var connection *websocket.Conn
+	if len(connections) > 0 {
+		connection = connections[0]
+	}
+	p := reg.Register(id, connection, msg)
 	// This helper constructs an already registered, routable fixture. Recovery
 	// failure cases use their own pending-registration fixtures.
 	p.CompleteProviderStateRestore()
@@ -177,7 +184,7 @@ func TestRoutingMetrics_SelectedEmitsDecisionAndCost(t *testing.T) {
 	defer collector.Close()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 
 	model := "test-routing-model"
@@ -203,11 +210,11 @@ func TestRoutingMetrics_SelectedEmitsDecisionAndCost(t *testing.T) {
 		t.Fatal("ReserveProviderEx returned nil — provider not routable")
 	}
 
-	srv.ddIncr("routing.decisions", []string{"model:" + model, "outcome:selected"})
-	srv.ddIncr("routing.provider_selected", []string{"provider_id:" + provider.ID, "model:" + model})
-	srv.ddHistogram("routing.cost_ms", decision.CostMs, []string{"model:" + model, "provider_id:" + provider.ID})
+	srv.observation.Incr("routing.decisions", []string{"model:" + model, "outcome:selected"})
+	srv.observation.Incr("routing.provider_selected", []string{"provider_id:" + provider.ID, "model:" + model})
+	srv.observation.Histogram("routing.cost_ms", decision.CostMs, []string{"model:" + model, "provider_id:" + provider.ID})
 	if decision.EffectiveTPS > 0 {
-		srv.ddGauge("routing.effective_decode_tps", decision.EffectiveTPS, []string{"provider_id:" + provider.ID})
+		srv.observation.Gauge("routing.effective_decode_tps", decision.EffectiveTPS, []string{"provider_id:" + provider.ID})
 	}
 
 	_ = ddClient.Statsd.Flush()
@@ -235,7 +242,7 @@ func TestRoutingMetrics_NoProviderEmitsNoProvider(t *testing.T) {
 	defer collector.Close()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 
 	srv := NewServer(reg, st, ServerConfig{}, logger)
@@ -262,7 +269,7 @@ func TestRoutingMetrics_NoProviderEmitsNoProvider(t *testing.T) {
 	if decision.CapacityRejections > 0 && decision.CandidateCount == 0 {
 		outcome = "over_capacity"
 	}
-	srv.ddIncr("routing.decisions", []string{"model:" + model, "outcome:" + outcome})
+	srv.observation.Incr("routing.decisions", []string{"model:" + model, "outcome:" + outcome})
 
 	_ = ddClient.Statsd.Flush()
 	packets := collector.drain()
@@ -280,7 +287,7 @@ func TestRoutingMetrics_OverCapacityOutcome(t *testing.T) {
 	defer collector.Close()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 
 	model := "big-model"
@@ -329,7 +336,7 @@ func TestRoutingMetrics_OverCapacityOutcome(t *testing.T) {
 	} else if decision.CapacityRejections > 0 && decision.CandidateCount == 0 {
 		outcome = "over_capacity"
 	}
-	srv.ddIncr("routing.decisions", []string{"model:" + model, "outcome:" + outcome})
+	srv.observation.Incr("routing.decisions", []string{"model:" + model, "outcome:" + outcome})
 
 	_ = ddClient.Statsd.Flush()
 	packets := collector.drain()
@@ -344,7 +351,7 @@ func TestRateLimitMetrics_ConsumerRejectionEmitsCounter(t *testing.T) {
 	defer collector.Close()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 
 	srv := NewServer(reg, st, ServerConfig{}, logger)
@@ -353,11 +360,11 @@ func TestRateLimitMetrics_ConsumerRejectionEmitsCounter(t *testing.T) {
 	srv.SetDatadog(ddClient)
 	srv.SetRateLimiter(ratelimit.New(ratelimit.Config{RPS: 0.001, Burst: 1}))
 
-	handler := srv.rateLimitConsumer(func(w http.ResponseWriter, r *http.Request) {
+	handler := srv.access.RateLimitConsumer(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	ctx := context.WithValue(context.Background(), ctxKeyConsumer, "acct-ratelimit-test")
+	ctx := access.WithConsumer(context.Background(), "acct-ratelimit-test")
 
 	rec := httptest.NewRecorder()
 	handler(rec, httptest.NewRequest("POST", "/test", nil).WithContext(ctx))
@@ -387,7 +394,7 @@ func TestRateLimitMetrics_FinancialTierTag(t *testing.T) {
 	defer collector.Close()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 
 	srv := NewServer(reg, st, ServerConfig{}, logger)
@@ -396,11 +403,11 @@ func TestRateLimitMetrics_FinancialTierTag(t *testing.T) {
 	srv.SetDatadog(ddClient)
 	srv.SetFinancialRateLimiter(ratelimit.New(ratelimit.Config{RPS: 0.001, Burst: 1}))
 
-	handler := srv.rateLimitFinancial(func(w http.ResponseWriter, r *http.Request) {
+	handler := srv.access.RateLimitFinancial(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	ctx := context.WithValue(context.Background(), ctxKeyConsumer, "acct-fin-test")
+	ctx := access.WithConsumer(context.Background(), "acct-fin-test")
 
 	rec := httptest.NewRecorder()
 	handler(rec, httptest.NewRequest("POST", "/test", nil).WithContext(ctx))
@@ -423,7 +430,7 @@ func TestAttestationMetrics_AllOutcomes(t *testing.T) {
 	defer collector.Close()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 
 	srv := NewServer(reg, st, ServerConfig{}, logger)
@@ -432,9 +439,9 @@ func TestAttestationMetrics_AllOutcomes(t *testing.T) {
 	srv.SetDatadog(ddClient)
 
 	for _, outcome := range []string{"passed", "failed", "status_sig_missing"} {
-		srv.ddIncr("attestation.challenges", []string{"outcome:" + outcome})
+		srv.observation.Incr("attestation.challenges", []string{"outcome:" + outcome})
 	}
-	srv.ddIncr("attestation.challenges_sent", nil)
+	srv.observation.Incr("attestation.challenges_sent", nil)
 
 	_ = ddClient.Statsd.Flush()
 	packets := collector.drain()
@@ -454,7 +461,7 @@ func TestInferenceMetrics_CompletionCounters(t *testing.T) {
 	defer collector.Close()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 
 	srv := NewServer(reg, st, ServerConfig{}, logger)
@@ -463,8 +470,8 @@ func TestInferenceMetrics_CompletionCounters(t *testing.T) {
 	srv.SetDatadog(ddClient)
 
 	model := "test-completion-model"
-	srv.ddIncr("inference.completions", []string{"model:" + model})
-	srv.ddHistogram("inference.completion_tokens", 42, []string{"model:" + model})
+	srv.observation.Incr("inference.completions", []string{"model:" + model})
+	srv.observation.Histogram("inference.completion_tokens", 42, []string{"model:" + model})
 
 	_ = ddClient.Statsd.Flush()
 	packets := collector.drain()
@@ -483,9 +490,9 @@ func TestInferenceMetrics_CompletionCounters(t *testing.T) {
 func TestDDMetrics_NilClientNoOps(t *testing.T) {
 	srv := &Server{}
 	// Must not panic when dd is nil.
-	srv.ddIncr("test.counter", []string{"a:b"})
-	srv.ddHistogram("test.histogram", 1.0, []string{"a:b"})
-	srv.ddGauge("test.gauge", 1.0, []string{"a:b"})
+	srv.observation.Incr("test.counter", []string{"a:b"})
+	srv.observation.Histogram("test.histogram", 1.0, []string{"a:b"})
+	srv.observation.Gauge("test.gauge", 1.0, []string{"a:b"})
 }
 
 func TestRoutingMetrics_AllTagsOnSelection(t *testing.T) {
@@ -493,7 +500,7 @@ func TestRoutingMetrics_AllTagsOnSelection(t *testing.T) {
 	defer collector.Close()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 
 	model := "tag-check-model"
@@ -519,10 +526,10 @@ func TestRoutingMetrics_AllTagsOnSelection(t *testing.T) {
 		t.Fatal("routing returned nil")
 	}
 
-	srv.ddIncr("routing.decisions", []string{"model:" + model, "outcome:selected"})
-	srv.ddIncr("routing.provider_selected", []string{"provider_id:" + provider.ID, "model:" + model})
-	srv.ddHistogram("routing.cost_ms", decision.CostMs, []string{"model:" + model, "provider_id:" + provider.ID})
-	srv.ddGauge("routing.effective_decode_tps", decision.EffectiveTPS, []string{"provider_id:" + provider.ID})
+	srv.observation.Incr("routing.decisions", []string{"model:" + model, "outcome:selected"})
+	srv.observation.Incr("routing.provider_selected", []string{"provider_id:" + provider.ID, "model:" + model})
+	srv.observation.Histogram("routing.cost_ms", decision.CostMs, []string{"model:" + model, "provider_id:" + provider.ID})
+	srv.observation.Gauge("routing.effective_decode_tps", decision.EffectiveTPS, []string{"provider_id:" + provider.ID})
 
 	_ = ddClient.Statsd.Flush()
 	packets := collector.drain()

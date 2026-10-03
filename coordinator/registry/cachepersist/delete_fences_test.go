@@ -8,13 +8,14 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/store"
 	crs "github.com/eigeninference/d-inference/coordinator/store/cacheroutingstate"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 // A written tombstone continues fencing older parked evidence until its
 // decision is one TTL old; acknowledging the delete must not let stale
 // evidence bind.
 func TestTombstoneOutlivesItsFlushForOneTTL(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	now := time.Now()
 	p := New(mem, nil, Options{MaxPending: 10})
 	restoreForTest(t, p, now)
@@ -45,7 +46,7 @@ func TestTombstoneOutlivesItsFlushForOneTTL(t *testing.T) {
 // receipt newer than the decision supersedes the pending delete, but keeps
 // its fence against older evidence.
 func TestDelayedOlderReceiptCannotCancelANewerTombstone(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	now := time.Now()
 	p := New(mem, nil, Options{MaxPending: 10})
 	restoreForTest(t, p, now)
@@ -72,7 +73,7 @@ func TestDelayedOlderReceiptCannotCancelANewerTombstone(t *testing.T) {
 // Tombstone retention is bounded by the holder budget as well as the TTL:
 // under churn the oldest tombstones are forgotten first.
 func TestRecentDeletesBoundedByHolderBudget(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	ctx := context.Background()
 	now := time.Now()
 	p := New(mem, nil, Options{MaxPending: 3})
@@ -124,7 +125,7 @@ func TestRecentDeletesBoundedByHolderBudget(t *testing.T) {
 // a receipt newer than that decision still cancels it, and one older than it
 // is still rejected, exactly as before the failure.
 func TestFailedDeleteWriteKeepsTheDecisionTime(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	flaky := &flakyStore{Store: mem}
 	ctx := context.Background()
 	now := time.Now()
@@ -169,7 +170,7 @@ func TestFailedDeleteWriteKeepsTheDecisionTime(t *testing.T) {
 func TestDeleteWriteKeepsTheLaterDecision(t *testing.T) {
 	for _, succeeds := range []bool{true, false} {
 		t.Run(fmt.Sprintf("succeeds_%v", succeeds), func(t *testing.T) {
-			mem := store.NewMemory(store.Config{})
+			mem := memory.NewMemory(store.Config{})
 			st := &deleteHookStore{Store: mem, passThrough: succeeds}
 			now := time.Now()
 			p := New(st, nil, Options{MaxPending: 10})
@@ -205,7 +206,7 @@ func TestDeleteWriteKeepsTheLaterDecision(t *testing.T) {
 // Retention evicts by decision time whatever order the decisions were
 // recorded in: a newer tombstone is never forgotten before an older one.
 func TestRecentDeletesEvictOldestDecisionFirst(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	p := New(mem, nil, Options{MaxPending: 2})
 	p.retentionLimit = 2
 	now := time.Now()
@@ -232,7 +233,7 @@ func TestRecentDeletesEvictOldestDecisionFirst(t *testing.T) {
 // decision is pending or retained, so a copy parked before the decision
 // never depends on the bounded tombstone retention to stay unbound.
 func TestDeleteDecisionDiscardsOutrankedParkedCopy(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	p := New(mem, nil, Options{MaxPending: 10})
 	restoreForTest(t, p, time.Now())
 	now := time.Now()
@@ -286,7 +287,7 @@ func TestDeleteDecisionDiscardsOutrankedParkedCopy(t *testing.T) {
 // bounded chunks per lock hold; a refreshed decision moves in the order
 // instead of leaving a stale entry behind.
 func TestPruneForgetsExpiredDecisionsInChunks(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	p := New(mem, nil, Options{MaxPending: 100_000})
 	now := time.Now()
 	const old, fresh = 2*pruneBatchRows + 7, 100
@@ -329,7 +330,7 @@ func TestPruneForgetsExpiredDecisionsInChunks(t *testing.T) {
 // An overflow during a failing delete write preserves the invalidation fence
 // even though the reset replaces the per-row backlog.
 func TestInFlightDeleteOverflowKeepsItsFence(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	st := &deleteHookStore{Store: mem}
 	now := time.Now()
 	p := New(st, nil, Options{MaxPending: 2})
@@ -360,7 +361,7 @@ func TestInFlightDeleteOverflowKeepsItsFence(t *testing.T) {
 
 // Timestamp ties go to the delete decision, whether pending or retained.
 func TestDeleteDecisionWinsTimestampTies(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	p := New(mem, nil, Options{MaxPending: 10})
 	now := time.Now()
 	restoreForTest(t, p, now)

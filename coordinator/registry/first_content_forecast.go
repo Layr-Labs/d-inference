@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/registry/firstcontent"
+	"github.com/eigeninference/d-inference/coordinator/registry/selection"
 )
 
 const (
@@ -13,7 +14,7 @@ const (
 	FirstContentPredictedLate        = "predicted_late"
 	firstContentFreshness            = 5 * time.Second
 	firstContentPerformanceFreshness = 2 * time.Minute
-	firstContentFastBandMs           = 100.0
+	firstContentFastBandMs           = selection.FastBandMs
 	// A delivery allowance, not a measured network round trip. The conservative
 	// forecast allows additional handoff and early decode/detokenization work.
 	firstContentHandoffMs             = 150.0

@@ -4,6 +4,7 @@ import (
 	"math"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/admission"
 )
 
 // pooled_admission.go — provider-level (all-models) token-budget admission.
@@ -243,36 +244,19 @@ func providerPooledTokenBudget(slots []protocol.BackendSlotCapacity) pooledToken
 // Token accounting is used only when the pool is not byte-reconstructable or
 // the snapshot predates/omits byte accumulation.
 func pooledBudgetAdmits(snap *routingSnapshot, requestTokens int64) bool {
-	pool := &snap.pooledTokenBudget
-	if !pool.hasBudgetReport {
-		return true
+	return admission.PoolAdmits(poolBudgetSnapshot(&snap.pooledTokenBudget,
+		snap.pendingMaxTokensAllModels, snap.pendingMaxBytesAllModels,
+		snap.pendingBytesKnown, snap.kvBytesPerToken), requestTokens)
+}
+
+func poolBudgetSnapshot(pool *pooledTokenBudget, pendingTokens int, pendingBytes int64, pendingBytesKnown bool, modelRate int64) admission.PoolBudget {
+	return admission.PoolBudget{
+		Reported: pool.hasBudgetReport, ByteMode: pool.byteMode, PendingBytesKnown: pendingBytesKnown,
+		Total: pool.total, Used: pool.used, Committed: pool.committed, Pending: int64(pendingTokens),
+		TotalBytes: pool.totalBytes, UsedBytes: pool.usedBytes,
+		CommittedBytes: pool.committedBytes, PendingBytes: pendingBytes,
+		Rate: resolvedPooledKVBytesPerToken(pool, modelRate),
 	}
-	if pool.total <= 0 {
-		return requestTokens == 0
-	}
-	if pool.byteMode && snap.pendingBytesKnown {
-		reqRate := resolvedPooledKVBytesPerToken(pool, snap.kvBytesPerToken)
-		if reqRate > 0 {
-			extra := snap.pendingMaxBytesAllModels - pool.committedBytes
-			if extra < 0 {
-				extra = 0
-			}
-			remaining := pool.totalBytes - pool.usedBytes
-			if remaining < 0 || extra > remaining || requestTokens < 0 {
-				return false
-			}
-			return requestTokens <= (remaining-extra)/reqRate
-		}
-	}
-	extra := int64(snap.pendingMaxTokensAllModels) - pool.committed
-	if extra < 0 {
-		extra = 0
-	}
-	remaining := pool.total - pool.used
-	if remaining < 0 || extra > remaining || requestTokens < 0 {
-		return false
-	}
-	return requestTokens <= remaining-extra
 }
 
 // pooledRemainingTokens is the capacity-snapshot analog of pooledBudgetAdmits:
@@ -290,33 +274,6 @@ func pooledBudgetAdmits(snap *routingSnapshot, requestTokens int64) bool {
 // sentinel that leaves the per-slot numbers unclamped. An authoritative zero
 // budget returns 0.
 func pooledRemainingTokens(pool pooledTokenBudget, pendingTokensAllModels int, pendingBytesAllModels int64, pendingBytesKnown bool, modelRate int64) int64 {
-	if !pool.hasBudgetReport {
-		return -1
-	}
-	if pool.total <= 0 {
-		return 0
-	}
-	if pool.byteMode && pendingBytesKnown {
-		rate := resolvedPooledKVBytesPerToken(&pool, modelRate)
-		if rate > 0 {
-			extra := pendingBytesAllModels - pool.committedBytes
-			if extra < 0 {
-				extra = 0
-			}
-			remBytes := pool.totalBytes - pool.usedBytes
-			if remBytes <= 0 || extra >= remBytes {
-				return 0
-			}
-			return (remBytes - extra) / rate
-		}
-	}
-	extra := int64(pendingTokensAllModels) - pool.committed
-	if extra < 0 {
-		extra = 0
-	}
-	rem := pool.total - pool.used
-	if rem <= 0 || extra >= rem {
-		return 0
-	}
-	return rem - extra
+	return admission.PoolRemaining(poolBudgetSnapshot(&pool, pendingTokensAllModels,
+		pendingBytesAllModels, pendingBytesKnown, modelRate))
 }

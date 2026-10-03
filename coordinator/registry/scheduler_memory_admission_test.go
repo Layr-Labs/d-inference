@@ -103,43 +103,6 @@ func TestResolvedModelTPSLockedIgnoresOtherModelObservedSlot(t *testing.T) {
 	}
 }
 
-func TestFreeMemoryAdmitsTokenBudget(t *testing.T) {
-	// With token budget, should use budget-based admission.
-	snap := routingSnapshot{
-		activeTokenBudgetUsed: 28_000,
-		activeTokenBudgetMax:  32_768,
-		modelSizeGB:           8,
-		totalMemoryGB:         64,
-	}
-	// Request for 500 + 4096 = 4596 tokens. 28000 + 4596 = 32596 <= 32768. Fits.
-	if !freeMemoryAdmits(snapPtr(snap), 500, 4096) {
-		t.Fatal("should admit: 28000 + 4596 = 32596 <= 32768")
-	}
-	// Request for 500 + 4500 = 5000 tokens. 28000 + 5000 = 33000 > 32768. Rejected.
-	if freeMemoryAdmits(snapPtr(snap), 500, 4500) {
-		t.Fatal("should reject: 28000 + 5000 = 33000 > 32768")
-	}
-}
-
-func TestFreeMemoryAdmitsIncludesQueuedBudget(t *testing.T) {
-	snap := routingSnapshot{
-		activeTokenBudgetUsed: 20_000,
-		activeTokenBudgetMax:  32_768,
-		queuedTokenBudget:     10_000,
-		modelSizeGB:           8,
-		totalMemoryGB:         64,
-	}
-	// active(20K) + queued(10K) + request(500+4096=4596) = 34596 > 32768. Rejected.
-	if freeMemoryAdmits(snapPtr(snap), 500, 4096) {
-		t.Fatal("should reject: active + queued + request exceeds budget")
-	}
-	// Without queued budget: active(20K) + request(4596) = 24596 <= 32768. Fits.
-	snap.queuedTokenBudget = 0
-	if !freeMemoryAdmits(snapPtr(snap), 500, 4096) {
-		t.Fatal("should admit when queued budget is zero")
-	}
-}
-
 func TestFreeMemoryAdmitsFallsBackWithoutBudget(t *testing.T) {
 	// Without token budget (max=0), should fall back to memory-based check.
 	snap := routingSnapshot{

@@ -8,6 +8,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/store"
 	crs "github.com/eigeninference/d-inference/coordinator/store/cacheroutingstate"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 // A delete is never dropped at the dirty cap: the decision that overflows
@@ -15,7 +16,7 @@ import (
 // next flush, so a restart cannot restore the row it condemned, and a
 // restore that runs after an overflow resets instead of loading.
 func TestDeleteBacklogOverflowResetsDurableCopy(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	st := &resetCountingStore{Store: mem}
 	ctx := context.Background()
 	now := time.Now()
@@ -87,7 +88,7 @@ func TestDeleteBacklogOverflowResetsDurableCopy(t *testing.T) {
 // A flush whose reset leaves nothing to snapshot still counts as a flush, so
 // a reset-only flush is visible in the health counters.
 func TestResetOnlyFlushIsCounted(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	ctx := context.Background()
 	now := time.Now()
 	p := New(mem, nil, Options{MaxPending: 2}) // dirty cap 8
@@ -116,7 +117,7 @@ func TestResetOnlyFlushIsCounted(t *testing.T) {
 // discards the pre-overflow upserts and stops the flush before its next chunk.
 // The reset runs in that same flush.
 func TestFlushStopsWritingUpsertsWhenTheBacklogOverflowsAfterTheSnapshot(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	hook := &upsertHookStore{Store: mem, passThrough: true}
 	st := &resetCountingStore{Store: hook}
 	ctx := context.Background()
@@ -149,7 +150,7 @@ func TestFlushStopsWritingUpsertsWhenTheBacklogOverflowsAfterTheSnapshot(t *test
 // its row may be one a released decision condemned, and retrying the upsert
 // after the reset would write it back.
 func TestUpsertsSnapshottedBeforeAnOverflowAreDiscarded(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	ctx := context.Background()
 	now := time.Now()
 	st := &upsertHookStore{Store: mem}
@@ -186,7 +187,7 @@ func TestUpsertsSnapshottedBeforeAnOverflowAreDiscarded(t *testing.T) {
 // pending: the fence keys on the snapshot's overflow count, not on whether
 // an overflow ever happened.
 func TestUpsertsAfterAHandledOverflowRemainPendingOnFailure(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	ctx := context.Background()
 	now := time.Now()
 	st := &upsertHookStore{Store: mem}
@@ -222,7 +223,7 @@ func TestUpsertsAfterAHandledOverflowRemainPendingOnFailure(t *testing.T) {
 // share one lock hold, so nothing snapshotted after an overflow can be written
 // before the reset.
 func TestSnapshotRefusesWhileAResetIsPending(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	now := time.Now()
 	p := New(mem, nil, Options{MaxPending: 2})
 	restoreForTest(t, p, now)
@@ -248,7 +249,7 @@ func TestSnapshotRefusesWhileAResetIsPending(t *testing.T) {
 // overflow during a delete-only batch replaces the backlog, and the reset
 // subsumes the remaining snapshotted deletes in that same flush.
 func TestFlushStopsWritingDeletesWhenTheBacklogOverflowsAfterTheSnapshot(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	hook := &deleteHookStore{Store: mem, passThrough: true}
 	st := &resetCountingStore{Store: hook}
 	ctx := context.Background()
@@ -280,7 +281,7 @@ func TestFlushStopsWritingDeletesWhenTheBacklogOverflowsAfterTheSnapshot(t *test
 // A reset that fails on the mid-flush path is counted once against that
 // flush and retried by the next, which then writes the pending deletes.
 func TestFlushRetriesAFailedResetAfterAMidFlushOverflow(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	hook := &upsertHookStore{Store: mem, passThrough: true}
 	st := &resetCountingStore{Store: hook}
 	ctx := context.Background()
@@ -331,7 +332,7 @@ func TestFlushRetriesAFailedResetAfterAMidFlushOverflow(t *testing.T) {
 // An overflow wakes the flush loop once, however many overflows pile up
 // before it runs, and never blocks the mark.
 func TestOverflowWakesTheFlushLoop(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	now := time.Now()
 	p := New(mem, nil, Options{MaxPending: 2}) // dirty cap 8
 	select {

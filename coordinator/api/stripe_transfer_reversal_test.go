@@ -1,11 +1,12 @@
 package api
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/store"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 func transferReversedPayload(transferID string) []byte {

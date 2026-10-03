@@ -8,6 +8,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/appattest"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	memorystore "github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 func TestFirstProofReadinessOutageRetriesEarlyAndRecovers(t *testing.T) {
@@ -33,7 +34,7 @@ func TestFirstProofReadinessOutageRetriesEarlyAndRecovers(t *testing.T) {
 		// must still qualify it before any refresh record or grant is created.
 		e.AssertionAt = time.Now()
 		applyAppAttestReadiness(&e, state)
-		st := &delayedHistoryStore{MemoryStore: store.NewMemory(store.Config{}), readiness: state, t: t,
+		st := &delayedHistoryStore{MemoryStore: memorystore.NewMemory(store.Config{}), readiness: state, t: t,
 			continuity: store.MachineContinuity{Machine: store.MachineIdentity{ID: "machine", Assurance: "key_bound"}}}
 		s.store = st
 		x.updateServingAuthorization(&record.status, e, appattest.EvaluateAuthorization(e, time.Now()))

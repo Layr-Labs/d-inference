@@ -6,15 +6,16 @@ import (
 	"strings"
 	"testing"
 
+	inresp "github.com/eigeninference/d-inference/coordinator/api/inference/response"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
-func newTestEmitter(t *testing.T) (*responsesStreamEmitter, *httptest.ResponseRecorder) {
+func newTestEmitter(t *testing.T) (*inresp.ResponsesStreamEmitter, *httptest.ResponseRecorder) {
 	t.Helper()
 	rec := httptest.NewRecorder()
 	pr := &registry.PendingRequest{RequestID: "req-test", RequestedMaxTokens: 100}
-	return newResponsesStreamEmitter(rec, rec, pr, "resp_test", 1700000000), rec
+	return inresp.NewResponsesStreamEmitter(rec, rec, pr, "resp_test", 1700000000), rec
 }
 
 type sseEvent struct {
@@ -47,16 +48,16 @@ func parseSSEEvents(t *testing.T, body string) []sseEvent {
 
 func TestResponsesStreamInterleavedToolCalls(t *testing.T) {
 	e, rec := newTestEmitter(t)
-	e.start()
+	e.Start()
 	chunks := []string{
 		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"get_weather","arguments":"{\"ci"}},{"index":1,"id":"call_b","type":"function","function":{"name":"get_time","arguments":"{\"tz"}}]}}]}`,
 		`data: {"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"arguments":"\":\"UTC\"}"}},{"index":0,"function":{"arguments":"ty\":\"SF\"}"}}]}}]}`,
 		`data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
 	}
 	for _, c := range chunks {
-		e.handleChunk(c)
+		e.HandleChunk(c)
 	}
-	e.finish(protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 10})
+	e.Finish(protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 10})
 
 	events := parseSSEEvents(t, rec.Body.String())
 	var completed map[string]any
@@ -116,7 +117,7 @@ func TestResponsesStreamInterleavedToolCalls(t *testing.T) {
 
 func TestResponsesStreamSeparatesParallelCallsSharingWireIndex(t *testing.T) {
 	e, rec := newTestEmitter(t)
-	e.start()
+	e.Start()
 	for _, chunk := range []string{
 		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"first","arguments":"{\"a\":"}}]}}]}`,
 		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"1}"}}]}}]}`,
@@ -124,9 +125,9 @@ func TestResponsesStreamSeparatesParallelCallsSharingWireIndex(t *testing.T) {
 		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"2}"}}]}}]}`,
 		`data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
 	} {
-		e.handleChunk(chunk)
+		e.HandleChunk(chunk)
 	}
-	e.finish(protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 10})
+	e.Finish(protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 10})
 
 	events := parseSSEEvents(t, rec.Body.String())
 	var output []any
@@ -157,9 +158,9 @@ func TestResponsesStreamSeparatesParallelCallsSharingWireIndex(t *testing.T) {
 
 func TestResponsesStreamEmptyOutputSynthesizesMessage(t *testing.T) {
 	e, rec := newTestEmitter(t)
-	e.start()
-	e.handleChunk(`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`)
-	e.finish(protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 0})
+	e.Start()
+	e.HandleChunk(`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`)
+	e.Finish(protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 0})
 
 	events := parseSSEEvents(t, rec.Body.String())
 	sawTextDone := false
@@ -188,16 +189,5 @@ func TestResponsesStreamEmptyOutputSynthesizesMessage(t *testing.T) {
 	item := output[0].(map[string]any)
 	if item["type"] != "message" || item["status"] != "completed" {
 		t.Errorf("synthesized item = %#v, want completed message", item)
-	}
-}
-
-func TestEffectiveFinishReasonTruncatedToolCalls(t *testing.T) {
-	usage := protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 100}
-	if got := effectiveFinishReason("stop", true, usage, 100); got != "length" {
-		t.Errorf("truncated tool-call response finish_reason = %q, want length", got)
-	}
-	usage.CompletionTokens = 10
-	if got := effectiveFinishReason("stop", true, usage, 100); got != "tool_calls" {
-		t.Errorf("untruncated tool-call response finish_reason = %q, want tool_calls", got)
 	}
 }

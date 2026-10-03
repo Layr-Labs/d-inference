@@ -10,12 +10,13 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 // reputationUpsertCounter counts reputation upserts on top of the real
 // in-memory store.
 type reputationUpsertCounter struct {
-	*store.MemoryStore
+	*memory.MemoryStore
 	upserts atomic.Int64
 }
 
@@ -44,7 +45,7 @@ func waitForUpserts(t *testing.T, st *reputationUpsertCounter, want int64) {
 // counts to the store.
 func TestRecordJobSuccessPersistsReputationThrottled(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	st := &reputationUpsertCounter{MemoryStore: store.NewMemory(store.Config{})}
+	st := &reputationUpsertCounter{MemoryStore: memory.NewMemory(store.Config{})}
 	reg := New(logger)
 	reg.SetStore(st)
 

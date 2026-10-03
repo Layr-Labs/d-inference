@@ -13,6 +13,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 	"nhooyr.io/websocket"
 )
 
@@ -20,7 +21,7 @@ func TestCacheEligibilityHeartbeatLifecycleThroughProviderWebSocket(t *testing.T
 	logger := slog.New(slog.DiscardHandler)
 	reg := registry.New(logger)
 	reg.SetModelCatalog([]registry.CatalogEntry{{ID: "public-model"}})
-	srv := NewServer(reg, store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	srv := NewServer(reg, memory.NewMemory(store.Config{}), ServerConfig{}, logger)
 	httpServer := httptest.NewServer(srv.Handler())
 	defer httpServer.Close()
 
@@ -153,7 +154,7 @@ func TestStructuralOptionalCacheTelemetryDoesNotCloseRegistration(t *testing.T) 
 	logger := slog.New(slog.DiscardHandler)
 	reg := registry.New(logger)
 	reg.SetModelCatalog([]registry.CatalogEntry{{ID: "public-model"}})
-	srv := NewServer(reg, store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	srv := NewServer(reg, memory.NewMemory(store.Config{}), ServerConfig{}, logger)
 	httpServer := httptest.NewServer(srv.Handler())
 	defer httpServer.Close()
 
@@ -203,7 +204,7 @@ func TestStructuralOptionalCacheTelemetryDoesNotCloseRegistration(t *testing.T) 
 func TestReadyCacheStatusHeartbeatReconcilesWithCapabilities(t *testing.T) {
 	logger := slog.New(slog.DiscardHandler)
 	reg := registry.New(logger)
-	srv := NewServer(reg, store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	srv := NewServer(reg, memory.NewMemory(store.Config{}), ServerConfig{}, logger)
 	httpServer := httptest.NewServer(srv.Handler())
 	defer httpServer.Close()
 
@@ -311,7 +312,7 @@ func writeProviderJSON(t *testing.T, ctx context.Context, conn *websocket.Conn, 
 func TestResidentCapabilityHeartbeatThroughProviderWebSocket(t *testing.T) {
 	logger := slog.New(slog.DiscardHandler)
 	reg := registry.New(logger)
-	srv := NewServer(reg, store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	srv := NewServer(reg, memory.NewMemory(store.Config{}), ServerConfig{}, logger)
 	httpServer := httptest.NewServer(srv.Handler())
 	defer httpServer.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

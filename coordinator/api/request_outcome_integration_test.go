@@ -10,6 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/access"
+	infer "github.com/eigeninference/d-inference/coordinator/api/inference"
+	"github.com/eigeninference/d-inference/coordinator/api/observation"
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
@@ -136,7 +139,7 @@ func TestRequestOutcomesAllEarlyExits(t *testing.T) {
 						defer srv.SetDraining(false)
 					}
 					if kind == "sealed_transport" {
-						req.Header.Set("Content-Type", SealedContentType)
+						req.Header.Set("Content-Type", infer.SealedContentType)
 					}
 					res, err := http.DefaultClient.Do(req)
 					if err != nil {
@@ -155,43 +158,6 @@ func TestRequestOutcomesAllEarlyExits(t *testing.T) {
 					}
 				})
 			}
-		}
-	}
-}
-
-func TestRequestOutcomesProviderErrorAfterContentAllEndpoints(t *testing.T) {
-	for _, endpoint := range outcomeEndpoints {
-		for _, stream := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/%t", endpoint, stream), func(t *testing.T) {
-				t.Setenv(envProfiler, "off")
-				reg, st, srv, ts := setupTTFTFailoverServer(t)
-				t.Cleanup(srv.Close)
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				const model = "outcome-error-model"
-				startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{Name: "error-provider", Version: "0.8.10", DecodeTPS: 200, Models: []failoverModelSpec{{ID: model}}, Script: func(ctx context.Context, fp *failoverProvider, req protocol.InferenceRequestMessage, _ []byte) {
-					fp.sendContentChunk(ctx, req, model, "some content")
-					time.Sleep(30 * time.Millisecond)
-					fp.sendInferenceError(ctx, req, "provider failed", 500)
-				}})
-				req, _ := http.NewRequestWithContext(ctx, "POST", ts.URL+endpoint, strings.NewReader(nativeOutcomeBody(endpoint, model, stream)))
-				req.Header.Set("Authorization", "Bearer test-key")
-				req.Header.Set("Content-Type", "application/json")
-				res, err := http.DefaultClient.Do(req)
-				if err != nil {
-					t.Fatal(err)
-				}
-				io.Copy(io.Discard, res.Body)
-				res.Body.Close()
-				r := awaitRequestOutcomes(t, st, 1)[0]
-				want := "rejected"
-				if stream {
-					want = "interrupted_response"
-				}
-				if r.Termination != want || r.ProviderOutcome != "error" || !r.ProviderContentObserved || r.ContentWriteCompleted != stream || !r.EgressCompleted || r.ResponseTerminal != "error" {
-					t.Fatalf("error evidence %+v", r)
-				}
-			})
 		}
 	}
 }
@@ -313,8 +279,8 @@ func TestRequestOutcomeInferenceIdentityPreservesHeader(t *testing.T) {
 		for _, supplied := range []string{"", "client-id"} {
 			var canonical, logged string
 			h := srv.loggingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				canonical = coordRequestIDFromContext(r.Context())
-				logged = requestIDFromContext(r.Context())
+				canonical = observation.CoordRequestIDFromContext(r.Context())
+				logged = access.RequestIDFromContext(r.Context())
 				w.WriteHeader(http.StatusNoContent)
 			}))
 			req := httptest.NewRequest(http.MethodPost, endpoint, nil)

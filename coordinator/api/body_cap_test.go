@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	httpx "github.com/eigeninference/d-inference/coordinator/api/httpx"
 )
 
 // infiniteReader yields 'a' forever; with io.LimitReader it streams an
@@ -70,7 +72,7 @@ func TestDecodeCappedJSON(t *testing.T) {
 		w := httptest.NewRecorder()
 		r := httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(big))
 		var dst payload
-		if decodeCappedJSON(w, r, maxControlPlaneBodyBytes, &dst) {
+		if httpx.DecodeCappedJSON(w, r, maxControlPlaneBodyBytes, &dst) {
 			t.Fatal("expected ok=false for an over-cap body")
 		}
 		if w.Code != http.StatusRequestEntityTooLarge {
@@ -82,7 +84,7 @@ func TestDecodeCappedJSON(t *testing.T) {
 		w := httptest.NewRecorder()
 		r := httptest.NewRequest(http.MethodPost, "/x", strings.NewReader("not json"))
 		var dst payload
-		if decodeCappedJSON(w, r, maxControlPlaneBodyBytes, &dst) {
+		if httpx.DecodeCappedJSON(w, r, maxControlPlaneBodyBytes, &dst) {
 			t.Fatal("expected ok=false for invalid JSON")
 		}
 		if w.Code != http.StatusBadRequest {
@@ -94,7 +96,7 @@ func TestDecodeCappedJSON(t *testing.T) {
 		w := httptest.NewRecorder()
 		r := httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(`{"x":"hi"}`))
 		var dst payload
-		if !decodeCappedJSON(w, r, maxControlPlaneBodyBytes, &dst) {
+		if !httpx.DecodeCappedJSON(w, r, maxControlPlaneBodyBytes, &dst) {
 			t.Fatalf("expected ok=true for valid JSON (status %d)", w.Code)
 		}
 		if dst.X != "hi" {

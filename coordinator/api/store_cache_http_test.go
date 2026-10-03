@@ -11,6 +11,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 // The production store is wrapped in the read-through cache (store.NewCached,
@@ -21,7 +22,7 @@ import (
 func TestStoreCacheInvalidatesThroughAdminModelAction(t *testing.T) {
 	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	cached := store.NewCached(store.NewMemory(store.Config{}), store.DefaultCacheConfig())
+	cached := store.NewCached(memory.NewMemory(store.Config{}), store.DefaultCacheConfig())
 	reg := registry.New(logger)
 	srv := NewServer(reg, cached, ServerConfig{}, logger)
 	ts := httptest.NewServer(srv.Handler())
@@ -34,7 +35,7 @@ func TestStoreCacheInvalidatesThroughAdminModelAction(t *testing.T) {
 		Capabilities: []string{"chat"}, Status: "active",
 	}
 	files := []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}
-	if err := cached.SetModelVersion(entry, &store.ModelVersion{ModelID: modelID, Version: "v1", R2Prefix: modelR2Prefix(modelID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready"}, files); err != nil {
+	if err := cached.SetModelVersion(entry, &store.ModelVersion{ModelID: modelID, Version: "v1", R2Prefix: testModelPrefix(modelID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready"}, files); err != nil {
 		t.Fatal(err)
 	}
 	if err := cached.PromoteModelVersion(modelID, "v1"); err != nil {

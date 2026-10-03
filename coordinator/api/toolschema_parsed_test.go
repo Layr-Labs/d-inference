@@ -3,8 +3,9 @@ package api
 import (
 	"bytes"
 	"reflect"
-	"strings"
 	"testing"
+
+	inreq "github.com/eigeninference/d-inference/coordinator/api/inference/request"
 )
 
 // toolNormalizationParityBodies cover every schema home and repair class the
@@ -37,7 +38,7 @@ var toolNormalizationParityBodies = map[string]string{
 
 func decodeForParity(t *testing.T, body string) map[string]any {
 	t.Helper()
-	parsed, err := decodeInferenceJSONObject([]byte(body))
+	parsed, err := inreq.DecodeInferenceJSONObject([]byte(body))
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -51,24 +52,24 @@ func TestNormalizeParsedToolSchemasMatchesBytesPath(t *testing.T) {
 	for name, body := range toolNormalizationParityBodies {
 		t.Run(name, func(t *testing.T) {
 			raw := []byte(body)
-			normalizedBytes := NormalizeToolSchemas(raw)
+			normalizedBytes := inreq.NormalizeToolSchemas(raw)
 			bytesChanged := !bytes.Equal(normalizedBytes, raw)
 			wantParsed := decodeForParity(t, string(normalizedBytes))
-			wantForward, err := marshalForwardBody(wantParsed)
+			wantForward, err := inreq.MarshalForwardBody(wantParsed)
 			if err != nil {
 				t.Fatal(err)
 			}
 
 			parsed := decodeForParity(t, body)
 			wantOriginalTools := decodeForParity(t, body)["tools"]
-			originalTools, changed := normalizeParsedToolSchemas(parsed, raw)
+			originalTools, changed := inreq.NormalizeParsedToolSchemas(parsed, raw)
 			if changed != bytesChanged {
 				t.Fatalf("changed = %v, bytes path changed = %v", changed, bytesChanged)
 			}
 			if !reflect.DeepEqual(parsed, wantParsed) {
 				t.Fatalf("parsed tree diverged from bytes path:\n got %#v\nwant %#v", parsed, wantParsed)
 			}
-			gotForward, err := marshalForwardBody(parsed)
+			gotForward, err := inreq.MarshalForwardBody(parsed)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -88,61 +89,6 @@ func TestNormalizeParsedToolSchemasMatchesBytesPath(t *testing.T) {
 	}
 }
 
-func TestNormalizeParsedToolSchemasRespectsSizeGate(t *testing.T) {
-	body := toolNormalizationParityBodies["chat missing type"]
-	parsed := decodeForParity(t, body)
-	before := cloneJSONValue(parsed)
-	padded := append([]byte(body), bytes.Repeat([]byte(" "), maxToolNormalizationBytes)...)
-	if _, changed := normalizeParsedToolSchemas(parsed, padded); changed {
-		t.Fatal("oversize body was normalized")
-	}
-	if !reflect.DeepEqual(parsed, before) {
-		t.Fatal("oversize body was mutated")
-	}
-	// The bytes path skips the same bodies.
-	if got := NormalizeToolSchemas(padded); !bytes.Equal(got, padded) {
-		t.Fatal("bytes path normalized an oversize body")
-	}
-}
-
-// The chat prelude validates constraints on the PRE-normalization tools: a
-// client-forged marker is refused, while the marker the normalizer itself
-// stamps (visible only in the repaired copy) never reaches the validator.
-func TestParsedConstraintValidationSeesPreNormalizationTools(t *testing.T) {
-	body := `{"model":"m","messages":[{"role":"user","content":"x"}],"tool_choice":"auto",
-		"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"any":true}}}}]}`
-	parsed := decodeForParity(t, body)
-	originalTools, changed := normalizeParsedToolSchemas(parsed, []byte(body))
-	if !changed || originalTools == nil {
-		t.Fatal("boolean positional schema was not repaired")
-	}
-	// The repaired copy now carries the reserved marker …
-	repaired, _ := marshalForwardBody(parsed["tools"])
-	if !bytes.Contains(repaired, []byte(originalBooleanSchemaKey)) {
-		t.Fatalf("repaired tools lack the marker: %s", repaired)
-	}
-	// … so validating the repaired view would wrongly reject the request …
-	if _, err := validateParsedToolConstraintPolicy(parsed); err == nil {
-		t.Fatal("repaired view accepted (marker not detected); test premise broken")
-	}
-	// … while the original view (what the handler validates) accepts it.
-	view := constraintView(parsed, originalTools)
-	if _, err := validateParsedToolConstraintPolicy(view); err != nil {
-		t.Fatalf("original view rejected: %v", err)
-	}
-	// And a genuinely forged marker in the caller's body still fails closed.
-	forged := strings.Replace(body, `"any":true`, `"any":{"type":"string","`+originalBooleanSchemaKey+`":true}`, 1)
-	forgedParsed := decodeForParity(t, forged)
-	forgedTools, forgedChanged := normalizeParsedToolSchemas(forgedParsed, []byte(forged))
-	if _, err := validateParsedToolConstraintPolicy(constraintView(forgedParsed, forgedTools)); err == nil {
-		t.Fatalf("forged marker accepted (changed=%v)", forgedChanged)
-	}
-	// The bytes validator agrees with the map validator on the same input.
-	if _, err := validateToolConstraintPolicy([]byte(forged)); err == nil {
-		t.Fatal("bytes validator accepted the forged marker")
-	}
-}
-
 // The bytes and parsed validators must return identical verdicts for the
 // constraint test corpus.
 func TestParsedAndBytesConstraintValidatorsAgree(t *testing.T) {
@@ -158,13 +104,13 @@ func TestParsedAndBytesConstraintValidatorsAgree(t *testing.T) {
 		`{"model":"m","messages":[{"role":"user","content":"x"}]}`,
 	}
 	for i, body := range bodies {
-		wantPolicy, wantErr := validateToolConstraintPolicy([]byte(body))
-		gotPolicy, gotErr := validateParsedToolConstraintPolicy(decodeForParity(t, body))
+		wantPolicy, wantErr := inreq.ValidateToolConstraintPolicy([]byte(body))
+		gotPolicy, gotErr := inreq.ValidateParsedToolConstraintPolicy(decodeForParity(t, body))
 		if gotPolicy != wantPolicy || !reflect.DeepEqual(gotErr, wantErr) {
 			t.Errorf("body %d: parsed=(%+v, %v) bytes=(%+v, %v)", i, gotPolicy, gotErr, wantPolicy, wantErr)
 		}
 	}
-	if _, err := validateToolConstraintPolicy([]byte(`not json`)); err == nil || err.Error() != "invalid request body" {
+	if _, err := inreq.ValidateToolConstraintPolicy([]byte(`not json`)); err == nil || err.Error() != "invalid request body" {
 		t.Fatalf("bytes validator lost its decode error: %v", err)
 	}
 }

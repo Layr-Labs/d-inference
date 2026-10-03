@@ -5,80 +5,10 @@ import (
 	"strings"
 	"testing"
 
+	inreq "github.com/eigeninference/d-inference/coordinator/api/inference/request"
+	inresp "github.com/eigeninference/d-inference/coordinator/api/inference/response"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
-
-// TestApproximateTokenCount verifies the len/4 routing heuristic.
-func TestApproximateTokenCount(t *testing.T) {
-	tests := []struct {
-		name  string
-		input any
-		want  int
-	}{
-		{"nil", nil, 0},
-		{"empty string", "", 0},
-		{"single char", "a", 1},
-		{"short ASCII", "hello", 1},                        // 5/4 = 1
-		{"english prose", "The quick brown fox jumps.", 6}, // 26/4 = 6
-		{"16 bytes", "0123456789abcdef", 4},                // 16/4 = 4
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := approximateTokenCount(tt.input)
-			if got != tt.want {
-				t.Errorf("approximateTokenCount(%v) = %d, want %d", tt.input, got, tt.want)
-			}
-		})
-	}
-}
-
-// TestApproximateTokenCountUpperBound verifies that the billing upper bound
-// returns len(text) — guaranteed >= actual BPE tokens for any tokenizer.
-func TestApproximateTokenCountUpperBound(t *testing.T) {
-	tests := []struct {
-		name  string
-		input any
-		want  int
-	}{
-		{"nil", nil, 0},
-		{"empty string", "", 0},
-		{"single char", "a", 1},
-		{"short ASCII", "hello", 5},
-		{"english prose", "The quick brown fox jumps over the lazy dog.", 44},
-		{"code snippet", "func main() { fmt.Println(\"hello\") }", 36},
-		{"multibyte UTF-8", "こんにちは世界", 21}, // 7 chars × 3 bytes each
-		{"emoji", "👋🌍", 8},                 // 2 emoji × 4 bytes each
-		{"chat template tags", "<|im_start|>system\nYou are helpful.<|im_end|>", 45},
-		{"json object", map[string]string{"role": "user", "content": "hi"}, len(`{"content":"hi","role":"user"}`)},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := approximateTokenCountUpperBound(tt.input)
-			if got != tt.want {
-				t.Errorf("approximateTokenCountUpperBound(%v) = %d, want %d", tt.input, got, tt.want)
-			}
-		})
-	}
-}
-
-// TestBillingEstimateAlwaysGERoutingEstimate confirms that the billing
-// upper bound is always >= the routing heuristic for the same input.
-func TestBillingEstimateAlwaysGERoutingEstimate(t *testing.T) {
-	inputs := []string{
-		"Hello, world!",
-		"def fibonacci(n):\n    if n <= 1:\n        return n\n    return fibonacci(n-1) + fibonacci(n-2)",
-		"SELECT u.id, u.name FROM users u WHERE u.active = true ORDER BY u.created_at DESC LIMIT 10;",
-		"これはテストです。日本語のテキストはトークン数が多くなります。",
-		strings.Repeat("a", 1000),
-	}
-	for _, input := range inputs {
-		routing := approximateTokenCount(input)
-		billing := approximateTokenCountUpperBound(input)
-		if billing < routing {
-			t.Errorf("billing(%d) < routing(%d) for %q", billing, routing, input[:min(20, len(input))])
-		}
-	}
-}
 
 // TestEstimatePromptTokens verifies the routing estimate for different
 // request field layouts.
@@ -113,8 +43,8 @@ func TestEstimatePromptTokens(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			routing := estimatePromptTokens(tt.input)
-			billing := estimateBillingPromptTokens(tt.input)
+			routing := inreq.EstimatePromptTokens(tt.input)
+			billing := inreq.EstimateBillingPromptTokens(tt.input)
 			if routing != tt.want {
 				t.Errorf("estimatePromptTokens() = %d, want %d", routing, tt.want)
 			}
@@ -125,57 +55,14 @@ func TestEstimatePromptTokens(t *testing.T) {
 	}
 }
 
-// TestResolveReasoningTokens covers the precedence between the provider's
-// tokenizer-accurate count and the legacy completion-tokens fallback.
-func TestResolveReasoningTokens(t *testing.T) {
-	cases := []struct {
-		name      string
-		usage     protocol.UsageInfo
-		reasoning string
-		want      uint64
-	}{
-		{
-			name:      "accurate count preferred",
-			usage:     protocol.UsageInfo{CompletionTokens: 100, ReasoningTokens: 42},
-			reasoning: "thinking...",
-			want:      42,
-		},
-		{
-			name:      "fallback to completion tokens for legacy provider",
-			usage:     protocol.UsageInfo{CompletionTokens: 100, ReasoningTokens: 0},
-			reasoning: "thinking...",
-			want:      100,
-		},
-		{
-			name:      "no reasoning content yields zero",
-			usage:     protocol.UsageInfo{CompletionTokens: 100, ReasoningTokens: 0},
-			reasoning: "",
-			want:      0,
-		},
-		{
-			name:      "accurate count wins even without reasoning text",
-			usage:     protocol.UsageInfo{CompletionTokens: 100, ReasoningTokens: 7},
-			reasoning: "",
-			want:      7,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := resolveReasoningTokens(tc.usage, tc.reasoning); got != tc.want {
-				t.Errorf("resolveReasoningTokens = %d, want %d", got, tc.want)
-			}
-		})
-	}
-}
-
 // TestBuildNonStreamingResponseReasoningDetails verifies the chat
 // completion usage object carries completion_tokens_details.reasoning_tokens
 // only when there is a reasoning count to report.
 func TestBuildNonStreamingResponseReasoningDetails(t *testing.T) {
-	msg := extractedMessage{Content: "4", Reasoning: "2+2"}
+	msg := inresp.ExtractedMessage{Content: "4", Reasoning: "2+2"}
 	usage := protocol.UsageInfo{PromptTokens: 10, CompletionTokens: 20, ReasoningTokens: 8}
 
-	resp := buildNonStreamingResponse("req-1", "gpt-oss-20b", msg, usage, 0, "", "")
+	resp := inresp.BuildNonStreamingResponse("req-1", "gpt-oss-20b", msg, usage, 0, "", "")
 	if resp.Usage.CompletionTokensDetails == nil {
 		t.Fatalf("expected completion_tokens_details, got nil")
 	}
@@ -193,8 +80,8 @@ func TestBuildNonStreamingResponseReasoningDetails(t *testing.T) {
 	}
 
 	// No reasoning content => no details object (omitempty).
-	plain := buildNonStreamingResponse("req-2", "gpt-oss-20b",
-		extractedMessage{Content: "hi"},
+	plain := inresp.BuildNonStreamingResponse("req-2", "gpt-oss-20b",
+		inresp.ExtractedMessage{Content: "hi"},
 		protocol.UsageInfo{PromptTokens: 3, CompletionTokens: 1}, 0, "", "")
 	if plain.Usage.CompletionTokensDetails != nil {
 		t.Errorf("expected no details for non-reasoning response, got %#v", plain.Usage.CompletionTokensDetails)
@@ -208,10 +95,10 @@ func TestBuildNonStreamingResponseReasoningDetails(t *testing.T) {
 // TestBuildResponsesResponseReasoningTokens verifies the Responses API
 // uses the accurate count when the provider supplies it.
 func TestBuildResponsesResponseReasoningTokens(t *testing.T) {
-	msg := extractedMessage{Content: "4", Reasoning: "2+2"}
+	msg := inresp.ExtractedMessage{Content: "4", Reasoning: "2+2"}
 	usage := protocol.UsageInfo{PromptTokens: 10, CompletionTokens: 20, ReasoningTokens: 8}
 
-	resp := buildResponsesResponse("req-1", "gpt-oss-20b", msg, usage, 0, "", "")
+	resp := inresp.BuildResponsesResponse("req-1", "gpt-oss-20b", msg, usage, 0, "", "")
 	if resp.Usage.OutputTokensDetail.ReasoningTokens != 8 {
 		t.Errorf("reasoning_tokens = %d, want 8 (accurate count, not %d completion)",
 			resp.Usage.OutputTokensDetail.ReasoningTokens, usage.CompletionTokens)
@@ -230,7 +117,7 @@ func TestInjectReasoningDetailIntoRawUsage(t *testing.T) {
 			"completion_tokens": float64(30),
 		},
 	}
-	injectReasoningDetailIntoRawUsage(obj, protocol.UsageInfo{CompletionTokens: 30, ReasoningTokens: 12})
+	inresp.InjectReasoningDetailIntoRawUsage(obj, protocol.UsageInfo{CompletionTokens: 30, ReasoningTokens: 12})
 	details := obj["usage"].(map[string]any)["completion_tokens_details"].(map[string]any)
 	if details["reasoning_tokens"] != 12 {
 		t.Errorf("reasoning_tokens = %v, want 12", details["reasoning_tokens"])
@@ -238,7 +125,7 @@ func TestInjectReasoningDetailIntoRawUsage(t *testing.T) {
 
 	// No-op when the provider reported no reasoning count.
 	plain := map[string]any{"usage": map[string]any{"completion_tokens": float64(5)}}
-	injectReasoningDetailIntoRawUsage(plain, protocol.UsageInfo{CompletionTokens: 5, ReasoningTokens: 0})
+	inresp.InjectReasoningDetailIntoRawUsage(plain, protocol.UsageInfo{CompletionTokens: 5, ReasoningTokens: 0})
 	if _, ok := plain["usage"].(map[string]any)["completion_tokens_details"]; ok {
 		t.Errorf("expected no details injected for zero reasoning count")
 	}
@@ -249,7 +136,7 @@ func TestInjectReasoningDetailIntoRawUsage(t *testing.T) {
 			"completion_tokens_details": map[string]any{"reasoning_tokens": float64(99)},
 		},
 	}
-	injectReasoningDetailIntoRawUsage(existing, protocol.UsageInfo{ReasoningTokens: 5})
+	inresp.InjectReasoningDetailIntoRawUsage(existing, protocol.UsageInfo{ReasoningTokens: 5})
 	got := existing["usage"].(map[string]any)["completion_tokens_details"].(map[string]any)["reasoning_tokens"]
 	if got != float64(99) {
 		t.Errorf("reasoning_tokens = %v, want 99 (must not override)", got)
@@ -257,7 +144,7 @@ func TestInjectReasoningDetailIntoRawUsage(t *testing.T) {
 
 	// No-op when there is no usage object at all.
 	noUsage := map[string]any{"object": "chat.completion"}
-	injectReasoningDetailIntoRawUsage(noUsage, protocol.UsageInfo{ReasoningTokens: 7})
+	inresp.InjectReasoningDetailIntoRawUsage(noUsage, protocol.UsageInfo{ReasoningTokens: 7})
 	if _, ok := noUsage["usage"]; ok {
 		t.Errorf("did not expect a usage object to be created")
 	}
@@ -276,20 +163,20 @@ func TestDetectMediaRequirementAndTokenEstimate(t *testing.T) {
 			}},
 		},
 	}
-	if !detectMediaRequirement(parsed) {
+	if !inreq.DetectMediaRequirement(parsed) {
 		t.Fatal("expected media requirement detected for an image_url content part")
 	}
-	got := estimatePromptTokens(parsed)
+	got := inreq.EstimatePromptTokens(parsed)
 	if got > 1000 {
 		t.Fatalf("media-aware ROUTING estimate must ignore base64 length; got %d tokens for a 200KB image", got)
 	}
-	if got < imagePromptTokenCost {
-		t.Fatalf("routing estimate should include the flat per-image cost (%d); got %d", imagePromptTokenCost, got)
+	if got < inreq.ImagePromptTokenCost {
+		t.Fatalf("routing estimate should include the flat per-image cost (%d); got %d", inreq.ImagePromptTokenCost, got)
 	}
 	// Billing intentionally stays a guaranteed UPPER bound (still counts the
 	// base64 bytes) so it can never under-reserve; over-reservation is refunded
 	// after inference. It must therefore exceed the small routing estimate here.
-	if b := estimateBillingPromptTokens(parsed); b <= got {
+	if b := inreq.EstimateBillingPromptTokens(parsed); b <= got {
 		t.Fatalf("billing upper bound (%d) should exceed the routing estimate (%d) for a base64 image", b, got)
 	}
 
@@ -298,7 +185,7 @@ func TestDetectMediaRequirementAndTokenEstimate(t *testing.T) {
 			map[string]any{"role": "user", "content": "hello world"},
 		},
 	}
-	if detectMediaRequirement(textParsed) {
+	if inreq.DetectMediaRequirement(textParsed) {
 		t.Fatal("a text-only request must not be flagged as requiring vision")
 	}
 }
@@ -316,18 +203,18 @@ func TestDetectMediaRequirementResponsesInput(t *testing.T) {
 			}},
 		},
 	}
-	if !detectMediaRequirement(withImage) {
+	if !inreq.DetectMediaRequirement(withImage) {
 		t.Fatal("expected media detected in Responses API input parts")
 	}
-	got := estimatePromptTokens(withImage)
+	got := inreq.EstimatePromptTokens(withImage)
 	if got > 1000 {
 		t.Fatalf("Responses input estimate must ignore base64 length; got %d tokens for a 200KB image", got)
 	}
-	if got < imagePromptTokenCost {
-		t.Fatalf("Responses input estimate should include flat image cost (%d); got %d", imagePromptTokenCost, got)
+	if got < inreq.ImagePromptTokenCost {
+		t.Fatalf("Responses input estimate should include flat image cost (%d); got %d", inreq.ImagePromptTokenCost, got)
 	}
 	textOnly := map[string]any{"input": "just a string prompt"}
-	if detectMediaRequirement(textOnly) {
+	if inreq.DetectMediaRequirement(textOnly) {
 		t.Fatal("a string Responses input must not be flagged as media")
 	}
 }
@@ -346,7 +233,7 @@ func TestDetectMediaRequirementAnthropicImageBlock(t *testing.T) {
 			}},
 		},
 	}
-	if !detectMediaRequirement(parsed) {
+	if !inreq.DetectMediaRequirement(parsed) {
 		t.Fatal("expected Anthropic image content block to be detected as media")
 	}
 }

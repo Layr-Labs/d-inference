@@ -10,6 +10,7 @@ import (
 	"os"
 	"testing"
 
+	inreq "github.com/eigeninference/d-inference/coordinator/api/inference/request"
 	"github.com/eigeninference/d-inference/coordinator/api/promptwork"
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 )
@@ -41,7 +42,7 @@ func projectPromptCountCorpusRecord(encoded []byte) (promptCountProjection, erro
 	}
 	shape, known := promptwork.ShapeFromBody(input.Request)
 	digest := sha256.Sum256(input.Request)
-	return promptCountProjection{input.ID, hex.EncodeToString(digest[:]), estimatePromptTokens(parsed), known, shape}, nil
+	return promptCountProjection{input.ID, hex.EncodeToString(digest[:]), inreq.EstimatePromptTokens(parsed), known, shape}, nil
 }
 
 func TestPromptCountProjectionBindsOriginalCorpusID(t *testing.T) {

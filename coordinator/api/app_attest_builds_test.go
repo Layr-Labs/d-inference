@@ -11,23 +11,20 @@ import (
 	"testing"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
-func qualificationReleaseFixture(t *testing.T) (*Server, *store.MemoryStore, store.AppAttestBuildIdentity) {
+func qualificationReleaseFixture(t *testing.T) (*Server, *memory.MemoryStore, store.AppAttestBuildIdentity) {
 	t.Helper()
-	s, st := testServer(t)
+	s, st := testServerWithConfig(t, ServerConfig{AppAttestShadow: AppAttestShadowConfig{ServingEnabled: true, Environment: "production"}})
 	t.Cleanup(s.Close)
 	s.SetReleaseKey("release-key")
 	s.SetAdminKey("admin-key")
-	s.appAttestShadow.ServingEnabled, s.appAttestShadow.Environment = true, "production"
 	bundle, binary, digest := buildReleaseBundleForTest(t, []byte("provider-binary"))
 	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(bundle) }))
 	t.Cleanup(cdn.Close)
 	s.SetR2CDNURL(cdn.URL)
-	url, err := expectedReleaseArtifactURL(cdn.URL, "1.0.0", "macos-arm64", digest)
-	if err != nil {
-		t.Fatal(err)
-	}
+	url := cdn.URL + "/releases/v1.0.0/artifacts/" + digest + "/darkbloom-bundle-macos-arm64.tar.gz"
 	build := store.AppAttestBuildIdentity{Release: store.Release{Version: "1.0.0", Platform: "macos-arm64", Backend: "mlx-swift",
 		BinaryHash: binary, BundleHash: digest, MetallibHash: strings.Repeat("c", 64), URL: url},
 		CodeDirectoryHash: strings.Repeat("d", 64), SourceCommit: strings.Repeat("e", 40), CIRunID: "123"}
@@ -52,8 +49,8 @@ func qualificationBody(b store.AppAttestBuildIdentity) map[string]any {
 		"source_commit": b.SourceCommit, "ci_run_id": b.CIRunID, "evidence": "physical transition test evidence, run 123"}
 }
 
-func registrationBody(b store.AppAttestBuildIdentity) registerReleaseRequest {
-	return registerReleaseRequest{Version: b.Release.Version, Platform: b.Release.Platform, Backend: b.Release.Backend,
+func registrationBody(b store.AppAttestBuildIdentity) releaseRegistrationFixture {
+	return releaseRegistrationFixture{Version: b.Release.Version, Platform: b.Release.Platform, Backend: b.Release.Backend,
 		BinaryHash: b.Release.BinaryHash, BundleHash: b.Release.BundleHash, MetallibHash: b.Release.MetallibHash,
 		URL: b.Release.URL, CodeDirectoryHash: b.CodeDirectoryHash, SourceCommit: b.SourceCommit, CIRunID: b.CIRunID}
 }
@@ -114,7 +111,7 @@ func TestQualifiedPublicationRequiresSeparateOperatorApproval(t *testing.T) {
 	}
 }
 
-type unavailableBuildStore struct{ *store.MemoryStore }
+type unavailableBuildStore struct{ *memory.MemoryStore }
 
 func (*unavailableBuildStore) ListAppAttestBuildQualifications(context.Context) ([]store.AppAttestBuildQualification, error) {
 	return nil, errors.New("qualification database unavailable")
@@ -127,11 +124,10 @@ func TestQualifiedPublicationMissingFieldsAndStoreOutageFailClosed(t *testing.T)
 	if w := qualificationCall(t, s, "POST", "/v1/releases", "release-key", req); w.Code != 409 {
 		t.Fatalf("old publisher bypass: %d", w.Code)
 	}
-	unavailable := NewServer(s.registry, &unavailableBuildStore{st}, ServerConfig{}, s.logger)
+	unavailable := NewServer(s.registry, &unavailableBuildStore{st}, ServerConfig{AppAttestShadow: AppAttestShadowConfig{ServingEnabled: true, Environment: "production"}}, s.logger)
 	t.Cleanup(unavailable.Close)
 	unavailable.SetReleaseKey("release-key")
-	unavailable.SetR2CDNURL(s.r2CDNURL)
-	unavailable.appAttestShadow = s.appAttestShadow
+	unavailable.SetR2CDNURL(strings.Split(b.Release.URL, "/releases/")[0])
 	s = unavailable
 	if w := qualificationCall(t, s, "POST", "/v1/releases", "release-key", registrationBody(b)); w.Code != 503 {
 		t.Fatalf("storage error: %d %s", w.Code, w.Body)
@@ -146,28 +142,44 @@ func TestRemoteReleaseRefreshConvergesWithoutGenerationChurn(t *testing.T) {
 	if err := st.SetRelease(&b.Release); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.refreshAppAttestReleaseCatalog(); err != nil {
+	if err := s.releases.RefreshAppAttestReleaseCatalog(); err != nil {
 		t.Fatal(err)
 	}
-	first := s.releaseTrustPolicy.Load()
-	if len(first.ByBinaryHash[b.Release.BinaryHash]) != 1 {
+	first := s.releases.Policy()
+	if !first.ContainsQualifiedRelease(b.Release) {
 		t.Fatal("remote publication not loaded")
 	}
 	for range 3 {
-		if err := s.refreshAppAttestReleaseCatalog(); err != nil {
+		if err := s.releases.RefreshAppAttestReleaseCatalog(); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if s.releaseTrustPolicy.Load() != first {
+	if s.releases.Policy().Generation != first.Generation {
 		t.Fatal("unchanged catalog invalidated live leases")
 	}
 	if err := st.DeleteRelease(b.Release.Version, b.Release.Platform); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.refreshAppAttestReleaseCatalog(); err != nil {
+	if err := s.releases.RefreshAppAttestReleaseCatalog(); err != nil {
 		t.Fatal(err)
 	}
-	if len(s.releaseTrustPolicy.Load().ByBinaryHash) != 0 {
+	if s.releases.Policy().Known() {
 		t.Fatal("remote release withdrawal did not fence")
 	}
+}
+
+type releaseRegistrationFixture struct {
+	RequireAppAttestQualification bool   `json:"require_app_attest_qualification,omitempty"`
+	CodeDirectoryHash             string `json:"code_directory_hash,omitempty"`
+	SourceCommit                  string `json:"source_commit,omitempty"`
+	CIRunID                       string `json:"ci_run_id,omitempty"`
+	Version                       string `json:"version"`
+	Platform                      string `json:"platform"`
+	Backend                       string `json:"backend,omitempty"`
+	BinaryHash                    string `json:"binary_hash"`
+	BundleHash                    string `json:"bundle_hash"`
+	MetallibHash                  string `json:"metallib_hash,omitempty"`
+	TemplateHashes                string `json:"template_hashes,omitempty"`
+	URL                           string `json:"url"`
+	Changelog                     string `json:"changelog"`
 }

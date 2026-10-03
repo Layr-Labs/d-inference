@@ -108,7 +108,7 @@ func TestStreamRelay_ChatBurstByteIdentical(t *testing.T) {
 	// The profiler's relay stamps under coalescing: every frame counts once
 	// (53 events over ~9 flushes), bytes_out is the exact byte stream the
 	// client received, the terminal flush is stamped and no write failed.
-	if !srv.profilerEnabled() {
+	if !srv.observation.ProfilerEnabled() {
 		t.Fatal("profiler must be on by default with a store")
 	}
 	var recs []store.RequestProfileRecord

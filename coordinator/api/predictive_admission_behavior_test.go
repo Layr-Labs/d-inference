@@ -10,7 +10,6 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 type predictiveAdmissionObservation struct {
@@ -110,72 +109,4 @@ func TestPredictiveAdmissionOverOriginalBudgetHTTP(t *testing.T) {
 			})
 		}
 	}
-}
-
-func TestSoftPredictiveAdmissionDeadlineRefusalKeepsOriginalClock(t *testing.T) {
-	t.Setenv(envProfiler, "on")
-	reg, memory, _, ts := setupTTFTFailoverServer(t) // Default soft prediction gate.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	const model = "soft-refusal-original-clock"
-	observations := make(chan predictiveAdmissionObservation, 2)
-	var attempts deadlineAttemptRecorder
-	script := func(ctx context.Context, fp *failoverProvider, req protocol.InferenceRequestMessage, _ []byte) {
-		observations <- observePredictiveAdmission(t, reg, fp, req)
-		if attempts.capture(t, reg, fp, req) == 1 {
-			// Spend real request time before the typed refusal; the retry may
-			// not restore that time, even though the predictive gate is off.
-			time.Sleep(100 * time.Millisecond)
-			fp.sendTypedInferenceError(ctx, req, protocol.FailureCodeCapacity,
-				errorReasonDeadlineUnreachable, http.StatusServiceUnavailable)
-			return
-		}
-		fp.serveFull(ctx, req, model, "retry-success")
-	}
-	for i := 0; i < 2; i++ {
-		p := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
-			Name: fmt.Sprintf("slow-provider-%d", i), Version: "0.8.16", DecodeTPS: 100,
-			Models: []failoverModelSpec{{ID: model}}, Script: script,
-		})
-		makeProviderTTFTSlow(t, reg, p.registryID, model)
-	}
-	status, response, err := postChat(ctx, ts.URL, "test-key", buildChatBody(t, model, true, nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if status != http.StatusOK || !strings.Contains(response, "retry-success") || len(attempts.snapshot()) != 2 {
-		t.Fatalf("status=%d attempts=%+v body=%s", status, attempts.snapshot(), response)
-	}
-	first, second := <-observations, <-observations
-	assertSoftOverBudgetDispatch(t, first)
-	assertSoftOverBudgetDispatch(t, second)
-	if first.provider == second.provider || !first.absoluteExpiry.Equal(second.absoluteExpiry) || first.originalMS != second.originalMS {
-		t.Fatalf("retry must change provider while keeping one request clock: first=%+v second=%+v", first, second)
-	}
-	if second.wireMS >= first.wireMS || first.wireMS-second.wireMS < 50 {
-		t.Fatalf("retry restored time spent before refusal: first=%+v second=%+v", first, second)
-	}
-	// Both the refusal and winner must retain their own writer budget after
-	// passing through the asynchronous profile sink into storage.
-	want := map[string]int64{first.requestID: first.wireMS, second.requestID: second.wireMS}
-	until := time.Now().Add(3 * time.Second)
-	for len(want) > 0 && time.Now().Before(until) {
-		for _, rec := range memory.RequestProfilesSinceFiltered(time.Time{}, store.RequestProfileFilter{}) {
-			budget, ok := want[rec.RequestID]
-			if !ok {
-				continue
-			}
-			if rec.AdmissionMode != "soft" || rec.PredictiveBypass != "none" || rec.DispatchBudgetMs == nil || *rec.DispatchBudgetMs != budget || rec.ReservationTTFTCeilingMs == nil || *rec.ReservationTTFTCeilingMs != 0 {
-				t.Fatalf("stored attempt lost decision evidence: %+v", rec)
-			}
-			delete(want, rec.RequestID)
-		}
-		if len(want) > 0 {
-			time.Sleep(10 * time.Millisecond)
-		}
-	}
-	if len(want) > 0 {
-		t.Fatalf("missing persisted attempt observations: %v", want)
-	}
-
 }

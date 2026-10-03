@@ -3,17 +3,17 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
-	"net/http"
-	"net/http/httptest"
-	"os"
-	"testing"
-	"time"
-
 	"github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"nhooyr.io/websocket"
+	"os"
+	"testing"
+	"time"
 )
 
 // TestOpenRouterModelsEndpoint verifies the dedicated /v1/models/openrouter feed
@@ -21,10 +21,10 @@ import (
 // is_ready, populated features, and no Darkbloom metadata block.
 func TestOpenRouterModelsEndpoint(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
-	srv.challengeInterval = 500 * time.Millisecond
+	srv.SetChallengeInterval(500 * time.Millisecond)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -46,12 +46,12 @@ func TestOpenRouterModelsEndpoint(t *testing.T) {
 		Status:           "active",
 		Description:      "Balanced general-purpose model.",
 		Metadata: map[string]any{
-			"openrouter_slug":        "darkbloom/qwen3.6-35b-a3b",
-			huggingFaceIDMetadataKey: huggingFaceID,
+			"openrouter_slug": "darkbloom/qwen3.6-35b-a3b",
+			"hugging_face_id": huggingFaceID,
 		},
 		CreatedAt: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
-	version := &store.ModelVersion{ModelID: modelID, Version: "v1", R2Prefix: modelR2Prefix(modelID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 9_000_000_000, FileCount: 1, Status: "ready"}
+	version := &store.ModelVersion{ModelID: modelID, Version: "v1", R2Prefix: testModelPrefix(modelID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 9_000_000_000, FileCount: 1, Status: "ready"}
 	files := []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}
 	if err := st.SetModelVersion(entry, version, files); err != nil {
 		t.Fatal(err)
@@ -68,7 +68,7 @@ func TestOpenRouterModelsEndpoint(t *testing.T) {
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	rec := httptest.NewRecorder()
-	srv.handleListModelsOpenRouter(rec, httptest.NewRequest(http.MethodGet, "/v1/models/openrouter", nil))
+	srv.catalog.HandleListModelsOpenRouter(rec, httptest.NewRequest(http.MethodGet, "/v1/models/openrouter", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
 	}
@@ -142,7 +142,7 @@ func TestOpenRouterModelsEndpoint(t *testing.T) {
 // 429s, not a reason to delist). Datacenters are empty in that case.
 func TestOpenRouterFeedSurvivesProviderOutage(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 
@@ -153,7 +153,7 @@ func TestOpenRouterFeedSurvivesProviderOutage(t *testing.T) {
 		Capabilities: []string{"tools"},
 	}
 	files := []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}
-	if err := st.SetModelVersion(entry, &store.ModelVersion{ModelID: modelID, Version: "v1", R2Prefix: modelR2Prefix(modelID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready"}, files); err != nil {
+	if err := st.SetModelVersion(entry, &store.ModelVersion{ModelID: modelID, Version: "v1", R2Prefix: testModelPrefix(modelID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready"}, files); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.PromoteModelVersion(modelID, "v1"); err != nil {
@@ -163,7 +163,7 @@ func TestOpenRouterFeedSurvivesProviderOutage(t *testing.T) {
 	// Note: NO provider connected. registry.ListModels() is empty.
 
 	rec := httptest.NewRecorder()
-	srv.handleListModelsOpenRouter(rec, httptest.NewRequest(http.MethodGet, "/v1/models/openrouter", nil))
+	srv.catalog.HandleListModelsOpenRouter(rec, httptest.NewRequest(http.MethodGet, "/v1/models/openrouter", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
 	}
@@ -195,10 +195,10 @@ func TestOpenRouterFeedSurvivesProviderOutage(t *testing.T) {
 // Staged models (openrouter_is_ready=false) report is_ready=false.
 func TestOpenRouterModelsStaging(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
-	srv.challengeInterval = 500 * time.Millisecond
+	srv.SetChallengeInterval(500 * time.Millisecond)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -211,7 +211,7 @@ func TestOpenRouterModelsStaging(t *testing.T) {
 		Metadata: map[string]any{"openrouter_is_ready": false},
 	}
 	files := []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}
-	if err := st.SetModelVersion(entry, &store.ModelVersion{ModelID: modelID, Version: "v1", R2Prefix: modelR2Prefix(modelID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready"}, files); err != nil {
+	if err := st.SetModelVersion(entry, &store.ModelVersion{ModelID: modelID, Version: "v1", R2Prefix: testModelPrefix(modelID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready"}, files); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.PromoteModelVersion(modelID, "v1"); err != nil {
@@ -222,7 +222,7 @@ func TestOpenRouterModelsStaging(t *testing.T) {
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	rec := httptest.NewRecorder()
-	srv.handleListModelsOpenRouter(rec, httptest.NewRequest(http.MethodGet, "/v1/models/openrouter", nil))
+	srv.catalog.HandleListModelsOpenRouter(rec, httptest.NewRequest(http.MethodGet, "/v1/models/openrouter", nil))
 	var resp types.OpenRouterModelsResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
@@ -247,7 +247,7 @@ func TestOpenRouterModelsStaging(t *testing.T) {
 // never sees a raw quant build that a migration will later retire.
 func TestOpenRouterModelsAliasEntriesHideBuilds(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{})
+	st := memory.NewMemory(store.Config{})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 
@@ -258,8 +258,8 @@ func TestOpenRouterModelsAliasEntriesHideBuilds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	primaryEntry := registryEntryFromRecord(primaryRecord)
-	primaryEntry.Metadata = map[string]any{huggingFaceIDMetadataKey: aliasHuggingFaceID}
+	primaryEntry := &primaryRecord.ModelRegistryEntry
+	primaryEntry.Metadata = map[string]any{"hugging_face_id": aliasHuggingFaceID}
 	if err := st.UpsertModelRegistryEntry(primaryEntry); err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +273,7 @@ func TestOpenRouterModelsAliasEntriesHideBuilds(t *testing.T) {
 	srv.SyncModelCatalog()
 
 	rec := httptest.NewRecorder()
-	srv.handleListModelsOpenRouter(rec, httptest.NewRequest(http.MethodGet, "/v1/models/openrouter", nil))
+	srv.catalog.HandleListModelsOpenRouter(rec, httptest.NewRequest(http.MethodGet, "/v1/models/openrouter", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
 	}
@@ -319,7 +319,7 @@ func TestOpenRouterModelsAliasEntriesHideBuilds(t *testing.T) {
 // otherwise OpenRouter lists it is_ready:true with zero providers, a black-hole.
 func TestOpenRouterModelsHidesRetiredAliasBuild(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{})
+	st := memory.NewMemory(store.Config{})
 	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
 
 	seedActiveModel(t, st, aliasFP8, "Gemma 4 26B fp8")
@@ -333,7 +333,7 @@ func TestOpenRouterModelsHidesRetiredAliasBuild(t *testing.T) {
 	srv.SyncModelCatalog()
 
 	rec := httptest.NewRecorder()
-	srv.handleListModelsOpenRouter(rec, httptest.NewRequest(http.MethodGet, "/v1/models/openrouter", nil))
+	srv.catalog.HandleListModelsOpenRouter(rec, httptest.NewRequest(http.MethodGet, "/v1/models/openrouter", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -355,21 +355,5 @@ func TestOpenRouterModelsHidesRetiredAliasBuild(t *testing.T) {
 	}
 	if !sawAlias {
 		t.Fatalf("alias gemma-4-26b missing from OpenRouter feed: %+v", resp.Data)
-	}
-}
-
-func TestConcreteModelEligibleForOpenRouterFeed(t *testing.T) {
-	const modelID = "model"
-	catalog := map[string]store.SupportedModel{
-		modelID: {ID: modelID, ModelType: "text", Active: true},
-	}
-	if !concreteModelEligibleForOpenRouterFeed(modelID, catalog, nil) {
-		t.Fatal("text catalog model without providers should be feed-eligible")
-	}
-	if concreteModelEligibleForOpenRouterFeed(modelID, catalog, map[string]string{modelID: "embedding"}) {
-		t.Fatal("provider-reported non-text model should not be feed-eligible")
-	}
-	if concreteModelEligibleForOpenRouterFeed("missing", catalog, nil) {
-		t.Fatal("missing catalog model should not be feed-eligible")
 	}
 }

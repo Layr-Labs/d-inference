@@ -13,6 +13,7 @@
       "name": "HTTP and API contracts",
       "source_patterns": [
         "coordinator/api/server.go",
+        "coordinator/api/routes.go",
         "coordinator/api/types/**",
         "coordinator/api/*handler*.go"
       ],
@@ -27,6 +28,7 @@
         "coordinator/datadog/**",
         "coordinator/api/*telemetry*.go",
         "coordinator/api/*metrics*.go",
+        "coordinator/api/observation/**",
         "provider-swift/Sources/ProviderCore/Telemetry/**",
         "console-ui/src/lib/telemetry*"
       ],
@@ -53,6 +55,8 @@
         "coordinator/registry/scheduler.go",
         "coordinator/registry/model_loading.go",
         "coordinator/registry/model_commands.go",
+        "coordinator/registry/admission/**",
+        "coordinator/registry/selection/**",
         "coordinator/api/warm_pool*.go"
       ],
       "docs_any_of": [
@@ -64,6 +68,10 @@
       "name": "configuration",
       "source_patterns": [
         "coordinator/config/**",
+        "coordinator/app/*config*.go",
+        "coordinator/app/routing.go",
+        "coordinator/app/runtime_policy.go",
+        "coordinator/app/release_policy.go",
         "coordinator/env/**",
         "coordinator/registry/config.go",
         "coordinator/registry/autopilot_config.go",
@@ -79,7 +87,10 @@
       "source_patterns": [
         "coordinator/store/postgres.go",
         "coordinator/store/*migration*.go",
-        "coordinator/store/migrations/**"
+        "coordinator/store/migrations/**",
+        "coordinator/store/postgres/migrations.go",
+        "coordinator/store/postgres/*schema*.go",
+        "coordinator/store/postgres/migrations/**"
       ],
       "docs_any_of": [
         "docs/architecture/storage.md"
@@ -89,6 +100,7 @@
       "name": "provider release",
       "source_patterns": [
         ".github/workflows/release-swift.yml",
+        "coordinator/api/releases/**",
         "scripts/install.sh",
         "provider-swift/Sources/ProviderCore/ProviderCore.swift"
       ],
@@ -110,6 +122,21 @@
       "docs_any_of": [
         "docs/architecture/model-autopilot.md",
         "docs/operations/model-autopilot.md"
+      ]
+    },
+    {
+      "name": "coordinator ownership",
+      "source_patterns": [
+        "coordinator/api/*/owner.go",
+        "coordinator/api/*/*/owner.go",
+        "coordinator/app/app.go",
+        "coordinator/app/lifecycle.go",
+        "coordinator/store/memory/memory.go",
+        "coordinator/store/postgres/postgres.go"
+      ],
+      "docs_any_of": [
+        "docs/developer/navigation.md",
+        "docs/architecture/components/coordinator.md"
       ]
     },
     {

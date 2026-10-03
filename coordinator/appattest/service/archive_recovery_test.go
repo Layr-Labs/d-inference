@@ -14,6 +14,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/appattest"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	memorystore "github.com/eigeninference/d-inference/coordinator/store/memory"
 	"github.com/fxamacker/cbor/v2"
 )
 
@@ -21,7 +22,7 @@ import (
 // dequeuing A would absorb the loss of B and make an older proof appear complete.
 func TestQueuedAssertionCannotAbsorbLaterInboxDrop(t *testing.T) {
 	ctx := context.Background()
-	st := store.NewMemory(store.Config{})
+	st := memorystore.NewMemory(store.Config{})
 	endpoint := base64.StdEncoding.EncodeToString(make([]byte, 32))
 	p := newSessionProvider(endpoint, "se")
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -84,7 +85,7 @@ func TestQueuedAssertionCannotAbsorbLaterInboxDrop(t *testing.T) {
 
 func TestArchiveGapFencesGrantUntilNewProofIsDurablyCommitted(t *testing.T) {
 	s, p, record, state := newAuthorizationFixture(t)
-	st := &statusReadinessStore{MemoryStore: store.NewMemory(store.Config{}), state: state}
+	st := &statusReadinessStore{MemoryStore: memorystore.NewMemory(store.Config{}), state: state}
 	s.store = st
 	x := sessionForAuthorization(s, p, record)
 	x.archive = st
@@ -184,7 +185,7 @@ func TestArchiveCompletionFailureFencesOlderGrant(t *testing.T) {
 			if !a.apply(p, record, state, time.Now()) {
 				t.Fatal("initial grant")
 			}
-			mem := store.NewMemory(store.Config{})
+			mem := memorystore.NewMemory(store.Config{})
 			x := sessionForAuthorization(s, p, record)
 			x.archive = &failingEvidenceCompletion{MemoryStore: mem}
 			x.expected = "assertion"
@@ -244,7 +245,7 @@ func TestLateWrongSessionReplyKeepsTimerOnlyWhenArchived(t *testing.T) {
 			x.expected = "assertion"
 			var archived *capturedProofArchive
 			if failArchive {
-				x.archive = &failingEvidenceCompletion{MemoryStore: store.NewMemory(store.Config{})}
+				x.archive = &failingEvidenceCompletion{MemoryStore: memorystore.NewMemory(store.Config{})}
 			} else {
 				archived = &capturedProofArchive{}
 				x.archive = archived

@@ -8,16 +8,17 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
-type unavailableAutopilotStore struct{ *store.MemoryStore }
+type unavailableAutopilotStore struct{ *memory.MemoryStore }
 
 func (*unavailableAutopilotStore) RecordAutopilot(context.Context, []store.AutopilotRecord) error {
 	return errors.New("unavailable")
 }
 func TestAutopilotNeverDispatchesWithoutDurableIntent(t *testing.T) {
 	r, c, now := newAutopilotControllerTest(t, false)
-	r.SetStore(&unavailableAutopilotStore{store.NewMemory(store.Config{})})
+	r.SetStore(&unavailableAutopilotStore{memory.NewMemory(store.Config{})})
 	p := autopilotControllerProvider(t, r, "provider", now)
 	sent := 0
 	r.autopilotSender = func(string, protocol.ModelAutopilotMessage) error { sent++; return nil }
@@ -34,7 +35,7 @@ func TestAutopilotNeverDispatchesWithoutDurableIntent(t *testing.T) {
 }
 
 type blockingAutopilotStore struct {
-	*store.MemoryStore
+	*memory.MemoryStore
 	entered, release chan struct{}
 }
 
@@ -49,7 +50,7 @@ func (s *blockingAutopilotStore) RecordAutopilot(ctx context.Context, r []store.
 }
 func TestAutopilotLedgerIOCannotBlockHeartbeatEventQueue(t *testing.T) {
 	r := New(testLogger())
-	sink := &blockingAutopilotStore{store.NewMemory(store.Config{}), make(chan struct{}), make(chan struct{})}
+	sink := &blockingAutopilotStore{memory.NewMemory(store.Config{}), make(chan struct{}), make(chan struct{})}
 	r.SetStore(sink)
 	record := store.AutopilotRecord{CommandID: "one", At: time.Now(), Phase: "reserved"}
 	r.queueAutopilotEvent(record)

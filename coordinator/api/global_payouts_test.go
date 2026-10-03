@@ -7,11 +7,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/billing/globalpayouts"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 type fakeGlobalStripe struct {
@@ -100,7 +100,7 @@ func (f *fakeGlobalStripe) serve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func globalPayoutAPIFixture(t *testing.T, failFirst bool) (*Server, *store.MemoryStore, *store.User, *fakeGlobalStripe) {
+func globalPayoutAPIFixture(t *testing.T, failFirst bool) (*Server, *memory.MemoryStore, *store.User, *fakeGlobalStripe) {
 	t.Helper()
 	srv, st := stripePayoutsTestServer(t, true, nil)
 	srv.SetBilling(billing.NewService(st, srv.billing.Ledger(), srv.logger, billing.Config{MockMode: true, StripeConnectReturnURL: "https://app.test/billing", StripeGlobalPayoutsEnabled: true, StripeGlobalPayoutsFinancialAccount: "fa_gp", StripeGlobalPayoutsSecretKey: "rk_test_gp", StripeGlobalPayoutsWebhookSecret: "whsec_test"}))
@@ -122,188 +122,43 @@ func globalAPIRequest(t *testing.T, s *Server, u *store.User, path, body string,
 	return w
 }
 
-func TestGlobalPayoutOnboardQuoteConfirmAndReturn(t *testing.T) {
-	s, st, u, f := globalPayoutAPIFixture(t, true)
-	w := globalAPIRequest(t, s, u, "/onboard", `{"country":"IN"}`, s.handleStripeOnboard)
-	if w.Code != 200 {
-		t.Fatalf("onboard %d %s", w.Code, w.Body.String())
-	}
-	local, _ := st.GetGlobalRecipient(u.AccountID)
-	if local.RecipientID != "acct_gp" {
-		t.Fatalf("recipient: %+v", local)
-	}
-	w = globalAPIRequest(t, s, u, "/quote", `{"amount_usd":"10.00"}`, s.handleGlobalPayoutQuote)
-	if w.Code != 200 {
-		t.Fatalf("quote %d %s", w.Code, w.Body.String())
-	}
-	var quote struct {
-		ID                string `json:"id"`
-		DestinationAmount int64  `json:"destination_amount"`
-	}
-	_ = json.Unmarshal(w.Body.Bytes(), &quote)
-	if quote.DestinationAmount != 80000 || st.GetWithdrawableBalance(u.AccountID) != 20_000_000 {
-		t.Fatal("quote moved funds or returned wrong currency amount")
-	}
-	body := `{"amount_usd":"10.00","method":"standard","quote_id":"` + quote.ID + `"}`
-	w = globalAPIRequest(t, s, u, "/withdraw", body, s.handleStripeWithdraw)
-	if w.Code != 202 {
-		t.Fatalf("confirm %d %s", w.Code, w.Body.String())
-	}
-	p, _ := st.GetGlobalPayout(quote.ID)
-	if p.Status != "pending" || p.Refunded {
-		t.Fatalf("ambiguous send was refunded: %+v", p)
-	}
-	// Retry even after unlink must remain a Global Payouts confirmation.
-	if err := st.RemoveGlobalRecipient(u.AccountID); err != nil {
-		t.Fatal(err)
-	}
-	w = globalAPIRequest(t, s, u, "/withdraw", body, s.handleStripeWithdraw)
-	if w.Code != 202 {
-		t.Fatalf("retry %d %s", w.Code, w.Body.String())
-	}
-	if f.creates != 1 || st.GetWithdrawableBalance(u.AccountID) != 10_000_000 {
-		t.Fatal("retry duplicated money movement")
-	}
-	p, _ = st.GetGlobalPayout(quote.ID)
-	if p.ExternalID != "obp_gp" {
-		t.Fatal("retry lost payout ID")
-	}
-	if err := s.syncGlobalPayout(httptest.NewRequest("GET", "/", nil).Context(), p.ID); err != nil {
-		t.Fatal(err)
-	}
-	p, _ = st.GetGlobalPayout(quote.ID)
-	if p.Status != "posted" {
-		t.Fatalf("status %s", p.Status)
-	}
-	f.state = "returned"
-	for range 2 {
-		if err := s.syncGlobalPayout(httptest.NewRequest("GET", "/", nil).Context(), p.ID); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if st.GetWithdrawableBalance(u.AccountID) != 20_000_000 {
-		t.Fatal("bank return failed to refund exactly once")
-	}
-}
-
-func TestGlobalPayoutRejectsInvalidQuotesAndCountries(t *testing.T) {
-	s, st, u, _ := globalPayoutAPIFixture(t, false)
-	for _, country := range []string{"CN", "KH", "GI"} {
-		w := globalAPIRequest(t, s, u, "/onboard", `{"country":"`+country+`"}`, s.handleStripeOnboard)
-		if w.Code != 400 {
-			t.Fatalf("unverified country %s accepted", country)
-		}
-	}
-	for _, value := range []string{"NaN", "Inf", "1e4", "1.001", "-5", "0.99", "1000001"} {
-		if _, err := payoutUSDCents(value); err == nil {
-			t.Fatalf("invalid amount accepted %q", value)
-		}
-	}
-	if st.GetWithdrawableBalance(u.AccountID) != 20_000_000 {
-		t.Fatal("invalid requests moved funds")
-	}
-}
-
-func TestGlobalPayoutUnknownOutcomeStopsResubmitting(t *testing.T) {
-	s, st, u, f := globalPayoutAPIFixture(t, false)
-	r := store.GlobalRecipient{ID: "old", AccountID: u.AccountID, Country: "IN", RecipientID: "acct_gp", PayoutMethodID: "pm_gp", Ready: true}
-	_, _ = st.PrepareGlobalRecipient(r)
-	request := globalpayouts.NewRequest("fa_gp", "acct_gp", "pm_gp", "inr", 1000)
-	data, _ := json.Marshal(request)
-	p := store.GlobalPayout{ID: "old-quote", AccountID: u.AccountID, RecipientGeneration: r.ID, RecipientID: r.RecipientID, PayoutMethodID: r.PayoutMethodID, AmountMicroUSD: 10_000_000, Request: data, Status: "quoted", ExpiresAt: time.Now().Add(time.Minute)}
-	if err := st.CreateGlobalPayoutQuote(p); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.BeginGlobalPayout(u.AccountID, p.ID, time.Now().Add(-13*time.Hour)); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.syncGlobalPayout(httptest.NewRequest("GET", "/", nil).Context(), p.ID); err != nil {
-		t.Fatal(err)
-	}
-	if f.creates != 0 || st.GetWithdrawableBalance(u.AccountID) != 10_000_000 {
-		t.Fatal("old unknown outcome was resent or refunded")
-	}
-	parked, err := st.GetGlobalPayout(p.ID)
-	if err != nil || !parked.RequiresManualReconciliation() {
-		t.Fatalf("old unknown outcome was not parked: %+v %v", parked, err)
-	}
-	if err := s.syncGlobalPayout(httptest.NewRequest("GET", "/", nil).Context(), p.ID); err != nil {
-		t.Fatal(err)
-	}
-	after, _ := st.GetGlobalPayout(p.ID)
-	if after.DispatchAttempts != parked.DispatchAttempts || !after.CheckedAt.Equal(parked.CheckedAt) {
-		t.Fatal("manual reconciliation retry wrote or claimed the row again")
-	}
-	rows, err := st.ListGlobalPayoutsToReconcile(time.Now().Add(24*time.Hour), 200)
-	if err != nil || len(rows) != 0 {
-		t.Fatalf("manual payout returned to automatic scan: %+v %v", rows, err)
-	}
-}
-
 func TestGlobalPayoutAmbiguousSendThenPermissionLossDoesNotRefund(t *testing.T) {
 	s, st, u, f := globalPayoutAPIFixture(t, true)
-	globalAPIRequest(t, s, u, "/onboard", `{"country":"IN"}`, s.handleStripeOnboard)
-	w := globalAPIRequest(t, s, u, "/quote", `{"amount_usd":"10"}`, s.handleGlobalPayoutQuote)
+	globalAPIRequest(t, s, u, "/onboard", `{"country":"IN"}`, s.payouts.HandleStripeOnboard)
+	w := globalAPIRequest(t, s, u, "/quote", `{"amount_usd":"10"}`, s.payouts.HandleGlobalPayoutQuote)
 	var q struct {
 		ID string `json:"id"`
 	}
 	_ = json.Unmarshal(w.Body.Bytes(), &q)
 	body := `{"amount_usd":"10","quote_id":"` + q.ID + `"}`
-	globalAPIRequest(t, s, u, "/withdraw", body, s.handleStripeWithdraw)
+	globalAPIRequest(t, s, u, "/withdraw", body, s.payouts.HandleStripeWithdraw)
 	f.mu.Lock()
 	f.rejectRequests = true
 	f.mu.Unlock()
-	globalAPIRequest(t, s, u, "/withdraw", body, s.handleStripeWithdraw)
+	globalAPIRequest(t, s, u, "/withdraw", body, s.payouts.HandleStripeWithdraw)
 	p, _ := st.GetGlobalPayout(q.ID)
 	if p.Refunded || p.Status != "pending" || st.GetWithdrawableBalance(u.AccountID) != 10_000_000 {
 		t.Fatalf("permission loss refunded an already accepted payout: %+v", p)
 	}
 }
 
-func TestGlobalPayoutPausePreservesReconciliation(t *testing.T) {
-	s, st, u, _ := globalPayoutAPIFixture(t, false)
-	globalAPIRequest(t, s, u, "/onboard", `{"country":"IN"}`, s.handleStripeOnboard)
-	w := globalAPIRequest(t, s, u, "/quote", `{"amount_usd":"10"}`, s.handleGlobalPayoutQuote)
-	var q struct {
-		ID string `json:"id"`
-	}
-	_ = json.Unmarshal(w.Body.Bytes(), &q)
-	if _, err := st.BeginGlobalPayout(u.AccountID, q.ID, time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	baseURL := s.billing.GlobalPayouts().BaseURL
-	s.SetBilling(billing.NewService(st, s.billing.Ledger(), s.logger, billing.Config{MockMode: true, StripeGlobalPayoutsFinancialAccount: "fa_gp", StripeGlobalPayoutsSecretKey: "rk_test_gp", StripeGlobalPayoutsWebhookSecret: "whsec_test"}))
-	s.billing.GlobalPayouts().BaseURL = baseURL
-	w = globalAPIRequest(t, s, u, "/quote", `{"amount_usd":"10"}`, s.handleGlobalPayoutQuote)
-	if w.Code != http.StatusBadGateway {
-		t.Fatalf("new quote accepted while paused: %d", w.Code)
-	}
-	if err := s.syncGlobalPayout(httptest.NewRequest("GET", "/", nil).Context(), q.ID); err != nil {
-		t.Fatal(err)
-	}
-	p, _ := st.GetGlobalPayout(q.ID)
-	if p.ExternalID == "" || p.Status != "processing" {
-		t.Fatalf("paused confirmed payment was stranded: %+v", p)
-	}
-}
-
 func TestGlobalPayoutWebhookUsesCurrentStateAndSignature(t *testing.T) {
 	s, st, u, _ := globalPayoutAPIFixture(t, false)
-	globalAPIRequest(t, s, u, "/onboard", `{"country":"IN"}`, s.handleStripeOnboard)
-	w := globalAPIRequest(t, s, u, "/quote", `{"amount_usd":"10"}`, s.handleGlobalPayoutQuote)
+	globalAPIRequest(t, s, u, "/onboard", `{"country":"IN"}`, s.payouts.HandleStripeOnboard)
+	w := globalAPIRequest(t, s, u, "/quote", `{"amount_usd":"10"}`, s.payouts.HandleGlobalPayoutQuote)
 	var q struct {
 		ID string `json:"id"`
 	}
 	_ = json.Unmarshal(w.Body.Bytes(), &q)
-	globalAPIRequest(t, s, u, "/withdraw", `{"amount_usd":"10","quote_id":"`+q.ID+`"}`, s.handleStripeWithdraw)
+	globalAPIRequest(t, s, u, "/withdraw", `{"amount_usd":"10","quote_id":"`+q.ID+`"}`, s.payouts.HandleStripeWithdraw)
 	payload := []byte(`{"type":"v2.money_management.outbound_payment.returned","related_object":{"id":"obp_gp"}}`)
 	unsigned := httptest.NewRecorder()
-	s.handleGlobalPayoutWebhook(unsigned, httptest.NewRequest("POST", "/", strings.NewReader(string(payload))))
+	s.payouts.HandleGlobalPayoutWebhook(unsigned, httptest.NewRequest("POST", "/", strings.NewReader(string(payload))))
 	if unsigned.Code != 400 {
 		t.Fatalf("unsigned event accepted: %d", unsigned.Code)
 	}
 	signed := httptest.NewRecorder()
-	s.handleGlobalPayoutWebhook(signed, signedConnectRequest(t, payload, "whsec_test"))
+	s.payouts.HandleGlobalPayoutWebhook(signed, signedConnectRequest(t, payload, "whsec_test"))
 	if signed.Code != 200 {
 		t.Fatalf("signed event %d %s", signed.Code, signed.Body.String())
 	}

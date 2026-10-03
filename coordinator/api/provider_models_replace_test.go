@@ -14,7 +14,7 @@ import (
 func TestProviderModelsReplaceUsesSameDrainedConnection(t *testing.T) {
 	srv, reg, _, ts := setupTestServer(t)
 	// This scenario checks replacement, not periodic attestation refreshes.
-	srv.challengeInterval = time.Hour
+	srv.SetChallengeInterval(time.Hour)
 	defer ts.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

@@ -8,10 +8,11 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/store"
 	crs "github.com/eigeninference/d-inference/coordinator/store/cacheroutingstate"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 func TestRestoreClampsToCurrentTTLAndKeepsLongestLived(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	now := time.Now()
 	ctx := context.Background()
 	// Written under a 60-minute TTL 20 minutes ago; today's TTL is 29 minutes.
@@ -56,7 +57,7 @@ func TestRestoreClampsToCurrentTTLAndKeepsLongestLived(t *testing.T) {
 // stored expiry although the clamp drops them. The cap must apply after the
 // clamp, or a cap-sized set of such rows hides every valid row behind it.
 func TestRestoreCapAppliesCurrentTTLBeforeLimit(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	ctx := context.Background()
 	now := time.Now()
 	rows := []crs.HolderRecord{
@@ -80,7 +81,7 @@ func TestRestoreCapAppliesCurrentTTLBeforeLimit(t *testing.T) {
 }
 
 func TestRestoreResetsRowsFromAnotherKeyGeneration(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	ctx := context.Background()
 	now := time.Now()
 	if err := mem.ResetCacheRoutingState(ctx, "gen-1"); err != nil {
@@ -126,14 +127,14 @@ func TestRestoreResetsRowsFromAnotherKeyGeneration(t *testing.T) {
 		t.Fatalf("new generation must restore its own rows: %v %+v", err, next.Status())
 	}
 	// A first boot with no recorded generation stamps it without reporting a rotation.
-	fresh := New(store.NewMemory(store.Config{}), nil, Options{MaxPending: 10, Fingerprint: "gen-1"})
+	fresh := New(memory.NewMemory(store.Config{}), nil, Options{MaxPending: 10, Fingerprint: "gen-1"})
 	if _, err := fresh.Restore(ctx, now, time.Minute, 10, 10); err != nil || fresh.Status().KeyRotated {
 		t.Fatalf("first boot must not report a rotation: %v %+v", err, fresh.Status())
 	}
 }
 
 func TestDemandGranularityFollowsShortTTLAndRestoreIsCapped(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	ctx := context.Background()
 	now := time.Now()
 	// A 30 s TTL bounds the granularity to 7.5 s; the default minute would
@@ -161,7 +162,7 @@ func TestDemandGranularityFollowsShortTTLAndRestoreIsCapped(t *testing.T) {
 		t.Fatalf("long TTL must keep the default granularity: %v", q.demandGranularity)
 	}
 	// A capped restore keeps the newest demand keys and stays within the TTL.
-	mem = store.NewMemory(store.Config{})
+	mem = memory.NewMemory(store.Config{})
 	var rows []crs.DemandRecord
 	for i := 0; i < 5; i++ {
 		rows = append(rows, crs.DemandRecord{Key: string(rune('a' + i)), SeenAt: now.Add(time.Duration(i) * time.Second)})
@@ -184,7 +185,7 @@ func TestDemandGranularityFollowsShortTTLAndRestoreIsCapped(t *testing.T) {
 // restored, and only the entries the registry's index accepted are treated as
 // already persisted.
 func TestRestoreBoundsDemandToNowAndSeedsOnlyAcceptedKeys(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	ctx := context.Background()
 	now := time.Now()
 	if err := mem.UpsertCacheDemand(ctx, []crs.DemandRecord{
@@ -223,7 +224,7 @@ func TestRestoreBoundsDemandToNowAndSeedsOnlyAcceptedKeys(t *testing.T) {
 // parked: a provider that disconnected before the retry parked newer
 // evidence the store does not hold yet, and it must survive the restore.
 func TestRestoreMergesIntoRowsParkedBeforeIt(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	ctx := context.Background()
 	now := time.Now()
 	older := rec("a", "e", now.Add(-30*time.Second), time.Minute)
@@ -254,7 +255,7 @@ func TestRestoreMergesIntoRowsParkedBeforeIt(t *testing.T) {
 // Rows parked while the restore was unavailable can expire before a retry
 // succeeds; they must not take the cap from rows the store still holds.
 func TestRestoreDropsExpiredParkedRowsBeforeTheCap(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	ctx := context.Background()
 	now := time.Now()
 	if err := mem.UpsertCacheHolders(ctx, []crs.HolderRecord{rec("durable", "e", now, time.Minute)}); err != nil {
@@ -291,7 +292,7 @@ func TestRestoreDropsExpiredParkedRowsBeforeTheCap(t *testing.T) {
 // so this run's receipts for the same key reach the store instead of being
 // outranked by the future timestamp.
 func TestRestoreRemovesFutureDatedRows(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	ctx := context.Background()
 	now := time.Now()
 	future := rec("a", "e", now.Add(2*time.Hour), time.Minute)
@@ -322,7 +323,7 @@ func TestRestoreRemovesFutureDatedRows(t *testing.T) {
 // condemn rows no per-row check can see: the restore resets instead of
 // parking them.
 func TestRestoreResetsWhenTheBacklogOverflowsDuringTheLoad(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	ctx := context.Background()
 	now := time.Now()
 	condemned := rec("condemned", "e", now, time.Minute)
@@ -351,7 +352,7 @@ func TestRestoreResetsWhenTheBacklogOverflowsDuringTheLoad(t *testing.T) {
 // into a reset: only the check after the merge loop sees it, and the copy
 // must not count as established with released decisions outstanding.
 func TestRestoreResetsWhenTheBacklogOverflowsDuringAnEmptyLoad(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	now := time.Now()
 	st := &loadHookStore{Store: mem}
 	p := New(st, nil, Options{MaxPending: 2}) // dirty cap 8
@@ -373,7 +374,7 @@ func TestRestoreResetsWhenTheBacklogOverflowsDuringAnEmptyLoad(t *testing.T) {
 // marker as the recorded generation, so the next boot completes it instead
 // of restoring the rows it had condemned, without counting a key rotation.
 func TestRestoreCompletesAnInterruptedReset(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	ctx := context.Background()
 	now := time.Now()
 	// The crash left the marker recorded and a residual row behind.

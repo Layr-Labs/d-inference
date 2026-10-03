@@ -1,18 +1,14 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/mediafetch"
+	inreq "github.com/eigeninference/d-inference/coordinator/api/inference/request"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
@@ -70,50 +66,15 @@ func TestResponsesInlineMediaReachesEncryptedProviderInOrder(t *testing.T) {
 	}
 }
 
-func TestResponsesInlineMediaRejectsRemoteBeforeFetch(t *testing.T) {
-	var hits int32
-	origin := httptest.NewServer(pngHandler(t, &hits))
-	defer origin.Close()
-	srv, _ := testServer(t)
-	makeVisionRoutableProvider(t, srv.registry, "vision", "test")
-	config := mediafetch.DefaultConfig()
-	config.AllowPrivateIPs = true
-	config.AllowNonStandardPorts = true
-	srv.mediaResolver = mediafetch.NewResolver(config, srv.logger)
-	for _, toolOutput := range []bool{false, true} {
-		t.Run(fmt.Sprintf("tool-output=%t", toolOutput), func(t *testing.T) {
-			part := map[string]any{"type": "input_image", "image_url": origin.URL + "/image.png?token=synthetic-marker"}
-			item := map[string]any{"role": "user", "content": []any{part}}
-			if toolOutput {
-				item = map[string]any{"type": "function_call_output", "call_id": "actual", "output": []any{part}}
-			}
-			body, _ := json.Marshal(map[string]any{"model": "test", "input": []any{item}, "max_output_tokens": 64})
-			req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
-			req.Header.Set("Authorization", "Bearer test-key")
-			w := httptest.NewRecorder()
-			srv.Handler().ServeHTTP(w, req)
-			if w.Code != 400 {
-				t.Fatalf("non-inline media did not fail before dispatch: %d", w.Code)
-			}
-			if strings.Contains(w.Body.String(), "synthetic-marker") {
-				t.Fatal("validation echoed URL contents")
-			}
-			if atomic.LoadInt32(&hits) != 0 {
-				t.Fatal("Responses started remote fetch")
-			}
-		})
-	}
-}
-
 func TestResponsesInlineMediaToolOutputDrivesVisionAdmission(t *testing.T) {
 	body := map[string]any{"input": []any{map[string]any{"type": "function_call_output", "call_id": "actual", "output": []any{
 		map[string]any{"type": "input_image", "image_url": "data:image/png;base64," + strings.Repeat("A", 4096)},
 		map[string]any{"type": "video_url", "video_url": map[string]any{"url": "data:video/mp4;base64,AAAA"}},
 	}}}}
-	if !detectMediaRequirement(body) || countMediaParts(body) != 2 {
+	if !inreq.DetectMediaRequirement(body) || inreq.CountMediaParts(body) != 2 {
 		t.Fatal("tool-output media lost its vision admission trait")
 	}
-	if got := estimatePromptTokens(body); got != 4+imagePromptTokenCost+videoPromptTokenCost {
+	if got := inreq.EstimatePromptTokens(body); got != 4+inreq.ImagePromptTokenCost+inreq.VideoPromptTokenCost {
 		t.Fatalf("incorrect media-aware routing estimate: %d", got)
 	}
 }

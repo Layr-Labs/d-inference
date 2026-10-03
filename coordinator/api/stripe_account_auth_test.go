@@ -1,10 +1,11 @@
 package api
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/store"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 // TestStripeUnlinkRouteRejectsAPIKey: unlink is account management — it must

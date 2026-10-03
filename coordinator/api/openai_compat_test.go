@@ -23,6 +23,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 	openai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/shared"
@@ -32,7 +33,7 @@ import (
 // testServerFastQueue creates a test server with a queue that times out in
 // 100ms instead of the default 30s. Use this for tests that verify error
 // responses for unavailable models to avoid blocking for 30s per test.
-func testServerFastQueue(t *testing.T) (*Server, *store.MemoryStore) {
+func testServerFastQueue(t *testing.T) (*Server, *memory.MemoryStore) {
 	t.Helper()
 	srv, st := testServer(t)
 	srv.registry.SetQueue(registry.NewRequestQueue(10, 100*time.Millisecond))
@@ -47,7 +48,7 @@ func setupE2ETest(t *testing.T, model string, handler func(ctx context.Context, 
 	t.Helper()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 
@@ -369,7 +370,7 @@ func TestOpenAI_ChatCompletionNonStreamingFormat(t *testing.T) {
 
 func TestOpenAI_ListModelsFormat(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 

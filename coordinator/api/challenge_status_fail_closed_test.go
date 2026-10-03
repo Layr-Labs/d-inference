@@ -13,6 +13,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 	"nhooyr.io/websocket"
 )
 
@@ -29,7 +30,7 @@ func challengeOverWebSocket(t *testing.T, model string, reply func(challenge pro
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	reg := registry.New(logger)
-	srv := NewServer(reg, store.NewMemory(store.Config{AdminKey: "test-key"}), ServerConfig{}, logger)
+	srv := NewServer(reg, memory.NewMemory(store.Config{AdminKey: "test-key"}), ServerConfig{}, logger)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 

@@ -57,6 +57,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 	"nhooyr.io/websocket"
 )
 
@@ -66,14 +67,14 @@ import (
 
 // setupFailoverServer creates a coordinator test server for failover tests,
 // mirroring setupTestServer / setupLoadTestServer.
-func setupFailoverServer(t *testing.T) (*registry.Registry, *store.MemoryStore, *httptest.Server) {
+func setupFailoverServer(t *testing.T) (*registry.Registry, *memory.MemoryStore, *httptest.Server) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{FirstContentSLAAccounts: []string{testConsumerID}}, logger)
 	t.Cleanup(srv.Close)
-	srv.challengeInterval = 500 * time.Millisecond
+	srv.SetChallengeInterval(500 * time.Millisecond)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return reg, st, ts
@@ -421,17 +422,17 @@ func testFailureClassification(errMsg string, statusCode int) (protocol.Inferenc
 	lower := strings.ToLower(errMsg)
 	switch {
 	case statusCode == 499:
-		return protocol.FailureCodeCancelled, errorReasonCancelled
+		return protocol.FailureCodeCancelled, "cancelled"
 	case strings.Contains(lower, "batch token budget"):
-		return protocol.FailureCodeCapacity, errorReasonRequestExceedsBatchBudget
+		return protocol.FailureCodeCapacity, "request_exceeds_batch_token_budget"
 	case strings.Contains(lower, "active token budget"):
-		return protocol.FailureCodeCapacity, errorReasonRequestExceedsNodeBudget
+		return protocol.FailureCodeCapacity, "request_exceeds_node_budget"
 	case strings.Contains(lower, "context") && (strings.Contains(lower, "exceeds") || strings.Contains(lower, "exceeded")):
-		return protocol.FailureCodeCapacity, errorReasonRequestExceedsContext
+		return protocol.FailureCodeCapacity, "request_exceeds_context"
 	case strings.Contains(lower, "queue full"):
-		return protocol.FailureCodeCapacity, errorReasonQueueFull
+		return protocol.FailureCodeCapacity, "queue_full"
 	case statusCode == http.StatusTooManyRequests || statusCode == http.StatusServiceUnavailable:
-		return protocol.FailureCodeCapacity, errorReasonCapacityBusy
+		return protocol.FailureCodeCapacity, "capacity_busy"
 	case statusCode == http.StatusBadRequest:
 		// A deterministic request-shape rejection. The raw text is still
 		// discarded by the production sanitizer.
@@ -469,56 +470,6 @@ func markerFor(name string) string {
 // fullServeScript serves every dispatch successfully with the provider's marker.
 func fullServeScript(model string) inferenceScript {
 	return func(ctx context.Context, fp *failoverProvider, req protocol.InferenceRequestMessage, body []byte) {
-		fp.serveFull(ctx, req, model, markerFor(fp.name))
-	}
-}
-
-// dispatchRecorder tracks the global order in which providers received
-// dispatches, so failover tests are independent of which provider the
-// scheduler happens to pick first.
-type dispatchRecorder struct {
-	mu    sync.Mutex
-	order []string
-}
-
-func (d *dispatchRecorder) record(name string) int {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.order = append(d.order, name)
-	return len(d.order)
-}
-
-func (d *dispatchRecorder) sequence() []string {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	out := make([]string, len(d.order))
-	copy(out, d.order)
-	return out
-}
-
-// failFirstScript makes the provider that receives the globally-FIRST dispatch
-// fail pre-content (role-only chunk, then failMode), while every later
-// dispatch is served fully. failMode is "error" (inference_error 500) or
-// "disconnect" (abrupt WebSocket drop after the role chunk).
-func failFirstScript(rec *dispatchRecorder, model, failMode string) inferenceScript {
-	return func(ctx context.Context, fp *failoverProvider, req protocol.InferenceRequestMessage, body []byte) {
-		seq := rec.record(fp.name)
-		if seq == 1 {
-			fp.sendRoleChunk(ctx, req, model)
-			// Let the role chunk relay through the coordinator before the
-			// failure signal so the "boilerplate already flowed" ordering is
-			// deterministic.
-			time.Sleep(40 * time.Millisecond)
-			switch failMode {
-			case "error":
-				fp.sendInferenceError(ctx, req, "simulated backend failure", http.StatusInternalServerError)
-			case "disconnect":
-				fp.closeNow()
-			default:
-				fp.t.Errorf("unknown failMode %q", failMode)
-			}
-			return
-		}
 		fp.serveFull(ctx, req, model, markerFor(fp.name))
 	}
 }
@@ -588,283 +539,17 @@ func assertCleanFailoverStream(t *testing.T, status int, body, wantMarker string
 // Test 1: pre-content failover on provider error (streaming)
 // ---------------------------------------------------------------------------
 
-// TestPreContentFailover_ErrorAfterRoleChunk: the first-dispatched provider
-// sends ONLY the boilerplate role chunk, then an inference_error (500). The
-// coordinator must NOT commit on the role chunk: it retries transparently on
-// the other provider, and the consumer sees a clean 200 stream with the other
-// provider's content, exactly one [DONE], and no in-band error.
-//
-// INTEGRATION-NOTE(WS-C): fails against the pre-workstream coordinator (role
-// chunk commits; error surfaces in-band). Encodes the deferred-commit contract.
-func TestPreContentFailover_ErrorAfterRoleChunk(t *testing.T) {
-	reg, _, ts := setupFailoverServer(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-
-	model := "failover-error-model"
-	rec := &dispatchRecorder{}
-	script := failFirstScript(rec, model, "error")
-
-	// DecodeTPS 200 vs 1 puts the providers ~63s apart in scheduler cost
-	// (max_tokens=64), far outside the 3s near-tie window — provider A is
-	// deterministically dispatched first. The script is order-independent
-	// anyway: whoever is dispatched first fails.
-	pA := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
-		Name: "provider-a", Version: "0.6.4", DecodeTPS: 200,
-		Models: []failoverModelSpec{{ID: model}}, Script: script,
-	})
-	pB := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
-		Name: "provider-b", Version: "0.6.4", DecodeTPS: 1,
-		Models: []failoverModelSpec{{ID: model}}, Script: script,
-	})
-
-	status, body, err := postChat(ctx, ts.URL, "test-key", buildChatBody(t, model, true, nil))
-	if err != nil {
-		t.Fatalf("chat request: %v", err)
-	}
-
-	seq := rec.sequence()
-	if len(seq) != 2 {
-		t.Fatalf("dispatch sequence = %v, want exactly 2 dispatches (failed primary + failover winner); status=%d body=%s", seq, status, body)
-	}
-	if seq[0] == seq[1] {
-		t.Errorf("both dispatches went to %q — failover must retry on a DIFFERENT provider", seq[0])
-	}
-	assertCleanFailoverStream(t, status, body, markerFor(seq[1]))
-	if strings.Contains(body, markerFor(seq[0])) {
-		t.Errorf("stream contains content from the failed provider %q; body = %s", seq[0], body)
-	}
-	if got := pA.dispatchCount() + pB.dispatchCount(); got != 2 {
-		t.Errorf("total dispatches = %d, want 2", got)
-	}
-}
-
-// Output-validation 422s use generation_failure + tool_noncompliance: the
-// coordinator must preserve the typed 422 while treating it as retryable, so a
-// second provider can produce a successful sample.
-func TestPreContentFailover_TypedOutputValidation422(t *testing.T) {
-	reg, _, ts := setupFailoverServer(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-
-	model := "failover-output-validation-model"
-	rec := &dispatchRecorder{}
-	script := func(ctx context.Context, fp *failoverProvider, req protocol.InferenceRequestMessage, body []byte) {
-		if rec.record(fp.name) == 1 {
-			fp.sendRoleChunk(ctx, req, model)
-			time.Sleep(40 * time.Millisecond)
-			fp.sendTypedInferenceError(
-				ctx,
-				req,
-				protocol.FailureCodeGenerationFailure,
-				errorReasonToolNoncompliance,
-				http.StatusUnprocessableEntity,
-			)
-			return
-		}
-		fp.serveFull(ctx, req, model, markerFor(fp.name))
-	}
-
-	pA := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
-		Name: "provider-a", Version: "0.6.4", DecodeTPS: 200,
-		Models: []failoverModelSpec{{ID: model}}, Script: script,
-	})
-	pB := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
-		Name: "provider-b", Version: "0.6.4", DecodeTPS: 1,
-		Models: []failoverModelSpec{{ID: model}}, Script: script,
-	})
-
-	status, body, err := postChat(ctx, ts.URL, "test-key", buildChatBody(t, model, true, nil))
-	if err != nil {
-		t.Fatalf("chat request: %v", err)
-	}
-	seq := rec.sequence()
-	if len(seq) != 2 || seq[0] == seq[1] {
-		t.Fatalf("dispatch sequence = %v, want failed provider then distinct failover winner; status=%d body=%s", seq, status, body)
-	}
-	assertCleanFailoverStream(t, status, body, markerFor(seq[1]))
-	if got := pA.dispatchCount() + pB.dispatchCount(); got != 2 {
-		t.Errorf("total dispatches = %d, want 2", got)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Test 1b: pre-content failover on provider error (non-streaming)
 // ---------------------------------------------------------------------------
-
-// TestPreContentFailover_ErrorAfterRoleChunk_NonStreaming is the stream:false
-// variant of Test 1: the assembled JSON response must carry the failover
-// winner's content and no error.
-//
-// INTEGRATION-NOTE(WS-C): same contract dependency as Test 1.
-func TestPreContentFailover_ErrorAfterRoleChunk_NonStreaming(t *testing.T) {
-	reg, _, ts := setupFailoverServer(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-
-	model := "failover-error-nonstream-model"
-	rec := &dispatchRecorder{}
-	script := failFirstScript(rec, model, "error")
-
-	startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
-		Name: "provider-a", Version: "0.6.4", DecodeTPS: 200,
-		Models: []failoverModelSpec{{ID: model}}, Script: script,
-	})
-	startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
-		Name: "provider-b", Version: "0.6.4", DecodeTPS: 1,
-		Models: []failoverModelSpec{{ID: model}}, Script: script,
-	})
-
-	status, body, err := postChat(ctx, ts.URL, "test-key", buildChatBody(t, model, false, nil))
-	if err != nil {
-		t.Fatalf("chat request: %v", err)
-	}
-	if status != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body = %s", status, body)
-	}
-
-	seq := rec.sequence()
-	if len(seq) != 2 {
-		t.Fatalf("dispatch sequence = %v, want exactly 2 dispatches; body = %s", seq, body)
-	}
-	if seq[0] == seq[1] {
-		t.Errorf("both dispatches went to %q — failover must retry on a DIFFERENT provider", seq[0])
-	}
-
-	var resp struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-		Error any `json:"error"`
-	}
-	if err := json.Unmarshal([]byte(body), &resp); err != nil {
-		t.Fatalf("response is not valid JSON: %v; body = %s", err, body)
-	}
-	if resp.Error != nil {
-		t.Errorf("response contains an error field — provider failure leaked: %s", body)
-	}
-	if len(resp.Choices) == 0 || !strings.Contains(resp.Choices[0].Message.Content, markerFor(seq[1])) {
-		t.Errorf("response content missing failover winner marker %q; body = %s", markerFor(seq[1]), body)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Test 2: pre-content failover on provider disconnect
 // ---------------------------------------------------------------------------
 
-// TestPreContentFailover_DisconnectAfterRoleChunk: identical to Test 1, but
-// the first-dispatched provider drops its WebSocket after the role chunk
-// instead of sending an error — the exact OpenRouter partner symptom. The
-// registry converts the drop into a "provider disconnected" (502) terminal;
-// pre-content, that must trigger a transparent retry, not an in-band error.
-//
-// INTEGRATION-NOTE(WS-C): fails against the pre-workstream coordinator.
-func TestPreContentFailover_DisconnectAfterRoleChunk(t *testing.T) {
-	reg, _, ts := setupFailoverServer(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-
-	model := "failover-disconnect-model"
-	rec := &dispatchRecorder{}
-	script := failFirstScript(rec, model, "disconnect")
-
-	startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
-		Name: "provider-a", Version: "0.6.4", DecodeTPS: 200,
-		Models: []failoverModelSpec{{ID: model}}, Script: script,
-	})
-	startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
-		Name: "provider-b", Version: "0.6.4", DecodeTPS: 1,
-		Models: []failoverModelSpec{{ID: model}}, Script: script,
-	})
-
-	status, body, err := postChat(ctx, ts.URL, "test-key", buildChatBody(t, model, true, nil))
-	if err != nil {
-		t.Fatalf("chat request: %v", err)
-	}
-
-	seq := rec.sequence()
-	if len(seq) != 2 {
-		t.Fatalf("dispatch sequence = %v, want exactly 2 dispatches (dropped primary + failover winner); status=%d body=%s", seq, status, body)
-	}
-	if seq[0] == seq[1] {
-		t.Errorf("both dispatches went to %q — failover must retry on a DIFFERENT provider", seq[0])
-	}
-	assertCleanFailoverStream(t, status, body, markerFor(seq[1]))
-	if strings.Contains(body, markerFor(seq[0])) {
-		t.Errorf("stream contains content from the dropped provider %q; body = %s", seq[0], body)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Test 3: post-content errors must STILL surface in-band
 // ---------------------------------------------------------------------------
-
-// TestPostContentErrorStillSurfaced guards the correctness boundary of the
-// deferred-commit change: once a CONTENT-bearing chunk has flowed to the
-// consumer, a provider failure must surface as an in-band error — silently
-// retrying on another provider would duplicate/corrupt already-delivered
-// output. Provider B is present and healthy specifically so a (buggy)
-// post-content retry would be detectable: its marker must NOT appear and it
-// must receive no dispatch.
-//
-// Passes against the current coordinator; must keep passing after WS-C.
-func TestPostContentErrorStillSurfaced(t *testing.T) {
-	reg, _, ts := setupFailoverServer(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-
-	model := "post-content-error-model"
-	const partialContent = "partial-content-before-failure"
-
-	failAfterContent := func(ctx context.Context, fp *failoverProvider, req protocol.InferenceRequestMessage, body []byte) {
-		fp.sendRoleChunk(ctx, req, model)
-		fp.sendContentChunk(ctx, req, model, partialContent)
-		// Let the content chunk relay before the error terminal.
-		time.Sleep(40 * time.Millisecond)
-		fp.sendInferenceError(ctx, req, "backend exploded mid-generation", http.StatusInternalServerError)
-	}
-
-	startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
-		Name: "provider-a", Version: "0.6.4", DecodeTPS: 200,
-		Models: []failoverModelSpec{{ID: model}}, Script: failAfterContent,
-	})
-	pB := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
-		Name: "provider-b", Version: "0.6.4", DecodeTPS: 1,
-		Models: []failoverModelSpec{{ID: model}}, Script: fullServeScript(model),
-	})
-
-	status, body, err := postChat(ctx, ts.URL, "test-key", buildChatBody(t, model, true, nil))
-	if err != nil {
-		t.Fatalf("chat request: %v", err)
-	}
-	if status != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (stream committed by the content chunk); body = %s", status, body)
-	}
-
-	idxContent := strings.Index(body, partialContent)
-	idxErr := strings.Index(body, `"provider_error"`)
-	if idxContent < 0 {
-		t.Errorf("stream missing the pre-failure content chunk %q; body = %s", partialContent, body)
-	}
-	if idxErr < 0 {
-		t.Errorf("stream did NOT surface an in-band error after content had flowed — silent post-content retry is a correctness bug; body = %s", body)
-	}
-	if idxContent >= 0 && idxErr >= 0 && idxContent > idxErr {
-		t.Errorf("in-band error appeared BEFORE the content chunk (content@%d, error@%d); body = %s", idxContent, idxErr, body)
-	}
-	if strings.Contains(body, markerFor("provider-b")) {
-		t.Errorf("stream contains provider-b content — coordinator silently retried AFTER content had flowed; body = %s", body)
-	}
-	if got := pB.dispatchCount(); got != 0 {
-		t.Errorf("provider-b received %d dispatch(es), want 0 — no retry after content has flowed", got)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Test 8: boilerplate role chunk then clean close
@@ -973,53 +658,3 @@ func TestReputationLatencyMeasuredToContentEndToEnd(t *testing.T) {
 // ---------------------------------------------------------------------------
 // C1: deterministic client-shape 4xx must stop after ONE dispatch
 // ---------------------------------------------------------------------------
-
-// always400Script makes EVERY dispatched provider reject pre-content with a
-// deterministic client-shape 400 (the Harmony multi-tool-call case). It records
-// each dispatch so the test can prove the loop did NOT fail over.
-func always400Script(rec *dispatchRecorder) inferenceScript {
-	return func(ctx context.Context, fp *failoverProvider, req protocol.InferenceRequestMessage, body []byte) {
-		rec.record(fp.name)
-		fp.sendInferenceError(ctx, req,
-			"assistant message contains multiple tool_calls; Harmony supports one tool call per assistant message",
-			http.StatusBadRequest)
-	}
-}
-
-// TestProviderClientError400_StopsAfterOne: a provider 400 is deterministic
-// (identical on every provider), so the dispatch loop must return it ONCE after a
-// single dispatch instead of failing over. Pre-fix this walked to provider B
-// (total 2 dispatches); the fix stops at 1. Asserts HTTP 400 + invalid_request_error.
-func TestProviderClientError400_StopsAfterOne(t *testing.T) {
-	reg, _, ts := setupFailoverServer(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-
-	model := "client-error-400-model"
-	rec := &dispatchRecorder{}
-	script := always400Script(rec)
-
-	pA := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
-		Name: "provider-a", Version: "0.6.4", DecodeTPS: 200,
-		Models: []failoverModelSpec{{ID: model}}, Script: script,
-	})
-	pB := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
-		Name: "provider-b", Version: "0.6.4", DecodeTPS: 1,
-		Models: []failoverModelSpec{{ID: model}}, Script: script,
-	})
-
-	status, body, err := postChat(ctx, ts.URL, "test-key", buildChatBody(t, model, false, nil))
-	if err != nil {
-		t.Fatalf("chat request: %v", err)
-	}
-	if status != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 (deterministic client error returned once); body = %s", status, body)
-	}
-	if got := pA.dispatchCount() + pB.dispatchCount(); got != 1 {
-		t.Fatalf("total dispatches = %d, want 1 — a deterministic 400 must NOT fail over across the fleet; body = %s", got, body)
-	}
-	if !strings.Contains(body, "invalid_request_error") {
-		t.Errorf("body should surface invalid_request_error; got %s", body)
-	}
-}

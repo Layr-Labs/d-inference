@@ -4,19 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
-	"log/slog"
-	"net/http/httptest"
-	"strings"
-	"sync/atomic"
-	"testing"
-	"time"
-
 	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
+	"io"
+	"log/slog"
+	"net/http/httptest"
 	"nhooyr.io/websocket"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
 )
 
 type retryRestoreStore struct {
@@ -60,7 +60,7 @@ func (s *retryRestoreStore) GetProviderToken(token string) (*store.ProviderToken
 func TestProviderRestoreRetriesTransientReads(t *testing.T) {
 	for _, phase := range []string{"provider", "reputation"} {
 		t.Run(phase, func(t *testing.T) {
-			base := store.NewMemory(store.Config{})
+			base := memory.NewMemory(store.Config{})
 			if err := base.UpsertProviderWithReputation(context.Background(), store.ProviderRecord{
 				ID: "history", SerialNumber: "serial", SEPublicKey: "se", LastSeen: time.Now(),
 				AccountID: "owner", LifetimeTokensGenerated: 700,
@@ -75,10 +75,10 @@ func TestProviderRestoreRetriesTransientReads(t *testing.T) {
 			}
 			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 			reg := registry.New(logger)
-			reg.SetStore(st)
+			srv := NewServer(reg, st, ServerConfig{}, logger)
+			t.Cleanup(srv.Close)
 			p := reg.Register("new", nil, &protocol.RegisterMessage{})
-			srv := &Server{registry: reg, store: st, logger: logger}
-			if err := srv.restorePersistedProviderState(context.Background(), p, "serial", "se"); err != nil {
+			if err := srv.providers.RestorePersistedProviderState(context.Background(), p, "serial", "se"); err != nil {
 				t.Fatal(err)
 			}
 			p.Mu().Lock()
@@ -93,7 +93,7 @@ func TestProviderRestoreRetriesTransientReads(t *testing.T) {
 func TestProviderRestoreDeadlineIncludesReputation(t *testing.T) {
 	for _, phase := range []string{"provider", "reputation"} {
 		t.Run(phase, func(t *testing.T) {
-			base := store.NewMemory(store.Config{})
+			base := memory.NewMemory(store.Config{})
 			if err := base.UpsertProvider(context.Background(), store.ProviderRecord{ID: "history", SerialNumber: "serial", AccountID: "owner"}); err != nil {
 				t.Fatal(err)
 			}
@@ -106,13 +106,13 @@ func TestProviderRestoreDeadlineIncludesReputation(t *testing.T) {
 			}
 			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 			reg := registry.New(logger)
-			reg.SetStore(st)
+			srv := NewServer(reg, st, ServerConfig{}, logger)
+			t.Cleanup(srv.Close)
 			p := reg.Register("new", nil, &protocol.RegisterMessage{})
-			srv := &Server{registry: reg, store: st, logger: logger}
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 			defer cancel()
 			started := time.Now()
-			err := srv.restorePersistedProviderState(ctx, p, "serial", "se")
+			err := srv.providers.RestorePersistedProviderState(ctx, p, "serial", "se")
 			if !errors.Is(err, context.DeadlineExceeded) || time.Since(started) > time.Second || st.lookups.Load() != 1 {
 				t.Fatalf("%s read escaped registration deadline: %v, attempts=%d", phase, err, st.lookups.Load())
 			}
@@ -127,20 +127,20 @@ func TestProviderRestoreDeadlineIncludesReputation(t *testing.T) {
 
 func TestProviderRestoreDisconnectedSessionStopsRetry(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	st := &retryRestoreStore{Store: store.NewMemory(store.Config{})}
+	st := &retryRestoreStore{Store: memory.NewMemory(store.Config{})}
 	reg := registry.New(logger)
-	reg.SetStore(st)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+	t.Cleanup(srv.Close)
 	p := reg.Register("new", nil, &protocol.RegisterMessage{})
 	st.beforeLookup = func(context.Context) error { reg.Disconnect(p.ID); return io.ErrUnexpectedEOF }
-	srv := &Server{registry: reg, store: st, logger: logger}
-	if err := srv.restorePersistedProviderState(context.Background(), p, "serial", "se"); !errors.Is(err, context.Canceled) || st.lookups.Load() != 1 {
+	if err := srv.providers.RestorePersistedProviderState(context.Background(), p, "serial", "se"); !errors.Is(err, context.Canceled) || st.lookups.Load() != 1 {
 		t.Fatalf("disconnected session retried: %v, attempts=%d", err, st.lookups.Load())
 	}
 }
 
 func TestProviderRestoreExhaustionEndsRegistrationBeforeDuplicateEviction(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	st := &retryRestoreStore{Store: store.NewMemory(store.Config{}), lookupFailures: 100}
+	st := &retryRestoreStore{Store: memory.NewMemory(store.Config{}), lookupFailures: 100}
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	defer srv.Close()
@@ -174,7 +174,7 @@ func TestProviderRestoreExhaustionEndsRegistrationBeforeDuplicateEviction(t *tes
 			break
 		}
 	}
-	if st.lookups.Load() != providerRestoreAttempts || st.tokenReads.Load() != 0 {
+	if st.lookups.Load() != 3 || st.tokenReads.Load() != 0 {
 		t.Fatalf("unbounded retries or registration continued: lookups=%d token_reads=%d", st.lookups.Load(), st.tokenReads.Load())
 	}
 	if reg.GetProvider(old.ID) != old {

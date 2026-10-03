@@ -11,6 +11,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 type orderedRestoreStore struct {
@@ -53,7 +54,7 @@ func waitPersisted(t *testing.T, ch <-chan store.ProviderRecord) store.ProviderR
 }
 
 func TestProviderIncompleteIdentityRemainsUnpublishedAfterDisconnect(t *testing.T) {
-	base := store.NewMemory(store.Config{})
+	base := memory.NewMemory(store.Config{})
 	if err := base.UpsertProvider(context.Background(), store.ProviderRecord{ID: "history", SerialNumber: "serial", SEPublicKey: "se", LastSeen: time.Now().Add(-time.Hour), LifetimeTokensGenerated: 700}); err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +87,7 @@ func TestProviderIncompleteIdentityRemainsUnpublishedAfterDisconnect(t *testing.
 }
 
 func TestProviderInitialPersistCannotOverwriteCompletedRestore(t *testing.T) {
-	base := store.NewMemory(store.Config{})
+	base := memory.NewMemory(store.Config{})
 	st := &orderedRestoreStore{Store: base, entered: make(chan store.ProviderRecord, 1), release: make(chan struct{}), written: make(chan store.ProviderRecord, 4)}
 	r := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	r.SetStore(st)
@@ -116,7 +117,7 @@ func TestProviderInitialPersistCannotOverwriteCompletedRestore(t *testing.T) {
 // store read. No pending zero snapshot may survive to overwrite the completed
 // record's reputation, and identity+reputation become visible together.
 func TestProviderPendingReputationCannotOverwriteCompletedRestore(t *testing.T) {
-	base := store.NewMemory(store.Config{})
+	base := memory.NewMemory(store.Config{})
 	r := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	r.SetStore(base)
 	p := &Provider{ID: "pending-reputation", stateRestorePending: true, AttestationResult: &attestation.VerificationResult{SerialNumber: "serial", PublicKey: "se"}}
@@ -156,7 +157,7 @@ func (s failedRestoreReputationStore) GetReputation(context.Context, string) (*s
 	return nil, io.ErrUnexpectedEOF
 }
 func TestProviderReputationReadFailureKeepsRestorePending(t *testing.T) {
-	base := store.NewMemory(store.Config{})
+	base := memory.NewMemory(store.Config{})
 	r := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	r.SetStore(failedRestoreReputationStore{base})
 	p := r.Register("new", nil, &protocol.RegisterMessage{})

@@ -8,6 +8,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	crs "github.com/eigeninference/d-inference/coordinator/store/cacheroutingstate"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 // Stop the ticker so these tests control every restore and flush explicitly.
@@ -31,7 +32,7 @@ func TestCachePersistenceInvalidationBeforeRestore(t *testing.T) {
 	for _, outcome := range []string{"miss_absent", "miss_corrupt", "hit"} {
 		t.Run(outcome, func(t *testing.T) {
 			ctx := context.Background()
-			mem := store.NewMemory(store.Config{})
+			mem := memory.NewMemory(store.Config{})
 			clock := time.Now().Add(-10 * time.Second)
 			r1, _, capability := exactTestRegistry(t)
 			removeTestProvider(r1, "provider-a")
@@ -113,7 +114,7 @@ func TestCachePersistenceNewestSessionInvalidation(t *testing.T) {
 					name = "flushed"
 				}
 				t.Run(name, func(t *testing.T) {
-					var st store.Store = store.NewMemory(store.Config{})
+					var st store.Store = memory.NewMemory(store.Config{})
 					if backend == "postgres" {
 						st = isolatedPostgresStore(t)
 					}

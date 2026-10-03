@@ -8,6 +8,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	memorystore "github.com/eigeninference/d-inference/coordinator/store/memory"
 	"github.com/google/uuid"
 )
 
@@ -25,7 +26,7 @@ func enrollmentBackoffSession(t *testing.T, h *rotationHarness, sessionID string
 	return x, identity.ID
 }
 
-func archiveEnrollmentOutcome(t *testing.T, mem *store.MemoryStore, session, outcome string, at time.Time) {
+func archiveEnrollmentOutcome(t *testing.T, mem *memorystore.MemoryStore, session, outcome string, at time.Time) {
 	t.Helper()
 	id := uuid.NewString()
 	if err := mem.BeginAppAttestEvidence(context.Background(), store.AppAttestEvidence{ID: id, SessionID: session, KeyID: id, ReceivedAt: at, Action: "attestation", Context: []byte(`{}`)}); err != nil {

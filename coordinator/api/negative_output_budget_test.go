@@ -12,12 +12,13 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 func TestNegativeOutputBudgetsRejectedBeforeAdmission(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	reg := registry.New(logger)
-	st := store.NewMemory(store.Config{AdminKey: "budget-fixture-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "budget-fixture-key"})
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	server := httptest.NewServer(srv.Handler())
 	defer server.Close()

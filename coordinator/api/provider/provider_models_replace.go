@@ -1,0 +1,72 @@
+package provider
+
+import (
+	"context"
+	"encoding/json"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+)
+
+func (s *Owner) handleModelsReplace(ctx context.Context, provider *registry.Provider, msg *protocol.ModelsReplaceMessage) {
+	_, _, generation, err := s.registry.ReplaceProviderModels(provider, msg)
+	ack := protocol.ModelsReplaceAckMessage{
+		Type: protocol.TypeModelsReplaceAck, RequestID: msg.RequestID,
+		DrainRequestID: msg.DrainRequestID, ValidateOnly: msg.ValidateOnly, Accepted: err == nil,
+	}
+	if err != nil {
+		ack.Error = err.Error()
+	}
+	data, _ := json.Marshal(ack)
+	ackCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if writeErr := provider.WriteTextControl(ackCtx, data); writeErr != nil {
+		s.logger.Warn("failed to send models_replace acknowledgement", "provider_id", provider.ID, "error", writeErr)
+		return
+	}
+	if err != nil || msg.ValidateOnly {
+		return
+	}
+	s.registry.ConfirmProviderModelsReceipt(provider, msg.RequestID, generation)
+}
+
+func (s *Owner) handleModelsReplaceReady(ctx context.Context, provider *registry.Provider, msg *protocol.ModelsReplaceReadyMessage) {
+	added, removed, resumed, ack := s.registry.ResumeProviderModels(provider, msg.RequestID, msg.DrainRequestID, msg.CapacitySeq)
+	s.finishModelsReplaceReady(ctx, provider, added, removed, resumed, ack)
+}
+
+func (s *Owner) handleModelsReplaceHeartbeat(ctx context.Context, provider *registry.Provider) {
+	added, removed, resumed, ack := s.registry.ResumeProviderModelsAfterHeartbeat(provider)
+	s.finishModelsReplaceReady(ctx, provider, added, removed, resumed, ack)
+}
+
+func (s *Owner) finishModelsReplaceReady(ctx context.Context, provider *registry.Provider, added, removed []string,
+	resumed bool, ack *protocol.ModelsReplaceResumedMessage) {
+	if ack == nil {
+		return
+	}
+	if resumed {
+		provider.Mu().Lock()
+		backend := provider.Backend
+		provider.Mu().Unlock()
+		if s.catalog.ProviderSupportsDesiredModels(backend) {
+			if err := s.registry.RefreshDesiredModels(provider); err != nil {
+				s.logger.Warn("failed to refresh desired_models after replacement", "provider_id", provider.ID, "error", err)
+			}
+		}
+		for _, id := range added {
+			s.registry.DrainQueuedRequestsForModel(id)
+		}
+		for _, id := range removed {
+			s.registry.DrainQueuedRequestsForModel(id)
+			s.registry.RejectUnservableQueuedRequests(id)
+		}
+	}
+	data, _ := json.Marshal(ack)
+	ackCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := provider.WriteTextControl(ackCtx, data); err != nil {
+		s.logger.Warn("failed to send models_replace_resumed acknowledgement", "provider_id", provider.ID, "error", err)
+	}
+}

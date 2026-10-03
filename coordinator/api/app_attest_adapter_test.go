@@ -7,6 +7,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 	"io"
 	"log/slog"
 	"net/http"
@@ -20,9 +21,13 @@ import (
 // and authorization workers are tested through their private service package.
 func newAuthorizationFixture(t *testing.T) (*Server, *registry.Provider, *protocol.AppAttestStatus) {
 	t.Helper()
+	return newAuthorizationFixtureWithStore(t, memory.NewMemory(store.Config{}))
+}
+
+func newAuthorizationFixtureWithStore(t *testing.T, st store.Store) (*Server, *registry.Provider, *protocol.AppAttestStatus) {
+	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	r := registry.New(logger)
-	r.SetAppAttestServingPolicy(true, 7)
 	key := base64.StdEncoding.EncodeToString(make([]byte, 32))
 	p := r.Register("connection", nil, &protocol.RegisterMessage{PublicKey: key, AppAttestProtocol: 3, Backend: registry.BackendMLXSwift, EncryptedResponseChunks: true, Hardware: protocol.Hardware{MachineModel: "Mac16,10", MemoryGB: 32}})
 	p.AccountID, p.RuntimeVerified, p.RuntimeManifestChecked = "account", true, true
@@ -35,11 +40,13 @@ func newAuthorizationFixture(t *testing.T) (*Server, *registry.Provider, *protoc
 	if !r.BindVerifiedMachineIdentity(p, "account", "machine") {
 		t.Fatal("identity")
 	}
-	s := &Server{registry: r, store: store.NewMemory(store.Config{}), logger: logger, appAttestShadow: AppAttestShadowConfig{ServingEnabled: true, MDMRemovalEnabled: true, Environment: "production"}}
-	s.releaseTrustPolicy.Store(&releaseTrustPolicySnapshot{Generation: 7, ByBinaryHash: map[string][]approvedReleasePolicy{strings.Repeat("a", 64): {{Version: "0.9.4", Platform: "macos-arm64", MetallibHash: strings.Repeat("b", 64)}}}})
+	s := NewServer(r, st, ServerConfig{AppAttestShadow: AppAttestShadowConfig{ServingEnabled: true, MDMRemovalEnabled: true, Environment: "production"}}, logger)
+	t.Cleanup(s.Close)
+	policy := publishTestReleasePolicy(t, s, store.Release{BinaryHash: strings.Repeat("a", 64), Version: "0.9.4", Platform: "macos-arm64", MetallibHash: strings.Repeat("b", 64)})
 	status := &protocol.AppAttestStatus{BinaryHash: strings.Repeat("a", 64), AppVersion: "0.9.4", AttestationPublicKey: "se", MachineModel: "Mac16,10", MemoryGB: "32"}
 	now := time.Now()
-	if !r.GrantAppAttestServingAuthorization(p, registry.AppAttestServingAuthorization{AccountID: "account", MachineID: "machine", CredentialID: "credential", ConnectionID: p.ID, ProofSessionID: "proof", Endpoint: p.PublicKey, PolicyGeneration: 7, IssuedAt: now, ValidUntil: now.Add(30 * time.Second), MachineModel: "Mac16,10", MemoryGB: 32}) {
+	// NewServer synchronously publishes the initial empty qualification snapshot.
+	if !r.GrantAppAttestServingAuthorization(p, registry.AppAttestServingAuthorization{AccountID: "account", MachineID: "machine", CredentialID: "credential", ConnectionID: p.ID, ProofSessionID: "proof", Endpoint: p.PublicKey, PolicyGeneration: policy.Generation, QualificationGeneration: 1, IssuedAt: now, ValidUntil: now.Add(30 * time.Second), MachineModel: "Mac16,10", MemoryGB: 32}) {
 		t.Fatal("seed registry authorization")
 	}
 	t.Cleanup(func() { r.Disconnect(p.ID) })
@@ -47,7 +54,7 @@ func newAuthorizationFixture(t *testing.T) (*Server, *registry.Provider, *protoc
 }
 func TestAppAttestAdminRevocationOwnershipAndIdempotency(t *testing.T) {
 	s, p, _ := newAuthorizationFixture(t)
-	s.adminKey = "admin-secret"
+	s.SetAdminKey("admin-secret")
 	keys, _ := store.As[store.AppAttestShadowStore](s.store)
 	_, err := keys.InsertAppAttestShadowKey(context.Background(), store.AppAttestShadowKey{KeyID: "credential", AccountID: "account"})
 	if err != nil {
@@ -57,7 +64,7 @@ func TestAppAttestAdminRevocationOwnershipAndIdempotency(t *testing.T) {
 		r := httptest.NewRequest(http.MethodPost, "/v1/admin/app-attest/revoke", strings.NewReader(`{"key_id":"credential","account_id":"`+account+`","reason":"operator_revoked"}`))
 		r.Header.Set("Authorization", "Bearer "+token)
 		w := httptest.NewRecorder()
-		s.handleAdminAppAttestRevoke(w, r)
+		s.trust.HandleAdminAppAttestRevoke(w, r)
 		return w.Code
 	}
 	if got := call("account", "wrong"); got == http.StatusOK {
@@ -82,7 +89,7 @@ func TestAppAttestAdminRevocationOwnershipAndIdempotency(t *testing.T) {
 func TestAppAttestPublicAuthorizationDoesNotExposePrivateIdentity(t *testing.T) {
 	s, _, _ := newAuthorizationFixture(t)
 	w := httptest.NewRecorder()
-	s.handleProviderAttestation(w, httptest.NewRequest(http.MethodGet, "/v1/providers/attestation", nil))
+	s.trust.HandleProviderAttestation(w, httptest.NewRequest(http.MethodGet, "/v1/providers/attestation", nil))
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"app_attest_authorized":true`) {
 		t.Fatalf("public verdict %d %s", w.Code, w.Body.String())
 	}
@@ -95,11 +102,10 @@ func TestAppAttestPublicAuthorizationDoesNotExposePrivateIdentity(t *testing.T) 
 
 func TestAppAttestAccountBoundInitialHistoryRestore(t *testing.T) {
 	s, p, _ := newAuthorizationFixture(t)
-	s.registry.SetStore(s.store)
 	if err := s.store.UpsertProvider(context.Background(), store.ProviderRecord{ID: "other-history", SEPublicKey: "se", AccountID: "previous-owner", LastSeen: time.Now(), LifetimeTokensGenerated: 99}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.restorePersistedProviderState(context.Background(), p, "", "se", "account"); err != nil {
+	if err := s.providers.RestorePersistedProviderState(context.Background(), p, "", "se", "account"); err != nil {
 		t.Fatal(err)
 	}
 	if p.AccountID != "account" || p.Stats.TokensGenerated != 0 {
@@ -111,40 +117,27 @@ func TestAppAttestAuthorizerRevalidatesMetalLibraryAndBackend(t *testing.T) {
 	for _, mode := range []string{"metallib", "backend", "verification_key", "runtime"} {
 		t.Run(mode, func(t *testing.T) {
 			s, p, status := newAuthorizationFixture(t)
-			if !appAttestReleaseApproved(s.releaseTrustPolicy.Load(), p, status) {
+			if !s.releases.Policy().AppAttestReleaseApproved(p, status) {
 				t.Fatal("initial release rejected")
 			}
-			snapshot := &releaseTrustPolicySnapshot{Generation: 8, ByBinaryHash: map[string][]approvedReleasePolicy{strings.Repeat("a", 64): {{Version: "0.9.4", Platform: "macos-arm64", MetallibHash: strings.Repeat("b", 64)}}}}
+			row := store.Release{BinaryHash: strings.Repeat("a", 64), Version: "0.9.4", Platform: "macos-arm64", MetallibHash: strings.Repeat("b", 64)}
 			switch mode {
 			case "metallib":
-				snapshot.ByBinaryHash[strings.Repeat("a", 64)][0].MetallibHash = strings.Repeat("c", 64)
+				row.MetallibHash = strings.Repeat("c", 64)
 			case "backend":
-				snapshot.ByBinaryHash[strings.Repeat("a", 64)][0].Backend = "other"
+				row.Backend = "other"
 			case "verification_key":
 				status.AttestationPublicKey = "other"
 			case "runtime":
 				p.MetallibVerified = false
 			}
-			s.publishReleaseTrustPolicy(snapshot)
-			if appAttestReleaseApproved(s.releaseTrustPolicy.Load(), p, status) {
+			publishTestReleasePolicy(t, s, row)
+			if s.releases.Policy().AppAttestReleaseApproved(p, status) {
 				t.Fatal("stale runtime reapproved")
 			}
 			if _, ok := s.registry.ProviderServingAuthorization(p); ok {
 				t.Fatal("old generation authorization survived")
 			}
 		})
-	}
-}
-
-func TestAppAttestReleaseAdapterPinsApprovalToItsGeneration(t *testing.T) {
-	s, p, status := newAuthorizationFixture(t)
-	before := s.currentAppAttestReleasePolicy()
-	s.publishReleaseTrustPolicy(&releaseTrustPolicySnapshot{Generation: 8, ByBinaryHash: map[string][]approvedReleasePolicy{strings.Repeat("a", 64): {{Version: "0.9.4", Platform: "macos-arm64", MetallibHash: strings.Repeat("c", 64)}}}})
-	after := s.currentAppAttestReleasePolicy()
-	if before.Generation != 7 || !before.Known || !before.Approves(p, status) {
-		t.Fatal("old approval reloaded a different generation")
-	}
-	if after.Generation != 8 || !after.Known || after.Approves(p, status) {
-		t.Fatal("new generation retained old runtime approval")
 	}
 }

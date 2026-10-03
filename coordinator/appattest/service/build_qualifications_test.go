@@ -9,9 +9,10 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
+	memorystore "github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
-type failingBuildStore struct{ *store.MemoryStore }
+type failingBuildStore struct{ *memorystore.MemoryStore }
 
 func (*failingBuildStore) ListAppAttestBuildQualifications(context.Context) ([]store.AppAttestBuildQualification, error) {
 	return nil, errors.New("unavailable")
@@ -49,7 +50,7 @@ func TestBuildQualificationStoreOutageCannotExtendLease(t *testing.T) {
 			t.Fatal("initial grant")
 		}
 		deadline := p.GetAppAttestServingAuthorization().ValidUntil
-		s.store = &failingBuildStore{store.NewMemory(store.Config{})}
+		s.store = &failingBuildStore{memorystore.NewMemory(store.Config{})}
 		time.Sleep(20 * time.Second)
 		if s.RefreshBuildQualifications(context.Background()) == nil {
 			t.Fatal("hidden database outage")

@@ -57,7 +57,7 @@ func TestAppAttestBuildRoutesRejectNonInteractiveAndNonAdminCredentials(t *testi
 				}
 			case "admin_provider_token":
 				token = "admin-provider-token"
-				if err := st.CreateProviderToken(&store.ProviderToken{TokenHash: sha256Hash(token), AccountID: user.AccountID, Active: true}); err != nil {
+				if err := st.CreateProviderToken(&store.ProviderToken{TokenHash: providerTokenHash(token), AccountID: user.AccountID, Active: true}); err != nil {
 					t.Fatal(err)
 				}
 			case "release_key":

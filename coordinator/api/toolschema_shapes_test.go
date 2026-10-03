@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"reflect"
 	"testing"
+
+	inreq "github.com/eigeninference/d-inference/coordinator/api/inference/request"
 )
 
 // Responses-API flat tool: parameters at the tool's top level, no "function"
@@ -20,7 +22,7 @@ func TestNormalizeToolSchemas_ResponsesFlatToolNormalized(t *testing.T) {
 		`{"type":"function","function":{"name":"chat_sibling",` +
 		`"parameters":{"properties":{"q":{"type":["string","null"]}}}}}]}`)
 
-	tools := tsnTools(t, NormalizeToolSchemas(body), 2)
+	tools := tsnTools(t, inreq.NormalizeToolSchemas(body), 2)
 
 	flat := tsnMap(t, tools[0], "tools[0]")
 	// The flat entry's own identity fields survive, and no wrapper is invented.
@@ -69,7 +71,7 @@ func TestNormalizeToolSchemas_FlatToolWithNonObjectFunctionStillNormalized(t *te
 	body := []byte(`{"tools":[{"name":"f","function":"notdict",` +
 		`"parameters":{"properties":{"u":{"enum":["c","f"]}}}}]}`)
 
-	tool := tsnMap(t, tsnTools(t, NormalizeToolSchemas(body), 1)[0], "tools[0]")
+	tool := tsnMap(t, tsnTools(t, inreq.NormalizeToolSchemas(body), 1)[0], "tools[0]")
 	if tool["function"] != "notdict" {
 		t.Errorf("garbage function value changed: %v", tool["function"])
 	}
@@ -92,7 +94,7 @@ func TestNormalizeToolSchemas_ObjectFunctionWrapperClaimsEntry(t *testing.T) {
 		`"function":{"name":"f","parameters":{"properties":{"a":{"enum":["x"]}}}},` +
 		`"parameters":{"properties":{"b":{"enum":["y"]}}}}]}`)
 
-	tool := tsnMap(t, tsnTools(t, NormalizeToolSchemas(body), 1)[0], "tools[0]")
+	tool := tsnMap(t, tsnTools(t, inreq.NormalizeToolSchemas(body), 1)[0], "tools[0]")
 	// The wrapped parameters are normalized...
 	fnParams := tsnMap(t, tsnMap(t, tool["function"], "function")["parameters"], "function.parameters")
 	if got := tsnType(t, fnParams, "function.parameters"); got != "object" {
@@ -124,7 +126,7 @@ func TestNormalizeToolSchemas_AnthropicInputSchemaNormalized(t *testing.T) {
 		`"days":{"type":"array","items":{"type":["integer","null"]}},` +
 		`"unit":{"enum":["c","f"]}}}}]}`)
 
-	tool := tsnMap(t, tsnTools(t, NormalizeToolSchemas(body), 1)[0], "tools[0]")
+	tool := tsnMap(t, tsnTools(t, inreq.NormalizeToolSchemas(body), 1)[0], "tools[0]")
 	// The entry's own fields are not schema nodes — identity survives and no
 	// type is invented on the tool itself despite its "description" key.
 	if tool["name"] != "get_weather" || tool["description"] != "Get weather" {
@@ -168,7 +170,7 @@ func TestNormalizeToolSchemas_AnthropicToolWithoutInputSchemaUnchanged(t *testin
 		`{"type":"web_search_20250305","name":"web_search","max_uses":3},` +
 		`{"name":"f","input_schema":{"properties":{"q":{"description":"q"}}}}]}`)
 
-	tools := tsnTools(t, NormalizeToolSchemas(body), 2)
+	tools := tsnTools(t, inreq.NormalizeToolSchemas(body), 2)
 	stub := tsnMap(t, tools[0], "tools[0]")
 	want := map[string]any{"type": "web_search_20250305", "name": "web_search", "max_uses": json.Number("3")}
 	if !reflect.DeepEqual(stub, want) {
@@ -193,7 +195,7 @@ func TestNormalizeToolSchemas_MixedShapesInOneToolsArray(t *testing.T) {
 		`{"name":"anthropic","input_schema":{"type":["object","null"],"properties":{"c":{"description":"c"}}}},` +
 		`42]}`)
 
-	tools := tsnTools(t, NormalizeToolSchemas(body), 4)
+	tools := tsnTools(t, inreq.NormalizeToolSchemas(body), 4)
 
 	chatParams := tsnMap(t, tsnMap(t, tsnMap(t, tools[0], "tools[0]")["function"], "tools[0].function")["parameters"], "chat parameters")
 	a := tsnMap(t, tsnMap(t, chatParams["properties"], "chat properties")["a"], "a")
@@ -231,7 +233,7 @@ func TestNormalizeToolSchemas_NullSchemasPreservedAcrossShapes(t *testing.T) {
 		`{"name":"flat","parameters":null},` +
 		`{"name":"anthropic","input_schema":null}]}`)
 
-	tools := tsnTools(t, NormalizeToolSchemas(body), 3)
+	tools := tsnTools(t, inreq.NormalizeToolSchemas(body), 3)
 	fn := tsnMap(t, tsnMap(t, tools[0], "tools[0]")["function"], "tools[0].function")
 	if v, ok := fn["parameters"]; !ok || v != nil {
 		t.Errorf("chat null parameters = %v (present=%v), want preserved null", v, ok)
@@ -258,11 +260,11 @@ func TestNormalizeToolSchemas_AllShapesIdempotentAndNumbersSurvive(t *testing.T)
 		`{"name":"anthropic","input_schema":` +
 		`{"properties":{"c":{"type":["number","null"],"default":123456789012345678901234567890.5}}}}]}`)
 
-	once := NormalizeToolSchemas(body)
+	once := inreq.NormalizeToolSchemas(body)
 	if bytes.Equal(once, body) {
 		t.Fatal("first pass did not normalize")
 	}
-	twice := NormalizeToolSchemas(once)
+	twice := inreq.NormalizeToolSchemas(once)
 	if !bytes.Equal(once, twice) {
 		t.Errorf("not idempotent:\n once: %s\ntwice: %s", once, twice)
 	}
@@ -299,101 +301,5 @@ func TestNormalizeToolSchemas_AllShapesIdempotentAndNumbersSurvive(t *testing.T)
 	c := tsnMap(t, tsnMap(t, tsnMap(t, tsnMap(t, tools[2], "tools[2]")["input_schema"], "input_schema")["properties"], "anthropic properties")["c"], "c")
 	if got := tsnType(t, c, "c"); got != "number" || c["nullable"] != true {
 		t.Errorf("anthropic c = type %q nullable %v, want number/true", got, c["nullable"])
-	}
-}
-
-// (a) A schema nested far deeper than maxToolSchemaDepth must NOT panic or
-// overflow the stack; the shallow part is normalized and the part beyond the
-// depth budget is left exactly as-is (which is safe — see maxToolSchemaDepth).
-func TestNormalizeToolSchemas_DepthLimitStopsRecursionWithoutPanic(t *testing.T) {
-	const levels = maxToolSchemaDepth + 200 // comfortably past the ceiling
-	body := tsnDeepPropertiesBody(levels)
-
-	var out []byte
-	// A naive unbounded recursion on a sufficiently deep input would overflow
-	// the stack and crash the test process; reaching the assertions at all is
-	// the core guarantee. (defer/recover would not catch a fatal stack overflow,
-	// so the real protection is the depth bound under test, not this guard.)
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				t.Fatalf("normalization panicked on a deeply-nested schema: %v", r)
-			}
-		}()
-		out = NormalizeToolSchemas(body)
-	}()
-
-	// The shallow part WAS repaired, so the body changed and re-encoded.
-	if bytes.Equal(out, body) {
-		t.Fatal("deeply-nested body was returned unchanged; the shallow part should have normalized")
-	}
-
-	// Walk down the properties chain and confirm: nodes above the limit gained
-	// a structural "object" type, and the node at the depth limit was left
-	// untouched (no type invented beyond the budget).
-	node := tsnParams(t, out) // depth 0
-	depth := 0
-	for {
-		props, ok := node["properties"].(map[string]any)
-		if !ok {
-			break
-		}
-		// A node that carries properties and was reached within the budget must
-		// have been typed "object".
-		if depth < maxToolSchemaDepth {
-			if got, ok := node["type"].(string); !ok || got != "object" {
-				t.Fatalf("node at depth %d type = %v, want object (within budget)", depth, node["type"])
-			}
-		} else {
-			// At or beyond the limit, recursion stopped: no type was injected.
-			if _, ok := node["type"]; ok {
-				t.Fatalf("node at depth %d gained a type %v; recursion should have stopped at the limit",
-					depth, node["type"])
-			}
-		}
-		child, ok := props["child"].(map[string]any)
-		if !ok {
-			t.Fatalf("missing properties.child at depth %d", depth)
-		}
-		node = child
-		depth++
-	}
-
-	// The leaf is the enum-only node; it sits at depth `levels`, far past the
-	// limit, so it must NOT have gained a "string" type — proof the deep part
-	// was left as-is rather than (impossibly) traversed.
-	if _, ok := node["type"]; ok {
-		t.Errorf("enum leaf at depth %d gained a type %v; it is past the depth budget and must be untouched",
-			depth, node["type"])
-	}
-	if enum, ok := node["enum"].([]any); !ok || len(enum) != 1 {
-		t.Errorf("enum leaf content changed: %v", node["enum"])
-	}
-}
-
-// A node sitting exactly at the LAST in-budget depth is still normalized; the
-// first node past it is not. Pins the boundary so an off-by-one in the depth
-// accounting is caught.
-func TestNormalizeToolSchemas_DepthLimitBoundaryIsNormalized(t *testing.T) {
-	// Leaf at depth maxToolSchemaDepth-1 (the deepest in-budget node) must be
-	// repaired; building exactly that many wrapper levels puts the enum leaf
-	// one step inside the budget.
-	body := tsnDeepPropertiesBody(maxToolSchemaDepth - 1)
-	out := NormalizeToolSchemas(body)
-	if bytes.Equal(out, body) {
-		t.Fatal("boundary body was not normalized")
-	}
-
-	node := tsnParams(t, out)
-	for i := 0; i < maxToolSchemaDepth-1; i++ {
-		props, ok := node["properties"].(map[string]any)
-		if !ok {
-			t.Fatalf("missing properties at depth %d", i)
-		}
-		node = tsnMap(t, props["child"], "child")
-	}
-	// node is now the enum leaf at depth maxToolSchemaDepth-1 (in budget).
-	if got, ok := node["type"].(string); !ok || got != "string" {
-		t.Errorf("in-budget leaf type = %v, want string", node["type"])
 	}
 }

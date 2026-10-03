@@ -10,10 +10,11 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 type checkoutReferralRetryStore struct {
-	*store.MemoryStore
+	*memory.MemoryStore
 	failReferral bool
 }
 
@@ -38,7 +39,7 @@ func TestCheckoutReferralRetriesWithoutRecreditingDeposit(t *testing.T) {
 	for i, want := range []int{500, 200, 200} {
 		st.failReferral = i == 0
 		w := httptest.NewRecorder()
-		s.handleStripeWebhook(w, signedConnectRequest(t, payload, "whsec_test"))
+		s.billingHTTP.HandleStripeWebhook(w, signedConnectRequest(t, payload, "whsec_test"))
 		if w.Code != want {
 			t.Fatalf("attempt %d: %d %s", i, w.Code, w.Body.String())
 		}
@@ -78,7 +79,7 @@ func TestCheckoutAcknowledgesPermanentReferralErrors(t *testing.T) {
 			payload := []byte(`{"type":"checkout.session.completed","data":{"object":{"id":"cs_paid","amount_total":500,"currency":"usd","payment_status":"paid","metadata":{"billing_session_id":"local","consumer_key":"buyer","referral_code":"REFER","app":"darkbloom"}}}}`)
 			for range 2 {
 				w := httptest.NewRecorder()
-				s.handleStripeWebhook(w, signedConnectRequest(t, payload, "whsec_test"))
+				s.billingHTTP.HandleStripeWebhook(w, signedConnectRequest(t, payload, "whsec_test"))
 				if w.Code != 200 {
 					t.Fatalf("%d %s", w.Code, w.Body.String())
 				}
@@ -109,7 +110,7 @@ func TestCheckoutMigrationAcceptsBothSecretsAndCreditsOnce(t *testing.T) {
 	payload := []byte(`{"type":"checkout.session.completed","data":{"object":{"id":"cs_stripe","amount_total":500,"currency":"usd","payment_status":"paid","metadata":{"billing_session_id":"local-session","consumer_key":"buyer","app":"darkbloom","referral_code":"REFER"}}}}`)
 	for _, secret := range []string{"whsec_old", "whsec_new", "whsec_old"} {
 		w := httptest.NewRecorder()
-		s.handleStripeWebhook(w, signedConnectRequest(t, payload, secret))
+		s.billingHTTP.HandleStripeWebhook(w, signedConnectRequest(t, payload, secret))
 		if w.Code != 200 {
 			t.Fatalf("%s: %d %s", secret, w.Code, w.Body.String())
 		}
@@ -118,7 +119,7 @@ func TestCheckoutMigrationAcceptsBothSecretsAndCreditsOnce(t *testing.T) {
 		t.Fatalf("deposit %d/%d", b, wd)
 	}
 	w := httptest.NewRecorder()
-	s.handleStripeWebhook(w, signedConnectRequest(t, payload, "whsec_wrong"))
+	s.billingHTTP.HandleStripeWebhook(w, signedConnectRequest(t, payload, "whsec_wrong"))
 	if w.Code != 400 {
 		t.Fatal("wrong signature accepted")
 	}
@@ -135,7 +136,7 @@ func TestConnectedAccountWebhookUsesSeparateSecretAndRequiresAccount(t *testing.
 	} {
 		payload := []byte(fmt.Sprintf(`{"type":"unused.event","account":%q,"data":{"object":{}}}`, tc.account))
 		w := httptest.NewRecorder()
-		s.handleStripeConnectAccountsWebhook(w, signedConnectRequest(t, payload, tc.secret))
+		s.payouts.HandleStripeConnectAccountsWebhook(w, signedConnectRequest(t, payload, tc.secret))
 		if w.Code != tc.want {
 			t.Fatalf("got %d want %d", w.Code, tc.want)
 		}
@@ -153,7 +154,7 @@ func TestAmbiguousTransferThenRejectionNeverRefunds(t *testing.T) {
 	if err := st.CreditWithdrawable(u.AccountID, 10_000_000, store.LedgerPayout, "seed"); err != nil {
 		t.Fatal(err)
 	}
-	w := globalAPIRequest(t, s, u, "/withdraw", `{"amount_usd":"5.00"}`, s.handleStripeWithdraw)
+	w := globalAPIRequest(t, s, u, "/withdraw", `{"amount_usd":"5.00"}`, s.payouts.HandleStripeWithdraw)
 	if w.Code != 502 {
 		t.Fatal(w.Body.String())
 	}

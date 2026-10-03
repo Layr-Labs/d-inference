@@ -2,10 +2,6 @@ package api
 
 import (
 	"errors"
-	"github.com/eigeninference/d-inference/coordinator/billing"
-	"github.com/eigeninference/d-inference/coordinator/payments"
-	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/store"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -14,11 +10,17 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/billing"
+	"github.com/eigeninference/d-inference/coordinator/payments"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 // mkWithdrawal seeds a withdrawal row created two hours ago unless the
 // fixture sets CreatedAt.
-func mkWithdrawal(t *testing.T, st *store.MemoryStore, wd store.StripeWithdrawal) {
+func mkWithdrawal(t *testing.T, st *memory.MemoryStore, wd store.StripeWithdrawal) {
 	t.Helper()
 	if wd.CreatedAt.IsZero() {
 		wd.CreatedAt = time.Now().Add(-2 * time.Hour)
@@ -29,7 +31,7 @@ func mkWithdrawal(t *testing.T, st *store.MemoryStore, wd store.StripeWithdrawal
 // seedWithdrawal inserts wd through the production path: it credits the gross
 // amount as withdrawable, then CreateStripeWithdrawalWithDebit debits it and
 // inserts the row, leaving the account's balances where they were.
-func seedWithdrawal(t *testing.T, st *store.MemoryStore, wd store.StripeWithdrawal) {
+func seedWithdrawal(t *testing.T, st *memory.MemoryStore, wd store.StripeWithdrawal) {
 	t.Helper()
 	if err := st.CreditWithdrawable(wd.AccountID, wd.AmountMicroUSD, store.LedgerPayout, "seed:"+wd.ID); err != nil {
 		t.Fatalf("seed withdrawable for %s: %v", wd.ID, err)
@@ -56,7 +58,7 @@ func deliverConnectWebhook(t *testing.T, srv *Server, payload []byte) *httptest.
 	t.Helper()
 	req := signedConnectRequest(t, payload, "whsec_test")
 	w := httptest.NewRecorder()
-	srv.handleStripeConnectWebhook(w, req)
+	srv.payouts.HandleStripeConnectWebhook(w, req)
 	return w
 }
 
@@ -83,7 +85,7 @@ func accountServingStripe(agreement string) *httptest.Server {
 // flakyPayoutStore wraps MemoryStore and injects transient (non-ErrNotFound)
 // failures into specific operations.
 type flakyPayoutStore struct {
-	*store.MemoryStore
+	*memory.MemoryStore
 	failLookups bool
 	failUpdates bool
 }
@@ -105,7 +107,7 @@ func (f *flakyPayoutStore) UpdateStripeWithdrawal(wd *store.StripeWithdrawal) er
 // newFlakyPayoutServer wires a Server + billing around a flakyPayoutStore.
 func newFlakyPayoutServer(t *testing.T, fakeStripe *httptest.Server) (*Server, *flakyPayoutStore) {
 	t.Helper()
-	mem := store.NewMemory(store.Config{AdminKey: "test-key"})
+	mem := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	flaky := &flakyPayoutStore{MemoryStore: mem}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	reg := registry.New(logger)

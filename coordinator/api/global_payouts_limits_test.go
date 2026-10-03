@@ -28,15 +28,15 @@ func TestGlobalPayoutRecipientLimits(t *testing.T) {
 			f.currency = policy.Currency
 			f.rate = tc.rate
 			f.quoteError = tc.quoteError
-			w := globalAPIRequest(t, s, u, "/onboard", `{"country":"`+tc.country+`"}`, s.handleStripeOnboard)
+			w := globalAPIRequest(t, s, u, "/onboard", `{"country":"`+tc.country+`"}`, s.payouts.HandleStripeOnboard)
 			if w.Code != 200 {
 				t.Fatal(w.Body.String())
 			}
-			w = globalAPIRequest(t, s, u, "/quote", `{"amount_usd":"`+tc.amount+`"}`, s.handleGlobalPayoutQuote)
+			w = globalAPIRequest(t, s, u, "/quote", `{"amount_usd":"`+tc.amount+`"}`, s.payouts.HandleGlobalPayoutQuote)
 			if w.Code != 400 || !strings.Contains(w.Body.String(), tc.want) || f.quoteCalls != tc.calls || st.GetWithdrawableBalance(u.AccountID) != 20_000_000 {
 				t.Fatalf("limit not actionable or moved funds: %d %s calls=%d", w.Code, w.Body.String(), f.quoteCalls)
 			}
-			w = globalAPIRequest(t, s, u, "/status", ``, s.handleStripeStatus)
+			w = globalAPIRequest(t, s, u, "/status", ``, s.payouts.HandleStripeStatus)
 			if !strings.Contains(w.Body.String(), "recipient_limits") {
 				t.Fatal("limits missing before review")
 			}
@@ -51,7 +51,7 @@ func TestGlobalPayoutQuoteRetainsStripeFeeEstimate(t *testing.T) {
 	if err := json.Unmarshal(p.EstimatedStripeFees, &fees); err != nil || len(fees) != 1 || fees[0].Amount.Value.String() != "150" {
 		t.Fatalf("fee estimate lost: %s %v", p.EstimatedStripeFees, err)
 	}
-	w := globalAPIRequest(t, s, u, "/quote", `{"amount_usd":"10"}`, s.handleGlobalPayoutQuote)
+	w := globalAPIRequest(t, s, u, "/quote", `{"amount_usd":"10"}`, s.payouts.HandleGlobalPayoutQuote)
 	if !strings.Contains(w.Body.String(), `"fee_usd":"0.00"`) {
 		t.Fatal("platform fee was charged to provider")
 	}

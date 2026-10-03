@@ -12,6 +12,7 @@ import (
 
 	policy "github.com/eigeninference/d-inference/coordinator/registry/autopilot"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 type testController struct {
@@ -59,7 +60,7 @@ func (failedLedger) AutopilotRecords(context.Context, time.Time, int) ([]store.A
 }
 
 func TestStatusReturnsDurableEventsAndDoesNotHideLedgerFailure(t *testing.T) {
-	ledger := store.NewMemory(store.Config{})
+	ledger := memory.NewMemory(store.Config{})
 	if err := ledger.RecordAutopilot(context.Background(), []store.AutopilotRecord{{CommandID: "command", Phase: "reserved", At: time.Now()}}); err != nil {
 		t.Fatal(err)
 	}

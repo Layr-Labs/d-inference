@@ -10,6 +10,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/appattest"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	memorystore "github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 // A dead Secure Enclave key is retired through the released client's
@@ -18,7 +19,7 @@ import (
 func TestDeadKeyRotationRecoversServingOnSameCanonicalMachine(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		s, p, record, state := newAuthorizationFixture(t)
-		mem := store.NewMemory(store.Config{})
+		mem := memorystore.NewMemory(store.Config{})
 		s.store = &statusReadinessStore{MemoryStore: mem, state: state}
 		s.config.AppID, s.config.KeyRotationPercent = "TEST.app", 100
 		old, replacement := rotationKeyID(1), rotationKeyID(2)

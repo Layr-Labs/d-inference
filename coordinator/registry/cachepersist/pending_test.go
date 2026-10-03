@@ -8,10 +8,11 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/store"
 	crs "github.com/eigeninference/d-inference/coordinator/store/cacheroutingstate"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 func TestPendingParkTakeAndPrune(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	p := New(mem, nil, Options{MaxPending: 2})
 	now := time.Now()
 	restoreForTest(t, p, now)
@@ -52,7 +53,7 @@ func TestPendingParkTakeAndPrune(t *testing.T) {
 // Overlapping sessions park the same durable row more than once; one parked
 // copy per (key, epoch) keeps the newer evidence and takes one cap slot.
 func TestParkDedupesByHolderIdentity(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	p := New(mem, nil, Options{MaxPending: 2})
 	now := time.Now()
 	older := rec("a", "e", now.Add(-time.Second), time.Minute)
@@ -79,7 +80,7 @@ func TestParkDedupesByHolderIdentity(t *testing.T) {
 // A bounded take hands back at most limit rows and says whether more remain,
 // so a large bucket can be bound in chunks.
 func TestTakeInChunks(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	p := New(mem, nil, Options{MaxPending: 10})
 	now := time.Now()
 	for i := 0; i < 5; i++ {
@@ -105,7 +106,7 @@ func TestTakeInChunks(t *testing.T) {
 // bounded chunks; rows taken or merged meanwhile have left or moved their
 // entry already.
 func TestPrunePendingPopsOnlyExpiredRowsInChunks(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
+	mem := memory.NewMemory(store.Config{})
 	p := New(mem, nil, Options{MaxPending: 100_000})
 	now := time.Now()
 	const expired, live = 2*pruneBatchRows + 7, 100

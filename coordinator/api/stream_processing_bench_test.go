@@ -2,28 +2,10 @@ package api
 
 import (
 	"fmt"
-	"strings"
 	"testing"
-)
 
-func BenchmarkStripProviderChatMetadata(b *testing.B) {
-	for _, tc := range []struct {
-		name  string
-		chunk string
-	}{
-		{"content", chatContentChunk("Hello world")},
-		{"large_content", chatContentChunk(strings.Repeat("ordinary content ", 4096))},
-		{"tool_arguments", tcDelta(0, "call_1", "run", `{"message":"quoted content","count":1}`)},
-		{"reserved_metadata", `data: {"choices":[],"Metadata":{"provider_id":"forged"}}`},
-	} {
-		b.Run(tc.name, func(b *testing.B) {
-			b.ReportAllocs()
-			for range b.N {
-				_ = stripProviderChatMetadata(tc.chunk)
-			}
-		})
-	}
-}
+	inresp "github.com/eigeninference/d-inference/coordinator/api/inference/response"
+)
 
 // Measures complete reconstruction, including JSON decoding, for a tool that
 // streams one argument over many deltas. The output grows with fragment count;
@@ -42,7 +24,7 @@ func BenchmarkExtractMessageToolArguments(b *testing.B) {
 			b.SetBytes(int64(len(fragment) * fragments))
 			b.ResetTimer()
 			for range b.N {
-				msg := extractMessage(chunks)
+				msg := inresp.ExtractMessage(chunks)
 				if len(msg.ToolCalls) != 1 {
 					b.Fatal("tool call was lost")
 				}

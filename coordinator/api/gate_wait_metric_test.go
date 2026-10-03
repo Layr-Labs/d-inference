@@ -9,6 +9,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 // awaitMetric polls the collector until a packet for metric arrives or the
@@ -37,7 +38,7 @@ func TestRegistryGateWaitHistogramTaggedBySite(t *testing.T) {
 	defer collector.Close()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	reg := registry.New(logger)
-	srv := NewServer(reg, store.NewMemory(store.Config{AdminKey: "test-key"}), ServerConfig{}, logger)
+	srv := NewServer(reg, memory.NewMemory(store.Config{AdminKey: "test-key"}), ServerConfig{}, logger)
 	defer srv.Close()
 	dd := newTestDD(t, collector)
 	defer dd.Close()

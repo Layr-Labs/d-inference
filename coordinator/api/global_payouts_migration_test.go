@@ -10,9 +10,10 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/billing/globalpayouts"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
-func globalOnlyFixture(t *testing.T) (*Server, *store.MemoryStore, *store.User, *fakeGlobalStripe) {
+func globalOnlyFixture(t *testing.T) (*Server, *memory.MemoryStore, *store.User, *fakeGlobalStripe) {
 	t.Helper()
 	s, st, u, f := globalPayoutAPIFixture(t, false)
 	base := s.billing.GlobalPayouts().BaseURL
@@ -41,7 +42,7 @@ func TestGlobalOnlyMigratesEveryConnectCountryWithoutErasingLegacyAccount(t *tes
 			s, st, u, f := globalOnlyFixture(t)
 			f.country, f.currency = strings.ToLower(country.Code), country.Currency
 			u.StripeAccountCountry = country.Code
-			w := globalAPIRequest(t, s, u, "/onboard", `{"country":"`+country.Code+`"}`, s.handleStripeOnboard)
+			w := globalAPIRequest(t, s, u, "/onboard", `{"country":"`+country.Code+`"}`, s.payouts.HandleStripeOnboard)
 			if w.Code != 200 || !strings.Contains(w.Body.String(), `"payout_rail":"global"`) {
 				t.Fatalf("onboard: %d %s", w.Code, w.Body.String())
 			}
@@ -49,7 +50,7 @@ func TestGlobalOnlyMigratesEveryConnectCountryWithoutErasingLegacyAccount(t *tes
 			if old.StripeAccountID != "acct_old" {
 				t.Fatal("lost legacy account identity")
 			}
-			if w := globalAPIRequest(t, s, u, "/withdraw", `{"amount_usd":"5.00","method":"instant"}`, s.handleStripeWithdraw); w.Code != 400 {
+			if w := globalAPIRequest(t, s, u, "/withdraw", `{"amount_usd":"5.00","method":"instant"}`, s.payouts.HandleStripeWithdraw); w.Code != 400 {
 				t.Fatalf("accepted old client instant request: %s", w.Body.String())
 			}
 			if st.GetBalance(u.AccountID) != 20_000_000 {
@@ -61,7 +62,7 @@ func TestGlobalOnlyMigratesEveryConnectCountryWithoutErasingLegacyAccount(t *tes
 
 func TestGlobalOnlyStatusAndOldClientsRequireSelfServiceBankSetup(t *testing.T) {
 	s, st, u, _ := globalOnlyFixture(t)
-	w := globalAPIRequest(t, s, u, "/status", "", s.handleStripeStatus)
+	w := globalAPIRequest(t, s, u, "/status", "", s.payouts.HandleStripeStatus)
 	var status map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &status); err != nil {
 		t.Fatal(err)
@@ -72,7 +73,7 @@ func TestGlobalOnlyStatusAndOldClientsRequireSelfServiceBankSetup(t *testing.T) 
 	if _, err := st.GetGlobalRecipient(u.AccountID); err != store.ErrNotFound {
 		t.Fatal("status silently created a recipient")
 	}
-	w = globalAPIRequest(t, s, u, "/withdraw", `{"amount_usd":"5.00"}`, s.handleStripeWithdraw)
+	w = globalAPIRequest(t, s, u, "/withdraw", `{"amount_usd":"5.00"}`, s.payouts.HandleStripeWithdraw)
 	if w.Code != 409 || !strings.Contains(w.Body.String(), "bank_setup_required") {
 		t.Fatalf("old client: %d %s", w.Code, w.Body.String())
 	}
@@ -84,7 +85,7 @@ func TestGlobalOnlyStatusAndOldClientsRequireSelfServiceBankSetup(t *testing.T) 
 func TestGlobalRecipientResetAndPausedCutoverNeverFallBackToConnect(t *testing.T) {
 	s, st, u, f := globalOnlyFixture(t)
 	f.country, f.currency = "us", "usd"
-	if w := globalAPIRequest(t, s, u, "/onboard", `{"country":"US"}`, s.handleStripeOnboard); w.Code != 200 {
+	if w := globalAPIRequest(t, s, u, "/onboard", `{"country":"US"}`, s.payouts.HandleStripeOnboard); w.Code != 200 {
 		t.Fatal(w.Body.String())
 	}
 	old, _ := st.GetGlobalRecipient(u.AccountID)
@@ -99,20 +100,20 @@ func TestGlobalRecipientResetAndPausedCutoverNeverFallBackToConnect(t *testing.T
 	// Even a rollback to hybrid policy cannot erase a user's migration fence.
 	s.SetBilling(billing.NewService(st, s.billing.Ledger(), s.logger, billing.Config{MockMode: true, StripeGlobalPayoutsEnabled: true, StripeGlobalPayoutsSecretKey: "rk_gp", StripeGlobalPayoutsFinancialAccount: "fa_gp", StripeConnectReturnURL: "https://app.test/billing"}))
 	s.billing.GlobalPayouts().BaseURL = base
-	w := globalAPIRequest(t, s, u, "/status", "", s.handleStripeStatus)
+	w := globalAPIRequest(t, s, u, "/status", "", s.payouts.HandleStripeStatus)
 	if !strings.Contains(w.Body.String(), `"payout_rail":"global"`) {
 		t.Fatal(w.Body.String())
 	}
-	w = globalAPIRequest(t, s, u, "/onboard", `{"country":"US"}`, s.handleStripeOnboard)
+	w = globalAPIRequest(t, s, u, "/onboard", `{"country":"US"}`, s.payouts.HandleStripeOnboard)
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"payout_rail":"global"`) {
 		t.Fatal(w.Body.String())
 	}
 	s.SetBilling(billing.NewService(st, s.billing.Ledger(), s.logger, billing.Config{StripeGlobalPayoutsOnly: true, StripeGlobalPayoutsSecretKey: "rk_gp", StripeGlobalPayoutsFinancialAccount: "fa_gp", StripeConnectReturnURL: "https://app.test/billing"}))
-	w = globalAPIRequest(t, s, u, "/onboard", `{"country":"US"}`, s.handleStripeOnboard)
+	w = globalAPIRequest(t, s, u, "/onboard", `{"country":"US"}`, s.payouts.HandleStripeOnboard)
 	if w.Code != 503 {
 		t.Fatalf("paused onboarding %d", w.Code)
 	}
-	w = globalAPIRequest(t, s, u, "/withdraw", `{"amount_usd":"5.00"}`, s.handleStripeWithdraw)
+	w = globalAPIRequest(t, s, u, "/withdraw", `{"amount_usd":"5.00"}`, s.payouts.HandleStripeWithdraw)
 	if w.Code < 400 || st.GetBalance(u.AccountID) != 20_000_000 {
 		t.Fatal("paused cutover fell back")
 	}
@@ -121,10 +122,10 @@ func TestGlobalRecipientResetAndPausedCutoverNeverFallBackToConnect(t *testing.T
 func TestGlobalFundingShortfallIncludesFeesAndDoesNotDebit(t *testing.T) {
 	s, st, u, f := globalOnlyFixture(t)
 	f.country, f.currency = "us", "usd"
-	if w := globalAPIRequest(t, s, u, "/onboard", `{"country":"US"}`, s.handleStripeOnboard); w.Code != 200 {
+	if w := globalAPIRequest(t, s, u, "/onboard", `{"country":"US"}`, s.payouts.HandleStripeOnboard); w.Code != 200 {
 		t.Fatal(w.Body.String())
 	}
-	w := globalAPIRequest(t, s, u, "/quote", `{"amount_usd":"10.00"}`, s.handleGlobalPayoutQuote)
+	w := globalAPIRequest(t, s, u, "/quote", `{"amount_usd":"10.00"}`, s.payouts.HandleGlobalPayoutQuote)
 	var quote struct {
 		ID string `json:"id"`
 	}
@@ -140,7 +141,7 @@ func TestGlobalFundingShortfallIncludesFeesAndDoesNotDebit(t *testing.T) {
 	}))
 	defer remote.Close()
 	s.billing.GlobalPayouts().BaseURL = remote.URL
-	w = globalAPIRequest(t, s, u, "/withdraw", `{"amount_usd":"10.00","quote_id":"`+quote.ID+`"}`, s.handleStripeWithdraw)
+	w = globalAPIRequest(t, s, u, "/withdraw", `{"amount_usd":"10.00","quote_id":"`+quote.ID+`"}`, s.payouts.HandleStripeWithdraw)
 	if w.Code != 503 || !strings.Contains(w.Body.String(), "payout_funding_unavailable") {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
@@ -178,7 +179,7 @@ func TestGlobalOnlyUSOnboardingRequestsLocalBankCapability(t *testing.T) {
 	}))
 	defer remote.Close()
 	s.billing.GlobalPayouts().BaseURL = remote.URL
-	if w := globalAPIRequest(t, s, u, "/onboard", `{"country":"US"}`, s.handleStripeOnboard); w.Code != 200 {
+	if w := globalAPIRequest(t, s, u, "/onboard", `{"country":"US"}`, s.payouts.HandleStripeOnboard); w.Code != 200 {
 		t.Fatal(w.Body.String())
 	}
 }

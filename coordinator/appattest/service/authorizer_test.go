@@ -16,6 +16,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	memorystore "github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 type authorizationBatchStore struct {
@@ -45,7 +46,7 @@ func newAuthorizationFixture(t *testing.T) (*Service, *registry.Provider, *appAt
 	if !r.BindVerifiedMachineIdentity(p, "account", "machine") {
 		t.Fatal("identity")
 	}
-	s := &Service{registry: r, store: store.NewMemory(store.Config{}), logger: logger, config: Config{ServingEnabled: true, MDMRemovalEnabled: true, Environment: "production"}}
+	s := &Service{registry: r, store: memorystore.NewMemory(store.Config{}), logger: logger, config: Config{ServingEnabled: true, MDMRemovalEnabled: true, Environment: "production"}}
 	s.currentReleasePolicy = func() ReleasePolicy {
 		return ReleasePolicy{Generation: 7, Known: true, ContainsQualifiedRelease: func(store.Release) bool { return true }, Approves: func(_ *registry.Provider, status *protocol.AppAttestStatus) bool {
 			return status != nil && status.BinaryHash == strings.Repeat("a", 64) && status.AppVersion == "0.9.4"

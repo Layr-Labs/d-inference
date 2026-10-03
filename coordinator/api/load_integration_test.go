@@ -18,6 +18,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 	"nhooyr.io/websocket"
 )
 
@@ -135,16 +136,16 @@ func sendConcurrentRequests(t *testing.T, url, apiKey, model string, count, maxI
 
 // setupLoadTestServer creates a Server with short challenge intervals and a
 // large request queue for load tests. Returns the test server, registry, and store.
-func setupLoadTestServer(t *testing.T) (*httptest.Server, *registry.Registry, *store.MemoryStore) {
+func setupLoadTestServer(t *testing.T) (*httptest.Server, *registry.Registry, *memory.MemoryStore) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	// Replace the default queue (10 slots, 30s) with a larger one for load tests.
 	reg.SetQueue(registry.NewRequestQueue(200, 30*time.Second))
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	t.Cleanup(srv.Close)
-	srv.challengeInterval = 500 * time.Millisecond
+	srv.SetChallengeInterval(500 * time.Millisecond)
 	ts := httptest.NewServer(srv.Handler())
 	return ts, reg, st
 }

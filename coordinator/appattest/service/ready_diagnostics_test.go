@@ -15,13 +15,14 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/appattest"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	memorystore "github.com/eigeninference/d-inference/coordinator/store/memory"
 	"github.com/fxamacker/cbor/v2"
 )
 
 func diagnosticBool(v bool) *bool { return &v }
 
 type lifecycleArchive struct {
-	*store.MemoryStore
+	*memorystore.MemoryStore
 	context json.RawMessage
 	readErr error
 }

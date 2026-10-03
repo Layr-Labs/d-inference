@@ -10,12 +10,13 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/appattest"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	memorystore "github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
-func historicalLiveInventoryFixture(t *testing.T) (*Service, *Session, *appAttestAuthorizationRecord, store.AppAttestReadiness, *store.MemoryStore) {
+func historicalLiveInventoryFixture(t *testing.T) (*Service, *Session, *appAttestAuthorizationRecord, store.AppAttestReadiness, *memorystore.MemoryStore) {
 	t.Helper()
 	s, p, record, readiness := newAuthorizationFixture(t)
-	mem := store.NewMemory(store.Config{})
+	mem := memorystore.NewMemory(store.Config{})
 	s.store = &statusReadinessStore{MemoryStore: mem, state: readiness}
 	now := time.Now().UTC()
 	if _, err := mem.InsertAppAttestShadowKey(context.Background(), store.AppAttestShadowKey{KeyID: "credential", Owner: "owner", AccountID: "account"}); err != nil {
@@ -98,7 +99,7 @@ func (s *transientContinuityStore) ResolveMachineContinuity(context.Context, str
 func TestFirstEligibleProofRetriesTransientContinuityFailure(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		s, p, record, state := newAuthorizationFixture(t)
-		st := &transientContinuityStore{statusReadinessStore: &statusReadinessStore{MemoryStore: store.NewMemory(store.Config{}), state: state}, fail: true}
+		st := &transientContinuityStore{statusReadinessStore: &statusReadinessStore{MemoryStore: memorystore.NewMemory(store.Config{}), state: state}, fail: true}
 		s.store = st
 		x := sessionForAuthorization(s, p, record)
 		x.servingIdentityReady = false

@@ -55,6 +55,30 @@ class DocsImpactCheckTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("bypassed", result.stdout)
 
+    def test_reorganized_owners_keep_canonical_documentation_gates(self) -> None:
+        cases = (
+            ("coordinator/api/routes.go", "docs/reference/api-contracts.md"),
+            ("coordinator/api/observation/events.go", "docs/architecture/telemetry.md"),
+            ("coordinator/registry/admission/budget.go", "docs/architecture/routing.md"),
+            ("coordinator/registry/selection/affinity.go", "docs/architecture/routing.md"),
+            ("coordinator/app/startup_config.go", "docs/reference/configuration.md"),
+            ("coordinator/store/postgres/migrations.go", "docs/architecture/storage.md"),
+            ("coordinator/api/releases/policy.go", "docs/operations/provider-release.md"),
+            ("coordinator/store/memory/memory.go", "docs/developer/navigation.md"),
+            ("coordinator/app/app.go", "docs/developer/navigation.md"),
+        )
+        for source, document in cases:
+            with self.subTest(source=source):
+                missing = self.run_check(source)
+                self.assertEqual(missing.returncode, 1, missing.stdout + missing.stderr)
+                covered = self.run_check(source, document)
+                self.assertEqual(covered.returncode, 0, covered.stdout + covered.stderr)
+
+    def test_reorganized_private_tests_remain_excluded(self) -> None:
+        result = self.run_check("coordinator/api/observation/owner_test.go",
+                                "coordinator/store/postgres/migrations_test.go")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

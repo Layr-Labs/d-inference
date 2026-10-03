@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,7 +14,9 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 	"nhooyr.io/websocket"
 )
 
@@ -45,16 +48,22 @@ func (s *drainSettlementStore) RecordUsage(record store.UsageRecord) {
 func TestProviderDrainLatestOverlappingBarrierFollowsUsageSettlementAndKeepsControlTrafficAlive(t *testing.T) {
 	for _, stream := range []bool{true, false} {
 		t.Run(map[bool]string{true: "streaming", false: "nonstreaming"}[stream], func(t *testing.T) {
-			s, reg, original, ts := setupTestServer(t)
-			defer ts.Close()
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
+			original := memory.NewMemory(store.Config{AdminKey: "test-key"})
 			blocked := &drainSettlementStore{
 				Store: original, entered: make(chan struct{}), release: make(chan struct{}),
 				usageStarted: make(chan store.UsageRecord, 2), usageRelease: make(chan struct{}),
 				usageRecorded: make(chan struct{}, 2),
 			}
-			s.store = blocked
+			// Bind the wrapper before construction so every owner shares it.
+			logger := quietLogger()
+			reg := registry.New(logger)
+			s := NewServer(reg, blocked, ServerConfig{}, logger)
+			t.Cleanup(s.Close)
+			s.SetChallengeInterval(200 * time.Millisecond)
+			ts := httptest.NewServer(s.Handler())
+			defer ts.Close()
 			var releaseOnce sync.Once
 			release := func() { releaseOnce.Do(func() { close(blocked.release) }) }
 			defer release()

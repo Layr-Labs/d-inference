@@ -15,6 +15,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	memorystore "github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 func TestAppAttestShadowUsesBoundedValidatedEndpointKey(t *testing.T) {
@@ -24,7 +25,7 @@ func TestAppAttestShadowUsesBoundedValidatedEndpointKey(t *testing.T) {
 		reg := registry.New(logger)
 		r := &protocol.RegisterMessage{PublicKey: input, AppAttestProtocol: 3}
 		p := reg.Register("session", nil, r)
-		st := store.NewMemory(store.Config{})
+		st := memorystore.NewMemory(store.Config{})
 		s := &Service{store: st, logger: logger, config: Config{Enabled: true, AppID: "TEST.app", Environment: "production"}}
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // No Apple/network work; inspect the constructed session only.

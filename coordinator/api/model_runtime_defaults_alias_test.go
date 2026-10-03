@@ -15,6 +15,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 const (
@@ -37,13 +38,13 @@ func newRuntimeDefaultsAliasHarness(
 	t.Helper()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	seedRuntimeDefaultsModel(t, st, runtimeDefaultsDesiredModel, desiredRuntime)
 	seedRuntimeDefaultsModel(t, st, runtimeDefaultsPreviousModel, previousRuntime)
 
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
-	srv.challengeInterval = 30 * time.Second
+	srv.SetChallengeInterval(30 * time.Second)
 	srv.SyncModelCatalog()
 
 	ts := httptest.NewServer(srv.Handler())
@@ -90,7 +91,7 @@ func seedRuntimeDefaultsModel(t *testing.T, st store.Store, model string, runtim
 	}
 	files := []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}
 	if err := st.SetModelVersion(entry, &store.ModelVersion{
-		ModelID: model, Version: "v1", R2Prefix: modelR2Prefix(model, "v1"),
+		ModelID: model, Version: "v1", R2Prefix: testModelPrefix(model, "v1"),
 		AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready",
 	}, files); err != nil {
 		t.Fatal(err)
@@ -238,35 +239,5 @@ func TestAliasFallbackRecomputesRuntimeDefaultsForEveryEndpoint(t *testing.T) {
 				t.Fatalf("provider model = %q, want %q", gotModel, runtimeDefaultsPreviousModel)
 			}
 		})
-	}
-}
-
-func TestAliasFallbackRetryKeepsRecomputedRuntimeDefaults(t *testing.T) {
-	desiredRuntime := map[string]any{
-		"reasoning_parser": "desired-reasoning",
-		"tool_call_parser": "desired-tools",
-	}
-	previousRuntime := map[string]any{
-		"reasoning_parser": "previous-reasoning",
-		"tool_call_parser": "previous-tools",
-	}
-	dispatches := &dispatchRecorder{}
-	harness := newRuntimeDefaultsAliasHarness(
-		t,
-		desiredRuntime,
-		previousRuntime,
-		failFirstScript(dispatches, runtimeDefaultsPreviousModel, "error"),
-		failFirstScript(dispatches, runtimeDefaultsPreviousModel, "error"),
-	)
-	postRuntimeDefaultsEndpoint(t, harness, "/v1/chat/completions",
-		`{"model":"runtime-defaults-alias","messages":[{"role":"user","content":"hello"}],"max_tokens":32,"stream":true}`)
-
-	if sequence := dispatches.sequence(); len(sequence) != 2 {
-		t.Fatalf("dispatch sequence = %v, want one fallback attempt plus one retry", sequence)
-	}
-	for _, provider := range harness.providers {
-		fields := readRuntimeDefaultsProviderBody(t, provider)
-		assertRuntimeDefaultField(t, fields, "reasoning_parser", "previous-reasoning", true)
-		assertRuntimeDefaultField(t, fields, "tool_call_parser", "previous-tools", true)
 	}
 }

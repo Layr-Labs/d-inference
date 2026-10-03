@@ -8,8 +8,6 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -25,20 +23,17 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 	"nhooyr.io/websocket"
 )
 
-type failingCreditStore struct {
-	store.Store
-}
-
-func billingTestServer(t *testing.T) (*Server, *store.MemoryStore, *payments.Ledger) {
+func billingTestServer(t *testing.T) (*Server, *memory.MemoryStore, *payments.Ledger) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
-	srv.challengeInterval = 200 * time.Millisecond
+	srv.SetChallengeInterval(200 * time.Millisecond)
 
 	ledger := srv.ledger
 
@@ -225,10 +220,4 @@ func sendInferenceRequest(t *testing.T, ctx context.Context, tsURL, model, apiKe
 	io.ReadAll(resp.Body)
 
 	return resp.StatusCode
-}
-
-// sha256HexStr computes SHA-256 of a string and returns hex encoding.
-func sha256HexStr(s string) string {
-	h := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(h[:])
 }

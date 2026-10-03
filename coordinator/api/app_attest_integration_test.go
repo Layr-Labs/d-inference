@@ -27,7 +27,7 @@ func TestAppAttestShadowCannotChangeRoutingOrTrust(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	model := "shadow-coexistence-model"
-	if err := st.CreateProviderToken(&store.ProviderToken{TokenHash: sha256Hash("shadow-provider-token"), AccountID: "test-account", Active: true}); err != nil {
+	if err := st.CreateProviderToken(&store.ProviderToken{TokenHash: providerTokenHash("shadow-provider-token"), AccountID: "test-account", Active: true}); err != nil {
 		t.Fatal(err)
 	}
 	frames := make(chan protocol.AppAttestShadowPayload, 8)

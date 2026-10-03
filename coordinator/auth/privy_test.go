@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
+	memorystore "github.com/eigeninference/d-inference/coordinator/store/memory"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -25,7 +26,7 @@ func testLogger() *slog.Logger {
 }
 
 func testMemStore() store.Store {
-	return store.NewMemory(store.Config{AdminKey: "test-key"})
+	return memorystore.NewMemory(store.Config{AdminKey: "test-key"})
 }
 
 // genES256Key returns a fresh ECDSA P-256 private key and the PKIX PEM encoding

@@ -1,12 +1,13 @@
 package api
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/store"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 // TestConnectWebhookPayoutBounceAfterPaidReopens: Stripe documents

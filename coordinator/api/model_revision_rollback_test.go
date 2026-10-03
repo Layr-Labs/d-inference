@@ -5,12 +5,13 @@ import (
 	"testing"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 func TestModelRevisionRollbackDoesNotAcknowledgeFailedRefreshOrDelivery(t *testing.T) {
 	for _, failure := range []string{"catalog", "delivery"} {
 		t.Run(failure, func(t *testing.T) {
-			backing := &revisionCatalogFailureStore{Store: store.NewMemory(store.Config{})}
+			backing := &revisionCatalogFailureStore{Store: memory.NewMemory(store.Config{})}
 			srv, st, manifest := revisionPublishFixture(t, backing)
 			original, err := st.GetModelRegistryRecord(manifest.ModelID)
 			if err != nil {

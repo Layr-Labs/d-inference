@@ -1,91 +1,65 @@
 package registry
 
-import "math/rand"
+import (
+	"math/rand"
 
-// firstContentRankMs retains health/capacity derating when narrowing the fast
-// band. Those policy penalties are deliberately separate from elapsed-time
-// forecasts: unhealthy hardware does not become healthy merely by advertising
-// a faster prefill EWMA.
-func firstContentRankMs(c *routingCandidate) float64 {
-	return c.firstContent.ExpectedMs + c.breakdown.HealthMs + c.breakdown.CapacityRateMs
+	"github.com/eigeninference/d-inference/coordinator/registry/selection"
+)
+
+func selectionCandidate(c *routingCandidate) selection.Candidate {
+	id := ""
+	if c.provider != nil {
+		id = c.provider.ID
+	}
+	return selection.Candidate{
+		ProviderID: id,
+		ExpectedMs: c.firstContent.ExpectedMs, HealthMs: c.breakdown.HealthMs,
+		CapacityRateMs: c.breakdown.CapacityRateMs, ServiceMs: c.firstContent.ServiceMs,
+		CachedTokens: c.firstContent.CachedTokens, CacheSavedMs: c.cacheEstimatedTTFTSavedMs,
+		CacheEvidenceWeight: c.cacheEvidenceWeight, AffinityEligible: c.cacheAffinityEligible,
+	}
 }
 
-// selectFirstContentCandidate applies one policy to scans, plans and quotes.
-// Owner scope, feasibility and decode quality are narrowed before this call.
-// Within 100 ms of the fastest expected delivery, choose the least committed
-// whole-Mac expected service. Cache proof/affinity only breaks close work ties.
+func firstContentRankMs(c *routingCandidate) float64 {
+	return selectionCandidate(c).RankMs()
+}
+
+// selectFirstContentCandidate projects immutable candidate values into policy
+// inputs. Ownership, feasibility and decode quality are narrowed by the caller;
+// provider pointers and random state never cross the policy boundary.
 func selectFirstContentCandidate(pool []*routingCandidate, affinity string) (winner, runnerUp *routingCandidate, nearTieSize int, path SelectionPath) {
 	if len(pool) == 0 {
 		return nil, nil, 0, SelectionNone
 	}
-	best := pool[0]
-	for _, c := range pool[1:] {
-		if firstContentRankMs(c) < firstContentRankMs(best) {
-			best = c
-		}
-	}
-	isNear := func(c *routingCandidate) bool {
-		return firstContentRankMs(c) <= firstContentRankMs(best)+firstContentFastBandMs
+	// Keep ordinary fleet scans allocation-free while passing only detached
+	// values across the policy boundary. Larger fleets spill once, not per node.
+	var inline [512]selection.Candidate
+	values := inline[:0]
+	if len(pool) > len(inline) {
+		values = make([]selection.Candidate, 0, len(pool))
 	}
 	for _, c := range pool {
-		if !isNear(c) {
-			continue
-		}
-		nearTieSize++
-		if winner == nil || c.firstContent.ServiceMs < winner.firstContent.ServiceMs {
-			winner = c
-		}
+		values = append(values, selectionCandidate(c))
 	}
-	work := winner.firstContent.ServiceMs
-	isWorkTie := func(c *routingCandidate) bool { return isNear(c) && c.firstContent.ServiceMs == work }
-	// Prefer validated cache benefit only after service work has been compared.
-	credited := false
-	creditWeight := 0.0
-	for _, c := range pool {
-		if isWorkTie(c) && c.firstContent.CachedTokens > 0 && c.cacheEstimatedTTFTSavedMs > 0 {
-			credited = true
-			creditWeight = max(creditWeight, c.cacheEvidenceWeight)
-		}
+	ranking := selection.Rank(values)
+	decision := ranking.Choose(values, rand.Intn(ranking.Choices), affinity)
+	if decision.Winner >= 0 {
+		winner = pool[decision.Winner]
 	}
-	isEquivalent := func(c *routingCandidate) bool {
-		return isWorkTie(c) && (!credited || (c.firstContent.CachedTokens > 0 && c.cacheEstimatedTTFTSavedMs > 0 && c.cacheEvidenceWeight == creditWeight))
+	if decision.RunnerUp >= 0 {
+		runnerUp = pool[decision.RunnerUp]
 	}
-	choices := 0
-	for _, c := range pool {
-		if isEquivalent(c) {
-			choices++
-		}
-	}
-	chosen := rand.Intn(choices)
-	for _, c := range pool {
-		if !isEquivalent(c) {
-			continue
-		}
-		if chosen == 0 {
-			winner = c
-			break
-		}
-		chosen--
-	}
-	switch {
-	case nearTieSize == 1:
+	switch decision.Path {
+	case selection.UniqueMin:
 		path = SelectionUniqueMin
-	case credited:
-		path = SelectionCacheCredit
-	case choices > 1:
-		path = SelectionRandom
-	default:
+	case selection.TiePending:
 		path = SelectionTiePending
+	case selection.Random:
+		path = SelectionRandom
+	case selection.PrefixAffinity:
+		path = SelectionPrefixAffinity
+	case selection.CacheCredit:
+		path = SelectionCacheCredit
 	}
-	if affinity != "" && choices > 1 {
-		if preferred := cacheAffinityWinner(pool, isEquivalent, affinity); preferred != nil {
-			winner, path = preferred, SelectionPrefixAffinity
-		}
-	}
-	for _, c := range pool {
-		if c != winner && (runnerUp == nil || firstContentRankMs(c) < firstContentRankMs(runnerUp)) {
-			runnerUp = c
-		}
-	}
-	return winner, runnerUp, nearTieSize, path
+	return winner, runnerUp, decision.NearTieSize, path
 }

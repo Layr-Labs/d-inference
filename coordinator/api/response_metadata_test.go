@@ -8,39 +8,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/geo"
+	inreq "github.com/eigeninference/d-inference/coordinator/api/inference/request"
+	inresp "github.com/eigeninference/d-inference/coordinator/api/inference/response"
+
 	"github.com/eigeninference/d-inference/coordinator/api/types"
-	"github.com/eigeninference/d-inference/coordinator/attestation"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
-
-func TestTruthyRequestFlag(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		in   any
-		want bool
-	}{
-		{true, true},
-		{false, false},
-		{"true", true},
-		{"TRUE", true},
-		{"1", true},
-		{"yes", true},
-		{"false", false},
-		{"", false},
-		{float64(1), true},
-		{float64(0), false},
-		{json.Number("1"), true},
-		{json.Number("0"), false},
-		{nil, false},
-	}
-	for _, tc := range cases {
-		if got := truthyRequestFlag(tc.in); got != tc.want {
-			t.Errorf("truthyRequestFlag(%#v) = %v, want %v", tc.in, got, tc.want)
-		}
-	}
-}
 
 func TestApplyMetadataDetailsRequestStripsBodyFlag(t *testing.T) {
 	t.Parallel()
@@ -50,7 +25,7 @@ func TestApplyMetadataDetailsRequestStripsBodyFlag(t *testing.T) {
 		"messages":         []any{map[string]any{"role": "user", "content": "hi"}},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	if !applyMetadataDetailsRequest(req, parsed) {
+	if !inreq.ApplyMetadataDetailsRequest(req, parsed) {
 		t.Fatal("expected the body flag to be stripped")
 	}
 	if _, ok := parsed["metadata_details"]; ok {
@@ -59,13 +34,13 @@ func TestApplyMetadataDetailsRequestStripsBodyFlag(t *testing.T) {
 	if parsed["model"] != "gemma-4-26b" {
 		t.Fatal("unrelated fields must be preserved")
 	}
-	if req.Header.Get(metadataDetailsHeader) != "true" {
-		t.Fatalf("header = %q, want true", req.Header.Get(metadataDetailsHeader))
+	if req.Header.Get(inreq.MetadataDetailsHeader) != "true" {
+		t.Fatalf("header = %q, want true", req.Header.Get(inreq.MetadataDetailsHeader))
 	}
-	if !metadataDetailsFromRequest(req) {
+	if !inreq.MetadataDetailsFromRequest(req) {
 		t.Fatal("dispatch must see the opt-in after the body flag is consumed")
 	}
-	forward, err := marshalForwardBody(parsed)
+	forward, err := inreq.MarshalForwardBody(parsed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,11 +53,11 @@ func TestApplyMetadataDetailsRequestHeaderOnly(t *testing.T) {
 	t.Parallel()
 	parsed := map[string]any{"model": "gemma-4-26b"}
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	req.Header.Set(metadataDetailsHeader, "true")
-	if applyMetadataDetailsRequest(req, parsed) {
+	req.Header.Set(inreq.MetadataDetailsHeader, "true")
+	if inreq.ApplyMetadataDetailsRequest(req, parsed) {
 		t.Fatal("header-only opt-in must not report a body strip")
 	}
-	if !metadataDetailsFromRequest(req) {
+	if !inreq.MetadataDetailsFromRequest(req) {
 		t.Fatal("header opt-in must be visible to dispatch")
 	}
 }
@@ -91,10 +66,10 @@ func TestApplyMetadataDetailsRequestFalseIsNoOp(t *testing.T) {
 	t.Parallel()
 	parsed := map[string]any{"model": "m", "metadata_details": false}
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	if !applyMetadataDetailsRequest(req, parsed) {
+	if !inreq.ApplyMetadataDetailsRequest(req, parsed) {
 		t.Fatal("false still has to be stripped so the provider never sees it")
 	}
-	if metadataDetailsFromRequest(req) {
+	if inreq.MetadataDetailsFromRequest(req) {
 		t.Fatal("metadata_details=false must not enable the body copy")
 	}
 }
@@ -112,7 +87,7 @@ func TestRequestTimingDetailsAnchorsRoutePastMediaFetch(t *testing.T) {
 		DispatchedAt:   start.Add(15 * time.Millisecond),
 		FirstChunkAt:   start.Add(40 * time.Millisecond),
 	}
-	got := requestTimingDetails(timing)
+	got := inresp.RequestTimingDetails(timing)
 	if got == nil {
 		t.Fatal("expected timing details")
 	}
@@ -133,92 +108,20 @@ func TestRequestTimingDetailsAnchorsRoutePastMediaFetch(t *testing.T) {
 	}
 }
 
-func TestChatCompletionMetadataOmitsDeviceSerial(t *testing.T) {
-	t.Parallel()
-	se := true
-	info := committedProviderInfo{
-		ProviderID:    "prov-1",
-		Attested:      true,
-		TrustLevel:    registry.TrustHardware,
-		Encrypted:     true,
-		Chip:          "Apple M4 Max",
-		MachineModel:  "Mac16,7",
-		SecureEnclave: &se,
-		MDAVerified:   true,
-		SEPublicKey:   "se-pub",
-	}
-	provider := &registry.Provider{
-		ID:        "prov-1",
-		Hardware:  protocol.Hardware{ChipName: "Apple M4 Max", MachineModel: "Mac16,7"},
-		PublicKey: "x25519",
-		Attested:  true,
-		AttestationResult: &attestation.VerificationResult{
-			PublicKey:              "se-pub",
-			SerialNumber:           "SECRET-SERIAL",
-			SecureEnclaveAvailable: true,
-		},
-		TrustLevel:  registry.TrustHardware,
-		MDAVerified: true,
-		Location: &store.ProviderLocation{
-			City:        "Austin",
-			Region:      "Texas",
-			RegionCode:  "TX",
-			Country:     "United States",
-			CountryCode: "US",
-			Latitude:    30.2672,
-			Longitude:   -97.7431,
-			Timezone:    "America/Chicago",
-			Source:      "ip-api-pro",
-		},
-	}
-	collected := collectCommittedProviderInfo(provider)
-	if collected.SEPublicKey != "se-pub" {
-		t.Fatalf("se public key = %q", collected.SEPublicKey)
-	}
-	if collected.Location == nil || collected.Location.Region != "Texas" || collected.Location.CountryCode != "US" {
-		t.Fatalf("location = %+v", collected.Location)
-	}
-	info.Location = collected.Location
-	meta := buildChatCompletionMetadata(info, "job-1", &types.RequestTimingDetails{ParseUs: 10})
-	raw, err := json.Marshal(meta)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(raw), "SECRET-SERIAL") || strings.Contains(string(raw), "serial") {
-		t.Fatalf("metadata leaked a device serial: %s", raw)
-	}
-	if strings.Contains(string(raw), "30.2672") || strings.Contains(string(raw), "-97.7431") || strings.Contains(string(raw), "ip-api") || strings.Contains(string(raw), "latitude") || strings.Contains(string(raw), `"city"`) || strings.Contains(string(raw), "Austin") {
-		t.Fatalf("metadata leaked city, precise geo, or lookup source: %s", raw)
-	}
-	var decoded types.ChatCompletionMetadata
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatal(err)
-	}
-	if decoded.ProviderID != "prov-1" || !decoded.ProviderAttested || decoded.ProviderTrustLevel != "hardware" {
-		t.Fatalf("unexpected metadata: %+v", decoded)
-	}
-	if decoded.JobID != "job-1" || decoded.Timing == nil || decoded.Timing.ParseUs != 10 {
-		t.Fatalf("job/timing missing: %+v", decoded)
-	}
-	if decoded.Location == nil || decoded.Location.Region != "Texas" || decoded.Location.Timezone != "America/Chicago" {
-		t.Fatalf("location missing from body: %+v", decoded.Location)
-	}
-}
-
 func TestSnapshotAndAttachChatCompletionMetadata(t *testing.T) {
 	t.Parallel()
 	pr := &registry.PendingRequest{RequestID: "job-9", MetadataDetails: true}
-	snapshotChatCompletionMetadata(pr, committedProviderInfo{
+	inresp.SnapshotChatCompletionMetadata(pr, inresp.CommittedProviderInfo{
 		ProviderID: "prov-9",
 		Attested:   true,
 		TrustLevel: registry.TrustSelfSigned,
 		Chip:       "Apple M3 Max",
 	})
-	if !hasChatCompletionMetadata(pr) {
+	if !inresp.HasChatCompletionMetadata(pr) {
 		t.Fatal("expected a metadata snapshot")
 	}
 	obj := map[string]any{"id": "chatcmpl-job-9"}
-	attachChatCompletionMetadata(obj, pr)
+	inresp.AttachChatCompletionMetadata(obj, pr)
 	raw, err := json.Marshal(obj)
 	if err != nil {
 		t.Fatal(err)
@@ -228,72 +131,51 @@ func TestSnapshotAndAttachChatCompletionMetadata(t *testing.T) {
 	}
 
 	resp := types.ChatCompletionResponse{ID: "chatcmpl-job-9"}
-	applyChatCompletionMetadataToResponse(&resp, pr)
+	inresp.ApplyChatCompletionMetadataToResponse(&resp, pr)
 	if resp.Metadata == nil || resp.Metadata.ProviderID != "prov-9" {
 		t.Fatalf("typed response metadata = %+v", resp.Metadata)
 	}
 
 	skipped := &registry.PendingRequest{RequestID: "job-0"}
-	snapshotChatCompletionMetadata(skipped, committedProviderInfo{ProviderID: "prov-9"})
-	if hasChatCompletionMetadata(skipped) {
+	inresp.SnapshotChatCompletionMetadata(skipped, inresp.CommittedProviderInfo{ProviderID: "prov-9"})
+	if inresp.HasChatCompletionMetadata(skipped) {
 		t.Fatal("opt-out requests must not snapshot metadata")
 	}
 }
 
 func TestConsumerSafeLocationOmitsPreciseGeo(t *testing.T) {
 	t.Parallel()
-	if consumerSafeLocation(nil) != nil {
+	if geo.ConsumerSafeLocation(nil) != nil {
 		t.Fatal("nil location must stay omitted")
 	}
-	if consumerSafeLocation(&store.ProviderLocation{}) != nil {
+	if geo.ConsumerSafeLocation(&store.ProviderLocation{}) != nil {
 		t.Fatal("empty location must stay omitted")
 	}
-	got := consumerSafeLocation(&store.ProviderLocation{
+	got := geo.ConsumerSafeLocation(&store.ProviderLocation{
 		City: "Austin", Region: "Texas", CountryCode: "US", Latitude: 30.2672, Source: "ip-api-pro",
 	})
 	if got == nil || got.Region != "Texas" || got.CountryCode != "US" {
 		t.Fatalf("coarse location = %+v", got)
 	}
-	if consumerSafeLocation(&store.ProviderLocation{
+	if geo.ConsumerSafeLocation(&store.ProviderLocation{
 		City: "Austin", Latitude: 30.2672, Longitude: -97.7431, Source: "ip-api-pro",
 	}) != nil {
 		t.Fatal("city/coords-only location must stay omitted")
 	}
 }
 
-func TestConfigurePendingCopiesMetadataDetails(t *testing.T) {
-	t.Parallel()
-	d := &dispatchState{metadataDetails: true}
-	pr := &registry.PendingRequest{}
-	d.configurePending(pr)
-	if !pr.MetadataDetails {
-		t.Fatal("queued pending requests must inherit metadata_details")
-	}
-
-	generic := &dispatchState{metadataDetails: true, consumerEndpoint: completionsEndpoint}
-	genericPR := &registry.PendingRequest{}
-	generic.configurePending(genericPR)
-	if !genericPR.MetadataDetails {
-		t.Fatal("configurePending still stamps the flag; snapshot must drop generic endpoints")
-	}
-	snapshotChatCompletionMetadata(genericPR, committedProviderInfo{ProviderID: "p"})
-	if hasChatCompletionMetadata(genericPR) {
-		t.Fatal("generic endpoints must not snapshot chat metadata into the body")
-	}
-}
-
 func TestIsChatCompletionsConsumer(t *testing.T) {
 	t.Parallel()
-	if !isChatCompletionsConsumer(&registry.PendingRequest{}) {
+	if !inresp.IsChatCompletionsConsumer(&registry.PendingRequest{}) {
 		t.Fatal("plain chat pending request is a chat-completions consumer")
 	}
-	if isChatCompletionsConsumer(&registry.PendingRequest{IsResponsesAPI: true}) {
+	if inresp.IsChatCompletionsConsumer(&registry.PendingRequest{IsResponsesAPI: true}) {
 		t.Fatal("Responses API must not get chat metadata")
 	}
-	if isChatCompletionsConsumer(&registry.PendingRequest{ConsumerEndpoint: completionsEndpoint}) {
+	if inresp.IsChatCompletionsConsumer(&registry.PendingRequest{ConsumerEndpoint: inreq.CompletionsEndpoint}) {
 		t.Fatal("legacy completions must not get chat metadata")
 	}
-	if isChatCompletionsConsumer(&registry.PendingRequest{ConsumerEndpoint: messagesEndpoint}) {
+	if inresp.IsChatCompletionsConsumer(&registry.PendingRequest{ConsumerEndpoint: inreq.MessagesEndpoint}) {
 		t.Fatal("Anthropic messages must not get chat metadata")
 	}
 }
@@ -302,7 +184,7 @@ func TestWriteCommittedProviderHeaders(t *testing.T) {
 	t.Parallel()
 	se := false
 	rec := httptest.NewRecorder()
-	writeCommittedProviderHeaders(rec, committedProviderInfo{
+	inresp.WriteCommittedProviderHeaders(rec, inresp.CommittedProviderInfo{
 		ProviderID:    "prov-h",
 		Attested:      false,
 		TrustLevel:    registry.TrustNone,

@@ -8,16 +8,18 @@ import (
 	"strings"
 	"testing"
 
+	infer "github.com/eigeninference/d-inference/coordinator/api/inference"
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 	logger := slog.New(slog.DiscardHandler)
 	reg := registry.New(logger)
-	srv := NewServer(reg, store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	srv := NewServer(reg, memory.NewMemory(store.Config{}), ServerConfig{}, logger)
 	srv.SetPromptSupervisor(promptcontract.NewSupervisor(promptcontract.SupervisorConfig{
 		Enabled: true,
 	}))
@@ -69,7 +71,7 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	var status ExactCacheStatus
+	var status infer.ExactCacheStatus
 	if err := json.Unmarshal(response.Body.Bytes(), &status); err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +186,7 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 	ddClient := newTestDD(t, collector)
 	defer ddClient.Close()
 	srv.SetDatadog(ddClient)
-	srv.emitExactCacheDDGauges()
+	srv.inference.EmitExactCacheDDGauges()
 	_ = ddClient.Statsd.Flush()
 	packets := collector.drain()
 	for _, metric := range []string{

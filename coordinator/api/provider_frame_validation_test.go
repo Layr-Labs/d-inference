@@ -3,10 +3,11 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"nhooyr.io/websocket"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"nhooyr.io/websocket"
 )
 
 // TestProviderReadLoopRejectsMalformedFramesAndKeepsConnection: the read loop

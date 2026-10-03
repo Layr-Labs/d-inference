@@ -5,6 +5,8 @@ import (
 	"math/rand/v2"
 	"strings"
 	"testing"
+
+	inreq "github.com/eigeninference/d-inference/coordinator/api/inference/request"
 )
 
 // jsonLenSpecialStrings are the string shapes whose encoded length differs
@@ -26,69 +28,6 @@ var jsonLenSpecialStrings = []string{
 	"replacement \uFFFD kept",
 	"émoji 🎉 日本語",
 	strings.Repeat("a\"b<c>&\n", 50),
-}
-
-func TestJSONStringEncodedLenMatchesEncoder(t *testing.T) {
-	for _, s := range jsonLenSpecialStrings {
-		want, err := json.Marshal(s)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := jsonStringEncodedLen(s, true); got != len(want) {
-			t.Errorf("escapeHTML=true %q: len = %d, want %d (%s)", s, got, len(want), want)
-		}
-		var buf strings.Builder
-		enc := json.NewEncoder(&buf)
-		enc.SetEscapeHTML(false)
-		if err := enc.Encode(s); err != nil {
-			t.Fatal(err)
-		}
-		if got, wantLen := jsonStringEncodedLen(s, false), buf.Len()-1; got != wantLen {
-			t.Errorf("escapeHTML=false %q: len = %d, want %d", s, got, wantLen)
-		}
-	}
-}
-
-func TestJSONEncodedLenLeafCases(t *testing.T) {
-	cases := map[string]any{
-		"nil":            nil,
-		"true":           true,
-		"false":          false,
-		"number":         json.Number("12.5e-3"),
-		"negative":       json.Number("-0"),
-		"empty number":   json.Number(""), // encodes as 0
-		"nil map":        map[string]any(nil),
-		"empty map":      map[string]any{},
-		"nil slice":      []any(nil),
-		"empty slice":    []any{},
-		"nested":         map[string]any{"a": []any{nil, true, json.Number("1"), "x"}, "b<": map[string]any{}},
-		"special key":    map[string]any{"k\"\n<": json.Number("1")},
-		"special values": map[string]any{"s": strings.Join(jsonLenSpecialStrings, "|")},
-	}
-	for name, v := range cases {
-		want, err := json.Marshal(v)
-		if err != nil {
-			t.Fatal(err)
-		}
-		got, ok := jsonEncodedLen(v)
-		if !ok || got != len(want) {
-			t.Errorf("%s: (%d, %v), want (%d, true) for %s", name, got, ok, len(want), want)
-		}
-	}
-	// Outside the decoder-shaped universe the counter must decline so the
-	// caller falls back to the real encoder.
-	for name, v := range map[string]any{
-		"int":            7,
-		"float":          1.5,
-		"[]string":       []string{"a"},
-		"nested int":     map[string]any{"n": 1},
-		"invalid number": json.Number("0x10"),
-		"leading plus":   json.Number("+1"),
-	} {
-		if n, ok := jsonEncodedLen(v); ok {
-			t.Errorf("%s: counter accepted unmodeled value (%d)", name, n)
-		}
-	}
 }
 
 // TestJSONValueLenMatchesMarshal is the property test: random decoder-shaped
@@ -127,16 +66,16 @@ func TestJSONValueLenMatchesMarshal(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := jsonValueLen(v); got != len(want) {
+		if got := inreq.JsonValueLen(v); got != len(want) {
 			t.Fatalf("tree %d: len = %d, want %d for %s", i, got, len(want), want)
 		}
 	}
 	// Fallback path: values the counter declines still measure exactly, and an
 	// unencodable value reports 0 like the marshal-and-measure path.
-	if got := jsonValueLen(map[string]any{"n": 42, "f": 0.5}); got != len(`{"f":0.5,"n":42}`) {
+	if got := inreq.JsonValueLen(map[string]any{"n": 42, "f": 0.5}); got != len(`{"f":0.5,"n":42}`) {
 		t.Fatalf("fallback len = %d", got)
 	}
-	if got := jsonValueLen(map[string]any{"bad": json.Number("nope")}); got != 0 {
+	if got := inreq.JsonValueLen(map[string]any{"bad": json.Number("nope")}); got != 0 {
 		t.Fatalf("unencodable value len = %d, want 0", got)
 	}
 }
@@ -145,7 +84,7 @@ func TestJSONNumberLiteralValid(t *testing.T) {
 	valid := []string{"0", "-0", "1", "-12", "1.5", "0.25", "1e5", "1E+5", "2.5e-3", "9007199254740993"}
 	invalid := []string{"", "-", "+1", "01", "1.", ".5", "1e", "1e+", "0x10", "nope", "1 ", "--1"}
 	for _, s := range valid {
-		if !jsonNumberLiteralValid(s) {
+		if !inreq.JsonNumberLiteralValid(s) {
 			t.Errorf("%q rejected", s)
 		}
 		if _, err := json.Marshal(json.Number(s)); err != nil {
@@ -153,7 +92,7 @@ func TestJSONNumberLiteralValid(t *testing.T) {
 		}
 	}
 	for _, s := range invalid {
-		if jsonNumberLiteralValid(s) {
+		if inreq.JsonNumberLiteralValid(s) {
 			t.Errorf("%q accepted", s)
 		}
 		if s == "" {

@@ -9,6 +9,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/eigeninference/d-inference/coordinator/api/access"
+	infer "github.com/eigeninference/d-inference/coordinator/api/inference"
+	"github.com/eigeninference/d-inference/coordinator/api/observation"
+
+	httpx "github.com/eigeninference/d-inference/coordinator/api/httpx"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/google/uuid"
 )
@@ -22,7 +27,7 @@ func TestRequestOutcomeFinalizesAfterRecoveryWrite(t *testing.T) {
 					srv.mux = http.NewServeMux()
 					var coordID, publicID string
 					srv.mux.HandleFunc("POST "+endpoint, func(w http.ResponseWriter, r *http.Request) {
-						coordID, publicID = coordRequestIDFromContext(r.Context()), requestIDFromContext(r.Context())
+						coordID, publicID = observation.CoordRequestIDFromContext(r.Context()), access.RequestIDFromContext(r.Context())
 						if committed {
 							w.Header().Set("Content-Type", "application/json")
 							w.WriteHeader(http.StatusOK)
@@ -34,7 +39,7 @@ func TestRequestOutcomeFinalizesAfterRecoveryWrite(t *testing.T) {
 					req := httptest.NewRequest("POST", endpoint, strings.NewReader(`{"stream":true}`))
 					req.Header.Set("X-Request-ID", "public-id")
 					srv.Handler().ServeHTTP(w, req)
-					srv.requestOutcomes.close()
+					srv.observation.CloseProfilesAndOutcomes()
 					row := awaitRequestOutcomes(t, st, 1)[0]
 					wantStatus, wantTermination := http.StatusInternalServerError, "rejected"
 					if committed {
@@ -81,7 +86,7 @@ func TestRequestOutcomeRecoveryPreservesAbortHandler(t *testing.T) {
 		srv.Handler().ServeHTTP(w, httptest.NewRequest("POST", "/v1/chat/completions", nil))
 		t.Fatal("abort handler returned normally")
 	}()
-	srv.requestOutcomes.close()
+	srv.observation.CloseProfilesAndOutcomes()
 	row := awaitRequestOutcomes(t, st, 1)[0]
 	if row.HTTPStatus != 0 || row.ResponseTerminal != "unknown" || row.EgressCompleted || row.RawReason != "handler_aborted" || w.Body.Len() != 0 {
 		t.Fatalf("abort fabricated recovery response: %+v", row)
@@ -92,12 +97,12 @@ func TestRequestOutcomePopulationUsesMatchedEscapedRoute(t *testing.T) {
 	srv, st := terminalOutcomeServer(t)
 	srv.mux = http.NewServeMux()
 	srv.mux.HandleFunc("POST /v1/messages", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 400, errorResponse("invalid_request_error", "scripted rejection"))
+		httpx.WriteJSON(w, 400, httpx.ErrorResponse("invalid_request_error", "scripted rejection"))
 	})
 	for _, path := range []string{"/v1%2Fmessages", "/v1/messages/missing"} {
 		w := httptest.NewRecorder()
 		srv.Handler().ServeHTTP(w, httptest.NewRequest("POST", path, nil))
-		if w.Code != 404 || srv.requestOutcomes.received.Load() != 0 {
+		if w.Code != 404 || requestOutcomeReceived(t, srv) != 0 {
 			t.Fatalf("unmatched path counted: %s status=%d", path, w.Code)
 		}
 	}
@@ -108,7 +113,7 @@ func TestRequestOutcomePopulationUsesMatchedEscapedRoute(t *testing.T) {
 			t.Fatalf("matched path behavior changed: %s status=%d", path, w.Code)
 		}
 	}
-	srv.requestOutcomes.close()
+	srv.observation.CloseProfilesAndOutcomes()
 	for _, row := range awaitRequestOutcomes(t, st, 2) {
 		if row.Endpoint != "/v1/messages" {
 			t.Fatalf("matched path not normalized: %+v", row)
@@ -122,7 +127,7 @@ func TestRequestOutcomeRecoveryAfterRejectedHeader(t *testing.T) {
 	srv.mux.HandleFunc("POST /v1/chat/completions", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(9999) })
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, httptest.NewRequest("POST", "/v1/chat/completions", nil))
-	srv.requestOutcomes.close()
+	srv.observation.CloseProfilesAndOutcomes()
 	row := awaitRequestOutcomes(t, st, 1)[0]
 	if w.Code != 500 || row.HTTPStatus != 500 || row.ResponseTerminal != "error" || row.Termination != "rejected" {
 		t.Fatalf("rejected header replaced actual recovery result: status=%d %+v", w.Code, row)
@@ -144,7 +149,7 @@ func TestRequestOutcomeRecoveryDoesNotInventSSETerminal(t *testing.T) {
 					if content {
 						frame := []byte(contentChunkSSE("m", "answer"))
 						n, err := w.Write(frame)
-						markContentWrite(w, true, n, len(frame), err)
+						observation.MarkContentWrite(w, true, n, len(frame), err)
 					}
 					w.(http.Flusher).Flush()
 					panic("panic after content")
@@ -158,13 +163,13 @@ func TestRequestOutcomeRecoveryDoesNotInventSSETerminal(t *testing.T) {
 					srv.SetCoordinatorKey(coord)
 					encrypted, _, _ := sealRequest(t, []byte(`{"model":"m"}`), coord.PublicKey, coord.KID)
 					req = httptest.NewRequest("POST", req.URL.Path, bytes.NewReader(encrypted))
-					req.Header.Set("Content-Type", SealedContentType)
-					handler = srv.sealedTransport(handler)
+					req.Header.Set("Content-Type", infer.SealedContentType)
+					handler = srv.inference.SealedTransport(handler)
 				}
 				srv.mux.HandleFunc("POST /v1/chat/completions", handler)
 				w := httptest.NewRecorder()
 				srv.Handler().ServeHTTP(w, req)
-				srv.requestOutcomes.close()
+				srv.observation.CloseProfilesAndOutcomes()
 				row := awaitRequestOutcomes(t, st, 1)[0]
 				if w.Result().Header.Get("Content-Type") != "text/event-stream" || row.HTTPStatus != 200 || row.ResponseTerminal != "unknown" || row.EgressCompleted || row.ContentWriteCompleted != content || row.Termination != "interrupted_response" || row.RawReason != "handler_panic" {
 					t.Fatalf("raw recovery JSON was counted as an SSE terminal: %+v", row)

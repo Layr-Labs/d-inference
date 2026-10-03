@@ -4,29 +4,31 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	trustapi "github.com/eigeninference/d-inference/coordinator/api/provider/trust"
+	"github.com/eigeninference/d-inference/coordinator/api/releases"
+	"github.com/eigeninference/d-inference/coordinator/attestation"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"nhooyr.io/websocket"
 	"os"
 	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/attestation"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/store"
-	"nhooyr.io/websocket"
 )
 
 // TestProviderRegistrationWithValidAttestation verifies that a provider
 // with a valid Secure Enclave attestation is marked as attested.
 func TestProviderRegistrationWithValidAttestation(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 
@@ -86,12 +88,12 @@ func TestProviderRegistrationBindsProtectedRuntimeClaims(t *testing.T) {
 	reg.SetModelCatalog([]registry.CatalogEntry{{ID: registry.Qwen38NAXModelID}})
 	srv := NewServer(
 		reg,
-		store.NewMemory(store.Config{AdminKey: "test-key"}),
+		memory.NewMemory(store.Config{AdminKey: "test-key"}),
 		ServerConfig{},
 		logger,
 	)
 	metallibHash := strings.Repeat("a", 64)
-	srv.SetRuntimeManifest(&RuntimeManifest{
+	srv.SetRuntimeManifest(&releases.RuntimeManifest{
 		TemplateHashes: map[string]map[string]bool{"mlx_metallib": {metallibHash: true}},
 	})
 	publicKey := testPublicKeyB64()
@@ -128,8 +130,8 @@ func TestProviderRegistrationBindsProtectedRuntimeClaims(t *testing.T) {
 		TemplateHashes: map[string]string{"mlx_metallib": metallibHash},
 	}
 	provider := reg.Register("signed-runtime", nil, regMsg)
-	srv.verifyProviderAttestation(context.Background(), provider.ID, provider, regMsg)
-	runtimeOK, mismatches := srv.verifyRuntimeHashesForBackend(
+	srv.trust.VerifyProviderAttestation(context.Background(), provider.ID, provider, regMsg)
+	runtimeOK, mismatches := srv.releases.VerifyRuntimeHashesForBackend(
 		regMsg.Backend, regMsg.TemplateHashes)
 	if !runtimeOK {
 		t.Fatalf("runtime manifest rejected valid metallib: %v", mismatches)
@@ -200,19 +202,19 @@ func TestProviderRegistrationAttestationFreshness(t *testing.T) {
 		{
 			name:            "accepts future skew just under boundary",
 			version:         "0.9.9",
-			timestampOffset: RegistrationAttestationMaxFutureSkew - time.Second,
+			timestampOffset: trustapi.RegistrationAttestationMaxFutureSkew - time.Second,
 			accepted:        true,
 		},
 		{
 			name:            "accepts future skew at boundary",
 			version:         "0.9.9",
-			timestampOffset: RegistrationAttestationMaxFutureSkew,
+			timestampOffset: trustapi.RegistrationAttestationMaxFutureSkew,
 			accepted:        true,
 		},
 		{
 			name:            "rejects future skew just over boundary",
 			version:         "0.9.9",
-			timestampOffset: RegistrationAttestationMaxFutureSkew + time.Second,
+			timestampOffset: trustapi.RegistrationAttestationMaxFutureSkew + time.Second,
 		},
 		{
 			name:     "accepts fresh reconnect",
@@ -232,7 +234,7 @@ func TestProviderRegistrationAttestationFreshness(t *testing.T) {
 				reg := registry.New(logger)
 				srv := NewServer(
 					reg,
-					store.NewMemory(store.Config{AdminKey: "test-key"}),
+					memory.NewMemory(store.Config{AdminKey: "test-key"}),
 					ServerConfig{},
 					logger,
 				)
@@ -251,7 +253,7 @@ func TestProviderRegistrationAttestationFreshness(t *testing.T) {
 						t, publicKey, "", "", timestamp, nil),
 				}
 				provider := reg.Register(fmt.Sprintf("reconnect-%d", index), nil, regMsg)
-				srv.verifyProviderAttestation(context.Background(), provider.ID, provider, regMsg)
+				srv.trust.VerifyProviderAttestation(context.Background(), provider.ID, provider, regMsg)
 
 				provider.Mu().Lock()
 				defer provider.Mu().Unlock()
@@ -284,7 +286,7 @@ func TestProviderRegistrationAttestationFreshness(t *testing.T) {
 
 func TestProviderRegistrationRequiresBinaryHashWhenPolicyConfigured(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.SetKnownBinaryHashes([]string{knownGoodBinaryHashForTest})
@@ -303,7 +305,7 @@ func TestProviderRegistrationRequiresBinaryHashWhenPolicyConfigured(t *testing.T
 	}
 	p := reg.Register("provider-1", nil, regMsg)
 
-	srv.verifyProviderAttestation(context.Background(), "provider-1", p, regMsg)
+	srv.trust.VerifyProviderAttestation(context.Background(), "provider-1", p, regMsg)
 
 	if p.AttestationResult == nil {
 		t.Fatal("expected attestation result")
@@ -326,7 +328,7 @@ func TestProviderRegistrationRequiresBinaryHashWhenPolicyConfigured(t *testing.T
 
 func TestProviderRegistrationAcceptsKnownBinaryHash(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.SetKnownBinaryHashes([]string{knownGoodBinaryHashForTest})
@@ -345,7 +347,7 @@ func TestProviderRegistrationAcceptsKnownBinaryHash(t *testing.T) {
 	}
 	p := reg.Register("provider-1", nil, regMsg)
 
-	srv.verifyProviderAttestation(context.Background(), "provider-1", p, regMsg)
+	srv.trust.VerifyProviderAttestation(context.Background(), "provider-1", p, regMsg)
 
 	if p.AttestationResult == nil {
 		t.Fatal("expected attestation result")
@@ -365,7 +367,7 @@ func TestProviderRegistrationAcceptsKnownBinaryHash(t *testing.T) {
 
 func TestProviderRegistrationRejectsInvalidConfiguredBinaryHash(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.SetKnownBinaryHashes([]string{"not-a-sha256"})
@@ -384,9 +386,9 @@ func TestProviderRegistrationRejectsInvalidConfiguredBinaryHash(t *testing.T) {
 	}
 	p := reg.Register("provider-1", nil, regMsg)
 
-	srv.verifyProviderAttestation(context.Background(), "provider-1", p, regMsg)
+	srv.trust.VerifyProviderAttestation(context.Background(), "provider-1", p, regMsg)
 
-	policyConfigured, knownHashes := srv.binaryHashPolicySnapshot()
+	policyConfigured, knownHashes := srv.releases.BinaryHashPolicySnapshot()
 	if !policyConfigured {
 		t.Fatal("binary hash policy should remain configured even when configured hashes are invalid")
 	}
@@ -408,7 +410,7 @@ func TestProviderRegistrationRejectsInvalidConfiguredBinaryHash(t *testing.T) {
 
 func TestSyncBinaryHashesRejectsInvalidStoredReleaseHashWithoutFailingOpen(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	if err := st.SetRelease(&store.Release{
@@ -423,7 +425,7 @@ func TestSyncBinaryHashesRejectsInvalidStoredReleaseHashWithoutFailingOpen(t *te
 
 	srv.SyncBinaryHashes()
 
-	policyConfigured, knownHashes := srv.binaryHashPolicySnapshot()
+	policyConfigured, knownHashes := srv.releases.BinaryHashPolicySnapshot()
 	if !policyConfigured {
 		t.Fatal("binary hash policy should remain configured when an active release has an invalid hash")
 	}
@@ -434,7 +436,7 @@ func TestSyncBinaryHashesRejectsInvalidStoredReleaseHashWithoutFailingOpen(t *te
 
 func TestSyncBinaryHashesPreservesAdditionalConfiguredHashes(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 
@@ -452,7 +454,7 @@ func TestSyncBinaryHashesPreservesAdditionalConfiguredHashes(t *testing.T) {
 	}
 
 	srv.SyncBinaryHashes()
-	policyConfigured, knownHashes := srv.binaryHashPolicySnapshot()
+	policyConfigured, knownHashes := srv.releases.BinaryHashPolicySnapshot()
 	if !policyConfigured {
 		t.Fatal("binary hash policy should be configured after manual hash and active release")
 	}
@@ -467,7 +469,7 @@ func TestSyncBinaryHashesPreservesAdditionalConfiguredHashes(t *testing.T) {
 		t.Fatalf("DeleteRelease: %v", err)
 	}
 	srv.SyncBinaryHashes()
-	policyConfigured, knownHashes = srv.binaryHashPolicySnapshot()
+	policyConfigured, knownHashes = srv.releases.BinaryHashPolicySnapshot()
 	if !policyConfigured {
 		t.Fatal("binary hash policy should remain configured after release deletion because manual hash remains")
 	}
@@ -481,7 +483,7 @@ func TestSyncBinaryHashesPreservesAdditionalConfiguredHashes(t *testing.T) {
 
 func TestAdminDeleteReleaseBlocksActiveBinaryHashWhenEnforced(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{AdminKey: "admin-key"}, logger)
 	srv.SetBinaryHashEnforcement(true)
@@ -511,7 +513,7 @@ func TestAdminDeleteReleaseBlocksActiveBinaryHashWhenEnforced(t *testing.T) {
 	req := httptest.NewRequest(http.MethodDelete, "/v1/admin/releases", strings.NewReader(`{"version":"1.0.0","platform":"macos-arm64"}`))
 	req.Header.Set("Authorization", "Bearer admin-key")
 	w := httptest.NewRecorder()
-	srv.handleAdminDeleteRelease(w, req)
+	srv.releases.HandleAdminDeleteRelease(w, req)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("delete without force status = %d, want %d; body=%s", w.Code, http.StatusConflict, w.Body.String())
 	}
@@ -522,7 +524,7 @@ func TestAdminDeleteReleaseBlocksActiveBinaryHashWhenEnforced(t *testing.T) {
 	forceReq := httptest.NewRequest(http.MethodDelete, "/v1/admin/releases", strings.NewReader(`{"version":"1.0.0","platform":"macos-arm64","force":true}`))
 	forceReq.Header.Set("Authorization", "Bearer admin-key")
 	forceW := httptest.NewRecorder()
-	srv.handleAdminDeleteRelease(forceW, forceReq)
+	srv.releases.HandleAdminDeleteRelease(forceW, forceReq)
 	if forceW.Code != http.StatusOK {
 		t.Fatalf("force delete status = %d, want %d; body=%s", forceW.Code, http.StatusOK, forceW.Body.String())
 	}
@@ -533,7 +535,7 @@ func TestAdminDeleteReleaseBlocksActiveBinaryHashWhenEnforced(t *testing.T) {
 
 func TestBinaryHashPolicySnapshotConcurrentSync(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	manualHash := strings.Repeat("a", 64)
@@ -550,7 +552,7 @@ func TestBinaryHashPolicySnapshotConcurrentSync(t *testing.T) {
 				case <-done:
 					return
 				default:
-					policyConfigured, knownHashes := srv.binaryHashPolicySnapshot()
+					policyConfigured, knownHashes := srv.releases.BinaryHashPolicySnapshot()
 					if policyConfigured && !knownHashes[manualHash] {
 						t.Errorf("manual hash missing from policy snapshot")
 						return
@@ -587,7 +589,7 @@ func TestBinaryHashPolicySnapshotConcurrentSync(t *testing.T) {
 // with an invalid attestation is still registered but not marked as attested.
 func TestProviderRegistrationWithInvalidAttestation(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 
@@ -637,7 +639,7 @@ func TestProviderRegistrationWithInvalidAttestation(t *testing.T) {
 // without an attestation still works in Open Mode.
 func TestProviderRegistrationWithoutAttestation(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 
@@ -684,7 +686,7 @@ func TestProviderRegistrationWithoutAttestation(t *testing.T) {
 // Ported from master's coordinator/internal/api/provider_test.go (PR #99 regression).
 func TestProviderRegistrationWithoutAttestationRejectedWhenBinaryHashPolicyConfigured(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.SetKnownBinaryHashes([]string{knownGoodBinaryHashForTest})
@@ -700,7 +702,7 @@ func TestProviderRegistrationWithoutAttestationRejectedWhenBinaryHashPolicyConfi
 	}
 	p := reg.Register("provider-1", nil, regMsg)
 
-	srv.verifyProviderAttestation(context.Background(), "provider-1", p, regMsg)
+	srv.trust.VerifyProviderAttestation(context.Background(), "provider-1", p, regMsg)
 
 	if p.AttestationResult == nil {
 		t.Fatal("expected attestation result")
@@ -722,7 +724,7 @@ func TestProviderRegistrationWithoutAttestationRejectedWhenBinaryHashPolicyConfi
 // attestation metadata.
 func TestListModelsWithAttestationInfo(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 
@@ -803,7 +805,7 @@ func TestListModelsWithAttestationInfo(t *testing.T) {
 
 func TestAttestationRejectsMissingEncryptionKeyForRegisteredPublicKey(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 
@@ -856,7 +858,7 @@ func TestAttestationRejectsMissingEncryptionKeyForRegisteredPublicKey(t *testing
 
 func TestAttestationRejectsMismatchedEncryptionKey(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 

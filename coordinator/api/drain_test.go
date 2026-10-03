@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -11,7 +10,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -74,7 +72,7 @@ func TestAdminDrain_PrivyAdminAuthorized(t *testing.T) {
 	admin := &store.User{AccountID: "acct-admin", Email: "admin@darkbloom.ai"}
 	r := withPrivyUser(httptest.NewRequest(http.MethodPost, "/v1/admin/drain", nil), admin)
 	w := httptest.NewRecorder()
-	srv.handleAdminDrain(w, r)
+	srv.operations.HandleAdminDrain(w, r)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("privy-admin status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
@@ -95,7 +93,7 @@ func TestAdminDrain_NonAdminForbidden(t *testing.T) {
 	user := &store.User{AccountID: "acct-user", Email: "nobody@example.com"}
 	r := withPrivyUser(httptest.NewRequest(http.MethodPost, "/v1/admin/drain", nil), user)
 	w := httptest.NewRecorder()
-	srv.handleAdminDrain(w, r)
+	srv.operations.HandleAdminDrain(w, r)
 
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("non-admin status = %d, want %d (body=%s)", w.Code, http.StatusForbidden, w.Body.String())
@@ -323,31 +321,6 @@ func TestModelsCapacity_EmptyWhileDraining(t *testing.T) {
 func TestInflight_AndSetDrainingAreDeterministic(t *testing.T) {
 	srv, _ := testServer(t)
 
-	if n := srv.Inflight(); n != 0 {
-		t.Fatalf("initial Inflight() = %d, want 0", n)
-	}
-	if n := srv.incInflight(); n != 1 {
-		t.Fatalf("after inc Inflight() = %d, want 1", n)
-	}
-	if n := srv.Inflight(); n != 1 {
-		t.Fatalf("Inflight() = %d, want 1", n)
-	}
-	if n := srv.decInflight(); n != 0 {
-		t.Fatalf("after dec Inflight() = %d, want 0", n)
-	}
-
-	if srv.IsDraining() {
-		t.Fatal("IsDraining() = true by default, want false")
-	}
-	srv.SetDraining(true)
-	if !srv.IsDraining() {
-		t.Fatal("IsDraining() = false after SetDraining(true)")
-	}
-	srv.SetDraining(false)
-	if srv.IsDraining() {
-		t.Fatal("IsDraining() = true after SetDraining(false)")
-	}
-
 	// A full request through the gate must leave the counter back at 0 even when
 	// the request is rejected downstream (here: 401 from requireAuth).
 	_ = doReq(srv, http.MethodPost, "/v1/chat/completions", "", minimalChatBody)
@@ -386,7 +359,7 @@ func TestDrainGate_ConcurrentNoInflightLeak(t *testing.T) {
 	srv, _ := testServer(t)
 
 	var ranUncounted atomic.Int64
-	gate := srv.drainGate(func(w http.ResponseWriter, r *http.Request) {
+	gate := srv.operations.DrainGate(func(w http.ResponseWriter, r *http.Request) {
 		// We are past the gate; it must have counted us before calling next.
 		if srv.Inflight() < 1 {
 			ranUncounted.Add(1)
@@ -443,59 +416,15 @@ func TestDrainGate_ConcurrentNoInflightLeak(t *testing.T) {
 // (e) DrainGraceFromEnv parses EIGENINFERENCE_DRAIN_GRACE, falling back to the
 // default for unset/empty/invalid/negative values and honoring an explicit "0"
 // (no wait — Shutdown is called immediately).
-func TestDrainGraceFromEnv(t *testing.T) {
-	cases := []struct {
-		name string
-		val  string
-		want time.Duration
-	}{
-		{"unset", "", DefaultDrainGrace},
-		{"valid_seconds", "90s", 90 * time.Second},
-		{"valid_minutes", "2m", 2 * time.Minute},
-		{"zero_disables_wait", "0", 0},
-		{"invalid_falls_back", "not-a-duration", DefaultDrainGrace},
-		{"negative_falls_back", "-5s", DefaultDrainGrace},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("EIGENINFERENCE_DRAIN_GRACE", tc.val)
-			if got := DrainGraceFromEnv(); got != tc.want {
-				t.Fatalf("DrainGraceFromEnv() = %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
 
 // (e) WaitForInflightZero returns immediately when nothing is in flight, times
 // out (false) while a request is still in flight, and returns true once the count
 // drops to 0 before the deadline.
-func TestWaitForInflightZero(t *testing.T) {
-	srv, _ := testServer(t)
 
-	// Already zero → true immediately.
-	if !srv.WaitForInflightZero(context.Background()) {
-		t.Fatal("WaitForInflightZero() = false with inflight 0, want true")
-	}
-
-	// One in flight, short deadline → times out false.
-	srv.incInflight()
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	if srv.WaitForInflightZero(ctx) {
-		t.Fatal("WaitForInflightZero() = true while a request is in flight, want false")
-	}
-
-	// Drop to 0 from another goroutine → returns true before the deadline.
-	go func() {
-		time.Sleep(20 * time.Millisecond)
-		srv.decInflight()
-	}()
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel2()
-	if !srv.WaitForInflightZero(ctx2) {
-		t.Fatal("WaitForInflightZero() = false after inflight dropped to 0, want true")
-	}
-	if n := srv.Inflight(); n != 0 {
-		t.Fatalf("Inflight() = %d at end, want 0", n)
-	}
+// Local wire projection keeps readiness assertions at the composed HTTP boundary.
+type readinessResponse struct {
+	Draining     bool   `json:"draining"`
+	Inflight     int64  `json:"inflight"`
+	Ready        bool   `json:"ready"`
+	HealthReason string `json:"health_reason,omitempty"`
 }

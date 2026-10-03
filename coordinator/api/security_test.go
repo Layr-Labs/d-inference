@@ -16,14 +16,15 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 	"nhooyr.io/websocket"
 )
 
 // securityTestServer creates a Server with a quiet logger for security tests.
-func securityTestServer(t *testing.T) (*Server, *store.MemoryStore) {
+func securityTestServer(t *testing.T) (*Server, *memory.MemoryStore) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	return srv, st
@@ -384,7 +385,7 @@ func TestSecurity_AuthBypass(t *testing.T) {
 func TestSecurity_ChallengeNonceReplay(t *testing.T) {
 	srv, _ := securityTestServer(t)
 	// Use a very fast challenge interval for this test.
-	srv.challengeInterval = 500 * time.Millisecond
+	srv.SetChallengeInterval(500 * time.Millisecond)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -537,7 +538,7 @@ func TestSecurity_DeviceCodeBruteForce(t *testing.T) {
 	// Create a valid device code.
 	codeReq := httptest.NewRequest(http.MethodPost, "/v1/device/code", nil)
 	codeW := httptest.NewRecorder()
-	srv.handleDeviceCode(codeW, codeReq)
+	srv.device.HandleDeviceCode(codeW, codeReq)
 
 	if codeW.Code != http.StatusOK {
 		t.Fatalf("create device code: status %d, body: %s", codeW.Code, codeW.Body.String())
@@ -556,7 +557,7 @@ func TestSecurity_DeviceCodeBruteForce(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/v1/device/approve", strings.NewReader(body))
 		req = req.WithContext(userCtx)
 		w := httptest.NewRecorder()
-		srv.handleDeviceApprove(w, req)
+		srv.device.HandleDeviceApprove(w, req)
 
 		if w.Code != http.StatusNotFound {
 			t.Errorf("attempt %d: random code %q returned status %d, want 404", i, randomCode, w.Code)
@@ -568,7 +569,7 @@ func TestSecurity_DeviceCodeBruteForce(t *testing.T) {
 	approveReq := httptest.NewRequest(http.MethodPost, "/v1/device/approve", strings.NewReader(approveBody))
 	approveReq = approveReq.WithContext(userCtx)
 	approveW := httptest.NewRecorder()
-	srv.handleDeviceApprove(approveW, approveReq)
+	srv.device.HandleDeviceApprove(approveW, approveReq)
 
 	if approveW.Code != http.StatusOK {
 		t.Errorf("valid code after 100 failed attempts: status %d, want 200, body: %s", approveW.Code, approveW.Body.String())
@@ -578,7 +579,7 @@ func TestSecurity_DeviceCodeBruteForce(t *testing.T) {
 	tokenBody := fmt.Sprintf(`{"device_code":"%s"}`, validDeviceCode)
 	tokenReq := httptest.NewRequest(http.MethodPost, "/v1/device/token", strings.NewReader(tokenBody))
 	tokenW := httptest.NewRecorder()
-	srv.handleDeviceToken(tokenW, tokenReq)
+	srv.device.HandleDeviceToken(tokenW, tokenReq)
 
 	var tokenResp map[string]any
 	json.Unmarshal(tokenW.Body.Bytes(), &tokenResp)
@@ -666,7 +667,7 @@ func TestSecurity_SQLInjection(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/v1/device/approve", strings.NewReader(body))
 			req = req.WithContext(userCtx)
 			w := httptest.NewRecorder()
-			srv.handleDeviceApprove(w, req)
+			srv.device.HandleDeviceApprove(w, req)
 
 			// Should return 404 (not found), not panic.
 			if w.Code == 0 || w.Code >= 500 {

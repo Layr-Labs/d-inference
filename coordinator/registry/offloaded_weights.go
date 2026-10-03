@@ -3,6 +3,8 @@ package registry
 import (
 	"math"
 	"strings"
+
+	"github.com/eigeninference/d-inference/coordinator/registry/admission"
 )
 
 func finitePositiveMemory(value float64) bool {
@@ -73,15 +75,5 @@ func reportedFreeForLoadAdmitsWithOffload(catalogSizeGB, offloadedMemoryGB float
 	if freeForLoadGB == nil {
 		return false, false
 	}
-	if math.IsNaN(*freeForLoadGB) || math.IsInf(*freeForLoadGB, 0) || *freeForLoadGB < 0 {
-		return false, true
-	}
-	required := offloadedMemoryGB
-	if !finitePositiveMemory(required) {
-		if !finitePositiveMemory(catalogSizeGB) {
-			return false, false
-		}
-		required = catalogSizeGB * coldLoadCatalogGBToMemGiB
-	}
-	return required <= *freeForLoadGB, true
+	return admission.ReportedLoadAdmits(catalogSizeGB, offloadedMemoryGB, *freeForLoadGB, true)
 }

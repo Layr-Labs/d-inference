@@ -1,31 +1,30 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
+	"github.com/eigeninference/d-inference/coordinator/attestation"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/eigeninference/d-inference/coordinator/attestation"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 func TestPublicAttestationRosterExcludesPrivateOnlyProviders(t *testing.T) {
 	s, private, _ := newAuthorizationFixture(t)
-	s.readCache = newTTLCache()
+	private.Mu().Lock()
 	private.PrivateOnly = true
 	private.AttestationResult.PublicKey = "private-persistent-key"
 	private.AttestationResult.HardwareModel = "private-hardware-marker"
+	private.Mu().Unlock()
 	public := s.registry.Register("public-connection", nil, &protocol.RegisterMessage{})
-	public.AttestationResult = &attestation.VerificationResult{PublicKey: "public-verification-key"}
+	public.SetAttestationResult(&attestation.VerificationResult{PublicKey: "public-verification-key"})
 	t.Cleanup(func() { s.registry.Disconnect(public.ID) })
 	// Check both the initial response and the shared cache hit; no auth is
 	// required for this route, so the private roster must never enter its cache.
 	for range 2 {
 		w := httptest.NewRecorder()
-		s.handleProviderAttestation(w, httptest.NewRequest(http.MethodGet, "/v1/providers/attestation", nil))
+		s.trust.HandleProviderAttestation(w, httptest.NewRequest(http.MethodGet, "/v1/providers/attestation", nil))
 		var result struct {
 			Providers []struct {
 				ID  string `json:"provider_id"`
@@ -43,16 +42,26 @@ func TestPublicAttestationRosterExcludesPrivateOnlyProviders(t *testing.T) {
 				t.Fatal("private metadata escaped", marker)
 			}
 		}
-		if _, ok := s.readCacheGet(providerAttestationCacheKey); !ok {
+		if _, ok := s.readCache.Get(providerAttestationCacheKey); !ok {
 			t.Fatal("expected the redacted response to populate the shared cache")
 		}
 	}
-	ownerFleet, err := s.mergeFleet(context.Background(), "account")
-	if err != nil || len(ownerFleet) != 1 || ownerFleet[0].ID != private.ID {
-		t.Fatal("public redaction removed the private machine from its owner's fleet", err)
-	}
-	otherFleet, err := s.mergeFleet(context.Background(), "another-account")
-	if err != nil || len(otherFleet) != 0 {
-		t.Fatal("private machine became visible to another account", err)
+	for _, account := range []string{"account", "another-account"} {
+		w := httptest.NewRecorder()
+		s.accounts.HandleMyProviders(w, reqWithUser(http.MethodGet, "/v1/me/providers", "", account))
+		var result struct {
+			Providers []struct {
+				ID string `json:"id"`
+			} `json:"providers"`
+		}
+		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &result) != nil {
+			t.Fatal("failed owner fleet response")
+		}
+		if account == "account" && (len(result.Providers) != 1 || result.Providers[0].ID != private.ID) {
+			t.Fatal("public redaction removed the private machine from its owner's fleet")
+		}
+		if account != "account" && len(result.Providers) != 0 {
+			t.Fatal("private machine became visible to another account")
+		}
 	}
 }

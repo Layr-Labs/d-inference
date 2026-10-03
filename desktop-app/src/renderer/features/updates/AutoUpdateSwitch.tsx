@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { ShieldCheck } from 'lucide-react';
 import { Button, Modal } from '../../components/UI';
-import styles from './updates.module.css';
 
 export function AutoUpdateSwitch({
   checked,
@@ -24,7 +23,7 @@ export function AutoUpdateSwitch({
           type="checkbox"
           role="switch"
           aria-label="Automatic provider updates"
-          className={`switch ${styles.toggle}`}
+          className="switch"
           checked={checked}
           disabled={disabled}
           onChange={(event) => (event.target.checked ? onChange(true) : setConfirm(true))}

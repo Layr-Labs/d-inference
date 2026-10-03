@@ -1,5 +1,6 @@
 import { useId, useState } from 'react';
-import { compact, dayLabel, earned, money, maximum, percent, type InsightSlice } from './types';
+import { compact } from '../../format';
+import { dayLabel, earned, money, maximum, percent, type InsightSlice } from './types';
 import styles from './insights.module.css';
 
 export type InsightMetric = 'earnings' | 'tokens' | 'jobs';

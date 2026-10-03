@@ -1,6 +1,7 @@
 import { app, clipboard, ipcMain, shell } from 'electron';
 import path from 'node:path';
 import type { Backend } from './backend';
+import { HardwareWatch } from './hardware';
 import type { desktopUpdates } from './updates';
 import type { MainWindow } from './window';
 import { clipboardText, externalURL, isTrustedSender } from './security';
@@ -45,6 +46,18 @@ export function registerIPC(options: {
   handle('app:external', async (target) => {
     await shell.openExternal(externalURL(target, backend.snapshot?.link?.url));
   });
+  const hardware = new HardwareWatch(
+    (signal) => backend.openHardwareEvents(signal),
+    (sample) => window.send('hardware:sample', sample),
+  );
+  window.webContents?.on('did-start-navigation', (details) => {
+    if (details.isMainFrame && !details.isSameDocument) hardware.reset();
+  });
+  window.webContents?.on('render-process-gone', () => hardware.reset());
+  handle('hardware:watch', () => {
+    if (!smokeTest) hardware.acquire();
+  });
+  handle('hardware:unwatch', () => hardware.release());
   handle('app:update-status', () => updates.status());
   handle('app:update', () => updates.check());
   handle('app:apply-update', () => updates.apply());

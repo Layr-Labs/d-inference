@@ -4,12 +4,13 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import type { Resource, Route } from '../src/shared/contracts';
 
 // Cooling status is read by spawning `darkbloom fan status --json` in the
-// native backend, so it is fetched only while the Cooling screen is shown.
+// native backend, so it is fetched only while Cooling or This Mac's Overview is shown.
 let useBackend: typeof import('../src/renderer/useBackend').useBackend;
+let showsCooling: typeof import('../src/renderer/useBackend').showsCooling;
 let previewAPI: typeof import('../src/renderer/preview').previewAPI;
 beforeAll(async () => {
   window.history.replaceState({}, '', '/?preview');
-  ({ useBackend } = await import('../src/renderer/useBackend'));
+  ({ useBackend, showsCooling } = await import('../src/renderer/useBackend'));
   ({ previewAPI } = await import('../src/renderer/preview'));
 });
 afterEach(() => {
@@ -19,14 +20,24 @@ afterEach(() => {
 const reads = (spy: { mock: { calls: unknown[][] } }, resource: Resource) =>
   spy.mock.calls.filter(([name]) => name === resource).length;
 
-async function mount(route: Route) {
+type View = { route: Route; machine: string | null };
+async function mount(route: Route, machine: string | null = null) {
   const read = vi.spyOn(previewAPI, 'read');
-  const hook = renderHook(({ route }: { route: Route }) => useBackend(route), {
-    initialProps: { route },
+  const hook = renderHook(({ route, machine }: View) => useBackend(route, machine), {
+    initialProps: { route, machine },
   });
   await waitFor(() => expect(read).toHaveBeenCalledWith('leaderboard'));
   return { read, ...hook };
 }
+
+it('shows cooling only on Cooling and on This Mac’s Overview', () => {
+  expect(showsCooling('cooling')).toBe(true);
+  expect(showsCooling('cooling', 'remote-studio')).toBe(true);
+  expect(showsCooling('machines')).toBe(true);
+  expect(showsCooling('machines', 'remote-studio')).toBe(false);
+  for (const route of ['home', 'models', 'analysis', 'settings', 'studio'] as const)
+    expect(showsCooling(route)).toBe(false);
+});
 
 it('does not read cooling while another screen is shown', async () => {
   const { read, result } = await mount('home');
@@ -37,12 +48,24 @@ it('does not read cooling while another screen is shown', async () => {
 
 it('reads cooling on entering the cooling screen and on each refresh there', async () => {
   const { read, result, rerender } = await mount('home');
-  rerender({ route: 'cooling' });
+  rerender({ route: 'cooling', machine: null });
   await waitFor(() => expect(reads(read, 'cooling')).toBe(1));
   await waitFor(() => expect(result.current.cooling?.supported).toBe(true));
   await act(() => result.current.refresh());
   expect(reads(read, 'cooling')).toBe(2);
-  rerender({ route: 'models' });
+  rerender({ route: 'models', machine: null });
   await act(() => result.current.refresh());
   expect(reads(read, 'cooling')).toBe(2);
+});
+
+it('reads cooling on This Mac’s Overview but not on a remote Mac’s', async () => {
+  const { read, result, rerender } = await mount('machines');
+  await waitFor(() => expect(reads(read, 'cooling')).toBe(1));
+  await act(() => result.current.refresh());
+  expect(reads(read, 'cooling')).toBe(2);
+  rerender({ route: 'machines', machine: 'remote-studio' });
+  await act(() => result.current.refresh());
+  expect(reads(read, 'cooling')).toBe(2);
+  rerender({ route: 'machines', machine: null });
+  await waitFor(() => expect(reads(read, 'cooling')).toBe(3));
 });

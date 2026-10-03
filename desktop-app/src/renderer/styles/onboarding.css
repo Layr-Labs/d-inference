@@ -18,13 +18,17 @@
   width: 150px;
 }
 
+[data-theme='light'] .onboarding-logo {
+  filter: invert(1);
+}
+
 .onboarding-layout {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 100px;
   flex: 1;
   align-items: center;
-  padding: 70px 0;
+  padding: 40px 0;
 }
 
 .onboarding-intro > span {
@@ -56,9 +60,52 @@
   border: 1px solid var(--blue-wash);
 }
 
-.onboarding-grid i.lit {
+.onboarding-grid i.lit,
+.onboarding-grid.joined i.own {
   background: var(--blue);
   border-color: #3762ff;
+}
+
+/* A column of light crosses the grid while this Mac is checked. */
+.onboarding-grid.scanning i:not(.lit) {
+  animation: onboarding-grid-scan 1.8s ease-in-out infinite;
+  animation-delay: calc(var(--column) * 0.1s);
+}
+
+/* Joining lights this Mac's cell, and a ripple spreads from it. */
+.onboarding-grid.joined i.own {
+  box-shadow: 0 0 16px color-mix(in srgb, var(--blue) 65%, transparent);
+  animation: onboarding-grid-own 0.6s cubic-bezier(0.2, 1.4, 0.4, 1) both;
+}
+
+.onboarding-grid.joined i:not(.lit):not(.own) {
+  animation: onboarding-grid-ripple 1s ease-out both;
+  animation-delay: calc(var(--distance) * 0.09s);
+}
+
+@keyframes onboarding-grid-scan {
+  14% {
+    background: color-mix(in srgb, var(--blue) 70%, var(--blue-wash));
+    border-color: color-mix(in srgb, var(--blue) 80%, var(--blue-wash));
+  }
+  34% {
+    background: var(--blue-wash);
+    border-color: var(--blue-wash);
+  }
+}
+
+@keyframes onboarding-grid-own {
+  from {
+    transform: scale(0.6);
+    box-shadow: none;
+  }
+}
+
+@keyframes onboarding-grid-ripple {
+  35% {
+    background: color-mix(in srgb, var(--blue) 40%, var(--blue-wash));
+    border-color: color-mix(in srgb, var(--blue) 55%, var(--blue-wash));
+  }
 }
 
 .onboarding-form {
@@ -99,6 +146,7 @@
 .steps li.current > span {
   background: var(--blue);
   border-color: var(--blue);
+  color: #fff;
 }
 
 .steps li.complete {
@@ -112,48 +160,39 @@
   margin-bottom: 16px;
 }
 
-.onboarding-form > p {
+.onboarding-step {
+  animation: onboarding-step-in 0.45s ease-out both;
+}
+
+/* Its duration is set inline from the scan timing. */
+.onboarding-step.leaving {
+  animation: onboarding-step-out ease-in both;
+}
+
+@keyframes onboarding-step-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@keyframes onboarding-step-out {
+  to {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
+.onboarding-step > p {
   font-size: 13px;
   color: var(--muted);
   margin-bottom: 24px;
   line-height: 1.7;
 }
 
-.onboarding-form > .button {
+.onboarding-step > .button {
   margin-top: 22px;
   width: 100%;
-}
-
-.setup-machine {
-  padding: 20px 0;
-  border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
-  display: flex;
-  gap: 16px;
-  align-items: center;
-  margin: 25px 0;
-}
-
-.setup-machine strong {
-  font-weight: 500;
-  font-size: 13px;
-  display: block;
-}
-
-.setup-machine span {
-  display: block;
-  font-size: 11px;
-  margin-top: 5px;
-  color: var(--muted);
-}
-
-.setup-machine > svg {
-  color: var(--accent-brand);
-}
-
-.setup-machine > svg:last-child {
-  margin-left: auto;
-  color: var(--positive);
 }
 
 .choice {
@@ -188,39 +227,35 @@
   transition: color var(--hover-duration);
 }
 
-.setup-models {
-  max-height: 290px;
-  overflow: auto;
+.setup-modes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 18px;
 }
 
-.setup-models .choice {
-  padding: 18px 12px;
-  border-bottom: 1px solid var(--line);
-  border-radius: 3px;
+.setup-modes .choice {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  transition:
+    background var(--hover-duration),
+    border-color var(--hover-duration);
 }
 
-.setup-models .choice:not(.selected):hover {
-  background: rgba(var(--contrast-rgb), 0.025);
+.setup-modes .choice:hover {
+  border-color: rgba(var(--contrast-rgb), 0.2);
 }
 
-.setup-models .choice.selected {
-  background: rgba(var(--contrast-rgb), 0.02);
+.setup-modes .choice.selected {
+  border-color: color-mix(in srgb, var(--blue) 70%, transparent);
+  background: color-mix(in srgb, var(--blue) 6%, transparent);
 }
 
-.setup-models .choice.selected:hover {
-  background: rgba(var(--contrast-rgb), 0.045);
-}
-
-.setup-code {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin: 15px 0;
-}
-
-.setup-code strong {
-  letter-spacing: 4px;
-  font-size: 21px;
+@media (max-width: 760px) {
+  .setup-modes {
+    grid-template-columns: 1fr;
+  }
 }
 
 .onboarding footer {
@@ -247,7 +282,7 @@
   font-size: 11px;
 }
 
-.onboarding-form > .terms-note {
+.onboarding-step > .terms-note {
   margin: 12px 0 0;
   color: var(--muted);
   font-size: 11px;

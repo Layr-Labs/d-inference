@@ -147,8 +147,8 @@
 }
 
 .notice {
-  background: #ae884e10;
-  border: 1px solid #ae884e30;
+  background: var(--warning-wash);
+  border: 1px solid var(--warning-line);
   color: var(--warning);
   padding: 13px 16px;
   border-radius: 4px;

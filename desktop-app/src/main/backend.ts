@@ -4,7 +4,15 @@ import { lstat, readFile, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
-import type { Action, DesktopStatus, Operation, Resource, Snapshot } from '../shared/contracts';
+import {
+  protocolVersion,
+  type Action,
+  type DesktopStatus,
+  type Operation,
+  type Resource,
+  type Snapshot,
+} from '../shared/contracts';
+import { frameData, splitFrames } from './sse';
 
 const execute = promisify(execFile);
 const runtimeRequirement =
@@ -22,6 +30,8 @@ const resources = new Set<Resource>([
   'endpoint-key',
   'insights-week',
   'insights-month',
+  'request-history',
+  'hardware',
 ]);
 export function validateDiscovery(value: unknown): {
   port: number;
@@ -79,7 +89,7 @@ export class Backend extends EventEmitter {
       await this.discover();
       this.snapshot = await this.read<Snapshot>('state');
       if (
-        this.snapshot.protocol !== 1 ||
+        this.snapshot.protocol !== protocolVersion ||
         !Array.isArray(this.snapshot.models) ||
         !this.snapshot.machine
       )
@@ -142,6 +152,14 @@ export class Backend extends EventEmitter {
   act(action: Action) {
     return this.request<Operation>('actions', { ...action, id: crypto.randomUUID() });
   }
+  async openHardwareEvents(signal: AbortSignal) {
+    if (!this.connection) throw new Error('Runtime is not connected');
+    return fetch(`http://127.0.0.1:${this.connection.port}/control/v1/hardware/events`, {
+      headers: { Authorization: `Bearer ${this.connection.token}` },
+      signal,
+      redirect: 'error',
+    });
+  }
   async watch() {
     while (!this.stopped) {
       try {
@@ -169,16 +187,14 @@ export class Backend extends EventEmitter {
               await reader.cancel();
               throw new Error('Event too large');
             }
-            let end: number;
-            while ((end = buffer.indexOf('\n\n')) >= 0) {
-              const event = buffer.slice(0, end);
-              buffer = buffer.slice(end + 2);
-              const data = event.split('\n').find((line) => line.startsWith('data: '));
-              if (data) {
-                this.snapshot = JSON.parse(data.slice(6));
-                this.status({ state: 'ready' });
-                this.emit('state', this.snapshot);
-              }
+            const { frames, rest } = splitFrames(buffer);
+            buffer = rest;
+            for (const frame of frames) {
+              const data = frameData(frame);
+              if (data === undefined) continue;
+              this.snapshot = JSON.parse(data);
+              this.status({ state: 'ready' });
+              this.emit('state', this.snapshot);
             }
           }
         }

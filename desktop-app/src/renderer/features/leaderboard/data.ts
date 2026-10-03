@@ -1,42 +1,4 @@
 import type { Leader } from '../../../shared/contracts';
-import { GRID_COLS, GRID_NORTH, GRID_ROWS, GRID_SOUTH } from './world-grid';
-
-export interface Region {
-  name: string;
-  country: string;
-  providers: number;
-  col: number;
-  row: number;
-}
-// Only public, aggregated regions supplied by the native backend can light the map.
-export function regionsFrom(value: unknown): Region[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((entry) => {
-    if (!entry || typeof entry !== 'object') return [];
-    const { latitude, longitude, providers, region, country } = entry;
-    if (
-      !Number.isFinite(latitude) ||
-      !Number.isFinite(longitude) ||
-      latitude > GRID_NORTH ||
-      latitude <= GRID_SOUTH ||
-      Math.abs(longitude) > 180 ||
-      !Number.isSafeInteger(providers) ||
-      providers <= 0 ||
-      typeof region !== 'string' ||
-      typeof country !== 'string'
-    )
-      return [];
-    return [
-      {
-        name: region,
-        country,
-        providers,
-        col: Math.min(GRID_COLS - 1, Math.floor(((longitude + 180) / 360) * GRID_COLS)),
-        row: Math.floor(((GRID_NORTH - latitude) / (GRID_NORTH - GRID_SOUTH)) * GRID_ROWS),
-      },
-    ];
-  });
-}
 
 export function annualPace(micro?: string) {
   if (!micro || !/^\d+$/.test(micro)) return '—';

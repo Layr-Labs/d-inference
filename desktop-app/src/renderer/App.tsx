@@ -1,13 +1,15 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Box, ChevronRight, Home as HomeIcon, Monitor, Trophy, Zap } from 'lucide-react';
 import type { Route } from '../shared/contracts';
 import { api, isPreview, useBackend } from './useBackend';
 import { Home } from './features/Home';
 import { Machines } from './features/Machines';
-import { Leaderboard, Updates } from './features/System';
-import { isMachineRoute } from './features/machines/navigation';
+import { Leaderboard } from './features/Leaderboard';
+import { Updates } from './features/Updates';
+import { isMachineRoute, type MachineSelection } from './features/machines/navigation';
 import { Notice, OperationFeed } from './components/UI';
 import { Onboarding } from './components/Onboarding';
+import { onboardingScenario } from './previewEligibility';
 import { Earnings } from './features/Earnings';
 import { Appearance } from './components/Appearance';
 import { SocialLinks } from './components/SocialLinks';
@@ -18,18 +20,26 @@ const navigation = [
   { id: 'updates', label: 'Updates', icon: Box },
 ] as const;
 export default function App() {
-  const [route, setRoute] = useState<Route>('home');
-  const backend = useBackend(route);
+  const [{ route, machine }, setView] = useState<{ route: Route; machine: MachineSelection }>({
+    route: 'home',
+    machine: null,
+  });
+  const navigate = useCallback((route: Route) => setView({ route, machine: null }), []);
+  const backend = useBackend(route, machine);
+  const openMachine = (id: string) =>
+    setView({ route: 'machines', machine: id === backend.state?.machine.id ? null : id });
   const machineRoute = isMachineRoute(route);
   const activeRoute = machineRoute ? 'machines' : route;
   const [onboarding, setOnboarding] = useState(
-    () => !isPreview && localStorage.getItem('darkbloom.onboardingComplete') !== '1',
+    () =>
+      !!onboardingScenario ||
+      (!isPreview && localStorage.getItem('darkbloom.onboardingComplete') !== '1'),
   );
   const finishOnboarding = () => {
     localStorage.setItem('darkbloom.onboardingComplete', '1');
     setOnboarding(false);
   };
-  useEffect(() => api?.onNavigate(setRoute), []);
+  useEffect(() => api?.onNavigate(navigate), [navigate]);
   const title = [
     ...navigation,
     { id: 'settings', label: 'Settings' },
@@ -65,7 +75,7 @@ export default function App() {
               aria-label={label}
               aria-current={activeRoute === id ? 'page' : undefined}
               className={activeRoute === id ? 'active' : ''}
-              onClick={() => setRoute(id)}
+              onClick={() => navigate(id)}
             >
               <Icon size={18} strokeWidth={1.55} />
               <span>{label}</span>
@@ -109,8 +119,18 @@ export default function App() {
           {backend.status.state !== 'ready' && (
             <Notice>{backend.status.message || 'Connecting to the native runtime…'}</Notice>
           )}
-          {route === 'home' && <Home backend={backend} navigate={setRoute} />}
-          {machineRoute && <Machines backend={backend} navigate={setRoute} route={route} />}
+          {route === 'home' && (
+            <Home backend={backend} navigate={navigate} openMachine={openMachine} />
+          )}
+          {machineRoute && (
+            <Machines
+              backend={backend}
+              navigate={navigate}
+              onSelect={openMachine}
+              route={route}
+              machine={machine}
+            />
+          )}
           {route === 'earnings' && <Earnings backend={backend} />}
           {route === 'updates' && <Updates backend={backend} />}
           {route === 'leaderboard' && <Leaderboard backend={backend} />}

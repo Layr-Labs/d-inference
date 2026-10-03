@@ -1,9 +1,7 @@
-.experience,
 .analytics {
   container-type: inline-size;
   color: var(--text-primary);
 }
-.experience h2,
 .analytics h2 {
   font-size: 22px;
   line-height: 1.2;
@@ -157,18 +155,6 @@
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
 }
-.machineDetail {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  padding: 0 0 20px 44px;
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-.machineDetail small {
-  color: var(--text-tertiary);
-  margin-left: 5px;
-}
 .note {
   margin-top: 12px;
   color: var(--text-tertiary);
@@ -186,17 +172,10 @@
   color: var(--text-secondary);
   font-size: 13px;
 }
-.twoUp {
-  display: grid;
-  gap: 30px;
-  padding-top: 30px;
-}
-.milestones,
-.pulse {
+.milestones {
   min-width: 0;
 }
-.tokenTotal,
-.pulseTotal {
+.tokenTotal {
   margin: 25px 0;
   font-size: 42px;
   font-weight: 500;
@@ -204,8 +183,7 @@
   letter-spacing: -1.8px;
   font-variant-numeric: tabular-nums;
 }
-.tokenTotal span,
-.pulseTotal span {
+.tokenTotal span {
   display: block;
   margin-top: 8px;
   font-size: 13px;
@@ -273,30 +251,6 @@
   color: var(--accent-brand);
   font-size: 13px;
   animation: milestoneReveal 0.4s ease-out;
-}
-.sparkline {
-  display: flex;
-  align-items: end;
-  gap: 10px;
-  height: 79px;
-  border-bottom: 1px solid var(--border-dim);
-}
-.sparkline > span {
-  display: flex;
-  align-items: end;
-  height: 100%;
-  flex: 1;
-}
-.sparkline i {
-  display: block;
-  width: 100%;
-  border-radius: 3px 3px 0 0;
-  background: var(--accent-brand);
-  opacity: 0.75;
-  min-height: 1px;
-}
-.sparkline > span:last-child i {
-  opacity: 0.3;
 }
 .analytics {
   padding: 28px 0;
@@ -530,7 +484,6 @@
   border-top: 1px solid var(--border-dim);
   padding-top: 28px;
 }
-.experience :is(button, summary, a):focus-visible,
 .analytics :is(button, summary, a):focus-visible {
   outline: 2px solid var(--accent-brand);
   outline-offset: 4px;
@@ -541,16 +494,6 @@
   }
   .metrics > div:first-child {
     grid-column: auto;
-  }
-  .twoUp {
-    grid-template-columns: 1fr 1fr;
-  }
-  .twoUp > :last-child {
-    border-left: 1px solid var(--border-dim);
-    padding-left: 30px;
-  }
-  .twoUp h2 {
-    font-size: 18px;
   }
   .breakdownRow summary {
     grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) auto auto;

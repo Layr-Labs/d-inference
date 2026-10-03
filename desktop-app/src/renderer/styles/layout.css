@@ -31,12 +31,6 @@
   display: block;
 }
 
-.workspace-label {
-  font-size: 11px;
-  color: var(--muted);
-  margin: 0 16px 13px;
-}
-
 .sidebar nav {
   display: flex;
   flex-direction: column;
@@ -254,21 +248,13 @@
   margin-top: 12px;
 }
 .home-page {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  height: calc(100dvh - 68px);
   padding: 24px 32px 18px;
-  max-width: 1440px;
 }
 .home-page > .page-footer {
   display: none;
 }
 @media (max-height: 760px) {
   .page-content.home-page {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
     padding: 18px 26px 14px;
   }
 }

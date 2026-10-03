@@ -36,7 +36,7 @@ export function ReleaseTimeline({
         ]
       : [];
   return (
-    <section className={styles.timelineSection}>
+    <section>
       <div className={styles.sectionHead}>
         <h2>What’s new</h2>
         <span>Release history</span>

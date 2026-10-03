@@ -1,10 +1,6 @@
 .dashboard {
-  flex: 1;
-  min-height: 0;
-  height: 100%;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
-  gap: 22px;
+  gap: 18px;
 }
 .dashboard > header {
   margin: 0;
@@ -17,11 +13,7 @@
   margin-top: 8px;
 }
 .contribution {
-  display: grid;
-  grid-template-columns: 1.3fr 1fr;
-  gap: 32px;
-  align-items: center;
-  padding: 10px 0;
+  padding: 4px 0 0;
 }
 .shared > span {
   display: block;
@@ -30,7 +22,7 @@
 }
 .shared > strong {
   display: block;
-  font-size: clamp(40px, 5vw, 76px);
+  font-size: clamp(40px, 4.2vw, 60px);
   font-weight: 500;
   letter-spacing: -3px;
   line-height: 1.15;
@@ -44,64 +36,27 @@
   font-size: 11px;
   color: var(--muted);
 }
-.dashboard button:not([class]) {
+.contribution button:not([class]),
+.footer button:not([class]) {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   color: var(--text-secondary);
   font-size: 11px;
 }
-.dashboard button:not([class]):hover {
+.contribution button:not([class]):hover,
+.footer button:not([class]):hover {
   color: var(--accent-brand);
 }
-.collective {
-  display: flex;
-  gap: 22px;
-  align-items: center;
-  border-left: 1px solid var(--line);
-  padding-left: 28px;
-}
-.collective strong {
-  font-size: 34px;
-  font-weight: 400;
-  letter-spacing: -1px;
-}
-.collective span,
-.collective small {
-  display: block;
-  font-size: 11px;
-  color: var(--text-secondary);
-  margin-top: 7px;
-}
-.collective small {
-  font-size: 10px;
-  color: var(--muted);
-}
-.constellation {
-  display: grid;
-  grid-template-columns: repeat(5, 5px);
-  gap: 5px;
-  transform: rotate(-12deg);
-}
-.constellation i {
-  width: 5px;
-  height: 5px;
-  background: var(--line);
-  border-radius: 1px;
-}
-.constellation i[data-lit='true'] {
-  background: var(--accent-brand);
-}
 .activity {
-  min-height: 0;
-  display: flex;
-  align-items: stretch;
-}
-.activity > section {
-  width: 100%;
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  height: clamp(440px, 54vh, 640px);
+  min-width: 0;
+}
+.activity > * {
+  flex: 1;
+  min-height: 0;
 }
 .footer {
   display: flex;
@@ -125,8 +80,6 @@
 }
 @media (max-height: 760px) {
   .dashboard {
-    flex: 1;
-    min-height: 0;
     gap: 14px;
   }
   .contribution {
@@ -139,27 +92,12 @@
   .dashboard > header h1 {
     font-size: 24px;
   }
-  .collective strong {
-    font-size: 26px;
-  }
   .footer {
     padding-top: 10px;
   }
 }
 @media (max-width: 1000px) {
-  .constellation {
-    display: none;
-  }
-  .contribution {
-    gap: 20px;
-  }
-  .collective {
-    padding-left: 20px;
-  }
   .shared > strong {
     font-size: 46px;
-  }
-  .collective span {
-    font-size: 10px;
   }
 }

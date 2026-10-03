@@ -15,13 +15,16 @@ import type {
 import { previewAPI } from './preview';
 import { parseReleaseHistory } from './features/updates/version';
 import { parseLeaderboard } from './features/leaderboard/data';
+import { showsLocalOverview, type MachineSelection } from './features/machines/navigation';
 
 export const isPreview = import.meta.env.DEV && new URLSearchParams(location.search).has('preview');
 export const api: DesktopAPI | undefined = isPreview ? previewAPI : window.darkbloom;
 // Cooling status spawns a `darkbloom fan status` process in the native backend,
-// so it is read only while a screen that displays it is shown.
-export const showsCooling = (route: Route) => route === 'cooling';
-export function useBackend(route: Route = 'home') {
+// so it is read only while a screen that displays it is shown: Cooling and
+// This Mac's Overview.
+export const showsCooling = (route: Route, machine: MachineSelection = null) =>
+  route === 'cooling' || showsLocalOverview(route, machine);
+export function useBackend(route: Route = 'home', machine: MachineSelection = null) {
   const [status, setStatus] = useState<DesktopStatus>({ state: 'connecting' });
   const [state, setState] = useState<Snapshot>();
   const [cloud, setCloud] = useState<CloudData>();
@@ -33,7 +36,7 @@ export function useBackend(route: Route = 'home') {
   const [leaderError, setLeaderError] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const coolingVisible = useRef(showsCooling(route));
+  const coolingVisible = useRef(showsCooling(route, machine));
   const readCooling = useCallback(async () => {
     if (!api) return;
     await api
@@ -117,7 +120,7 @@ export function useBackend(route: Route = 'home') {
     }, 30_000);
     return () => clearInterval(timer);
   }, [status.state, refresh]);
-  const coolingShown = showsCooling(route);
+  const coolingShown = showsCooling(route, machine);
   useEffect(() => {
     coolingVisible.current = coolingShown;
     // Entering the screen fetches at once (status is deliberately not a dependency:

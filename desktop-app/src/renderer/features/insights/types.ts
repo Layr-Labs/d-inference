@@ -1,4 +1,4 @@
-import { compact as compactNumber, money as exactMoney } from '../../format';
+import { money as exactMoney } from '../../format';
 
 export interface InsightAmounts {
   work_micro_usd: bigint;
@@ -72,8 +72,6 @@ export function parseInsights(value: any): ProviderInsights {
     machines: rows(value.machines),
   };
 }
-export const compact = (value: bigint | number) =>
-  compactNumber(typeof value === 'bigint' ? value.toString() : value);
 export const money = (value: bigint) => {
   if (value > 0n && value < 10000n) return `$0.${value.toString().padStart(6, '0')}`;
   return exactMoney(value.toString());

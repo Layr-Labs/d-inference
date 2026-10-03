@@ -50,7 +50,6 @@ export function Updates({ backend }: { backend: BackendState }) {
           idle_minutes: settings.idle_minutes,
           auto_update: auto,
           schedule: settings.schedule,
-          startup_preload: settings.startup_preload,
         },
         true,
       );

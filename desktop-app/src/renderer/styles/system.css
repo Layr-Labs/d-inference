@@ -22,39 +22,6 @@
   color: var(--text-primary);
 }
 
-.metric-row {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  margin: 0 0 36px;
-  padding: 26px 0;
-  border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
-}
-
-.metric-row > div {
-  padding-left: 28px;
-  border-left: 1px solid var(--line);
-}
-
-.metric-row > div:first-child {
-  padding-left: 0;
-  border-left: 0;
-}
-
-.metric-row span {
-  font-size: 11px;
-  color: var(--muted);
-  display: block;
-}
-
-.metric-row strong {
-  display: block;
-  font-size: 32px;
-  font-weight: 400;
-  letter-spacing: -1px;
-  margin-top: 15px;
-}
-
 .action-row {
   display: flex;
   align-items: center;
@@ -64,15 +31,6 @@
 
 .back {
   margin-bottom: 28px;
-}
-
-.plain-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  border-bottom: 1px solid var(--line);
-  padding: 20px 0;
-  font-size: 12px;
 }
 
 .settings-section {
@@ -116,8 +74,8 @@ label.setting-row:hover small {
   color: var(--text-secondary);
 }
 
-/* Native checkboxes, switches and sliders only expose hover through a filter. */
-label.setting-row:hover input:not(:disabled) {
+/* Native checkboxes and sliders only expose hover through a filter. */
+label.setting-row:hover input:not(.switch):not(:disabled) {
   filter: var(--control-hover-filter);
 }
 
@@ -146,9 +104,7 @@ select:not(:disabled):hover {
   border-color: rgba(var(--contrast-rgb), 0.24);
 }
 
-label.setting-row,
-.switch,
-.range-field input {
+label.setting-row {
   cursor: pointer;
 }
 
@@ -159,71 +115,61 @@ label.setting-row,
   overflow-wrap: anywhere;
 }
 
+/* Size the switch only through these variables; knob size and travel derive from them. */
 .switch {
-  width: 32px;
-  height: 18px;
-  accent-color: var(--blue);
+  --switch-width: 36px;
+  --switch-height: 20px;
+  --switch-inset: 2px;
+  --switch-knob: calc(var(--switch-height) - 2 * var(--switch-inset));
+  --switch-track: rgba(var(--contrast-rgb), 0.18);
+  --switch-track-hover: rgba(var(--contrast-rgb), 0.26);
+  appearance: none;
+  position: relative;
+  flex-shrink: 0;
+  width: var(--switch-width);
+  height: var(--switch-height);
+  margin: 0;
+  border-radius: 999px;
+  background-color: var(--switch-track);
+  vertical-align: middle;
+  cursor: pointer;
+  transition: background-color var(--hover-duration);
 }
 
-.cooling-hero {
-  display: flex;
-  align-items: center;
-  gap: 55px;
-  padding: 40px 0 50px;
+.switch::before {
+  content: '';
+  position: absolute;
+  top: var(--switch-inset);
+  left: var(--switch-inset);
+  width: var(--switch-knob);
+  height: var(--switch-knob);
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
+  transition: transform 0.18s ease;
 }
 
-.cooling-hero > svg {
-  color: var(--text-secondary);
-  margin-left: 40px;
+.switch:checked {
+  --switch-track: var(--blue);
+  --switch-track-hover: #2858ff;
 }
 
-.cooling-hero strong {
-  display: block;
-  font-size: 74px;
-  font-weight: 400;
-  letter-spacing: -4px;
-  margin: 10px 0;
+.switch:checked::before {
+  transform: translateX(calc(var(--switch-width) - var(--switch-knob) - 2 * var(--switch-inset)));
 }
 
-.cooling-hero p {
-  font-size: 12px;
-  color: var(--muted);
+.switch:not(:disabled):hover,
+label:hover > .switch:not(:disabled) {
+  background-color: var(--switch-track-hover);
 }
 
-.fan-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 32px;
-  margin-bottom: 40px;
+.switch:focus-visible {
+  outline-offset: 2px;
 }
 
-.fan-grid > div {
-  padding: 24px;
-  border: 1px solid var(--line);
-  border-radius: 5px;
-}
-
-.fan-grid strong {
-  font-size: 28px;
-  font-weight: 400;
-  display: block;
-  margin-top: 18px;
-}
-
-.fan-grid small {
-  font-size: 11px;
-  color: var(--muted);
-}
-
-.range-field {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  font-size: 12px;
-}
-
-.range-field input {
-  accent-color: var(--blue);
+.switch:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .studio-intro {
@@ -309,52 +255,6 @@ label.setting-row,
   font-size: 11px;
   line-height: 1.9;
   color: var(--accent-brand);
-}
-
-.version-panel {
-  display: flex;
-  align-items: center;
-  gap: 28px;
-  border: 1px solid var(--line);
-  background: var(--panel-bg);
-  border-radius: 6px;
-  padding: 32px;
-}
-
-.version-symbol {
-  font-size: 60px;
-  color: var(--accent-brand);
-}
-
-.version-panel h2 {
-  font-size: 35px;
-  font-weight: 400;
-  margin: 8px 0 15px;
-}
-
-.version-panel > .button {
-  margin-left: auto;
-}
-
-.release-notes {
-  font-size: 13px;
-  color: var(--text-secondary);
-  white-space: pre-wrap;
-  line-height: 1.8;
-}
-
-.link-code {
-  margin-top: 25px;
-  padding: 20px;
-  border: 1px solid rgba(var(--contrast-rgb), 0.125);
-  display: flex;
-  align-items: center;
-  gap: 20px;
-}
-
-.link-code strong {
-  font-size: 24px;
-  letter-spacing: 3px;
 }
 
 .schedule-window {

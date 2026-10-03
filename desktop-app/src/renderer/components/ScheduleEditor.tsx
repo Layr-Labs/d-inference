@@ -20,6 +20,7 @@ export function ScheduleEditor({
         <input
           className="switch"
           type="checkbox"
+          role="switch"
           checked={value.enabled}
           onChange={(event) =>
             onChange({

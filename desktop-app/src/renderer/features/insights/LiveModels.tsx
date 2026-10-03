@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Activity, Pause, Play } from 'lucide-react';
 import type { Snapshot } from '../../../shared/contracts';
+import { modelName } from '../../models/facts';
 import styles from './insights.module.css';
 
 const serving = (state: string) => state === 'running' || state === 'idle';
@@ -61,12 +62,10 @@ export function LiveModels({ state }: { state: Snapshot }) {
             <div className={styles.liveRow}>
               <span className={styles.modelName}>
                 <span className={styles.modelMark}>
-                  {(
-                    state.models.find((m) => m.id === model.model)?.display_name || model.model
-                  ).slice(0, 1)}
+                  {modelName(state.models, model.model).slice(0, 1)}
                 </span>
                 <span>
-                  {state.models.find((m) => m.id === model.model)?.display_name || model.model}
+                  {modelName(state.models, model.model)}
                   <small>
                     {model.state} · {stale ? '—' : model.waiting} waiting
                   </small>

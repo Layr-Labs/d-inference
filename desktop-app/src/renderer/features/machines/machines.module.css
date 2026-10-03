@@ -60,8 +60,7 @@
   background: var(--blue-wash);
   color: var(--accent-brand);
 }
-.railItem i,
-.readiness i {
+.railItem i {
   display: inline-block;
   width: 5px;
   height: 5px;
@@ -70,8 +69,7 @@
   margin-right: 5px;
   flex-shrink: 0;
 }
-.railItem i[data-online='true'],
-.readiness i[data-online='true'] {
+.railItem i[data-online='true'] {
   background: var(--positive);
 }
 .content {
@@ -90,141 +88,6 @@
 .content :global(.page-heading p) {
   font-size: 12px;
 }
-.earnings {
-  background: var(--panel-bg);
-  border-radius: 12px;
-  padding: 24px;
-  margin-bottom: 30px;
-}
-.earningsMetrics {
-  display: grid;
-  grid-template-columns: 1.3fr 1fr 1fr;
-  gap: 16px;
-  align-items: end;
-  margin-bottom: 26px;
-}
-.earningsMetrics span,
-.metrics span {
-  display: block;
-  color: var(--muted);
-  font-size: 11px;
-  margin-bottom: 10px;
-}
-.earningsMetrics strong {
-  font-weight: 500;
-  font-size: 32px;
-  letter-spacing: -1px;
-}
-.earningsMetrics b {
-  display: block;
-  font-size: 20px;
-  font-weight: 500;
-}
-.earningsMetrics small {
-  font-size: 10px;
-  color: var(--muted);
-  margin-left: 3px;
-}
-.chartHeading,
-.tableHeading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 18px;
-}
-.chartHeading {
-  font-size: 11px;
-  color: var(--muted);
-}
-.chartHeading button {
-  font-size: 11px;
-}
-.caption,
-.emptyChart {
-  font-size: 11px;
-  color: var(--muted);
-  line-height: 1.6;
-}
-.caption {
-  margin-top: 16px;
-}
-.emptyChart {
-  padding: 24px 0;
-}
-.tableHeading h2 {
-  font-size: 17px;
-  margin: 0;
-}
-.tableHeading > span {
-  font-size: 11px;
-  color: var(--muted);
-}
-.filters {
-  display: flex;
-  gap: 12px;
-  margin-bottom: 20px;
-}
-.filters > label {
-  flex: 1;
-  min-width: 0;
-}
-.filters input {
-  width: 100%;
-}
-.filters select {
-  min-width: 120px;
-}
-.table {
-  overflow-x: auto;
-}
-.tableLabels,
-.tableRow {
-  display: grid;
-  grid-template-columns: minmax(190px, 2fr) minmax(70px, 1fr) 50px minmax(120px, 1fr);
-  gap: 12px;
-  min-width: 510px;
-  align-items: center;
-  border-bottom: 1px solid var(--line);
-  text-align: left;
-  width: 100%;
-}
-.tableLabels {
-  font-size: 10px;
-  color: var(--muted);
-  padding: 0 0 14px;
-}
-.tableRow {
-  padding: 20px 0;
-  font-size: 12px;
-  transition: background 0.15s;
-}
-.tableRow:hover {
-  background: var(--panel-bg);
-}
-.tableLabels > :last-child,
-.tableRow > :last-child {
-  text-align: right;
-}
-.machineName {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-}
-.machineName > svg {
-  flex-shrink: 0;
-  color: var(--muted);
-}
-.machineName strong {
-  font-weight: 500;
-}
-.machineName small {
-  display: block;
-  margin-top: 6px;
-  font-size: 10px;
-  color: var(--muted);
-}
 .breadcrumb {
   display: flex;
   align-items: center;
@@ -232,9 +95,6 @@
   color: var(--muted);
   font-size: 10px;
   margin: 0 0 24px;
-}
-.breadcrumb button:hover {
-  color: var(--text-primary);
 }
 .machineHeader {
   display: flex;
@@ -324,48 +184,6 @@
 .panel {
   min-width: 0;
 }
-.readiness {
-  display: flex;
-  gap: 7px;
-  align-items: center;
-  flex-wrap: wrap;
-  font-size: 12px;
-  background: var(--panel-bg);
-  border-radius: 8px;
-  padding: 14px 16px;
-  margin: 24px 0;
-}
-.readiness small {
-  font-size: 10px;
-  color: var(--muted);
-  margin-left: auto;
-}
-.metrics {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
-  margin: 28px 0;
-}
-.metrics strong {
-  font-size: 23px;
-  font-weight: 500;
-}
-.section {
-  padding: 24px 0;
-  border-top: 1px solid var(--line);
-}
-.modelNames {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.modelNames span {
-  padding: 7px 10px;
-  border-radius: 5px;
-  background: var(--panel-bg);
-  font-size: 11px;
-  color: var(--text-secondary);
-}
 .content :global(.model-row) {
   gap: 12px;
   padding: 20px 0;
@@ -421,28 +239,10 @@
   }
 }
 @media (max-width: 700px) {
-  .earnings {
-    padding: 18px;
-  }
-  .earningsMetrics {
-    grid-template-columns: 1fr 1fr;
-  }
-  .earningsMetrics > :first-child {
-    grid-column: 1/-1;
-  }
-  .earningsMetrics strong {
-    font-size: 28px;
-  }
   .tabs {
     gap: 18px;
   }
-  .metrics strong {
-    font-size: 19px;
-  }
   .machineTitle h1 {
     font-size: 21px;
-  }
-  .chartHeading {
-    flex-wrap: wrap;
   }
 }

@@ -5,6 +5,8 @@ import { api } from '../useBackend';
 import type { Snapshot } from '../../shared/contracts';
 import { Button, External, Header, Notice, Status } from '../components/UI';
 import { AutoUpdateSwitch } from './updates/AutoUpdateSwitch';
+import { IdleMemory } from './settings/IdleMemory';
+import { idleDraft, idleMinutes } from './settings/idleDuration';
 import { ScheduleEditor } from '../components/ScheduleEditor';
 
 export function Settings({
@@ -18,10 +20,10 @@ export function Settings({
   const [base, setBase] = useState(original);
   const changedElsewhere = base.revision !== original.revision;
   const [name, setName] = useState(original.name);
-  const [idle, setIdle] = useState(original.idle_minutes);
+  const [idle, setIdle] = useState(() => idleDraft(original.idle_minutes));
   const [auto, setAuto] = useState(original.auto_update);
   const [schedule, setSchedule] = useState(original.schedule || { enabled: false, windows: [] });
-  const [preload, setPreload] = useState(original.startup_preload || false);
+  const idleValue = idleMinutes(idle);
   return (
     <>
       <Header
@@ -31,18 +33,18 @@ export function Settings({
         action={
           <Button
             variant="primary"
-            disabled={backend.busy || !name.trim() || changedElsewhere}
+            disabled={backend.busy || !name.trim() || changedElsewhere || idleValue === undefined}
             onClick={async () => {
+              if (idleValue === undefined) return;
               if (
                 await backend.act(
                   {
                     action: 'settings',
                     revision: base.revision,
                     name,
-                    idle_minutes: idle,
+                    idle_minutes: idleValue,
                     auto_update: auto,
                     schedule,
-                    startup_preload: preload,
                   },
                   true,
                 )
@@ -63,10 +65,9 @@ export function Settings({
             onClick={() => {
               setBase(original);
               setName(original.name);
-              setIdle(original.idle_minutes);
+              setIdle(idleDraft(original.idle_minutes));
               setAuto(original.auto_update);
               setSchedule(original.schedule || { enabled: false, windows: [] });
-              setPreload(original.startup_preload || false);
             }}
           >
             Reload settings
@@ -90,30 +91,7 @@ export function Settings({
       </section>
       <section className="settings-section">
         <h2>Memory</h2>
-        <label className="setting-row">
-          <span>
-            <strong>Preload models</strong>
-            <small>Load selected models when the provider starts or a schedule window opens.</small>
-          </span>
-          <input
-            className="switch"
-            type="checkbox"
-            checked={preload}
-            onChange={(e) => setPreload(e.target.checked)}
-          />
-        </label>
-        <label className="setting-row">
-          <span>
-            <strong>Memory when idle</strong>
-            <small>Apply changes by restarting the provider.</small>
-          </span>
-          <select value={idle} onChange={(e) => setIdle(Number(e.target.value))}>
-            <option value={0}>Keep models loaded</option>
-            <option value={15}>Free after 15 minutes</option>
-            <option value={60}>Free after 1 hour</option>
-            <option value={240}>Free after 4 hours</option>
-          </select>
-        </label>
+        <IdleMemory value={idle} onChange={setIdle} />
         <div className="setting-row">
           <span>
             <strong>Model storage</strong>

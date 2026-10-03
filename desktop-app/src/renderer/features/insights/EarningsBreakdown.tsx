@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { shortModelName } from '../../format';
-import { compact, money, percent, type InsightSlice, type ProviderInsights } from './types';
+import { compact } from '../../format';
+import { money, percent, type InsightSlice, type ProviderInsights } from './types';
 import { metricLabel, metricValue, type InsightMetric } from './EarningsTimeline';
 import styles from './insights.module.css';
 

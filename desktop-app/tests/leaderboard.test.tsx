@@ -4,11 +4,8 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { Leaderboard } from '../src/renderer/features/Leaderboard';
 import { NetworkMap } from '../src/renderer/features/leaderboard/NetworkMap';
-import {
-  annualPace,
-  regionsFrom,
-  parseLeaderboard,
-} from '../src/renderer/features/leaderboard/data';
+import { annualPace, parseLeaderboard } from '../src/renderer/features/leaderboard/data';
+import { regionsFrom } from '../src/renderer/features/leaderboard/geography';
 import type { BackendState } from '../src/renderer/useBackend';
 
 afterEach(cleanup);

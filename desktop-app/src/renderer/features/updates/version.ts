@@ -1,4 +1,4 @@
-import type { ReleaseHistory } from '../../../shared/contracts';
+import type { ReleaseData, ReleaseHistory, Snapshot } from '../../../shared/contracts';
 
 // Presentation only. The native updater and coordinator retain update authority.
 export function compareVersions(a?: string, b?: string): number | undefined {
@@ -44,6 +44,29 @@ export function releaseStatus(
   if (compareVersions(installed, latest) !== undefined) return 'current';
   return 'unknown';
 }
+
+// A serving provider reports its own version; otherwise the CLI's applies.
+// The latest published release and the coordinator's minimum, each withheld while its resource
+// reports an error.
+export const publishedVersions = (sources: {
+  release?: ReleaseData;
+  releaseHistory?: ReleaseHistory;
+}) => ({
+  latest: sources.release?.error ? undefined : sources.release?.version,
+  minimum: sources.releaseHistory?.error
+    ? undefined
+    : sources.releaseHistory?.minimum_provider_version,
+});
+
+export const runtimeVersion = (state: Snapshot) =>
+  ['running', 'draining'].includes(state.state)
+    ? state.machine.version || state.version
+    : state.version;
+
+export const updateAvailable = (installed: string, latest?: string, minimum?: string) =>
+  !!latest &&
+  compareVersions(latest, installed) === 1 &&
+  (!minimum || (compareVersions(latest, minimum) ?? -1) >= 0);
 
 export function parseReleaseHistory(value: unknown): ReleaseHistory {
   if (!value || typeof value !== 'object') throw new Error('Missing release history');

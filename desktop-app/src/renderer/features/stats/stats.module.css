@@ -5,6 +5,11 @@
 .stats > header {
   margin-bottom: 0 !important;
 }
+.view {
+  display: grid;
+  gap: 28px;
+  min-width: 0;
+}
 .preview {
   font-size: 10px;
   color: var(--accent-brand);
@@ -58,7 +63,7 @@
   color: var(--muted);
   margin-top: 6px;
 }
-.sectionHead > button {
+.sectionHead > button:not(:global(.text-link)) {
   display: grid;
   place-items: center;
   width: 30px;
@@ -66,7 +71,7 @@
   border-radius: 6px;
   color: var(--muted);
 }
-.sectionHead > button:hover {
+.sectionHead > button:not(:global(.text-link)):hover {
   color: var(--text-primary);
   background: var(--raised-bg);
 }

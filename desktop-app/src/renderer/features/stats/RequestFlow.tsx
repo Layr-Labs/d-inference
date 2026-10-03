@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { Pause, Play } from 'lucide-react';
 import { ParticleScene } from './ParticleScene';
 import type { Snapshot } from '../../../shared/contracts';
+import { modelName } from '../../models/facts';
+import { useReducedMotion } from '../../useReducedMotion';
 import { activityFresh } from './data';
 import styles from './stats.module.css';
 export function RequestFlow({
@@ -13,17 +15,9 @@ export function RequestFlow({
   preview: boolean;
   compact?: boolean;
 }) {
-  const [paused, setPaused] = useState(false),
-    [reduced, setReduced] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const reduced = useReducedMotion();
   const [now, setNow] = useState(Date.now() / 1000);
-  useEffect(() => {
-    const query = window.matchMedia?.('(prefers-reduced-motion: reduce)');
-    if (!query) return;
-    const update = () => setReduced(query.matches);
-    update();
-    query.addEventListener('change', update);
-    return () => query.removeEventListener('change', update);
-  }, []);
   const fresh = activityFresh(state, now);
   const animate =
     preview &&
@@ -78,9 +72,7 @@ export function RequestFlow({
         <ParticleScene
           animate={animate}
           active={fresh && !!running}
-          names={models.map(
-            (model) => state.models.find((m) => m.id === model.model)?.display_name || model.model,
-          )}
+          names={models.map((model) => modelName(state.models, model.model))}
         />
       )}
       {!preview && (
@@ -89,9 +81,7 @@ export function RequestFlow({
             return (
               <div key={model.model}>
                 <span className={styles.modelGlyph}>{index === 0 ? '◎' : '✧'}</span>
-                <strong>
-                  {state.models.find((m) => m.id === model.model)?.display_name || model.model}
-                </strong>
+                <strong>{modelName(state.models, model.model)}</strong>
                 <span className={styles.lane}>
                   <i
                     style={{

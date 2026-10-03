@@ -1,8 +1,10 @@
-import type { Snapshot } from '../../../shared/contracts';
+import type { ActivitySample, Snapshot } from '../../../shared/contracts';
 export interface TrafficPoint {
   at: number;
   requests: number;
   tokens: number;
+  input?: number;
+  cached?: number;
 }
 export interface ModelTraffic {
   id: string;
@@ -12,13 +14,22 @@ export interface ModelTraffic {
   speed: number;
   points: TrafficPoint[];
 }
+
+const optionalDelta = (current?: number, previous?: number) =>
+  current === undefined || previous === undefined ? undefined : current - previous;
+
 export function observedTraffic(state: Snapshot): TrafficPoint[] {
-  return state.activity.samples.slice(1).flatMap((sample, index) => {
-    const previous = state.activity.samples[index];
+  const samples: ActivitySample[] = state.activity.samples;
+  return samples.slice(1).flatMap((sample, index) => {
+    const previous = samples[index];
+    const input = optionalDelta(sample.input_tokens, previous.input_tokens);
+    const cached = optionalDelta(sample.cached_input_tokens, previous.cached_input_tokens);
     if (
       sample.at <= previous.at ||
       sample.requests < previous.requests ||
-      sample.tokens < previous.tokens
+      sample.tokens < previous.tokens ||
+      (input ?? 0) < 0 ||
+      (cached ?? 0) < 0
     )
       return [];
     return [
@@ -26,6 +37,8 @@ export function observedTraffic(state: Snapshot): TrafficPoint[] {
         at: sample.at,
         requests: sample.requests - previous.requests,
         tokens: sample.tokens - previous.tokens,
+        ...(input !== undefined && { input }),
+        ...(cached !== undefined && { cached }),
       },
     ];
   });

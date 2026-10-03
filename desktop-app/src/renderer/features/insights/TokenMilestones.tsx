@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Check, Flag, Sparkles } from 'lucide-react';
 import { tokenProgress } from './activity';
-import { compact } from './types';
+import { compact } from '../../format';
 import styles from './insights.module.css';
 
 export function TokenMilestones({ tokens }: { tokens: bigint }) {

@@ -72,11 +72,9 @@
   .brand {
     display: none;
   }
-  .workspace-label,
   .sidebar nav span,
   .sidebar nav small,
-  .local-profile,
-  .sidebar-bottom .workspace-label {
+  .local-profile {
     display: none;
   }
   .sidebar nav button {
@@ -112,13 +110,8 @@
   .page-heading h1 {
     font-size: 28px;
   }
-  .home-lead,
-  .split-bottom,
   .mode-options {
     grid-template-columns: 1fr;
-  }
-  .machine-art svg {
-    width: 30px;
   }
   .section-title {
     align-items: flex-start;
@@ -160,15 +153,6 @@
     flex-wrap: wrap;
     font-size: 9px;
   }
-  .metric-row strong {
-    font-size: 23px;
-  }
-  .metric-row > div {
-    padding-left: 15px;
-  }
-  .metric-row span {
-    font-size: 10px;
-  }
   .setting-row {
     flex-wrap: wrap;
     gap: 15px;
@@ -189,33 +173,6 @@
   }
   .studio-intro .status {
     margin-left: 45px;
-  }
-  .cooling-hero {
-    gap: 24px;
-  }
-  .cooling-hero > svg {
-    margin-left: 0;
-    width: 65px;
-  }
-  .cooling-hero strong {
-    font-size: 60px;
-  }
-  .fan-grid {
-    gap: 15px;
-  }
-  .fan-grid > div {
-    padding: 18px;
-  }
-  .version-panel {
-    flex-wrap: wrap;
-    padding: 25px;
-    gap: 20px;
-  }
-  .version-panel > .button {
-    margin-left: 0;
-  }
-  .version-symbol {
-    font-size: 45px;
   }
   .operation {
     left: 85px;

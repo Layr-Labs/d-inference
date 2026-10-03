@@ -1,25 +1,17 @@
 import { ArrowRight, Check, Download, ShieldAlert } from 'lucide-react';
 import type { BackendState } from '../../useBackend';
 import { Button, Notice } from '../../components/UI';
-import { compareVersions, releaseStatus } from './version';
+import { publishedVersions, releaseStatus, runtimeVersion, updateAvailable } from './version';
 import styles from './updates.module.css';
 
 export function RuntimeVersion({ backend }: { backend: BackendState }) {
-  const installed = ['running', 'draining'].includes(backend.state!.state)
-    ? backend.state!.machine.version || backend.state!.version
-    : backend.state!.version;
-  const latest = backend.release?.error ? undefined : backend.release?.version;
-  const minimum = backend.releaseHistory?.error
-    ? undefined
-    : backend.releaseHistory?.minimum_provider_version;
+  const installed = runtimeVersion(backend.state!);
+  const { latest, minimum } = publishedVersions(backend);
   const retired = backend.releaseHistory?.history?.some(
     (release) => release.version === installed && !release.active,
   );
   const status = releaseStatus(installed, latest, minimum, retired);
-  const canUpdate =
-    !!latest &&
-    compareVersions(latest, installed) === 1 &&
-    (!minimum || (compareVersions(latest, minimum) ?? -1) >= 0);
+  const canUpdate = updateAvailable(installed, latest, minimum);
   return (
     <section className={styles.versionPanel}>
       <div className={styles.stateLine} data-status={status}>

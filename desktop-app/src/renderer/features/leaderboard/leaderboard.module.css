@@ -10,11 +10,13 @@
 }
 .map {
   min-width: 0;
+  width: 100%;
+  max-width: 660px;
+  justify-self: center;
 }
 .map svg {
   width: 100%;
   display: block;
-  max-height: 180px;
 }
 .land {
   fill: rgba(var(--contrast-rgb), 0.075);
@@ -22,11 +24,20 @@
 .lit {
   fill: var(--accent-brand);
 }
-.lit rect {
-  transition: opacity 0.15s;
+.lit [data-level='1'] {
+  fill-opacity: 0.3;
 }
-.lit rect:hover {
-  opacity: 1;
+.lit [data-level='2'] {
+  fill-opacity: 0.55;
+}
+.lit [data-level='3'] {
+  fill-opacity: 0.8;
+}
+.active {
+  fill: none;
+  stroke: var(--text-primary);
+  stroke-width: 1.5;
+  pointer-events: none;
 }
 .mapCaption {
   min-height: 40px;
@@ -42,7 +53,8 @@
   font-size: 0;
 }
 .regionPicker select {
-  max-width: 140px;
+  field-sizing: content;
+  max-width: 280px;
   background: transparent;
   border: 0;
   color: var(--text-secondary);

@@ -1,3 +1,7 @@
+import type { AutopilotAction, AutopilotPolicyAction, AutopilotStatus } from './autopilot';
+import type { Eligibility, WaitlistAction } from './eligibility';
+import type { HardwareSample } from './hardware';
+export type { HardwareLoad, HardwareSample, HardwareTopology } from './hardware';
 export const protocolVersion = 1;
 export type Route =
   | 'home'
@@ -18,6 +22,9 @@ export interface Operation {
   finished_at?: number;
   message: string;
   cancellable: boolean;
+  // Reported by runtimes that attribute a download to its model, with progress from 0 to 1.
+  model?: string;
+  progress?: number;
 }
 export interface NativeModel {
   id: string;
@@ -44,6 +51,22 @@ export interface Machine {
   version?: string;
   models: string[];
   earnings_micro_usd?: string;
+  // Settled, including base rewards: all time and rolling 24 hours.
+  lifetime_micro_usd?: string;
+  day_micro_usd?: string;
+  requests_24h?: number;
+  tokens_24h?: MachineTokens;
+  // Output tokens for the 24 local clock hours ending with the hour containing observed_at,
+  // oldest first; null marks an hour with no observation, which is not zero.
+  hourly_tokens?: (number | null)[];
+  online_since?: number;
+  last_paid_at?: number;
+}
+export interface MachineTokens {
+  // Uncached prompt tokens; cached_input counts prompt tokens served from the prefix cache.
+  input?: number;
+  cached_input?: number;
+  output: number;
 }
 export interface Schedule {
   enabled: boolean;
@@ -82,11 +105,17 @@ export interface Snapshot {
   endpoint?: { base_url: string; authenticated: boolean; models: string[] };
   link?: { url: string; code: string; expires_at: number; state: string };
   catalog_error?: string;
+  eligibility?: Eligibility;
+  autopilot?: AutopilotStatus;
 }
 export interface ActivitySample {
   at: number;
   requests: number;
   tokens: number;
+  // Session-cumulative prompt tokens, split so the two never overlap: input_tokens counts only
+  // uncached prompt tokens; cached_input_tokens counts those served from the prefix cache.
+  input_tokens?: number;
+  cached_input_tokens?: number;
 }
 export interface CloudData {
   linked: boolean;
@@ -97,11 +126,33 @@ export interface CloudData {
   balance_micro_usd?: string;
   machines: Machine[];
   local_earnings_micro_usd?: string;
+  // This Mac's settled earnings including base rewards: all time, and the rolling past 24 hours.
+  local_lifetime_micro_usd?: string;
+  local_day_micro_usd?: string;
   error?: string;
+}
+// Request metadata only: history never carries prompt or response content.
+export interface RequestRecord {
+  id: string;
+  started_at: number;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  duration_ms: number;
+  outcome: 'completed' | 'cancelled' | 'failed';
+  // Omitted until the request settles.
+  earnings_micro_usd?: string;
+}
+export interface RequestHistory {
+  observed_at: number;
+  since?: number;
+  records: RequestRecord[];
 }
 export interface NetworkData {
   total_tokens?: string;
   total_requests?: string;
+  // Prompt plus completion tokens in the past 24 hours; omitted by runtimes that do not relay it.
+  last_24h_tokens?: string;
   total_macs?: number;
   provider_regions?: unknown;
   error?: string;
@@ -144,9 +195,11 @@ export type Action =
       idle_minutes: number;
       auto_update: boolean;
       schedule?: Schedule;
-      startup_preload?: boolean;
     }
-  | { action: 'cooling'; enabled: boolean; speed?: number; temperature?: number };
+  | { action: 'cooling'; enabled: boolean; speed?: number; temperature?: number }
+  | WaitlistAction
+  | AutopilotAction
+  | AutopilotPolicyAction;
 export type Resource =
   | 'state'
   | 'cloud'
@@ -157,7 +210,9 @@ export type Resource =
   | 'leaderboard'
   | 'endpoint-key'
   | 'insights-week'
-  | 'insights-month';
+  | 'insights-month'
+  | 'request-history'
+  | 'hardware';
 export interface DesktopStatus {
   state: 'connecting' | 'ready' | 'missing' | 'incompatible' | 'error' | 'installing';
   message?: string;
@@ -183,6 +238,8 @@ export interface DesktopAPI {
   onState(callback: (state: Snapshot) => void): () => void;
   onStatus(callback: (status: DesktopStatus) => void): () => void;
   onNavigate(callback: (route: Route) => void): () => void;
+  // Streams 1 Hz samples while subscribed; read('hardware') returns HardwareLoad.
+  onHardware(callback: (sample: HardwareSample) => void): () => void;
 }
 declare global {
   interface Window {

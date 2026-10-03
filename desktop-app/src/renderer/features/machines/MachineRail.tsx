@@ -1,5 +1,6 @@
-import { Grid2X2, Laptop, Monitor } from 'lucide-react';
 import type { Machine } from '../../../shared/contracts';
+import { MachineIcon } from './MachineIcon';
+import { isOnline, memoryLabel } from './fleet';
 import styles from './machines.module.css';
 export function MachineRail({
   machines,
@@ -8,9 +9,9 @@ export function MachineRail({
   onSelect,
 }: {
   machines: Machine[];
-  selected: string | null;
+  selected: string;
   localID: string;
-  onSelect: (id: string | null) => void;
+  onSelect: (id: string) => void;
 }) {
   return (
     <aside className={styles.rail} aria-label="Your Macs">
@@ -19,12 +20,7 @@ export function MachineRail({
         <span>{machines.length}</span>
       </div>
       <div className={styles.railItems}>
-        <button className={styles.railItem} aria-pressed={!selected} onClick={() => onSelect(null)}>
-          <Grid2X2 size={18} />
-          <strong>Fleet overview</strong>
-        </button>
         {machines.map((machine) => {
-          const Icon = machine.name.includes('Book') ? Laptop : Monitor;
           const local = machine.id === localID;
           return (
             <button
@@ -34,15 +30,14 @@ export function MachineRail({
               aria-label={`Select ${machine.name}, ${local ? 'This Mac' : 'View only'}`}
               onClick={() => onSelect(machine.id)}
             >
-              <Icon size={21} />
+              <MachineIcon name={machine.name} size={21} />
               <span>
                 <strong>{machine.name}</strong>
                 <small>
-                  {local ? 'This Mac' : 'View only'} ·{' '}
-                  {machine.memory_gb ? `${machine.memory_gb} GB` : 'Memory unknown'}
+                  {local ? 'This Mac' : 'View only'} · {memoryLabel(machine)}
                 </small>
                 <small>
-                  <i data-online={['running', 'online', 'serving'].includes(machine.status)} />
+                  <i data-online={isOnline(machine.status)} />
                   {machine.status}
                 </small>
               </span>

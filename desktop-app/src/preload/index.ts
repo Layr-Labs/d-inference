@@ -18,5 +18,13 @@ const api: DesktopAPI = {
   onState: (callback) => subscribe('backend:state', callback),
   onStatus: (callback) => subscribe('backend:status', callback),
   onNavigate: (callback) => subscribe('app:navigate', callback),
+  onHardware: (callback) => {
+    const unsubscribe = subscribe('hardware:sample', callback);
+    void ipcRenderer.invoke('hardware:watch');
+    return () => {
+      unsubscribe();
+      void ipcRenderer.invoke('hardware:unwatch');
+    };
+  },
 };
 contextBridge.exposeInMainWorld('darkbloom', api);

@@ -19,6 +19,8 @@
   --positive: #83d9a7;
   --negative: #ffa3a3;
   --warning: #e3cda5;
+  --warning-wash: #ae884e10;
+  --warning-line: #ae884e30;
   --control-hover-filter: brightness(1.3);
 }
 :root[data-theme='light'] {
@@ -48,8 +50,7 @@
 :root {
   color: var(--text-primary);
 }
-[data-theme='light'] .brand img,
-[data-theme='light'] .onboarding-brand img {
+[data-theme='light'] .brand img {
   filter: invert(1);
 }
 .button.primary {

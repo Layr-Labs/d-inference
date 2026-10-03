@@ -1,0 +1,464 @@
+{
+  "date": "2026-10-03",
+  "repository": "Layr-Labs/d-inference",
+  "request": "https://eigenlabs.slack.com/archives/D07A1867LHF/p1791005077212719",
+  "upstream_pr": 1325,
+  "upstream_contract_commit": "f924d268783f2bd7add8239ee59ebed19d7a85f6",
+  "stack_name": "d-inference-threat-review",
+  "stack_id": "arn:aws:cloudformation:us-east-1:188847976460:stack/d-inference-threat-review/76e47ec0-bf49-11f1-af5b-0afff63d21e5",
+  "stack_status": "UPDATE_COMPLETE",
+  "account": "188847976460",
+  "region": "us-east-1",
+  "actions_variables": {
+    "BEDROCK_SCAN_ROLE_ARN": "arn:aws:iam::188847976460:role/d-inference-threat-review",
+    "BEDROCK_SCAN_AWS_REGION": "us-east-1",
+    "BEDROCK_SCAN_PROFILES": "{\"sonnet\":\"arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/13cwzfubd3h1\",\"opus\":\"arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/8dyqpjhdjkiy\",\"sol\":\"arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/8xbmmz0i0p7o\"}"
+  },
+  "oidc": {
+    "use_default": false,
+    "use_immutable_subject": false,
+    "include_claim_keys": [
+      "repo",
+      "workflow_ref"
+    ],
+    "sub_claim_prefix": "repo:Layr-Labs/d-inference"
+  },
+  "runtime_trust": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Principal": {
+          "Federated": "arn:aws:iam::188847976460:oidc-provider/token.actions.githubusercontent.com"
+        },
+        "Action": "sts:AssumeRoleWithWebIdentity",
+        "Condition": {
+          "StringEquals": {
+            "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+            "token.actions.githubusercontent.com:sub": [
+              "repo:Layr-Labs/d-inference:workflow_ref:Layr-Labs/d-inference/.github/workflows/threat-model-review.yml@refs/heads/master",
+              "repo:Layr-Labs/d-inference:workflow_ref:Layr-Labs/d-inference/.github/workflows/bedrock-smoke.yml@refs/heads/master"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "runtime_permissions": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Action": [
+          "bedrock:InvokeModel"
+        ],
+        "Resource": [
+          "arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/13cwzfubd3h1",
+          "arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/8dyqpjhdjkiy",
+          "arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/8xbmmz0i0p7o"
+        ],
+        "Effect": "Allow"
+      },
+      {
+        "Condition": {
+          "StringEquals": {
+            "bedrock:InferenceProfileArn": [
+              "arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/13cwzfubd3h1",
+              "arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/8dyqpjhdjkiy",
+              "arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/8xbmmz0i0p7o"
+            ]
+          }
+        },
+        "Action": [
+          "bedrock:InvokeModel"
+        ],
+        "Resource": [
+          "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-opus-5-5",
+          "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-6",
+          "arn:aws:bedrock:us-east-1::foundation-model/openai.gpt-6.1-sol",
+          "arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-opus-5-5",
+          "arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-sonnet-4-6",
+          "arn:aws:bedrock:us-east-2::foundation-model/openai.gpt-6.1-sol",
+          "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-opus-5-5",
+          "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-6",
+          "arn:aws:bedrock:us-west-2::foundation-model/openai.gpt-6.1-sol"
+        ],
+        "Effect": "Allow"
+      }
+    ]
+  },
+  "models": {
+    "sonnet": {
+      "source_id": "us.anthropic.claude-sonnet-4-6",
+      "profile_arn": "arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/13cwzfubd3h1",
+      "source_and_integration_schema_validated": true,
+      "needs_deeper_review": false,
+      "responses": [
+        {
+          "request_id": "80736a59-4c3d-4e50-a6fb-49c5aa8c708f",
+          "stage": "source",
+          "stop_reason": "end_turn",
+          "usage": {
+            "cacheReadInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "inputTokens": 1500,
+            "outputTokens": 202,
+            "totalTokens": 1702
+          },
+          "timestamp": "2026-10-03T16:51:16.020318+00:00"
+        },
+        {
+          "request_id": "8493b54b-05e8-418f-9c47-1a7b48e2165f",
+          "stage": "integration",
+          "stop_reason": "end_turn",
+          "usage": {
+            "cacheReadInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "inputTokens": 1213,
+            "outputTokens": 150,
+            "totalTokens": 1363
+          },
+          "timestamp": "2026-10-03T16:51:18.961447+00:00"
+        }
+      ],
+      "raw_model_denial": {
+        "denied": true,
+        "error": "AccessDeniedException",
+        "request_id": "1865ffab-755c-4c3c-9e33-5e803ea69713",
+        "model_arn": "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-6",
+        "role_arn": "arn:aws:iam::188847976460:role/d-inference-validation-20261003",
+        "scope": "Live call under a temporary role with identical runtime invoke policy plus Marketplace deny"
+      }
+    },
+    "opus": {
+      "source_id": "us.anthropic.claude-opus-5-5",
+      "profile_arn": "arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/8dyqpjhdjkiy",
+      "source_and_integration_schema_validated": true,
+      "needs_deeper_review": false,
+      "responses": [
+        {
+          "request_id": "225f6fad-2e95-468b-b481-dabda13391b9",
+          "stage": "source",
+          "stop_reason": "end_turn",
+          "usage": {
+            "cacheReadInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "inputTokens": 2108,
+            "outputTokens": 375,
+            "totalTokens": 2483
+          },
+          "timestamp": "2026-10-03T16:45:53.240695+00:00"
+        },
+        {
+          "request_id": "03389359-2277-4fad-aaa3-813516fe06db",
+          "stage": "integration",
+          "stop_reason": "end_turn",
+          "usage": {
+            "cacheReadInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "inputTokens": 1879,
+            "outputTokens": 319,
+            "totalTokens": 2198
+          },
+          "timestamp": "2026-10-03T16:45:57.237444+00:00"
+        }
+      ],
+      "raw_model_denial": {
+        "denied": true,
+        "error": "AccessDeniedException",
+        "request_id": "dfd7bb91-6aef-45c5-a4da-8e112ece360d",
+        "model_arn": "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-opus-5-5",
+        "role_arn": "arn:aws:iam::188847976460:role/d-inference-validation-20261003",
+        "scope": "Live call under a temporary role with identical runtime invoke policy plus Marketplace deny"
+      }
+    },
+    "sol": {
+      "source_id": "us.openai.gpt-6.1-sol",
+      "profile_arn": "arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/8xbmmz0i0p7o",
+      "source_and_integration_schema_validated": true,
+      "needs_deeper_review": true,
+      "responses": [
+        {
+          "request_id": "c6cdcf94-0e84-4307-86c6-ec434cf0296a",
+          "stage": "source",
+          "stop_reason": "end_turn",
+          "usage": {
+            "cacheReadInputTokens": 0,
+            "cacheWriteInputTokens": 1378,
+            "inputTokens": 2,
+            "outputTokens": 202,
+            "totalTokens": 1582
+          },
+          "timestamp": "2026-10-03T16:45:55.982010+00:00"
+        },
+        {
+          "request_id": "0a7b3a9a-0441-4cb1-a141-2dc1f3e48f68",
+          "stage": "integration",
+          "stop_reason": "end_turn",
+          "usage": {
+            "cacheReadInputTokens": 0,
+            "cacheWriteInputTokens": 1109,
+            "inputTokens": 2,
+            "outputTokens": 219,
+            "totalTokens": 1330
+          },
+          "timestamp": "2026-10-03T16:46:10.019416+00:00"
+        }
+      ],
+      "raw_model_denial": {
+        "denied": true,
+        "error": "AccessDeniedException",
+        "request_id": "c71ef0c6-c008-410f-bb6a-9c381d568bc1",
+        "model_arn": "arn:aws:bedrock:us-east-1::foundation-model/openai.gpt-6.1-sol",
+        "role_arn": "arn:aws:iam::188847976460:role/d-inference-validation-20261003",
+        "scope": "Live call under a temporary role with identical runtime invoke policy plus Marketplace deny"
+      }
+    }
+  },
+  "successful_contract_calls": 6,
+  "sonnet55": {
+    "agreement": "NOT_AVAILABLE",
+    "restricted_call_error": "AccessDeniedException",
+    "new_agreement_created": false,
+    "replaced_unavailable_profile_deleted": true
+  },
+  "feature_branch_denial": {
+    "audience": "sts.amazonaws.com",
+    "subject": "repo:Layr-Labs/d-inference:workflow_ref:Layr-Labs/d-inference/.github/workflows/bedrock-smoke.yml@refs/heads/test/bedrock-oidc-thr_tck5wewgpn",
+    "workflow_ref": "Layr-Labs/d-inference/.github/workflows/bedrock-smoke.yml@refs/heads/test/bedrock-oidc-thr_tck5wewgpn",
+    "status": 403,
+    "code": "AccessDenied",
+    "request_id": "723a4cc7-d4b3-492f-bed3-893db265fa72",
+    "run_id": 37138288308,
+    "url": "https://github.com/Layr-Labs/d-inference/actions/runs/37138288308",
+    "head": "e0ab6e2be4355ba0b9e853fdd924cd8ccb3c4e41"
+  },
+  "claude_compatibility": {
+    "before": {
+      "run": 37137932327,
+      "job": 111246176965,
+      "workflow_conclusion": "failure",
+      "oidc_app_exchange": "success",
+      "independent_existing_api_error": "401 API key is invalid",
+      "safe_authentication_log_lines": [
+        "2026-10-03T16:44:22.1394010Z OIDC token successfully obtained",
+        "2026-10-03T16:44:23.4345499Z App token successfully obtained",
+        "2026-10-03T16:44:23.4347909Z Using GITHUB_TOKEN from OIDC"
+      ]
+    },
+    "after": {
+      "run": 37138260867,
+      "job": 111247147802,
+      "workflow_conclusion": "failure",
+      "oidc_app_exchange": "success",
+      "independent_existing_api_error": "401 API key is invalid",
+      "safe_authentication_log_lines": [
+        "2026-10-03T16:49:45.6111969Z OIDC token successfully obtained",
+        "2026-10-03T16:49:46.9491340Z App token successfully obtained",
+        "2026-10-03T16:49:46.9493383Z Using GITHUB_TOKEN from OIDC"
+      ]
+    }
+  },
+  "runtime_policy_simulation": [
+    {
+      "alias": "sonnet",
+      "context": [],
+      "results": [
+        {
+          "EvalActionName": "bedrock:InvokeModel",
+          "EvalResourceName": "arn:aws:bedrock:${Region}:${Account}:${ResourceType}/${ResourceId}",
+          "EvalDecision": "implicitDeny",
+          "MissingContextValues": [
+            "bedrock:InferenceProfileArn"
+          ]
+        }
+      ]
+    },
+    {
+      "alias": "sonnet",
+      "context": [
+        {
+          "ContextKeyName": "bedrock:InferenceProfileArn",
+          "ContextKeyValues": [
+            "arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/13cwzfubd3h1"
+          ],
+          "ContextKeyType": "string"
+        }
+      ],
+      "results": [
+        {
+          "EvalActionName": "bedrock:InvokeModel",
+          "EvalResourceName": "arn:aws:bedrock:${Region}:${Account}:${ResourceType}/${ResourceId}",
+          "EvalDecision": "allowed",
+          "MissingContextValues": []
+        }
+      ]
+    },
+    {
+      "alias": "opus",
+      "context": [],
+      "results": [
+        {
+          "EvalActionName": "bedrock:InvokeModel",
+          "EvalResourceName": "arn:aws:bedrock:${Region}:${Account}:${ResourceType}/${ResourceId}",
+          "EvalDecision": "implicitDeny",
+          "MissingContextValues": [
+            "bedrock:InferenceProfileArn"
+          ]
+        }
+      ]
+    },
+    {
+      "alias": "opus",
+      "context": [
+        {
+          "ContextKeyName": "bedrock:InferenceProfileArn",
+          "ContextKeyValues": [
+            "arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/8dyqpjhdjkiy"
+          ],
+          "ContextKeyType": "string"
+        }
+      ],
+      "results": [
+        {
+          "EvalActionName": "bedrock:InvokeModel",
+          "EvalResourceName": "arn:aws:bedrock:${Region}:${Account}:${ResourceType}/${ResourceId}",
+          "EvalDecision": "allowed",
+          "MissingContextValues": []
+        }
+      ]
+    },
+    {
+      "alias": "sol",
+      "context": [],
+      "results": [
+        {
+          "EvalActionName": "bedrock:InvokeModel",
+          "EvalResourceName": "arn:aws:bedrock:${Region}:${Account}:${ResourceType}/${ResourceId}",
+          "EvalDecision": "implicitDeny",
+          "MissingContextValues": [
+            "bedrock:InferenceProfileArn"
+          ]
+        }
+      ]
+    },
+    {
+      "alias": "sol",
+      "context": [
+        {
+          "ContextKeyName": "bedrock:InferenceProfileArn",
+          "ContextKeyValues": [
+            "arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/8xbmmz0i0p7o"
+          ],
+          "ContextKeyType": "string"
+        }
+      ],
+      "results": [
+        {
+          "EvalActionName": "bedrock:InvokeModel",
+          "EvalResourceName": "arn:aws:bedrock:${Region}:${Account}:${ResourceType}/${ResourceId}",
+          "EvalDecision": "allowed",
+          "MissingContextValues": []
+        }
+      ]
+    }
+  ],
+  "temporary_validation_role_cleanup": {
+    "role": "d-inference-validation-20261003",
+    "inline_policy_removed": true,
+    "role_removed": true,
+    "absence_verified": true
+  },
+  "quotas": [
+    {
+      "QuotaCode": "L-15B8E632",
+      "QuotaName": "Cross-region model inference tokens per minute for Anthropic Claude Sonnet 4.6",
+      "Value": 6000000.0,
+      "Unit": "None",
+      "Description": "The maximum number of cross-region tokens that you can submit for model inference in one minute for Anthropic Claude Sonnet 4.6. The quota considers the combined sum of input and output tokens across all requests to Converse, ConverseStream, InvokeModel and InvokeModelWithResponseStream."
+    },
+    {
+      "QuotaCode": "L-00FF3314",
+      "QuotaName": "Cross-region model inference requests per minute for Anthropic Claude Sonnet 4.6",
+      "Value": 10000.0,
+      "Unit": "None",
+      "Description": "The maximum number of cross-region requests that you can submit for model inference in one minute for Anthropic Claude Sonnet 4.6. This quota represents the total number of requests to the Converse, ConverseStream, InvokeModel and InvokeModelWithResponseStream actions."
+    },
+    {
+      "QuotaCode": "L-A4430697",
+      "QuotaName": "Cross-region model inference tokens per minute for Anthropic Claude Opus 5.5",
+      "Value": 30000000.0,
+      "Unit": "None",
+      "Description": "The maximum number of cross-region tokens that you can submit for model inference in one minute for Anthropic Claude Opus 5.5. The quota considers the combined sum of input and output tokens across all requests to Converse, ConverseStream, InvokeModel and InvokeModelWithResponseStream."
+    },
+    {
+      "QuotaCode": "L-8C5F762B",
+      "QuotaName": "Cross-region model inference tokens per minute for GPT-6.1 Sol",
+      "Value": 40000000.0,
+      "Unit": "None",
+      "Description": "The maximum number of cross-region tokens that you can submit for model inference in one minute for GPT-6.1 Sol. The quota considers the combined sum of input and output tokens across all requests to Converse, ConverseStream, InvokeModel and InvokeModelWithResponseStream."
+    },
+    {
+      "QuotaCode": "L-02B3D3B6",
+      "QuotaName": "Model invocation max tokens per day for GPT-6.1 Sol (doubled for cross-region calls)",
+      "Value": 28800000000.0,
+      "Unit": "None",
+      "Description": "Daily maximum tokens for model inference for GPT-6.1 Sol. Combines sum of input and output tokens across all requests to Converse, ConverseStream, InvokeModel and InvokeModelWithResponseStream. Doubled for cross-region calls; not applicable in case of approved TPM increase."
+    }
+  ],
+  "cost_tracking": {
+    "destination": "Eigen Dashy",
+    "new_email_alerts": false,
+    "repository_dollar_cap": null,
+    "billing_owner": "Not yet confirmed",
+    "existing_account_budget": [
+      {
+        "BudgetName": "claude-bedrock-production-monthly-budget",
+        "BudgetType": "COST",
+        "BudgetLimit": {
+          "Amount": "1000000.0",
+          "Unit": "USD"
+        },
+        "TimeUnit": "MONTHLY",
+        "CostFilters": {
+          "Service": [
+            "Amazon Bedrock"
+          ]
+        }
+      }
+    ],
+    "limitations": [
+      "Existing USD 1M/month Amazon Bedrock service filter is not a repository cap and misses Marketplace-billed usage.",
+      "Live Eigen Dashy ingestion and CUR reconciliation were not established by this provisioning.",
+      "Usage totals cover six successful schema calls; denied/error calls retain unknown usage."
+    ]
+  },
+  "limitations": [
+    "Live model tests used a temporary operator-assumed role with identical runtime invoke statements and explicit Marketplace deny; that role was deleted.",
+    "Master workflow role assumption and end-to-end scanner/OpenRouter fallback tests follow Anto's later PR1325 merge.",
+    "Sol returned needs_deeper_review=true on integration; schema compatibility is not security-review clearance.",
+    "Original harness production_model metadata describes pinned PR1325 selection; source_model and verified profile identify the actual Sonnet4.6 alternative.",
+    "Claude's OIDC/App exchange succeeds before and after migration; its existing Anthropic API key returns 401 in both runs."
+  ],
+  "merge_protections_unchanged": true,
+  "scanner_activation_changed": false,
+  "source_artifact_sha256": {
+    "runtime-trust.json": "aca26a3f8f503494553f0904950fd07dbd182f6b147a70e28fb093d54c6b3ad2",
+    "runtime-permissions-final.json": "e982cfd3f37f0dc97274cd47f65185ad6f162be59a79e4f1f70e4c7f13e6e02e",
+    "runtime-iam-simulation.json": "328823dbb22eac5983170136409af219f2fde26c038c4f0a2e3cbed7a3726031",
+    "feature-branch-denial.json": "55752b6e491aeefa471a552926778de3f0ca43ae58ffa2e077f27372ec27a75c",
+    "claude-oidc-compatibility.json": "55e9cfd995c680b813655801f9c4457fbabe83c715d0812eed18fd85538772a3",
+    "oidc-before.json": "b89ffad29907bf42e4cd530bf0e700b58271d28e9e0a5d0939c7023057f99698",
+    "oidc-after.json": "01fbbf410913fcf314a4e6f7f2126dd3af3e0cc89f2a01b06bab862e116466d5",
+    "actions-variables.json": "d8fdb583a241517c6f875643c533f8f19aa80d7b4e4d83745c3b473acb042319",
+    "temporary-role-cleanup.json": "a9f18929538b66ae21156b020d154d8e73d2afa9024b926f82d6749d09c4a4b4",
+    "sonnet55-result.json": "9eb2d77bf38204407556801e49ccc14969ea0686e8efd4a76c677c562b80de24",
+    "sonnet55-usage.jsonl": "86d6f5cc1f98d4a90ff05a2c8dd3e691511b8d466d70b51bde7d4fef7baa8baa",
+    "sonnet46-usage.jsonl": "1acd606f64fa6adfdd41112f217f5ddd4a6fcf6a5799358d1a0998a12b41fdde",
+    "opus55-usage.jsonl": "f5680919c14948f90095a7deb28507bd83966a0d53fd61aba01b8ffa68812fe7",
+    "sol61-usage.jsonl": "5640cfbad57b17aa3b625977b9a54a918a680cd933fd2d95ba58dff9b12f4b96",
+    "master-rules-before.json": "ce131351981f3488643e2061339d5bd648ac75db6d1ac5bfe77060ae7dc70764",
+    "master-rules-after.json": "ce131351981f3488643e2061339d5bd648ac75db6d1ac5bfe77060ae7dc70764",
+    "bedrock.json": "12b6bc352f48c56c633e7881b27a7c5b1e97c8ba2b0d2b5392e22c0abd712109",
+    "relevant-quotas.json": "dabc6bbf7e28abee526d0fa5143f886f1c7bfc11c61071c74d95e7552678ebb9"
+  }
+}

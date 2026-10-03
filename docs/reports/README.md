@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-28
+> Last updated: 2026-10-03
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -11,6 +11,8 @@ what was decided and whether it shipped read [`../design/README.md`](../design/R
 File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
 
+- [Prefix-cache candidate qualification](2026-10-03-prefix-cache-qualification.md) — native encrypted demanded-fork before/after with MTP, bounded planner allocation/timing comparisons, unchanged proof fingerprints and deadline regressions; local candidate evidence rather than deployed speedups.
+- [OpenRouter cache and throughput investigation](2026-10-03-openrouter-cache-throughput.md) — all nine public models, successful/repeated cache denominators, actual-token TPS/TTFT cohorts, separate production counter windows and source-reproduced lost cache opportunities.
 - [Hybrid provider trust review](2026-09-27-hybrid-provider-trust-review.md) — September 27 snapshot of legacy MDM/APNs and App Attest authorization boundaries, threats, evidence and deployment limits.
 - [First-content performance and M5 capacity investigation](2026-09-28-first-content-performance.md) — production latency, deadline-refusal amplification and prefill measurement bounds; separates observations from unqualified concurrency targets.
 - [Qwen chunk-partition parity and chunk-agnostic recurrent capture](2026-09-27-qwen-chunk-partition-parity.md) — dense Qwen3.5-9B checkpoint state is bit-identical across chunk partitions and the MoE varies cold already, so recurrent capture now takes every 256-token-aligned range end; live results for the company-leaves case.

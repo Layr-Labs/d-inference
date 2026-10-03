@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-03
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -997,6 +997,10 @@ Go `InferenceRequestMessage` · Swift `CoordinatorMessage.InferenceRequest`.
 | `calibration_id` | Required printable reviewed-corpus identity for `calibrated_template`; absent for exact counts |
 
 The fields contain no content, token IDs, cache keys or consumer identity.
+The coordinator may reconcile the SLA input-token term from current verified
+exact work before dispatch, keeping the original ingress anchor and any earlier
+caller cutoff. The provider inherits the resulting remaining budget; its recount
+and calibrated uncertainty cannot extend that deadline or change billing usage.
 An exact count must equal the provider's actual tokenization; a calibrated
 count must bound it. Invalid identity, unknown source or an exceeded bound
 withdraws calibrated admission and preserves the conservative fallback.

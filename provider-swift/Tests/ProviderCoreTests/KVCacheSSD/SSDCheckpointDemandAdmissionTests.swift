@@ -163,7 +163,8 @@ struct SSDCheckpointDemandAdmissionTests {
         store.registerDonationDemand(.init(repeatedPrefixTokens: 0), requestID: .init(22))
         await store.abandonStaging(requestID: .init(22))
         #expect(store.donationDemandHints.demand(for: .init(22))?.repeatedPrefixTokens == 0)
-        #expect(store.demandRefusal(requestID: .init(22), localRepeat: false) == .skippedNovel)
+        #expect(store.donationWritePolicy(requestID: .init(22), localRepeat: false,
+                                         checkpointPosition: 256).refusal == .skippedNovel)
         store.completeStaging(requestID: .init(22))
         #expect(store.donationDemandHints.count == 0)
 

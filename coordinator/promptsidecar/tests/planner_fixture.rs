@@ -59,6 +59,34 @@ async fn plans_with_real_tokenizer_and_bounds_concurrency() {
     assert_eq!(status.loaded_contracts, 1);
 }
 
+#[tokio::test]
+async fn production_plans_match_fixture_proofs_after_contract_eviction() {
+    let fixture = Fixture::new();
+    let other = fixture.add_contract("two");
+    let planner = Planner::new(fixture.root(), 1, 1, 200_000);
+    let request = fixture.request(&"hello world ".repeat(300));
+    let (expected, token_ids, template_input, provider_body) =
+        planner.fixture_plan(request.clone()).await.unwrap();
+    assert_eq!(expected.prompt_token_count as usize, token_ids.len());
+    assert!(template_input["messages"].is_array());
+    assert_eq!(provider_body, request.body);
+    for _ in 0..3 {
+        assert_eq!(
+            serde_json::to_value(planner.plan(request.clone()).await.unwrap()).unwrap(),
+            serde_json::to_value(&expected).unwrap()
+        );
+    }
+    let mut replacement = request.clone();
+    replacement.prompt_contract_id = other;
+    planner.plan(replacement).await.unwrap();
+    assert_eq!(planner.status().loaded_contracts, 1);
+    assert_eq!(
+        serde_json::to_value(planner.plan(request).await.unwrap()).unwrap(),
+        serde_json::to_value(expected).unwrap()
+    );
+    assert_eq!(planner.status().metrics.contract_loads.cold, 3);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn concurrent_cold_contract_load_is_singleflight() {
     let fixture = Fixture::new();

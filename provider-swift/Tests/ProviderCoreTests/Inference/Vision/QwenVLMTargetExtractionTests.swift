@@ -311,6 +311,27 @@ struct QwenVLMTargetExtractionTests {
                 == EngineV2Factory.defaultSoloPrefillStripeTokens)
     }
 
+    @Test("short demanded capture requires the actual dense paged SSD store and keeps its floor")
+    func shortDemandedCaptureRequiresDensePagedSSD() async throws {
+        let config = try EngineV2VLMTextExtraction.decodeQwenConfiguration(
+            configData: qwenTargetFixtureJSON(fullAttentionInterval: 2))
+        let dense = Qwen35Model(config)
+        let moe = Qwen35MoEModel(config)
+        let fixture = try SSDHybridCheckpointTestFixture(paged: true)
+        defer { fixture.remove() }
+        let store = try fixture.makeStore()
+        defer { store.close() }
+        #expect(EngineV2Factory.demandedShortCheckpointMinimumTokens(
+            model: dense, backend: .paged, store: store) == store.config.minEffectiveTokens)
+        #expect(EngineV2Factory.demandedShortCheckpointMinimumTokens(
+            model: moe, backend: .paged, store: store) == nil)
+        #expect(EngineV2Factory.demandedShortCheckpointMinimumTokens(
+            model: dense, backend: .contiguous, store: store) == nil)
+        #expect(EngineV2Factory.demandedShortCheckpointMinimumTokens(
+            model: dense, backend: .paged, store: nil) == nil)
+        await store.closeAndWait()
+    }
+
     @Test("benchmark resolution uses the same extracted Qwen target")
     func benchmarkServingModelUsesQwenExtraction() throws {
         let configData = qwenTargetFixtureJSON()

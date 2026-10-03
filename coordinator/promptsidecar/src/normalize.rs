@@ -10,7 +10,7 @@ pub struct NormalizedRequest {
     pub messages: Vec<Value>,
     pub tools: Option<Vec<Value>>,
     pub additional_context: Map<String, Value>,
-    pub body: Value,
+    model_id: String,
     pub prompt_date: Option<String>,
 }
 
@@ -156,32 +156,39 @@ pub fn normalize(
     let tools = tools.map(|tools| tools.into_iter().map(sorted_value_keys).collect::<Vec<_>>());
     let additional_context = sorted_object_keys(additional_context);
 
-    let mut normalized_body = Map::new();
-    normalized_body.insert("model".into(), Value::String(model_id.clone()));
-    normalized_body.insert("messages".into(), Value::Array(messages.clone()));
-    if let Some(tools) = &tools {
-        normalized_body.insert("tools".into(), Value::Array(tools.clone()));
-    }
-    if !additional_context.is_empty() {
-        normalized_body.insert(
-            "additional_context".into(),
-            Value::Object(additional_context.clone()),
-        );
-    }
-    if let Some(date) = &prompt_date {
-        normalized_body.insert(
-            crate::request_date::BODY_FIELD.into(),
-            Value::String(date.clone()),
-        );
-    }
-
     Ok(NormalizedRequest {
         messages,
         tools,
         additional_context,
-        body: Value::Object(normalized_body),
+        model_id,
         prompt_date,
     })
+}
+
+impl NormalizedRequest {
+    /// Fixture-only projection. Production renders the normalized fields
+    /// directly and does not duplicate a private request tree for diagnostics.
+    pub fn fixture_body(&self) -> Value {
+        let mut normalized_body = Map::new();
+        normalized_body.insert("model".into(), Value::String(self.model_id.clone()));
+        normalized_body.insert("messages".into(), Value::Array(self.messages.clone()));
+        if let Some(tools) = &self.tools {
+            normalized_body.insert("tools".into(), Value::Array(tools.clone()));
+        }
+        if !self.additional_context.is_empty() {
+            normalized_body.insert(
+                "additional_context".into(),
+                Value::Object(self.additional_context.clone()),
+            );
+        }
+        if let Some(date) = &self.prompt_date {
+            normalized_body.insert(
+                crate::request_date::BODY_FIELD.into(),
+                Value::String(date.clone()),
+            );
+        }
+        Value::Object(normalized_body)
+    }
 }
 
 fn ambiguous_nemotron_number(value: &Value) -> bool {
@@ -1606,7 +1613,7 @@ mod tests {
             "tools":[tool(json!({"Content":{"type":"string"},"append":{"type":"boolean"},"path":{"type":"string"}}))]});
         let left = normalize(unsorted.as_object().unwrap().clone(), None).unwrap();
         let right = normalize(sorted.as_object().unwrap().clone(), None).unwrap();
-        assert_eq!(left.body, right.body);
+        assert_eq!(left.fixture_body(), right.fixture_body());
         let keys = left.tools.unwrap()[0]["function"]["parameters"]["properties"]
             .as_object()
             .unwrap()
@@ -1822,8 +1829,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["enum", "type", "x-note"]
         );
-        assert_sorted(&normalized.body["messages"], "body/messages");
-        assert_sorted(&normalized.body["tools"], "body/tools");
+        assert_sorted(&normalized.fixture_body()["messages"], "body/messages");
+        assert_sorted(&normalized.fixture_body()["tools"], "body/tools");
     }
 
     #[test]
@@ -2721,7 +2728,7 @@ mod tests {
             }).as_object().unwrap().clone();
             let first = normalize(body.clone(), None).unwrap();
             let second = normalize(body, None).unwrap();
-            prop_assert_eq!(first.body, second.body);
+            prop_assert_eq!(first.fixture_body(), second.fixture_body());
             prop_assert_eq!(first.messages, second.messages);
         }
 

@@ -1,0 +1,842 @@
+{
+  "status": "all_required_frozen_cut_gates_pass",
+  "sdk_pin": "58d538c8a9668f72a2702d5bb348e0e53a8cdf61",
+  "sdk_original_base": "1ee8675a035d0d842d5df663938d66cfedf88a8e",
+  "minimal_merged_upstream_backports": [
+    209,
+    210,
+    192,
+    211,
+    174,
+    175
+  ],
+  "sdk_cut_signatures": [
+    {
+      "sha": "8eadbb80a78f2d9cf47c2b61b6a3315ff08b1936",
+      "verified": true,
+      "reason": "valid"
+    },
+    {
+      "sha": "f2fdd18679c707e232441d74b2659120a62e9bf7",
+      "verified": true,
+      "reason": "valid"
+    },
+    {
+      "sha": "e13cba1a7d80e25d97d69c099d9d9f626015d283",
+      "verified": true,
+      "reason": "valid"
+    },
+    {
+      "sha": "deb1016b46242140aa6a845e58a456e8769e1cbc",
+      "verified": true,
+      "reason": "valid"
+    },
+    {
+      "sha": "7a23b2c1218dec8de1e2e3f3e9926e101ba713b3",
+      "verified": true,
+      "reason": "valid"
+    },
+    {
+      "sha": "9bbb7b1ab64d3623acd0689e3856791c88091c01",
+      "verified": true,
+      "reason": "valid"
+    },
+    {
+      "sha": "103a7a2f8e1b075437cc3671ea2dad52e7106d9c",
+      "verified": true,
+      "reason": "valid"
+    },
+    {
+      "sha": "760b960af09ff60f668599f73e7610b7a72fbe15",
+      "verified": true,
+      "reason": "valid"
+    },
+    {
+      "reason": "valid",
+      "sha": "58d538c8a9668f72a2702d5bb348e0e53a8cdf61",
+      "verified": true
+    }
+  ],
+  "toolchains": {
+    "swift": "swift-driver version: 1.148.6 Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)\nTarget: arm64-apple-macosx28.0",
+    "xcode": "Xcode 26.6\nBuild version 17F113",
+    "macos": "ProductName:\t\tmacOS\nProductVersion:\t\t27.0\nBuildVersion:\t\t26A428",
+    "hardware": "Apple M4 Max",
+    "physical_memory_bytes": 137438953472
+  },
+  "source_matched_metallib": {
+    "sha256": "2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2",
+    "bytes": 182425984,
+    "verified_staged_copies": [
+      {
+        "path": "libs/mlx-swift-lm/.build/arm64-apple-macosx/debug/mlx.metallib",
+        "sha256": "2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2"
+      },
+      {
+        "path": "libs/mlx-swift-lm/.build/arm64-apple-macosx/debug/mlx-swift-lmPackageTests.xctest/Contents/MacOS/mlx.metallib",
+        "sha256": "2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2"
+      },
+      {
+        "path": "libs/mlx-swift-lm/.build/arm64-apple-macosx/debug/mlx-swift-lmPackageTests.xctest/Contents/Resources/mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib",
+        "sha256": "2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2"
+      },
+      {
+        "path": "provider-swift/.build/arm64-apple-macosx/debug/mlx.metallib",
+        "sha256": "2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2"
+      },
+      {
+        "path": "provider-swift/.build/arm64-apple-macosx/debug/DarkbloomProviderPackageTests.xctest/Contents/MacOS/mlx.metallib",
+        "sha256": "2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2"
+      },
+      {
+        "path": "provider-swift/.build/arm64-apple-macosx/debug/DarkbloomProviderPackageTests.xctest/Contents/Resources/mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib",
+        "sha256": "2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2"
+      }
+    ],
+    "mlx_swift_sha": "0f4fe403bef6899e8a72882bc6d4036a7a62ae31",
+    "nested_mlx_sha": "3fa8f25e6451174d7b06be372c3a24272b77d88e",
+    "nested_mlx_c_sha": "02cf6f4d099023e4e0c0357248b8b3f83110e29d",
+    "note": "Compiled source is nested Cmlx MLX; unrelated top-level libs/mlx does not establish provider kernel identity."
+  },
+  "skip_policy": {
+    "default_suites": "Expected opt-in, downloaded-model, supervised hardware and frozen-reference tests may skip in default runs.",
+    "required_selected_suites": "run-nested-suite refuses zero matching tests and any skip; all required native opt-ins are explicit.",
+    "frozen_fp32_reference_hardware": "Unrun on this M4 Max; reference bits and tolerances unchanged. Do not claim these reference-hardware comparisons passed."
+  },
+  "steps": [
+    {
+      "name": "sdk-frozen-build",
+      "exit_code": 0,
+      "seconds": 24.712046625034418,
+      "command": [
+        "swift",
+        "build",
+        "--build-tests"
+      ],
+      "cwd": "libs/mlx-swift-lm",
+      "explicit_environment": {},
+      "required_no_skips": false
+    },
+    {
+      "name": "sdk-frozen-metallib",
+      "exit_code": 0,
+      "seconds": 0.4656314579769969,
+      "command": [
+        "scripts/stage-test-metallib.sh",
+        "${VALIDATION_DIR}/mlx.metallib",
+        "${REPOSITORY}/libs/mlx-swift-lm/.build/arm64-apple-macosx/debug"
+      ],
+      "cwd": "libs/mlx-swift-lm",
+      "explicit_environment": {},
+      "required_no_skips": false
+    },
+    {
+      "name": "sdk-frozen-paging",
+      "exit_code": 0,
+      "seconds": 26.800789709028322,
+      "command": [
+        "scripts/run-nested-suite.sh",
+        "CBv2Paged(AttentionWorkReservation|NativeDType)Tests|CBv2Attention(OwnerIdentity|PacketLifetime)Tests|CBv2KVSharingParityTests|PagedMTPBatchedColumnsTests",
+        "--no-parallel"
+      ],
+      "cwd": "libs/mlx-swift-lm",
+      "explicit_environment": {
+        "DARKBLOOM_NEMOTRON35_MTP_BATCHED_ATTENTION": "1"
+      },
+      "required_no_skips": true,
+      "xctest": {
+        "tests": 22,
+        "skipped": 0,
+        "failures": 0,
+        "seconds": 20.656
+      },
+      "swift_testing_runs": [
+        {
+          "tests": 12,
+          "suites": 4,
+          "seconds": 1.876
+        }
+      ],
+      "swift_testing_explicit_skip_lines": 0,
+      "swift_testing_skip_count_method": "Explicit Test/Suite skipped lines; Swift Testing totals include skipped cases, so this is an observed line count rather than a deduplicated case count.",
+      "unrun_reference_hardware_lines": 0
+    },
+    {
+      "name": "sdk-frozen-checkpoints",
+      "exit_code": 0,
+      "seconds": 22.413965917017777,
+      "command": [
+        "scripts/run-nested-suite.sh",
+        "CBv2(DemandedShortCheckpoint.*|CompleteCheckpointEngine|CheckpointRetention|RecurrentCheckpointRetention|FirstTokenWorkProjection)Tests|HistoricalWindowCheckpoint(Engine)?Tests",
+        "--no-parallel"
+      ],
+      "cwd": "libs/mlx-swift-lm",
+      "explicit_environment": {},
+      "required_no_skips": true,
+      "xctest": {
+        "tests": 67,
+        "skipped": 0,
+        "failures": 0,
+        "seconds": 11.68
+      },
+      "swift_testing_runs": [
+        {
+          "tests": 20,
+          "suites": 1,
+          "seconds": 7.507
+        }
+      ],
+      "swift_testing_explicit_skip_lines": 0,
+      "swift_testing_skip_count_method": "Explicit Test/Suite skipped lines; Swift Testing totals include skipped cases, so this is an observed line count rather than a deduplicated case count.",
+      "unrun_reference_hardware_lines": 0
+    },
+    {
+      "name": "sdk-frozen-native-owners",
+      "exit_code": 0,
+      "seconds": 3.4607373750186525,
+      "command": [
+        "scripts/run-nested-suite.sh",
+        "CBv2NativeComplete(PrefixOwner|CheckpointTransfer)Tests",
+        "--no-parallel",
+        "--skip",
+        "testRequiredImportEvaluationFailureCannotBeRehabilitatedByLaterSuccessfulFence|testTypedRequiredFenceFailureRetainsActualRootsAndCreditAfterLaterDrain"
+      ],
+      "cwd": "libs/mlx-swift-lm",
+      "explicit_environment": {
+        "DARKBLOOM_TEST_NATIVE_COMPLETE_PREFIX": "1"
+      },
+      "required_no_skips": true,
+      "xctest": {
+        "tests": 15,
+        "skipped": 0,
+        "failures": 0,
+        "seconds": 0.255
+      },
+      "swift_testing_runs": [
+        {
+          "tests": 0,
+          "suites": 0,
+          "seconds": 0.001
+        }
+      ],
+      "swift_testing_explicit_skip_lines": 0,
+      "swift_testing_skip_count_method": "Explicit Test/Suite skipped lines; Swift Testing totals include skipped cases, so this is an observed line count rather than a deduplicated case count.",
+      "unrun_reference_hardware_lines": 0
+    },
+    {
+      "name": "sdk-frozen-import-fault",
+      "exit_code": 0,
+      "seconds": 3.214504541014321,
+      "command": [
+        "scripts/run-nested-suite.sh",
+        "testRequiredImportEvaluationFailureCannotBeRehabilitatedByLaterSuccessfulFence",
+        "--no-parallel"
+      ],
+      "cwd": "libs/mlx-swift-lm",
+      "explicit_environment": {
+        "DARKBLOOM_TEST_NATIVE_COMPLETE_PREFIX": "1",
+        "DARKBLOOM_TEST_NATIVE_COMPLETE_PREFIX_FAULT": "import-evaluation"
+      },
+      "required_no_skips": true,
+      "xctest": {
+        "tests": 1,
+        "skipped": 0,
+        "failures": 0,
+        "seconds": 0.05
+      },
+      "swift_testing_runs": [
+        {
+          "tests": 0,
+          "suites": 0,
+          "seconds": 0.001
+        }
+      ],
+      "swift_testing_explicit_skip_lines": 0,
+      "swift_testing_skip_count_method": "Explicit Test/Suite skipped lines; Swift Testing totals include skipped cases, so this is an observed line count rather than a deduplicated case count.",
+      "unrun_reference_hardware_lines": 0
+    },
+    {
+      "name": "sdk-frozen-fence-fault",
+      "exit_code": 0,
+      "seconds": 3.2255256670177914,
+      "command": [
+        "scripts/run-nested-suite.sh",
+        "testTypedRequiredFenceFailureRetainsActualRootsAndCreditAfterLaterDrain",
+        "--no-parallel"
+      ],
+      "cwd": "libs/mlx-swift-lm",
+      "explicit_environment": {
+        "DARKBLOOM_TEST_NATIVE_COMPLETE_PREFIX": "1",
+        "DARKBLOOM_TEST_NATIVE_COMPLETE_PREFIX_FAULT": "typed-fence"
+      },
+      "required_no_skips": true,
+      "xctest": {
+        "tests": 1,
+        "skipped": 0,
+        "failures": 0,
+        "seconds": 0.039
+      },
+      "swift_testing_runs": [
+        {
+          "tests": 0,
+          "suites": 0,
+          "seconds": 0.001
+        }
+      ],
+      "swift_testing_explicit_skip_lines": 0,
+      "swift_testing_skip_count_method": "Explicit Test/Suite skipped lines; Swift Testing totals include skipped cases, so this is an observed line count rather than a deduplicated case count.",
+      "unrun_reference_hardware_lines": 0
+    },
+    {
+      "name": "sdk-frozen-mimo-media",
+      "exit_code": 0,
+      "seconds": 5.395166417001747,
+      "command": [
+        "scripts/run-nested-suite.sh",
+        "MiMoV26NativeMediaDeadlineTests",
+        "--no-parallel"
+      ],
+      "cwd": "libs/mlx-swift-lm",
+      "explicit_environment": {
+        "MIMO_V26_SERIAL_NATIVE_TESTS": "1",
+        "MIMO_V26_NATIVE_MEDIA_DEADLINE_TESTS": "1",
+        "MIMO_V26_SERIAL_LOAD_FIXTURES": "${VALIDATION_DIR}/mimo-provider"
+      },
+      "required_no_skips": true,
+      "xctest": {
+        "tests": 14,
+        "skipped": 0,
+        "failures": 0,
+        "seconds": 2.22
+      },
+      "swift_testing_runs": [
+        {
+          "tests": 0,
+          "suites": 0,
+          "seconds": 0.001
+        }
+      ],
+      "swift_testing_explicit_skip_lines": 0,
+      "swift_testing_skip_count_method": "Explicit Test/Suite skipped lines; Swift Testing totals include skipped cases, so this is an observed line count rather than a deduplicated case count.",
+      "unrun_reference_hardware_lines": 0
+    },
+    {
+      "name": "sdk-frozen-all",
+      "exit_code": 0,
+      "seconds": 509.2613733339822,
+      "command": [
+        "swift",
+        "test",
+        "--skip-build",
+        "--no-parallel"
+      ],
+      "cwd": "libs/mlx-swift-lm",
+      "explicit_environment": {},
+      "required_no_skips": false,
+      "xctest": {
+        "tests": 1595,
+        "skipped": 334,
+        "failures": 0,
+        "seconds": 287.94
+      },
+      "swift_testing_runs": [
+        {
+          "tests": 1422,
+          "suites": 226,
+          "seconds": 218.316
+        }
+      ],
+      "swift_testing_explicit_skip_lines": 34,
+      "swift_testing_skip_count_method": "Explicit Test/Suite skipped lines; Swift Testing totals include skipped cases, so this is an observed line count rather than a deduplicated case count.",
+      "unrun_reference_hardware_lines": 9
+    },
+    {
+      "name": "make-provider-frozen-test",
+      "exit_code": 0,
+      "seconds": 426.935789625044,
+      "command": [
+        "make",
+        "provider-test"
+      ],
+      "cwd": ".",
+      "explicit_environment": {
+        "MIMO_PROMPT_ARTIFACT_DIRECTORY": "${PINNED_MIMO_PROMPT_FIXTURES}",
+        "MIMO_PROMPT_REFERENCE_VECTORS": "${REPOSITORY}/fixtures/prompt-contract/mimo-v26-additional20.json",
+        "MIMO_V26_SERIAL_LOAD_FIXTURES": "${VALIDATION_DIR}/mimo-provider",
+        "MIMO_V26_WIRED_METADATA_FIXTURE": "${VALIDATION_DIR}/mimo-provider/tiny-bf16",
+        "MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS": "1"
+      },
+      "required_no_skips": false,
+      "xctest": {
+        "tests": 553,
+        "skipped": 125,
+        "failures": 0,
+        "seconds": 45.425
+      },
+      "swift_testing_runs": [
+        {
+          "tests": 3696,
+          "suites": 489,
+          "seconds": 285.383
+        },
+        {
+          "tests": 1,
+          "suites": 1,
+          "seconds": 0.486
+        },
+        {
+          "tests": 1,
+          "suites": 0,
+          "seconds": 0.051
+        },
+        {
+          "tests": 1,
+          "suites": 1,
+          "seconds": 0.182
+        },
+        {
+          "tests": 1,
+          "suites": 1,
+          "seconds": 0.132
+        },
+        {
+          "tests": 7,
+          "suites": 1,
+          "seconds": 3.145
+        },
+        {
+          "tests": 1,
+          "suites": 1,
+          "seconds": 2.006
+        },
+        {
+          "tests": 1,
+          "suites": 1,
+          "seconds": 0.497
+        }
+      ],
+      "swift_testing_explicit_skip_lines": 91,
+      "swift_testing_skip_count_method": "Explicit Test/Suite skipped lines; Swift Testing totals include skipped cases, so this is an observed line count rather than a deduplicated case count.",
+      "unrun_reference_hardware_lines": 0
+    },
+    {
+      "name": "make-provider-frozen-build",
+      "exit_code": 0,
+      "seconds": 11.988419417000841,
+      "command": [
+        "make",
+        "provider-build"
+      ],
+      "cwd": ".",
+      "explicit_environment": {
+        "MIMO_PROMPT_ARTIFACT_DIRECTORY": "${PINNED_MIMO_PROMPT_FIXTURES}",
+        "MIMO_PROMPT_REFERENCE_VECTORS": "${REPOSITORY}/fixtures/prompt-contract/mimo-v26-additional20.json",
+        "MIMO_V26_SERIAL_LOAD_FIXTURES": "${VALIDATION_DIR}/mimo-provider",
+        "MIMO_V26_WIRED_METADATA_FIXTURE": "${VALIDATION_DIR}/mimo-provider/tiny-bf16",
+        "MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS": "1"
+      },
+      "required_no_skips": false
+    },
+    {
+      "name": "provider-frozen-native-startup",
+      "exit_code": 0,
+      "seconds": 7.9767099999589846,
+      "command": [
+        "../scripts/run-nested-suite.sh",
+        "MiMoV26StandaloneLifecycleTests.test(ActualScannerPreloadStartsListenerWithSameNativeOwner|StartRefusesActualUnpublishedPreloadWithoutReplacingOwner)",
+        "--no-parallel"
+      ],
+      "cwd": "provider-swift",
+      "explicit_environment": {
+        "MIMO_PROMPT_ARTIFACT_DIRECTORY": "${PINNED_MIMO_PROMPT_FIXTURES}",
+        "MIMO_PROMPT_REFERENCE_VECTORS": "${REPOSITORY}/fixtures/prompt-contract/mimo-v26-additional20.json",
+        "MIMO_V26_SERIAL_LOAD_FIXTURES": "${VALIDATION_DIR}/mimo-provider",
+        "MIMO_V26_WIRED_METADATA_FIXTURE": "${VALIDATION_DIR}/mimo-provider/tiny-bf16",
+        "MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS": "1",
+        "MIMO_V26_SERIAL_NATIVE_TESTS": "1"
+      },
+      "required_no_skips": true,
+      "xctest": {
+        "tests": 2,
+        "skipped": 0,
+        "failures": 0,
+        "seconds": 0.361
+      },
+      "swift_testing_runs": [
+        {
+          "tests": 0,
+          "suites": 0,
+          "seconds": 0.001
+        }
+      ],
+      "swift_testing_explicit_skip_lines": 0,
+      "swift_testing_skip_count_method": "Explicit Test/Suite skipped lines; Swift Testing totals include skipped cases, so this is an observed line count rather than a deduplicated case count.",
+      "unrun_reference_hardware_lines": 0
+    },
+    {
+      "name": "provider-frozen-native-memory",
+      "exit_code": 0,
+      "seconds": 1.8587330419686623,
+      "command": [
+        "../scripts/run-nested-suite.sh",
+        "testNativeMemoryAdmission|testNativeShutdownActivitySurvivesPendingHostUntilRealQuiescentDrain",
+        "--no-parallel"
+      ],
+      "cwd": "provider-swift",
+      "explicit_environment": {
+        "MIMO_PROMPT_ARTIFACT_DIRECTORY": "${PINNED_MIMO_PROMPT_FIXTURES}",
+        "MIMO_PROMPT_REFERENCE_VECTORS": "${REPOSITORY}/fixtures/prompt-contract/mimo-v26-additional20.json",
+        "MIMO_V26_SERIAL_LOAD_FIXTURES": "${VALIDATION_DIR}/mimo-provider",
+        "MIMO_V26_WIRED_METADATA_FIXTURE": "${VALIDATION_DIR}/mimo-provider/tiny-bf16",
+        "MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS": "1",
+        "MIMO_V26_SERIAL_NATIVE_TESTS": "1"
+      },
+      "required_no_skips": true,
+      "xctest": {
+        "tests": 4,
+        "skipped": 0,
+        "failures": 0,
+        "seconds": 0.41
+      },
+      "swift_testing_runs": [
+        {
+          "tests": 0,
+          "suites": 0,
+          "seconds": 0.001
+        }
+      ],
+      "swift_testing_explicit_skip_lines": 0,
+      "swift_testing_skip_count_method": "Explicit Test/Suite skipped lines; Swift Testing totals include skipped cases, so this is an observed line count rather than a deduplicated case count.",
+      "unrun_reference_hardware_lines": 0
+    },
+    {
+      "name": "provider-frozen-native-media",
+      "exit_code": 0,
+      "seconds": 3.8630803329870105,
+      "command": [
+        "../scripts/run-nested-suite.sh",
+        "testNativeMediaRelease|testAuthenticatedChatResponsesActuallyRouteEncodedImageThroughNativeBridge|testActualMemoryBackedVideoIndicesAndAuthenticatedNativeRoute|testNativeIdleBootstrapLearnsRealTargetRateAndKeepsTextRateIsolated|testNativePreparedSealReachesRealAtomicDeadlineRejectionWithoutLosingCharge|testTypedDeadlineGatePreservesRawTextAndOffPolicyAndRefusesForeignCapability|MiMoMediaDecodeMemoryTests",
+        "--no-parallel"
+      ],
+      "cwd": "provider-swift",
+      "explicit_environment": {
+        "MIMO_PROMPT_ARTIFACT_DIRECTORY": "${PINNED_MIMO_PROMPT_FIXTURES}",
+        "MIMO_PROMPT_REFERENCE_VECTORS": "${REPOSITORY}/fixtures/prompt-contract/mimo-v26-additional20.json",
+        "MIMO_V26_SERIAL_LOAD_FIXTURES": "${VALIDATION_DIR}/mimo-provider",
+        "MIMO_V26_WIRED_METADATA_FIXTURE": "${VALIDATION_DIR}/mimo-provider/tiny-bf16",
+        "MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS": "1",
+        "MIMO_V26_SERIAL_NATIVE_TESTS": "1"
+      },
+      "required_no_skips": true,
+      "xctest": {
+        "tests": 9,
+        "skipped": 0,
+        "failures": 0,
+        "seconds": 2.306
+      },
+      "swift_testing_runs": [
+        {
+          "tests": 0,
+          "suites": 0,
+          "seconds": 0.001
+        }
+      ],
+      "swift_testing_explicit_skip_lines": 0,
+      "swift_testing_skip_count_method": "Explicit Test/Suite skipped lines; Swift Testing totals include skipped cases, so this is an observed line count rather than a deduplicated case count.",
+      "unrun_reference_hardware_lines": 0
+    },
+    {
+      "name": "provider-frozen-native-prefix",
+      "exit_code": 0,
+      "seconds": 8.281252250017133,
+      "command": [
+        "../scripts/run-nested-suite.sh",
+        "MiMoV26NativeLoadTransactionTests.testNativeCompletePrefix",
+        "--no-parallel"
+      ],
+      "cwd": "provider-swift",
+      "explicit_environment": {
+        "MIMO_PROMPT_ARTIFACT_DIRECTORY": "${PINNED_MIMO_PROMPT_FIXTURES}",
+        "MIMO_PROMPT_REFERENCE_VECTORS": "${REPOSITORY}/fixtures/prompt-contract/mimo-v26-additional20.json",
+        "MIMO_V26_SERIAL_LOAD_FIXTURES": "${VALIDATION_DIR}/mimo-prefix",
+        "MIMO_V26_WIRED_METADATA_FIXTURE": "${VALIDATION_DIR}/mimo-provider/tiny-bf16",
+        "MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS": "1",
+        "MIMO_V26_SERIAL_NATIVE_TESTS": "1"
+      },
+      "required_no_skips": true,
+      "xctest": {
+        "tests": 5,
+        "skipped": 0,
+        "failures": 0,
+        "seconds": 0.765
+      },
+      "swift_testing_runs": [
+        {
+          "tests": 0,
+          "suites": 0,
+          "seconds": 0.001
+        }
+      ],
+      "swift_testing_explicit_skip_lines": 0,
+      "swift_testing_skip_count_method": "Explicit Test/Suite skipped lines; Swift Testing totals include skipped cases, so this is an observed line count rather than a deduplicated case count.",
+      "unrun_reference_hardware_lines": 0
+    },
+    {
+      "name": "provider-frozen-qwen-live",
+      "exit_code": 0,
+      "seconds": 88.25090891600121,
+      "command": [
+        "../scripts/run-nested-suite.sh",
+        "Qwen35(Adjacent|DemandedShort)CheckpointLiveTests",
+        "--no-parallel"
+      ],
+      "cwd": "provider-swift",
+      "explicit_environment": {
+        "MIMO_PROMPT_ARTIFACT_DIRECTORY": "${PINNED_MIMO_PROMPT_FIXTURES}",
+        "MIMO_PROMPT_REFERENCE_VECTORS": "${REPOSITORY}/fixtures/prompt-contract/mimo-v26-additional20.json",
+        "MIMO_V26_SERIAL_LOAD_FIXTURES": "${VALIDATION_DIR}/mimo-provider",
+        "MIMO_V26_WIRED_METADATA_FIXTURE": "${VALIDATION_DIR}/mimo-provider/tiny-bf16",
+        "MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS": "1",
+        "DARKBLOOM_LIVE_MLX_TESTS": "1",
+        "DARKBLOOM_LIVE_MLX_QWEN35_CHECKPOINT_RETENTION": "1"
+      },
+      "required_no_skips": true,
+      "xctest": {
+        "tests": 0,
+        "skipped": 0,
+        "failures": 0,
+        "seconds": 0.0
+      },
+      "swift_testing_runs": [
+        {
+          "tests": 2,
+          "suites": 2,
+          "seconds": 80.612
+        }
+      ],
+      "swift_testing_explicit_skip_lines": 0,
+      "swift_testing_skip_count_method": "Explicit Test/Suite skipped lines; Swift Testing totals include skipped cases, so this is an observed line count rather than a deduplicated case count.",
+      "unrun_reference_hardware_lines": 0
+    },
+    {
+      "name": "provider-frozen-native-fault",
+      "exit_code": 0,
+      "seconds": 8.061027792049572,
+      "command": [
+        "../scripts/run-nested-suite.sh",
+        "testNativeFenceRefusalKeepsActualBundlePermitAndBlocksOtherOwnerReclaim",
+        "--no-parallel"
+      ],
+      "cwd": "provider-swift",
+      "explicit_environment": {
+        "MIMO_PROMPT_ARTIFACT_DIRECTORY": "${PINNED_MIMO_PROMPT_FIXTURES}",
+        "MIMO_PROMPT_REFERENCE_VECTORS": "${REPOSITORY}/fixtures/prompt-contract/mimo-v26-additional20.json",
+        "MIMO_V26_SERIAL_LOAD_FIXTURES": "${VALIDATION_DIR}/mimo-provider",
+        "MIMO_V26_WIRED_METADATA_FIXTURE": "${VALIDATION_DIR}/mimo-provider/tiny-bf16",
+        "MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS": "1",
+        "MIMO_V26_SERIAL_NATIVE_TESTS": "1",
+        "MIMO_V26_PROVIDER_LIFETIME_NATIVE_TESTS": "1",
+        "MIMO_V26_PROVIDER_LIFETIME_FAULT_CASE": "testNativeFenceRefusalKeepsActualBundlePermitAndBlocksOtherOwnerReclaim",
+        "DARKBLOOM_PREFIX_CACHE": "0",
+        "DARKBLOOM_PREFIX_CACHE_MEMORY": "0"
+      },
+      "required_no_skips": true,
+      "xctest": {
+        "tests": 1,
+        "skipped": 0,
+        "failures": 0,
+        "seconds": 0.16
+      },
+      "swift_testing_runs": [
+        {
+          "tests": 0,
+          "suites": 0,
+          "seconds": 0.001
+        }
+      ],
+      "swift_testing_explicit_skip_lines": 0,
+      "swift_testing_skip_count_method": "Explicit Test/Suite skipped lines; Swift Testing totals include skipped cases, so this is an observed line count rather than a deduplicated case count.",
+      "unrun_reference_hardware_lines": 0
+    }
+  ],
+  "final_real_qwen_cells": [
+    {
+      "case": "adjacent_fork",
+      "measurement_role": "final_cut_functional_verification_separate_from_prior_aggregates",
+      "modelHash": "127de76b4ef82b7aaa0acaac0ee31c784cff066eda64291f521f051469b7c24b",
+      "mtp": true,
+      "sameText": true,
+      "forkPrompt": 5776,
+      "shared": 5145,
+      "donorPrompt": 7136,
+      "targetTensorBytes": 261246972,
+      "targetFileBytes": 261287014,
+      "extraSavedTokens": 4096,
+      "beforeHit": 1024,
+      "afterHit": 5120,
+      "beforeBytesRead": 93492672,
+      "afterBytesRead": 261324896,
+      "positions": [
+        1024,
+        5120,
+        6144
+      ],
+      "donorTTFT_seconds": 9.382598708,
+      "donorFinishToDone_seconds": 0.309091042,
+      "beforeTTFT_seconds": 6.309171708,
+      "afterTTFT_seconds": 1.016976042,
+      "coldTTFT_seconds": 7.907138083
+    },
+    {
+      "case": "demanded_short",
+      "measurement_role": "final_cut_functional_verification_separate_from_prior_aggregates",
+      "modelHash": "127de76b4ef82b7aaa0acaac0ee31c784cff066eda64291f521f051469b7c24b",
+      "mtp": true,
+      "sameText": true,
+      "prompt": 2559,
+      "hint": 2048,
+      "stripe": 4096,
+      "fileBytes": 135428194,
+      "forkPrompt": 2708,
+      "shared": 2077,
+      "warmHit": 2048,
+      "bytesRead": 135449424,
+      "positions": [
+        2048
+      ],
+      "tensorBytes": [
+        135405564
+      ],
+      "coldTTFT_seconds": 3.243307,
+      "novelTTFT_seconds": 3.257446333,
+      "donorTTFT_seconds": 3.398064334,
+      "donorFinishToDone_seconds": 0.088237,
+      "warmTTFT_seconds": 0.967899042,
+      "forkColdTTFT_seconds": 3.741019083,
+      "ranges": [
+        [
+          0,
+          2048
+        ],
+        [
+          2048,
+          2559
+        ]
+      ]
+    }
+  ],
+  "measurement_separation": "Final A4 real-model reruns are functional verification. They are not pooled into the earlier two adjacent-fork or three solo short-prefix timing aggregates.",
+  "parity_scope": {
+    "native_tiny_fixture": "Exact generated token IDs, including packed/control paths, with ownership/byte reservations drained.",
+    "real_qwen_fixture": "Exact generated text and authenticated encrypted checkpoint manifests/token savings; no claim of bit-exact floating-point logits."
+  },
+  "qualification_limits": [
+    "RSS/high-contention mixed throughput and other dense artifacts remain separate qualification unless measured in the separate mixed-cohort artifact.",
+    "Future ordinary packing is not simulated in the pure forecast and can conservatively price one later boundary that actual packing disarms; already-launched packing is reflected before finalization.",
+    "No production changes, release, deployment, merge or memory/tenant/proof safeguard relaxation."
+  ],
+  "historical_ledger_test_regression": {
+    "sdk_before": "8eadbb80a78f2d9cf47c2b61b6a3315ff08b1936",
+    "sdk_after": "58d538c8a9668f72a2702d5bb348e0e53a8cdf61",
+    "upstream_semantic_commit": "06224a8ceaed14675623bab11c739200dab4472d",
+    "upstream_pull_request": "https://github.com/Layr-Labs/mlx-swift-lm/pull/175",
+    "test": "HistoricalWindowCheckpointTests.slotCapLeavesRoomForServing",
+    "before": {
+      "scope": "full SDK, allocator cache affected by earlier suites",
+      "window_bytes": 76197,
+      "capped_windows": 3,
+      "uncapped_windows": 9,
+      "request_tokens": 1043808,
+      "uncapped_reserved": true,
+      "result": "failed original refusal assertion"
+    },
+    "after": {
+      "scope": "required isolated regression",
+      "window_bytes": 76197,
+      "capped_windows": 3,
+      "uncapped_windows": 9,
+      "request_tokens": 1044512,
+      "capped_reserved": true,
+      "uncapped_reserved": false,
+      "swift_testing_tests": 1,
+      "suites": 1,
+      "seconds": 1.348,
+      "skips": 0,
+      "result": "passed"
+    },
+    "root_cause": "The old fixture estimated request size from bytesReserved, which includes a replaceable physical-floor overhead determined by allocator buffer reuse. The fix probes actual reserve/release acceptance, then retains the existing half-window margin.",
+    "changes": "Tests only; production ledger, memory caps and capped-versus-uncapped refusal assertions are unchanged.",
+    "comparison_limit": "Before and isolated-after allocator states differ; request-token values are validation evidence, not a throughput or capacity-policy comparison. Full allocator-populated verification is recorded separately below.",
+    "after_full_allocator_populated_run": {
+      "window_bytes": 76197,
+      "capped_windows": 3,
+      "uncapped_windows": 9,
+      "request_tokens": 1045472,
+      "capped_reserved": true,
+      "uncapped_reserved": false,
+      "xctest": {
+        "tests": 1595,
+        "expected_skips": 334,
+        "failures": 0,
+        "seconds": 287.941
+      },
+      "swift_testing": {
+        "tests": 1422,
+        "suites": 226,
+        "seconds": 218.316
+      },
+      "result": "complete SDK passed"
+    }
+  },
+  "parent_component_checks": [
+    {
+      "component": "coordinator",
+      "command": "GOTOOLCHAIN=go1.25.0 make coordinator-test",
+      "status": "passed",
+      "api_tests": 1798,
+      "other_packages_and_runner_guards": "passed"
+    },
+    {
+      "component": "coordinator",
+      "command": "GOTOOLCHAIN=go1.25.0 make coordinator-build",
+      "status": "passed"
+    },
+    {
+      "component": "coordinator",
+      "command": "go vet ./api ./registry ./promptcontract; focused race checks",
+      "status": "passed"
+    },
+    {
+      "component": "promptsidecar",
+      "toolchain": "Rust 1.88.0",
+      "checks": [
+        "format",
+        "all-target check",
+        "clippy with warnings denied",
+        "all-target tests",
+        "release build",
+        "required pinned MiMo tokenizer/corpus fixtures"
+      ],
+      "tests": 180,
+      "status": "passed"
+    }
+  ],
+  "schema": 1,
+  "date": "2026-10-03",
+  "native_storage_qualification": {
+    "applies_to": "All original timing aggregates, final-cut functional cells, mixed cohorts and separate warm fork.",
+    "strict_fsync": false,
+    "write_completion_is_fsync_durability": false,
+    "physical_disk_vs_os_file_cache": "Not separately measured."
+  },
+  "additional_mixed_verification": {
+    "evidence": "qwen-mixed.json",
+    "fixture": "qwen-mixed-benchmark.swift",
+    "required_pipeline_replaced": false,
+    "mixed_pairs": 3,
+    "warm_pairs": 1,
+    "runtime_mtp": false,
+    "control_packed_cohorts": 0,
+    "qualification": "Cold capture creation cost and separate functional reuse; no isolated packing or fleet throughput claim."
+  }
+}

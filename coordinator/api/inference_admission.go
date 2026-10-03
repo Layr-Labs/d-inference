@@ -232,6 +232,7 @@ type inferenceAdmissionParams struct {
 	receivedAt                time.Time
 	cachePlanForModel         func(string) registry.CachePlan
 	promptWorkForModel        func(string) *protocol.PromptWork
+	deadlineForWork           func(string, *protocol.PromptWork) time.Duration
 	policy                    selfRoutePolicy
 	// refundReservation releases any pre-flight balance reservation before a
 	// terminal rejection. Must be non-nil (a no-op closure on the free paths).
@@ -421,12 +422,21 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 	// 503 which counts as downtime. Fast 429s also preserve our TTFT
 	// metrics. Self-route skips this fleet-wide gate — it queues on the
 	// owner's machine instead (handled below).
+	forecastDeadlines := make(map[string]time.Duration, 2)
 	forecastRequest := func(candidateModel string) *registry.PendingRequest {
 		// Exact cache planning may call the prompt-contract sidecar. It must
 		// not occupy a CPU scan permit, including on a lazy alias fallback.
 		permit.release()
 		query := p.firstContentRequest(candidateModel, modelTraits(candidateModel))
 		query.MinDecodeTPS = s.minDecodeTPS
+		if !p.receivedAt.IsZero() {
+			candidateDeadline := time.Duration(0)
+			if !query.FirstContentDeadline.IsZero() {
+				candidateDeadline = query.FirstContentDeadline.Sub(p.receivedAt)
+			}
+			forecastDeadlines[candidateModel] = candidateDeadline
+			permit.params.deadline = candidateDeadline
+		}
 		if !permit.acquire(candidateModel) {
 			return nil
 		}
@@ -683,6 +693,9 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 				withCode("rate_limit_exceeded")))
 			return model, true
 		}
+	}
+	if candidateDeadline, ok := forecastDeadlines[model]; ok {
+		p.deadline = candidateDeadline
 	}
 	ttftThreshold := p.remainingFirstContentBudget()
 	if ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold) {

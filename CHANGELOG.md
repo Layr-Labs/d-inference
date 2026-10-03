@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — demanded prefix reuse
+
+- Retain a distinct demanded shared-prefix checkpoint even beside the deepest checkpoint, within the existing three-boundary and memory limits. Give authenticated repeated checkpoints access to the reserved SSD write share on their first local appearance; unique extensions continue to use the novel share.
+- Capture one aligned demanded boundary in eligible dense Qwen text prompts below the normal solo stripe, so repeated short prefixes can become durable. Keep novel requests and other serving layouts on their existing geometry, and price the extra range in the first-content projection.
+- Reuse immutable compiled prompt templates within the bounded contract cache and avoid fixture-only body/token copies during production planning. Keep request dates, prompt data, proof identity and render limits isolated.
+- Reconcile first-content input-token budgets from current verified exact counts before preflight and dispatch, preserving the original arrival time, account/alias policy and earlier caller deadlines. Calibrated uncertainty and provider recount cannot extend the budget.
+
 ## Unreleased — leaderboard availability
 
 - Add a concurrent BRIN time index for recent provider-earnings rankings, enable range autosummarization, and keep planner statistics current. Return an uncached 503 when ranking queries fail instead of showing and caching an empty leaderboard.

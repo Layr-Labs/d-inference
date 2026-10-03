@@ -1,0 +1,10 @@
+model,reduced_context_matrix,matrix_complete,successes_over_attempts,configuration_errors,service_failures,rate_limits,cache_hits_over_reported_successes,cache_hit_percent,cached_input_token_percent,repeated_cache_hit_percent,repeated_floor_eligible_hits_over_successes,repeated_floor_eligible_cache_hit_percent,cost_usd,cache_savings_expected_usd,long_output_sample_n,long_total_tps_median,long_end_to_end_tps_median,long_ttft_any_s_median
+xiaomi/mimo-v2.6-flash,True,True,105/107,0,2,2,9/105,8.57,10.66,10.34,9/71,12.68,0.020369592,0.0019937279999999997,23,27.59,22.01,2.798
+prism-ml/ternary-bonsai-2-27b,False,True,40/83,0,43,43,13/40,32.5,27.37,37.14,13/35,37.14,0.016966975,0.0019968,17,40.23,25.83,6.921
+qwen/qwen3.8-27b,False,True,64/94,0,30,30,12/64,18.75,15.4,24.49,12/49,24.49,0.0338893,0.0013056,16,43.19,30.06,2.838
+nvidia/nemotron-3.5-lightning,False,True,82/113,0,31,31,35/82,42.68,46.66,53.03,35/66,53.03,0.027810858,0.007867392,24,165.43,91.48,1.349
+qwen/qwen3.6-35b-a3b,False,True,126/128,0,2,2,36/126,28.57,35.3,33.96,36/106,33.96,0.09186575,0.0172032,32,94.69,54.27,3.924
+google/gemma-4-26b-a4b-it,False,True,127/128,0,1,1,14/127,11.02,10.31,13.08,14/107,13.08,0.083579588,0.004343808,32,97.28,58.72,2.422
+qwen/qwen3.5-9b,True,True,105/107,0,2,2,0/105,0.0,0.0,0.0,0/71,0.0,0.01449078,0.0,22,89.97,63.36,2.682
+qwen/qwen3.5-35b-a3b,False,True,128/129,0,1,1,24/128,18.75,16.44,22.22,24/108,22.22,0.16061896,0.01327104,32,142.94,97.74,1.913
+openai/gpt-oss-20b,False,True,108/123,0,15,15,20/108,18.52,11.56,22.47,20/89,22.47,0.019252602,0.00110592,24,49.7,27.55,4.879

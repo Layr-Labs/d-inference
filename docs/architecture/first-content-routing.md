@@ -1,6 +1,6 @@
 # First-content routing
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-03
 
 The coordinator selects providers by expected time to delivered content, with a
 separate conservative forecast for deadline feasibility. The selection policy applies by
@@ -65,6 +65,17 @@ sidecar call. Cache routing off still permits independently bounded count-only
 work. A temporary miss of the planning concurrency gate is not memoized, so a
 later attempt can recover exact counts and cache planning within the original
 deadline (`api/promptwork/planner.go`, `Plan`; `api/promptwork/planning.go`).
+
+Before candidate preflight and final dispatch, a current, artifact/contract-bound
+exact count reconciles the SLA's input-token term (`promptWorkDeadline`,
+`coordinator/api/first_content_prompt_deadline.go`). A larger or smaller exact
+count corrects the duration, always measured from the original ingress time.
+An earlier caller context cutoff still wins; planning uses its original bounded
+context and never gets another budget. Calibrated uncertainty, heuristic,
+missing, malformed or stale work retains the initial duration. Account exemption
+and explicit public-alias policy are resolved independently; physical token
+reservations and billing remain unchanged. Provider recount after dispatch
+does not extend the reconciled clock.
 
 `prompt_work` carries the count, upper bound and artifact/template identity to
 preflight, selection and provider reconciliation. Exact and calibrated counts

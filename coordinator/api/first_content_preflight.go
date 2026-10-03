@@ -12,6 +12,11 @@ import (
 // does not reserve capacity or tighten the request's physical memory budget.
 // Call without a routing-scan permit: cache planning may contact a sidecar.
 func (p inferenceAdmissionParams) firstContentRequest(model string, traits registry.RequestTraits) *registry.PendingRequest {
+	received := p.receivedAt
+	// Capture even an isolated caller's anchor before optional planning.
+	if received.IsZero() {
+		received = time.Now()
+	}
 	pr := &registry.PendingRequest{
 		Model: model, EstimatedPromptTokens: p.estimatedPromptTokens,
 		FirstContentPromptTokens: calibratedContextPromptTokens(model, p.estimatedPromptTokens),
@@ -19,14 +24,6 @@ func (p inferenceAdmissionParams) firstContentRequest(model string, traits regis
 		Traits: traits, AllowedProviderSerials: p.allowedProviderSerials,
 		SelfRouteOnly: p.policy.enabled, PreferOwner: p.policy.prefer,
 		OwnerAccountID: p.policy.ownerAccountID,
-	}
-	if p.deadline > 0 {
-		received := p.receivedAt
-		// Isolated callers may have no HTTP timing.
-		if received.IsZero() {
-			received = time.Now()
-		}
-		pr.FirstContentDeadline = received.Add(p.deadline)
 	}
 	if p.cachePlanForModel != nil {
 		pr.CachePlan = p.cachePlanForModel(model)
@@ -36,6 +33,13 @@ func (p inferenceAdmissionParams) firstContentRequest(model string, traits regis
 	}
 	if pr.PromptWork == nil {
 		pr.PromptWork = promptwork.Heuristic(pr.FirstContentPromptTokens)
+	}
+	deadline := p.deadline
+	if p.deadlineForWork != nil {
+		deadline = p.deadlineForWork(model, pr.PromptWork)
+	}
+	if deadline > 0 {
+		pr.FirstContentDeadline = received.Add(deadline)
 	}
 	return pr
 }

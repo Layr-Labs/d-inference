@@ -798,6 +798,12 @@ func (s *Server) maybeFallbackAlias(parsed map[string]any, mode aliasFallbackMod
 			// planning. Failed reacquisition aborts before any fallback walk.
 			return currentModel, 0, 0, 0, 0, false, false
 		}
+		// Candidate-specific exact accounting may correct the token term.
+		// Use that candidate's remaining ingress-anchored budget for this gate.
+		ttftThreshold = 0
+		if !query.FirstContentDeadline.IsZero() {
+			ttftThreshold = max(time.Nanosecond, time.Until(query.FirstContentDeadline))
+		}
 	}
 	candidates, rejections, tooLarge, bestTTFT, hasTTFT := s.registry.QuickFirstContentCapacityForRequest(target.Previous, query)
 	enforceTTFT := mode == aliasFallbackTTFT
@@ -2302,6 +2308,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		},
 		requiresVision, parsed)
 	r = r.WithContext(promptwork.WithMemo(r.Context(), &cachePlans.memo))
+	deadlineForWork := s.promptWorkDeadlineForRequest(r.Context(), timingReceivedAt(timing), publicModel, deadline)
 	var preflightHandled bool
 	preflightStart := time.Now()
 	model, preflightHandled = s.runInferenceAdmission(w, r, parsed, inferenceAdmissionParams{
@@ -2321,6 +2328,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		receivedAt:                timingReceivedAt(timing),
 		cachePlanForModel:         cachePlans.forModel,
 		promptWorkForModel:        cachePlans.workForModel,
+		deadlineForWork:           deadlineForWork,
 		policy:                    policy,
 		refundReservation:         refundReservation,
 		onModelFallback:           onModelFallback,
@@ -2368,6 +2376,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	profileDBCall(rp, registryReadStart2)
 	cachePlan := cachePlans.forBody(model, providerBody)
+	deadline = deadlineForWork(model, promptwork.FromContext(r.Context(), model, providerBody))
 	rp.Mark(registry.StampReqPlanDone)
 	if rp != nil {
 		rp.Model, rp.PublicModel, rp.Stream = model, publicModel, stream
@@ -2879,6 +2888,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		},
 		requiresVision, parsed)
 	r = r.WithContext(promptwork.WithMemo(r.Context(), &cachePlans.memo))
+	deadlineForWork := s.promptWorkDeadlineForRequest(r.Context(), timingReceivedAt(timing), publicModel, genericDeadline)
 	var preflightHandled bool
 	preflightStart := time.Now()
 	model, preflightHandled = s.runInferenceAdmission(w, r, parsed, inferenceAdmissionParams{
@@ -2898,6 +2908,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		receivedAt:                timingReceivedAt(timing),
 		cachePlanForModel:         cachePlans.forModel,
 		promptWorkForModel:        cachePlans.workForModel,
+		deadlineForWork:           deadlineForWork,
 		policy:                    policy,
 		refundReservation:         refundReservation,
 		onModelFallback:           refreshGenericBody,
@@ -2926,6 +2937,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		// for unsupported shapes while declining cache participation.
 		inferenceBody = endpointBody
 	}
+	genericDeadline = deadlineForWork(model, promptwork.FromContext(r.Context(), model, inferenceBody))
 
 	// Generic endpoints use the same dispatch state machine as chat. This keeps
 	// queue deadlines, speculative failover, pre-content boilerplate handling,

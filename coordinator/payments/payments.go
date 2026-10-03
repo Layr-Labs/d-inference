@@ -80,6 +80,13 @@ func (l *Ledger) LedgerHistory(consumerID string) []store.LedgerEntry {
 	return l.store.LedgerHistory(consumerID)
 }
 
+// ForgetConsumer drops the in-memory usage history of an erased account.
+func (l *Ledger) ForgetConsumer(consumerID string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.usage, consumerID)
+}
+
 // RecordUsage appends a usage entry for a consumer's history, keeping only the
 // newest usageHistoryLimit entries in insertion order.
 //

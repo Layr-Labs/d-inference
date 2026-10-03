@@ -62,6 +62,13 @@ func (s *Server) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, err = repo.CompleteStripeCheckout(id, obj.ID, account, obj.AmountTotal*10_000)
+	if errors.Is(err, store.ErrCheckoutErased) {
+		// Redelivery cannot credit an erased account; acknowledge so Stripe
+		// stops retrying. The payment needs a refund in the Stripe dashboard.
+		s.logger.Error("stripe Checkout completed for an erased account; refund it in Stripe", "billing_session_id", id)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	if err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, store.ErrPayoutConflict) {

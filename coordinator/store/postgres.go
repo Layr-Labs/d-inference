@@ -2211,6 +2211,8 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) er
 	return upsertProviderRecord(ctx, s.pool, p)
 }
 
+// upsertProviderRecord leaves a soft-deleted row alone: the account is under
+// erasure and a late heartbeat persist must not rewrite its serial or location.
 func upsertProviderRecord(ctx context.Context, db providerRecordDB, p ProviderRecord) error {
 	_, err := db.Exec(ctx,
 		`INSERT INTO providers (
@@ -2243,7 +2245,8 @@ func upsertProviderRecord(ctx context.Context, db providerRecordDB, p ProviderRe
 			lifetime_requests_served = $20, lifetime_tokens_generated = $21,
 			last_session_requests_served = $22, last_session_tokens_generated = $23,
 			lifetime_stats = $24, last_session_stats = $25,
-			last_seen = $27, public_key = $28`,
+			last_seen = $27, public_key = $28
+		WHERE providers.deleted_at IS NULL`,
 		p.ID, p.Hardware, p.Models, p.Backend,
 		marshalProviderLocation(p.Location),
 		p.TrustLevel, p.Attested,

@@ -929,6 +929,8 @@ func main() {
 	// No-op when Stripe Connect isn't configured. Spawns its own panic-safe loop.
 	srv.StartStripePayoutReconciler(ctx)
 	srv.StartGlobalPayoutReconciler(ctx)
+	// Account erasure: scrub requests whose grace period has ended.
+	srv.StartAccountErasureLoop(ctx)
 
 	// HTTP server with graceful shutdown.
 	httpServer := &http.Server{

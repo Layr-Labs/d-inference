@@ -133,6 +133,9 @@ PostgreSQL URL; there is no memory-store fallback or schema-skip mode.
 | 13 | `00013_soft_delete_columns.sql` | Adds `deleted_at TIMESTAMPTZ` (nullable, no default) to `users`, `api_keys`, `providers`, `provider_tokens`. |
 | 14–16 | 14 Go (`indexMigrations`); `00015_…`, `00016_…` | Replaces the full unique key on `users.privy_user_id` with the partial unique index `idx_users_privy_live` (`WHERE deleted_at IS NULL`); drops `users_privy_user_id_key` and `idx_users_privy`. |
 | 17 | `00017_referrals_referrer_code_cascade.sql` | Replaces the `referrals.referrer_code` foreign key with `referrals_referrer_code_cascade_fkey` (`ON UPDATE CASCADE`), added `NOT VALID` and then validated. |
+| 18 | `00018_erasure_tables.sql` | Creates `erasure_requests` and `erasure_outbox` for [account erasure](#account-erasure). |
+| 19–20 | Go: `indexMigrations` | `CONCURRENTLY` indexes for account erasure: `billing_sessions(referral_code)` and `users(privy_user_id) WHERE deleted_at IS NOT NULL`. |
+| 21 | `00021_erasure_refuse_credits.sql` | `erasure_refused_credits` and the triggers that keep credits out of an erased account (`erasure_keep_balance_insert`, `erasure_keep_balance_update` on `balances`; `erasure_refuse_ledger_credit` on `ledger_entries`). |
 
 Versions 2 to 5 are Go migrations (`goMigrations`). They keep the code they had
 before goose and run on the store pool. The SQL migrations run on a separate
@@ -181,16 +184,17 @@ Privy ID, Stripe account and email; promotion claims; key authentication,
 listing, lookup, update and rotation; provider token lookup; provider record,
 MDA chain, account listing, restore (`GetProviderForRestore`) and machine
 continuity history; usage-flow provider locations; and the machine-inventory
-backfill. Writes and hard deletes do not filter. No code sets `deleted_at` yet;
-account erasure will, and it must also invalidate the `CachedStore` user
-cache. A Privy user ID is unique among live users only, so a person can sign up
-again after erasure.
+backfill. Writes and hard deletes do not filter, with one exception: the
+provider upsert leaves a soft-deleted `providers` row alone, so a late
+heartbeat persist cannot rewrite it (`upsertProviderRecord`). Only
+[account erasure](#account-erasure) sets `deleted_at`. A Privy user ID is
+unique among live users only, so a person can sign up again after erasure.
 
 `coordinator/store/schema/schema.sql` is the `pg_dump --schema-only` of the
 schema the migrations build, without `goose_db_version`.
 `TestMigrationsBuildCheckedInSchema` builds a fresh database with goose and
 fails when its schema differs from that file. The file is also the schema that
-sqlc reads: the api_keys queries are SQL in `coordinator/store/queries/api_keys.sql`,
+sqlc reads: the api_keys and account erasure queries are SQL in `coordinator/store/queries/`,
 and `make sqlc-generate` turns them into Go in `coordinator/store/storedb`
 (`coordinator/store/sqlc.yaml`). sqlc reads the dump, not the migrations,
 because it cannot see columns that the baseline adds inside `DO` blocks. To add a migration, follow
@@ -289,6 +293,106 @@ flowchart LR
   B -- no --> X[exit 1]
   D -. any error .-> X
 ```
+
+### Account erasure
+
+Account erasure removes the personal data of one account in three steps
+(procedure: [account erasure runbook](../operations/account-erasure.md)):
+
+```mermaid
+stateDiagram-v2
+  [*] --> planned: plan (dry run, confirm token)
+  planned --> pending: confirm (soft delete)
+  pending --> canceled: cancel before scrub_after
+  pending --> erased: scrub (loop after scrub_after, or force)
+  erased --> [*]
+```
+
+1. **Plan.** `PlanAccountErasure` counts, in a read-only transaction, the rows
+   every rule would change and lists the account's Stripe objects. It writes
+   nothing. `SaveErasurePlan` stores a `planned` request with the counts and
+   the SHA-256 hash of a 15-minute confirm token.
+2. **Confirm (soft delete).** `RequestAccountErasure` checks the token, its
+   expiry, the account email and the hash of the planned wallet list, refuses
+   while a withdrawal is open (including a Stripe withdrawal paid within
+   `stripePayoutBounceWindow`, 30 days), and sets
+   `deleted_at` on the user and its providers. API keys and provider tokens
+   get `active = false` and `deleted_at`. `scrub_after` is now plus
+   `EIGENINFERENCE_ERASURE_GRACE`. The handler then disconnects the account's
+   providers (`DisconnectAccount`); the tokens are already revoked, so a
+   provider that reconnects is unlinked.
+3. **Scrub.** `ScrubAccount` is one transaction. It locks the `users` row,
+   the request, the account's `billing_sessions` and then `balances` (the
+   same session-before-balance order as `CompleteStripeCheckout`; every
+   erasure step locks `users` before `erasure_requests`), refuses while a
+   withdrawal is open, collects every key of the account first (provider IDs,
+   Secure Enclave keys, serial numbers, App Attest key IDs, the referrer code,
+   Checkout Session IDs, every Express account and Global Payouts recipient
+   in its users row and withdrawals, `mda_serial` alias digests, the given
+   wallet addresses), drops the Secure Enclave and App Attest keys that
+   another account also uses (they are reported under `retained`), zeroes
+   both balances with one `erasure_forfeit` ledger entry, and runs each rule
+   of `erasureRules` (`coordinator/store/erasure_rules.go`). Every rule
+   statement is bounded by a collected key, and its affected-row count must
+   equal a count query with the same predicate run just before it in the same
+   transaction; a difference aborts with `ErrErasureCountMismatch` and nothing
+   commits. The scrub then writes one `erasure_outbox` row for each Stripe
+   object and one `erasure_log` row, and marks the request `erased`. After the
+   commit the API layer clears in-memory copies: registry providers, the
+   trust-reuse cache, MDM scheduler jobs and UDID routes, and the ledger's
+   usage history (`scrubErasure`, `coordinator/api/erasure_loop.go`).
+
+An hourly loop (`StartAccountErasureLoop`) leases due `pending` requests with
+`FOR UPDATE SKIP LOCKED` for one hour and scrubs each one; a failure is stored
+in `last_error` and retried after the lease. `CancelAccountErasure` clears
+`deleted_at` on the user and providers before `scrub_after`; keys and tokens
+stay revoked. While a request is pending, `PrivyUserPendingErasure` makes a
+Privy login answer 403 `account_pending_deletion`; after the scrub the stored
+Privy ID is random. `CachedStore` overrides the three writers to drop cached
+users.
+
+Once a request is `erased`, triggers keep every credit out of the account:
+`balances` increases are capped at the old values and a positive
+`ledger_entries` row is replaced by an `erasure_refused_credits` row (type,
+amount, reference without admin notes or Checkout IDs), so the ledger still
+sums to zero and the caller (a webhook, a settlement) sees success and
+acknowledges. The memory store does the same in `creditLocked`.
+
+The rule table, by table:
+
+| Table | Link to the account | Rule |
+|---|---|---|
+| `users` | `account_id` | `email`, Stripe fields: empty; `privy_user_id`: unique random |
+| `api_keys` | `owner_account_id` | `name`: empty |
+| `provider_tokens` | `account_id` | `label` (host name): empty |
+| `device_codes` | `account_id` | delete row |
+| `providers` | `account_id` | `serial_number`: empty; `location`, `attestation_result`, `mda_cert_chain`: NULL |
+| `provider_sessions` | `account_id` | `serial_number`: empty; open sessions closed |
+| `provider_log_reports` | `account_id` | delete row |
+| `provider_trust_reuse`, `provider_verification_jobs`, `code_attestations`, `code_attest_push_budgets` | `se_pubkey` of the account's providers that no other account's provider has | delete row; a shared key's rows are kept and reported |
+| `darkbloom_machine_aliases` | `app_attest`/`legacy_se` with `scope` = account; `mda_serial` digest of the account's serials | delete row; an `mda_serial` alias of a machine another account used is kept and reported |
+| `app_attest_evidence_blobs`, `app_attest_receipt_blobs`, `app_attest_receipt_jobs` | evidence of the account's provider sessions; receipts of its App Attest keys that no other account's session used | delete row |
+| `app_attest_evidence`, `app_attest_receipts` | same | `context`: `{}` |
+| `usage` | `consumer_key_hash` = SHA-256 of the account ID | `request_location`: NULL |
+| `inference_routes` | `consumer_key_hash`; `provider_id` | `consumer_region`, `provider_region`: NULL |
+| `referrers` | `account_id` | `code`: unique random; `referrals` follows by `ON UPDATE CASCADE` |
+| `billing_sessions` | `account_id`; `referral_code` = the old code | `external_id`: empty, `pending` becomes `erased`; copied `referral_code`: the new code |
+| `ledger_entries` | `account_id` | `stripe:<session>` references: `stripe:erased`; admin notes: dropped |
+| `global_payout_recipients` | `account_id` | tombstone, as `RemoveGlobalRecipient` |
+| `global_payout_withdrawals` | `account_id` | `data.recipient_id`, `data.payout_method_id`: empty; `data.request`: `{}` |
+| `stripe_withdrawals` | `account_id` | `stripe_account_id`: empty |
+| `payments`, `provider_payouts` | the wallet addresses named in the request | each address: one random value for all its rows |
+
+`TestErasureMarkerPostgres` (`coordinator/store/erasure_marker_test.go`)
+seeds every rule's table with marker strings, plus a second account that
+shares a machine and a Secure Enclave key, scrubs, and searches every text,
+JSON, array and bytea column of every table for the marker; a hit outside
+`erasureMarkerAllowList` fails, and the second account's data must not
+change. It proves the rules for the rows it seeds: a new column that holds
+personal data needs a rule and a fixture row.
+`TestErasureMarkerMemory` does the same over every value reachable from the
+`MemoryStore`. What is kept, and why, is listed in the
+[runbook](../operations/account-erasure.md#what-is-kept-and-why).
 
 ### Table families
 
@@ -399,6 +503,14 @@ KV blocks under a per-model key, not tokens.
 8. **Provider secrets never leave the Keychain in the clear.** The KV KEK is
    wrapped by a Secure Enclave key and the SSD cache is unreadable without it
    (`provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift`).
+9. **An erasure scrub changes exactly the rows it counted, or nothing.**
+   Each rule statement runs after a count with the same predicate in one
+   transaction, and a difference rolls the whole scrub back
+   (`applyRules`, `coordinator/store/erasure_postgres.go`).
+10. **An erased account's balance stays zero.** The triggers in
+   `coordinator/store/schema/migrations/00021_erasure_refuse_credits.sql`
+   refuse every credit after the scrub and record it for review
+   (`TestErasedAccountRefusesCredits`).
 
 ## Failure modes
 
@@ -410,6 +522,7 @@ KV blocks under a per-model key, not tokens.
 | A coordinator built before goose fails to boot with a unique-violation on `idx_users_privy` | It replays its boot DDL, whose non-concurrent `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_privy` fails once a soft-deleted and a live user share a Privy ID | Roll back only to images built with goose; see the [deployment rollback](../operations/coordinator-deploy.md#rollback). |
 | Boot fails with `database holds data that retired backfills never processed` or `balances.withdrawable_micro_usd is missing` | The database has billing, usage or earnings history but never ran a backfill retired after v0.9.10 | Boot a coordinator built from v0.9.10 (which still runs them) against it once, then redeploy (`checkRetiredBackfills`). |
 | Boot fails with an actionable `provider_earnings` duplicate message | Rows share a non-empty `job_id`, so the unique index cannot be built | Run `dedupe_provider_earnings.sql` offline, then redeploy. |
+| An account erasure stays `pending` after `scrub_after` | The scrub refused (a withdrawal still open) or aborted (`ErrErasureCountMismatch`: rows changed between count and statement); the loop retries hourly | `last_error` in `GET /v1/admin/accounts/{account_id}/erasure`; [runbook](../operations/account-erasure.md). |
 | `EIGENINFERENCE_DATABASE_URL is required in production` | No DSN and no memory-store opt-in | The environment file; see [`../operations/coordinator-deploy.md`](../operations/coordinator-deploy.md). |
 | Billing or key state gone after a restart | The process ran on the memory store | Startup log line `using in-memory store`. |
 | `/v1/stats` slow and pool saturated | Full scans on `usage` holding connections; the 80-connection floor is the mitigation, not a fix | `pg_stat_activity`; the read cache. |
@@ -430,6 +543,7 @@ KV blocks under a per-model key, not tokens.
 | Provider identity and usage reads | `coordinator/store/postgres_provider_read.go` (`providerRecordColumns`, `scanProviderRecord`, `GetProviderRecord`); `coordinator/store/provider_restore.go` (`GetProviderForRestore`, using the same projection); `coordinator/store/postgres_usage_read.go` (`readUsageRecords`, `UsageRecords`); `coordinator/store/postgres_row.go` (`rowScanner`) |
 | Domain files | `coordinator/store/postgres_model_registry.go`, `coordinator/store/postgres_base_rewards.go`, `coordinator/store/postgres_profiles.go`, `coordinator/store/route_telemetry.go`, `coordinator/store/usage_time_series.go`, `coordinator/store/apikey.go` |
 | Memory backend | `coordinator/store/memory.go`, `coordinator/store/memory_base_rewards.go` |
+| Account erasure | `coordinator/store/erasure.go` (types, `AccountErasureStore`), `coordinator/store/erasure_rules.go` (`erasureRules`), `coordinator/store/erasure_keys.go`, `coordinator/store/erasure_postgres.go`, `coordinator/store/erasure_memory.go`, `coordinator/api/erasure_handlers.go`, `coordinator/api/erasure_loop.go` |
 | Manual SQL | `coordinator/store/migrations/` |
 | Persistent-disk state outside Postgres (MicroMDM, journals) | `coordinator/deploy/start.sh`, `coordinator/api/trust_reuse_journal.go`, [`../operations/state-export.md`](../operations/state-export.md) |
 | Provider files and Keychain | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `provider-swift/Sources/ProviderCore/Service/`, `provider-swift/Sources/ProviderCore/KVCacheSSD/`, `provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift` |

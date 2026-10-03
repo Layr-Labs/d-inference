@@ -8,6 +8,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -275,5 +276,44 @@ func TestConfigCheck(t *testing.T) {
 	}
 	if err := (Config{AppID: testAppID, VerificationKey: "x"}).Check(); err != nil {
 		t.Fatalf("fully configured auth should pass Check, got %v", err)
+	}
+}
+
+// TestGetOrCreateUserRefusesPendingErasure: during the erasure grace period
+// a login must not create a second live account; after the scrub the Privy
+// ID is free and the login makes a fresh account.
+func TestGetOrCreateUserRefusesPendingErasure(t *testing.T) {
+	st := testMemStore()
+	if err := st.CreateUser(&store.User{AccountID: "acct-gone", PrivyUserID: "did:privy:gone", Email: "gone@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	now := time.Now()
+	plan, err := st.PlanAccountErasure(ctx, "acct-gone", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SaveErasurePlan(ctx, "acct-gone", "admin_key", plan.ErasureCounts, nil, "token", now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	req, err := st.RequestAccountErasure(ctx, store.ErasureConfirm{AccountID: "acct-gone", ConfirmToken: "token", Email: "gone@example.com", Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, keyPEM := genES256Key(t)
+	a := newAuth(t, keyPEM, "", st)
+
+	if _, err := a.GetOrCreateUser("did:privy:gone"); !errors.Is(err, ErrAccountPendingDeletion) {
+		t.Fatalf("login during grace: %v, want ErrAccountPendingDeletion", err)
+	}
+	if _, err := st.ScrubAccount(ctx, req.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := a.GetOrCreateUser("did:privy:gone")
+	if err != nil {
+		t.Fatalf("login after erasure: %v", err)
+	}
+	if fresh.AccountID == "acct-gone" || fresh.Email != "" {
+		t.Fatalf("login after erasure = %+v, want a fresh account", fresh)
 	}
 }

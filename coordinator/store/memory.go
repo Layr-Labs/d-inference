@@ -177,6 +177,13 @@ type MemoryStore struct {
 	floorDrawSeq       int64
 	floorDrawKeys      map[string]struct{} // "providerKey|epochID" → settled marker
 
+	// Account erasure requests and their outbox rows.
+	erasureRequests map[string]*memoryErasureRequest
+	erasureOutbox   []ErasureOutboxItem
+	// Erased accounts refuse credits; refused ones are kept for review.
+	erasedAccounts        map[string]bool
+	erasureRefusedCredits []ErasureRefusedCredit
+	erasureRefusedSeq     int64
 }
 
 // NewMemory creates a new MemoryStore. If adminKey is non-empty it is
@@ -184,6 +191,8 @@ type MemoryStore struct {
 func NewMemory(scfg Config) *MemoryStore {
 	s := &MemoryStore{
 		modelDemandStartedAt:          time.Now().UTC(),
+		erasureRequests:               make(map[string]*memoryErasureRequest),
+		erasedAccounts:                make(map[string]bool),
 		keyRecords:                    make(map[string]*APIKey),
 		keysByID:                      make(map[string]string),
 		keySpend:                      make(map[string]*keySpend),
@@ -1236,8 +1245,9 @@ func (s *MemoryStore) Credit(accountID string, amountMicroUSD int64, entryType L
 func (s *MemoryStore) CreditWithdrawable(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.creditLocked(accountID, amountMicroUSD, entryType, reference, time.Now())
-	s.withdrawable[accountID] += amountMicroUSD
+	if s.creditLocked(accountID, amountMicroUSD, entryType, reference, time.Now()) {
+		s.withdrawable[accountID] += amountMicroUSD
+	}
 	return nil
 }
 
@@ -1253,8 +1263,9 @@ func (s *MemoryStore) CreditWithdrawableOnce(accountID string, amountMicroUSD in
 			return false, nil
 		}
 	}
-	s.creditLocked(accountID, amountMicroUSD, entryType, reference, time.Now())
-	s.withdrawable[accountID] += amountMicroUSD
+	if s.creditLocked(accountID, amountMicroUSD, entryType, reference, time.Now()) {
+		s.withdrawable[accountID] += amountMicroUSD
+	}
 	return true, nil
 }
 
@@ -1320,6 +1331,9 @@ func (s *MemoryStore) MigrateAccountBalance(from, to string) (bool, error) {
 		CreatedAt:      now,
 	})
 
+	if s.refuseErasedCreditLocked(to, bal, LedgerMigration, "migrate:in", now) {
+		return true, nil
+	}
 	s.balances[to] += bal
 	s.withdrawable[to] += wdr
 	s.ledgerSeq++
@@ -1352,7 +1366,12 @@ func (s *MemoryStore) LedgerHistory(accountID string) []LedgerEntry {
 	return entries
 }
 
-func (s *MemoryStore) creditLocked(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string, createdAt time.Time) {
+// creditLocked credits the balance and records the ledger entry. It returns
+// false, changing nothing, when an erased account refuses the credit.
+func (s *MemoryStore) creditLocked(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string, createdAt time.Time) bool {
+	if s.refuseErasedCreditLocked(accountID, amountMicroUSD, entryType, reference, createdAt) {
+		return false
+	}
 	s.balances[accountID] += amountMicroUSD
 	s.ledgerSeq++
 	s.ledgerEntries = append(s.ledgerEntries, LedgerEntry{
@@ -1364,6 +1383,7 @@ func (s *MemoryStore) creditLocked(accountID string, amountMicroUSD int64, entry
 		Reference:      reference,
 		CreatedAt:      createdAt,
 	})
+	return true
 }
 
 // --- Referral System ---
@@ -2648,8 +2668,9 @@ func (s *MemoryStore) creditProviderAccountLocked(earning *ProviderEarning) erro
 		cp.CreatedAt = time.Now()
 	}
 
-	s.creditLocked(cp.AccountID, cp.AmountMicroUSD, LedgerPayout, cp.JobID, cp.CreatedAt)
-	s.withdrawable[cp.AccountID] += cp.AmountMicroUSD
+	if s.creditLocked(cp.AccountID, cp.AmountMicroUSD, LedgerPayout, cp.JobID, cp.CreatedAt) {
+		s.withdrawable[cp.AccountID] += cp.AmountMicroUSD
+	}
 	s.providerEarningsSeq++
 	cp.ID = s.providerEarningsSeq
 	s.providerEarnings = append(s.providerEarnings, cp)
@@ -2738,6 +2759,11 @@ func (s *MemoryStore) UpsertProvider(_ context.Context, p ProviderRecord) error 
 }
 
 func (s *MemoryStore) upsertProviderRecordLocked(p ProviderRecord) {
+	// A soft-deleted record belongs to an account under erasure; a late
+	// heartbeat persist must not bring it back or rewrite it.
+	if old, ok := s.providerRecords[p.ID]; ok && old.DeletedAt != nil {
+		return
+	}
 	cp := p
 	if p.Location != nil {
 		loc := *p.Location

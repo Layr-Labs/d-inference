@@ -390,6 +390,19 @@ func (c *trustReuseCache) revocationState(seKey string) (uint64, string) {
 	return rec.revocationGeneration, rec.revocationEventID
 }
 
+// forget drops the cached records of erased SE keys. With no record the next
+// connection of such a key takes the full verification path.
+func (c *trustReuseCache) forget(seKeys []string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, key := range seKeys {
+		delete(c.records, key)
+	}
+}
+
 func (c *trustReuseCache) isRevoked(seKey string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()

@@ -287,6 +287,39 @@ func (s *mdmVerificationScheduler) Unbind(seKey string, generation uint64) {
 	s.signal()
 }
 
+// Forget drops the in-memory jobs, bindings and UDID routes of erased SE
+// keys and cancels their running attempts. A canceled attempt only releases
+// its claim, which is an UPDATE of a row the scrub already deleted.
+func (s *mdmVerificationScheduler) Forget(seKeys []string) {
+	if s == nil || len(seKeys) == 0 {
+		return
+	}
+	erased := make(map[string]bool, len(seKeys))
+	for _, key := range seKeys {
+		erased[key] = true
+	}
+	s.mu.Lock()
+	for key, job := range s.jobs {
+		if !erased[job.record.SEPubKey] {
+			continue
+		}
+		if job.attemptCancel != nil {
+			job.attemptCancel()
+		}
+		if job.record.UDID != "" && s.byUDID[job.record.UDID] == key {
+			delete(s.byUDID, job.record.UDID)
+		}
+		if !job.running {
+			delete(s.jobs, key)
+		}
+	}
+	for key := range erased {
+		delete(s.bindings, key)
+	}
+	s.mu.Unlock()
+	s.signal()
+}
+
 func (s *mdmVerificationScheduler) loadDueRows() {
 	now := s.deps.now().UTC()
 	limit := s.cfg.QueueCapacity

@@ -27,3 +27,47 @@ type ApiKey struct {
 	SelfRouteOnly  bool
 	DeletedAt      *time.Time
 }
+
+type ErasureOutbox struct {
+	ID         string
+	RequestID  string
+	Target     string
+	ExternalID string
+	State      string
+	Attempts   int32
+	NextAt     time.Time
+	LeaseUntil *time.Time
+	LastError  string
+	DoneAt     *time.Time
+	CreatedAt  time.Time
+}
+
+type ErasureRefusedCredit struct {
+	ID             int64
+	AccountID      string
+	EntryType      string
+	AmountMicroUsd int64
+	Reference      string
+	CreatedAt      time.Time
+}
+
+type ErasureRequest struct {
+	ID               string
+	AccountID        string
+	Actor            string
+	CanceledBy       string
+	Reason           string
+	State            string
+	Plan             []byte
+	ConfirmTokenHash string
+	ConfirmExpiresAt *time.Time
+	WalletHash       string
+	WalletAddresses  []string
+	RequestedAt      *time.Time
+	ScrubAfter       *time.Time
+	ErasedAt         *time.Time
+	CanceledAt       *time.Time
+	LeaseUntil       *time.Time
+	LastError        string
+	CreatedAt        time.Time
+}

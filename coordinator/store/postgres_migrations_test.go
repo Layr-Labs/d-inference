@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -182,5 +183,25 @@ func TestMigrateRetriesLockTimeout(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "hit lock_timeout; retrying") {
 		t.Fatalf("migrate did not retry after a lock timeout; logs:\n%s", logs.String())
+	}
+}
+
+// A CREATE INDEX CONCURRENTLY that fails leaves an invalid index, and an
+// SQL file's IF NOT EXISTS would then skip it and record the version. Index
+// builds therefore run as Go migrations through ensureConcurrentIndex,
+// which fails unless the index ends up valid.
+func TestSQLMigrationsDoNotBuildIndexesConcurrently(t *testing.T) {
+	entries, err := migrationFiles.ReadDir(migrationDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		b, err := migrationFiles.ReadFile(migrationDir + "/" + entry.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if regexp.MustCompile(`(?i)CREATE\s+(UNIQUE\s+)?INDEX\s+CONCURRENTLY`).Match(b) {
+			t.Errorf("%s builds an index CONCURRENTLY; use a Go migration with ensureConcurrentIndex", entry.Name())
+		}
 	}
 }

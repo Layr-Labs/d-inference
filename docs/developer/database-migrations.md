@@ -30,15 +30,43 @@ mechanism is explained in
    ```
 
    Goose runs the file in one transaction. Put `-- +goose NO TRANSACTION` at
-   the top for `CREATE INDEX CONCURRENTLY` or `DROP INDEX CONCURRENTLY`, and
-   use one such statement per file. Wrap a statement that contains `;` (a
-   `DO` block or a function body) in `-- +goose StatementBegin` and
+   the top for `DROP INDEX CONCURRENTLY`. Wrap a statement that contains `;`
+   (a `DO` block or a function body) in `-- +goose StatementBegin` and
    `-- +goose StatementEnd`.
+
+   Do not put `CREATE INDEX CONCURRENTLY` in an SQL file
+   (`TestSQLMigrationsDoNotBuildIndexesConcurrently` fails). A build that
+   fails, for example on `lock_timeout`, leaves an invalid index; with
+   `IF NOT EXISTS` the next attempt skips it and goose records the version
+   with a broken index. Add a Go migration to `goMigrations`
+   (`coordinator/store/postgres_migrations.go`) instead:
+
+   ```go
+   step(6, func(ctx context.Context) error {
+       return s.ensureConcurrentIndex(ctx, "idx_example_account",
+           `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_example_account ON example (account_id)`)
+   }),
+   ```
+
+   `ensureConcurrentIndex` (`coordinator/store/postgres_startup.go`) returns at
+   once when a valid index exists, refuses an invalid leftover by name (drop it
+   by hand, then restart), builds the index, and fails unless the result is
+   valid. The version is recorded only after it succeeds.
 3. Keep each statement short and lock-safe. The migration session sets
    `lock_timeout` to 3 s and `statement_timeout` to 10 min. Add a column
    without a volatile default; add a constraint `NOT VALID`, then `VALIDATE`
    it; build indexes on large tables `CONCURRENTLY`. Do not swallow errors in a
    `DO ... EXCEPTION WHEN others` block: a failure must stop the boot.
+
+   A migration runs once. Nothing in it runs again on later boots, so it
+   cannot repair rows that a writer keeps producing; fix the writer.
+
+   Do not drop or rename a column, or add `NOT NULL` or another constraint to
+   a table the baseline creates, while a coordinator image built before goose
+   can still be started as a rollback target. That image replays its own boot
+   DDL: `ADD COLUMN IF NOT EXISTS` brings a dropped column back, and its
+   `DROP NOT NULL` on `fleet_snapshots.free_for_load_gb` undoes a later
+   `SET NOT NULL`.
 4. Regenerate the schema file from a database built by the migrations:
 
    ```bash

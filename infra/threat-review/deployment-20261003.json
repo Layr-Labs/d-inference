@@ -10,9 +10,9 @@
   "account": "188847976460",
   "region": "us-east-1",
   "actions_variables": {
-    "BEDROCK_SCAN_ROLE_ARN": "arn:aws:iam::188847976460:role/d-inference-threat-review",
     "BEDROCK_SCAN_AWS_REGION": "us-east-1",
-    "BEDROCK_SCAN_PROFILES": "{\"sonnet\":\"arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/13cwzfubd3h1\",\"opus\":\"arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/8dyqpjhdjkiy\",\"sol\":\"arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/8xbmmz0i0p7o\"}"
+    "BEDROCK_SCAN_PROFILES": "{\"sonnet\":\"arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/xozi5e4a29tj\",\"opus\":\"arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/8dyqpjhdjkiy\",\"sol\":\"arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/8xbmmz0i0p7o\"}",
+    "BEDROCK_SCAN_ROLE_ARN": "arn:aws:iam::188847976460:role/d-inference-threat-review"
   },
   "oidc": {
     "use_default": false,
@@ -52,7 +52,7 @@
           "bedrock:InvokeModel"
         ],
         "Resource": [
-          "arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/13cwzfubd3h1",
+          "arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/xozi5e4a29tj",
           "arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/8dyqpjhdjkiy",
           "arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/8xbmmz0i0p7o"
         ],
@@ -62,7 +62,7 @@
         "Condition": {
           "StringEquals": {
             "bedrock:InferenceProfileArn": [
-              "arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/13cwzfubd3h1",
+              "arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/xozi5e4a29tj",
               "arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/8dyqpjhdjkiy",
               "arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/8xbmmz0i0p7o"
             ]
@@ -73,13 +73,13 @@
         ],
         "Resource": [
           "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-opus-5-5",
-          "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-6",
+          "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-5-5",
           "arn:aws:bedrock:us-east-1::foundation-model/openai.gpt-6.1-sol",
           "arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-opus-5-5",
-          "arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-sonnet-4-6",
+          "arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-sonnet-5-5",
           "arn:aws:bedrock:us-east-2::foundation-model/openai.gpt-6.1-sol",
           "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-opus-5-5",
-          "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-6",
+          "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-5-5",
           "arn:aws:bedrock:us-west-2::foundation-model/openai.gpt-6.1-sol"
         ],
         "Effect": "Allow"
@@ -88,43 +88,43 @@
   },
   "models": {
     "sonnet": {
-      "source_id": "us.anthropic.claude-sonnet-4-6",
-      "profile_arn": "arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/13cwzfubd3h1",
+      "source_id": "us.anthropic.claude-sonnet-5-5",
+      "profile_arn": "arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/xozi5e4a29tj",
       "source_and_integration_schema_validated": true,
       "needs_deeper_review": false,
       "responses": [
         {
-          "request_id": "80736a59-4c3d-4e50-a6fb-49c5aa8c708f",
+          "request_id": "186851cf-4c4a-466e-9975-4cb1075a1553",
           "stage": "source",
           "stop_reason": "end_turn",
           "usage": {
             "cacheReadInputTokens": 0,
             "cacheWriteInputTokens": 0,
-            "inputTokens": 1500,
-            "outputTokens": 202,
-            "totalTokens": 1702
+            "inputTokens": 2108,
+            "outputTokens": 326,
+            "totalTokens": 2434
           },
-          "timestamp": "2026-10-03T16:51:16.020318+00:00"
+          "timestamp": "2026-10-03T17:46:57.064869+00:00"
         },
         {
-          "request_id": "8493b54b-05e8-418f-9c47-1a7b48e2165f",
+          "request_id": "fa9ba1ba-322d-49bf-9bc9-067d44e1669b",
           "stage": "integration",
           "stop_reason": "end_turn",
           "usage": {
             "cacheReadInputTokens": 0,
             "cacheWriteInputTokens": 0,
-            "inputTokens": 1213,
-            "outputTokens": 150,
-            "totalTokens": 1363
+            "inputTokens": 1835,
+            "outputTokens": 283,
+            "totalTokens": 2118
           },
-          "timestamp": "2026-10-03T16:51:18.961447+00:00"
+          "timestamp": "2026-10-03T17:46:59.275182+00:00"
         }
       ],
       "raw_model_denial": {
         "denied": true,
         "error": "AccessDeniedException",
-        "request_id": "1865ffab-755c-4c3c-9e33-5e803ea69713",
-        "model_arn": "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-6",
+        "request_id": "86c0846d-1ca7-40d7-b5ac-79060cb37a61",
+        "model_arn": "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-5-5",
         "role_arn": "arn:aws:iam::188847976460:role/d-inference-validation-20261003",
         "scope": "Live call under a temporary role with identical runtime invoke policy plus Marketplace deny"
       }
@@ -216,10 +216,12 @@
   },
   "successful_contract_calls": 6,
   "sonnet55": {
-    "agreement": "NOT_AVAILABLE",
-    "restricted_call_error": "AccessDeniedException",
-    "new_agreement_created": false,
-    "replaced_unavailable_profile_deleted": true
+    "agreement": "AVAILABLE",
+    "authorization": "AUTHORIZED",
+    "entitlement": "AVAILABLE",
+    "region": "AVAILABLE",
+    "source_and_integration_schema_validated": true,
+    "agreement_created_by_this_agent": false
   },
   "feature_branch_denial": {
     "audience": "sts.amazonaws.com",
@@ -259,40 +261,6 @@
     }
   },
   "runtime_policy_simulation": [
-    {
-      "alias": "sonnet",
-      "context": [],
-      "results": [
-        {
-          "EvalActionName": "bedrock:InvokeModel",
-          "EvalResourceName": "arn:aws:bedrock:${Region}:${Account}:${ResourceType}/${ResourceId}",
-          "EvalDecision": "implicitDeny",
-          "MissingContextValues": [
-            "bedrock:InferenceProfileArn"
-          ]
-        }
-      ]
-    },
-    {
-      "alias": "sonnet",
-      "context": [
-        {
-          "ContextKeyName": "bedrock:InferenceProfileArn",
-          "ContextKeyValues": [
-            "arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/13cwzfubd3h1"
-          ],
-          "ContextKeyType": "string"
-        }
-      ],
-      "results": [
-        {
-          "EvalActionName": "bedrock:InvokeModel",
-          "EvalResourceName": "arn:aws:bedrock:${Region}:${Account}:${ResourceType}/${ResourceId}",
-          "EvalDecision": "allowed",
-          "MissingContextValues": []
-        }
-      ]
-    },
     {
       "alias": "opus",
       "context": [],
@@ -360,29 +328,50 @@
           "MissingContextValues": []
         }
       ]
+    },
+    {
+      "alias": "sonnet",
+      "context": [],
+      "results": [
+        {
+          "EvalActionName": "bedrock:InvokeModel",
+          "EvalResourceName": "arn:aws:bedrock:${Region}:${Account}:${ResourceType}/${ResourceId}",
+          "EvalDecision": "implicitDeny",
+          "MissingContextValues": [
+            "bedrock:InferenceProfileArn"
+          ]
+        }
+      ]
+    },
+    {
+      "alias": "sonnet",
+      "context": [
+        {
+          "ContextKeyName": "bedrock:InferenceProfileArn",
+          "ContextKeyValues": [
+            "arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/xozi5e4a29tj"
+          ],
+          "ContextKeyType": "string"
+        }
+      ],
+      "results": [
+        {
+          "EvalActionName": "bedrock:InvokeModel",
+          "EvalResourceName": "arn:aws:bedrock:${Region}:${Account}:${ResourceType}/${ResourceId}",
+          "EvalDecision": "allowed",
+          "MissingContextValues": []
+        }
+      ]
     }
   ],
   "temporary_validation_role_cleanup": {
     "role": "d-inference-validation-20261003",
     "inline_policy_removed": true,
     "role_removed": true,
-    "absence_verified": true
+    "absence_verified": true,
+    "superseded_sonnet46_profile_absent": true
   },
   "quotas": [
-    {
-      "QuotaCode": "L-15B8E632",
-      "QuotaName": "Cross-region model inference tokens per minute for Anthropic Claude Sonnet 4.6",
-      "Value": 6000000.0,
-      "Unit": "None",
-      "Description": "The maximum number of cross-region tokens that you can submit for model inference in one minute for Anthropic Claude Sonnet 4.6. The quota considers the combined sum of input and output tokens across all requests to Converse, ConverseStream, InvokeModel and InvokeModelWithResponseStream."
-    },
-    {
-      "QuotaCode": "L-00FF3314",
-      "QuotaName": "Cross-region model inference requests per minute for Anthropic Claude Sonnet 4.6",
-      "Value": 10000.0,
-      "Unit": "None",
-      "Description": "The maximum number of cross-region requests that you can submit for model inference in one minute for Anthropic Claude Sonnet 4.6. This quota represents the total number of requests to the Converse, ConverseStream, InvokeModel and InvokeModelWithResponseStream actions."
-    },
     {
       "QuotaCode": "L-A4430697",
       "QuotaName": "Cross-region model inference tokens per minute for Anthropic Claude Opus 5.5",
@@ -403,6 +392,13 @@
       "Value": 28800000000.0,
       "Unit": "None",
       "Description": "Daily maximum tokens for model inference for GPT-6.1 Sol. Combines sum of input and output tokens across all requests to Converse, ConverseStream, InvokeModel and InvokeModelWithResponseStream. Doubled for cross-region calls; not applicable in case of approved TPM increase."
+    },
+    {
+      "QuotaCode": "L-94A31E46",
+      "QuotaName": "Cross-region model inference tokens per minute for Anthropic Claude Sonnet 5.5",
+      "Value": 6000000.0,
+      "Unit": "None",
+      "Description": "The maximum number of cross-region tokens that you can submit for model inference in one minute for Anthropic Claude Sonnet 5.5. The quota considers the combined sum of input and output tokens across all requests to Converse, ConverseStream, InvokeModel and InvokeModelWithResponseStream."
     }
   ],
   "cost_tracking": {
@@ -436,7 +432,7 @@
     "Live model tests used a temporary operator-assumed role with identical runtime invoke statements and explicit Marketplace deny; that role was deleted.",
     "Master workflow role assumption and end-to-end scanner/OpenRouter fallback tests follow Anto's later PR1325 merge.",
     "Sol returned needs_deeper_review=true on integration; schema compatibility is not security-review clearance.",
-    "Original harness production_model metadata describes pinned PR1325 selection; source_model and verified profile identify the actual Sonnet4.6 alternative.",
+    "Historical Sonnet4.6 ledger metadata retains the requested upstream production_model; source_model identifies that earlier alternative. Current Sonnet5.5 records match both fields.",
     "Claude's OIDC/App exchange succeeds before and after migration; its existing Anthropic API key returns 401 in both runs."
   ],
   "merge_protections_unchanged": true,
@@ -459,6 +455,68 @@
     "master-rules-before.json": "ce131351981f3488643e2061339d5bd648ac75db6d1ac5bfe77060ae7dc70764",
     "master-rules-after.json": "ce131351981f3488643e2061339d5bd648ac75db6d1ac5bfe77060ae7dc70764",
     "bedrock.json": "12b6bc352f48c56c633e7881b27a7c5b1e97c8ba2b0d2b5392e22c0abd712109",
-    "relevant-quotas.json": "dabc6bbf7e28abee526d0fa5143f886f1c7bfc11c61071c74d95e7552678ebb9"
-  }
+    "relevant-quotas.json": "dabc6bbf7e28abee526d0fa5143f886f1c7bfc11c61071c74d95e7552678ebb9",
+    "sonnet55-enabled-availability.json": "106a3b88d74cafec933c743919473f38126f287e14234657b847400afd8e15e1",
+    "sonnet55-enabled-profile.json": "fe43b2e40d0ddf4d62523c0c1a59a2dd1261041a361c2a9002dfc70a81b970e8",
+    "sonnet55-enabled-runtime-permissions.json": "dee17701f61ffc1af17efc80a026a0e2a2891bc3d8a36eea0756abe8becc2607",
+    "sonnet55-enabled-runtime-simulation.json": "1596f542c1b2060279c3c26e95bc9e8833b002894ee4f3c1536dbf3ba756d53d",
+    "sonnet55-enabled-result.json": "3bee5e401bf72cd5e6ddd07e88941f061c508130f38e7a23bfc716719b877082",
+    "sonnet55-enabled-usage.jsonl": "337099b4866c5b4fb11744b38890b3b283f4ea2e6fc66c6f65ffe6a2f455ad7c",
+    "sonnet55-enabled-raw-denial.json": "1b163365776972c7d83777948fe66908e71996dc665816fbd03cf886e1310c2c",
+    "sonnet55-enabled-cleanup.json": "366af565a9eaca68765364974db97cd692efae00e62c73a880897e9ffa2451fb",
+    "sonnet55-enabled-actions-variables.json": "5e0f177e544fe89f3b6850cb7dad58d2ed86906f6c2932e8d6b3de6fa65e97a8"
+  },
+  "historical_model_validations": {
+    "sonnet46": {
+      "source_id": "us.anthropic.claude-sonnet-4-6",
+      "profile_arn": "arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/13cwzfubd3h1",
+      "source_and_integration_schema_validated": true,
+      "needs_deeper_review": false,
+      "responses": [
+        {
+          "request_id": "80736a59-4c3d-4e50-a6fb-49c5aa8c708f",
+          "stage": "source",
+          "stop_reason": "end_turn",
+          "usage": {
+            "cacheReadInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "inputTokens": 1500,
+            "outputTokens": 202,
+            "totalTokens": 1702
+          },
+          "timestamp": "2026-10-03T16:51:16.020318+00:00"
+        },
+        {
+          "request_id": "8493b54b-05e8-418f-9c47-1a7b48e2165f",
+          "stage": "integration",
+          "stop_reason": "end_turn",
+          "usage": {
+            "cacheReadInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "inputTokens": 1213,
+            "outputTokens": 150,
+            "totalTokens": 1363
+          },
+          "timestamp": "2026-10-03T16:51:18.961447+00:00"
+        }
+      ],
+      "raw_model_denial": {
+        "denied": true,
+        "error": "AccessDeniedException",
+        "request_id": "1865ffab-755c-4c3c-9e33-5e803ea69713",
+        "model_arn": "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-6",
+        "role_arn": "arn:aws:iam::188847976460:role/d-inference-validation-20261003",
+        "scope": "Live call under a temporary role with identical runtime invoke policy plus Marketplace deny"
+      }
+    },
+    "sonnet55_before_enablement": {
+      "agreement": "NOT_AVAILABLE",
+      "restricted_call_error": "AccessDeniedException",
+      "new_agreement_created": false,
+      "replaced_unavailable_profile_deleted": true
+    }
+  },
+  "validation_history_successful_calls": 8,
+  "selection_update": "Sonnet5.5 revalidated after user confirmed enablement; Sonnet4.6 profile removed; Opus5.5 and Sol6.1 unchanged.",
+  "deployed_template_sha256": "1694861d2172b8ed9b252a2daf2f1aa8f81e485dcc5e1d2bc08b584f10db2029"
 }

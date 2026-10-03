@@ -16,7 +16,7 @@ does not change cloud permissions, branch rules or auto-merge settings by itself
 ## Prerequisites
 
 - AWS provisioning rights in the selected shared Bedrock account, with model
-  entitlement for Sonnet 4.6, Opus 5.5 and Sol 6.1 in the US system profiles.
+  entitlement for Sonnet 5.5, Opus 5.5 and Sol 6.1 in the US system profiles.
 - GitHub repository and organization ruleset administration.
 - Existing state-writer App, signed state branch and funded OpenRouter backup;
   see [review configuration](../developer/threat-model-review.md).

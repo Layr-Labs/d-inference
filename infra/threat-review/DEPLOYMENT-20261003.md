@@ -1,8 +1,9 @@
 # Bedrock provisioning — 2026-10-03
 
-Provisioned from PR1325's reviewed CloudFormation starting point, with Sonnet4.6
-as the tested alternative to unavailable Sonnet5.5. This handoff does not activate
-the scanner or change merge protections.
+Provisioned from PR1325's reviewed CloudFormation starting point. Sonnet5.5 is now
+enabled and has passed restricted source/integration validation, restoring the
+original requested selection alongside Opus5.5 and Sol6.1. This handoff does not
+activate the scanner or change merge protections.
 
 ## Configuration applied
 
@@ -21,14 +22,17 @@ Repository Actions variables have been set and read back:
 
 | Alias | Final source profile | Dedicated application profile |
 | --- | --- | --- |
-| `sonnet` | `us.anthropic.claude-sonnet-4-6` | `arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/13cwzfubd3h1` |
+| `sonnet` | `us.anthropic.claude-sonnet-5-5` | `arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/xozi5e4a29tj` |
 | `opus` | `us.anthropic.claude-opus-5-5` | `arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/8dyqpjhdjkiy` |
 | `sol` | `us.openai.gpt-6.1-sol` | `arn:aws:bedrock:us-east-1:188847976460:application-inference-profile/8xbmmz0i0p7o` |
 
-Sonnet5.5 reported agreement `NOT_AVAILABLE` and a restricted invocation returned
-`AccessDeniedException`. No Marketplace agreement was created. Its unused initial
-application profile was replaced and its absence verified. The scanner and
-OpenRouter fallback model name must both use Sonnet4.6 as in this change.
+Sonnet5.5 initially reported agreement `NOT_AVAILABLE` and a restricted invocation
+returned `AccessDeniedException`, so Sonnet4.6 was tested as a temporary alternative.
+After the owner confirmed enablement, all four availability axes read ready and
+Sonnet5.5 passed both production-schema calls. The final profile above replaces
+the temporary Sonnet4.6 profile, whose absence was verified. No Marketplace
+agreement was created by this agent. Scanner and OpenRouter identity are restored
+to Sonnet5.5 with the original $2/$10 per-million-token provider ceilings.
 
 ## Trust and permissions
 
@@ -90,7 +94,7 @@ Applied US cross-region quotas read on2026-10-03:
 
 | Model | Tokens/minute | Requests/minute |
 | --- | ---: | ---: |
-| Sonnet4.6 | 6,000,000 (`L-15B8E632`) | 10,000 (`L-00FF3314`) |
+| Sonnet5.5 | 6,000,000 (`L-94A31E46`) | Not found in the inspected applied inventory |
 | Opus5.5 | 30,000,000 (`L-A4430697`) | Not found in the inspected applied inventory |
 | Sol6.1 | 40,000,000 (`L-8C5F762B`) | Not found in the inspected applied inventory |
 
@@ -106,14 +110,17 @@ has not yet been confirmed. The shared profile/role CostCenter tag is
 `security-engineering`; that tag does not establish an accountable billing owner.
 
 Token evidence covers successful responses only. The initial denied Sonnet5.5
-attempt retains unknown usage. Original test-ledger `production_model` metadata
-names the pinned upstream requested selection; `source_model` plus the verified
-application profile identifies the actual tested Sonnet4.6 alternative.
+attempt retains unknown usage. The JSON preserves the earlier Sonnet4.6 validation
+separately from the current Sonnet5.5 evidence: eight successful calls across the
+validation history, six for the final model selection. Historical alternative
+ledger `production_model` named the upstream request while `source_model` identified
+Sonnet4.6; both fields match Sonnet5.5 in the new successful validation.
 
 ## Anto's remaining rollout
 
-1. Incorporate the final Sonnet4.6 configuration into PR1325, then follow existing
-   review and merge protections.
+1. Incorporate the production-schema smoke and updated deployment handoff into
+   PR1325, then follow existing review and merge protections. The model selection
+   now matches the original Sonnet5.5, Opus5.5 and Sol6.1 request.
 2. Run the master-only smoke against all three profiles, then validate the actual
    PR review flow and OpenRouter fallback.
 3. Handle scanner activation and merge-policy rollout separately, and confirm

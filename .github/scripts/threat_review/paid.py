@@ -9,7 +9,7 @@ from .state import BudgetStopped, USD
 # The 2x input reserve covers cache creation, including a one-hour cache write;
 # caching discounts are never necessary for admission. Prompt size stays below
 # long-context pricing tiers. No tools, images, search or per-request fees.
-RATES = {SONNET: (3, 15), OPUS: (4, 20), SOL: (2, 10)}
+RATES = {SONNET: (2, 10), OPUS: (4, 20), SOL: (2, 10)}
 OUTPUT_TOKENS = 4096
 
 

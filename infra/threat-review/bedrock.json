@@ -13,10 +13,10 @@
     "SonnetProfile": {
       "Type": "AWS::Bedrock::ApplicationInferenceProfile",
       "Properties": {
-        "InferenceProfileName": "d-inference-threat-review-us-anthropic-claude-sonnet-4-6",
+        "InferenceProfileName": "d-inference-threat-review-us-anthropic-claude-sonnet-5-5",
         "ModelSource": {
           "CopyFrom": {
-            "Fn::Sub": "arn:aws:bedrock:us-east-1:${AWS::AccountId}:inference-profile/us.anthropic.claude-sonnet-4-6"
+            "Fn::Sub": "arn:aws:bedrock:us-east-1:${AWS::AccountId}:inference-profile/us.anthropic.claude-sonnet-5-5"
           }
         },
         "Tags": [
@@ -38,7 +38,7 @@
           },
           {
             "Key": "Model",
-            "Value": "us.anthropic.claude-sonnet-4-6"
+            "Value": "us.anthropic.claude-sonnet-5-5"
           }
         ]
       }
@@ -198,13 +198,13 @@
                   ],
                   "Resource": [
                     "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-opus-5-5",
-                    "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-6",
+                    "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-5-5",
                     "arn:aws:bedrock:us-east-1::foundation-model/openai.gpt-6.1-sol",
                     "arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-opus-5-5",
-                    "arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-sonnet-4-6",
+                    "arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-sonnet-5-5",
                     "arn:aws:bedrock:us-east-2::foundation-model/openai.gpt-6.1-sol",
                     "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-opus-5-5",
-                    "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-6",
+                    "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-5-5",
                     "arn:aws:bedrock:us-west-2::foundation-model/openai.gpt-6.1-sol"
                   ],
                   "Condition": {

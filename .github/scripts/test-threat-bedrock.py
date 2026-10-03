@@ -93,7 +93,7 @@ class BedrockTests(unittest.TestCase):
     def test_sonnet_availability_fallback_preserves_selected_model_identity(self):
         self.client.error = SDKError("AccessDeniedException")
         self.assertEqual(self.invoke(), {"backup": True})
-        self.assertEqual(self.payload["model"], "anthropic/claude-sonnet-4.6")
+        self.assertEqual(self.payload["model"], "anthropic/claude-sonnet-5.5")
         self.assertTrue(self.client.requests[0]["modelId"].endswith("/sonnet"))
         self.assertEqual(self.calls.fallback.calls[0][2]["model"], self.payload["model"])
 

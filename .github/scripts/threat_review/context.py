@@ -6,7 +6,7 @@ from .client import ReviewUnavailable
 from .review import ID_DEFINITION, MAX_THREAT_MODEL
 
 VERSION = "budgeted-v2"
-SONNET = "anthropic/claude-sonnet-4.6"
+SONNET = "anthropic/claude-sonnet-5.5"
 OPUS = "anthropic/claude-opus-5.5"
 SOL = "openai/gpt-6.1-sol"
 RISK = re.compile(r"auth|attest|encrypt|crypt|billing|payment|ledger|mdm|enroll|secret|token|permission|\.github/", re.I)

@@ -1,5 +1,7 @@
 """Budgeted advisory lifecycle; trusted checkout only and durable partial reports."""
 import re
+import json
+from pathlib import Path
 from urllib.parse import quote
 from .client import GitHub, ReviewUnavailable
 from .budget_scan import Scanner, failure
@@ -11,7 +13,7 @@ from .source import complete_files
 from .state import State
 
 
-def status_body(repository, head, base, diff_base, snapshot, evidence, history=None, compact=False):
+def status_body(repository, head, base, diff_base, snapshot, evidence, history=None, compact=False, clearance=False):
     errors = snapshot.get("errors", [])
     complete = (snapshot.get("integration_completed", False)
                 and snapshot.get("covered_units") == snapshot.get("total_units")
@@ -27,6 +29,13 @@ def status_body(repository, head, base, diff_base, snapshot, evidence, history=N
                   diff_base, [] if compact else snapshot.get("outcomes", []))
     # The legacy renderer's full-text-model claim does not describe this engine.
     body = re.sub(r"(?m)^Coverage: .*", "", body)
+    if clearance:
+        body = body.replace("## Threat model review — advisory", "## Threat model review", 1)
+        old = "Findings require human validation; this review never requests changes or blocks merging."
+        body = body.rsplit(old, 1)[0] + (
+            "Merge clearance requires complete coverage with no medium/high findings, or an independent "
+            "manual security override. Review-control changes always require human approval. "
+            f"[Override instructions](https://github.com/{repository}/blob/master/docs/operations/threat-review-rollout.md).")
     body += (f"\n\nCoverage: {snapshot.get('covered_units', 0)}/{snapshot.get('total_units', 0)} source units; "
              f"cross-file integration {'complete' if snapshot.get('integration_completed') else 'pending'}. "
              f"{snapshot.get('depth_batches_pending', 0)} selected depth batch(es) pending. "
@@ -40,6 +49,12 @@ def status_body(repository, head, base, diff_base, snapshot, evidence, history=N
     if compact:
         body += (f"\n\nSaved report contains {len(snapshot.get('findings', []))} finding(s) and "
                  f"{len(snapshot.get('limited_files', []))} file(s) requiring manual review.")
+    if "bedrock_requests" in snapshot:
+        body += (f"\n\nBedrock: {snapshot['bedrock_requests']} request(s), "
+                 f"{snapshot['bedrock_input_tokens']} input / {snapshot['bedrock_output_tokens']} output tokens; "
+                 f"{snapshot['bedrock_unknown_usage']} request(s) with unknown usage. "
+                 f"OpenRouter backup used {snapshot['openrouter_fallbacks']} time(s). "
+                 "Dollar amounts above cover OpenRouter only; AWS billing is reconciled separately.")
     return body
 
 
@@ -82,7 +97,8 @@ def run(event, root, env, github=None, state=None, paid_factory=PaidCalls):
             # before retrying; a failed lookup must never authorize another POST.
             existing = github.existing_comment((MARKER, LEGACY_MARKER))
         alive()
-        body = status_body(repository, head, base, diff_base, snapshot, evidence, history)
+        clearance = env.get("THREAT_REVIEW_REQUIRE_CLEARANCE") == "true"
+        body = status_body(repository, head, base, diff_base, snapshot, evidence, history, clearance=clearance)
         if previous and not history:
             # No durable write succeeded: preserve old findings inline instead
             # of replacing paid work with an infrastructure failure notice.
@@ -90,7 +106,7 @@ def run(event, root, env, github=None, state=None, paid_factory=PaidCalls):
         if len(body) > COMMENT_LIMIT:
             if not history:
                 return  # retain the old comment; the Actions summary has status
-            body = status_body(repository, head, base, diff_base, snapshot, evidence, history, compact=True)
+            body = status_body(repository, head, base, diff_base, snapshot, evidence, history, compact=True, clearance=clearance)
             if len(body) > COMMENT_LIMIT:
                 raise ReviewUnavailable("Compact report exceeds comment capacity")
         publication_uncertain = True
@@ -123,9 +139,11 @@ def run(event, root, env, github=None, state=None, paid_factory=PaidCalls):
                 raise ReviewUnavailable("Deep review requires maintainer permission")
         diff_base = github.comparison_base(base, head)
         alive()
-        state.admit(number)
+        bedrock = env.get("BEDROCK_SCAN_ENABLED") == "true"
+        if not bedrock:
+            state.admit(number)
         key = env.get("OPENROUTER_API_KEY")
-        if not key:
+        if not key and not bedrock:
             raise ReviewUnavailable("Review key missing")
         # A large PR can take time to collect. Acknowledge it and archive prior
         # advice before those reads, rather than leaving the author waiting.
@@ -134,8 +152,15 @@ def run(event, root, env, github=None, state=None, paid_factory=PaidCalls):
         alive()
         files = complete_files(github, files, diff_base, head)
         context = ThreatContext((root / "docs/threat-model.yaml").read_text())
-        paid = paid_factory(state, number, run_id, key, context.prefix(), alive=alive)
+        if bedrock:
+            from .bedrock import BedrockCalls
+            paid = BedrockCalls(state, number, run_id, key, context.prefix(), env, alive=alive)
+        else:
+            paid = paid_factory(state, number, run_id, key, context.prefix(), alive=alive)
         scanner = Scanner(context, files, state, paid, checkpoint, base)
+        # Merge clearance requires this run's model evidence. Existing cached
+        # advice remains useful for advisory mode but cannot grant auto-merge.
+        scanner.use_cache = env.get("THREAT_REVIEW_REQUIRE_CLEARANCE") != "true"
         evidence = scanner.evidence
         checkpoint(scanner.snapshot())
         snapshot = scanner.run(force_deep)
@@ -153,4 +178,9 @@ def run(event, root, env, github=None, state=None, paid_factory=PaidCalls):
                 # Delivery can fail or become stale; return the saved report
                 # to the Actions summary rather than losing local findings.
                 pass
-    return status_body(repository, head, base, diff_base, snapshot, evidence, history)
+    if env.get("THREAT_REVIEW_RESULT_FILE"):
+        Path(env["THREAT_REVIEW_RESULT_FILE"]).write_text(json.dumps({
+            "repository": repository, "head": head, "base": base, "diff_base": diff_base,
+            "review": snapshot}))
+    return status_body(repository, head, base, diff_base, snapshot, evidence, history,
+                       clearance=env.get("THREAT_REVIEW_REQUIRE_CLEARANCE") == "true")

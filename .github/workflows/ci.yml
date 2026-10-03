@@ -38,6 +38,7 @@ jobs:
           python3 .github/scripts/test-threat-full-scan.py
           python3 .github/scripts/test-threat-ensemble.py
           python3 .github/scripts/test-threat-budget.py
+          python3 .github/scripts/test-threat-bedrock.py
       - name: Test native GPU CI routing without a GPU
         run: python3 scripts/test-native-gpu-ci.py
       - name: Test bounded MiMo provider fixture provisioning offline

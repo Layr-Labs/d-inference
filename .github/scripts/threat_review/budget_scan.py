@@ -50,6 +50,7 @@ class Scanner:
         self.reused = 0
         self.integration = False
         self.depth_pending = 0
+        self.use_cache = True
 
     def snapshot(self):
         errors = list(dict.fromkeys(self.errors + ([self.paid.stopped] if self.paid.stopped else [])))
@@ -108,7 +109,7 @@ class Scanner:
         identity = digest([VERSION, model, self.base, self.context.hash,
                            SYSTEM, SCHEMA, INSTRUCTIONS, message,
                            self.source_hash if stage == "integration" else None])
-        cached = self.state.cached(identity)
+        cached = self.state.cached(identity) if self.use_cache else None
         if cached is not None:
             self.validate(cached, batch, evidence)
             response = cached
@@ -122,7 +123,7 @@ class Scanner:
             self.covered.update(u["id"] for u in batch)
         # Persist validated advice BEFORE caching or starting another request.
         self.checkpoint(self.snapshot())
-        if cached is None:
+        if cached is None and self.use_cache:
             self.state.save_cache(identity, response)
         return response
 

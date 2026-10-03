@@ -1,6 +1,6 @@
 # Operations runbooks
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-03
 
 Procedures for deploying, migrating, and operating Darkbloom production
 infrastructure. Every runbook has the same shape — when to use, prerequisites,
@@ -49,3 +49,5 @@ follow both rules: [`provider-release.md`](provider-release.md).
 - [App Attest recovery rollout](app-attest-rollout.md) — fixed-provider cohorts, receipt recovery, qualification and gates for later MDM retirement.
 
 - [Stripe account migration](stripe-migration.md) — activate self-service Global Payouts, retain old settlement and move Checkout.
+
+- [Threat review rollout](threat-review-rollout.md): provision attributed Bedrock access and activate conditional author auto-merge.

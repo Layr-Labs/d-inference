@@ -41,6 +41,7 @@ MIMO_NATIVE_COMMANDS = {
     "Run isolated native MiMo retained-fault gate":
         "../scripts/run-nested-suite.sh testNativeFenceRefusalKeepsActualBundlePermitAndBlocksOtherOwnerReclaim --no-parallel",
 }
+COVERAGE_STEPS = ("Collect provider coverage profiles", "Report provider coverage")
 LANES = {
     "test-provider": "provider",
     "test-provider-sdk": "sdk",
@@ -201,6 +202,37 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                     self.assertEqual(restores, [])
                 self.assertNotIn("spm-v3-", self.jobs[job_id])
 
+    def test_only_the_provider_lane_collects_and_reports_coverage(self):
+        steps = step_blocks(self.jobs["test-provider"])
+        names = [field(step, "name", indent=6) for step in steps]
+        build = next(index for index, step in enumerate(steps) if field(step, "uses") == BUILD_ACTION)
+        collect = names.index(COVERAGE_STEPS[0])
+        report = names.index(COVERAGE_STEPS[1])
+        upload = names.index("Upload provider coverage report")
+        tests = [index for index, step in enumerate(steps)
+                 if "run-provider-tests.sh" in step or "run-nested-suite.sh" in step]
+        # Profiles go to one directory from the first provider process on;
+        # the report runs after every test step and cannot change their results.
+        self.assertEqual(collect, build + 1)
+        self.assertIn('echo "LLVM_PROFILE_FILE=$profiles/%p-%m.profraw" >> "$GITHUB_ENV"', steps[collect])
+        self.assertIn('echo "PROVIDER_COVERAGE_DIR=$profiles" >> "$GITHUB_ENV"', steps[collect])
+        self.assertGreater(report, max(tests))
+        self.assertEqual(upload, report + 1)
+        self.assertEqual(field(steps[report], "if"),
+                         "${{ !cancelled() && steps.provider-tests.outcome != 'skipped' }}")
+        self.assertIn("xcrun llvm-profdata merge", steps[report])
+        self.assertIn("name: provider-coverage", steps[upload])
+        self.assertNotIn("continue-on-error:", steps[report])
+        test_step = next(step for step in steps if run_command(step) == "../scripts/run-provider-tests.sh")
+        self.assertEqual(field(test_step, "id"), "provider-tests")
+        for job_id in ("test-provider-sdk", "test-provider-parity"):
+            self.assertNotIn("LLVM_PROFILE_FILE", self.jobs[job_id])
+            self.assertNotIn("PROVIDER_COVERAGE_DIR", self.jobs[job_id])
+        build_step = next(step for step in step_blocks(ACTION.read_text(), indent=4)
+                          if field(step, "id", indent=6) == "provider-build")
+        self.assertIn('if [ "$LANE" = provider ]; then\n  coverage=(--enable-code-coverage)',
+                      textwrap.dedent(build_step.split("run: |\n", 1)[1]))
+
     def test_provider_entrypoint_and_resource_installer_checks_are_retained(self):
         steps = step_blocks(self.jobs["test-provider"])
         expected = (
@@ -214,7 +246,9 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             "../scripts/run-nested-suite.sh testNativeAudioRelease --no-parallel",
             "./scripts/test-install-atomic.sh",
         )
-        self.assertEqual([run_command(step) for step in steps if field(step, "run")], list(expected))
+        runs = [run_command(step) for step in steps
+                if field(step, "run") and field(step, "name", indent=6) not in COVERAGE_STEPS]
+        self.assertEqual(runs, list(expected))
         test_step = next(step for step in steps if run_command(step) == "../scripts/run-provider-tests.sh")
         self.assertEqual(field(test_step, "working-directory"), "provider-swift")
         self.assertEqual(field(test_step, "if"), PROVIDER_MIMO_READY)

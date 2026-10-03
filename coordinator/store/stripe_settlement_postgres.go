@@ -82,6 +82,9 @@ func (s *PostgresStore) CompleteStripeCheckout(id, externalID, accountID string,
 	if err != nil {
 		return false, err
 	}
+	if b.Status == "erased" {
+		return false, ErrCheckoutErased
+	}
 	if !checkoutMatches(&b, externalID, accountID, amount) {
 		return false, ErrPayoutConflict
 	}

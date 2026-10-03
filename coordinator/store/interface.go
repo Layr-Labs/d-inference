@@ -52,6 +52,7 @@ type Store interface {
 	InviteStore
 	ProviderEarningsStore
 	ProviderStore
+	AccountErasureStore
 }
 
 // UsageRecord captures a single inference usage event. On write (RecordUsage)

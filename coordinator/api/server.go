@@ -245,6 +245,7 @@ type Server struct {
 	codeResumeFallbackBeforeAPNs  func()              // test seam after nonce consume, before ctx recheck
 	codeAttestThrottle            *codeAttestThrottle // per-device APNs push budget + reuse cache (v0.6.0)
 	trustReuseCache               *trustReuseCache    // per-device trust-reuse cache: skip a fleet-wide live MDM herd on restart (DAR-326)
+	erasureGrace                  time.Duration       // account erasure: soft delete to scrub (EIGENINFERENCE_ERASURE_GRACE)
 	trustReuseJournal             hardUntrustJournal
 	trustRevocationMu             sync.Mutex
 	trustSafetyMu                 sync.RWMutex
@@ -860,6 +861,12 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		firstContentSLAAccounts:  firstContentSLAAccounts,
 		firstContentSLAEmails:    firstContentSLAEmails,
 		routingScanSem:           make(chan struct{}, DefaultRoutingConcurrency()),
+	}
+	var ignoredGrace bool
+	s.erasureGrace, ignoredGrace = erasureGraceFromEnv()
+	if ignoredGrace {
+		logger.Warn("EIGENINFERENCE_ERASURE_GRACE is not a valid non-negative Go duration; using the default",
+			"default", defaultErasureGrace)
 	}
 	if _, clampedDown := trustReuseReconnectGapFromEnv(); clampedDown {
 		logger.Warn("EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP exceeds the 120s security ceiling; clamping DOWN",
@@ -2791,6 +2798,11 @@ func (s *Server) routes() {
 
 	// Admin account management (service-role + per-account platform fee)
 	s.mux.HandleFunc("PUT /v1/admin/users/role", s.requireAuth(s.handleAdminSetUserRole))
+	// Account erasure (GDPR): plan, confirm, status, cancel. Admin only.
+	s.mux.HandleFunc("POST /v1/admin/accounts/{account_id}/erasure/plan", s.requireAuth(s.handleAdminErasurePlan))
+	s.mux.HandleFunc("POST /v1/admin/accounts/{account_id}/erasure", s.requireAuth(s.handleAdminErasureRequest))
+	s.mux.HandleFunc("GET /v1/admin/accounts/{account_id}/erasure", s.requireAuth(s.handleAdminErasureStatus))
+	s.mux.HandleFunc("POST /v1/admin/accounts/{account_id}/erasure/cancel", s.requireAuth(s.handleAdminErasureCancel))
 	s.mux.HandleFunc("PUT /v1/admin/users/platform-fee", s.requireAuth(s.handleAdminSetUserPlatformFee))
 
 	// Admin model registry (manifest-backed). The legacy supported_models CRUD
@@ -3206,8 +3218,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			}
 			user, err := s.privyAuth.GetOrCreateUser(privyUserID)
 			if err != nil {
-				s.logger.Error("privy: user resolution failed", "error", err)
-				writeJSON(w, http.StatusInternalServerError, errorResponse("auth_error", "failed to resolve user"))
+				s.writePrivyUserError(w, err)
 				return
 			}
 			ctx := context.WithValue(r.Context(), ctxKeyConsumer, user.AccountID)
@@ -3310,6 +3321,19 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// writePrivyUserError answers a failed Privy user resolution. An account that
+// waits for erasure gets 403 account_pending_deletion: the login must not
+// create a second live account for the same person.
+func (s *Server) writePrivyUserError(w http.ResponseWriter, err error) {
+	if errors.Is(err, auth.ErrAccountPendingDeletion) {
+		writeJSON(w, http.StatusForbidden, errorResponse("account_pending_deletion",
+			"this account is scheduled for deletion; contact support to cancel"))
+		return
+	}
+	s.logger.Error("privy: user resolution failed", "error", err)
+	writeJSON(w, http.StatusInternalServerError, errorResponse("auth_error", "failed to resolve user"))
+}
+
 // requirePrivyAuth wraps a handler requiring a Privy JWT session. Unlike
 // requireAuth, API keys are rejected. Use for sensitive account operations
 // (key creation, device approval) that must not be triggerable by a leaked
@@ -3333,8 +3357,7 @@ func (s *Server) requirePrivyAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		user, err := s.privyAuth.GetOrCreateUser(privyUserID)
 		if err != nil {
-			s.logger.Error("privy: user resolution failed", "error", err)
-			writeJSON(w, http.StatusInternalServerError, errorResponse("auth_error", "failed to resolve user"))
+			s.writePrivyUserError(w, err)
 			return
 		}
 		ctx := context.WithValue(r.Context(), ctxKeyConsumer, user.AccountID)

@@ -466,6 +466,53 @@ CREATE TABLE public.earnings_summary (
 
 
 --
+-- Name: erasure_outbox; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.erasure_outbox (
+    id text NOT NULL,
+    request_id text NOT NULL,
+    target text NOT NULL,
+    external_id text DEFAULT ''::text NOT NULL,
+    state text DEFAULT 'pending'::text NOT NULL,
+    attempts integer DEFAULT 0 NOT NULL,
+    next_at timestamp with time zone DEFAULT now() NOT NULL,
+    lease_until timestamp with time zone,
+    last_error text DEFAULT ''::text NOT NULL,
+    done_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT erasure_outbox_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'done'::text, 'manual_action'::text]))),
+    CONSTRAINT erasure_outbox_target_check CHECK ((target = ANY (ARRAY['stripe_account'::text, 'global_recipient'::text, 'checkout_sessions'::text, 'erasure_log'::text])))
+);
+
+
+--
+-- Name: erasure_requests; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.erasure_requests (
+    id text NOT NULL,
+    account_id text NOT NULL,
+    actor text DEFAULT ''::text NOT NULL,
+    canceled_by text DEFAULT ''::text NOT NULL,
+    reason text DEFAULT ''::text NOT NULL,
+    state text NOT NULL,
+    plan jsonb DEFAULT '{}'::jsonb NOT NULL,
+    confirm_token_hash text DEFAULT ''::text NOT NULL,
+    confirm_expires_at timestamp with time zone,
+    wallet_addresses text[] DEFAULT '{}'::text[] NOT NULL,
+    requested_at timestamp with time zone,
+    scrub_after timestamp with time zone,
+    erased_at timestamp with time zone,
+    canceled_at timestamp with time zone,
+    lease_until timestamp with time zone,
+    last_error text DEFAULT ''::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT erasure_requests_state_check CHECK ((state = ANY (ARRAY['planned'::text, 'pending'::text, 'erased'::text, 'canceled'::text])))
+);
+
+
+--
 -- Name: fleet_snapshots; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2137,6 +2184,22 @@ ALTER TABLE ONLY public.earnings_summary
 
 
 --
+-- Name: erasure_outbox erasure_outbox_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.erasure_outbox
+    ADD CONSTRAINT erasure_outbox_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: erasure_requests erasure_requests_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.erasure_requests
+    ADD CONSTRAINT erasure_requests_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: fleet_snapshots fleet_snapshots_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2659,6 +2722,41 @@ CREATE INDEX darkbloom_machines_merged_into ON public.darkbloom_machines USING b
 
 
 --
+-- Name: erasure_outbox_due; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX erasure_outbox_due ON public.erasure_outbox USING btree (next_at) WHERE (state = 'pending'::text);
+
+
+--
+-- Name: erasure_outbox_request; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX erasure_outbox_request ON public.erasure_outbox USING btree (request_id);
+
+
+--
+-- Name: erasure_requests_account; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX erasure_requests_account ON public.erasure_requests USING btree (account_id, created_at DESC);
+
+
+--
+-- Name: erasure_requests_due; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX erasure_requests_due ON public.erasure_requests USING btree (scrub_after) WHERE (state = 'pending'::text);
+
+
+--
+-- Name: erasure_requests_open; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX erasure_requests_open ON public.erasure_requests USING btree (account_id) WHERE (state = ANY (ARRAY['planned'::text, 'pending'::text]));
+
+
+--
 -- Name: global_payout_account; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2712,6 +2810,13 @@ CREATE INDEX idx_billing_sessions_account ON public.billing_sessions USING btree
 --
 
 CREATE INDEX idx_billing_sessions_external ON public.billing_sessions USING btree (external_id);
+
+
+--
+-- Name: idx_billing_sessions_referral_code; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_billing_sessions_referral_code ON public.billing_sessions USING btree (referral_code) WHERE (referral_code <> ''::text);
 
 
 --
@@ -3184,6 +3289,13 @@ CREATE INDEX idx_usage_request_location_notnull ON public.usage USING btree (cre
 
 
 --
+-- Name: idx_users_privy_deleted; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_users_privy_deleted ON public.users USING btree (privy_user_id) WHERE (deleted_at IS NOT NULL);
+
+
+--
 -- Name: idx_users_privy_live; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3296,6 +3408,14 @@ ALTER TABLE ONLY public.darkbloom_machine_sessions
 
 ALTER TABLE ONLY public.darkbloom_machines
     ADD CONSTRAINT darkbloom_machines_merged_into_fkey FOREIGN KEY (merged_into) REFERENCES public.darkbloom_machines(id);
+
+
+--
+-- Name: erasure_outbox erasure_outbox_request_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.erasure_outbox
+    ADD CONSTRAINT erasure_outbox_request_id_fkey FOREIGN KEY (request_id) REFERENCES public.erasure_requests(id);
 
 
 --

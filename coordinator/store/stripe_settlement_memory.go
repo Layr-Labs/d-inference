@@ -61,6 +61,9 @@ func (s *MemoryStore) CompleteStripeCheckout(id, externalID, accountID string, a
 	if b == nil {
 		return false, ErrNotFound
 	}
+	if b.Status == "erased" {
+		return false, ErrCheckoutErased
+	}
 	if !checkoutMatches(b, externalID, accountID, amount) {
 		return false, ErrPayoutConflict
 	}

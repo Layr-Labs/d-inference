@@ -3397,3 +3397,42 @@ threats:
     detection_hint: >
       Review public payloads, archives, logs and cache timing separately; never expose
       raw evidence or infer authorization from client-supplied diagnostics.
+
+  - id: T-059
+    trust_boundary: TB-006
+    stride: Information_Disclosure
+    title: Account erasure leaves personal data behind or erases the wrong account
+    description: >
+      An erased account's email, serial numbers, MDA chains, locations, labels,
+      codes, raw logs or Stripe IDs can survive in an unlisted column, a late
+      heartbeat write, an in-memory cache or a backup. A mistyped or replayed
+      admin request can soft delete the wrong account.
+    adversaries: [ADV-003]
+    affected_assets: [A-007, A-008, A-009, A-010]
+    affected_files:
+      - coordinator/store/erasure_rules.go
+      - coordinator/store/erasure_postgres.go
+      - coordinator/api/erasure_handlers.go
+      - coordinator/api/erasure_loop.go
+    mitigations:
+      - description: >
+          The plan returns the account email and a 15-minute confirm token that is
+          stored hashed; the confirm call must repeat both. The soft delete revokes
+          keys and provider tokens before the providers are disconnected and refuses
+          while a withdrawal is open. The scrub is one transaction bounded by keys it
+          collects first; each statement's affected rows must equal a count read in
+          the same transaction. A marker test searches every text, JSON, array and
+          bytea column after a scrub. Soft-deleted provider rows ignore late
+          heartbeat upserts, and CachedStore drops cached users.
+        status: implemented
+      - description: >
+          Backups, point-in-time recovery and Datadog logs keep data until their
+          retention ends. Financial records, shared mda_serial machine aliases and
+          Stripe-side data until the outbox deletes it are kept on purpose.
+        status: accepted
+    open_findings: []
+    severity: medium
+    detection_hint: >
+      Run the marker test after every schema change; check each new column that
+      holds user-chosen text, a device identifier or a location against
+      coordinator/store/erasure_rules.go.

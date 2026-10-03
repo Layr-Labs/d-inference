@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-03
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -117,6 +117,7 @@ type is in [billing.md](../architecture/billing.md#ledger).
 | `admin_reward` | `LedgerAdminReward` | `POST /v1/admin/reward` | yes |
 | `migration` | `LedgerMigration` | balance moved between account identities | both columns move |
 | `provider_floor_draw` | `LedgerFloorDraw` | base-rewards epoch draw, reference `<epoch_id>` | yes |
+| `erasure_forfeit` | `LedgerErasureForfeit` | account erasure zeroes the balance, reference `erasure:<request_id>` | debit (both columns to 0) |
 
 `RewardLedgerTypes = [referral_reward, admin_reward]` — counted as "reward"
 rather than "work" earnings on the leaderboard and in `GET /v1/me/summary`

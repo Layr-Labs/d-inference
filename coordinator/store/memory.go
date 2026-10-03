@@ -177,6 +177,9 @@ type MemoryStore struct {
 	floorDrawSeq       int64
 	floorDrawKeys      map[string]struct{} // "providerKey|epochID" → settled marker
 
+	// Account erasure requests and their outbox rows.
+	erasureRequests map[string]*memoryErasureRequest
+	erasureOutbox   []ErasureOutboxItem
 }
 
 // NewMemory creates a new MemoryStore. If adminKey is non-empty it is
@@ -184,6 +187,7 @@ type MemoryStore struct {
 func NewMemory(scfg Config) *MemoryStore {
 	s := &MemoryStore{
 		modelDemandStartedAt:          time.Now().UTC(),
+		erasureRequests:               make(map[string]*memoryErasureRequest),
 		keyRecords:                    make(map[string]*APIKey),
 		keysByID:                      make(map[string]string),
 		keySpend:                      make(map[string]*keySpend),
@@ -2738,6 +2742,11 @@ func (s *MemoryStore) UpsertProvider(_ context.Context, p ProviderRecord) error 
 }
 
 func (s *MemoryStore) upsertProviderRecordLocked(p ProviderRecord) {
+	// A soft-deleted record belongs to an account under erasure; a late
+	// heartbeat persist must not bring it back or rewrite it.
+	if old, ok := s.providerRecords[p.ID]; ok && old.DeletedAt != nil {
+		return
+	}
 	cp := p
 	if p.Location != nil {
 		loc := *p.Location

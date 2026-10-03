@@ -628,3 +628,29 @@ func durationStats(ds []time.Duration) (min, median, p90, max time.Duration) {
 	sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
 	return s[0], s[len(s)/2], s[(len(s)*9)/10], s[len(s)-1]
 }
+
+// DisconnectAccount disconnects every live provider linked to accountID and
+// returns how many it disconnected. Account erasure calls it after the soft
+// delete revoked the provider tokens, so a provider that reconnects comes
+// back unlinked. Disconnect clears each provider's registry state.
+func (r *Registry) DisconnectAccount(accountID string) int {
+	if accountID == "" {
+		return 0
+	}
+	var ids []string
+	r.mu.RLock()
+	for id, p := range r.providers {
+		p.mu.Lock()
+		linked := p.AccountID == accountID
+		p.mu.Unlock()
+		if linked {
+			ids = append(ids, id)
+		}
+	}
+	r.mu.RUnlock()
+	// Disconnect takes r.mu itself, so it runs outside the read lock.
+	for _, id := range ids {
+		r.Disconnect(id)
+	}
+	return len(ids)
+}

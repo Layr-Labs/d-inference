@@ -1,8 +1,8 @@
 # HTTP API contracts
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-03
 
-The complete public HTTP surface of the coordinator, derived from the 118 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
+The complete public HTTP surface of the coordinator, derived from the 122 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
 Production base URL: `https://api.darkbloom.dev`. Unless a file is named, handler symbols below live in `coordinator/api/server.go`.
 
@@ -390,12 +390,16 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 | GET | `/ws/provider` | `handleProviderWS` (`coordinator/api/provider.go`) | `ws` | Provider WebSocket; message catalogue in [`protocol-messages.md`](protocol-messages.md) |
 | POST | `/v1/provider/log-report` | `handleUploadLogReport` (`coordinator/api/log_report_handlers.go`) | `key` | Body capped at [`maxLogReportBodySize`](#timeouts-and-constants); 426 `upgrade_required` when `?serial=` names a provider below the minimum version |
 
-### Admin (43)
+### Admin (47)
 
 | Method | Path | Handler | Auth | Notes |
 |---|---|---|---|---|
 | PUT | `/v1/admin/pricing` | `handleAdminPricing` (`coordinator/api/billing_handlers.go`) | `admin` | Platform default price table; same body and response as `PUT /v1/pricing` (`modelPriceInput` → `types.PriceUpdateResponse`) |
 | PUT | `/v1/admin/users/role` | `handleAdminSetUserRole` (`coordinator/api/billing_handlers.go`) | `admin` | Role selects the consumer or service limiter |
+| POST | `/v1/admin/accounts/{account_id}/erasure/plan` | `handleAdminErasurePlan` (`coordinator/api/erasure_handlers.go`) | `admin` | Dry run plus a 15-minute confirm token; changes no account data. [Account erasure](#account-erasure) |
+| POST | `/v1/admin/accounts/{account_id}/erasure` | `handleAdminErasureRequest` (`coordinator/api/erasure_handlers.go`) | `admin` | Soft delete, revoke keys and provider tokens, disconnect providers; `force` scrubs at once |
+| GET | `/v1/admin/accounts/{account_id}/erasure` | `handleAdminErasureStatus` (`coordinator/api/erasure_handlers.go`) | `admin` | Newest request and its outbox rows |
+| POST | `/v1/admin/accounts/{account_id}/erasure/cancel` | `handleAdminErasureCancel` (`coordinator/api/erasure_handlers.go`) | `admin` | Grace period only; keys and tokens stay revoked |
 | PUT | `/v1/admin/users/platform-fee` | `handleAdminSetUserPlatformFee` (`coordinator/api/billing_handlers.go`) | `admin` | Per-user fee override; fee policy in [`../architecture/billing.md#invariants`](../architecture/billing.md#invariants) |
 | POST | `/v1/admin/models/register` | `handleRegisterModel` (`coordinator/api/model_registry_handlers.go`) | `publishing` | Publish a model build; optional `cache_read_price` beside `input_price`/`output_price` (`modelPriceInput`); the response (`registerModelResponse`) quotes the effective platform rates |
 | POST | `/v1/admin/models/` | `handleAdminModelRegistryAction` (`coordinator/api/model_registry_handlers.go`) | `publishing` | Registry actions selected by path suffix, including `publish-revision` (version plus optional pinned `hugging_face_artifact`) and `retire-revision` (version); publication returns 503 if its committed promotion has not reached live policy or desired-state delivery to a provider fails; [revision contracts](model-registry-format.md#admin-actions) |
@@ -434,7 +438,7 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 |---|---|---|
 | `/v1/` | `handleUnimplementedEndpoint` | Any `/v1/*` request matching no registered method+path — including a wrong method on a real path — gets 404 `invalid_request_error` with message `endpoint <METHOD> <path> is not implemented` |
 
-Total: 4 + 9 + 10 + 3 + 15 + 13 + 6 + 6 + 5 + 3 + 1 + 41 + 1 = **117 registrations**, matching `routes()`.
+Total: 4 + 9 + 10 + 3 + 15 + 13 + 6 + 6 + 5 + 3 + 1 + 45 + 1 = **121 registrations**, matching `routes()`.
 
 
 ## Exact cache status
@@ -649,12 +653,12 @@ Every error body has one shape (`errorResponse`, `writeJSON`, `withCode` in `coo
 
 | Status | `type` values | Raised by |
 |---|---|---|
-| 400 | `invalid_request_error`, `invalid_sealed_envelope`, `kid_mismatch`, `decryption_failed`, `invalid_request`, `bad_request`, `referral_error` | Body/JSON validation, `n > 1`, tool-choice and vision rules, native media tools unsupported by a model's serving fleet (`param: model`), sealed-envelope faults, device-code and key-management input, unknown catalog `?type=` |
+| 400 | `invalid_request_error`, `invalid_sealed_envelope`, `kid_mismatch`, `decryption_failed`, `invalid_request`, `bad_request`, `referral_error`, `email_mismatch` | Body/JSON validation, `n > 1`, tool-choice and vision rules, native media tools unsupported by a model's serving fleet (`param: model`), sealed-envelope faults, device-code and key-management input, unknown catalog `?type=` |
 | 401 | `authentication_error`, `auth_error`, `unauthorized` | Missing/invalid bearer (`requireAuth`, `requirePrivyAuth`), no account user (`requirePrivyUser`), release key |
 | 402 | `insufficient_funds` (balance below the reservation), `insufficient_quota` (per-key spend cap); `code` is `insufficient_quota` for both | `reserveInferenceBalance` (`coordinator/api/inference_admission.go`); the per-cause table, including the provider-price 402, is [Payment-required responses](../architecture/billing.md#payment-required-responses) |
-| 403 | `forbidden`, `model_not_allowed` | API key on a `privy` route; non-admin on an `admin` route; model outside the key's `allowed_models` (`keyModelAllowed`, `coordinator/api/apikey_handlers.go`) |
+| 403 | `forbidden`, `model_not_allowed`, `account_pending_deletion`, `invalid_confirm_token` | API key on a `privy` route; non-admin on an `admin` route; model outside the key's `allowed_models` (`keyModelAllowed`, `coordinator/api/apikey_handlers.go`); Privy login of an account that waits for erasure (`writePrivyUserError`); wrong or expired erasure confirm token |
 | 404 | `model_not_found`, `not_found`, `invalid_grant`, `invalid_code`, `referral_error`, `invalid_request_error` | Model or alias not in the catalog; unknown key id; device codes; `/v1/` catch-all; state export when disabled |
-| 409 | `no_linked_machine`, `already_used`, `conflict`, `stripe_account_gone`, `stripe_account_recreate_required` | Self-route without a linked machine; device-approve replay; invite-code collision; Stripe Connect state |
+| 409 | `no_linked_machine`, `already_used`, `conflict`, `stripe_account_gone`, `stripe_account_recreate_required`, `open_withdrawal`, `erasure_conflict` | Self-route without a linked machine; device-approve replay; invite-code collision; Stripe Connect state; account erasure with a withdrawal in flight or in the wrong state |
 | 410 | `expired_token`, `expired_code` | expired [device codes](#device-code-flow-3) |
 | 412 | `precondition_failed` | State export without an encryption recipient |
 | 413 | `invalid_request_error` (plain, or with `code: payload_too_large`) | Inference body over `maxInferenceBodyBytes` ([Limits and validation](#limits-and-validation); `parseInferencePrelude`); admission rejects a prompt no provider can accept (`runInferenceAdmission`) |
@@ -892,6 +896,40 @@ For `payout_rail=global`, submit `{amount_usd, method:"standard", quote_id}` to 
 An unsubmitted confirmation invalidated by paused admissions returns 409 `quote_paused`; changed payout settings return 409 `payout_changed`. The browser releases that saved confirmation. Invalidation is atomic with `BeginGlobalPayout`; if another confirmation has already debited, the endpoint returns/reconciles the existing withdrawal instead. A recipient minimum/maximum violation returns 400 `recipient_amount_limit` with the threshold in local currency (`coordinator/api/global_payouts_withdraw.go`, `maybeGlobalWithdraw`, `handleGlobalPayoutQuote`).
 
 An unknown payout outcome held for manual reconciliation remains `status=pending` and exposes `failure_reason=manual_reconciliation_required`. History displays **Needs review**; the debit remains reserved, and automatic scans and repeated confirmations do not resubmit or refund it (`coordinator/store/global_payouts.go`, `GlobalPayout.RequiresManualReconciliation`; `coordinator/api/global_payouts_history.go`, `globalWithdrawalView`).
+
+## Account erasure
+
+Admin routes that erase one account's personal data. The procedure is the
+[account erasure runbook](../operations/account-erasure.md); the per-table
+rules are in [storage](../architecture/storage.md#account-erasure). Every
+route answers 403 `forbidden` without admin auth and records the acting admin
+as `admin_key` or `account:<id>` (`adminActor`).
+
+| Route | Body | Success | Errors |
+|---|---|---|---|
+| `POST …/erasure/plan` | optional `{"wallet_addresses": [string]}` | 200 `erasurePlanResponse`: `account_id`, `email`, `rows[]` (`rule`, `table`, `columns`, `action`, `rows`), `stripe_objects[]` (`target`, `id`), `stripe_object_counts`, `retained[]`, `balance_micro_usd`, `withdrawable_micro_usd`, `open_withdrawals`, `request_id`, `confirm_token`, `confirm_expires_at`, `grace_seconds` | 404 `not_found`; 409 `erasure_conflict` (already pending or erased) |
+| `POST …/erasure` | `{"confirm_token", "email", "reason", "wallet_addresses", "force"}`; `confirm_token` required | 200 `{"request": ErasureRequest}` | 403 `invalid_confirm_token`; 400 `email_mismatch`; 409 `open_withdrawal`, `erasure_conflict`; 404 `not_found`; with `force`, a failed scrub answers 409 or 500 with `scrub_error` and leaves the request `pending` |
+| `GET …/erasure` | — | 200 `{"request": ErasureRequest, "outbox": [ErasureOutboxItem]}` | 404 `not_found` |
+| `POST …/erasure/cancel` | — | 200 `{"request": ErasureRequest}` | 404 `not_found` (no planned or pending request); 409 `erasure_conflict` (not pending, or `scrub_after` passed) |
+
+`…` is `/v1/admin/accounts/{account_id}`. `ErasureRequest`
+(`coordinator/store/erasure.go`) has `id`, `account_id`, `actor`,
+`canceled_by`, `reason`, `state` (`planned` · `pending` · `erased` ·
+`canceled`), `summary` (`planned` and `applied` row counts), `requested_at`,
+`scrub_after`, `erased_at`, `canceled_at`, `last_error`,
+`wallet_address_count` and `created_at`. `ErasureOutboxItem` has `id`,
+`target` (`stripe_account` · `global_recipient` · `checkout_sessions` ·
+`erasure_log`), `state` (`pending` · `done` · `manual_action`), `attempts`,
+`next_at`, `last_error`, `done_at` and `has_external_id`; the Stripe ID itself
+is never returned. The plan returns the email and Stripe IDs for the admin to
+check; the stored plan has counts only.
+
+While a request is `pending`, a Privy login of the account answers 403
+`account_pending_deletion` instead of creating a second account
+(`auth.ErrAccountPendingDeletion`). After the scrub the stored Privy ID is
+random, and a login creates a new account. A Checkout Session of an erased
+account that completes later is acknowledged with 200 and credits nothing
+(`store.ErrCheckoutErased`).
 
 ## Code map
 

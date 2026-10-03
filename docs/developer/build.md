@@ -794,6 +794,8 @@ local stub servers; its default observation mode sends only public GETs.
 | `coordinator-build` | `go build ./cmd/coordinator` → `./coordinator/coordinator` |
 | `coordinator-build-linux` | `GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o coordinator-linux ./cmd/coordinator` |
 | `coordinator` | `coordinator-test` + `coordinator-build` |
+| `sqlc-generate` | `go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 generate -f coordinator/store/sqlc.yaml` → `coordinator/store/storedb` |
+| `sqlc-check` | Needs `DATABASE_URL`. `TestMigrationsBuildCheckedInSchema` (fails when `coordinator/store/schema/schema.sql` is stale), then `sqlc diff` (fails when `coordinator/store/storedb` is stale) |
 | `prompt-sidecar-format` | `cargo fmt --all -- --check` |
 | `prompt-sidecar-check` | `cargo check --locked --all-targets` + `cargo clippy --locked --all-targets -- -D warnings` |
 | `prompt-sidecar-test` | `cargo test --locked --all-targets` |

@@ -144,7 +144,11 @@ finds nothing to apply. Out-of-order versions are refused.
 `coordinator/store/schema/schema.sql` is the `pg_dump --schema-only` of the
 schema the migrations build, without `goose_db_version`.
 `TestMigrationsBuildCheckedInSchema` builds a fresh database with goose and
-fails when its schema differs from that file. To add a migration, follow
+fails when its schema differs from that file. The file is also the schema that
+sqlc reads: the api_keys queries are SQL in `coordinator/store/queries/api_keys.sql`,
+and `make sqlc-generate` turns them into Go in `coordinator/store/storedb`
+(`coordinator/store/sqlc.yaml`). sqlc reads the dump, not the migrations,
+because it cannot see columns that the baseline adds inside `DO` blocks. To add a migration, follow
 [Add a database migration](../developer/database-migrations.md).
 
 `schema_migrations` is a separate, older table. It holds the markers of the
@@ -371,6 +375,7 @@ KV blocks under a per-model key, not tokens.
 | Backend selection and validation | `coordinator/store/config.go`, `coordinator/cmd/coordinator/main.go` |
 | Postgres pool | `coordinator/store/postgres.go` |
 | Migrations | `coordinator/store/postgres_migrations.go` (`migrate`, `goMigrations`), `coordinator/store/schema/migrations/`, `coordinator/store/schema/schema.sql`, `coordinator/store/postgres_retired_backfills.go` |
+| Generated queries (sqlc) | `coordinator/store/sqlc.yaml`, `coordinator/store/queries/`, `coordinator/store/storedb/`; api_keys in `coordinator/store/postgres_api_keys.go` |
 | Provider identity and usage reads | `coordinator/store/postgres_provider_read.go` (`providerRecordColumns`, `scanProviderRecord`, `GetProviderRecord`); `coordinator/store/provider_restore.go` (`GetProviderForRestore`, using the same projection); `coordinator/store/postgres_usage_read.go` (`readUsageRecords`, `UsageRecords`); `coordinator/store/postgres_row.go` (`rowScanner`) |
 | Domain files | `coordinator/store/postgres_model_registry.go`, `coordinator/store/postgres_base_rewards.go`, `coordinator/store/postgres_profiles.go`, `coordinator/store/route_telemetry.go`, `coordinator/store/usage_time_series.go`, `coordinator/store/apikey.go` |
 | Memory backend | `coordinator/store/memory.go`, `coordinator/store/memory_base_rewards.go` |

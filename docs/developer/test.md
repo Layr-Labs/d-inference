@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-03
 
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the
@@ -994,6 +994,31 @@ cd coordinator/promptsidecar && cargo +1.88.0 llvm-cov --locked --all-targets --
 ```
 
 A number measured on macOS can differ from the Linux number in CI.
+
+#### Warm planner performance and template ownership
+
+`planner_performance` is an ignored, local-artifact benchmark of the actual
+renderer and tokenizer, rather than a synthetic word tokenizer. It downloads
+nothing and calls no coordinator. Point `PROMPT_BENCH_MODEL_ROOT` at an immutable
+model directory containing `tokenizer.json`, `tokenizer_config.json`, `config.json`
+and `chat_template.jinja`; set `PROMPT_BENCH_MODEL_ID` to the concrete model ID.
+
+```bash
+cd coordinator/promptsidecar
+PROMPT_BENCH_MODEL_ROOT=/absolute/isolated/model PROMPT_BENCH_MODEL_ID=concrete-model \
+  cargo +1.88.0 test --locked --release --test planner_performance -- \
+  --ignored --nocapture --test-threads=1
+```
+
+Run the same fixture, artifact bytes and controls on both comparison revisions.
+Separate short, tool-schema, long-prompt and synchronized burst cells; retain
+sample counts, timing quantiles, allocation traffic and exact count/chain proof
+fingerprints. Cumulative allocated bytes are not peak RSS, and local planner
+timings do not establish production timeout or consumer TTFT improvements.
+`render::prepared` and `planner::retention_tests` cover request-specific dates,
+model filters, template variants, render bounds and release of compiled programs
+when their bounded contract owner retires. Production and fixture projections
+must retain identical exact count and block-chain results.
 
 
 ### 4. Provider (Swift) — unit tests with a source-matched metallib
@@ -2503,6 +2528,59 @@ NAX in the provider (`ModelRuntimeRequirements`), so on other chips the
 fixture bypasses a product gate and trips the 30-second engine step watchdog
 in prefill. Results and the parity evidence behind the capture rule:
 [2026-09-27 report](../reports/2026-09-27-qwen-chunk-partition-parity.md).
+
+Two focused suites use the same cached dense model, opt-in gates and isolated
+encrypted SSD fixture. `Qwen35AdjacentCheckpointLiveTests` creates a demanded
+fork, withholds its file to reproduce the old publication outcome, and compares
+restored-token counts and exact output after store/engine restarts. It uses a
+1,024-token test stripe. `Qwen35DemandedShortCheckpointLiveTests` uses the
+production 4,096-token stripe to compare novel, demanded-cold and warm-fork
+requests below that stripe. Each prints native TTFT, accounting and donation
+costs; neither substitutes for fleet or load testing.
+
+```bash
+cd provider-swift
+# Build and stage source-matched metallibs with make provider-test first.
+DARKBLOOM_LIVE_MLX_TESTS=1 DARKBLOOM_LIVE_MLX_QWEN35_CHECKPOINT_RETENTION=1 \
+swift test --skip-build --no-parallel --filter Qwen35AdjacentCheckpointLiveTests
+DARKBLOOM_LIVE_MLX_TESTS=1 DARKBLOOM_LIVE_MLX_QWEN35_CHECKPOINT_RETENTION=1 \
+swift test --skip-build --no-parallel --filter Qwen35DemandedShortCheckpointLiveTests
+```
+
+Run GPU suites sequentially and report opt-in skips as unrun. The
+[candidate qualification report](../reports/2026-10-03-prefix-cache-qualification.md)
+distinguishes the local paired archive result from the production baseline.
+
+The report also retains a verification-only
+[`qwen-mixed-benchmark.swift`](../reports/evidence/prefix-qualification-2026-10-03/qwen-mixed-benchmark.swift)
+snapshot for the three mixed cold pairs and separate MTP-off warm fork. To
+reproduce, temporarily copy it into
+`provider-swift/Tests/ProviderCoreTests/Inference/Live/Qwen/` with the filename
+`Qwen35MixedCheckpointBenchmark.swift`,
+build the tests and stage the matching metallib, then run the two selectors
+sequentially. Remove that temporary file afterwards, rebuild the original test
+target and stage its metallib again. Cached Qwen weights are required; use an
+idle owned host and retain every cell, including failed measurements.
+
+```bash
+cd provider-swift
+mkdir -p /tmp/darkbloom-cache-performance-validation
+swift build --build-tests
+../scripts/stage-test-metallib.sh .build/arm64-apple-macosx/debug
+DARKBLOOM_MIXED_CHECKPOINT_BENCHMARK=1 \
+  DARKBLOOM_MIXED_CHECKPOINT_BENCHMARK_OUTPUT=/tmp/qwen-mixed-cohort.json \
+  ../scripts/run-nested-suite.sh realMixedCohort --no-parallel
+DARKBLOOM_MIXED_WARM_BENCHMARK=1 \
+  ../scripts/run-nested-suite.sh realMixedWarmFork --no-parallel
+```
+
+The warm fixture writes to
+`/tmp/darkbloom-cache-performance-validation/qwen-mixed-warm.json`.
+This fixture uses explicit width/stripe/budget settings and forced output
+lengths. Every native timing fixture in the report uses `strictFsync=false`:
+write completion is not fsync durability, and OS file-cache versus physical
+storage effects are not separated. The mixed control does not pack, so its
+delta measures capture creation rather than isolated packing overhead.
 
 ## Connected coordinator/provider HTTP cache gate
 

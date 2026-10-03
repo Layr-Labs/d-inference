@@ -752,69 +752,6 @@ func (s *Server) resolveRequestedModel(
 	return buildID, requested, rb, true
 }
 
-// aliasFallbackMode selects the failure policy for maybeFallbackAlias.
-type aliasFallbackMode int
-
-const (
-	// aliasFallbackCapacity routes to Previous whenever it has any free capacity.
-	aliasFallbackCapacity aliasFallbackMode = iota
-	// aliasFallbackTTFT additionally rejects Previous when its best TTFT estimate
-	// would miss the per-request ceiling (ttftThreshold).
-	aliasFallbackTTFT
-)
-
-// maybeFallbackAlias keeps public aliases available during a desired-build
-// saturation event. Alias resolution intentionally prefers Desired when it is
-// routable, but if every desired provider is transiently full (aliasFallbackCapacity)
-// or too slow to hit the TTFT ceiling (aliasFallbackTTFT) and Previous can serve,
-// route this request to Previous instead of returning a fast 429 / slow stream.
-// Hard constraints and permanent model-too-large failures are handled by the
-// caller and do not use this fallback. The TTFT estimate for Previous is also
-// returned so the caller does not need to recompute it. ttftThreshold is the
-// request-local deadline pinned before admission and is only consulted in
-// aliasFallbackTTFT mode.
-func (s *Server) maybeFallbackAlias(parsed map[string]any, mode aliasFallbackMode, publicModel, currentModel string, estimatedPromptTokens, requestedMaxTokens int, ttftThreshold time.Duration, traits registry.RequestTraits, requiresVision bool, allowedProviderSerials []string, firstContentQuery ...func(string) *registry.PendingRequest) (string, int, int, int, time.Duration, bool, bool) {
-	if publicModel == "" || publicModel == currentModel {
-		return currentModel, 0, 0, 0, 0, false, false
-	}
-	target, ok := s.registry.AliasTarget(publicModel)
-	if !ok || target.Desired != currentModel || target.Previous == "" {
-		return currentModel, 0, 0, 0, 0, false, false
-	}
-	// Previous must be a real, non-shed catalog build before we probe it.
-	if s.modelShed(target.Previous, publicModel) || !s.registry.IsModelInCatalog(target.Previous) {
-		return currentModel, 0, 0, 0, 0, false, false
-	}
-	// A SINGLE Previous-build probe drives both modes; the mode only decides
-	// whether the probe's TTFT estimate also gates the fallback.
-	query := inferenceAdmissionParams{estimatedPromptTokens: estimatedPromptTokens,
-		requestedMaxTokens: requestedMaxTokens, requiresVision: requiresVision,
-		allowedProviderSerials: allowedProviderSerials, deadline: ttftThreshold}.firstContentRequest(target.Previous, traits)
-	query.MinDecodeTPS = s.minDecodeTPS
-	if len(firstContentQuery) > 0 && firstContentQuery[0] != nil {
-		query = firstContentQuery[0](target.Previous)
-		if query == nil {
-			// Preflight may release its CPU scan permit for external prompt
-			// planning. Failed reacquisition aborts before any fallback walk.
-			return currentModel, 0, 0, 0, 0, false, false
-		}
-	}
-	candidates, rejections, tooLarge, bestTTFT, hasTTFT := s.registry.QuickFirstContentCapacityForRequest(target.Previous, query)
-	enforceTTFT := mode == aliasFallbackTTFT
-	if candidates <= 0 || (enforceTTFT && ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold)) {
-		// No fallback. TTFT mode reports the probed Previous build (the caller
-		// uses it as the alternate TTFT estimate); capacity mode discards the
-		// model, so keep the unchanged current build.
-		failModel := currentModel
-		if enforceTTFT {
-			failModel = target.Previous
-		}
-		return failModel, candidates, rejections, tooLarge, bestTTFT, hasTTFT, false
-	}
-	parsed["model"] = target.Previous
-	return target.Previous, candidates, rejections, tooLarge, bestTTFT, hasTTFT, true
-}
-
 func ttftTooSlow(bestTTFT time.Duration, hasTTFT bool, threshold time.Duration) bool {
 	return threshold > 0 && hasTTFT && bestTTFT > threshold
 }
@@ -1336,8 +1273,8 @@ func (s *Server) dispatchWithReserver(
 	// Bound the provider write by the request-absolute first-token clock (see
 	// firstTokenWriteContext): a congested write lane must not silently eat
 	// the budget while the aggregator's cancel clock keeps running.
-	writeCtx, cancelWrite := firstTokenWriteContext(
-		r.Context(), receivedAt, requestDeadline)
+	writeCtx, cancelWrite := firstTokenWriteContextForPending(
+		r.Context(), receivedAt, requestDeadline, pr)
 	ap.Mark(registry.StampWriteSubmitted)
 	_, writeErr := writeProviderInferenceRequestDeferred(
 		writeCtx,
@@ -2302,6 +2239,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		},
 		requiresVision, parsed)
 	r = r.WithContext(promptwork.WithMemo(r.Context(), &cachePlans.memo))
+	deadlineForWork := s.promptWorkDeadlineForRequest(r.Context(), timingReceivedAt(timing), publicModel, deadline)
+	fallbackDeadline := firstContentDurationWithinContext(r.Context(), timingReceivedAt(timing), deadline)
 	var preflightHandled bool
 	preflightStart := time.Now()
 	model, preflightHandled = s.runInferenceAdmission(w, r, parsed, inferenceAdmissionParams{
@@ -2318,9 +2257,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		modelMaxContext:           modelMaxContext,
 		allowedProviderSerials:    allowedProviderSerials,
 		deadline:                  deadline,
+		fallbackDeadline:          fallbackDeadline,
 		receivedAt:                timingReceivedAt(timing),
 		cachePlanForModel:         cachePlans.forModel,
 		promptWorkForModel:        cachePlans.workForModel,
+		deadlineForWork:           deadlineForWork,
 		policy:                    policy,
 		refundReservation:         refundReservation,
 		onModelFallback:           onModelFallback,
@@ -2368,6 +2309,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	profileDBCall(rp, registryReadStart2)
 	cachePlan := cachePlans.forBody(model, providerBody)
+	deadline = max(fallbackDeadline, deadlineForWork(model, promptwork.FromContext(r.Context(), model, providerBody)))
 	rp.Mark(registry.StampReqPlanDone)
 	if rp != nil {
 		rp.Model, rp.PublicModel, rp.Stream = model, publicModel, stream
@@ -2410,6 +2352,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		timing:                 timing,
 		profile:                rp,
 		deadline:               deadline,
+		fallbackDeadline:       fallbackDeadline,
+		promptDeadlineForWork:  deadlineForWork,
 		speculativeAt:          s.firstContentHedgeDelay(model, estimatedPromptTokens, deadline),
 		modelMaxContext:        modelMaxContext,
 		refundReservation:      refundReservation,
@@ -2879,6 +2823,8 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		},
 		requiresVision, parsed)
 	r = r.WithContext(promptwork.WithMemo(r.Context(), &cachePlans.memo))
+	deadlineForWork := s.promptWorkDeadlineForRequest(r.Context(), timingReceivedAt(timing), publicModel, genericDeadline)
+	fallbackDeadline := firstContentDurationWithinContext(r.Context(), timingReceivedAt(timing), genericDeadline)
 	var preflightHandled bool
 	preflightStart := time.Now()
 	model, preflightHandled = s.runInferenceAdmission(w, r, parsed, inferenceAdmissionParams{
@@ -2895,9 +2841,11 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		modelMaxContext:           modelMaxContext,
 		allowedProviderSerials:    allowedProviderSerials,
 		deadline:                  genericDeadline,
+		fallbackDeadline:          fallbackDeadline,
 		receivedAt:                timingReceivedAt(timing),
 		cachePlanForModel:         cachePlans.forModel,
 		promptWorkForModel:        cachePlans.workForModel,
+		deadlineForWork:           deadlineForWork,
 		policy:                    policy,
 		refundReservation:         refundReservation,
 		onModelFallback:           refreshGenericBody,
@@ -2926,6 +2874,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		// for unsupported shapes while declining cache participation.
 		inferenceBody = endpointBody
 	}
+	genericDeadline = max(fallbackDeadline, deadlineForWork(model, promptwork.FromContext(r.Context(), model, inferenceBody)))
 
 	// Generic endpoints use the same dispatch state machine as chat. This keeps
 	// queue deadlines, speculative failover, pre-content boilerplate handling,
@@ -2974,6 +2923,8 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		timing:                 timing,
 		profile:                rp,
 		deadline:               genericDeadline,
+		fallbackDeadline:       fallbackDeadline,
+		promptDeadlineForWork:  deadlineForWork,
 		speculativeAt:          s.firstContentHedgeDelay(model, estimatedPromptTokens, genericDeadline),
 		modelMaxContext:        modelMaxContext,
 		refundReservation:      refundReservation,

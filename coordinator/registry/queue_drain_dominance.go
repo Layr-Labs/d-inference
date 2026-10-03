@@ -45,7 +45,8 @@ func drainDominanceComparable(pr *PendingRequest) bool {
 		!pr.SelfRouteOnly && !pr.PreferOwner &&
 		len(pr.AllowedProviderSerials) == 0 &&
 		len(pr.ExcludedProviderIDs) == 0 &&
-		!pr.CachePlan.present()
+		!pr.CachePlan.present() &&
+		pr.FirstContentQualifiedDeadline.IsZero()
 }
 
 // drainPureCapacityRejection reports whether a failed reservation was decided

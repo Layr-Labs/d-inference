@@ -33,7 +33,14 @@ type PendingRequest struct {
 	// Queue drain and provider-writer dequeue refresh their attempt-local
 	// ceilings from this timestamp; zero preserves legacy relative behavior.
 	FirstContentDeadline time.Time
-	ProviderID           string
+	// Fallback and qualified cutoffs share the original ingress anchor. Before
+	// selection FirstContentDeadline is their latest envelope; reservation binds
+	// it to this provider's renderer, then keeps it immutable through handoff.
+	FirstContentFallbackDeadline      time.Time
+	FirstContentQualifiedDeadline     time.Time
+	firstContentDeadlineUsesQualified bool
+	firstContentDeadlineBound         bool
+	ProviderID                        string
 	// Immutable privacy-safe verdict captured at the final writer authorization boundary.
 	DispatchVerification Verification
 	// Captured atomically with this provider's pending debit. A later lease
@@ -114,7 +121,8 @@ type PendingRequest struct {
 	// supplies exact counts instead. Physical commitment estimates are separate.
 	FirstContentPromptTokens int
 	// Immutable request-local count evidence, rebound to each selected model.
-	// It never extends the first-content deadline or replaces billed usage.
+	// Exact work may reconcile the ingress-anchored SLA token term only for a
+	// qualified serving renderer; forecasts do not replace billed usage.
 	PromptWork *protocol.PromptWork
 	// Request-local retry/hedge policy; no wire protocol change.
 	RequireFreshFeasible      bool

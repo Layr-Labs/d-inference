@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-03
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -432,8 +432,7 @@ end of a full chunk of its own cap (the clause that keeps files written under
 the earlier uniform-chunk rule and the small-chunk engine fixtures valid), at
 or above the store's 1,024-token floor, so a donor prefilled in 512-token
 chunks retains 1,024 first. The durable path skips the prompt end itself
-(export needs a token after the checkpoint, so a staged terminal copy could
-only stand in for the deepest boundary in the adjacency drop); the resident
+because export needs a token after the checkpoint; the resident
 bank keeps that endpoint, since a longer next turn restores it. The rule rests on the
 [chunk-partition parity measurement](../reports/2026-09-27-qwen-chunk-partition-parity.md):
 on dense Qwen3.5-9B the recurrent state at a boundary is bit-identical under
@@ -477,15 +476,49 @@ interior boundary is copied; a recurrent donor's boundaries are whatever
 aligned range ends land, so the target role goes to the deepest committed
 boundary at or below the hint, and a deeper one below the hint supersedes it.
 The coordinator observes demand at every 1,024-token boundary and at the
-prompt end, so a target can be any 1,024 multiple. A target within 1,024
-tokens of the final latest (`defaultTargetAdjacencyTokens`, every layout) is
-dropped at publication; a recurrent target one 2,048-token chunk below the
-latest is kept. Without a hint (older coordinator, local serving) or with a
+prompt end, so a target can be any 1,024 multiple. A distinct demanded target
+is kept even when it is only 1,024 tokens below the final latest: an adopter
+whose suffix diverges after that target cannot authenticate the deeper
+checkpoint. Equal roles are deduplicated, and the existing three-boundary
+and byte-admission limits still apply. Without a hint (older coordinator, local serving) or with a
 fleet-novel hint of 0 the donor retains first and latest only. Only boundaries that retention will keep are copied. An adopter that
 restored at `M` captures only above `M`: no first, and a target only when the
 hint names one above `M`. The hint reaches the engine as
 `CBv2Request.prefixCheckpointTargetTokens`, set by the provider bridge from
 `RemotePrefixCacheContext.repeatedPrefixTokens`.
+
+For the qualified dense Qwen production paged SSD path, a scoped cold text
+request that participates in caching and is shorter than its armed solo stripe
+can end one range at the deepest
+256/query-aligned interior boundary covered by positive repeat demand, provided
+that boundary meets the store's existing minimum. The remaining suffix uses
+the ordinary geometry. This creates a capture opportunity without shrinking
+all chunks. Novel prompts, requests with caching disabled or out-of-band media
+or position state, imported prefixes, MoE, native historical and long-prompt
+paths retain their existing partition. The SDK switch defaults off;
+`EngineV2Factory.demandedShortCheckpointMinimumTokens` enables it only for the
+qualified provider/store combination. Scheduling and the pure first-content
+projection share `demandedShortCheckpointChunk` and observed capture eligibility.
+Preempted donors and donors whose capture geometry has disarmed retain their
+ordinary remaining range. The step plan marks only ranges introduced by this
+clamp; those rows stay outside that step's packed group so the new boundary can
+produce a checkpoint. Ordinary ranges keep their existing packing policy.
+
+An actually launched packed group revokes short-boundary eligibility before
+admission can inspect its in-flight work. Later geometry disarms mirror that
+monotonic veto. Pure projection does not predict future ordinary packing and
+can conservatively price a boundary that later becomes unavailable. These gates
+live in `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/DemandedShortCheckpointRange.swift`
+(`canScheduleDemandedShortCheckpoint`) and
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift`
+(`executeMixed`). Existing checkpoint count/byte and storage floors remain.
+
+The write-priority classification is separate from the donation admission
+floor. An offered checkpoint at or below the authenticated repeated-token
+hint can use the repeated-write reserve on its first local appearance. A
+deeper, unique extension is novel unless that checkpoint's own tag was seen
+locally. Both classes debit the same total write budget
+(`SSDCheckpointDemand`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointDemand.swift`).
 
 Staged windows are transient reservations on the same admission ledger that
 request chunks reserve against, so they are bounded twice, both read from the

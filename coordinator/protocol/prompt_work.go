@@ -11,7 +11,11 @@ const (
 // PromptWork describes numeric input work, never prompt content or cache keys.
 // Only exact contract counts or reviewed calibration can supply an upper bound.
 // A heuristic remains explicitly unqualified, even if it has a numeric estimate.
-// This evidence cannot change the request's first-content clock or billing usage.
+// The coordinator may reconcile the SLA token term from a verified exact count
+// matching the serving renderer before dispatch, retaining the ingress anchor
+// and earlier caller cutoff. Other candidates keep their fallback duration.
+// Calibration uncertainty and provider recount cannot extend the inherited
+// deadline; count evidence never changes billing usage.
 type PromptWork struct {
 	Version           int    `json:"version"`
 	Source            string `json:"source"`

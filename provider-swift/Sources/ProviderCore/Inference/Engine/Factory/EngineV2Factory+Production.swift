@@ -202,6 +202,8 @@ extension EngineV2Factory {
             effectivePrefixCache != nil || preparedBackend.residentPrefixCacheEnabled
                 || preparedBackend.hybridPrefixCache != nil
                 || completePrefixCache != nil
+        schedulerConfig.demandedShortCheckpointMinimumTokens = demandedShortCheckpointMinimumTokens(
+            model: model, backend: preparedBackend.kind, store: completePrefixCache)
         let processOwner: EngineProcessMemoryOwner?
         if preparedBackend.kind == .paged, let kvBudget {
             // Binding after any slab/request allocation would lose the required

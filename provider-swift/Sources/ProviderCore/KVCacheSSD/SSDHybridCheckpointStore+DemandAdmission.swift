@@ -19,15 +19,21 @@ extension SSDHybridCheckpointStore {
         donationDemandHints.discard(requestID)
     }
 
-    /// Returns the refusal for a NOT yet durable checkpoint, or nil to proceed
-    /// to write-budget admission. `localRepeat` is this store's own tag
+    /// Snapshot demand once for admission and queued writer priority.
+    /// `localRepeat` is this store's own exact tag
     /// history verdict (`writeDemand.observe`), recorded before the gate so a
     /// second local sighting qualifies even when the coordinator hint is 0.
-    func demandRefusal(requestID: CBv2RequestID?, localRepeat: Bool) -> PrefixCacheDonationOutcome? {
+    func donationWritePolicy(requestID: CBv2RequestID?, localRepeat: Bool, checkpointPosition: Int)
+        -> (refusal: PrefixCacheDonationOutcome?, repeated: Bool) {
         let demand = donationDemandHints.demand(for: requestID)
-        guard SSDCheckpointDemand.admitsWrite(
+        let admitted = SSDCheckpointDemand.admitsWrite(
             demand: demand, localRepeat: localRepeat, minEffectiveTokens: config.minEffectiveTokens)
-        else { return .skippedNovel }
-        return nil
+        // A fleet repeat of the preamble admits donation, but only endpoints
+        // covered by that repeat may spend the reserved repeat share. A longer
+        // unique extension retains novel priority. Missing/retired hints do
+        // not manufacture fleet repetition; local exact-tag history remains.
+        let repeated = localRepeat || (checkpointPosition > 0
+            && (demand?.repeatedPrefixTokens ?? 0) >= checkpointPosition)
+        return (admitted ? nil : .skippedNovel, repeated)
     }
 }

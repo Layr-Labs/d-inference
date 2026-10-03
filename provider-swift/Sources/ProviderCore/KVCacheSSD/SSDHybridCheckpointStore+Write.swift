@@ -150,18 +150,20 @@ extension SSDHybridCheckpointStore {
         }
         let tag = lookupKeys.checkpointTag(chainHash: digest, cacheSalt: cacheSalt ?? "")
         let short = Data(tag.prefix(16))
-        let repeated = writeDemand.observe(short, now: config.nowSeconds())
+        let localRepeat = writeDemand.observe(short, now: config.nowSeconds())
+        let demand = donationWritePolicy(requestID: requestID, localRepeat: localRepeat,
+                                        checkpointPosition: manifest.position)
         if !index.contains(tag16: short) {
             // Demand gate first: a fleet-novel checkpoint is skipped before any
             // budget is charged (`SSDHybridCheckpointStore+DemandAdmission`).
             // The tag was recorded above, so a local second sighting qualifies.
-            if let refusal = demandRefusal(requestID: requestID, localRepeat: repeated) {
+            if let refusal = demand.refusal {
                 return .refused(refusal)
             }
             // Novel writes use a 90% sub-budget, leaving capacity for known
             // repeat demand. Durable duplicates consume no write budget. The
             // writer rechecks after queueing, since this admission is advisory.
-            if let refusal = Self.writeRefusal(rateLimiter.admission(bytes: envelope.plaintextBytes, repeated: repeated)) {
+            if let refusal = Self.writeRefusal(rateLimiter.admission(bytes: envelope.plaintextBytes, repeated: demand.repeated)) {
                 return .refused(refusal)
             }
         }
@@ -179,7 +181,7 @@ extension SSDHybridCheckpointStore {
             return proof.files[short]
         }
         return .ready(WriteJob(
-            source: source, envelope: envelope, tag: tag, epoch: epoch, repeated: repeated,
+            source: source, envelope: envelope, tag: tag, epoch: epoch, repeated: demand.repeated,
             authenticatedFile: alreadyAuthenticated, settlement: settlement,
             hostReservation: hostReservation, stats: statsBox, completion: completion))
     }

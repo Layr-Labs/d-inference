@@ -99,6 +99,8 @@ type dispatchState struct {
 	timing                 *registry.RequestTiming
 	profile                *registry.RequestProfile
 	deadline               time.Duration
+	fallbackDeadline       time.Duration
+	promptDeadlineForWork  func(string, *protocol.PromptWork) time.Duration
 	speculativeAt          time.Duration
 	// Deterministic test seams for speculative timer/ingress arbitration.
 	// Production requests leave both nil.
@@ -1417,10 +1419,10 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			Timing:       d.timing,
 		}
 		d.configurePending(queuePR)
-		d.configureFirstContentReservation(queuePR, false)
 		if receivedAt := timingReceivedAt(d.timing); !receivedAt.IsZero() && d.deadline > 0 {
 			queuePR.FirstContentDeadline = receivedAt.Add(d.deadline)
 		}
+		d.configureFirstContentReservation(queuePR, false)
 		if !queuePR.RefreshFirstContentBudget(time.Now()) {
 			d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)
 			return outcomeFailFast
@@ -1704,7 +1706,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		// WriteText blocks until the frame is on the wire (write watchdog
 		// allows 5-30s per frame), so an unbounded write could eat the budget
 		// while the aggregator's cancel clock keeps running.
-		writeCtx, cancelWrite := firstTokenWriteContext(r.Context(), timingReceivedAt(d.timing), d.deadline)
+		writeCtx, cancelWrite := firstTokenWriteContextForPending(r.Context(), timingReceivedAt(d.timing), d.deadline, queuePR)
 		d.pr.Profile.Mark(registry.StampWriteSubmitted)
 		_, writeErr := d.writeQueuedProviderInferenceRequest(writeCtx,
 			providerInferenceFrameBuilder(d.requestID, encrypted.EphemeralPublicKey, encrypted.Ciphertext, d.pr))
@@ -2082,8 +2084,8 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 		}
 	}()
 
-	deadlineWait := d.firstTokenWait(d.deadline)
-	speculativeTimer := time.NewTimer(d.firstTokenSpeculativeWait())
+	deadlineWait := d.firstTokenWaitFor(pr, d.deadline)
+	speculativeTimer := time.NewTimer(d.firstTokenSpeculativeWaitFor(pr))
 	deadlineTimer := d.newFirstContentTimer(deadlineWait)
 	// Routing v2 W2: the probe round may deliver ONE refined (strictly
 	// earlier) absolute speculative launch instant. Read through a local so
@@ -2100,7 +2102,7 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 		select {
 		case chunk, ok := <-pr.ChunkCh:
 			if ok && holdPreContentBoilerplate(pr, chunk, &d.heldChunks) {
-				if d.firstTokenSpeculativeWait() <= 0 {
+				if d.firstTokenSpeculativeWaitFor(pr) <= 0 {
 					speculativeTimer.Stop()
 					deadlineTimer.Stop()
 					return d.runSpeculative()
@@ -2183,7 +2185,7 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 			// delivered value it stays the 50% default — exact legacy timing.
 			hedgeAdvance = nil
 			receivedAt := timingReceivedAt(d.timing)
-			if receivedAt.IsZero() || !at.Before(receivedAt.Add(d.speculativeAt)) {
+			if receivedAt.IsZero() || !at.Before(receivedAt.Add(d.firstTokenSpeculativeAtFor(pr))) {
 				continue
 			}
 			if !speculativeTimer.Stop() {
@@ -2193,7 +2195,7 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 			if d.speculativeAt < 0 {
 				d.speculativeAt = 0
 			}
-			speculativeTimer.Reset(d.firstTokenSpeculativeWait())
+			speculativeTimer.Reset(d.firstTokenSpeculativeWaitFor(pr))
 			continue
 
 		case <-speculativeTimer.C:
@@ -2216,7 +2218,7 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 			if pr.FirstContentIngressArrivedByDeadline() {
 				continue
 			}
-			if len(d.heldChunks) > 0 && d.canExtendPreambleLiveness() {
+			if len(d.heldChunks) > 0 && d.canExtendPreambleLivenessFor(pr) {
 				// Preamble liveness — the provider is alive but still in its
 				// pre-content phase. Fall through to waitAccepted, still
 				// bounded by leftover request-absolute first-token budget.
@@ -2228,7 +2230,7 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 			}
 			d.excludeProviders[provider.ID] = struct{}{}
 			s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
-			if providerAttemptAttributableStall(pr, d.deadline) {
+			if providerAttemptAttributableStall(pr, d.firstContentDurationFor(pr, d.deadline)) {
 				s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
 			}
 			d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)
@@ -2412,7 +2414,7 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 		"primary_provider", provider.ID,
 		"backup_provider", backupProvider.ID,
 		"ttft_deadline_ms", d.deadline.Milliseconds(),
-		"speculative_at_ms", d.speculativeAt.Milliseconds(),
+		"speculative_at_ms", d.firstTokenSpeculativeAtFor(d.pr).Milliseconds(),
 	)
 	outcome := d.runRace(backupProvider, backupPR)
 	if hedgeLaunched {
@@ -2433,11 +2435,12 @@ func (d *dispatchState) waitNoBackup() dispatchOutcome {
 	r := d.r
 	provider, pr := d.provider, d.pr
 
-	remainingDeadline := d.newFirstContentTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
+	remainingDeadline := d.newFirstContentTimer(d.firstTokenWaitFor(pr, d.deadline-d.speculativeAt))
 	for {
 		select {
 		case chunk, ok := <-pr.ChunkCh:
 			if ok && holdPreContentBoilerplate(pr, chunk, &d.heldChunks) {
+				d.rearmExpiredFirstContentTimer(&remainingDeadline, pr)
 				continue
 			}
 			remainingDeadline.Stop()
@@ -2487,7 +2490,7 @@ func (d *dispatchState) waitNoBackup() dispatchOutcome {
 			if pr.FirstContentIngressArrivedByDeadline() {
 				continue
 			}
-			if len(d.heldChunks) > 0 && d.canExtendPreambleLiveness() {
+			if len(d.heldChunks) > 0 && d.canExtendPreambleLivenessFor(pr) {
 				// Liveness: the provider already produced its preamble.
 				// Fall through to waitAccepted, still bounded by leftover
 				// request-absolute first-token budget.
@@ -2499,7 +2502,7 @@ func (d *dispatchState) waitNoBackup() dispatchOutcome {
 			}
 			d.excludeProviders[provider.ID] = struct{}{}
 			s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
-			if providerAttemptAttributableStall(pr, d.deadline) {
+			if providerAttemptAttributableStall(pr, d.firstContentDurationFor(pr, d.deadline)) {
 				s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
 			}
 			d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)
@@ -2588,7 +2591,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 	r := d.r
 	provider, pr := d.provider, d.pr
 
-	raceDeadline := d.newFirstContentTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
+	raceDeadline := d.newFirstContentTimer(d.firstContentRaceWait(pr, backupPR, d.deadline-d.speculativeAt))
 	// One-shot extension: when the race deadline expires but a racer
 	// has shown liveness (preamble received), the race continues up to
 	// leftover first-token budget (capped by preambleContentTimeout).
@@ -2603,6 +2606,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 		select {
 		case chunk, ok := <-pr.ChunkCh:
 			if ok && holdPreContentBoilerplate(pr, chunk, &d.heldChunks) {
+				d.rearmExpiredFirstContentRaceTimer(&raceDeadline, pr, backupPR)
 				// Preamble only — the primary hasn't proven it can
 				// generate; keep the backup racing for first content.
 				if completedAt, empty := backupPR.OnTimeEmptyCompletionIngress(); empty &&
@@ -2656,6 +2660,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 
 		case chunk, ok := <-backupPR.ChunkCh:
 			if ok && holdPreContentBoilerplate(backupPR, chunk, &backupHeld) {
+				d.rearmExpiredFirstContentRaceTimer(&raceDeadline, pr, backupPR)
 				// Backup preamble doesn't win the race — first CONTENT does.
 				if completedAt, empty := pr.OnTimeEmptyCompletionIngress(); empty &&
 					!backupPR.ContentIngressAtOrBefore(completedAt) {
@@ -2851,6 +2856,10 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 				d.committed = true
 				return outcomeCommitted
 			}
+			if outcome, handled := d.expireBoundFirstContentRacer(provider, pr, backupProvider, backupPR, backupHeld); handled {
+				raceDeadline.Stop()
+				return outcome
+			}
 			if pr.FirstContentIngressArrivedByDeadline() ||
 				backupPR.FirstContentIngressArrivedByDeadline() {
 				continue
@@ -2862,7 +2871,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 				// preambleContentTimeout (zero bytes have reached the
 				// client; a genuine cold load would have signalled
 				// AcceptedCh).
-				ext := d.firstTokenWait(preambleContentTimeout)
+				ext := d.firstContentRaceWait(pr, backupPR, preambleContentTimeout)
 				if ext > preambleContentTimeout {
 					ext = preambleContentTimeout
 				}
@@ -2896,11 +2905,11 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			// (shape-keyed) trips its cooldown.
 			// Attribute each provider's complete initial+racing interval. The
 			// prior extension-only check missed stalls split across phases.
-			if providerAttemptAttributableStall(pr, d.deadline) {
+			if providerAttemptAttributableStall(pr, d.firstContentDurationFor(pr, d.deadline)) {
 				s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
 			}
 			if providerAttemptAttributableStall(
-				backupPR, d.deadline-d.speculativeAt) {
+				backupPR, d.firstContentDurationFor(backupPR, d.deadline-d.speculativeAt)) {
 				s.noteInferenceError(backupProvider.ID, backupPR, http.StatusGatewayTimeout, "", "", "")
 			}
 			s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
@@ -2934,11 +2943,12 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Provider, pr *registry.PendingRequest) dispatchOutcome {
 	s := d.s
 	r := d.r
-	remainingPrimary := d.newFirstContentTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
+	remainingPrimary := d.newFirstContentTimer(d.firstTokenWaitFor(pr, d.deadline-d.speculativeAt))
 	for {
 		select {
 		case chunk, ok := <-pr.ChunkCh:
 			if ok && holdPreContentBoilerplate(pr, chunk, &d.heldChunks) {
+				d.rearmExpiredFirstContentTimer(&remainingPrimary, pr)
 				continue
 			}
 			remainingPrimary.Stop()
@@ -2993,7 +3003,7 @@ func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Prov
 			if pr.FirstContentIngressArrivedByDeadline() {
 				continue
 			}
-			if len(d.heldChunks) > 0 && d.canExtendPreambleLiveness() {
+			if len(d.heldChunks) > 0 && d.canExtendPreambleLivenessFor(pr) {
 				// Primary preamble liveness — continue in waitAccepted
 				// on leftover request-absolute first-token budget.
 				d.preambleLiveness = true
@@ -3007,7 +3017,7 @@ func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Prov
 			// backup's stale error text.
 			d.excludeProviders[provider.ID] = struct{}{}
 			s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
-			if providerAttemptAttributableStall(pr, d.deadline) {
+			if providerAttemptAttributableStall(pr, d.firstContentDurationFor(pr, d.deadline)) {
 				s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
 			}
 			d.updateSpeculativeTimeout(pr, "first_chunk_timeout")
@@ -3046,11 +3056,12 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 	// primary's 4xx/422/429, so the primary keeps the attribution even
 	// though the backup keeps racing (noteServingSlotFor's freeze rule).
 	d.noteServingSlotFor(backupProvider, backupPR)
-	backupDeadline := d.newFirstContentTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
+	backupDeadline := d.newFirstContentTimer(d.firstTokenWaitFor(backupPR, d.deadline-d.speculativeAt))
 	for {
 		select {
 		case chunk, ok := <-backupPR.ChunkCh:
 			if ok && holdPreContentBoilerplate(backupPR, chunk, &backupHeld) {
+				d.rearmExpiredFirstContentTimer(&backupDeadline, backupPR)
 				continue
 			}
 			backupDeadline.Stop()
@@ -3123,7 +3134,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 			if backupPR.FirstContentIngressArrivedByDeadline() {
 				continue
 			}
-			if len(backupHeld) > 0 && d.canExtendPreambleLiveness() {
+			if len(backupHeld) > 0 && d.canExtendPreambleLivenessFor(backupPR) {
 				// Backup preamble liveness — promote it and continue
 				// in waitAccepted on leftover first-token budget.
 				backupPR.BackupWon.Store(true)
@@ -3140,7 +3151,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 			d.excludeProviders[backupProvider.ID] = struct{}{}
 			s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
 			if providerAttemptAttributableStall(
-				backupPR, d.deadline-d.speculativeAt) {
+				backupPR, d.firstContentDurationFor(backupPR, d.deadline-d.speculativeAt)) {
 				s.noteInferenceError(backupProvider.ID, backupPR, http.StatusGatewayTimeout, "", "", "")
 			}
 			d.updateSpeculativeTimeout(backupPR, "first_chunk_timeout")
@@ -3168,11 +3179,12 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 func (d *dispatchState) raceBackupErrWaitPrimary(provider *registry.Provider, pr *registry.PendingRequest) dispatchOutcome {
 	s := d.s
 	r := d.r
-	primaryDeadline := d.newFirstContentTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
+	primaryDeadline := d.newFirstContentTimer(d.firstTokenWaitFor(pr, d.deadline-d.speculativeAt))
 	for {
 		select {
 		case chunk, ok := <-pr.ChunkCh:
 			if ok && holdPreContentBoilerplate(pr, chunk, &d.heldChunks) {
+				d.rearmExpiredFirstContentTimer(&primaryDeadline, pr)
 				continue
 			}
 			primaryDeadline.Stop()
@@ -3221,7 +3233,7 @@ func (d *dispatchState) raceBackupErrWaitPrimary(provider *registry.Provider, pr
 			if pr.FirstContentIngressArrivedByDeadline() {
 				continue
 			}
-			if len(d.heldChunks) > 0 && d.canExtendPreambleLiveness() {
+			if len(d.heldChunks) > 0 && d.canExtendPreambleLivenessFor(pr) {
 				// Primary preamble liveness — continue in waitAccepted
 				// on leftover request-absolute first-token budget.
 				d.preambleLiveness = true
@@ -3232,7 +3244,7 @@ func (d *dispatchState) raceBackupErrWaitPrimary(provider *registry.Provider, pr
 			}
 			d.excludeProviders[provider.ID] = struct{}{}
 			s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
-			if providerAttemptAttributableStall(pr, d.deadline) {
+			if providerAttemptAttributableStall(pr, d.firstContentDurationFor(pr, d.deadline)) {
 				s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
 			}
 			d.updateSpeculativeTimeout(pr, "first_chunk_timeout")
@@ -3296,7 +3308,7 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 	if d.preambleLiveness {
 		firstContentBudget = preambleContentTimeout
 	}
-	if remaining, ok := d.firstTokenRemaining(); ok && remaining < firstContentBudget {
+	if remaining, ok := d.firstTokenRemainingFor(pr); ok && remaining < firstContentBudget {
 		firstContentBudget = remaining
 	}
 	chunkTimer := d.newFirstContentTimer(firstContentBudget)
@@ -3304,6 +3316,7 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 		select {
 		case chunk, ok := <-pr.ChunkCh:
 			if ok && holdPreContentBoilerplate(pr, chunk, &d.heldChunks) {
+				d.rearmExpiredFirstContentTimer(&chunkTimer, pr)
 				continue
 			}
 			chunkTimer.Stop()

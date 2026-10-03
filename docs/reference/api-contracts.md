@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-03
 
 The complete public HTTP surface of the coordinator, derived from the 118 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -531,15 +531,29 @@ accepts older responses containing the extra field.
 
 Inference planning may obtain exact input work from the verified model/template
 tokenizer before dispatch. The internal numeric provenance is not a client
-request field. Planning, retries and provider reconciliation spend the same
-original first-content clock; neither corrected counts nor a calibrated margin
-extend it. Unsupported shapes keep conservative fallback, and billing continues
-to settle actual provider usage (`planPromptRoute`, `coordinator/api/prompt_work.go`).
+request field. Before preflight and dispatch, a verified exact count matching
+the candidate provider's advertised artifact and renderer may correct the SLA's
+input-token term upward or downward, measured from the original request
+arrival and bounded by any earlier caller deadline. Calibrated uncertainty and
+provider recount do not extend that duration. Planning, retries and hedges keep
+the original arrival time and never start a fresh clock. Each provider's
+feasibility and dispatched budget use its own qualified or fallback cutoff;
+another provider's matching renderer cannot supply that qualification. An
+unsent exact-bound attempt is rejected if its renderer changes before handoff.
+When every otherwise-fitting provider's own cutoff has expired, admission returns
+`429` with `Retry-After`, retains the `deadline_unreachable` rejection reason and
+does not spill to a cold provider. A physically fitting expired peer prevents a
+too-small peer from turning that request into a permanent model-size refusal.
+An eligible previous-build alias can still serve within its own cutoff.
+Unsupported shapes keep
+conservative fallback, and billing continues to settle actual provider usage
+(`planPromptRoute`, `coordinator/api/prompt_work.go`; `promptWorkDeadline`,
+`coordinator/api/first_content_prompt_deadline.go`).
 
 Public inference uses [first-content routing](../architecture/first-content-routing.md)
 by default across chat completions, Responses, completions and Anthropic messages.
 Internal retries, cache planning, quotes, queue waits and hedges consume the same
-original request deadline. Predictive provider refusals do not count as node
+ingress-anchored budget. Predictive provider refusals do not count as node
 health failures; after two, another attempt needs fresh feasible evidence.
 A request can launch at most one speculative backup. Current error JSON and
 `Retry-After` contracts remain; unavailable deadline-bound capacity can produce

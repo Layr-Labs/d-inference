@@ -207,12 +207,13 @@ func (r *Registry) reserveFirstContentFromPlan(pr *PendingRequest, plan *Dispatc
 }
 
 func applyFirstContentQuote(c *routingCandidate, pr *PendingRequest, quote PlanEntry, now time.Time) {
+	deadline := candidateFirstContentDeadline(c, pr)
 	if !quote.Confirmed || quote.Demoted || quote.QuoteConfidence != protocol.CapacityConfidenceHigh ||
 		quote.QuoteObservedAt.IsZero() || now.Before(quote.QuoteObservedAt) || now.Sub(quote.QuoteObservedAt) > firstContentFreshness ||
 		quote.QuoteCapacitySeq < c.snapshot.capacitySeq || c.snapshot.newestReservationAt.After(quote.QuoteObservedAt) ||
 		(!pr.RequireFreshFeasibleAfter.IsZero() && !quote.QuoteObservedAt.After(pr.RequireFreshFeasibleAfter)) ||
 		quote.QuoteTTFTP50 <= 0 || quote.QuoteTTFTP90 < quote.QuoteTTFTP50 ||
-		(pr.FirstContentDeadline.IsZero() && (!(pr.Hedge || pr.RequireFreshFeasible) || pr.FirstContentPlanningHorizon <= 0)) ||
+		(deadline.IsZero() && (!(pr.Hedge || pr.RequireFreshFeasible) || pr.FirstContentPlanningHorizon <= 0)) ||
 		firstContentForecastUnknownReason(&c.snapshot, pr, c.firstContent.PromptTokens, true) != "" {
 		return
 	}
@@ -221,10 +222,10 @@ func applyFirstContentQuote(c *routingCandidate, pr *PendingRequest, quote PlanE
 	// qualified prediction or erase the current request's restore charge.
 	c.firstContent.ExpectedMs = max(c.firstContent.ExpectedMs, float64(quote.QuoteTTFTP50)/float64(time.Millisecond)+c.firstContent.RestoreMs)
 	c.firstContent.ConservativeMs = max(c.firstContent.ConservativeMs, float64(quote.QuoteTTFTP90)/float64(time.Millisecond)+c.firstContent.RestoreMs)
-	if pr.FirstContentDeadline.IsZero() {
+	if deadline.IsZero() {
 		c.firstContent.BudgetMs = float64(pr.FirstContentPlanningHorizon) / float64(time.Millisecond)
 	} else {
-		c.firstContent.BudgetMs = max(0, float64(pr.FirstContentDeadline.Sub(now))/float64(time.Millisecond))
+		c.firstContent.BudgetMs = max(0, float64(deadline.Sub(now))/float64(time.Millisecond))
 	}
 	c.firstContent.Status, c.firstContent.Reason = FirstContentFeasible, "fresh_quote"
 	if c.firstContent.ConservativeMs > c.firstContent.BudgetMs {

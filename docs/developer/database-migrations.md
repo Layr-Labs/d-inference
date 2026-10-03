@@ -21,7 +21,8 @@ mechanism is explained in
    `coordinator/store/schema/migrations/` or the highest version in
    `goMigrations` (`coordinator/store/postgres_migrations.go`). If a branch that
    merges before yours takes the same number, renumber yours.
-2. Create `coordinator/store/schema/migrations/NNNNN_short_name.sql`:
+2. In `coordinator/store/schema/migrations/`, create `NNNNN_short_name.sql`,
+   where `NNNNN` is the version with leading zeros:
 
    ```sql
    -- +goose Up

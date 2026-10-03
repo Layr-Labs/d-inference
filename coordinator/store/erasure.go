@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -52,6 +53,12 @@ const (
 	// globalPayoutReconcileWindow is how long a posted Global Payout can still
 	// be returned; ListGlobalPayoutsToReconcile reads it during this window.
 	globalPayoutReconcileWindow = 90 * 24 * time.Hour
+	// stripePayoutBounceWindow is how long a paid Stripe withdrawal still
+	// counts as open. A bank can return a payout after Stripe marked it paid
+	// (payout.failed after payout.paid), which refunds the ledger; Stripe
+	// says most failures arrive within a few business days, and 30 days
+	// leaves a wide margin.
+	stripePayoutBounceWindow = 30 * 24 * time.Hour
 )
 
 var (
@@ -61,6 +68,8 @@ var (
 	ErrErasureConfirmToken = errors.New("erasure: confirm token is invalid or expired")
 	// ErrErasureEmailMismatch: the confirming email is not the account email.
 	ErrErasureEmailMismatch = errors.New("erasure: email does not match the account")
+	// ErrErasureWalletMismatch: the confirming wallet list is not the planned one.
+	ErrErasureWalletMismatch = errors.New("erasure: wallet addresses differ from the plan")
 	// ErrErasureOpenWithdrawal: a withdrawal of the account is not terminal.
 	ErrErasureOpenWithdrawal = errors.New("erasure: account has a withdrawal that is not in a terminal state")
 	// ErrErasureCountMismatch: a scrub statement changed a different number
@@ -114,7 +123,27 @@ type ErasurePlan struct {
 	AccountID     string                `json:"account_id"`
 	Email         string                `json:"email"`
 	StripeObjects []ErasureStripeObject `json:"stripe_objects"`
+	Wallets       []ErasureWalletCount  `json:"wallets"`
 	ErasureCounts
+}
+
+// ErasureWalletCount is how many rows hold one wallet address of the plan.
+type ErasureWalletCount struct {
+	Address              string `json:"address"`
+	PaymentsConsumerRows int64  `json:"payments_consumer_rows"`
+	PaymentsProviderRows int64  `json:"payments_provider_rows"`
+	ProviderPayoutRows   int64  `json:"provider_payouts_rows"`
+}
+
+// ErasureRefusedCredit is a credit that arrived after the account was
+// erased. The balance stays zero; an operator reviews the record.
+type ErasureRefusedCredit struct {
+	ID             int64           `json:"id"`
+	AccountID      string          `json:"account_id"`
+	EntryType      LedgerEntryType `json:"entry_type"`
+	AmountMicroUSD int64           `json:"amount_micro_usd"`
+	Reference      string          `json:"reference"`
+	CreatedAt      time.Time       `json:"created_at"`
 }
 
 // ErasureRequest is one row of erasure_requests, without the confirm token
@@ -202,10 +231,11 @@ type AccountErasureStore interface {
 	// nothing.
 	PlanAccountErasure(ctx context.Context, accountID string, walletAddresses []string) (*ErasurePlan, error)
 
-	// SaveErasurePlan stores the planned request with the hash of a confirm
-	// token that expires at expiresAt. It replaces an earlier planned request
-	// of the account and refuses with ErrErasureConflict while one is pending.
-	SaveErasurePlan(ctx context.Context, accountID, actor string, counts ErasureCounts, confirmToken string, expiresAt time.Time) (*ErasureRequest, error)
+	// SaveErasurePlan stores the planned request with the hashes of a confirm
+	// token that expires at expiresAt and of the planned wallet list. It
+	// replaces an earlier planned request of the account and refuses with
+	// ErrErasureConflict while one is pending.
+	SaveErasurePlan(ctx context.Context, accountID, actor string, counts ErasureCounts, walletAddresses []string, confirmToken string, expiresAt time.Time) (*ErasureRequest, error)
 
 	// RequestAccountErasure checks the token and email, soft deletes the
 	// account (users and providers get deleted_at; API keys and provider
@@ -230,6 +260,10 @@ type AccountErasureStore interface {
 	// scrub_after has passed, until now+lease, and returns their IDs.
 	LeaseDueAccountErasures(ctx context.Context, now time.Time, lease time.Duration, limit int) ([]string, error)
 
+	// ListErasureRefusedCredits returns the credits refused after the
+	// account was erased, oldest first (at most 500).
+	ListErasureRefusedCredits(ctx context.Context, accountID string) ([]ErasureRefusedCredit, error)
+
 	// RecordAccountErasureFailure stores the last scrub error of a request.
 	RecordAccountErasureFailure(ctx context.Context, requestID, message string) error
 
@@ -244,6 +278,12 @@ type AccountErasureStore interface {
 	// PrivyUserPendingErasure reports whether a soft-deleted account holds
 	// this Privy user ID. Login refuses such an account.
 	PrivyUserPendingErasure(ctx context.Context, privyUserID string) (bool, error)
+}
+
+// erasureWalletHash binds the confirm call to the planned wallet list.
+func erasureWalletHash(wallets []string) string {
+	h := sha256.Sum256([]byte("erasure-wallets-v1:" + strings.Join(normalizeWallets(wallets), "\n")))
+	return hex.EncodeToString(h[:])
 }
 
 // erasureTokenHash is the stored form of a confirm token.

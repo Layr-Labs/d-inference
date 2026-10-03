@@ -329,7 +329,7 @@ func TestErasureOutboxLoopDeliversScrubRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.SaveErasurePlan(ctx, account, "admin_key", plan.ErasureCounts, "token", now.Add(time.Minute)); err != nil {
+	if _, err := st.SaveErasurePlan(ctx, account, "admin_key", plan.ErasureCounts, nil, "token", now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	req, err := st.RequestAccountErasure(ctx, store.ErasureConfirm{AccountID: account, ConfirmToken: "token", Email: "o@example.com", Now: now})

@@ -19,19 +19,27 @@ import (
 type erasureKeys struct {
 	AccountID       string
 	ConsumerKeyHash string
-	StripeAccountID string
+	// StripeAccountIDs are the current Express account and every earlier one
+	// the account's withdrawals used.
+	StripeAccountIDs []string
 
-	ProviderIDs     []string
-	SEKeys          []string
-	Serials         []string
-	AppAttestKeyIDs []string
+	ProviderIDs []string
+	// SEKeys and AppAttestKeyIDs exclude keys that another account also uses
+	// (counted in SharedSEKeys and SharedAppAttestKeys); their rows stay.
+	SEKeys              []string
+	SharedSEKeys        int64
+	Serials             []string
+	AppAttestKeyIDs     []string
+	SharedAppAttestKeys int64
 
 	ReferrerCode        string
 	ReferrerReplacement string
 	PrivyReplacement    string
 
-	CheckoutSessionIDs       []string
-	GlobalRecipientID        string
+	CheckoutSessionIDs []string
+	// RecipientIDs are the current Global Payouts recipient and every earlier
+	// one the account's payouts used.
+	RecipientIDs             []string
 	GlobalRecipientTombstone []byte
 
 	MDADigestsToDelete []string
@@ -93,7 +101,6 @@ func collectErasureKeys(ctx context.Context, q *storedb.Queries, accountID, stri
 	k := &erasureKeys{
 		AccountID:           accountID,
 		ConsumerKeyHash:     hashKey(accountID),
-		StripeAccountID:     stripeAccountID,
 		PrivyReplacement:    erasedValue("erased:"),
 		ReferrerReplacement: erasedValue("erased-"),
 	}
@@ -118,11 +125,34 @@ func collectErasureKeys(ctx context.Context, q *storedb.Queries, accountID, stri
 	k.ProviderIDs = sortedUnique(k.ProviderIDs)
 	k.SEKeys = sortedUnique(seKeys)
 	k.Serials = sortedUnique(append(append(serials, sessionSerials...), logSerials...))
+	if len(k.SEKeys) > 0 {
+		shared, err := q.ListSharedSEKeys(ctx, storedb.ListSharedSEKeysParams{SeKeys: k.SEKeys, AccountID: accountID})
+		if err != nil {
+			return nil, err
+		}
+		k.SEKeys, k.SharedSEKeys = withoutKeys(k.SEKeys, shared)
+	}
 	if len(k.ProviderIDs) > 0 {
 		if k.AppAttestKeyIDs, err = q.ListAppAttestKeysForSessions(ctx, k.ProviderIDs); err != nil {
 			return nil, err
 		}
 		k.AppAttestKeyIDs = sortedUnique(k.AppAttestKeyIDs)
+	}
+	if len(k.AppAttestKeyIDs) > 0 {
+		shared, err := q.ListSharedAppAttestKeys(ctx, storedb.ListSharedAppAttestKeysParams{KeyIds: k.AppAttestKeyIDs, SessionIds: k.ProviderIDs})
+		if err != nil {
+			return nil, err
+		}
+		k.AppAttestKeyIDs, k.SharedAppAttestKeys = withoutKeys(k.AppAttestKeyIDs, shared)
+	}
+	pastAccounts, err := q.ListAccountStripeAccountIDs(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	k.StripeAccountIDs = sortedUnique(append(pastAccounts, stripeAccountID))
+	pastRecipients, err := q.ListAccountRecipientIDs(ctx, accountID)
+	if err != nil {
+		return nil, err
 	}
 
 	if k.ReferrerCode, err = q.GetReferrerCodeForErasure(ctx, accountID); err != nil && !noRows(err) {
@@ -140,8 +170,9 @@ func collectErasureKeys(ctx context.Context, q *storedb.Queries, accountID, stri
 		if err := json.Unmarshal(data, &r); err != nil {
 			return nil, err
 		}
-		k.GlobalRecipientID = r.RecipientID
+		pastRecipients = append(pastRecipients, r.RecipientID)
 	}
+	k.RecipientIDs = sortedUnique(pastRecipients)
 	if k.GlobalRecipientTombstone, err = json.Marshal(GlobalRecipient{ID: uuid.NewString(), AccountID: accountID}); err != nil {
 		return nil, err
 	}
@@ -174,11 +205,11 @@ func collectErasureKeys(ctx context.Context, q *storedb.Queries, accountID, stri
 // stripeObjects lists the Stripe objects of the account for the plan.
 func (k *erasureKeys) stripeObjects() []ErasureStripeObject {
 	out := []ErasureStripeObject{}
-	if k.StripeAccountID != "" {
-		out = append(out, ErasureStripeObject{Target: ErasureTargetStripeAccount, ID: k.StripeAccountID})
+	for _, id := range k.StripeAccountIDs {
+		out = append(out, ErasureStripeObject{Target: ErasureTargetStripeAccount, ID: id})
 	}
-	if k.GlobalRecipientID != "" {
-		out = append(out, ErasureStripeObject{Target: ErasureTargetGlobalRecipient, ID: k.GlobalRecipientID})
+	for _, id := range k.RecipientIDs {
+		out = append(out, ErasureStripeObject{Target: ErasureTargetGlobalRecipient, ID: id})
 	}
 	for _, id := range k.CheckoutSessionIDs {
 		out = append(out, ErasureStripeObject{Target: ErasureTargetCheckoutSessions, ID: id})
@@ -193,11 +224,11 @@ func (k *erasureKeys) outboxRows() []ErasureOutboxItem {
 	add := func(t ErasureTarget, id string) {
 		out = append(out, ErasureOutboxItem{ID: uuid.NewString(), Target: t, ExternalID: id, State: ErasureOutboxPending})
 	}
-	if k.StripeAccountID != "" {
-		add(ErasureTargetStripeAccount, k.StripeAccountID)
+	for _, id := range k.StripeAccountIDs {
+		add(ErasureTargetStripeAccount, id)
 	}
-	if k.GlobalRecipientID != "" {
-		add(ErasureTargetGlobalRecipient, k.GlobalRecipientID)
+	for _, id := range k.RecipientIDs {
+		add(ErasureTargetGlobalRecipient, id)
 	}
 	for i := 0; i < len(k.CheckoutSessionIDs); i += ErasureCheckoutBatch {
 		end := min(i+ErasureCheckoutBatch, len(k.CheckoutSessionIDs))
@@ -221,8 +252,30 @@ func stripeObjectCounts(objects []ErasureStripeObject) map[ErasureTarget]int64 {
 
 // retained lists the data the scrub keeps for the account on purpose.
 func (k *erasureKeys) retained() []ErasureRetained {
-	if k.MDADigestsShared == 0 {
-		return nil
+	var out []ErasureRetained
+	if k.MDADigestsShared > 0 {
+		out = append(out, ErasureRetained{Table: "darkbloom_machine_aliases", Rows: k.MDADigestsShared, Reason: retainedSharedMDAAlias})
 	}
-	return []ErasureRetained{{Table: "darkbloom_machine_aliases", Rows: k.MDADigestsShared, Reason: retainedSharedMDAAlias}}
+	if k.SharedSEKeys > 0 {
+		out = append(out, ErasureRetained{Table: "provider_trust_reuse, provider_verification_jobs, code_attestations, code_attest_push_budgets", Rows: k.SharedSEKeys, Reason: retainedSharedSEKey})
+	}
+	if k.SharedAppAttestKeys > 0 {
+		out = append(out, ErasureRetained{Table: "app_attest_receipts, app_attest_receipt_blobs, app_attest_receipt_jobs", Rows: k.SharedAppAttestKeys, Reason: retainedSharedAppAttestKey})
+	}
+	return out
+}
+
+// withoutKeys removes shared from keys and reports how many it removed.
+func withoutKeys(keys, shared []string) ([]string, int64) {
+	drop := map[string]bool{}
+	for _, s := range shared {
+		drop[s] = true
+	}
+	out := keys[:0:0]
+	for _, k := range keys {
+		if !drop[k] {
+			out = append(out, k)
+		}
+	}
+	return out, int64(len(keys) - len(out))
 }

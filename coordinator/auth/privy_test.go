@@ -293,7 +293,7 @@ func TestGetOrCreateUserRefusesPendingErasure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.SaveErasurePlan(ctx, "acct-gone", "admin_key", plan.ErasureCounts, "token", now.Add(time.Minute)); err != nil {
+	if _, err := st.SaveErasurePlan(ctx, "acct-gone", "admin_key", plan.ErasureCounts, nil, "token", now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	req, err := st.RequestAccountErasure(ctx, store.ErasureConfirm{AccountID: "acct-gone", ConfirmToken: "token", Email: "gone@example.com", Now: now})

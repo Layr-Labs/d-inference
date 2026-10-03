@@ -135,7 +135,8 @@ PostgreSQL URL; there is no memory-store fallback or schema-skip mode.
 | 17 | `00017_referrals_referrer_code_cascade.sql` | Replaces the `referrals.referrer_code` foreign key with `referrals_referrer_code_cascade_fkey` (`ON UPDATE CASCADE`), added `NOT VALID` and then validated. |
 | 18 | `00018_erasure_tables.sql` | Creates `erasure_requests` and `erasure_outbox` for [account erasure](#account-erasure). |
 | 19–20 | Go: `indexMigrations` | `CONCURRENTLY` indexes for account erasure: `billing_sessions(referral_code)` and `users(privy_user_id) WHERE deleted_at IS NOT NULL`. |
-| 21 | `00021_erasure_outbox_stripe_job.sql` | Adds `erasure_outbox.stripe_job_id` (the Stripe redaction job of a `checkout_sessions` row). |
+| 21 | `00021_erasure_refuse_credits.sql` | `erasure_refused_credits` and the triggers that keep credits out of an erased account (`erasure_keep_balance_insert`, `erasure_keep_balance_update` on `balances`; `erasure_refuse_ledger_credit` on `ledger_entries`). |
+| 22 | `00022_erasure_outbox_stripe_job.sql` | Adds `erasure_outbox.stripe_job_id` (the Stripe redaction job of a `checkout_sessions` row). |
 
 Versions 2 to 5 are Go migrations (`goMigrations`). They keep the code they had
 before goose and run on the store pool. The SQL migrations run on a separate
@@ -313,17 +314,24 @@ stateDiagram-v2
    nothing. `SaveErasurePlan` stores a `planned` request with the counts and
    the SHA-256 hash of a 15-minute confirm token.
 2. **Confirm (soft delete).** `RequestAccountErasure` checks the token, its
-   expiry and the account email, refuses while a withdrawal is open, and sets
+   expiry, the account email and the hash of the planned wallet list, refuses
+   while a withdrawal is open (including a Stripe withdrawal paid within
+   `stripePayoutBounceWindow`, 30 days), and sets
    `deleted_at` on the user and its providers. API keys and provider tokens
    get `active = false` and `deleted_at`. `scrub_after` is now plus
    `EIGENINFERENCE_ERASURE_GRACE`. The handler then disconnects the account's
    providers (`DisconnectAccount`); the tokens are already revoked, so a
    provider that reconnects is unlinked.
-3. **Scrub.** `ScrubAccount` is one transaction. It locks the request and the
-   `users` row, refuses while a withdrawal is open, collects every key of the
-   account first (provider IDs, Secure Enclave keys, serial numbers, App
-   Attest key IDs, the referrer code, Checkout Session IDs, the Global Payouts
-   recipient, `mda_serial` alias digests, the given wallet addresses), zeroes
+3. **Scrub.** `ScrubAccount` is one transaction. It locks the `users` row,
+   the request, the account's `billing_sessions` and then `balances` (the
+   same session-before-balance order as `CompleteStripeCheckout`; every
+   erasure step locks `users` before `erasure_requests`), refuses while a
+   withdrawal is open, collects every key of the account first (provider IDs,
+   Secure Enclave keys, serial numbers, App Attest key IDs, the referrer code,
+   Checkout Session IDs, every Express account and Global Payouts recipient
+   in its users row and withdrawals, `mda_serial` alias digests, the given
+   wallet addresses), drops the Secure Enclave and App Attest keys that
+   another account also uses (they are reported under `retained`), zeroes
    both balances with one `erasure_forfeit` ledger entry, and runs each rule
    of `erasureRules` (`coordinator/store/erasure_rules.go`). Every rule
    statement is bounded by a collected key, and its affected-row count must
@@ -354,6 +362,13 @@ Privy login answer 403 `account_pending_deletion`; after the scrub the stored
 Privy ID is random. `CachedStore` overrides the three writers to drop cached
 users.
 
+Once a request is `erased`, triggers keep every credit out of the account:
+`balances` increases are capped at the old values and a positive
+`ledger_entries` row is replaced by an `erasure_refused_credits` row (type,
+amount, reference without admin notes or Checkout IDs), so the ledger still
+sums to zero and the caller (a webhook, a settlement) sees success and
+acknowledges. The memory store does the same in `creditLocked`.
+
 The rule table, by table:
 
 | Table | Link to the account | Rule |
@@ -365,9 +380,9 @@ The rule table, by table:
 | `providers` | `account_id` | `serial_number`: empty; `location`, `attestation_result`, `mda_cert_chain`: NULL |
 | `provider_sessions` | `account_id` | `serial_number`: empty; open sessions closed |
 | `provider_log_reports` | `account_id` | delete row |
-| `provider_trust_reuse`, `provider_verification_jobs`, `code_attestations`, `code_attest_push_budgets` | `se_pubkey` of the account's providers | delete row |
+| `provider_trust_reuse`, `provider_verification_jobs`, `code_attestations`, `code_attest_push_budgets` | `se_pubkey` of the account's providers that no other account's provider has | delete row; a shared key's rows are kept and reported |
 | `darkbloom_machine_aliases` | `app_attest`/`legacy_se` with `scope` = account; `mda_serial` digest of the account's serials | delete row; an `mda_serial` alias of a machine another account used is kept and reported |
-| `app_attest_evidence_blobs`, `app_attest_receipt_blobs`, `app_attest_receipt_jobs` | evidence of the account's provider sessions; receipts of its App Attest keys | delete row |
+| `app_attest_evidence_blobs`, `app_attest_receipt_blobs`, `app_attest_receipt_jobs` | evidence of the account's provider sessions; receipts of its App Attest keys that no other account's session used | delete row |
 | `app_attest_evidence`, `app_attest_receipts` | same | `context`: `{}` |
 | `usage` | `consumer_key_hash` = SHA-256 of the account ID | `request_location`: NULL |
 | `inference_routes` | `consumer_key_hash`; `provider_id` | `consumer_region`, `provider_region`: NULL |
@@ -380,9 +395,12 @@ The rule table, by table:
 | `payments`, `provider_payouts` | the wallet addresses named in the request | each address: one random value for all its rows |
 
 `TestErasureMarkerPostgres` (`coordinator/store/erasure_marker_test.go`)
-fills every rule's table with marker strings, scrubs, and searches every text,
+seeds every rule's table with marker strings, plus a second account that
+shares a machine and a Secure Enclave key, scrubs, and searches every text,
 JSON, array and bytea column of every table for the marker; a hit outside
-`erasureMarkerAllowList` fails, and a second account's data must not change.
+`erasureMarkerAllowList` fails, and the second account's data must not
+change. It proves the rules for the rows it seeds: a new column that holds
+personal data needs a rule and a fixture row.
 `TestErasureMarkerMemory` does the same over every value reachable from the
 `MemoryStore`. What is kept, and why, is listed in the
 [runbook](../operations/account-erasure.md#what-is-kept-and-why).
@@ -500,6 +518,10 @@ KV blocks under a per-model key, not tokens.
    Each rule statement runs after a count with the same predicate in one
    transaction, and a difference rolls the whole scrub back
    (`applyRules`, `coordinator/store/erasure_postgres.go`).
+10. **An erased account's balance stays zero.** The triggers in
+   `coordinator/store/schema/migrations/00021_erasure_refuse_credits.sql`
+   refuse every credit after the scrub and record it for review
+   (`TestErasedAccountRefusesCredits`).
 
 ## Failure modes
 

@@ -11,8 +11,9 @@ import (
 const StripeConfirmedRejectionPrefix = "transfer_create_failed: confirmed_rejection: "
 
 // ErrCheckoutErased: the billing session belongs to an erased account. The
-// scrub marks a pending session "erased" and clears its Checkout ID; a later
-// checkout.session.completed is acknowledged and refunded by hand.
+// scrub clears every Checkout ID and marks a pending session "erased"; a
+// later or replayed checkout.session.completed is acknowledged, credits
+// nothing, and a new payment is refunded by hand.
 var ErrCheckoutErased = errors.New("billing session belongs to an erased account")
 
 type StripeSettlementStore interface {

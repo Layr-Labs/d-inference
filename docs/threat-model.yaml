@@ -3416,14 +3416,20 @@ threats:
       - coordinator/api/erasure_loop.go
     mitigations:
       - description: >
-          The plan returns the account email and a 15-minute confirm token that is
-          stored hashed; the confirm call must repeat both. The soft delete revokes
-          keys and provider tokens before the providers are disconnected and refuses
-          while a withdrawal is open. The scrub is one transaction bounded by keys it
-          collects first; each statement's affected rows must equal a count read in
-          the same transaction. A marker test searches every text, JSON, array and
-          bytea column after a scrub. Soft-deleted provider rows ignore late
-          heartbeat upserts, and CachedStore drops cached users.
+          The plan returns the account email and a 15-minute confirm token; the token
+          and the planned wallet list are stored hashed, and the confirm call must
+          repeat the account ID, the token, the email and the same wallet list. The
+          soft delete revokes keys and provider tokens before the providers are
+          disconnected and refuses while a withdrawal is open, including a Stripe
+          payout paid within 30 days. The scrub is one transaction bounded by keys it
+          collects first, skips Secure Enclave and App Attest keys another account
+          also uses, and checks each statement's affected rows against a count read
+          in the same transaction. Every Express account and recipient the account
+          used is queued for Stripe deletion. After the scrub, database triggers keep
+          late credits out of the balance and record them for review. A marker test
+          searches every text, JSON, array and bytea column after a scrub of the
+          seeded tables. Soft-deleted provider rows ignore late heartbeat upserts,
+          and CachedStore drops cached users.
         status: implemented
       - description: >
           Backups, point-in-time recovery and Datadog logs keep data until their

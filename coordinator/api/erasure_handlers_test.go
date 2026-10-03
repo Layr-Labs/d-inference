@@ -87,13 +87,13 @@ func TestAdminErasureHTTPFlow(t *testing.T) {
 	}
 	token := plan["confirm_token"].(string)
 
-	if code, body := erasureCall(t, ts, http.MethodPost, base, "admin-key", map[string]any{"confirm_token": token, "email": "other@example.com"}); code != http.StatusBadRequest {
+	if code, body := erasureCall(t, ts, http.MethodPost, base, "admin-key", map[string]any{"account_id": account, "confirm_token": token, "email": "other@example.com"}); code != http.StatusBadRequest {
 		t.Fatalf("confirm with the wrong email = %d %v", code, body)
 	}
-	if code, _ := erasureCall(t, ts, http.MethodPost, base, "admin-key", map[string]any{"confirm_token": "nope", "email": email}); code != http.StatusForbidden {
+	if code, _ := erasureCall(t, ts, http.MethodPost, base, "admin-key", map[string]any{"account_id": account, "confirm_token": "nope", "email": email}); code != http.StatusForbidden {
 		t.Fatalf("confirm with the wrong token = %d", code)
 	}
-	code, confirmed := erasureCall(t, ts, http.MethodPost, base, "admin-key", map[string]any{"confirm_token": token, "email": email, "reason": "ticket 42"})
+	code, confirmed := erasureCall(t, ts, http.MethodPost, base, "admin-key", map[string]any{"account_id": account, "confirm_token": token, "email": email, "reason": "ticket 42"})
 	if code != http.StatusOK {
 		t.Fatalf("confirm = %d %v", code, confirmed)
 	}
@@ -127,7 +127,7 @@ func TestAdminErasureHTTPFlow(t *testing.T) {
 
 	// force=true scrubs at once.
 	_, plan = erasureCall(t, ts, http.MethodPost, base+"/plan", "admin-key", nil)
-	code, forced := erasureCall(t, ts, http.MethodPost, base, "admin-key", map[string]any{"confirm_token": plan["confirm_token"], "email": email, "force": true})
+	code, forced := erasureCall(t, ts, http.MethodPost, base, "admin-key", map[string]any{"account_id": account, "confirm_token": plan["confirm_token"], "email": email, "force": true})
 	if code != http.StatusOK || forced["request"].(map[string]any)["state"] != string(store.ErasureErased) {
 		t.Fatalf("forced erasure = %d %v", code, forced)
 	}
@@ -165,7 +165,7 @@ func TestAdminErasureRefusesOpenWithdrawalHTTP(t *testing.T) {
 	if plan["open_withdrawals"] != float64(1) {
 		t.Fatalf("plan open_withdrawals = %v", plan["open_withdrawals"])
 	}
-	if code, body := erasureCall(t, ts, http.MethodPost, base, "admin-key", map[string]any{"confirm_token": plan["confirm_token"], "email": email}); code != http.StatusConflict || body["error"].(map[string]any)["type"] != "open_withdrawal" {
+	if code, body := erasureCall(t, ts, http.MethodPost, base, "admin-key", map[string]any{"account_id": account, "confirm_token": plan["confirm_token"], "email": email}); code != http.StatusConflict || body["error"].(map[string]any)["type"] != "open_withdrawal" {
 		t.Fatalf("confirm with an open withdrawal = %d %v", code, body)
 	}
 }
@@ -190,7 +190,7 @@ func TestPrivyLoginRefusedDuringErasureGrace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.SaveErasurePlan(ctx, user.AccountID, "admin_key", plan.ErasureCounts, "token", now.Add(time.Minute)); err != nil {
+	if _, err := st.SaveErasurePlan(ctx, user.AccountID, "admin_key", plan.ErasureCounts, nil, "token", now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.RequestAccountErasure(ctx, store.ErasureConfirm{AccountID: user.AccountID, ConfirmToken: "token", Email: user.Email, Now: now, Grace: time.Hour}); err != nil {
@@ -220,7 +220,7 @@ func TestRunDueErasuresScrubsAndForgets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.SaveErasurePlan(ctx, account, "admin_key", plan.ErasureCounts, "token", past.Add(time.Minute)); err != nil {
+	if _, err := st.SaveErasurePlan(ctx, account, "admin_key", plan.ErasureCounts, nil, "token", past.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.RequestAccountErasure(ctx, store.ErasureConfirm{AccountID: account, ConfirmToken: "token", Email: "due@example.com", Now: past, Grace: time.Hour}); err != nil {
@@ -254,7 +254,7 @@ func TestCheckoutWebhookAcknowledgesErasedSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.SaveErasurePlan(ctx, account, "admin_key", plan.ErasureCounts, "token", now.Add(time.Minute)); err != nil {
+	if _, err := st.SaveErasurePlan(ctx, account, "admin_key", plan.ErasureCounts, nil, "token", now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	req, err := st.RequestAccountErasure(ctx, store.ErasureConfirm{AccountID: account, ConfirmToken: "token", Email: "c@example.com", Now: now})
@@ -291,5 +291,53 @@ func TestErasureGraceFromEnv(t *testing.T) {
 		if got, ignored := erasureGraceFromEnv(); got != tc.want || ignored != tc.ignored {
 			t.Errorf("%q: got %v, %v; want %v, %v", tc.value, got, ignored, tc.want, tc.ignored)
 		}
+	}
+}
+
+// The confirm call must repeat the account ID, so an account without an email
+// is never confirmed by two empty strings; it must also repeat the planned
+// wallet list. The plan shows each wallet's row counts, and the status lists
+// credits refused after the erasure.
+func TestAdminErasureConfirmBindsAccountAndWallets(t *testing.T) {
+	srv, st := testBillingServer(t)
+	srv.SetAdminKey("admin-key")
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	account := "acct-no-email"
+	if err := st.CreateUser(&store.User{AccountID: account, PrivyUserID: "did:privy:no-email"}); err != nil {
+		t.Fatal(err)
+	}
+	base := "/v1/admin/accounts/" + account + "/erasure"
+	code, plan := erasureCall(t, ts, http.MethodPost, base+"/plan", "admin-key", map[string]any{"wallet_addresses": []string{"0xwallet"}})
+	if code != http.StatusOK {
+		t.Fatalf("plan = %d %v", code, plan)
+	}
+	wallets := plan["wallets"].([]any)
+	if len(wallets) != 1 || wallets[0].(map[string]any)["address"] != "0xwallet" {
+		t.Fatalf("plan wallets = %v", plan["wallets"])
+	}
+	token := plan["confirm_token"]
+	for _, body := range []map[string]any{
+		{"confirm_token": token, "email": "", "wallet_addresses": []string{"0xwallet"}},
+		{"account_id": "acct-other", "confirm_token": token, "wallet_addresses": []string{"0xwallet"}},
+	} {
+		if code, resp := erasureCall(t, ts, http.MethodPost, base, "admin-key", body); code != http.StatusBadRequest {
+			t.Fatalf("confirm without the account id = %d %v", code, resp)
+		}
+	}
+	if code, resp := erasureCall(t, ts, http.MethodPost, base, "admin-key", map[string]any{"account_id": account, "confirm_token": token, "wallet_addresses": []string{"0xother"}}); code != http.StatusBadRequest || resp["error"].(map[string]any)["type"] != "wallet_mismatch" {
+		t.Fatalf("confirm with other wallets = %d %v", code, resp)
+	}
+	code, resp := erasureCall(t, ts, http.MethodPost, base, "admin-key", map[string]any{"account_id": account, "confirm_token": token, "wallet_addresses": []string{"0xwallet"}, "force": true})
+	if code != http.StatusOK || resp["request"].(map[string]any)["state"] != string(store.ErasureErased) {
+		t.Fatalf("confirm = %d %v", code, resp)
+	}
+	if err := st.Credit(account, 9, store.LedgerRefund, "late-refund"); err != nil {
+		t.Fatal(err)
+	}
+	_, status := erasureCall(t, ts, http.MethodGet, base, "admin-key", nil)
+	refused := status["refused_credits"].([]any)
+	if len(refused) != 1 || refused[0].(map[string]any)["amount_micro_usd"] != float64(9) || st.GetBalance(account) != 0 {
+		t.Fatalf("refused credits = %v, balance %d", refused, st.GetBalance(account))
 	}
 }

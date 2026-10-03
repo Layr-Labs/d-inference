@@ -17,12 +17,12 @@ WHERE account_id = $1 AND state IN ('planned', 'pending')
 FOR UPDATE;
 
 -- name: InsertErasurePlan :exec
-INSERT INTO erasure_requests (id, account_id, actor, state, plan, confirm_token_hash, confirm_expires_at)
-VALUES ($1, $2, $3, 'planned', $4, $5, $6);
+INSERT INTO erasure_requests (id, account_id, actor, state, plan, confirm_token_hash, confirm_expires_at, wallet_hash)
+VALUES ($1, $2, $3, 'planned', $4, $5, $6, $7);
 
 -- name: UpdateErasurePlan :exec
 UPDATE erasure_requests
-SET actor = $2, plan = $3, confirm_token_hash = $4, confirm_expires_at = $5
+SET actor = $2, plan = $3, confirm_token_hash = $4, confirm_expires_at = $5, wallet_hash = $6
 WHERE id = $1 AND state = 'planned';
 
 -- name: MarkErasurePending :exec
@@ -103,6 +103,7 @@ UPDATE providers SET deleted_at = NULL WHERE account_id = $1 AND deleted_at IS N
 SELECT COUNT(*) FROM stripe_withdrawals
 WHERE account_id = sqlc.arg('account_id') AND (
     status IN ('pending', 'transferred')
+    OR (status = 'paid' AND updated_at > sqlc.arg('paid_after')::timestamptz)
     OR (status = 'failed' AND NOT refunded AND transfer_id = '' AND payout_id = ''
         AND sweep_payout_id = '' AND amount_micro_usd > 0
         AND starts_with(failure_reason, sqlc.arg('refund_prefix')::text)));
@@ -140,6 +141,30 @@ SELECT DISTINCT serial_number FROM provider_log_reports WHERE account_id = $1 AN
 
 -- name: ListAppAttestKeysForSessions :many
 SELECT DISTINCT key_id FROM app_attest_evidence WHERE session_id = ANY(sqlc.arg('session_ids')::text[]) AND key_id <> '';
+
+-- name: ListSharedSEKeys :many
+SELECT DISTINCT se_public_key FROM providers
+WHERE se_public_key = ANY(sqlc.arg('se_keys')::text[]) AND account_id <> sqlc.arg('account_id');
+
+-- name: ListSharedAppAttestKeys :many
+SELECT DISTINCT key_id FROM app_attest_evidence
+WHERE key_id = ANY(sqlc.arg('key_ids')::text[]) AND NOT (session_id = ANY(sqlc.arg('session_ids')::text[]));
+
+-- name: ListAccountStripeAccountIDs :many
+SELECT DISTINCT stripe_account_id FROM stripe_withdrawals WHERE account_id = $1 AND stripe_account_id <> '';
+
+-- name: ListAccountRecipientIDs :many
+SELECT DISTINCT (data->>'recipient_id')::text AS recipient_id FROM global_payout_withdrawals
+WHERE account_id = $1 AND COALESCE(data->>'recipient_id', '') <> '';
+
+-- name: LockAccountBillingSessions :many
+SELECT id FROM billing_sessions WHERE account_id = $1 ORDER BY id FOR UPDATE;
+
+-- name: IsAccountErased :one
+SELECT EXISTS (SELECT 1 FROM erasure_requests WHERE account_id = $1 AND state = 'erased');
+
+-- name: ListErasureRefusedCredits :many
+SELECT * FROM erasure_refused_credits WHERE account_id = $1 ORDER BY created_at, id LIMIT 500;
 
 -- name: GetReferrerCodeForErasure :one
 SELECT code FROM referrers WHERE account_id = $1;

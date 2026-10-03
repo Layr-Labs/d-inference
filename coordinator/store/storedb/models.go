@@ -43,6 +43,15 @@ type ErasureOutbox struct {
 	StripeJobID string
 }
 
+type ErasureRefusedCredit struct {
+	ID             int64
+	AccountID      string
+	EntryType      string
+	AmountMicroUsd int64
+	Reference      string
+	CreatedAt      time.Time
+}
+
 type ErasureRequest struct {
 	ID               string
 	AccountID        string
@@ -53,6 +62,7 @@ type ErasureRequest struct {
 	Plan             []byte
 	ConfirmTokenHash string
 	ConfirmExpiresAt *time.Time
+	WalletHash       string
 	WalletAddresses  []string
 	RequestedAt      *time.Time
 	ScrubAfter       *time.Time

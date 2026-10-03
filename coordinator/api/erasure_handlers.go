@@ -36,6 +36,9 @@ type erasurePlanResponse struct {
 }
 
 type erasureConfirmBody struct {
+	// AccountID must repeat the path's account ID, so an account without an
+	// email is still confirmed by something the admin typed.
+	AccountID       string   `json:"account_id"`
 	ConfirmToken    string   `json:"confirm_token"`
 	Email           string   `json:"email"`
 	Reason          string   `json:"reason"`
@@ -51,8 +54,9 @@ type erasureRequestResponse struct {
 }
 
 type erasureStatusResponse struct {
-	Request *store.ErasureRequest     `json:"request"`
-	Outbox  []store.ErasureOutboxItem `json:"outbox"`
+	Request        *store.ErasureRequest        `json:"request"`
+	Outbox         []store.ErasureOutboxItem    `json:"outbox"`
+	RefusedCredits []store.ErasureRefusedCredit `json:"refused_credits"`
 }
 
 // adminActor names the admin who acted: the admin key, or the account of a
@@ -75,6 +79,8 @@ func writeErasureError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "account or erasure request not found"))
 	case errors.Is(err, store.ErrErasureConfirmToken):
 		writeJSON(w, http.StatusForbidden, errorResponse("invalid_confirm_token", "confirm token is invalid or expired; run the plan again"))
+	case errors.Is(err, store.ErrErasureWalletMismatch):
+		writeJSON(w, http.StatusBadRequest, errorResponse("wallet_mismatch", "wallet_addresses differ from the list in the plan; run the plan again", withParam("wallet_addresses")))
 	case errors.Is(err, store.ErrErasureEmailMismatch):
 		writeJSON(w, http.StatusBadRequest, errorResponse("email_mismatch", "email does not match the account email shown in the plan", withParam("email")))
 	case errors.Is(err, store.ErrErasureOpenWithdrawal):
@@ -130,7 +136,7 @@ func (s *Server) handleAdminErasurePlan(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	expires := time.Now().UTC().Add(erasureConfirmTTL)
-	req, err := s.store.SaveErasurePlan(ctx, accountID, s.adminActor(r), plan.ErasureCounts, token, expires)
+	req, err := s.store.SaveErasurePlan(ctx, accountID, s.adminActor(r), plan.ErasureCounts, body.WalletAddresses, token, expires)
 	if errors.Is(err, store.ErrNotFound) {
 		// The user row exists (the plan read it) but is no longer live.
 		err = store.ErrErasureConflict
@@ -162,6 +168,10 @@ func (s *Server) handleAdminErasureRequest(w http.ResponseWriter, r *http.Reques
 	}
 	if body.ConfirmToken == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "confirm_token is required", withParam("confirm_token")))
+		return
+	}
+	if body.AccountID != accountID {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "account_id must repeat the account in the path", withParam("account_id")))
 		return
 	}
 	ctx := r.Context()
@@ -212,7 +222,12 @@ func (s *Server) handleAdminErasureStatus(w http.ResponseWriter, r *http.Request
 		writeErasureError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, erasureStatusResponse{Request: req, Outbox: outbox})
+	refused, err := s.store.ListErasureRefusedCredits(r.Context(), accountID)
+	if err != nil {
+		writeErasureError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, erasureStatusResponse{Request: req, Outbox: outbox, RefusedCredits: refused})
 }
 
 // handleAdminErasureCancel handles POST /v1/admin/accounts/{account_id}/erasure/cancel.

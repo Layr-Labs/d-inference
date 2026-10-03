@@ -51,11 +51,14 @@ func erasureRequestFromRow(r storedb.ErasureRequest) (*ErasureRequest, error) {
 }
 
 // openWithdrawals counts withdrawals whose money is still moving: Stripe
-// withdrawals that are not terminal or wait for a confirmed-rejection refund,
-// and Global Payouts that are pending, processing, or posted recently enough
+// withdrawals that are not terminal, wait for a confirmed-rejection refund,
+// or were paid within stripePayoutBounceWindow (a bank can still return
+// them), and Global Payouts that are pending, processing, or posted recently enough
 // that the reconciler still reads them.
 func openWithdrawals(ctx context.Context, q *storedb.Queries, accountID string, now time.Time) (int64, error) {
-	stripe, err := q.CountOpenStripeWithdrawals(ctx, storedb.CountOpenStripeWithdrawalsParams{AccountID: accountID, RefundPrefix: StripeConfirmedRejectionPrefix})
+	stripe, err := q.CountOpenStripeWithdrawals(ctx, storedb.CountOpenStripeWithdrawalsParams{
+		AccountID: accountID, RefundPrefix: StripeConfirmedRejectionPrefix, PaidAfter: now.Add(-stripePayoutBounceWindow),
+	})
 	if err != nil {
 		return 0, err
 	}
@@ -108,6 +111,9 @@ func (s *PostgresStore) PlanAccountErasure(ctx context.Context, accountID string
 		}
 		plan = &ErasurePlan{AccountID: accountID, Email: user.Email, StripeObjects: k.stripeObjects()}
 		plan.Rows, plan.Retained, plan.OpenWithdrawals = rows, k.retained(), open
+		if plan.Wallets, err = walletCounts(ctx, q, k.Wallets); err != nil {
+			return err
+		}
 		plan.StripeObjectCounts = stripeObjectCounts(plan.StripeObjects)
 		bal, err := q.GetBalanceForErasure(ctx, accountID)
 		if err != nil && !noRows(err) {
@@ -120,7 +126,8 @@ func (s *PostgresStore) PlanAccountErasure(ctx context.Context, accountID string
 }
 
 // SaveErasurePlan stores or replaces the planned request of the account.
-func (s *PostgresStore) SaveErasurePlan(ctx context.Context, accountID, actor string, counts ErasureCounts, confirmToken string, expiresAt time.Time) (*ErasureRequest, error) {
+func (s *PostgresStore) SaveErasurePlan(ctx context.Context, accountID, actor string, counts ErasureCounts, walletAddresses []string, confirmToken string, expiresAt time.Time) (*ErasureRequest, error) {
+	walletHash := erasureWalletHash(walletAddresses)
 	raw, err := json.Marshal(ErasureSummary{Planned: &counts})
 	if err != nil {
 		return nil, err
@@ -138,7 +145,7 @@ func (s *PostgresStore) SaveErasurePlan(ctx context.Context, accountID, actor st
 			id = uuid.NewString()
 			return q.InsertErasurePlan(ctx, storedb.InsertErasurePlanParams{
 				ID: id, AccountID: accountID, Actor: actor, Plan: raw,
-				ConfirmTokenHash: erasureTokenHash(confirmToken), ConfirmExpiresAt: &expiresAt,
+				ConfirmTokenHash: erasureTokenHash(confirmToken), ConfirmExpiresAt: &expiresAt, WalletHash: walletHash,
 			})
 		case err != nil:
 			return err
@@ -148,6 +155,7 @@ func (s *PostgresStore) SaveErasurePlan(ctx context.Context, accountID, actor st
 		id = open.ID
 		return q.UpdateErasurePlan(ctx, storedb.UpdateErasurePlanParams{
 			ID: id, Actor: actor, Plan: raw, ConfirmTokenHash: erasureTokenHash(confirmToken), ConfirmExpiresAt: &expiresAt,
+			WalletHash: walletHash,
 		})
 	})
 	if isUniqueViolation(err) {
@@ -171,28 +179,35 @@ func normalizeErasureEmail(email string) string { return strings.ToLower(strings
 func (s *PostgresStore) RequestAccountErasure(ctx context.Context, in ErasureConfirm) (*ErasureRequest, error) {
 	var id string
 	err := s.erasureTx(ctx, pgx.TxOptions{}, func(q *storedb.Queries) error {
-		open, err := q.GetOpenErasureRequestForUpdate(ctx, in.AccountID)
-		if noRows(err) {
-			return ErrErasureConfirmToken
-		}
-		if err != nil {
-			return err
-		}
-		if open.State != string(ErasurePlanned) {
-			return ErrErasureConflict
-		}
-		if !erasureTokenValid(open.ConfirmTokenHash, open.ConfirmExpiresAt, in.ConfirmToken, in.Now) {
-			return ErrErasureConfirmToken
-		}
-		user, err := q.LockLiveUserForErasure(ctx, in.AccountID)
+		// Lock order for every erasure step: users, then erasure_requests.
+		user, err := q.LockUserForErasure(ctx, in.AccountID)
 		if noRows(err) {
 			return ErrNotFound
 		}
 		if err != nil {
 			return err
 		}
+		open, err := q.GetOpenErasureRequestForUpdate(ctx, in.AccountID)
+		if noRows(err) {
+			if user.DeletedAt != nil {
+				return ErrErasureConflict
+			}
+			return ErrErasureConfirmToken
+		}
+		if err != nil {
+			return err
+		}
+		if open.State != string(ErasurePlanned) || user.DeletedAt != nil {
+			return ErrErasureConflict
+		}
+		if !erasureTokenValid(open.ConfirmTokenHash, open.ConfirmExpiresAt, in.ConfirmToken, in.Now) {
+			return ErrErasureConfirmToken
+		}
 		if normalizeErasureEmail(user.Email) != normalizeErasureEmail(in.Email) {
 			return ErrErasureEmailMismatch
+		}
+		if open.WalletHash != erasureWalletHash(in.WalletAddresses) {
+			return ErrErasureWalletMismatch
 		}
 		if n, err := openWithdrawals(ctx, q, in.AccountID, in.Now); err != nil {
 			return err
@@ -236,6 +251,11 @@ func erasureTokenValid(storedHash string, expires *time.Time, token string, now 
 func (s *PostgresStore) CancelAccountErasure(ctx context.Context, accountID, actor string, now time.Time) (*ErasureRequest, error) {
 	var id string
 	err := s.erasureTx(ctx, pgx.TxOptions{}, func(q *storedb.Queries) error {
+		if _, err := q.LockUserForErasure(ctx, accountID); noRows(err) {
+			return ErrNotFound
+		} else if err != nil {
+			return err
+		}
 		open, err := q.GetOpenErasureRequestForUpdate(ctx, accountID)
 		if noRows(err) {
 			return ErrNotFound
@@ -245,9 +265,6 @@ func (s *PostgresStore) CancelAccountErasure(ctx context.Context, accountID, act
 		}
 		if open.State != string(ErasurePending) || open.ScrubAfter == nil || !now.Before(*open.ScrubAfter) {
 			return ErrErasureConflict
-		}
-		if _, err := q.LockUserForErasure(ctx, accountID); err != nil {
-			return err
 		}
 		if _, err := q.RestoreUser(ctx, accountID); err != nil {
 			return fmt.Errorf("store: restore user: %w", err)
@@ -269,25 +286,32 @@ func (s *PostgresStore) CancelAccountErasure(ctx context.Context, accountID, act
 func (s *PostgresStore) ScrubAccount(ctx context.Context, requestID string, now time.Time) (*ErasureResult, error) {
 	var result ErasureResult
 	err := s.erasureTx(ctx, pgx.TxOptions{}, func(q *storedb.Queries) error {
+		// Lock order: users, erasure_requests, billing_sessions, balances —
+		// the same billing_sessions-before-balances order as
+		// CompleteStripeCheckout.
+		peek, err := q.GetErasureRequest(ctx, requestID)
+		if noRows(err) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		user, err := q.LockUserForErasure(ctx, peek.AccountID)
+		if noRows(err) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
 		req, err := q.GetErasureRequestForUpdate(ctx, requestID)
-		if noRows(err) {
-			return ErrNotFound
-		}
 		if err != nil {
 			return err
 		}
-		if req.State != string(ErasurePending) {
+		if req.State != string(ErasurePending) || user.DeletedAt == nil {
 			return ErrErasureConflict
 		}
-		user, err := q.LockUserForErasure(ctx, req.AccountID)
-		if noRows(err) {
-			return ErrNotFound
-		}
-		if err != nil {
+		if _, err := q.LockAccountBillingSessions(ctx, req.AccountID); err != nil {
 			return err
-		}
-		if user.DeletedAt == nil {
-			return ErrErasureConflict
 		}
 		if n, err := openWithdrawals(ctx, q, req.AccountID, now); err != nil {
 			return err
@@ -488,6 +512,26 @@ func (s *PostgresStore) LeaseDueErasureOutbox(ctx context.Context, now time.Time
 	return out, nil
 }
 
+// walletCounts counts the rows that hold each planned wallet address.
+func walletCounts(ctx context.Context, q *storedb.Queries, wallets []walletReplacement) ([]ErasureWalletCount, error) {
+	out := make([]ErasureWalletCount, 0, len(wallets))
+	for _, w := range wallets {
+		c := ErasureWalletCount{Address: w.Address}
+		var err error
+		if c.PaymentsConsumerRows, err = q.CountPaymentConsumerAddress(ctx, w.Address); err != nil {
+			return nil, err
+		}
+		if c.PaymentsProviderRows, err = q.CountPaymentProviderAddress(ctx, w.Address); err != nil {
+			return nil, err
+		}
+		if c.ProviderPayoutRows, err = q.CountProviderPayoutAddress(ctx, w.Address); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}
+
 // SaveErasureOutboxResult stores one delivery outcome.
 func (s *PostgresStore) SaveErasureOutboxResult(ctx context.Context, id string, r ErasureOutboxResult) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -503,4 +547,20 @@ func (s *PostgresStore) SaveErasureOutboxResult(ctx context.Context, id string, 
 		return ErrErasureConflict
 	}
 	return nil
+}
+
+// ListErasureRefusedCredits returns credits refused after the erasure.
+func (s *PostgresStore) ListErasureRefusedCredits(ctx context.Context, accountID string) ([]ErasureRefusedCredit, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	rows, err := s.queries().ListErasureRefusedCredits(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ErasureRefusedCredit, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, ErasureRefusedCredit{ID: r.ID, AccountID: r.AccountID, EntryType: LedgerEntryType(r.EntryType),
+			AmountMicroUSD: r.AmountMicroUsd, Reference: r.Reference, CreatedAt: r.CreatedAt})
+	}
+	return out, nil
 }

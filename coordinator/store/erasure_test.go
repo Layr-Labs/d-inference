@@ -59,7 +59,7 @@ func planAndConfirm(t *testing.T, s Store, a erasureAccount, now time.Time, grac
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.SaveErasurePlan(ctx, a.AccountID, "admin_key", plan.ErasureCounts, "token", now.Add(15*time.Minute)); err != nil {
+	if _, err := s.SaveErasurePlan(ctx, a.AccountID, "admin_key", plan.ErasureCounts, nil, "token", now.Add(15*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	req, err := s.RequestAccountErasure(ctx, ErasureConfirm{AccountID: a.AccountID, ConfirmToken: "token", Email: a.Email, Actor: "admin_key", Reason: "ticket 1", Now: now, Grace: grace})
@@ -108,8 +108,15 @@ func TestAccountErasureLifecycle(t *testing.T) {
 			if _, err := s.RequestAccountErasure(ctx, ErasureConfirm{AccountID: a.AccountID, ConfirmToken: "token", Email: a.Email, Now: now}); !errors.Is(err, ErrErasureConfirmToken) {
 				t.Fatalf("confirm without a plan: %v", err)
 			}
-			if _, err := s.SaveErasurePlan(ctx, a.AccountID, "admin_key", plan.ErasureCounts, "token", now.Add(15*time.Minute)); err != nil {
+			if _, err := s.SaveErasurePlan(ctx, a.AccountID, "admin_key", plan.ErasureCounts, []string{"0xabc"}, "token", now.Add(15*time.Minute)); err != nil {
 				t.Fatal(err)
+			}
+			// The wallet list is bound to the plan.
+			if _, err := s.RequestAccountErasure(ctx, ErasureConfirm{AccountID: a.AccountID, ConfirmToken: "token", Email: a.Email, WalletAddresses: []string{"0xabc", "0xother"}, Now: now}); !errors.Is(err, ErrErasureWalletMismatch) {
+				t.Fatalf("other wallets: %v", err)
+			}
+			if _, err := s.RequestAccountErasure(ctx, ErasureConfirm{AccountID: a.AccountID, ConfirmToken: "token", Email: a.Email, Now: now}); !errors.Is(err, ErrErasureWalletMismatch) {
+				t.Fatalf("no wallets: %v", err)
 			}
 			if _, err := s.RequestAccountErasure(ctx, ErasureConfirm{AccountID: a.AccountID, ConfirmToken: "wrong", Email: a.Email, Now: now}); !errors.Is(err, ErrErasureConfirmToken) {
 				t.Fatalf("wrong token: %v", err)
@@ -141,7 +148,7 @@ func TestAccountErasureLifecycle(t *testing.T) {
 			if pending, err := s.PrivyUserPendingErasure(ctx, a.PrivyID); err != nil || !pending {
 				t.Fatalf("PrivyUserPendingErasure = %v, %v", pending, err)
 			}
-			if _, err := s.SaveErasurePlan(ctx, a.AccountID, "admin_key", plan.ErasureCounts, "t2", now.Add(time.Minute)); !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrErasureConflict) {
+			if _, err := s.SaveErasurePlan(ctx, a.AccountID, "admin_key", plan.ErasureCounts, nil, "t2", now.Add(time.Minute)); !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrErasureConflict) {
 				t.Fatalf("plan while pending: %v", err)
 			}
 
@@ -246,7 +253,7 @@ func TestAccountErasureRefusesOpenWithdrawal(t *testing.T) {
 			if err != nil || plan.OpenWithdrawals != 1 {
 				t.Fatalf("plan open withdrawals = %+v, %v", plan, err)
 			}
-			if _, err := s.SaveErasurePlan(ctx, a.AccountID, "admin_key", plan.ErasureCounts, "token", now.Add(time.Minute)); err != nil {
+			if _, err := s.SaveErasurePlan(ctx, a.AccountID, "admin_key", plan.ErasureCounts, nil, "token", now.Add(time.Minute)); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := s.RequestAccountErasure(ctx, ErasureConfirm{AccountID: a.AccountID, ConfirmToken: "token", Email: a.Email, Now: now}); !errors.Is(err, ErrErasureOpenWithdrawal) {
@@ -256,11 +263,18 @@ func TestAccountErasureRefusesOpenWithdrawal(t *testing.T) {
 				t.Fatalf("refused request changed the user: %v", err)
 			}
 
-			// A withdrawal that opens during the grace period blocks the scrub.
+			// A recently paid withdrawal can still bounce and refund the
+			// ledger, so it counts as open.
 			wd.Status = "paid"
 			if err := s.UpdateStripeWithdrawal(wd); err != nil {
 				t.Fatal(err)
 			}
+			if _, err := s.RequestAccountErasure(ctx, ErasureConfirm{AccountID: a.AccountID, ConfirmToken: "token", Email: a.Email, Now: now}); !errors.Is(err, ErrErasureOpenWithdrawal) {
+				t.Fatalf("request with a recently paid withdrawal: %v", err)
+			}
+			ageWithdrawal(t, s, wd.ID, now.Add(-stripePayoutBounceWindow-time.Hour))
+
+			// A withdrawal that opens during the grace period blocks the scrub.
 			req, err := s.RequestAccountErasure(ctx, ErasureConfirm{AccountID: a.AccountID, ConfirmToken: "token", Email: a.Email, Now: now, Grace: time.Hour})
 			if err != nil {
 				t.Fatal(err)
@@ -388,5 +402,22 @@ func TestCachedStoreInvalidatesUsersOnErasure(t *testing.T) {
 	}
 	if c.Stats().Users.Invalidations < 4 {
 		t.Fatalf("invalidations = %d; want one per erasure write", c.Stats().Users.Invalidations)
+	}
+}
+
+// ageWithdrawal moves a withdrawal's updated_at back, past the bounce window.
+func ageWithdrawal(t *testing.T, s Store, id string, at time.Time) {
+	t.Helper()
+	switch st := s.(type) {
+	case *PostgresStore:
+		if _, err := st.pool.Exec(context.Background(), `UPDATE stripe_withdrawals SET updated_at = $2 WHERE id = $1`, id, at); err != nil {
+			t.Fatal(err)
+		}
+	case *MemoryStore:
+		st.mu.Lock()
+		st.stripeWithdrawalsByID[id].UpdatedAt = at
+		st.mu.Unlock()
+	default:
+		t.Fatalf("unsupported store %T", s)
 	}
 }

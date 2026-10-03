@@ -149,3 +149,17 @@ func IsNotFoundAPIErr(err error) bool {
 	var apiErr *APIError
 	return errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusNotFound || apiErr.Code == "resource_missing")
 }
+
+// CheckoutSessionExists reports whether the Checkout Session exists under
+// the current key. A redaction job cannot say which of its sessions is
+// missing, so the worker asks one by one.
+func (p *StripeProcessor) CheckoutSessionExists(sessionID string) (bool, error) {
+	if !checkoutSessionIDRe.MatchString(sessionID) {
+		return false, fmt.Errorf("stripe redaction: invalid checkout session id")
+	}
+	_, err := p.stripeDo(http.MethodGet, "/v1/checkout/sessions/"+sessionID, nil, "")
+	if IsNotFoundAPIErr(err) {
+		return false, nil
+	}
+	return err == nil, err
+}

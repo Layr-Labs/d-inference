@@ -42,7 +42,12 @@ func TestErasureOutboxLeaseAndResult(t *testing.T) {
 			}
 			checkout := byTarget[ErasureTargetCheckoutSessions]
 			later := now.Add(5 * time.Minute)
-			if err := s.SaveErasureOutboxResult(ctx, checkout.ID, ErasureOutboxResult{State: ErasureOutboxPending, NextAt: later, StripeJobID: "prj_1"}); err != nil {
+			since := now.Add(-time.Minute)
+			split := &ErasureOutboxItem{ID: uniqueID("ob-split"), RequestID: req.ID, Target: ErasureTargetCheckoutSessions, ExternalID: "cs_missing", LastError: "not found"}
+			if err := s.SaveErasureOutboxResult(ctx, checkout.ID, ErasureOutboxResult{
+				State: ErasureOutboxPending, NextAt: later, ExternalID: checkout.ExternalID, StripeJobID: "prj_1",
+				JobStatus: "validating", JobStatusSince: &since, JobGeneration: 2, Split: split,
+			}); err != nil {
 				t.Fatal(err)
 			}
 			logRow := byTarget[ErasureTargetErasureLog]
@@ -64,7 +69,14 @@ func TestErasureOutboxLeaseAndResult(t *testing.T) {
 						t.Errorf("done row = %+v; the Stripe ID must be cleared", it)
 					}
 				case ErasureTargetCheckoutSessions:
-					if it.State != ErasureOutboxPending || it.StripeJobID != "prj_1" || !it.HasStripeJob || !it.NextAt.Equal(later) {
+					if it.ID == split.ID {
+						if it.State != ErasureOutboxManualAction || it.ExternalID != "cs_missing" || it.LastError != "not found" {
+							t.Errorf("split row = %+v", it)
+						}
+						continue
+					}
+					if it.State != ErasureOutboxPending || it.StripeJobID != "prj_1" || !it.HasStripeJob || !it.NextAt.Equal(later) ||
+						it.ExternalID != a.Checkout || it.JobStatus != "validating" || it.JobGeneration != 2 || it.JobStatusSince == nil || !it.JobStatusSince.Equal(since) {
 						t.Errorf("progress row = %+v", it)
 					}
 				case ErasureTargetErasureLog:
@@ -74,7 +86,7 @@ func TestErasureOutboxLeaseAndResult(t *testing.T) {
 				}
 			}
 			// The progress row is due again after its next_at.
-			if due, _ := s.LeaseDueErasureOutbox(ctx, later, time.Minute, 10); len(due) != 1 || due[0].StripeJobID != "prj_1" {
+			if due, _ := s.LeaseDueErasureOutbox(ctx, later, time.Minute, 10); len(due) != 1 || due[0].StripeJobID != "prj_1" || due[0].JobGeneration != 2 {
 				t.Fatalf("lease after next_at = %+v", due)
 			}
 		})

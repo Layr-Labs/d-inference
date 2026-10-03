@@ -86,7 +86,7 @@ func outboxTestServer(t *testing.T, mock bool) (*Server, *store.MemoryStore, *fa
 func outboxRow(target store.ErasureTarget, externalID, jobID string) store.ErasureOutboxWork {
 	return store.ErasureOutboxWork{ErasureOutboxItem: store.ErasureOutboxItem{
 		ID: "ob-1", RequestID: "req-1", Target: target, State: store.ErasureOutboxPending,
-		ExternalID: externalID, StripeJobID: jobID,
+		ExternalID: externalID, StripeJobID: jobID, CreatedAt: time.Now().UTC(),
 	}, AccountID: "acct-1", ErasedAt: time.Unix(1_800_000_000, 0)}
 }
 
@@ -161,7 +161,7 @@ func TestErasureOutboxRedactionJobLifecycle(t *testing.T) {
 	if !strings.Contains(form, "validation_behavior=fix") || strings.Count(form, "objects%5Bcheckout_sessions%5D%5B%5D=cs_test_") != 2 {
 		t.Fatalf("create form = %q", form)
 	}
-	if got := f.headers["POST /v1/privacy/redaction_jobs"].Get("Idempotency-Key"); got != "erasure-redaction-ob-1" {
+	if got := f.headers["POST /v1/privacy/redaction_jobs"].Get("Idempotency-Key"); got != "erasure-redaction-ob-1-0" {
 		t.Fatalf("idempotency key = %q", got)
 	}
 
@@ -197,10 +197,10 @@ func TestErasureOutboxRedactionOutcomes(t *testing.T) {
 			t.Fatalf("outcome = %+v", out)
 		}
 	})
-	t.Run("session not found", func(t *testing.T) {
+	t.Run("single session not found needs an operator", func(t *testing.T) {
 		f.on(http.MethodPost, "/v1/privacy/redaction_jobs", 404, `{"error":{"code":"resource_missing","message":"No such checkout session"}}`)
-		if out := srv.deliverErasureOutbox(ctx, fresh); out.kind != outboxDone {
-			t.Fatalf("outcome = %+v", out)
+		if out := srv.deliverErasureOutbox(ctx, fresh); out.kind != outboxManual || !strings.Contains(out.err, "earlier Stripe account") {
+			t.Fatalf("outcome = %+v; a missing session must stay on a manual_action row", out)
 		}
 	})
 	t.Run("transient", func(t *testing.T) {
@@ -369,4 +369,82 @@ func TestErasureOutboxLoopDeliversScrubRows(t *testing.T) {
 	if n := strings.Count(strings.Join(f.requests, "\n"), "POST /v1/privacy/redaction_jobs"); n != 1 {
 		t.Fatalf("redaction job created %d times", n)
 	}
+}
+
+// One missing session in a batch must not stop the others: they stay on the
+// row for a new job, and the missing one moves to a manual_action row.
+func TestErasureOutboxRedactionSplitsMissingSessions(t *testing.T) {
+	srv, _, f := outboxTestServer(t, false)
+	row := outboxRow(store.ErasureTargetCheckoutSessions, "cs_test_a,cs_test_old,cs_test_b", "")
+	f.on(http.MethodPost, "/v1/privacy/redaction_jobs", 404, `{"error":{"code":"resource_missing","message":"No such checkout.session: 'cs_test_old'"}}`)
+	f.on(http.MethodGet, "/v1/checkout/sessions/cs_test_a", 200, `{"id":"cs_test_a"}`)
+	f.on(http.MethodGet, "/v1/checkout/sessions/cs_test_b", 200, `{"id":"cs_test_b"}`)
+	f.on(http.MethodGet, "/v1/checkout/sessions/cs_test_old", 404, `{"error":{"code":"resource_missing","message":"No such checkout.session"}}`)
+
+	out := srv.deliverErasureOutbox(context.Background(), row)
+	if out.kind != outboxProgress || out.externalIDs == nil || *out.externalIDs != "cs_test_a,cs_test_b" || !out.newGeneration {
+		t.Fatalf("outcome = %+v", out)
+	}
+	if out.split == nil || out.split.ExternalID != "cs_test_old" || out.split.RequestID != row.RequestID || out.split.Target != store.ErasureTargetCheckoutSessions {
+		t.Fatalf("split = %+v", out.split)
+	}
+	r := outboxResult(row, out, time.Now())
+	if r.State != store.ErasureOutboxPending || r.ExternalID != "cs_test_a,cs_test_b" || r.JobGeneration != 1 || r.Split == nil {
+		t.Fatalf("result = %+v", r)
+	}
+	// The next create uses a new idempotency key for the smaller batch.
+	row.ExternalID, row.JobGeneration = r.ExternalID, r.JobGeneration
+	f.on(http.MethodPost, "/v1/privacy/redaction_jobs", 200, `{"id":"prj_5","status":"validating"}`)
+	if out := srv.deliverErasureOutbox(context.Background(), row); out.kind != outboxProgress || out.jobID != "prj_5" {
+		t.Fatalf("second create = %+v", out)
+	}
+	if got := f.headers["POST /v1/privacy/redaction_jobs"].Get("Idempotency-Key"); got != "erasure-redaction-ob-1-1" {
+		t.Fatalf("idempotency key = %q", got)
+	}
+}
+
+// A job that disappears gets a new idempotency key, a job stuck in one
+// status escalates, and the 90-day waits end at a deadline.
+func TestErasureOutboxRedactionEscalation(t *testing.T) {
+	srv, _, f := outboxTestServer(t, false)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	t.Run("gone job gets a new key", func(t *testing.T) {
+		row := outboxRow(store.ErasureTargetCheckoutSessions, "cs_test_1", "prj_dead")
+		f.on(http.MethodGet, "/v1/privacy/redaction_jobs/prj_dead", 404, `{"error":{"code":"resource_missing","message":"No such job"}}`)
+		out := srv.deliverErasureOutbox(ctx, row)
+		r := outboxResult(row, out, now)
+		if out.kind != outboxProgress || r.StripeJobID != "" || r.JobGeneration != 1 {
+			t.Fatalf("outcome = %+v, result = %+v", out, r)
+		}
+	})
+	t.Run("status clock", func(t *testing.T) {
+		row := outboxRow(store.ErasureTargetCheckoutSessions, "cs_test_1", "prj_slow")
+		f.on(http.MethodGet, "/v1/privacy/redaction_jobs/prj_slow", 200, `{"id":"prj_slow","status":"validating"}`)
+		out := srv.deliverErasureOutbox(ctx, row)
+		r := outboxResult(row, out, now)
+		if out.kind != outboxProgress || r.JobStatus != "validating" || r.JobStatusSince == nil || !r.JobStatusSince.Equal(now) {
+			t.Fatalf("first poll result = %+v", r)
+		}
+		row.JobStatus, row.JobStatusSince = r.JobStatus, r.JobStatusSince
+		if r2 := outboxResult(row, srv.deliverErasureOutbox(ctx, row), now.Add(time.Hour)); !r2.JobStatusSince.Equal(now) {
+			t.Fatalf("unchanged status restarted the clock: %+v", r2)
+		}
+		old := now.Add(-erasureRedactionStuck - time.Hour)
+		row.JobStatusSince = &old
+		if out := srv.deliverErasureOutbox(ctx, row); out.kind != outboxManual || !strings.Contains(out.err, "validating since") {
+			t.Fatalf("stuck job = %+v", out)
+		}
+	})
+	t.Run("90-day waits end", func(t *testing.T) {
+		row := outboxRow(store.ErasureTargetCheckoutSessions, "cs_test_1", "prj_young")
+		row.CreatedAt = now.Add(-erasureRedactionDeadline - time.Hour)
+		f.on(http.MethodGet, "/v1/privacy/redaction_jobs/prj_young", 200, `{"id":"prj_young","status":"failed"}`)
+		f.on(http.MethodGet, "/v1/privacy/redaction_jobs/prj_young/validation_errors", 200,
+			`{"object":"list","data":[{"code":"invalid_state","message":"This charge can be redacted 90 days after it was created."}]}`)
+		if out := srv.deliverErasureOutbox(ctx, row); out.kind != outboxManual || !strings.Contains(out.err, "still too recent") {
+			t.Fatalf("outcome = %+v", out)
+		}
+	})
 }

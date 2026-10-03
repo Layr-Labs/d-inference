@@ -96,7 +96,7 @@ erasure forfeits the balance and cannot be undone after the scrub.
    |---|---|---|
    | `stripe_account` | `DELETE /v1/accounts/{id}` with the Connect key | deleted, or Stripe says the account does not exist |
    | `global_recipient` | `POST /v2/core/accounts/{id}/close` with `applied_configurations: ["recipient"]` | closed, or not found |
-   | `checkout_sessions` | a Stripe redaction job for up to 10 sessions (`validation_behavior=fix`): create, wait for `ready`, run, wait for `succeeded`; the job ID is kept on the row (`has_stripe_job`) | the job succeeded, or the sessions do not exist |
+   | `checkout_sessions` | a Stripe redaction job for up to 10 sessions (`validation_behavior=fix`): create, wait for `ready`, run, wait for `succeeded`; the job ID is kept on the row (`has_stripe_job`) | the job succeeded. A session Stripe cannot find is not done: it moves to its own `manual_action` row (see step 6), and the others continue in a new job |
    | `erasure_log` | one Datadog log with tag `erasure_log:true`, or a `slog` line without Datadog | written |
 
    A transient error (network, 5xx, 429) is retried with backoff from 1 min
@@ -108,8 +108,13 @@ erasure forfeits the balance and cannot be undone after the scrub.
    grant access). Most transactions can be redacted only 90 days after they
    were created; when every validation error of a job says so, the row waits
    7 days (`erasureRedactionWait`) and a new job is made, without counting an
-   attempt. When the coordinator runs in billing mock mode, Stripe rows end
-   done without a call.
+   attempt. Those waits end 105 days after the scrub
+   (`erasureRedactionDeadline`): the row then moves to `manual_action`. A job
+   that stays in one non-terminal status (for example `validating`) for more
+   than 31 days (`erasureRedactionStuck`; Stripe says a job can take up to 30
+   days) also moves to `manual_action`. When a job disappears at Stripe, the
+   next one is created with a new idempotency key. When the coordinator runs
+   in billing mock mode, Stripe rows end done without a call.
 
 6. Resolve `manual_action` rows by hand. A done row no longer holds its
    Stripe ID; a `manual_action` row keeps it in `erasure_outbox.external_id`
@@ -186,8 +191,10 @@ can be canceled.
   redacted Checkout transaction can no longer be refunded or disputed.
   Checkout Sessions made on the earlier Stripe account (before the
   [Stripe migration](stripe-migration.md)) are not reachable with the current
-  key: Stripe answers "not found" and the row ends done. Redact those in the
-  old account's dashboard.
+  key. The worker looks up each session of a batch that Stripe refused as not
+  found, keeps the found ones in the batch, and moves the missing ones to a
+  `manual_action` row whose `last_error` says so. Redact those sessions in the
+  old account's dashboard, then clear the row as in step 6.
 
 ## Verification
 

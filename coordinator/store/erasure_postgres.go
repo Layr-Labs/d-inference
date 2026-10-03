@@ -456,6 +456,7 @@ func (s *PostgresStore) GetAccountErasure(ctx context.Context, accountID string)
 			Attempts: int(r.Attempts), NextAt: r.NextAt, LastError: r.LastError, DoneAt: r.DoneAt,
 			HasExternalID: r.ExternalID != "", ExternalID: r.ExternalID, CreatedAt: r.CreatedAt,
 			HasStripeJob: r.StripeJobID != "", StripeJobID: r.StripeJobID,
+			JobStatus: r.StripeJobStatus, JobStatusSince: r.StripeJobStatusSince, JobGeneration: int(r.StripeJobGeneration),
 		})
 	}
 	return req, items, nil
@@ -503,6 +504,7 @@ func (s *PostgresStore) LeaseDueErasureOutbox(ctx context.Context, now time.Time
 			ID: r.ID, RequestID: r.RequestID, Target: ErasureTarget(r.Target), State: ErasureOutboxState(r.State),
 			Attempts: int(r.Attempts), NextAt: r.NextAt, LastError: r.LastError, CreatedAt: r.CreatedAt,
 			ExternalID: r.ExternalID, HasExternalID: r.ExternalID != "", StripeJobID: r.StripeJobID, HasStripeJob: r.StripeJobID != "",
+			JobStatus: r.StripeJobStatus, JobStatusSince: r.StripeJobStatusSince, JobGeneration: int(r.StripeJobGeneration),
 		}}
 		if r.ErasedAt != nil {
 			w.ErasedAt = *r.ErasedAt
@@ -534,19 +536,26 @@ func walletCounts(ctx context.Context, q *storedb.Queries, wallets []walletRepla
 
 // SaveErasureOutboxResult stores one delivery outcome.
 func (s *PostgresStore) SaveErasureOutboxResult(ctx context.Context, id string, r ErasureOutboxResult) error {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	n, err := s.queries().SaveErasureOutboxResult(ctx, storedb.SaveErasureOutboxResultParams{
-		ID: id, State: string(r.State), Attempts: int32(r.Attempts), NextAt: r.NextAt,
-		LastError: r.LastError, StripeJobID: r.StripeJobID,
+	return s.erasureTx(ctx, pgx.TxOptions{}, func(q *storedb.Queries) error {
+		n, err := q.SaveErasureOutboxResult(ctx, storedb.SaveErasureOutboxResultParams{
+			ID: id, State: string(r.State), Attempts: int32(r.Attempts), NextAt: r.NextAt,
+			LastError: r.LastError, ExternalID: r.ExternalID, StripeJobID: r.StripeJobID,
+			StripeJobStatus: r.JobStatus, StripeJobStatusSince: r.JobStatusSince, StripeJobGeneration: int32(r.JobGeneration),
+		})
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return ErrErasureConflict
+		}
+		if r.Split == nil {
+			return nil
+		}
+		return q.InsertManualErasureOutbox(ctx, storedb.InsertManualErasureOutboxParams{
+			ID: r.Split.ID, RequestID: r.Split.RequestID, Target: string(r.Split.Target),
+			ExternalID: r.Split.ExternalID, NextAt: r.NextAt, LastError: r.Split.LastError,
+		})
 	})
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return ErrErasureConflict
-	}
-	return nil
 }
 
 // ListErasureRefusedCredits returns credits refused after the erasure.

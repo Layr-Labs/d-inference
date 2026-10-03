@@ -894,6 +894,7 @@ func (s *MemoryStore) SaveErasureOutboxResult(ctx context.Context, id string, r 
 			return ErrErasureConflict
 		}
 		o.State, o.Attempts, o.NextAt, o.LastError, o.StripeJobID = r.State, r.Attempts, r.NextAt, r.LastError, r.StripeJobID
+		o.ExternalID, o.JobStatus, o.JobStatusSince, o.JobGeneration = r.ExternalID, r.JobStatus, r.JobStatusSince, r.JobGeneration
 		o.DoneAt = nil
 		if r.State == ErasureOutboxDone {
 			at := r.NextAt
@@ -901,6 +902,12 @@ func (s *MemoryStore) SaveErasureOutboxResult(ctx context.Context, id string, r 
 		}
 		o.HasExternalID, o.HasStripeJob = o.ExternalID != "", o.StripeJobID != ""
 		delete(s.erasureOutboxLease, id)
+		if r.Split != nil {
+			split := *r.Split
+			split.State, split.Attempts, split.NextAt, split.CreatedAt = ErasureOutboxManualAction, 1, r.NextAt, r.NextAt
+			split.HasExternalID = split.ExternalID != ""
+			s.erasureOutbox = append(s.erasureOutbox, split)
+		}
 		return nil
 	}
 	return ErrErasureConflict

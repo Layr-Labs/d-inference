@@ -182,6 +182,11 @@ type ErasureOutboxItem struct {
 	CreatedAt     time.Time          `json:"created_at"`
 	ExternalID    string             `json:"-"`
 	StripeJobID   string             `json:"-"` // redaction job of a checkout_sessions row
+	// JobStatus is the last Stripe status seen for StripeJobID, since
+	// JobStatusSince; JobGeneration changes the job's idempotency key.
+	JobStatus      string     `json:"-"`
+	JobStatusSince *time.Time `json:"-"`
+	JobGeneration  int        `json:"-"`
 }
 
 // ErasureOutboxWork is a leased outbox row plus the request fields the
@@ -195,11 +200,18 @@ type ErasureOutboxWork struct {
 // ErasureOutboxResult is the new state of a delivered outbox row. State done
 // clears the external ID and the job ID and sets done_at to NextAt.
 type ErasureOutboxResult struct {
-	State       ErasureOutboxState
-	Attempts    int
-	NextAt      time.Time
-	LastError   string
-	StripeJobID string
+	State          ErasureOutboxState
+	Attempts       int
+	NextAt         time.Time
+	LastError      string
+	ExternalID     string // the row's IDs from now on; ignored when done
+	StripeJobID    string
+	JobStatus      string
+	JobStatusSince *time.Time
+	JobGeneration  int
+	// Split, when set, is a manual_action row written in the same
+	// transaction: Checkout Sessions Stripe cannot find with the current key.
+	Split *ErasureOutboxItem
 }
 
 // ErasureConfirm is the input of RequestAccountErasure.

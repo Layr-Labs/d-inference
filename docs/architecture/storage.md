@@ -136,7 +136,7 @@ PostgreSQL URL; there is no memory-store fallback or schema-skip mode.
 | 18 | `00018_erasure_tables.sql` | Creates `erasure_requests` and `erasure_outbox` for [account erasure](#account-erasure). |
 | 19–20 | Go: `indexMigrations` | `CONCURRENTLY` indexes for account erasure: `billing_sessions(referral_code)` and `users(privy_user_id) WHERE deleted_at IS NOT NULL`. |
 | 21 | `00021_erasure_refuse_credits.sql` | `erasure_refused_credits` and the triggers that keep credits out of an erased account (`erasure_keep_balance_insert`, `erasure_keep_balance_update` on `balances`; `erasure_refuse_ledger_credit` on `ledger_entries`). |
-| 22 | `00022_erasure_outbox_stripe_job.sql` | Adds `erasure_outbox.stripe_job_id` (the Stripe redaction job of a `checkout_sessions` row). |
+| 22 | `00022_erasure_outbox_stripe_job.sql` | Adds the redaction-job columns of `erasure_outbox` (`stripe_job_id`, its status, status time and generation) for `checkout_sessions` rows. |
 
 Versions 2 to 5 are Go migrations (`goMigrations`). They keep the code they had
 before goose and run on the store pool. The SQL migrations run on a separate
@@ -347,11 +347,16 @@ The outbox worker (`StartErasureOutboxLoop`,
 `coordinator/api/erasure_outbox.go`) leases due `pending` outbox rows with
 `FOR UPDATE SKIP LOCKED` every minute and delivers them: Express account
 deletion, Global Payouts recipient close, Checkout Session redaction jobs,
-and the `erasure_log` Datadog record. "Not found" counts as done; a done row
-loses its Stripe ID and job ID. A definitive refusal or 8 failed attempts
-end in `manual_action` with `last_error`; a redaction batch that is too
-recent waits 7 days without counting an attempt
-(`SaveErasureOutboxResult`).
+and the `erasure_log` Datadog record. A Stripe account or recipient that is
+not found counts as done; a Checkout Session that is not found moves to its
+own `manual_action` row in the same transaction (`ErasureOutboxResult.Split`),
+and the rest of its batch continues. A done row loses its Stripe ID and job
+ID. A definitive refusal or 8 failed attempts end in `manual_action` with
+`last_error`. A redaction batch that is too recent waits 7 days without
+counting an attempt, until 105 days after the scrub; a job in one
+non-terminal status for over 31 days ends in `manual_action`. The row keeps
+the job's last status, since when, and a generation that changes the job's
+idempotency key (`SaveErasureOutboxResult`).
 
 An hourly loop (`StartAccountErasureLoop`) leases due `pending` requests with
 `FOR UPDATE SKIP LOCKED` for one hour and scrubs each one; a failure is stored

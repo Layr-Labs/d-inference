@@ -823,6 +823,32 @@ func (q *Queries) InsertErasurePlan(ctx context.Context, arg InsertErasurePlanPa
 	return err
 }
 
+const insertManualErasureOutbox = `-- name: InsertManualErasureOutbox :exec
+INSERT INTO erasure_outbox (id, request_id, target, external_id, state, attempts, next_at, last_error)
+VALUES ($1, $2, $3, $4, 'manual_action', 1, $5, $6)
+`
+
+type InsertManualErasureOutboxParams struct {
+	ID         string
+	RequestID  string
+	Target     string
+	ExternalID string
+	NextAt     time.Time
+	LastError  string
+}
+
+func (q *Queries) InsertManualErasureOutbox(ctx context.Context, arg InsertManualErasureOutboxParams) error {
+	_, err := q.db.Exec(ctx, insertManualErasureOutbox,
+		arg.ID,
+		arg.RequestID,
+		arg.Target,
+		arg.ExternalID,
+		arg.NextAt,
+		arg.LastError,
+	)
+	return err
+}
+
 const isAccountErased = `-- name: IsAccountErased :one
 SELECT EXISTS (SELECT 1 FROM erasure_requests WHERE account_id = $1 AND state = 'erased')
 `
@@ -846,10 +872,11 @@ WITH due AS (
 ), leased AS (
     UPDATE erasure_outbox o SET lease_until = $3::timestamptz
     FROM due WHERE o.id = due.id
-    RETURNING o.id, o.request_id, o.target, o.external_id, o.state, o.attempts, o.next_at, o.lease_until, o.last_error, o.done_at, o.created_at, o.stripe_job_id
+    RETURNING o.id, o.request_id, o.target, o.external_id, o.state, o.attempts, o.next_at, o.lease_until, o.last_error, o.done_at, o.created_at, o.stripe_job_id, o.stripe_job_status, o.stripe_job_status_since, o.stripe_job_generation
 )
 SELECT l.id, l.request_id, l.target, l.external_id, l.state, l.attempts, l.next_at,
-       l.last_error, l.stripe_job_id, l.created_at, r.account_id, r.erased_at
+       l.last_error, l.stripe_job_id, l.stripe_job_status, l.stripe_job_status_since,
+       l.stripe_job_generation, l.created_at, r.account_id, r.erased_at
 FROM leased l JOIN erasure_requests r ON r.id = l.request_id
 `
 
@@ -860,18 +887,21 @@ type LeaseDueErasureOutboxParams struct {
 }
 
 type LeaseDueErasureOutboxRow struct {
-	ID          string
-	RequestID   string
-	Target      string
-	ExternalID  string
-	State       string
-	Attempts    int32
-	NextAt      time.Time
-	LastError   string
-	StripeJobID string
-	CreatedAt   time.Time
-	AccountID   string
-	ErasedAt    *time.Time
+	ID                   string
+	RequestID            string
+	Target               string
+	ExternalID           string
+	State                string
+	Attempts             int32
+	NextAt               time.Time
+	LastError            string
+	StripeJobID          string
+	StripeJobStatus      string
+	StripeJobStatusSince *time.Time
+	StripeJobGeneration  int32
+	CreatedAt            time.Time
+	AccountID            string
+	ErasedAt             *time.Time
 }
 
 // Outbox delivery.
@@ -894,6 +924,9 @@ func (q *Queries) LeaseDueErasureOutbox(ctx context.Context, arg LeaseDueErasure
 			&i.NextAt,
 			&i.LastError,
 			&i.StripeJobID,
+			&i.StripeJobStatus,
+			&i.StripeJobStatusSince,
+			&i.StripeJobGeneration,
 			&i.CreatedAt,
 			&i.AccountID,
 			&i.ErasedAt,
@@ -1127,7 +1160,7 @@ func (q *Queries) ListAppAttestKeysForSessions(ctx context.Context, sessionIds [
 }
 
 const listErasureOutbox = `-- name: ListErasureOutbox :many
-SELECT id, request_id, target, external_id, state, attempts, next_at, lease_until, last_error, done_at, created_at, stripe_job_id FROM erasure_outbox WHERE request_id = $1 ORDER BY created_at, id
+SELECT id, request_id, target, external_id, state, attempts, next_at, lease_until, last_error, done_at, created_at, stripe_job_id, stripe_job_status, stripe_job_status_since, stripe_job_generation FROM erasure_outbox WHERE request_id = $1 ORDER BY created_at, id
 `
 
 func (q *Queries) ListErasureOutbox(ctx context.Context, requestID string) ([]ErasureOutbox, error) {
@@ -1152,6 +1185,9 @@ func (q *Queries) ListErasureOutbox(ctx context.Context, requestID string) ([]Er
 			&i.DoneAt,
 			&i.CreatedAt,
 			&i.StripeJobID,
+			&i.StripeJobStatus,
+			&i.StripeJobStatusSince,
+			&i.StripeJobGeneration,
 		); err != nil {
 			return nil, err
 		}
@@ -1483,20 +1519,27 @@ SET state = $1,
     attempts = $2,
     next_at = $3::timestamptz,
     last_error = $4,
-    stripe_job_id = CASE WHEN $1 = 'done' THEN '' ELSE $5::text END,
-    external_id = CASE WHEN $1 = 'done' THEN '' ELSE external_id END,
+    external_id = CASE WHEN $1 = 'done' THEN '' ELSE $5::text END,
+    stripe_job_id = CASE WHEN $1 = 'done' THEN '' ELSE $6::text END,
+    stripe_job_status = $7,
+    stripe_job_status_since = $8::timestamptz,
+    stripe_job_generation = $9,
     done_at = CASE WHEN $1 = 'done' THEN $3::timestamptz ELSE NULL END,
     lease_until = NULL
-WHERE id = $6 AND state = 'pending'
+WHERE id = $10 AND state = 'pending'
 `
 
 type SaveErasureOutboxResultParams struct {
-	State       string
-	Attempts    int32
-	NextAt      time.Time
-	LastError   string
-	StripeJobID string
-	ID          string
+	State                string
+	Attempts             int32
+	NextAt               time.Time
+	LastError            string
+	ExternalID           string
+	StripeJobID          string
+	StripeJobStatus      string
+	StripeJobStatusSince *time.Time
+	StripeJobGeneration  int32
+	ID                   string
 }
 
 func (q *Queries) SaveErasureOutboxResult(ctx context.Context, arg SaveErasureOutboxResultParams) (int64, error) {
@@ -1505,7 +1548,11 @@ func (q *Queries) SaveErasureOutboxResult(ctx context.Context, arg SaveErasureOu
 		arg.Attempts,
 		arg.NextAt,
 		arg.LastError,
+		arg.ExternalID,
 		arg.StripeJobID,
+		arg.StripeJobStatus,
+		arg.StripeJobStatusSince,
+		arg.StripeJobGeneration,
 		arg.ID,
 	)
 	if err != nil {

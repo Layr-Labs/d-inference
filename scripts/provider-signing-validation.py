@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path, PurePosixPath
 import plistlib
+import shlex
 import shutil
 import subprocess
 import tarfile
@@ -42,6 +43,22 @@ def write_json(path, value):
     with path.open("x") as destination:
         json.dump(value, destination, indent=2)
         destination.write("\n")
+
+
+def configure_keychain(arguments):
+    keychain = str(arguments.keychain.resolve(strict=True))
+    existing = shlex.split(subprocess.check_output(
+        ["security", "list-keychains", "-d", "user"], text=True))
+    # codesign --keychain narrows identity selection; it does not add the
+    # keychain to the search list used for identity/certificate-chain lookup.
+    if keychain not in existing:
+        subprocess.run(["security", "list-keychains", "-d", "user", "-s",
+                        keychain, *existing], check=True)
+    identities = subprocess.check_output(
+        ["security", "find-identity", "-v", "-p", "codesigning", keychain], text=True)
+    if '"' + arguments.identity + '"' not in identities:
+        raise ValueError("Required Developer ID identity is unavailable in the signing keychain")
+    print("Verified signing identity: " + arguments.identity)
 
 
 def stage(arguments):
@@ -195,6 +212,9 @@ def receipt(arguments):
 def main():
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="command", required=True)
+    keychain_parser = commands.add_parser("keychain")
+    keychain_parser.add_argument("--keychain", type=Path, required=True)
+    keychain_parser.add_argument("--identity", required=True)
     stage_parser = commands.add_parser("stage")
     for name in ["source", "bin", "metallib", "output"]:
         stage_parser.add_argument("--" + name, type=Path, required=True)
@@ -212,7 +232,7 @@ def main():
     for name in ["output", "notary"]:
         receipt_parser.add_argument("--" + name, type=Path, required=True)
     arguments = parser.parse_args()
-    {"stage": stage, "unpack": unpack, "profile": profile,
+    {"keychain": configure_keychain, "stage": stage, "unpack": unpack, "profile": profile,
      "cli-entitlements": cli_entitlements, "receipt": receipt}[arguments.command](arguments)
 
 

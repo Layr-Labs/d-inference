@@ -2564,16 +2564,18 @@ idle owned host and retain every cell, including failed measurements.
 
 ```bash
 cd provider-swift
+mkdir -p /tmp/darkbloom-cache-performance-validation
 swift build --build-tests
 ../scripts/stage-test-metallib.sh .build/arm64-apple-macosx/debug
 DARKBLOOM_MIXED_CHECKPOINT_BENCHMARK=1 \
   DARKBLOOM_MIXED_CHECKPOINT_BENCHMARK_OUTPUT=/tmp/qwen-mixed-cohort.json \
   ../scripts/run-nested-suite.sh realMixedCohort --no-parallel
 DARKBLOOM_MIXED_WARM_BENCHMARK=1 \
-  DARKBLOOM_MIXED_WARM_BENCHMARK_OUTPUT=/tmp/qwen-mixed-warm.json \
   ../scripts/run-nested-suite.sh realMixedWarmFork --no-parallel
 ```
 
+The warm fixture writes to
+`/tmp/darkbloom-cache-performance-validation/qwen-mixed-warm.json`.
 This fixture uses explicit width/stripe/budget settings and forced output
 lengths. Every native timing fixture in the report uses `strictFsync=false`:
 write completion is not fsync durability, and OS file-cache versus physical

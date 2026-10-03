@@ -268,8 +268,10 @@ host. All six staged metallib copies match the compiled nested MLX source.
 [Validation evidence](evidence/prefix-qualification-2026-10-03/validation.json)
 records commands, toolchains, skips and exact dependency provenance.
 
-Native timing cells above were collected before the backports; they measure
-capture changes. Separate final-cut functional verification repeats the
+The earlier adjacent-fork and solo short-prefix timing aggregates were
+collected before the backports; they measure capture changes. The mixed cold
+cohorts and separate MTP-off warm fork use the final dependency cut. Separate
+final-cut MTP-enabled functional verification repeats the
 adjacent experiment (1,024 → 5,120 restored tokens, 6.309 → 1.017s TTFT) and
 short capture (2,048 restored tokens, 0.968s warm versus 3.741s cold), preserving
 exact text with MTP enabled. These two cells are retained in validation evidence

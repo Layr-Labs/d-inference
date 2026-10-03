@@ -101,8 +101,7 @@ CREATE TABLE public.api_keys (
     allowed_models text DEFAULT ''::text NOT NULL,
     expires_at timestamp with time zone,
     last_used_at timestamp with time zone,
-    self_route_only boolean DEFAULT false NOT NULL,
-    deleted_at timestamp with time zone
+    self_route_only boolean DEFAULT false NOT NULL
 );
 
 
@@ -1278,8 +1277,7 @@ CREATE TABLE public.provider_tokens (
     account_id text NOT NULL,
     label text DEFAULT ''::text NOT NULL,
     active boolean DEFAULT true NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    deleted_at timestamp with time zone
+    created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
@@ -1361,8 +1359,7 @@ CREATE TABLE public.providers (
     last_session_requests_served bigint DEFAULT 0 NOT NULL,
     last_session_tokens_generated bigint DEFAULT 0 NOT NULL,
     lifetime_stats jsonb DEFAULT '{}'::jsonb NOT NULL,
-    last_session_stats jsonb DEFAULT '{}'::jsonb NOT NULL,
-    deleted_at timestamp with time zone
+    last_session_stats jsonb DEFAULT '{}'::jsonb NOT NULL
 );
 
 
@@ -1795,8 +1792,7 @@ CREATE TABLE public.users (
     stripe_account_country text DEFAULT ''::text NOT NULL,
     stripe_destination_type text DEFAULT ''::text NOT NULL,
     stripe_destination_last4 text DEFAULT ''::text NOT NULL,
-    stripe_instant_eligible boolean DEFAULT false NOT NULL,
-    deleted_at timestamp with time zone
+    stripe_instant_eligible boolean DEFAULT false NOT NULL
 );
 
 
@@ -2561,6 +2557,14 @@ ALTER TABLE ONLY public.users
 
 
 --
+-- Name: users users_privy_user_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_privy_user_id_key UNIQUE (privy_user_id);
+
+
+--
 -- Name: app_attest_evidence_key; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2743,20 +2747,6 @@ CREATE INDEX idx_code_attest_push_budgets_due ON public.code_attest_push_budgets
 
 
 --
--- Name: idx_darkbloom_machine_sessions_account; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_darkbloom_machine_sessions_account ON public.darkbloom_machine_sessions USING btree (account_id);
-
-
---
--- Name: idx_device_codes_account; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_device_codes_account ON public.device_codes USING btree (account_id);
-
-
---
 -- Name: idx_device_codes_user; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2789,13 +2779,6 @@ CREATE INDEX idx_floor_draws_account ON public.provider_floor_draws USING btree 
 --
 
 CREATE INDEX idx_floor_draws_epoch ON public.provider_floor_draws USING btree (epoch_id);
-
-
---
--- Name: idx_inference_routes_consumer_key_hash; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_inference_routes_consumer_key_hash ON public.inference_routes USING btree (consumer_key_hash);
 
 
 --
@@ -2855,13 +2838,6 @@ CREATE INDEX idx_model_registry_status ON public.model_registry USING btree (sta
 
 
 --
--- Name: idx_model_token_reservations_account; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_model_token_reservations_account ON public.model_token_reservations USING btree (account_id);
-
-
---
 -- Name: idx_model_token_reservations_open; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2911,13 +2887,6 @@ CREATE INDEX idx_provider_earnings_provider ON public.provider_earnings USING bt
 
 
 --
--- Name: idx_provider_log_reports_account; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_provider_log_reports_account ON public.provider_log_reports USING btree (account_id);
-
-
---
 -- Name: idx_provider_payouts_address; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2929,13 +2898,6 @@ CREATE INDEX idx_provider_payouts_address ON public.provider_payouts USING btree
 --
 
 CREATE INDEX idx_provider_payouts_settled ON public.provider_payouts USING btree (settled, created_at DESC);
-
-
---
--- Name: idx_provider_sessions_account; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_provider_sessions_account ON public.provider_sessions USING btree (account_id);
 
 
 --
@@ -3065,13 +3027,6 @@ CREATE INDEX idx_request_profiles_provider ON public.request_profiles USING btre
 
 
 --
--- Name: idx_request_rejections_consumer_key_hash; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_request_rejections_consumer_key_hash ON public.request_rejections USING btree (consumer_key_hash);
-
-
---
 -- Name: idx_request_rejections_created; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3184,10 +3139,10 @@ CREATE INDEX idx_usage_request_location_notnull ON public.usage USING btree (cre
 
 
 --
--- Name: idx_users_privy_live; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_users_privy; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX idx_users_privy_live ON public.users USING btree (privy_user_id) WHERE (deleted_at IS NULL);
+CREATE UNIQUE INDEX idx_users_privy ON public.users USING btree (privy_user_id);
 
 
 --
@@ -3371,11 +3326,11 @@ ALTER TABLE ONLY public.provider_reputation
 
 
 --
--- Name: referrals referrals_referrer_code_cascade_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: referrals referrals_referrer_code_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.referrals
-    ADD CONSTRAINT referrals_referrer_code_cascade_fkey FOREIGN KEY (referrer_code) REFERENCES public.referrers(code) ON UPDATE CASCADE;
+    ADD CONSTRAINT referrals_referrer_code_fkey FOREIGN KEY (referrer_code) REFERENCES public.referrers(code);
 
 
 --

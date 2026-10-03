@@ -20,7 +20,7 @@ func (s *PostgresStore) BackfillMachineInventory(ctx context.Context, limit int)
 	}
 	rows, err := s.pool.Query(ctx, `SELECT p.id,COALESCE(p.account_id,''),COALESCE(p.se_public_key,''),COALESCE(p.public_key,''),p.attestation_result,COALESCE(p.version,''),p.hardware,p.last_seen
 	 FROM providers p LEFT JOIN darkbloom_machine_sessions m ON m.session_id=p.id
-	 WHERE m.session_id IS NULL AND p.last_seen < CURRENT_TIMESTAMP - interval '5 minutes'
+	 WHERE m.session_id IS NULL AND p.deleted_at IS NULL AND p.last_seen < CURRENT_TIMESTAMP - interval '5 minutes'
 	 AND NOT EXISTS(SELECT 1 FROM provider_sessions ps WHERE ps.session_id=p.id AND ps.disconnected_at IS NULL)
 	 ORDER BY p.id LIMIT $1`, limit)
 	if err != nil {

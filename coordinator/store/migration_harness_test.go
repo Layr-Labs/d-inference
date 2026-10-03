@@ -77,13 +77,24 @@ func replayMigrations(t testing.TB, s *PostgresStore) {
 	}
 }
 
-// loadSchemaFile applies schema/schema.sql (the pg_dump of the pre-goose
-// schema) to the database at pool. The session settings at the top of the
-// dump are skipped: some name settings older servers do not have, and the
-// empty search_path would stay on the pooled connection.
-func loadSchemaFile(t testing.TB, pool *pgxpool.Pool) {
+const (
+	// checkedInSchemaFile is the pg_dump of the schema the migrations build.
+	checkedInSchemaFile = "schema/schema.sql"
+	// preGooseSchemaFile is the pg_dump of the schema the pre-goose boot
+	// loop built: the state of every database before its first goose run.
+	preGooseSchemaFile = "testdata/schema_pre_goose.sql"
+	// lastPreGooseVersion is the last version that only replays the
+	// pre-goose boot.
+	lastPreGooseVersion = 5
+)
+
+// loadSchemaFile applies a pg_dump schema file to the database at pool. The
+// session settings at the top of the dump are skipped: some name settings
+// older servers do not have, and the empty search_path would stay on the
+// pooled connection.
+func loadSchemaFile(t testing.TB, pool *pgxpool.Pool, path string) {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join("schema", "schema.sql"))
+	b, err := os.ReadFile(filepath.FromSlash(path))
 	if err != nil {
 		t.Fatalf("read schema file: %v", err)
 	}

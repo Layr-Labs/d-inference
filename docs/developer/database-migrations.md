@@ -38,20 +38,18 @@ mechanism is explained in
    (`TestSQLMigrationsDoNotBuildIndexesConcurrently` fails). A build that
    fails, for example on `lock_timeout`, leaves an invalid index; with
    `IF NOT EXISTS` the next attempt skips it and goose records the version
-   with a broken index. Add a Go migration to `goMigrations`
-   (`coordinator/store/postgres_migrations.go`) instead:
+   with a broken index. Add the index to `indexMigrations`
+   (`coordinator/store/postgres_migration_indexes.go`) instead:
 
    ```go
-   step(6, func(ctx context.Context) error {
-       return s.ensureConcurrentIndex(ctx, "idx_example_account",
-           `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_example_account ON example (account_id)`)
-   }),
+   index(18, "idx_example_account", `CREATE INDEX CONCURRENTLY idx_example_account ON example (account_id)`),
    ```
 
-   `ensureConcurrentIndex` (`coordinator/store/postgres_startup.go`) returns at
-   once when a valid index exists, refuses an invalid leftover by name (drop it
-   by hand, then restart), builds the index, and fails unless the result is
-   valid. The version is recorded only after it succeeds.
+   `buildConcurrentIndex` returns at once when a valid index exists, drops an
+   invalid leftover of an interrupted attempt, builds the index on its own
+   connection with a 1 min `lock_timeout` (the build waits for every older
+   snapshot), and fails unless the result is valid. The version is recorded
+   only after it succeeds.
 3. Keep each statement short and lock-safe. The migration session sets
    `lock_timeout` to 3 s and `statement_timeout` to 10 min. Add a column
    without a volatile default; add a constraint `NOT VALID`, then `VALIDATE`

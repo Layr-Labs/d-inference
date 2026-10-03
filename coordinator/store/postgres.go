@@ -1247,7 +1247,7 @@ func (s *PostgresStore) GetUserByPrivyID(privyUserID string) (*User, error) {
 	defer cancel()
 
 	row := s.pool.QueryRow(ctx,
-		`SELECT `+userSelectColumns+` FROM users WHERE privy_user_id = $1`, privyUserID,
+		`SELECT `+userSelectColumns+` FROM users WHERE privy_user_id = $1 AND deleted_at IS NULL`, privyUserID,
 	)
 	u, err := scanUser(row)
 	if err != nil {
@@ -1262,7 +1262,7 @@ func (s *PostgresStore) GetUserByAccountID(accountID string) (*User, error) {
 	defer cancel()
 
 	row := s.pool.QueryRow(ctx,
-		`SELECT `+userSelectColumns+` FROM users WHERE account_id = $1`, accountID,
+		`SELECT `+userSelectColumns+` FROM users WHERE account_id = $1 AND deleted_at IS NULL`, accountID,
 	)
 	u, err := scanUser(row)
 	if err != nil {
@@ -1316,7 +1316,7 @@ func (s *PostgresStore) GetUserByStripeAccount(stripeAccountID string) (*User, e
 	defer cancel()
 
 	row := s.pool.QueryRow(ctx,
-		`SELECT `+userSelectColumns+` FROM users WHERE stripe_account_id = $1`, stripeAccountID,
+		`SELECT `+userSelectColumns+` FROM users WHERE stripe_account_id = $1 AND deleted_at IS NULL`, stripeAccountID,
 	)
 	u, err := scanUser(row)
 	if err != nil {
@@ -1368,7 +1368,7 @@ func (s *PostgresStore) GetUserByEmail(email string) (*User, error) {
 	defer cancel()
 
 	row := s.pool.QueryRow(ctx,
-		`SELECT `+userSelectColumns+` FROM users WHERE LOWER(email) = LOWER($1)`, email,
+		`SELECT `+userSelectColumns+` FROM users WHERE LOWER(email) = LOWER($1) AND deleted_at IS NULL`, email,
 	)
 	u, err := scanUser(row)
 	if err != nil {
@@ -1915,7 +1915,7 @@ func (s *PostgresStore) GetProviderToken(token string) (*ProviderToken, error) {
 	var pt ProviderToken
 	err := s.pool.QueryRow(ctx,
 		`SELECT token_hash, account_id, label, active, created_at
-		 FROM provider_tokens WHERE token_hash = $1 AND active = TRUE`, h,
+		 FROM provider_tokens WHERE token_hash = $1 AND active = TRUE AND deleted_at IS NULL`, h,
 	).Scan(&pt.TokenHash, &pt.AccountID, &pt.Label, &pt.Active, &pt.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("store: provider token not found: %w", err)
@@ -2275,6 +2275,7 @@ func (s *PostgresStore) GetMDAChainBySerial(ctx context.Context, serial string) 
 	err := s.pool.QueryRow(ctx,
 		`SELECT mda_cert_chain FROM providers
 		 WHERE serial_number = $1 AND serial_number != '' AND mda_cert_chain IS NOT NULL
+		   AND deleted_at IS NULL
 		 ORDER BY last_seen DESC LIMIT 1`, serial,
 	).Scan(&chain)
 	if err != nil {
@@ -2314,7 +2315,7 @@ func (s *PostgresStore) ListProvidersByAccount(ctx context.Context, accountID st
 			lifetime_stats, last_session_stats,
 			registered_at, last_seen, public_key
 		 FROM providers
-		 WHERE account_id = $1
+		 WHERE account_id = $1 AND deleted_at IS NULL
 		 ORDER BY COALESCE(NULLIF(serial_number, ''),
 		                   NULLIF(se_public_key, ''),
 		                   id),

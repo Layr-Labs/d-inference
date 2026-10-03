@@ -56,7 +56,7 @@ SELECT u.city AS c_city,
 FROM located_usage u
 JOIN LATERAL (
     SELECT location FROM providers
-    WHERE id = u.provider_id AND location IS NOT NULL
+    WHERE id = u.provider_id AND location IS NOT NULL AND deleted_at IS NULL
     OFFSET 0
 ) p ON true
 GROUP BY u.city, u.region, u.region_code, u.country, u.country_code,

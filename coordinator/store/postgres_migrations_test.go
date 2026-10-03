@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 )
@@ -26,19 +27,20 @@ func TestMigrationsBuildCheckedInSchema(t *testing.T) {
 	t.Cleanup(s.Close)
 
 	dumpPool := openTestPool(t, newThrowawayTestDatabase(t))
-	loadSchemaFile(t, dumpPool)
+	loadSchemaFile(t, dumpPool, checkedInSchemaFile)
 
 	assertSameSchema(t, "schema/schema.sql", schemaSnapshot(t, dumpPool), "goose", schemaSnapshot(t, s.pool))
 }
 
 // A database that a pre-goose binary migrated meets goose for the first
-// time: every migration runs, and nothing changes except the new goose
-// version table.
-func TestMigrationsLeaveLegacyDatabaseUnchanged(t *testing.T) {
+// time. The baseline and the Go steps (versions 1 to 5) change nothing
+// except the new goose version table; the later versions then bring it to
+// the checked-in schema.
+func TestMigrationsUpgradeLegacyDatabase(t *testing.T) {
 	ctx := context.Background()
 	databaseURL := newThrowawayTestDatabase(t)
 	pool := openTestPool(t, databaseURL)
-	loadSchemaFile(t, pool)
+	loadSchemaFile(t, pool, preGooseSchemaFile)
 	// The rows the pre-goose boot leaves on a fresh database.
 	for _, stmt := range []string{
 		`INSERT INTO schema_migrations (id, applied_at) VALUES
@@ -76,13 +78,25 @@ func TestMigrationsLeaveLegacyDatabaseUnchanged(t *testing.T) {
 	}
 	schemaBefore, rowsBefore := schemaSnapshot(t, pool), readRows()
 
-	s, err := NewPostgres(ctx, Config{DatabaseURL: databaseURL})
+	s := &PostgresStore{pool: pool}
+	db := stdlib.OpenDBFromPool(pool)
+	t.Cleanup(func() { _ = db.Close() })
+	provider, err := s.newMigrationProvider(db)
 	if err != nil {
-		t.Fatalf("NewPostgres on legacy database: %v", err)
+		t.Fatal(err)
 	}
-	t.Cleanup(s.Close)
+	if _, err := provider.UpTo(ctx, lastPreGooseVersion); err != nil {
+		t.Fatalf("apply versions up to %d on legacy database: %v", lastPreGooseVersion, err)
+	}
+	assertSameSchema(t, "legacy", schemaBefore, "after the baseline", schemaSnapshot(t, pool))
+	assertSameSchema(t, "legacy rows", rowsBefore, "rows after the baseline", readRows())
 
-	assertSameSchema(t, "legacy", schemaBefore, "after goose", schemaSnapshot(t, pool))
+	if err := s.migrate(ctx); err != nil {
+		t.Fatalf("migrate legacy database: %v", err)
+	}
+	dumpPool := openTestPool(t, newThrowawayTestDatabase(t))
+	loadSchemaFile(t, dumpPool, checkedInSchemaFile)
+	assertSameSchema(t, "schema/schema.sql", schemaSnapshot(t, dumpPool), "upgraded legacy", schemaSnapshot(t, pool))
 	assertSameSchema(t, "legacy rows", rowsBefore, "rows after goose", readRows())
 	var versions []int64
 	rows, err := pool.Query(ctx, `SELECT version_id FROM `+migrationVersionTable+` ORDER BY id`)
@@ -97,8 +111,9 @@ func TestMigrationsLeaveLegacyDatabaseUnchanged(t *testing.T) {
 		}
 		versions = append(versions, v)
 	}
-	if len(versions) != 6 || versions[0] != 0 || versions[5] != 5 {
-		t.Fatalf("goose versions = %v, want 0 through 5", versions)
+	want := len(provider.ListSources())
+	if len(versions) != want+1 || versions[0] != 0 || versions[want] != int64(want) {
+		t.Fatalf("goose versions = %v, want 0 through %d", versions, want)
 	}
 }
 
@@ -136,16 +151,17 @@ func TestConcurrentMigrationsApplyOnce(t *testing.T) {
 			t.Fatalf("runner %d: %v", i, err)
 		}
 	}
-	if applied[0]+applied[1] != 5 || (applied[0] != 0 && applied[1] != 0) {
-		t.Fatalf("applied = %v, want one runner to apply all 5 versions and the other none", applied)
+	want := len(runners[0].ListSources())
+	if applied[0]+applied[1] != want || (applied[0] != 0 && applied[1] != 0) {
+		t.Fatalf("applied = %v, want one runner to apply all %d versions and the other none", applied, want)
 	}
 	var rows, distinct int
 	pool := openTestPool(t, databaseURL)
 	if err := pool.QueryRow(ctx, `SELECT count(*), count(DISTINCT version_id) FROM `+migrationVersionTable).Scan(&rows, &distinct); err != nil {
 		t.Fatal(err)
 	}
-	if rows != 6 || distinct != 6 {
-		t.Fatalf("goose version rows = %d (%d distinct), want 6", rows, distinct)
+	if rows != want+1 || distinct != want+1 {
+		t.Fatalf("goose version rows = %d (%d distinct), want %d", rows, distinct, want+1)
 	}
 }
 
@@ -186,6 +202,52 @@ func TestMigrateRetriesLockTimeout(t *testing.T) {
 	}
 }
 
+// A CREATE INDEX CONCURRENTLY waits for every older snapshot. A query that
+// runs longer than the 3 s session lock_timeout must not cancel it: the
+// CONCURRENTLY migrations wait up to a minute, and apply on the first attempt.
+func TestConcurrentIndexMigrationWaitsForOlderSnapshot(t *testing.T) {
+	ctx := context.Background()
+	databaseURL := newThrowawayTestDatabase(t)
+	s, err := NewPostgres(ctx, Config{DatabaseURL: databaseURL})
+	if err != nil {
+		t.Fatalf("NewPostgres: %v", err)
+	}
+	t.Cleanup(s.Close)
+	// Make version 6 pending again.
+	if _, err := s.pool.Exec(ctx, `DROP INDEX idx_provider_sessions_account`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(ctx, `DELETE FROM `+migrationVersionTable+` WHERE version_id >= 6`); err != nil {
+		t.Fatal(err)
+	}
+
+	holder := openTestPool(t, databaseURL)
+	tx, err := holder.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT count(*) FROM users`); err != nil {
+		t.Fatal(err)
+	}
+	release := time.AfterFunc(2*migrationLockTimeout, func() { _ = tx.Rollback(context.Background()) })
+	defer release.Stop()
+
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(previous)
+	if err := s.migrate(ctx); err != nil {
+		t.Fatalf("migrate behind an older snapshot: %v", err)
+	}
+	if strings.Contains(logs.String(), "retrying") {
+		t.Fatalf("the index build hit the session lock_timeout; logs:\n%s", logs.String())
+	}
+	var valid bool
+	if err := s.pool.QueryRow(ctx, `SELECT indisvalid FROM pg_index WHERE indexrelid = 'idx_provider_sessions_account'::regclass`).Scan(&valid); err != nil || !valid {
+		t.Fatalf("idx_provider_sessions_account valid=%v err=%v", valid, err)
+	}
+}
+
 // A CREATE INDEX CONCURRENTLY that fails leaves an invalid index, and an
 // SQL file's IF NOT EXISTS would then skip it and record the version. Index
 // builds therefore run as Go migrations through ensureConcurrentIndex,
@@ -203,5 +265,107 @@ func TestSQLMigrationsDoNotBuildIndexesConcurrently(t *testing.T) {
 		if regexp.MustCompile(`(?i)CREATE\s+(UNIQUE\s+)?INDEX\s+CONCURRENTLY`).Match(b) {
 			t.Errorf("%s builds an index CONCURRENTLY; use a Go migration with ensureConcurrentIndex", entry.Name())
 		}
+	}
+}
+
+// pendingFrom makes version and every later version pending again.
+func pendingFrom(t *testing.T, s *PostgresStore, version int64) {
+	t.Helper()
+	if _, err := s.pool.Exec(context.Background(), `DELETE FROM `+migrationVersionTable+` WHERE version_id >= $1`, version); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func versionRecorded(t *testing.T, s *PostgresStore, version int64) bool {
+	t.Helper()
+	var recorded bool
+	if err := s.pool.QueryRow(context.Background(), `SELECT EXISTS(SELECT 1 FROM `+migrationVersionTable+` WHERE version_id = $1)`, version).Scan(&recorded); err != nil {
+		t.Fatal(err)
+	}
+	return recorded
+}
+
+// An interrupted CONCURRENTLY build leaves an invalid index of the same name.
+// The index migration drops it, builds again, and records the version only
+// with a valid index.
+func TestIndexMigrationRebuildsInvalidLeftover(t *testing.T) {
+	ctx := context.Background()
+	databaseURL := newThrowawayTestDatabase(t)
+	s, err := NewPostgres(ctx, Config{DatabaseURL: databaseURL})
+	if err != nil {
+		t.Fatalf("NewPostgres: %v", err)
+	}
+	t.Cleanup(s.Close)
+	if _, err := s.pool.Exec(ctx, `DROP INDEX idx_provider_sessions_account`); err != nil {
+		t.Fatal(err)
+	}
+	pendingFrom(t, s, 6)
+
+	// The reviewer's reproduction: a build that times out behind an older
+	// snapshot fails and leaves an invalid index.
+	holder := openTestPool(t, databaseURL)
+	tx, err := holder.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT count(*) FROM users`); err != nil {
+		t.Fatal(err)
+	}
+	builder, err := pgx.Connect(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := builder.Exec(ctx, `SET lock_timeout = '200ms'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := builder.Exec(ctx, `CREATE INDEX CONCURRENTLY idx_provider_sessions_account ON provider_sessions (account_id)`); err == nil {
+		t.Fatal("fixture: the build behind an older snapshot did not fail")
+	}
+	_ = builder.Close(ctx)
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var valid bool
+	if err := s.pool.QueryRow(ctx, `SELECT indisvalid FROM pg_index WHERE indexrelid = 'idx_provider_sessions_account'::regclass`).Scan(&valid); err != nil || valid {
+		t.Fatalf("fixture: leftover index valid=%v err=%v, want an invalid index", valid, err)
+	}
+
+	if err := s.migrate(ctx); err != nil {
+		t.Fatalf("migrate with an invalid leftover index: %v", err)
+	}
+	if err := s.pool.QueryRow(ctx, `SELECT indisvalid FROM pg_index WHERE indexrelid = 'idx_provider_sessions_account'::regclass`).Scan(&valid); err != nil || !valid {
+		t.Fatalf("idx_provider_sessions_account valid=%v err=%v after migrate", valid, err)
+	}
+	if !versionRecorded(t, s, 6) {
+		t.Fatal("version 6 not recorded after a successful rebuild")
+	}
+}
+
+// A build that cannot produce a valid index fails the boot, and goose does
+// not record the version: here the unique live-user index meets two live
+// users with the same Privy ID.
+func TestIndexMigrationFailureIsNotRecorded(t *testing.T) {
+	ctx := context.Background()
+	databaseURL := newThrowawayTestDatabase(t)
+	s, err := NewPostgres(ctx, Config{DatabaseURL: databaseURL})
+	if err != nil {
+		t.Fatalf("NewPostgres: %v", err)
+	}
+	t.Cleanup(s.Close)
+	if _, err := s.pool.Exec(ctx, `DROP INDEX idx_users_privy_live`); err != nil {
+		t.Fatal(err)
+	}
+	for _, account := range []string{"first", "second"} {
+		if _, err := s.pool.Exec(ctx, `INSERT INTO users (account_id, privy_user_id) VALUES ($1, 'did:privy:shared')`, account); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pendingFrom(t, s, 14)
+
+	if err := s.migrate(ctx); err == nil {
+		t.Fatal("migrate succeeded although idx_users_privy_live cannot be built")
+	}
+	if versionRecorded(t, s, 14) {
+		t.Fatal("version 14 recorded although its index build failed")
 	}
 }

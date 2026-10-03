@@ -3,10 +3,12 @@
 import copy
 import json
 from pathlib import Path
+import runpy
 import tempfile
 import unittest
 
-from threat_review.bedrock import BedrockCalls
+from threat_review.bedrock import BedrockCalls, MODELS
+from threat_review.budget_scan import SCHEMA
 from threat_review.budget_runner import status_body
 from threat_review.client import ReviewUnavailable, ScanTimeout
 from threat_review.context import SONNET
@@ -87,6 +89,52 @@ class BedrockTests(unittest.TestCase):
         self.assertEqual(len(self.calls.fallback.calls), 1)
         self.assertEqual(self.calls.metrics()["bedrock_unknown_usage"], 1)
         self.assertNotIn("private provider detail", self.path.read_text())
+
+    def test_sonnet_availability_fallback_preserves_selected_model_identity(self):
+        self.client.error = SDKError("AccessDeniedException")
+        self.assertEqual(self.invoke(), {"backup": True})
+        self.assertEqual(self.payload["model"], "anthropic/claude-sonnet-5.5")
+        self.assertTrue(self.client.requests[0]["modelId"].endswith("/sonnet"))
+        self.assertEqual(self.calls.fallback.calls[0][2]["model"], self.payload["model"])
+
+    def test_synthetic_smoke_uses_production_contract_for_each_model_and_pass(self):
+        smoke = runpy.run_path(str(Path(__file__).with_name("threat-bedrock-smoke.py")))["smoke_model"]
+        files = [{"filename": "smoke.py", "status": "modified", "additions": 1, "deletions": 1,
+                  "patch": "@@ -1 +1 @@\n-answer = 40 + 2\n+answer = 42",
+                  "base_text": "answer = 40 + 2\n", "head_text": "answer = 42\n"}]
+        threat = "threats:\n  - id: T-SMOKE\n    description: Preserve the answer.\n"
+        replies = []
+        def converse(**request):
+            self.client.requests.append(request)
+            message = json.loads(request["messages"][0]["content"][0]["text"])
+            replies.append(message["stage"])
+            schema = json.loads(request["system"][0]["text"].split(
+                "\nReturn only JSON matching this schema:\n", 1)[1])
+            self.assertEqual(schema, SCHEMA)
+            result = {"findings": [], "covered_units": [u["id"] for u in message["units"]],
+                      "analysis": "The arithmetic result is unchanged.", "needs_deeper_review": False}
+            if invalid is not None:
+                if invalid == "missing":
+                    del result["needs_deeper_review"]
+                else:
+                    result["needs_deeper_review"] = invalid
+            response = copy.deepcopy(self.client.response)
+            response["output"]["message"]["content"] = [{"text": json.dumps(result)}]
+            return response
+        self.client.converse = converse
+        invalid = None
+        for model in MODELS:
+            smoke(threat, files, model, self.calls)
+        self.assertEqual(replies, ["source", "integration"] * 3)
+        self.assertEqual(self.calls.calls, 6)
+        self.assertEqual(self.calls.unknown, 0)
+        for invalid in ("missing", "false", 0):
+            with self.subTest(invalid=invalid), self.assertRaises((ReviewUnavailable, ValueError)):
+                smoke(threat, files, SONNET, self.calls)
+        invalid = True
+        self.assertEqual(smoke(threat, files, SONNET, self.calls),
+                         {"source": True, "integration": True})
+        self.assertEqual(self.calls.fallback.calls, [])
 
     def test_unknown_failure_does_not_resample(self):
         for error in (TimeoutError(), SDKError("ModelTimeoutException"), SDKError("InternalServerException")):

@@ -407,8 +407,11 @@ its public codec download is about 1.87 GB and is checked against fixed hashes.
 
 The optional Bedrock reviewer installs hash-locked dependencies from
 `.github/scripts/requirements-bedrock.txt` in its trusted workflow.
-`python3 .github/scripts/test-threat-bedrock.py` covers explicit provider fallback
-and conditional merge clearance without cloud calls. Live validation and activation
+`python3 .github/scripts/test-threat-bedrock.py` covers explicit provider fallback,
+Sonnet 5.5 fallback identity, production smoke schema validation (including the
+boolean `needs_deeper_review`), and conditional merge clearance without cloud calls.
+The smoke script calls `budget_scan.py` (`Scanner.call`, `Scanner.integrate`) with
+caching disabled, one source pass and one integration pass per model. Live validation and activation
 are separate: see [the rollout runbook](../operations/threat-review-rollout.md).
 
 ## Provider lifecycle regression checks

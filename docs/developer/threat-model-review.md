@@ -159,7 +159,8 @@ allowance. Reservations assume cold cache and allow two times the input price fo
 cache writes. Oversized requests are deferred. Response `usage.cost` settles the
 reservation; missing or invalid usage saves valid findings but stops more calls
 in that run. Charges above the reservation open a persistent circuit breaker.
-Sol 6.1 uses price ceilings of $2 input and $10 output per million tokens,
+Sonnet 5.5 uses price ceilings of $2 input and $10 output per million tokens;
+Sol 6.1 uses $2 input and $10 output per million tokens,
 verified against the [OpenRouter model catalog](https://openrouter.ai/api/v1/models).
 Price/provider behavior changes require review; retain the independent key cap.
 Never delete or reset the ledger to work around a limit.

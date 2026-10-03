@@ -52,7 +52,11 @@ does not change cloud permissions, branch rules or auto-merge settings by itself
    been approved. No AWS access key is stored in GitHub.
 5. Dispatch **Bedrock review smoke test** on master. It makes at most six small
    paid requests, two per model, with no OpenRouter fallback. Check each model's
-   source/integration schema validation and the request/response usage pairs.
+   source/integration production schema validation, including the boolean
+   `needs_deeper_review`, and the request/response usage pairs. The smoke uses
+   the scanner's validators with caching disabled and reports each pass's
+   escalation flag. Schema compatibility is not security clearance; a `true`
+   flag requests further review.
    Independently exercise STS denial from a feature-branch workflow identity and
    denial of direct foundation-model invocation. Positive smoke execution alone
    does not prove either denial or the `pull_request_target` identity.

@@ -444,6 +444,14 @@ class ScanTests(unittest.TestCase):
             self.assertNotIn("cache_control", sol["messages"][0]["content"][0])
             self.assertNotIn("temperature", sol)
 
+    def test_sonnet_46_reservation_and_provider_ceiling_match_selected_model(self):
+        self.files[0]["filename"] = "ordinary.go"
+        result, _ = self.scan()
+        self.assertFalse(result["errors"])
+        sonnet = self.service.calls[0]
+        self.assertEqual(sonnet["model"], "anthropic/claude-sonnet-4.6")
+        self.assertEqual(sonnet["provider"]["max_price"], {"prompt": 3, "completion": 15, "request": 0})
+
     def test_invalid_citations_are_never_saved_as_findings(self):
         self.service.reply = lambda body: self.service.completion(body, [dict(fixtures.FINDING, line=999)])
         result, _ = self.scan()

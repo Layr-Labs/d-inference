@@ -3,12 +3,30 @@
 import os
 import signal
 from threat_review.bedrock import BedrockCalls, MODELS
+from threat_review.budget_scan import Scanner
 from threat_review.client import ScanTimeout
-from threat_review.review import review
+from threat_review.context import ThreatContext
 
 
 def expired(*args):
     raise ScanTimeout("Smoke test deadline")
+
+
+def smoke_model(threat, files, model, calls):
+    """Exercise the production schema and validators without state or escalation."""
+    scanner = Scanner(ThreatContext(threat), files, None, calls, lambda _: None, "smoke")
+    scanner.use_cache = False
+    if scanner.limits or len(scanner.source) != 1:
+        raise ValueError("Synthetic fixture must fit one complete source batch")
+    result = scanner.call(model, "source", scanner.source[0])
+    if result["findings"]:
+        raise ValueError("Synthetic source did not complete cleanly")
+    deeper = {"source": result["needs_deeper_review"]}
+    result = scanner.integrate(model, [{"id": "0", "analysis": result["analysis"],
+                                       "findings": result["findings"]}])
+    if result["findings"]:
+        raise ValueError("Synthetic integration did not complete cleanly")
+    return dict(deeper, integration=result["needs_deeper_review"])
 
 
 if __name__ == "__main__":
@@ -24,10 +42,9 @@ if __name__ == "__main__":
     threat = "threats:\n  - id: T-SMOKE\n    description: Preserve the integer answer and do not add I/O.\n"
     try:
         for model in MODELS:
-            findings, _, limits = review(threat, files, "", model, calls)
-            if findings or limits:
-                raise ValueError("Synthetic harmless fixture did not complete cleanly")
-            print(f"{model}: source and integration schema/coverage validation passed")
+            deeper = smoke_model(threat, files, model, calls)
+            print(f"{model}: source and integration schema/coverage validation passed; "
+                  f"needs_deeper_review={deeper}; compatibility only, not security clearance")
         if calls.calls != 6 or calls.unknown:
             raise ValueError("Unexpected usage completeness")
     except Exception:

@@ -13,7 +13,7 @@ Paid scanning is disabled when `THREAT_REVIEW_ENABLED` is not `true`.
 ## Prerequisites
 
 - Actions administration and a reviewed workflow on the default branch.
-- An OpenRouter key with access to `anthropic/claude-sonnet-5.5`,
+- An OpenRouter key with access to `anthropic/claude-sonnet-4.6`,
   `anthropic/claude-opus-5.5` and `openai/gpt-6.1-sol`. Retain a provider-side key
   spending limit as an independent backstop. This change does not add credits,
   raise a limit or enable paid scanning.
@@ -113,7 +113,7 @@ green workflow is not evidence that scanning completed.
 `BEDROCK_SCAN_ENABLED=true` selects `.github/scripts/threat_review/bedrock.py`
 (`BedrockCalls`). Configure exactly three application profile aliases in
 `BEDROCK_SCAN_PROFILES`: `sonnet`, `opus`, and `sol`. Model selection remains
-Sonnet 5.5 with selective Opus 5.5 and Sol 6.1; legacy model variables do not
+Sonnet 4.6 with selective Opus 5.5 and Sol 6.1; legacy model variables do not
 override that strategy. The default limit is 12 Bedrock calls per attempt and
 4,096 output tokens per call (bounded configuration: 1–100 calls, 256–16,384
 tokens). These workload bounds are not a repository-wide dollar cap. AWS charges
@@ -159,7 +159,8 @@ allowance. Reservations assume cold cache and allow two times the input price fo
 cache writes. Oversized requests are deferred. Response `usage.cost` settles the
 reservation; missing or invalid usage saves valid findings but stops more calls
 in that run. Charges above the reservation open a persistent circuit breaker.
-Sol 6.1 uses price ceilings of $2 input and $10 output per million tokens,
+Sonnet 4.6 uses price ceilings of $3 input and $15 output per million tokens;
+Sol 6.1 uses $2 input and $10 output per million tokens,
 verified against the [OpenRouter model catalog](https://openrouter.ai/api/v1/models).
 Price/provider behavior changes require review; retain the independent key cap.
 Never delete or reset the ledger to work around a limit.

@@ -3,6 +3,7 @@
 ## Unreleased — Bedrock review and conditional merge clearance
 
 - Add attributed Bedrock review with bounded OpenRouter fallback, explicit usage reporting, and optional current-revision merge clearance. Medium/high findings, incomplete scans, and review-control changes require an independent formal security override. Cloud and merge-policy activation remain a separate verified rollout.
+- Select Sonnet 4.6 for the first pass and matching OpenRouter backup, retaining Opus 5.5 and Sol 6.1. Align the Sonnet profile permissions and backup price ceiling; exercise the production response schema in the bounded Bedrock smoke test.
 
 ## Unreleased — leaderboard availability
 

@@ -7,6 +7,7 @@ REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 INSTALLER="$REPO_ROOT/scripts/install.sh"
 "$REPO_ROOT/scripts/sync-install-embed.sh" check
 python3 "$REPO_ROOT/scripts/test-install-onboarding.py"
+python3 "$REPO_ROOT/scripts/test-install-coordinator-binding.py"
 
 cat > "$ROOT/paged.c" <<'C'
 #include <libgen.h>

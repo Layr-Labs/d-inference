@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-03
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -93,12 +93,24 @@ The script performs these actions in order (`scripts/install.sh`; failures exit
    `alias eigeninf`, `alias dginf`, `# EigenInference` and `# Darkbloom` are
    deleted and `# Darkbloom` + `export PATH="$HOME/.darkbloom/bin:$PATH"` is
    appended; the rc is then sourced.
-5. **Config location.** The script does not create, copy or migrate
-   `provider.toml` (retired `~/.dginf` / `~/.eigeninference` installs are no
-   longer migrated); the CLI reads only `~/.config/darkbloom/provider.toml` or
-   an explicit `--config` path
+5. **Config location and coordinator.** The CLI reads only
+   `~/.config/darkbloom/provider.toml` or an explicit `--config` path
    (`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`,
-   `defaultConfigPath`).
+   `defaultConfigPath`); retired `~/.dginf` / `~/.eigeninference` installs are
+   not migrated. `bind_provider_coordinator` binds the provider to the
+   coordinator that served the installer and keeps every other line of the
+   file:
+   - when `$COORD_URL` is `https://api.darkbloom.dev`, it removes any `url`
+     line under `[coordinator]`, so the provider uses its built-in production
+     default. It does not create the file when it is missing;
+   - for any other coordinator, it writes `url = "wss://<host>/ws/provider"`
+     under `[coordinator]` and creates the file when it is missing (`ws://`
+     only for `http://localhost` or `http://127.0.0.1`; any other scheme, a
+     path, or a character outside `A-Za-z0-9.-` and `:port` stops the
+     install).
+
+   A provider that is already running keeps its old coordinator until
+   `darkbloom start`.
 6. **Step 3/5 — Secure Enclave identity.** Runs `darkbloom-enclave info`
    (`provider-swift/Sources/darkbloom-enclave-cli/EnclaveCLI.swift`), which
    creates the P-256 key if missing. Failure prints a warning; the install

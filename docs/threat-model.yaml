@@ -2547,9 +2547,23 @@ threats:
       - coordinator/api/server.go
       - coordinator/api/enroll.go
       - coordinator/api/consumer.go
+      - scripts/install.sh
     mitigations:
       - description: baseURL should be set in production; fallback to Host header is the risk.
         status: open
+      - description: >
+          The installer persists the substituted URL: for any coordinator other
+          than https://api.darkbloom.dev, scripts/install.sh
+          (bind_provider_coordinator) writes it into provider.toml as the
+          provider's [coordinator] url (the production installer removes that
+          url instead), so a Host-derived URL would rebind later
+          login/start traffic, not only the install-time download. The binding
+          accepts only https://host[:port] with a strict host character set
+          (http:// only for localhost/127.0.0.1) and prints the bound URL.
+          Production lists EIGENINFERENCE_BASE_URL in
+          deploy/gcp/prod/required-env-keys.txt and dev sets it in
+          deploy/gcp/refresh-env.sh, so neither serves a Host-derived installer.
+        status: implemented
       - description: >
           enroll.go now generates SCEP/MDM URLs (the ACME payload was removed
           2026-07-03) via the shared resolveBaseURL

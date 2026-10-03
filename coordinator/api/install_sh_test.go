@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -180,6 +181,60 @@ func TestInstallScriptTemplating(t *testing.T) {
 		}
 	})
 }
+
+// A served installer binds the provider to the coordinator that served it:
+// another coordinator writes its url into provider.toml, and production
+// removes that url so the provider uses its built-in production default.
+func TestServedInstallerBindsProviderToServingCoordinator(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	const devURL = `url = "wss://api.dev.darkbloom.xyz/ws/provider"` + "\n"
+	const other = "[provider]\nname = \"mac\"\n\n[coordinator]\nprivate_only = true\n"
+	for _, tc := range []struct {
+		name, baseURL string
+		existing      *string
+		want          *string
+	}{
+		{"dev creates the file", "https://api.dev.darkbloom.xyz", nil, configText("[coordinator]\n" + devURL)},
+		{"dev writes into an existing file", "https://api.dev.darkbloom.xyz", configText(other), configText(other + devURL)},
+		{"production creates no file", "https://api.darkbloom.dev", nil, nil},
+		{"production removes the dev url", "https://api.darkbloom.dev", configText(other + devURL), configText(other)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newTestServerWithBaseURL(t, tc.baseURL)
+			defer srv.Close()
+			dir := t.TempDir()
+			installer := filepath.Join(dir, "install.sh")
+			if err := os.WriteFile(installer, []byte(fetchInstallScript(t, srv.URL)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			config := filepath.Join(dir, "provider.toml")
+			if tc.existing != nil {
+				if err := os.WriteFile(config, []byte(*tc.existing), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cmd := exec.Command("bash", installer, "--bind-coordinator-test", config)
+			cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + dir}
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("bind: %v\n%s", err, out)
+			}
+			got, err := os.ReadFile(config)
+			if tc.want == nil {
+				if !os.IsNotExist(err) {
+					t.Fatalf("installer created provider.toml: %q, %v", got, err)
+				}
+				return
+			}
+			if err != nil || string(got) != *tc.want {
+				t.Fatalf("provider.toml = %q, %v; want %q", got, err, *tc.want)
+			}
+		})
+	}
+}
+
+func configText(s string) *string { return &s }
 
 func newTestServerWithBaseURL(t *testing.T, baseURL string) *httptest.Server {
 	t.Helper()

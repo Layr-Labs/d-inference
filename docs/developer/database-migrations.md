@@ -33,20 +33,19 @@ mechanism is explained in
    (a `DO` block or a function body) in `-- +goose StatementBegin` and
    `-- +goose StatementEnd`.
 
-   For an index on a table that has data, build one index per file, outside a
-   transaction, and drop an invalid index that an interrupted attempt left:
+   Build an index on a table that has data as a Go migration, not in an SQL
+   file: add it to `indexMigrations`
+   (`coordinator/store/postgres_migration_indexes.go`):
 
-   ```sql
-   -- +goose NO TRANSACTION
-   -- +goose Up
-   SET lock_timeout = '1min';
-   DROP INDEX CONCURRENTLY IF EXISTS idx_example_account;
-   CREATE INDEX CONCURRENTLY idx_example_account ON example (account_id);
-   RESET lock_timeout;
+   ```go
+   index(18, "idx_example_account", `CREATE INDEX CONCURRENTLY idx_example_account ON example (account_id)`),
    ```
 
-   A `CONCURRENTLY` build waits for every older snapshot in the database, so
-   the 3 s session `lock_timeout` would cancel it behind any long query.
+   `buildConcurrentIndex` returns at once when a valid index exists, drops an
+   invalid leftover of an interrupted attempt, builds the index on its own
+   connection with a 1 min `lock_timeout` (the build waits for every older
+   snapshot), and fails unless the result is valid. The version is recorded
+   only after it succeeds.
 3. Keep each statement short and lock-safe. The migration session sets
    `lock_timeout` to 3 s and `statement_timeout` to 10 min. Add a column
    without a volatile default; add a constraint `NOT VALID`, then `VALIDATE`

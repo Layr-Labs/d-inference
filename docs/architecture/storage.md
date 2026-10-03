@@ -129,9 +129,9 @@ PostgreSQL URL; there is no memory-store fallback or schema-skip mode.
 | 3 | `ensureProviderRestoreIndexes` (`coordinator/store/postgres_startup.go`) | Builds the two provider-restore indexes `CONCURRENTLY`. |
 | 4 | `ensureProviderEarningsJobIndex` (`coordinator/store/postgres.go`) | Builds the `provider_earnings(job_id)` unique index `CONCURRENTLY`. |
 | 5 | `ensureProviderEarningsWindowIndex` (`coordinator/store/postgres_earnings_window_index.go`) | Builds the BRIN time index and sets the analyze cadence. |
-| 6–12 | `00006_…` to `00012_…` | One `CONCURRENTLY` index per file for account erasure: `account_id` on `provider_sessions`, `provider_log_reports`, `device_codes`, `darkbloom_machine_sessions`, `model_token_reservations`; `consumer_key_hash` on `inference_routes` and `request_rejections`. |
+| 6–12 | Go: `indexMigrations` (`coordinator/store/postgres_migration_indexes.go`) | One `CONCURRENTLY` index per version for account erasure: `account_id` on `provider_sessions`, `provider_log_reports`, `device_codes`, `darkbloom_machine_sessions`, `model_token_reservations`; `consumer_key_hash` on `inference_routes` and `request_rejections`. |
 | 13 | `00013_soft_delete_columns.sql` | Adds `deleted_at TIMESTAMPTZ` (nullable, no default) to `users`, `api_keys`, `providers`, `provider_tokens`. |
-| 14–16 | `00014_…` to `00016_…` | Replaces the full unique key on `users.privy_user_id` with the partial unique index `idx_users_privy_live` (`WHERE deleted_at IS NULL`); drops `users_privy_user_id_key` and `idx_users_privy`. |
+| 14–16 | 14 Go (`indexMigrations`); `00015_…`, `00016_…` | Replaces the full unique key on `users.privy_user_id` with the partial unique index `idx_users_privy_live` (`WHERE deleted_at IS NULL`); drops `users_privy_user_id_key` and `idx_users_privy`. |
 | 17 | `00017_referrals_referrer_code_cascade.sql` | Replaces the `referrals.referrer_code` foreign key with `referrals_referrer_code_cascade_fkey` (`ON UPDATE CASCADE`), added `NOT VALID` and then validated. |
 
 Versions 2 to 5 are Go migrations (`goMigrations`). They keep the code they had
@@ -141,10 +141,14 @@ two-connection pool whose sessions set `lock_timeout` to 3 s and
 `migrationStatementTimeout`); a value set in the database URL wins. A DDL
 statement that cannot get its lock in time fails instead of queueing every
 later query on the table behind it, and `migrate` runs goose again, up to three
-attempts. A `CONCURRENTLY` statement blocks no reads or writes but waits for
-every older snapshot in the database, so those files raise `lock_timeout` to
-1 min for their own statements and reset it after. Each of them first drops an
-invalid index that an interrupted attempt left behind. Goose holds a session
+attempts. Versions 6 to 12 and 14 build indexes `CONCURRENTLY` as Go
+migrations (`indexMigrations`, `buildConcurrentIndex` in
+`coordinator/store/postgres_migration_indexes.go`), each on a connection of its
+own. A `CONCURRENTLY` build blocks no reads or writes but waits for every older
+snapshot in the database, so that connection sets `lock_timeout` to 1 min
+(`concurrentIndexLockTimeout`). An invalid index left by an interrupted attempt
+is dropped and built again, and the version is recorded only when the index is
+valid. Goose holds a session
 advisory lock while it applies versions, so two coordinators that start
 together take turns: one applies, the other then finds nothing to apply.
 Out-of-order versions are refused.

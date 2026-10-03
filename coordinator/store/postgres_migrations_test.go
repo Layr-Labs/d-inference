@@ -246,3 +246,105 @@ func TestConcurrentIndexMigrationWaitsForOlderSnapshot(t *testing.T) {
 		t.Fatalf("idx_provider_sessions_account valid=%v err=%v", valid, err)
 	}
 }
+
+// pendingFrom makes version and every later version pending again.
+func pendingFrom(t *testing.T, s *PostgresStore, version int64) {
+	t.Helper()
+	if _, err := s.pool.Exec(context.Background(), `DELETE FROM `+migrationVersionTable+` WHERE version_id >= $1`, version); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func versionRecorded(t *testing.T, s *PostgresStore, version int64) bool {
+	t.Helper()
+	var recorded bool
+	if err := s.pool.QueryRow(context.Background(), `SELECT EXISTS(SELECT 1 FROM `+migrationVersionTable+` WHERE version_id = $1)`, version).Scan(&recorded); err != nil {
+		t.Fatal(err)
+	}
+	return recorded
+}
+
+// An interrupted CONCURRENTLY build leaves an invalid index of the same name.
+// The index migration drops it, builds again, and records the version only
+// with a valid index.
+func TestIndexMigrationRebuildsInvalidLeftover(t *testing.T) {
+	ctx := context.Background()
+	databaseURL := newThrowawayTestDatabase(t)
+	s, err := NewPostgres(ctx, Config{DatabaseURL: databaseURL})
+	if err != nil {
+		t.Fatalf("NewPostgres: %v", err)
+	}
+	t.Cleanup(s.Close)
+	if _, err := s.pool.Exec(ctx, `DROP INDEX idx_provider_sessions_account`); err != nil {
+		t.Fatal(err)
+	}
+	pendingFrom(t, s, 6)
+
+	// The reviewer's reproduction: a build that times out behind an older
+	// snapshot fails and leaves an invalid index.
+	holder := openTestPool(t, databaseURL)
+	tx, err := holder.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT count(*) FROM users`); err != nil {
+		t.Fatal(err)
+	}
+	builder, err := pgx.Connect(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := builder.Exec(ctx, `SET lock_timeout = '200ms'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := builder.Exec(ctx, `CREATE INDEX CONCURRENTLY idx_provider_sessions_account ON provider_sessions (account_id)`); err == nil {
+		t.Fatal("fixture: the build behind an older snapshot did not fail")
+	}
+	_ = builder.Close(ctx)
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var valid bool
+	if err := s.pool.QueryRow(ctx, `SELECT indisvalid FROM pg_index WHERE indexrelid = 'idx_provider_sessions_account'::regclass`).Scan(&valid); err != nil || valid {
+		t.Fatalf("fixture: leftover index valid=%v err=%v, want an invalid index", valid, err)
+	}
+
+	if err := s.migrate(ctx); err != nil {
+		t.Fatalf("migrate with an invalid leftover index: %v", err)
+	}
+	if err := s.pool.QueryRow(ctx, `SELECT indisvalid FROM pg_index WHERE indexrelid = 'idx_provider_sessions_account'::regclass`).Scan(&valid); err != nil || !valid {
+		t.Fatalf("idx_provider_sessions_account valid=%v err=%v after migrate", valid, err)
+	}
+	if !versionRecorded(t, s, 6) {
+		t.Fatal("version 6 not recorded after a successful rebuild")
+	}
+}
+
+// A build that cannot produce a valid index fails the boot, and goose does
+// not record the version: here the unique live-user index meets two live
+// users with the same Privy ID.
+func TestIndexMigrationFailureIsNotRecorded(t *testing.T) {
+	ctx := context.Background()
+	databaseURL := newThrowawayTestDatabase(t)
+	s, err := NewPostgres(ctx, Config{DatabaseURL: databaseURL})
+	if err != nil {
+		t.Fatalf("NewPostgres: %v", err)
+	}
+	t.Cleanup(s.Close)
+	if _, err := s.pool.Exec(ctx, `DROP INDEX idx_users_privy_live`); err != nil {
+		t.Fatal(err)
+	}
+	for _, account := range []string{"first", "second"} {
+		if _, err := s.pool.Exec(ctx, `INSERT INTO users (account_id, privy_user_id) VALUES ($1, 'did:privy:shared')`, account); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pendingFrom(t, s, 14)
+
+	if err := s.migrate(ctx); err == nil {
+		t.Fatal("migrate succeeded although idx_users_privy_live cannot be built")
+	}
+	if versionRecorded(t, s, 14) {
+		t.Fatal("version 14 recorded although its index build failed")
+	}
+}

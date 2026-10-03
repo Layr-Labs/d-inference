@@ -1,0 +1,72 @@
+name: Temporary Bedrock branch denial proof
+
+on:
+  push:
+    branches: [test/bedrock-oidc-thr_tck5wewgpn]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deny-feature-branch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Verify feature identity cannot assume the production review role
+        shell: python
+        run: |
+          import base64
+          import json
+          import os
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          import xml.etree.ElementTree as ET
+
+          expected = (
+              "repo:Layr-Labs/d-inference:workflow_ref:"
+              "Layr-Labs/d-inference/.github/workflows/bedrock-smoke.yml"
+              "@refs/heads/test/bedrock-oidc-thr_tck5wewgpn"
+          )
+          url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+          url += ("&" if "?" in url else "?") + "audience=sts.amazonaws.com"
+          request = urllib.request.Request(url, headers={
+              "Authorization": "Bearer " + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"],
+          })
+          with urllib.request.urlopen(request, timeout=20) as response:
+              token = json.load(response)["value"]
+          part = token.split(".")[1]
+          claims = json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+          assert claims["aud"] == "sts.amazonaws.com"
+          assert claims["repository"] == "Layr-Labs/d-inference"
+          assert claims["ref"] == "refs/heads/test/bedrock-oidc-thr_tck5wewgpn"
+          assert claims["sub"] == expected, "Custom workflow subject must be configured first"
+          body = urllib.parse.urlencode({
+              "Action": "AssumeRoleWithWebIdentity",
+              "Version": "2011-06-15",
+              "RoleArn": "arn:aws:iam::188847976460:role/d-inference-threat-review",
+              "RoleSessionName": "feature-denial-" + os.environ["GITHUB_RUN_ID"],
+              "DurationSeconds": "900",
+              "WebIdentityToken": token,
+          }).encode()
+          request = urllib.request.Request(
+              "https://sts.us-east-1.amazonaws.com/", data=body,
+              headers={"Content-Type": "application/x-www-form-urlencoded"},
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  response.read()
+              raise RuntimeError("Unexpected role assumption success")
+          except urllib.error.HTTPError as error:
+              data = error.read(32768)
+              parsed = ET.fromstring(data)
+              code = parsed.find(".//{*}Code")
+              request_id = parsed.find(".//{*}RequestId")
+              assert error.code == 403 and code is not None and code.text == "AccessDenied"
+              print(json.dumps({
+                  "audience": claims["aud"], "subject": claims["sub"],
+                  "workflow_ref": claims["workflow_ref"],
+                  "status": error.code, "code": code.text,
+                  "request_id": request_id.text if request_id is not None else None,
+              }))

@@ -1,12 +1,25 @@
 # Changelog
 
+## Unreleased — desktop hardware load
+
+- Serve real whole-machine load to the desktop app over the authenticated loopback control API: per-core CPU load with the chip's tier and cluster layout (including M5 Super cores), GPU utilization and memory, ANE activity, memory use and pressure, thermal state, and Darkbloom's share of GPU time. Sampling runs in the desktop API process only while the app is looking, without root, and never reaches heartbeats, logs or the coordinator.
+- Add best-effort GPU power and frequency plus estimated DRAM and ANE bandwidth where macOS exposes them; values stay unknown (`null`) rather than zero until a counter has been seen moving. `darkbloom doctor --hardware` prints the same report.
+
 ## Unreleased — macOS desktop app
 
 - Replace the desktop preview's step diagram with a continuous particle scene: incoming requests gather around orbiting model cores, then spread into token trails. Preserve pause, reduced-motion, inactive-provider, and off-screen behavior; keep illustrative motion separate from native activity.
 
-- Replace Analysis with Stats and add a visual-first traffic preview with animated request stages, model traffic shares, an inspectable traffic curve, and milestones. Make Home a single-screen contribution view with updating session counters and quieter earnings. Keep illustrative metrics confined to development preview; live mode uses existing native observations until richer APIs are added.
+- Replace Analysis with Stats and add a visual-first traffic preview with animated request stages, model traffic shares, an inspectable traffic curve, and milestones. Keep illustrative metrics confined to development preview; live mode uses existing native observations until richer APIs are added.
 
-- Rework My Macs around a fleet overview, machine selector, and local Overview/Models/Cooling/Analysis/Settings panels. Preserve scheduling, idle memory, preload, account/storage controls, model metadata, Studio/Earnings shortcuts, and cancellable native operations. Label other machines View only; selected remote data follows fresh snapshots. Align sidebar social links in a shared hover row.
+- Rebuild Home around this Mac's chip: a procedurally drawn Apple silicon anatomy with unified memory around it, lit by measured whole-machine load when the runtime reports it and by the simulated workload otherwise. Put the network milestone strip (tokens processed, last 24 hours, Macs connected, next proposed milestone) on top, keep this session's tokens shared, and show the account's earnings and Macs below.
+
+- Rework My Macs around a machine selector and local Overview/Models/Cooling/Stats/Settings panels; there is no separate fleet overview. Preserve scheduling, idle memory, account/storage controls, model metadata, Studio/Earnings shortcuts, and cancellable native operations. Label other machines View only; selected remote data follows fresh snapshots. Align sidebar social links in a shared hover row.
+
+- Give This Mac's Overview a health bar (readiness with next steps, memory, and a fan that turns with reported RPM), per-Mac earnings and an hourly tokens-shared chart. Add a Stats Activity table of served-request metadata, show Tokens served as stacked input, cached input and output bars, make the view-only Mac page a compact read-only summary, and fit Cooling on one screen. Values the runtime does not report yet show as unavailable.
+
+- Make Models Autopilot-first: downloading builds the pool, pinning keeps a model loaded, and runtimes with Autopilot off or unsupported keep manual selection. Replace the idle-memory select with a Keep models loaded switch and a custom duration, remove the Preload models option without changing its native value, and fix the switch geometry.
+
+- Open onboarding with a paced eligibility scan that advances eligible Macs and explains why others can't serve yet, with an email waitlist. Merge model choice into one Start serving with Autopilot step with Advanced pinning, and fall back to manual selection on runtimes without Autopilot.
 
 - Add Slack, GitHub, and X shortcuts above the current Mac in the desktop sidebar.
 - Add a visual Updates view with installed/latest versions, expandable release history, configured version cutoffs, and a confirmed auto-update opt-out. Keep provider auto-update defaults and settings in Swift; publish a read-only release-history feed without artifact or account details.

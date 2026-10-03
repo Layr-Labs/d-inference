@@ -9,6 +9,7 @@ struct DesktopHTTP: HTTPResponder {
   typealias Context = BasicRequestContext
   let backend: DesktopBackend
   let token: String
+  var hardware = DesktopHardware.live
   let streams = DesktopStreamLimiter()
 
   static func authorized(header: String?, token: String, origin: String?, host: String?) -> Bool {
@@ -53,6 +54,13 @@ struct DesktopHTTP: HTTPResponder {
             }
             try await writer.finish(nil)
           })
+      }
+      if request.method == .get, path == "/control/v1/hardware/events" {
+        return hardware.events(lease: try streams.acquire())
+      }
+      if request.method == .get, path == "/control/v1/hardware" {
+        return try json(
+          await hardware.resource(peakBandwidthGbps: await backend.peakMemoryBandwidthGbps()))
       }
       if request.method == .get, path.hasPrefix("/control/v1/") {
         return try json(try await backend.resource(String(path.dropFirst("/control/v1/".count))))

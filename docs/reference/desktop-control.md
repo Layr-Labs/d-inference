@@ -69,6 +69,8 @@ credential (`desktop-app/src/main/backend.ts`, `Backend`; `DesktopHTTP.authorize
 | `GET /control/v1/release` | Latest registered runtime version and changelog | `DesktopBackend.resource` |
 | `GET /control/v1/cooling` | Native fan diagnostics and helper state; concurrent and repeat reads within 10 s share one `fan status` run; a finished `cooling` action clears it | `DesktopBackend.cooling` |
 | `GET /control/v1/endpoint-key` | Existing local inference credential for explicit reveal | `DesktopBackend.resource` |
+| `GET /control/v1/hardware` | Chip topology and the latest whole-machine load sample (see [Hardware load](#hardware-load)); waits up to 1.5 s for a first sample | `DesktopHardware.resource` |
+| `GET /control/v1/hardware/events` | One full `hardware` sample per SSE frame at 1 Hz; connection renews after 120 frames; shares the eight-stream limit with `/events` | `DesktopHardware.events`, `DesktopStreamLimiter` |
 
 Failures return `{"error": "<message>"}` (`DesktopHTTP.errorResponse`):
 
@@ -112,6 +114,59 @@ uses `BigInt` for totals, shares, averages, milestones, and CSV serialization;
 only normalized chart geometry and abbreviated labels use floating point.
 The [HTTP contract](api-contracts.md#desktop-earnings-insights) defines data scope,
 retention and the distinction between running work and settled inference.
+
+### Hardware load
+
+The chip view reads real machine load from the desktop API process, never from
+the provider daemon (`provider-swift/Sources/DarkbloomHardwareLoad/`,
+`HardwareLoadMonitor`). Sampling is demand-driven: it runs only while a
+hardware stream is open or for 10 s after the last one closes or a snapshot read.
+A dedicated thread polls ANE power at 10 Hz and takes one full sample per
+second; one sample costs about 3 ms of CPU, mostly IOReport's blocking PMP read.
+No root, entitlement or helper is needed.
+
+`GET /control/v1/hardware` returns `{"protocol": 1, "topology": {...}, "sample": {...} | null}`.
+Each `hardware/events` frame is one `sample` object. Topology:
+
+| Field | Meaning |
+|---|---|
+| `chip`, `model` | `machdep.cpu.brand_string`, `hw.model` |
+| `cpu.tiers[]` | `{level, name, kind, cores}` from `hw.perflevelN`, fastest first; `kind` is `super`, `performance` or `efficiency` (M5 adds `super`) |
+| `cpu.clusters[]` | `{id, kind, cpus}`; `cpus` are logical CPU ids from the device tree (`IODeviceTree:/cpus`), the indices of `sample.cpu.load` |
+| `gpu` | `cores`, `groups` (enabled cores per GPU partition from the driver's core masks), `max_mhz` |
+| `ane.present` | The Neural Engine driver exists |
+| `memory` | `total_gb`; `peak_bandwidth_gbps` from the chip table, or `null` |
+
+Sample:
+
+| Field | Source | Tier |
+|---|---|---|
+| `sampled_at`, `interval_ms` | Epoch seconds; window length | — |
+| `cpu.load[]` | Busy fraction per logical CPU (`host_processor_info` tick deltas) | Public |
+| `gpu.utilization`, `gpu.memory_in_use_gb` | GPU driver `PerformanceStatistics` | Public |
+| `gpu.provider_share` | The provider's fraction of all GPU time in the window (per-connection `AGXDeviceUserClient` `AppUsage`); `0` while the provider is stopped | Public |
+| `ane.active` | Fraction of polls with the ANE powered; the driver holds power a few seconds after work stops | Public |
+| `memory.used_gb`, `memory.wired_gb`, `memory.pressure` | `host_statistics64`, `kern.memorystatus_vm_pressure_level` (`normal`, `warn`, `critical`) | Public |
+| `thermal.state` | `nominal`, `fair`, `serious` or `critical` | Public |
+| `provider.running` | The daemon's recorded process is current, or a local-only endpoint is live | Public |
+| `gpu.power_w`, `gpu.frequency_mhz` | IOReport Energy Model and GPU performance-state residency over the DVFS table | IOReport |
+| `memory.bandwidth_gbps`, `ane.bandwidth_gbps` | IOReport PMP DCS histograms, estimated at each bucket's upper bound | IOReport |
+| `ane.power_w` | IOReport Energy Model ANE channels | IOReport |
+| `capabilities` | Per IOReport field and `gpu_provider_share`: `measured`, `estimated`, `pending` or `unavailable` | — |
+
+`null` means unknown, never zero. A source that cannot be read is `null`, and
+an IOReport counter stays `null` (`pending`) until it has advanced once, because
+several channels exist on chips that never drive them. IOReport is a private
+library bound at runtime from one file (`IOReportLibrary.swift`); if it is
+missing, every IOReport field is `null` with capability `unavailable` and the
+public tier is unaffected. On an M4 Max under decode-like GEMV load the DRAM
+estimate reads about 450 GB/s against 431 GB/s measured by MLX.
+
+Privacy: hardware counters are served on this loopback API only. They are not
+logged, not added to heartbeats or the daemon state file, and not sent to the
+coordinator. Other processes are never named; they contribute only anonymous GPU
+time to the `provider_share` denominator. `darkbloom doctor --hardware` prints
+the same document from a sampler started for that command.
 
 ## Actions
 

@@ -326,6 +326,7 @@ and how to read the line in [attestation → Verify](./attestation.md#verify).
 | `--coordinator <url>` | `String?` | config URL | Coordinator for the network checks |
 | `--support` | flag | `false` | Append coordinator URL, token presence, MDM state, PID-file path |
 | `--clear-backend-guard` | flag | `false` | Delete `~/.darkbloom/kv-backend-guard.json`, reset the crash-loop counter in `watchdog-state.json`, exit |
+| `--hardware` | flag | `false` | Print the desktop hardware-load document (topology, one sample, counter capabilities) as JSON, exit |
 
 Clearing restores model-aware `auto` on the next model load, not guaranteed
 paged service. It preserves explicit settings, the kill switch and capability
@@ -804,7 +805,7 @@ four write cycles: a value from before a reload is worse than no value.
 Run local diagnostics and fetch the coordinator's trust view.
 
 ```bash
-darkbloom doctor [--strict] [--coordinator <url>] [--support] [--clear-backend-guard]
+darkbloom doctor [--strict] [--coordinator <url>] [--support] [--clear-backend-guard] [--hardware]
 ```
 
 | Flag | Description |
@@ -813,6 +814,7 @@ darkbloom doctor [--strict] [--coordinator <url>] [--support] [--clear-backend-g
 | `--coordinator <url>` | Override coordinator URL for remote checks |
 | `--support` | Print local identifiers useful for support |
 | `--clear-backend-guard` | Remove the crash-loop KV guard, reset its restart chain and exit; normal selection resumes on the next load |
+| `--hardware` | Print one whole-machine load sample and which counters this Mac exposes, as JSON ([format](../reference/desktop-control.md#hardware-load)), and exit |
 
 `darkbloom doctor` is read-only except for the subprocess calls used by public
 ProviderCore checks and the explicit `--clear-backend-guard` action

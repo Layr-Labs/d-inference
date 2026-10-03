@@ -24,9 +24,16 @@ struct Doctor: AsyncParsableCommand {
     @Flag(help: "Clear the crash-loop KV-backend guard so backend selection resolves normally on the next model load, then exit.")
     var clearBackendGuard = false
 
+    @Flag(help: "Print the hardware load sampler's capabilities and one sample as JSON, then exit.")
+    var hardware = false
+
     mutating func run() async throws {
         if clearBackendGuard {
             try Self.runClearBackendGuard()
+            return
+        }
+        if hardware {
+            print(try await Self.hardwareReport())
             return
         }
         await runUpdateBannerIfEnabled()

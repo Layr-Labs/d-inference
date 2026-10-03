@@ -94,6 +94,22 @@ let package = Package(
         ),
 
         // ----------------------------------------------------------------
+        // DarkbloomHardwareLoad: sudoless whole-machine load sampling for the
+        // desktop control API (per-core CPU, GPU, ANE, memory, best-effort
+        // IOReport SoC counters). MLX-free so its tests build in seconds.
+        // ----------------------------------------------------------------
+        .target(
+            name: "DarkbloomHardwareLoad",
+            path: "Sources/DarkbloomHardwareLoad",
+            linkerSettings: [.linkedFramework("IOKit")]
+        ),
+        .testTarget(
+            name: "DarkbloomHardwareLoadTests",
+            dependencies: ["DarkbloomHardwareLoad"],
+            path: "Tests/DarkbloomHardwareLoadTests"
+        ),
+
+        // ----------------------------------------------------------------
         // ProviderCoreFoundation: Linux-buildable subset containing the
         // model hashing primitives (ModelScanner file discovery,
         // WeightHasher) and the registry manifest types. Has NO Apple-
@@ -181,6 +197,7 @@ let package = Package(
                 "DarkbloomFanCore",
                 "DarkbloomFanProtocol",
                 "DarkbloomFanService",
+                "DarkbloomHardwareLoad",
                 "ProviderAppAttest",
                 "ProviderCore",
                 "ProviderBenchmark",
@@ -318,7 +335,10 @@ let package = Package(
         // ----------------------------------------------------------------
         .testTarget(
             name: "DarkbloomCLITests",
-            dependencies: ["darkbloom", .product(name: "HummingbirdTesting", package: "hummingbird")],
+            dependencies: [
+                "darkbloom", "DarkbloomHardwareLoad",
+                .product(name: "HummingbirdTesting", package: "hummingbird"),
+            ],
             path: "Tests/DarkbloomCLITests"
         ),
 

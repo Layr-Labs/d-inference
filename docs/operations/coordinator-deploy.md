@@ -328,7 +328,11 @@ does not answer after ~60 s, or the container exits with `store: run
 migrations`, suspect a migration behind a DB lock: re-run the
 `pg_stat_activity` query and `pg_terminate_backend(<pid>)` the blocker. Goose
 holds an advisory lock while it migrates, so a second container waits for the
-first instead of running the same DDL.
+first instead of running the same DDL; after 5 min of waiting it exits 1.
+Long read queries can make all three `lock_timeout` attempts fail, most likely
+on the first goose deploy, which replays the baseline. That failure is safe:
+the coordinator exits before serving and no failed version is recorded. End
+the blocker or wait for a quieter moment, then start the container again.
 
 ## Verification
 
@@ -430,14 +434,21 @@ Registry for diagnosis.
 Providers reconnect on their own; the live registry is in-process and rebuilt
 from reconnects, durable state is in Cloud SQL and on the persistent disk.
 
-An older goose image applies nothing on a newer database, because every
-version it knows is already recorded. An image built before goose runs its own
-boot DDL and ignores `goose_db_version`. That works until the soft-delete
-migrations (versions 13 to 16) run: from then on, a soft-deleted user and a
-live user can share a Privy ID, and the old boot DDL's non-concurrent
-`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_privy` fails, so the image cannot
-boot. Deploy the goose release and let it run stable before the soft-delete
-release ships; after that, every rollback image must be a goose build.
+A previous image built before goose boots on a goose-migrated database: it runs
+its own boot DDL and ignores `goose_db_version`. That DDL also reapplies its own
+schema: `ADD COLUMN IF NOT EXISTS` brings a dropped column back, and its
+`DROP NOT NULL` on `fleet_snapshots.free_for_load_gb` undoes a later
+`SET NOT NULL`. So a destructive migration (drop or rename a column, tighten a
+constraint on a baseline table) must wait until no pre-goose image can be
+started as a fallback.
+
+That old boot DDL also fails once the soft-delete migrations (versions 13 to
+16) have run: from then on, a soft-deleted user and a live user can share a
+Privy ID, and its non-concurrent `CREATE UNIQUE INDEX IF NOT EXISTS
+idx_users_privy` fails, so the image cannot boot. Deploy the goose release and
+let it run stable before the soft-delete release ships; after that, every
+rollback image must be a goose build. An older goose image applies nothing on
+a newer database, because every version it knows is already recorded.
 
 ## Environment file
 

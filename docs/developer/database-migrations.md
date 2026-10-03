@@ -29,29 +29,42 @@ mechanism is explained in
    ALTER TABLE providers ADD COLUMN example TEXT;
    ```
 
-   Goose runs the file in one transaction. Wrap a statement that contains `;`
+   Goose runs the file in one transaction. Put `-- +goose NO TRANSACTION` at
+   the top for `DROP INDEX CONCURRENTLY`. Wrap a statement that contains `;`
    (a `DO` block or a function body) in `-- +goose StatementBegin` and
    `-- +goose StatementEnd`.
 
-   For an index on a table that has data, build one index per file, outside a
-   transaction, and drop an invalid index that an interrupted attempt left:
+   Do not put `CREATE INDEX CONCURRENTLY` in an SQL file
+   (`TestSQLMigrationsDoNotBuildIndexesConcurrently` fails). A build that
+   fails, for example on `lock_timeout`, leaves an invalid index; with
+   `IF NOT EXISTS` the next attempt skips it and goose records the version
+   with a broken index. Add the index to `indexMigrations`
+   (`coordinator/store/postgres_migration_indexes.go`) instead:
 
-   ```sql
-   -- +goose NO TRANSACTION
-   -- +goose Up
-   SET lock_timeout = '1min';
-   DROP INDEX CONCURRENTLY IF EXISTS idx_example_account;
-   CREATE INDEX CONCURRENTLY idx_example_account ON example (account_id);
-   RESET lock_timeout;
+   ```go
+   index(18, "idx_example_account", `CREATE INDEX CONCURRENTLY idx_example_account ON example (account_id)`),
    ```
 
-   A `CONCURRENTLY` build waits for every older snapshot in the database, so
-   the 3 s session `lock_timeout` would cancel it behind any long query.
+   `buildConcurrentIndex` returns at once when a valid index exists, drops an
+   invalid leftover of an interrupted attempt, builds the index on its own
+   connection with a 1 min `lock_timeout` (the build waits for every older
+   snapshot), and fails unless the result is valid. The version is recorded
+   only after it succeeds.
 3. Keep each statement short and lock-safe. The migration session sets
    `lock_timeout` to 3 s and `statement_timeout` to 10 min. Add a column
    without a volatile default; add a constraint `NOT VALID`, then `VALIDATE`
    it; build indexes on large tables `CONCURRENTLY`. Do not swallow errors in a
    `DO ... EXCEPTION WHEN others` block: a failure must stop the boot.
+
+   A migration runs once. Nothing in it runs again on later boots, so it
+   cannot repair rows that a writer keeps producing; fix the writer.
+
+   Do not drop or rename a column, or add `NOT NULL` or another constraint to
+   a table the baseline creates, while a coordinator image built before goose
+   can still be started as a rollback target. That image replays its own boot
+   DDL: `ADD COLUMN IF NOT EXISTS` brings a dropped column back, and its
+   `DROP NOT NULL` on `fleet_snapshots.free_for_load_gb` undoes a later
+   `SET NOT NULL`.
 4. Regenerate the schema file from a database built by the migrations:
 
    ```bash

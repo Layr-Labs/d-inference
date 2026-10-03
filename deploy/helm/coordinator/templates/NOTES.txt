@@ -1,0 +1,19 @@
+Coordinator StatefulSet {{ include "coordinator.fullname" . }} in {{ .Release.Namespace }}.
+
+Image: {{ include "coordinator.image" . }}
+Service: {{ include "coordinator.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}
+Probes: liveness GET /health, readiness GET /readyz (not /live or /ready).
+PVC: userdata-{{ include "coordinator.fullname" . }}-N, StorageClass {{ include "coordinator.storageClassName" . }} (Retain), STS whenDeleted={{ .Values.persistence.whenDeleted }} whenScaled={{ .Values.persistence.whenScaled }}.
+PDB: minAvailable={{ .Values.podDisruptionBudget.minAvailable }} — at least one ordinal stays up.
+{{- if .Values.autoscaling.enabled }}
+HPA: StatefulSet {{ .Values.autoscaling.minReplicas }}-{{ .Values.autoscaling.maxReplicas }}. Scale-down keeps PVCs. Extra ordinals split the in-process provider WebSocket fleet.
+{{- end }}
+{{- if .Values.computeClass.enabled }}
+ComputeClass: {{ .Values.computeClass.name }} (NAP). Cluster NAP CPU/memory caps must fit requests x maxReplicas.
+{{- end }}
+{{- if .Values.gatewayAPI.enabled }}
+Gateway health check is /readyz. Backend timeout {{ .Values.gatewayAPI.backend.timeoutSec }}s. Hosts: {{ join ", " .Values.gatewayAPI.hostnames }}.
+{{- end }}
+Image pull: node GSA + Artifact Registry reader on us-east4 coordinator. Do not set imagePullSecrets.
+Workload Identity: KSA {{ include "coordinator.serviceAccountName" . }} → {{ index .Values.serviceAccount.annotations "iam.gke.io/gcp-service-account" }}. Install --namespace darkbloom so it matches the WI binding.
+Secrets come from {{ include "coordinator.secretName" . }} (envFrom). DATABASE_URL host is rewritten to status.hostIP:{{ .Values.database.proxyPort }} when database.rewriteHostToNodeIP is true.

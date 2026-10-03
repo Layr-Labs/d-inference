@@ -17,11 +17,6 @@ type AppAttestReadinessStore interface {
 	RevokeAppAttestKey(context.Context, string, string, string) (bool, error)
 }
 
-const appAttestRevocationDDL = `CREATE TABLE IF NOT EXISTS app_attest_key_revocations (
- key_id TEXT PRIMARY KEY REFERENCES app_attest_shadow_keys(key_id),
- account_id TEXT NOT NULL, reason TEXT NOT NULL, revoked_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-)`
-
 func (s *PostgresStore) GetAppAttestReadiness(ctx context.Context, key string) (AppAttestReadiness, error) {
 	var result AppAttestReadiness
 	// Read revocation and receipt in one snapshot. A failed query is unknown,

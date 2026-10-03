@@ -8,18 +8,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Typed cohort/revision columns keep time-window reads indexed. The versioned
-// payload contains only the fixed, bounded RequestOutcomeRecord schema.
-const requestOutcomesTableDDL = `CREATE TABLE IF NOT EXISTS request_outcomes (
- id BIGSERIAL UNIQUE,
- coord_request_id TEXT PRIMARY KEY CHECK (coord_request_id <> ''),
- received_at TIMESTAMPTZ NOT NULL,
- updated_at TIMESTAMPTZ NOT NULL,
- revision BIGINT NOT NULL,
- evidence_conflict BOOLEAN NOT NULL DEFAULT FALSE,
- record JSONB NOT NULL
-)`
-
 func (s *PostgresStore) RecordRequestOutcomes(ctx context.Context, records []RequestOutcomeRecord) error {
 	for _, r := range records {
 		if err := validateRequestOutcome(r); err != nil {

@@ -1,6 +1,6 @@
 # Deploy the coordinator (production)
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-03
 
 Runbook for swapping the production coordinator container on the GCE VM
 `darkbloom-coordinator` to a Cloud-Build image of a reviewed `master` commit,
@@ -39,7 +39,7 @@ For bank payout configuration and validation, follow [Global Payouts](global-pay
 
 - `gcloud` authenticated with IAM to SSH via IAP into project `darkbloom-mainnet`
   and to read Cloud Build / Artifact Registry.
-- `psql` access to the production RDS database (`PROD_DB_URL`) for the
+- `psql` access to the production Cloud SQL database (`PROD_DB_URL`) for the
   pre-swap lock check.
 - Explicit human approval for the production mutation (rule 1 in
   [README.md](README.md) is the canonical statement), recorded where your team
@@ -66,7 +66,7 @@ For bank payout configuration and validation, follow [Global Payouts](global-pay
 | Container | `coordinator`: `--network host`, `--restart unless-stopped`, `--stop-timeout 690`, `-v /mnt/disks/userdata:/mnt/disks/userdata`, `--env-file /etc/d-inference/env`; entrypoint [`coordinator/deploy/start.sh`](../../coordinator/deploy/start.sh) |
 | Inside the container | `start.sh` symlinks `/data -> /mnt/disks/userdata`, starts MicroMDM on `:9002` (state in `/data/micromdm`, command webhook `http://localhost:8080/v1/mdm/webhook`), then `exec coordinator` as PID 1. `/usr/local/bin/promptsidecar` is spawned by the coordinator when `EIGENINFERENCE_PROMPT_SIDECAR_ENABLED=true` |
 | Persistent disk | `/mnt/disks/userdata`: MicroMDM BoltDB, prompt-contract artifacts (`EIGENINFERENCE_PROMPT_SIDECAR_ARTIFACT_ROOT=/mnt/disks/userdata/prompt-contracts`), logs. **Omitting the bind mount boots a blank MDM and drops the fleet to `self_signed` trust** (2026-07-04 incident) |
-| Database | AWS RDS PostgreSQL via `EIGENINFERENCE_DATABASE_URL`; schema migrations run at coordinator start |
+| Database | Cloud SQL for PostgreSQL 17 in `darkbloom-mainnet` (read replica `d-inference-prod-pg17-ro`) via `EIGENINFERENCE_DATABASE_URL`; pending goose migrations apply at coordinator start |
 | Env file | `/etc/d-inference/env`, root-only `0600`, on the boot disk (never tmpfs). Managed by [`deploy/gcp/prod/refresh-env.sh`](../../deploy/gcp/prod/refresh-env.sh) with [`deploy/gcp/prod/required-env-keys.txt`](../../deploy/gcp/prod/required-env-keys.txt) and [`deploy/gcp/prod/release-env-defaults`](../../deploy/gcp/prod/release-env-defaults); applied at boot by [`deploy/gcp/prod/darkbloom-env-refresh.service`](../../deploy/gcp/prod/darkbloom-env-refresh.service) (`Before=docker.service`) |
 | Fallback | The previous container is renamed `coordinator_fallback_<timestamp>` and kept stopped |
 
@@ -114,9 +114,12 @@ by hand; shell variables do not cross SSH.
 
 ### 2. Pre-swap checks (VM and DB)
 
-Startup runs schema migrations. An `ALTER TABLE` queued behind a long query's
-relation lock hangs the deploy (2026-07-03 outage — the fix was killing the
-blocker, not restarting). No rows means safe to proceed:
+Startup applies pending goose migrations
+([storage](../architecture/storage.md#migrations-are-numbered-goose-versions)).
+A migration statement waits at most 3 s for a lock (`lock_timeout`); after
+three failed attempts the coordinator exits 1. Before goose, an `ALTER TABLE`
+queued behind a long query's relation lock hung the deploy (2026-07-03
+outage). No rows means safe to proceed:
 
 ```bash
 psql "$PROD_DB_URL" -c "select pid, now()-query_start as runtime, state, left(query,80)
@@ -128,7 +131,7 @@ psql "$PROD_DB_URL" -c "select count(*) as blocked from pg_locks where granted =
 A coordinator built after v0.9.10 refuses to start on a database that holds
 billing, usage or earnings rows but never ran the retired one-shot backfills
 (`checkRetiredBackfills`, see
-[storage](../architecture/storage.md#migrations-run-inside-the-process-at-every-boot)).
+[storage](../architecture/storage.md#migrations-are-numbered-goose-versions)).
 Production ran them; confirm all three markers before the swap (three rows):
 
 ```bash
@@ -183,6 +186,27 @@ exits after migration success (with a 15-minute upper bound). Do not start a
 second ordinary coordinator container. Rerun the blocked-query/lock checks and
 verify current serving health after preparation; success is not approval to
 swap.
+
+#### First deploy of a goose build
+
+The first coordinator built with goose (`coordinator/store/postgres_migrations.go`)
+applies versions 1 to 5 to production once. On a schema that the previous
+coordinator built they change nothing. A lock timeout inside one of the
+baseline's `DO ... EXCEPTION WHEN others` blocks is swallowed, and goose still
+records version 1. After that deploy, confirm the versions and compare the
+production schema with the checked-in file of the deployed commit (read-only;
+use a `pg_dump` 17 client):
+
+```bash
+psql "$PROD_DB_URL" -c "select version_id from goose_db_version order by id;"   # 0 through 5
+pg_dump "$PROD_DB_URL" --schema-only --no-owner --no-privileges --exclude-table=goose_db_version \
+  | grep -v '^\\restrict \|^\\unrestrict \|^-- Dumped from database version\|^-- Dumped by pg_dump version' \
+  | diff - coordinator/store/schema/schema.sql
+```
+
+Only objects applied by hand, such as the `request_waterfall` view, may
+differ. A missing column or index means a swallowed statement; apply it under
+a separate approved operation.
 
 New provider-recovery indexes are built concurrently and checked for validity. An
 interrupted build that leaves an invalid index fails closed with its index name;
@@ -300,9 +324,11 @@ sudo docker run -d --name coordinator \
 ```
 
 Startup takes ~15–40 s (MicroMDM init, migrations, listeners). If `/health`
-does not answer after ~60 s, suspect a migration behind a DB lock: re-run the
-`pg_stat_activity` query and `pg_terminate_backend(<pid>)` the blocker. **Do
-not restart the container again** — restarts stack migrations.
+does not answer after ~60 s, or the container exits with `store: run
+migrations`, suspect a migration behind a DB lock: re-run the
+`pg_stat_activity` query and `pg_terminate_backend(<pid>)` the blocker. Goose
+holds an advisory lock while it migrates, so a second container waits for the
+first instead of running the same DDL.
 
 ## Verification
 
@@ -335,7 +361,7 @@ curl -fsS localhost:8080/v1/cache/status | jq -e \
 # Fleet trust rebuild (~2 min) and MDM sanity.
 sudo docker logs coordinator 2>&1 | grep -c "upgraded live provider to hardware trust"   # should climb
 sudo docker logs coordinator 2>&1 | grep -c "device not found in MDM"        # baseline is a few dozen; hundreds = missing volume mount → Rollback
-sudo docker logs coordinator 2>&1 | grep "postgres migration completed"      # one line per migration; result already_applied on steady state
+sudo docker logs coordinator 2>&1 | grep '"postgres migration"'             # one line per applied version; none when nothing was pending
 
 # Public.
 curl -fsS https://api.darkbloom.dev/health
@@ -402,7 +428,11 @@ cause in the deploy record; the failed candidate image stays in Artifact
 Registry for diagnosis.
 
 Providers reconnect on their own; the live registry is in-process and rebuilt
-from reconnects, durable state is in RDS and on the persistent disk.
+from reconnects, durable state is in Cloud SQL and on the persistent disk.
+
+A previous image built before goose boots on a goose-migrated database: it runs
+its own boot DDL and ignores `goose_db_version`. An older goose image applies
+nothing, because every version it knows is already recorded.
 
 ## Environment file
 
@@ -460,7 +490,7 @@ reference copy; editing it changes nothing on the host.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| No `/health` after 60 s | migration behind an RDS relation lock | `pg_stat_activity` → `pg_terminate_backend(<pid>)`; do not restart the container |
+| No `/health` after 60 s, or exit with `store: run migrations` | migration behind a relation lock (three `lock_timeout` attempts failed) | `pg_stat_activity` → `pg_terminate_backend(<pid>)`; do not restart the container |
 | Exit at boot with `database holds data that retired backfills never processed` or `balances.withdrawable_micro_usd is missing` | the database never ran a one-shot backfill retired after v0.9.10 (not production, which has all three markers) | roll back to the captured image, which runs the backfills at start, then redeploy the candidate |
 | Fleet drops to `self_signed`; "device not found in MDM" storm | container started without `-v /mnt/disks/userdata:/mnt/disks/userdata` (blank MicroMDM) | Rollback, then redo the swap with the mount |
 | `/v1/models` empty; providers `self_signed` | MicroMDM not running or `MICROMDM_API_KEY` ≠ `EIGENINFERENCE_MDM_API_KEY` | fix the env file, recreate the container |

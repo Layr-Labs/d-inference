@@ -91,7 +91,7 @@ func TestPostgresModelPriceCacheTracksCacheRead(t *testing.T) {
 }
 
 // A model_prices table created before cache_read_price existed gains the
-// column on the next migrate() with existing rows reading back as unset.
+// column when the baseline replays, with existing rows reading back as unset.
 func TestPostgresModelPricesMigrationAddsCacheReadColumn(t *testing.T) {
 	s := testPostgresStore(t)
 	ctx := context.Background()
@@ -103,9 +103,7 @@ func TestPostgresModelPricesMigrationAddsCacheReadColumn(t *testing.T) {
 		"INSERT INTO model_prices (account_id, model, input_price, output_price) VALUES ('platform', $1, 50000, 200000)", model); err != nil {
 		t.Fatalf("insert legacy row: %v", err)
 	}
-	if err := s.migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	replayMigrations(t, s)
 	got, ok := s.GetModelPrice("platform", model)
 	if !ok || got.InputPrice != 50_000 || got.OutputPrice != 200_000 || got.CacheReadPrice != nil {
 		t.Fatalf("legacy row after migration = %+v ok=%v, want cache_read_price unset", got, ok)
@@ -116,7 +114,7 @@ func TestPostgresModelPricesMigrationAddsCacheReadColumn(t *testing.T) {
 }
 
 // A usage table created before cached_tokens existed gains the column on the
-// next migrate(); rows written before it read back as 0 cached tokens (they
+// baseline replay; rows written before it read back as 0 cached tokens (they
 // were billed at the full input price) and new rows persist their count.
 func TestPostgresUsageMigrationAddsCachedTokensColumn(t *testing.T) {
 	s := testPostgresStore(t)
@@ -131,9 +129,7 @@ func TestPostgresUsageMigrationAddsCachedTokensColumn(t *testing.T) {
 		hashKey(consumer), legacyReq); err != nil {
 		t.Fatalf("insert legacy row: %v", err)
 	}
-	if err := s.migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	replayMigrations(t, s)
 	s.RecordUsage(UsageRecord{ProviderID: "p", ConsumerKey: consumer, Model: "m", RequestID: uniqueID("new-usage"), PromptTokens: 100, CachedTokens: 60, CompletionTokens: 10, CostMicroUSD: 5})
 
 	byReq := map[string]UsageRecord{}

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased — coordinator schema migrations
+
+- Apply the coordinator's Postgres schema as numbered goose migrations instead of re-running every DDL statement at each boot. The first boot records the existing schema as version 1 without changing it; later boots apply only new versions. Migration statements stop waiting for a lock after 3 seconds and retry up to three times, and coordinators that start together take turns on an advisory lock.
+- Check in the schema as `coordinator/store/schema/schema.sql` and test that the migrations build exactly that schema. New schema changes go in a new numbered migration file.
+
 ## Unreleased — leaderboard availability
 
 - Add a concurrent BRIN time index for recent provider-earnings rankings, enable range autosummarization, and keep planner statistics current. Return an uncached 503 when ranking queries fail instead of showing and caching an empty leaderboard.

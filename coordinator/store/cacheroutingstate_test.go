@@ -325,7 +325,7 @@ func TestCacheRoutingStateRejectsInvalidRecords(t *testing.T) {
 
 // The durable copy never holds the provider-confirmed chain hash: a boundary
 // is named by its keyed identifier and token count only, and the column an
-// earlier build of this branch created is dropped by the schema loop.
+// earlier build of this branch created is dropped by the baseline.
 func TestCacheRoutingHoldersTableStoresNoChainHash(t *testing.T) {
 	for name, s := range cacheRoutingStateBackends(t) {
 		pg, ok := As[*PostgresStore](s)
@@ -343,17 +343,17 @@ func TestCacheRoutingHoldersTableStoresNoChainHash(t *testing.T) {
 				return n
 			}
 			if count() != 0 {
-				t.Fatal("anchor_chain_hash exists after the schema loop")
+				t.Fatal("anchor_chain_hash exists after the migrations")
 			}
 			// A table an earlier build created carries the column; the
-			// schema loop's drop removes it, and its values with it.
+			// baseline's drop removes it, and its values with it.
 			if _, err := pg.pool.Exec(ctx, `ALTER TABLE cache_routing_holders ADD COLUMN IF NOT EXISTS anchor_chain_hash TEXT NOT NULL DEFAULT ''`); err != nil {
 				t.Fatal(err)
 			}
 			if count() != 1 {
 				t.Fatal("fixture column missing")
 			}
-			if _, err := pg.pool.Exec(ctx, cacheRoutingHoldersDropChainHashDDL); err != nil {
+			if _, err := pg.pool.Exec(ctx, baselineStatement(t, "ALTER TABLE cache_routing_holders DROP COLUMN IF EXISTS anchor_chain_hash")); err != nil {
 				t.Fatalf("drop migration: %v", err)
 			}
 			if count() != 0 {
@@ -364,7 +364,7 @@ func TestCacheRoutingHoldersTableStoresNoChainHash(t *testing.T) {
 			if _, err := pg.pool.Exec(ctx, `ALTER TABLE cache_routing_holders DROP COLUMN IF EXISTS ready_boundary_mode`); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := pg.pool.Exec(ctx, cacheRoutingHoldersBackfillColumnsDDL); err != nil {
+			if _, err := pg.pool.Exec(ctx, baselineStatement(t, "ALTER TABLE cache_routing_holders\n ADD COLUMN IF NOT EXISTS measured_stage_ms")); err != nil {
 				t.Fatalf("backfill migration: %v", err)
 			}
 			var n int

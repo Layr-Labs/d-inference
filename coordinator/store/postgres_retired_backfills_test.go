@@ -13,7 +13,9 @@ import (
 // to pin checkRetiredBackfills: a fresh database records the retired
 // backfill markers and keeps booting once it holds data, a prod-shaped
 // database with the markers boots untouched, and a database holding data a
-// retired backfill never processed refuses to start.
+// retired backfill never processed refuses to start. Goose runs the guard
+// once, so a reboot below first forgets the goose versions: the guard runs
+// again only on a database that a pre-goose binary migrated.
 
 func bootRetiredBackfillStore(t *testing.T, databaseURL string) (*PostgresStore, error) {
 	t.Helper()
@@ -90,7 +92,8 @@ func TestRetiredBackfillGuardRecordsMarkersOnFreshDatabase(t *testing.T) {
 	}
 
 	// The same database, now holding data in every retired-backfill table,
-	// must keep booting.
+	// must keep booting when the guard runs again.
+	forgetMigrationVersions(t, s)
 	again := mustBootRetiredBackfillStore(t, databaseURL)
 	if totals, err := again.UsageTotals(); err != nil || totals.Requests != 1 {
 		t.Fatalf("usage totals after reboot = %+v, %v; want the counter preserved", totals, err)
@@ -129,6 +132,7 @@ func TestRetiredBackfillGuardBootsProdShapedDatabase(t *testing.T) {
 	mustExecRetiredBackfill(t, s, `UPDATE usage_totals
 		SET total_requests = 41, total_prompt_tokens = 4100, total_completion_tokens = 820
 		WHERE id = 1`)
+	forgetMigrationVersions(t, s)
 	s.Close()
 
 	again := mustBootRetiredBackfillStore(t, databaseURL)
@@ -156,6 +160,7 @@ func TestRetiredBackfillGuardRefusesDataWithoutMarker(t *testing.T) {
 				// row either.
 				mustExecRetiredBackfill(t, s, `DELETE FROM usage_totals`)
 			}
+			forgetMigrationVersions(t, s)
 			s.Close()
 
 			_, err := bootRetiredBackfillStore(t, databaseURL)
@@ -194,6 +199,7 @@ func TestRetiredBackfillGuardRefusesBalancesWithoutWithdrawableColumn(t *testing
 	// missing.
 	mustExecRetiredBackfill(t, s, `DELETE FROM schema_migrations WHERE id = 'backfill_withdrawable_balance_v1'`)
 	mustExecRetiredBackfill(t, s, `ALTER TABLE balances DROP COLUMN withdrawable_micro_usd`)
+	forgetMigrationVersions(t, s)
 	s.Close()
 
 	_, err := bootRetiredBackfillStore(t, databaseURL)

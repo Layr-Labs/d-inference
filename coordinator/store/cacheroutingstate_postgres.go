@@ -12,69 +12,6 @@ import (
 	crs "github.com/eigeninference/d-inference/coordinator/store/cacheroutingstate"
 )
 
-// cacheRoutingHoldersDDL and cacheRoutingDemandDDL are the durable copies of
-// the registry's in-memory holder and demand indexes (see
-// cacheroutingstate/records.go). Keys are HMACs under the route key; the
-// provider-confirmed chain hash is not stored (cacheRoutingHoldersDropChainHashDDL
-// removes the column earlier builds of this branch created), and no prompt
-// content is. The primary key is (key, cache_epoch): a holder key names a
-// boundary, an epoch names one provider's SSD root, and a boundary is held by
-// at most the configured number of providers.
-const cacheRoutingHoldersDDL = `CREATE TABLE IF NOT EXISTS cache_routing_holders (
- key TEXT NOT NULL,
- cache_epoch TEXT NOT NULL,
- tier TEXT NOT NULL DEFAULT '',
- model_id TEXT NOT NULL,
- model_aggregate_hash TEXT NOT NULL DEFAULT '',
- prompt_contract_id TEXT NOT NULL DEFAULT '',
- block_hash_version TEXT NOT NULL DEFAULT '',
- ready_boundary_mode TEXT NOT NULL DEFAULT '',
- anchor_token_count INTEGER NOT NULL DEFAULT 0,
- required_recompute_tokens INTEGER NOT NULL DEFAULT 0,
- stage_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
- measured_stage_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
- measured_expires_at TIMESTAMPTZ,
- updated_at TIMESTAMPTZ NOT NULL,
- expires_at TIMESTAMPTZ NOT NULL,
- PRIMARY KEY (key, cache_epoch)
-)`
-
-// The chain hash column of earlier builds is dropped, and its values with it.
-const cacheRoutingHoldersDropChainHashDDL = `ALTER TABLE cache_routing_holders DROP COLUMN IF EXISTS anchor_chain_hash`
-
-// Tables created by earlier builds of this branch pick up the columns added
-// since; each ADD is a no-op once present.
-const cacheRoutingHoldersBackfillColumnsDDL = `ALTER TABLE cache_routing_holders
- ADD COLUMN IF NOT EXISTS measured_stage_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
- ADD COLUMN IF NOT EXISTS measured_expires_at TIMESTAMPTZ,
- ADD COLUMN IF NOT EXISTS ready_boundary_mode TEXT NOT NULL DEFAULT ''`
-
-// The prune deletes rows whose effective expiry under the active TTL has
-// passed, written as `expires_at <= now OR updated_at <= now - ttl` so both
-// halves are index-served (a bitmap OR over the two indexes) instead of a
-// full scan every five minutes; a boot-time load orders by the clamped
-// expression and scans the table once.
-const cacheRoutingHoldersExpiryIndexDDL = `CREATE INDEX IF NOT EXISTS idx_cache_routing_holders_expires ON cache_routing_holders(expires_at)`
-
-const cacheRoutingHoldersUpdatedIndexDDL = `CREATE INDEX IF NOT EXISTS idx_cache_routing_holders_updated ON cache_routing_holders(updated_at)`
-
-const cacheRoutingDemandDDL = `CREATE TABLE IF NOT EXISTS cache_routing_demand (
- key TEXT PRIMARY KEY,
- seen_at TIMESTAMPTZ NOT NULL
-)`
-
-const cacheRoutingDemandSeenIndexDDL = `CREATE INDEX IF NOT EXISTS idx_cache_routing_demand_seen ON cache_routing_demand(seen_at)`
-
-// cacheRoutingMetaDDL records the derived cache-key generation the rows were
-// written under (a non-secret fingerprint), so a change of generation (a
-// master-key rotation, a bumped derivation version) resets the tables instead
-// of restoring rows no request can ever match.
-const cacheRoutingMetaDDL = `CREATE TABLE IF NOT EXISTS cache_routing_meta (
- name TEXT PRIMARY KEY,
- value TEXT NOT NULL,
- updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-)`
-
 const cacheRoutingKeyFingerprintName = "key_fingerprint"
 
 const cacheHolderInsertColumns = 15

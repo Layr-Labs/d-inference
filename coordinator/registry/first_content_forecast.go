@@ -78,6 +78,7 @@ type firstContentSnapshot struct {
 // memory reservations, completion limits, ownership or physical eligibility.
 func (r *Registry) estimateFirstContent(c *routingCandidate, pr *PendingRequest, now time.Time) {
 	s := &c.snapshot
+	deadline := candidateFirstContentDeadline(c, pr)
 	e := FirstContentEstimate{Status: FirstContentUnknown, CapacityAgeMs: s.capacityAgeMs,
 		PerformanceAgeMs: s.performanceAgeMs, ServiceMs: s.wholeMacServiceMs, TransportMs: s.transportMs, TransportAgeMs: s.transportAgeMs}
 	prompt := max(0, pr.EstimatedPromptTokens)
@@ -141,15 +142,15 @@ func (r *Registry) estimateFirstContent(c *routingCandidate, pr *PendingRequest,
 	}
 	c.firstContentEvidenceQualified = firstContentForecastUnknownReason(s, pr, prompt, true) == ""
 	e.Reason = firstContentForecastUnknownReason(s, pr, prompt, false)
-	if pr.FirstContentDeadline.IsZero() && pr.MaxTTFTMs <= 0 && (!(pr.Hedge || pr.RequireFreshFeasible) || pr.FirstContentPlanningHorizon <= 0) {
+	if deadline.IsZero() && pr.MaxTTFTMs <= 0 && (!(pr.Hedge || pr.RequireFreshFeasible) || pr.FirstContentPlanningHorizon <= 0) {
 		e.Reason = "no_deadline"
 	}
 	if e.Reason == "" {
 		e.Status = FirstContentFeasible
 	}
 
-	if !pr.FirstContentDeadline.IsZero() {
-		e.BudgetMs = max(0, float64(pr.FirstContentDeadline.Sub(now))/float64(time.Millisecond))
+	if !deadline.IsZero() {
+		e.BudgetMs = max(0, float64(deadline.Sub(now))/float64(time.Millisecond))
 	} else if pr.MaxTTFTMs > 0 {
 		e.BudgetMs = pr.MaxTTFTMs
 	} else if (pr.Hedge || pr.RequireFreshFeasible) && pr.FirstContentPlanningHorizon > 0 {
@@ -198,6 +199,12 @@ func firstContentForecastUnknownReason(s *routingSnapshot, pr *PendingRequest, p
 // firstContentCandidateAllowed retains unknown evidence as a bounded fallback.
 // The existing optional hard ceiling applies only to credible late forecasts.
 func firstContentCandidateAllowed(c *routingCandidate, pr *PendingRequest) bool {
+	if !candidateFirstContentDeadline(c, pr).IsZero() && c.firstContent.BudgetMs <= 0 {
+		// Unknown performance keeps a bounded fallback, never an expired
+		// renderer's clock. Discard it in the scan rather than spending the
+		// bounded commit rescans before reaching a live qualified candidate.
+		return false
+	}
 	if pr.Hedge && (c.snapshot.wholeMacBusy || c.snapshot.totalPending > 0) {
 		return false
 	}

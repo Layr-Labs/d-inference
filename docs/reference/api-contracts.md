@@ -531,11 +531,21 @@ accepts older responses containing the extra field.
 
 Inference planning may obtain exact input work from the verified model/template
 tokenizer before dispatch. The internal numeric provenance is not a client
-request field. Before preflight and dispatch, a verified exact count may correct
-the SLA's input-token term upward or downward, measured from the original request
+request field. Before preflight and dispatch, a verified exact count matching
+the candidate provider's advertised artifact and renderer may correct the SLA's
+input-token term upward or downward, measured from the original request
 arrival and bounded by any earlier caller deadline. Calibrated uncertainty and
 provider recount do not extend that duration. Planning, retries and hedges keep
-the original arrival time and never start a fresh clock. Unsupported shapes keep
+the original arrival time and never start a fresh clock. Each provider's
+feasibility and dispatched budget use its own qualified or fallback cutoff;
+another provider's matching renderer cannot supply that qualification. An
+unsent exact-bound attempt is rejected if its renderer changes before handoff.
+When every otherwise-fitting provider's own cutoff has expired, admission returns
+`429` with `Retry-After`, retains the `deadline_unreachable` rejection reason and
+does not spill to a cold provider. A physically fitting expired peer prevents a
+too-small peer from turning that request into a permanent model-size refusal.
+An eligible previous-build alias can still serve within its own cutoff.
+Unsupported shapes keep
 conservative fallback, and billing continues to settle actual provider usage
 (`planPromptRoute`, `coordinator/api/prompt_work.go`; `promptWorkDeadline`,
 `coordinator/api/first_content_prompt_deadline.go`).

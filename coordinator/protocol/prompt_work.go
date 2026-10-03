@@ -12,7 +12,8 @@ const (
 // Only exact contract counts or reviewed calibration can supply an upper bound.
 // A heuristic remains explicitly unqualified, even if it has a numeric estimate.
 // The coordinator may reconcile the SLA token term from a verified exact count
-// before dispatch, retaining the ingress anchor and earlier caller cutoff.
+// matching the serving renderer before dispatch, retaining the ingress anchor
+// and earlier caller cutoff. Other candidates keep their fallback duration.
 // Calibration uncertainty and provider recount cannot extend the inherited
 // deadline; count evidence never changes billing usage.
 type PromptWork struct {

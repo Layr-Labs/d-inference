@@ -7,6 +7,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
 // promptWorkDeadline reconciles the SLA's input-token term, not its ingress
@@ -49,4 +50,29 @@ func (s *Server) promptWorkDeadlineForRequest(ctx context.Context, received time
 	return func(model string, work *protocol.PromptWork) time.Duration {
 		return firstContentDurationWithinContext(ctx, received, s.promptWorkDeadline(publicModel, model, fallback, work))
 	}
+}
+
+// setPromptWorkDeadlines carries both ingress-anchored token terms until a
+// candidate's renderer qualifies one. The larger envelope bounds unselected
+// work; only reservation may turn it into a provider's actual wire cutoff.
+func setPromptWorkDeadlines(pr *registry.PendingRequest, received time.Time, fallback, qualified time.Duration) {
+	if pr == nil || received.IsZero() || fallback <= 0 {
+		return
+	}
+	pr.FirstContentFallbackDeadline = received.Add(fallback)
+	if qualified > 0 && qualified != fallback {
+		pr.FirstContentQualifiedDeadline = received.Add(qualified)
+	}
+	pr.FirstContentDeadline = pr.FirstContentDeadlineEnvelope()
+}
+
+// configurePromptWorkDeadlines is run for direct, queued, retry and hedge
+// requests immediately before reservation. Revalidation can withdraw stale
+// exact evidence; it never grants a fresh planning or request clock.
+func (d *dispatchState) configurePromptWorkDeadlines(pr *registry.PendingRequest) {
+	if d.promptDeadlineForWork == nil {
+		return
+	}
+	qualified := d.promptDeadlineForWork(d.model, pr.PromptWork)
+	setPromptWorkDeadlines(pr, timingReceivedAt(d.timing), d.fallbackDeadline, qualified)
 }

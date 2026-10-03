@@ -838,5 +838,164 @@
     "runtime_mtp": false,
     "control_packed_cohorts": 0,
     "qualification": "Cold capture creation cost and separate functional reuse; no isolated packing or fleet throughput claim."
+  },
+  "serving_renderer_deadline_followup": {
+    "status": "all_affected_required_go_checks_pass",
+    "tested_parent_base": "a10e4d6464bb822a551021b58f1135d46b43dd21",
+    "toolchain": "go1.25.0",
+    "scope": "candidate-qualified first-content deadline correctness, API and registry follow-up",
+    "source_frozen_before_checks": true,
+    "sdk_runtime_source_changed": false,
+    "protocol_wire_fields_changed": false,
+    "baseline_note": "Cases overlap across staged fix points; do not sum them as unique requests or measured performance gains. The preflight baseline uses a temporary source copy with only expiry-cause handling withdrawn.",
+    "baselines": [
+      {
+        "name": "public_serving_identity",
+        "expected_failed_cases": 6,
+        "sha256": "7bbd48bd00ede0e78721ca09bcd3abfc526cb9e0ca9f386a2aef0129ad36ad45",
+        "bytes": 4374
+      },
+      {
+        "name": "selected_terminal_clocks",
+        "expected_failed_cases": 5,
+        "sha256": "5a6088275a38895c5c982224e23485b572c8ce641687ea538ac291ad71760e6b",
+        "bytes": 1199
+      },
+      {
+        "name": "selected_hedge_point",
+        "expected_failed_cases": 2,
+        "sha256": "44b0a7ffca0c6d8d6e55d99fe75516993898f92146651e72ac19beac6f95634e",
+        "bytes": 595
+      },
+      {
+        "name": "expired_unknown_scan",
+        "expected_failed_cases": 1,
+        "sha256": "4bee21441828919173494bbf30193320e09337e15c66ed4e1063e87913636e88",
+        "bytes": 4874
+      },
+      {
+        "name": "expired_preflight_classification",
+        "expected_failed_cases": 6,
+        "sha256": "7a3a1ec7892ed9fcf683a4b2575f7138be1fe921238491b9aa38e18a193da320",
+        "bytes": 2615
+      },
+      {
+        "name": "mixed_expired_and_too_small_classification",
+        "expected_failed_cases": 6,
+        "sha256": "378cdad14825c06f6627f1b9713d85a3ed64352d24422f412a4c2412f5330260",
+        "bytes": 2543
+      }
+    ],
+    "checks": [
+      {
+        "name": "focused_race",
+        "command": "GOTOOLCHAIN=go1.25.0 go test -race -json ./api ./registry -run '^(TestPromptWorkDeadline|TestFirstContentDeadline|TestPromptWorkForecastRequiresCandidateContract|TestPromptWorkIdentity|TestSelected|TestDispatchSelected|TestSpeculativeRace|TestFirstContentPreflight|TestRequestCachePlan|TestAppAttest.*Writer|TestAppAttest.*Handoff|TestFirstToken|TestFirstContent|TestOnTime|TestLate|TestAccount.*Deadline|Test.*Exempt)' -count=1",
+        "exit_code": 0,
+        "sha256": "2972301cb66cf248a2d3d4f702368c1df47803f7dbeae96301f01fd7ef3696b8",
+        "bytes": 274188,
+        "top_level_test_pass": 103,
+        "total_test_pass_events": 246,
+        "failed_events": 0,
+        "package_results": [
+          {
+            "Package": "github.com/eigeninference/d-inference/coordinator/registry",
+            "Action": "pass",
+            "Elapsed": 1.699
+          },
+          {
+            "Package": "github.com/eigeninference/d-inference/coordinator/api",
+            "Action": "pass",
+            "Elapsed": 10.505
+          }
+        ],
+        "cwd": "coordinator"
+      },
+      {
+        "name": "coordinator_test",
+        "command": "GOTOOLCHAIN=go1.25.0 make coordinator-test",
+        "exit_code": 0,
+        "runner_guard_tests": 14,
+        "api_top_level_tests": 1807,
+        "api_isolated_shards": 8,
+        "go_packages_selected": 40,
+        "non_api_packages_selected": 39,
+        "seconds_total": 66.439,
+        "sha256": "c1dfc1329c906a29e111a11f036ddf5e1628da75e4e14db322ce32f47f615466",
+        "bytes": 1190,
+        "cwd": "repository root"
+      },
+      {
+        "name": "coordinator_build",
+        "command": "GOTOOLCHAIN=go1.25.0 make coordinator-build",
+        "exit_code": 0,
+        "sha256": "95e037d3ddc71ae0b4de78136d012aaf68b274cc50a0dcf44b757730026ce819",
+        "bytes": 45,
+        "cwd": "repository root"
+      },
+      {
+        "name": "coordinator_vet",
+        "command": "GOTOOLCHAIN=go1.25.0 go vet ./...",
+        "cwd": "coordinator",
+        "exit_code": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      },
+      {
+        "name": "diff_check",
+        "command": "git diff --check",
+        "exit_code": 0,
+        "cwd": "repository root"
+      }
+    ],
+    "source_sha256": {
+      "coordinator/api/consumer.go": "b7d1391d171ff2d494ce01bc630adffb540860307c4849f0a690b2fb4abbfa88",
+      "coordinator/api/dispatch.go": "3a88e4f69238eb44e840158b53387dfaa70d4a151c29e64040e1337ecd2e9006",
+      "coordinator/api/dispatch_first_content_deadlines.go": "d3c5b6df1a724f07bdbaf99d042fd59963699b01f848c4e8f2a963debd24c800",
+      "coordinator/api/dispatch_first_content_deadlines_test.go": "2d8705feb2ffd1191625322374eeadd5a3ac83679af5ec8d6d7b47c60cb90675",
+      "coordinator/api/first_content_alias.go": "ec3537f17737c71c5f68cc777c1032ddafe21082663f8de09d7887ebd41ef4d2",
+      "coordinator/api/first_content_preflight.go": "8999051f693ca3df2c8fcaf65d2930181dcac5aa82b9dedcd18c5759368f9dc1",
+      "coordinator/api/first_content_preflight_expiry_test.go": "f3cbcd25257d2dd76a5f8ab4002b05b0be377b8afab2a339b1874118b7ac819c",
+      "coordinator/api/first_content_preflight_response.go": "362a6bf030af24a650d16b8dd841466486992fa98365089e0c7dc0f74ef7125e",
+      "coordinator/api/first_content_prompt_deadline.go": "a92aeaa28d7be79441aa8ad3a240ba7cfe34444c9718846471d69f643142651c",
+      "coordinator/api/first_content_prompt_deadline_test.go": "f8b7e12deccd4c1953498918ee46eba6d8e4a5a26748919f69487b527fe1f9fb",
+      "coordinator/api/first_content_retry.go": "add41e397f220044ee15b620ca464ef424976c02765d5f7d016ac5abcc3c9c5c",
+      "coordinator/api/first_content_serving_deadline_http_test.go": "85b88d33b4e6c73d61a175651d086f730f54f684473ac968566d483d5747c423",
+      "coordinator/api/first_token_attempt_clock.go": "498644907a0bd69e3edaa55b8197bb813591e9aba048ed09b526e076bd2b1e6f",
+      "coordinator/api/inference_admission.go": "7dcc1286492895f5a801419a802bcfd3651700331b32a231608cda82e5ff0bd2",
+      "coordinator/protocol/prompt_work.go": "3881319ac83f8f1b2f85e8240aa48140dab0b9fcb85ae4466c1e301626c3b759",
+      "coordinator/registry/first_content_deadline_identity.go": "e745b7e9c2e79f827653f5d13f86824fce3c551466ea85d93f6af62803160de8",
+      "coordinator/registry/first_content_deadline_identity_test.go": "7d4ce7f98f450c5cf08a8d326dba358fe4f9d9059ed8b156d67b358090f9535e",
+      "coordinator/registry/first_content_forecast.go": "860fdaed285317c28a7893693acb9eefb55f3d65301974aec542385a3d72f336",
+      "coordinator/registry/first_content_plan.go": "63115b10e6a8cd55ee325b53274a66cc736de7ec93f9997421a0d9f3f7be8ef3",
+      "coordinator/registry/first_content_preflight.go": "20624796cef7ba8322bdb10af54fd635204d7d936b2f9d5d41f562a370ff7ba3",
+      "coordinator/registry/inference_authorization.go": "ed8d2db84c43742b1acf3a96be86be6be9ffdb5de804ffce90ab0e55aac167fe",
+      "coordinator/registry/pending_request.go": "a37ebc04607a33010de01ea6d4541df052287b75c45e214d52f12d5e7a2c7602",
+      "coordinator/registry/queue_drain_dominance.go": "2f870af79e8bc4d0a7a9eb7c196440303fd020e358d58aeb4d888f98ac9649ac",
+      "coordinator/registry/scheduler.go": "64692c806f022e7a52bc3d997e56289781faf3914344c99304e466dbd19ffa5e"
+    },
+    "reader_audit": [
+      "Fallback and exact token terms retain the original ingress and earlier caller cutoff; numeric values only enter registry.",
+      "Only exact authenticated artifact/contract work may choose the qualified duration; calibrated uncertainty only forecasts work.",
+      "One resolver supplies each provider snapshot forecast and fresh quote; no model-wide matching-provider gate or extra fleet scan.",
+      "Reservation revalidates heartbeat and retained-plan state and binds the cutoff atomically before active pending publication.",
+      "Final writer rejects unsent exact-bound renderer drift; already-bound fallback does not upgrade when capability arrives.",
+      "Direct, queue, retry and hedge constructors carry original absolute choices; retry does not renew the clock.",
+      "Queue requeues only unbound failed reservations; accepted/cancelled bound offers retire and release their reservation.",
+      "Qualified deadline choices disable scalar queue dominance; ordinary queue comparison remains available.",
+      "Selected waits, speculative launch and each surviving racer use their own bound cutoff while unselected scans use the max envelope.",
+      "Known expired unknown-rate peers are filtered in the existing scan and cannot consume the bounded rescan budget.",
+      "Dedicated expiry evidence preserves retryable deadline classification and eligible alias fallbacks under hard and soft forecast policy.",
+      "An expired physically fitting peer prevents a false permanent model-too-large result; a truly non-fitting pool remains503.",
+      "Physical prompt/output/context/load reservations and billed usage are unchanged; no raw content or caller Context is retained in registry carriers.",
+      "Modularity pass extracted alias flow and pure deadline/timing helpers into focused files."
+    ],
+    "native_scope_note": "This followup changes Go routing/admission/timers and synchronized protocol comments only. The SDK pin and native runtime/cache behavior remain the frozen cut measured above; native timing cells are not pooled with correctness regressions.",
+    "documentation_checks": {
+      "docs_impact_base": "origin/master",
+      "base_sha": "48d2be458b3ce511a2a9006238b923295c9c6718",
+      "changed_files": 81,
+      "docs_checked": 332,
+      "status": "pass"
+    }
   }
 }

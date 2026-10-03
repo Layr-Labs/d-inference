@@ -67,9 +67,20 @@ later attempt can recover exact counts and cache planning within the original
 deadline (`api/promptwork/planner.go`, `Plan`; `api/promptwork/planning.go`).
 
 Before candidate preflight and final dispatch, a current, artifact/contract-bound
-exact count reconciles the SLA's input-token term (`promptWorkDeadline`,
+exact count can reconcile the SLA's input-token term (`promptWorkDeadline`,
 `coordinator/api/first_content_prompt_deadline.go`). A larger or smaller exact
-count corrects the duration, always measured from the original ingress time.
+count corrects the duration only for a candidate advertising the matching
+artifact and renderer contract, always measured from the original ingress time.
+Missing or conflicting serving identity retains the original fallback cutoff;
+a matching peer cannot grant its count or cutoff to another provider.
+`FirstContentDeadlineForIdentity`
+(`coordinator/registry/first_content_deadline_identity.go`) applies the same
+serving identity qualification as the candidate's prompt count.
+Planning and unselected scans use the larger of the two absolute cutoffs as
+their outer bound. Candidate feasibility uses its own cutoff, which is bound
+at reservation for provider handoff and response arbitration. That outer bound
+does not authorize the provider to use a larger budget. An unsent exact-bound
+attempt whose renderer identity changes before writer authorization is rejected.
 An earlier caller context cutoff still wins; planning uses its original bounded
 context and never gets another budget. Calibrated uncertainty, heuristic,
 missing, malformed or stale work retains the initial duration. Account exemption
@@ -405,6 +416,17 @@ use `FirstContentPlanningHorizon` to assess hedges and recovery after repeated
 predictive refusals; this advisory horizon creates no first-content deadline or
 timer. Ordinary exempt primary selection remains deadline-free. The loser is
 cancelled and retired through the normal terminal/accounting arbitration.
+Providers with different rendering contracts can have different cutoffs, both
+anchored to the original arrival. The race first visits the earlier cutoff and
+retires only that expired attempt; a viable survivor keeps its own remaining
+budget (`firstContentRaceWait`, `coordinator/api/first_token_attempt_clock.go`;
+`expireBoundFirstContentRacer`,
+`coordinator/api/dispatch_first_content_deadlines.go`). On-time content ingress
+still beats expiry while classification is pending. If classification proves
+the event is boilerplate, the expired cutoff is revisited without a fresh window.
+A shorter selected interval advances the original hedge point to at most its
+halfway point; an earlier model or quote point stays earlier
+(`firstTokenSpeculativeAtFor`, `coordinator/api/first_token_attempt_clock.go`).
 
 Public deadline-bound requests wait for capacity only when evidence supports a
 useful release within the remaining first-content budget. A configured queue
@@ -430,6 +452,12 @@ Missing observations reduce feasibility coverage, not physical safety. Unknown
 fallbacks can still be refused by the provider. The retry ladder is bounded and
 keeps the original overload, fault and timeout outcomes; it does not claim every
 predicted refusal would actually miss in execution.
+An expired candidate cutoff is a known deadline refusal even when performance
+is Unknown. The scan preserves that cause separately from other TTFT filters
+(`deadlineRejections`, `coordinator/registry/scheduler.go`). If no fitting peer
+has a live cutoff, preflight retains the retryable deadline refusal and avoids
+cold spill; an expired fitting peer is not a permanent model-size failure
+(`runInferenceAdmission`, `coordinator/api/inference_admission.go`).
 
 The profiler persists each candidate's `first_content` object with expected and
 conservative times, class/reason, remaining budget, evidence ages, cache work and
@@ -444,12 +472,16 @@ does not represent a random sample of all outcomes.
 |---|---|
 | Forecast types and classification | `coordinator/registry/first_content_forecast.go` — `FirstContentEstimate`, `estimateFirstContent` |
 | Prompt accounting and bounded planning | `coordinator/api/promptwork/` — `Memo`, `Plan`, `Calibration` |
+| Candidate-local cutoff and binding | `coordinator/registry/first_content_deadline_identity.go` — `FirstContentDeadlineForIdentity`, `FirstContentDeadlineEnvelope`; `coordinator/registry/scheduler.go` — `commitProviderReservation` |
 | Qualified prediction arithmetic | `coordinator/registry/firstcontent/` — `Calibration`, `Predict` |
 | Independent deadline profile identity | `coordinator/registry/deadline_profile.go` — `qualifiedDeadlineProfileLocked` |
 | Existing work ownership | `coordinator/registry/first_content_calibrated_work.go` — `fillCalibratedWorkSnapshot` |
 | Candidate selection | `coordinator/registry/candidate_selection.go` — `selectRoutingCandidateWithAffinity` |
 | Physical reservation | `coordinator/registry/scheduler.go` — `commitProviderReservation` |
-| Cache-aware preflight | `coordinator/registry/first_content_preflight.go` — `QuickFirstContentCapacityForRequest` |
+| Cache-aware preflight | `coordinator/registry/first_content_preflight.go` — `QuickFirstContentCapacityForRequestWithDeadlines` |
+| Expired-provider response | `coordinator/api/first_content_preflight_response.go` — `writeFirstContentDeadlineExpired` |
+| Selected clock and asymmetric hedge expiry | `coordinator/api/first_token_attempt_clock.go` — `firstTokenRemainingFor`, `firstContentRaceWait`; `coordinator/api/dispatch_first_content_deadlines.go` — `expireBoundFirstContentRacer` |
+| Exact-bound unsent renderer drift | `coordinator/registry/inference_authorization.go` — `authorizeInferenceAttemptHandoff` |
 | Retained alternatives | `coordinator/registry/dispatch_plan.go` — `ReserveNextFromPlan`, `RefreshDispatchPlan` |
 | Quote correlation | `coordinator/registry/capacity_quotes.go` — `ProbePlanCandidates` |
 | Request retry and terminal ownership | `coordinator/api/dispatch.go` — `dispatchState` |

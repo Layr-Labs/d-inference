@@ -109,6 +109,9 @@ func TestPromptWorkDeadlinePreflightAndWriterSpendSameIngressClock(t *testing.T)
 	if pr.FirstContentDeadline != want || pr.EstimatedPromptTokens != 3606 || pr.RequestedMaxTokens != 32 {
 		t.Fatalf("budget/physical inputs: %+v want cutoff%v", pr, want)
 	}
+	if pr.FirstContentDeadlineForIdentity("", "") != received.Add(params.deadline) {
+		t.Fatal("isolated preflight lost original fallback policy")
+	}
 	builder := providerInferenceFrameBuilder("fixture", "key", "ciphertext", pr)
 	encoded, err := builder(received.Add(4 * time.Second))
 	if err != nil {

@@ -22,6 +22,7 @@ func firstContentDeadlineAt(receivedAt time.Time, deadline time.Duration) time.T
 // retries and hedges. These fields affect service predictions only; physical
 // token reservations and billing keep their existing prompt/output inputs.
 func (d *dispatchState) configureFirstContentReservation(pr *registry.PendingRequest, hedge bool) {
+	d.configurePromptWorkDeadlines(pr)
 	pr.FirstContentPromptTokens = calibratedContextPromptTokens(d.model, d.estimatedPromptTokens)
 	pr.RequireFreshFeasible = d.predictiveRefusals >= predictiveRefusalRefreshThreshold
 	pr.RequireFreshFeasibleAfter = d.freshFeasibleAfter

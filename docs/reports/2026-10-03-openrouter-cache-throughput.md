@@ -150,7 +150,11 @@ and missing-root diagnosis remain separate work.
    9s + 1ms/token policy gives 12.606s instead of 14.779s. Reconcile the token
    term from trusted matching work while retaining the original ingress anchor,
    explicit caller cutoff, alias/account policy and physical admission. This is
-   deadline correctness; an increased budget alone is not lower measured TTFT.
+   candidate-local: only a provider advertising the matching artifact/renderer
+   uses the exact cutoff; a different renderer retains the original fallback.
+   Reservation binds the selected cutoff and final writer authorization rejects
+   unsent exact-bound renderer drift. This is deadline correctness; an increased
+   budget alone is not lower measured TTFT.
 5. **Short solo capture gaps.** Dense Qwen defaults to a 4,096-token solo stripe;
    durable capture requires an actual aligned range end before prompt end.
    Many shorter requests therefore have no reusable checkpoint despite

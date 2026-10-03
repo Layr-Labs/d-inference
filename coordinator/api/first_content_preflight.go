@@ -41,6 +41,15 @@ func (p inferenceAdmissionParams) firstContentRequest(model string, traits regis
 	if deadline > 0 {
 		pr.FirstContentDeadline = received.Add(deadline)
 	}
+	if p.deadlineForWork != nil {
+		fallback := p.fallbackDeadline
+		if fallback <= 0 {
+			// Isolated internal callers may supply only the preplanning policy.
+			// Keep that token term; production supplies its context-clamped value.
+			fallback = p.deadline
+		}
+		setPromptWorkDeadlines(pr, received, fallback, deadline)
+	}
 	return pr
 }
 

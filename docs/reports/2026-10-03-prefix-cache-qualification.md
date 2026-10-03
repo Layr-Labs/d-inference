@@ -220,6 +220,50 @@ earlier caller deadline, planning time already spent, account exemptions,
 public alias policy and stale/malformed/calibrated fallback. This fixes SLA
 accounting; granting the correct token term is not a measured TTFT reduction.
 
+Review of the first candidate exposed a rollout error in that correction:
+coordinator-side exact qualification alone could change the SLA duration for a
+provider whose advertised renderer did not match. The isolated regression uses
+1,200 canonical tokens versus a 4,008-token heuristic: the exact duration is
+10.200s, while the original fallback is 13.008s. A legacy provider's credible
+11.3s forecast fits its fallback but the first candidate incorrectly returns
+429 against the shorter canonical duration. Missing and conflicting renderer
+identities also incorrectly receive a larger canonical duration in the opposite
+case. All six baseline serving-identity regression cases fail on the first
+candidate and pass after the correction.
+
+The final implementation retains both absolute cutoffs. Candidate forecasting
+and fresh quotes qualify their own cutoff from the advertised artifact and
+renderer, then reservation atomically binds the chosen cutoff. Other providers
+retain the original fallback policy, even when a matching peer is present.
+Unselected planning and scans use the larger outer bound without granting it to
+a provider. Final writer authorization refuses an unsent exact-bound request
+whose renderer changed; an already-bound fallback cannot gain a later upgrade.
+Candidate-dependent requests are excluded from scalar queue-dominance skips.
+Tests cover retained plans, heartbeat changes at reservation, expired unknown
+peers, mixed fleets and the real HTTP/WebSocket handoff.
+Admission regressions preserve a retryable `429` with `deadline_unreachable`
+when every fitting provider's own cutoff has expired, even if the outer envelope
+is still live or another peer is physically too small. Both hard and soft
+forecast policies retain the deadline cause, refund once and avoid cold spill.
+A qualified previous-build alias can still use its own remaining cutoff; the
+all-too-small control retains the permanent `503` refusal.
+
+Five selected-clock baseline subcases also fail before their companion fix.
+Selected waits and writes now use the bound cutoff, and an asymmetric hedge
+timer retires only the expired racer. Both directions preserve the viable
+survivor, including when on-time ingress is later classified as boilerplate.
+Two additional baseline cases show that the shorter selected interval could
+defer the hedge until expiry. The selected interval now advances the original
+hedge point to at most halfway, preserving an earlier model or quote point.
+Earlier caller deadlines, original ingress time and account exemptions remain
+covered. These regressions establish deadline correctness; they do not measure
+a fleet latency or cache-hit improvement.
+The final affected checks pass with Go 1.25.0: 103 top-level API/registry race
+tests (246 test pass events), all 1,807 API tests in eight isolated shards,
+the complete coordinator package suite, runner guards, build and `go vet ./...`.
+The validation record separates this followup from the earlier native pipeline;
+the SDK pin and native runtime behavior are unchanged.
+
 ## Existing SDK paging failures
 
 The complete SDK run on the candidate based on the original pin exposed five

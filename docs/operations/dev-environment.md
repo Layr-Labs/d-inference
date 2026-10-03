@@ -188,9 +188,12 @@ that URL is not production, the installer writes
 that is already running keeps its old coordinator until you run
 `darkbloom start` again.
 
-The production installer does not change `provider.toml`. To move a dev Mac
-back to production, delete the `url` line under `[coordinator]` and run
-`darkbloom start`. One Mac cannot serve dev and production at the same time.
+The installer always binds the provider to the coordinator that served it. To
+move a dev Mac back to production, run the production installer
+(`curl -fsSL https://api.darkbloom.dev/install.sh | bash`): it removes the `url`
+line under `[coordinator]`, keeps every other line, and the provider then uses
+its built-in production default. Run `darkbloom start` afterwards. One Mac
+cannot serve dev and production at the same time.
 
 Add the host's SSH alias to `deploy/provider-fleet/dev-inventory.txt`;
 `deploy/provider-fleet/update-fleet.sh dev` re-runs the installer on every

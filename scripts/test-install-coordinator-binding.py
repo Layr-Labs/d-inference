@@ -24,13 +24,48 @@ class CoordinatorBindingTests(unittest.TestCase):
             leftovers = sorted(p.name for p in config.parent.glob("*")) if config.parent.exists() else []
             return result, config.read_text() if config.exists() else None, leftovers
 
-    def test_production_leaves_config_untouched(self):
-        for existing in (None, '[coordinator]\nurl = "wss://other.invalid/ws/provider"\n'):
-            for url in ("https://api.darkbloom.dev", "https://api.darkbloom.dev/"):
-                with self.subTest(existing=existing, url=url):
-                    result, text, _ = self.bind(url, existing)
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertEqual(text, existing)
+    def test_production_does_not_create_a_config(self):
+        for url in ("https://api.darkbloom.dev", "https://api.darkbloom.dev/"):
+            with self.subTest(url=url):
+                result, text, leftovers = self.bind(url)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIsNone(text)
+                self.assertEqual(leftovers, [])
+
+    def test_production_removes_only_the_coordinator_url(self):
+        existing = (
+            '[provider]\nname = "mac"\nurl = "keep-provider"\n\n'
+            '[coordinator]\nheartbeat_interval_secs = 5\n'
+            'url = "wss://api.dev.darkbloom.xyz/ws/provider"\nprivate_only = true\n\n'
+            '[coordinator.extra]\nurl = "keep-extra"\n'
+            '[backend]\nenabled_models = ["a"]\n')
+        for url in ("https://api.darkbloom.dev", "https://api.darkbloom.dev/"):
+            with self.subTest(url=url):
+                result, text, leftovers = self.bind(url, existing)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(text, existing.replace(
+                    'url = "wss://api.dev.darkbloom.xyz/ws/provider"\n', ""))
+                self.assertEqual(leftovers, ["provider.toml"])
+                self.assertIn("production default", result.stdout)
+
+    def test_production_leaves_a_config_without_url_unchanged(self):
+        for existing in ('[provider]\nname = "mac"', '[coordinator]\nprivate_only = true\n'):
+            with self.subTest(existing=existing):
+                result, text, _ = self.bind("https://api.darkbloom.dev", existing)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(text, existing)
+                self.assertEqual(result.stdout, "")
+
+    def test_dev_then_production_round_trip_restores_the_file(self):
+        existing = '[provider]\nname = "mac"\n\n[coordinator]\nprivate_only = true\n'
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "provider.toml"
+            config.write_text(existing)
+            for url in (DEV, "https://api.darkbloom.dev"):
+                subprocess.run(
+                    ["bash", str(INSTALLER), "--bind-coordinator-test", str(config)],
+                    env={**os.environ, "COORD_URL": url}, capture_output=True, text=True, check=True)
+            self.assertEqual(config.read_text(), existing)
 
     def test_missing_config_is_created_with_only_the_coordinator(self):
         result, text, leftovers = self.bind(DEV + "/")

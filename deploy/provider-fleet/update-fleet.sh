@@ -9,7 +9,7 @@
 # latest release registered against that coordinator. The dev installer also
 # writes the dev coordinator into ~/.config/darkbloom/provider.toml, so the
 # provider connects to dev after its next `darkbloom start`. The prod installer
-# leaves provider.toml unchanged, so it does not move a dev Mac back to prod.
+# removes that url, so a re-installed Mac goes back to the production default.
 
 set -euo pipefail
 

@@ -71,13 +71,33 @@ struct InstallerCoordinatorBindingTests {
         #expect(try ConfigManager.load(from: config) == expected)
     }
 
-    @Test("the production installer leaves the config alone")
-    func productionInstallerDoesNotWrite() throws {
+    @Test("the production installer creates no config")
+    func productionInstallerDoesNotCreateConfig() throws {
         let config = try tempConfigURL()
         defer { try? FileManager.default.removeItem(at: config.deletingLastPathComponent()) }
 
         try runInstallerBinding(coordinator: "https://api.darkbloom.dev", config: config)
 
         #expect(!FileManager.default.fileExists(atPath: config.path))
+    }
+
+    @Test("the production installer moves a dev-bound Mac back to the production default")
+    func productionInstallerRestoresDefault() throws {
+        let config = try tempConfigURL()
+        defer { try? FileManager.default.removeItem(at: config.deletingLastPathComponent()) }
+        let original = ProviderConfig(
+            provider: ProviderSettings(name: "seed-mac", memoryReserveGB: 6, autoUpdate: false),
+            backend: BackendSettings(port: 8200, enabledModels: ["model-a"], idleTimeoutMins: 15),
+            coordinator: CoordinatorSettings(heartbeatIntervalSecs: 9, privateOnly: true))
+        try ConfigManager.save(original, to: config)
+
+        try runInstallerBinding(coordinator: Self.devCoordinator, config: config)
+        #expect(try ConfigManager.load(from: config).coordinator.url == Self.devProviderURL)
+        try runInstallerBinding(coordinator: "https://api.darkbloom.dev", config: config)
+
+        let restored = try ConfigManager.load(from: config)
+        #expect(restored == original)
+        #expect(restored.coordinator.url == CoordinatorSettings().url)
+        #expect(try loadUpdateConfig(configPath: config.path).coordinator.url == CoordinatorSettings().url)
     }
 }

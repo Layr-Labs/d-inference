@@ -2,7 +2,7 @@
 
 ## Unreleased — DevNet
 
-- An installer served by a coordinator other than production (for example dev) now writes that coordinator's `[coordinator] url` into `~/.config/darkbloom/provider.toml` and keeps the file's other settings, so `darkbloom start`, `login`, `update`, the LaunchAgent and the watchdog connect to it instead of production. The production installer leaves the file unchanged; a Mac bound to dev stays on dev until the `url` line is removed. A running provider changes coordinator at its next `darkbloom start`.
+- An installer served by a coordinator other than production (for example dev) now writes that coordinator's `[coordinator] url` into `~/.config/darkbloom/provider.toml` and keeps the file's other settings, so `darkbloom start`, `login`, `update`, the LaunchAgent and the watchdog connect to it instead of production. The production installer removes that `url` line (and creates no file), so a Mac bound to dev returns to the production default. A running provider changes coordinator at its next `darkbloom start`.
 - Add `coordinator/cmd/devnet-seed`, which fills an empty dev database with fake accounts, API keys, provider sessions, usage, ledger entries and balances. It refuses a database whose `users` table has rows.
 - The dev VM boot path now sets `EIGENINFERENCE_IPAPI_KEY`, as `deploy/gcp/refresh-env.sh` already did.
 

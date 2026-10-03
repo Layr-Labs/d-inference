@@ -97,14 +97,20 @@ The script performs these actions in order (`scripts/install.sh`; failures exit
    `~/.config/darkbloom/provider.toml` or an explicit `--config` path
    (`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`,
    `defaultConfigPath`); retired `~/.dginf` / `~/.eigeninference` installs are
-   not migrated. When `$COORD_URL` is not `https://api.darkbloom.dev`,
-   `bind_provider_coordinator` writes `url = "wss://<host>/ws/provider"`
-   under `[coordinator]` in that file (`ws://` only for `http://localhost` or
-   `http://127.0.0.1`; any other scheme, a path, or a character outside
-   `A-Za-z0-9.-` and `:port` stops the install). It creates the file when it
-   is missing and keeps every other line. The
-   production installer does not create or change the file. A provider that
-   is already running keeps its old coordinator until `darkbloom start`.
+   not migrated. `bind_provider_coordinator` binds the provider to the
+   coordinator that served the installer and keeps every other line of the
+   file:
+   - when `$COORD_URL` is `https://api.darkbloom.dev`, it removes any `url`
+     line under `[coordinator]`, so the provider uses its built-in production
+     default. It does not create the file when it is missing;
+   - for any other coordinator, it writes `url = "wss://<host>/ws/provider"`
+     under `[coordinator]` and creates the file when it is missing (`ws://`
+     only for `http://localhost` or `http://127.0.0.1`; any other scheme, a
+     path, or a character outside `A-Za-z0-9.-` and `:port` stops the
+     install).
+
+   A provider that is already running keeps its old coordinator until
+   `darkbloom start`.
 6. **Step 3/5 — Secure Enclave identity.** Runs `darkbloom-enclave info`
    (`provider-swift/Sources/darkbloom-enclave-cli/EnclaveCLI.swift`), which
    creates the P-256 key if missing. Failure prints a warning; the install

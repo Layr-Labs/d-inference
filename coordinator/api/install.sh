@@ -27,7 +27,8 @@ INSTALL_DIR="$HOME/.darkbloom"
 BIN_DIR="$INSTALL_DIR/bin"
 PROVIDER_CONFIG="$HOME/.config/darkbloom/provider.toml"
 # The provider connects here when provider.toml sets no [coordinator] url
-# (CoordinatorSettings in provider-swift ProviderConfig.swift).
+# (CoordinatorSettings in provider-swift ProviderConfig.swift), so the
+# production installer removes that url instead of writing one.
 PRODUCTION_COORD_URL="https://api.darkbloom.dev"
 DARKBLOOM_DESIGNATED_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
 DARKBLOOM_FAN_HELPER_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.fan-helper" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
@@ -314,44 +315,65 @@ provider_websocket_url() {
     printf '%s://%s/ws/provider\n' "$scheme" "$host"
 }
 
-# Bind the provider to the coordinator that served this installer. Without
-# this, a Mac installed from a dev coordinator would connect to production.
-# The production installer leaves provider.toml as it is. Only the
-# [coordinator] url line changes; every other line is kept.
+# Bind the provider to the coordinator that served this installer, so that
+# start, login, update and the LaunchAgent use it. For production, remove any
+# [coordinator] url so the provider uses its built-in production default
+# (this also moves a Mac back from dev); a missing file stays missing. For any
+# other coordinator, write its url. Every other line is kept.
 bind_provider_coordinator() {
     local coord_url=${1%/}
     local config=$2
-    [ "$coord_url" = "$PRODUCTION_COORD_URL" ] && return 0
-    local ws_url
-    ws_url=$(provider_websocket_url "$coord_url") || {
-        fail_install "Coordinator URL must be https://<host>[:port], or http:// for localhost (got $coord_url)."
-        return 1
-    }
-    mkdir -p "$(dirname "$config")" || return 1
+    local ws_url=""
+    if [ "$coord_url" = "$PRODUCTION_COORD_URL" ]; then
+        [ -f "$config" ] || return 0
+    else
+        ws_url=$(provider_websocket_url "$coord_url") || {
+            fail_install "Coordinator URL must be https://<host>[:port], or http:// for localhost (got $coord_url)."
+            return 1
+        }
+        mkdir -p "$(dirname "$config")" || return 1
+    fi
+    local line=""
+    [ -n "$ws_url" ] && line="url = \"$ws_url\""
     local tmp="$config.install-$$"
     if [ -f "$config" ]; then
-        awk -v line="url = \"$ws_url\"" '
+        # An empty line value removes the url instead of writing one; awk then
+        # exits 3 when there was no url to remove, and the file is not touched.
+        local status=0
+        awk -v line="$line" '
             /^[[:space:]]*\[/ {
-                if (in_coordinator && !written) { print line; written = 1 }
+                if (in_coordinator && !written && line != "") { print line; written = 1 }
                 in_coordinator = ($0 ~ /^[[:space:]]*\[coordinator\][[:space:]]*(#.*)?$/)
                 print
                 next
             }
             in_coordinator && /^[[:space:]]*url[[:space:]]*=/ {
-                if (!written) { print line; written = 1 }
+                if (!written && line != "") { print line; written = 1 }
+                removed = 1
                 next
             }
             { print }
             END {
+                if (line == "") exit(removed ? 0 : 3)
                 if (in_coordinator && !written) { print line; written = 1 }
                 if (!written) { print ""; print "[coordinator]"; print line }
             }
-        ' "$config" > "$tmp" || { rm -f "$tmp"; return 1; }
+        ' "$config" > "$tmp" || status=$?
+        [ "$status" -eq 0 ] || [ "$status" -eq 3 ] || { rm -f "$tmp"; return 1; }
+        if [ "$status" -eq 3 ] || cmp -s "$tmp" "$config"; then
+            rm -f "$tmp"
+            [ -z "$ws_url" ] || echo "  Coordinator: $ws_url (already set in $config)"
+            return 0
+        fi
     else
-        printf '[coordinator]\nurl = "%s"\n' "$ws_url" > "$tmp" || { rm -f "$tmp"; return 1; }
+        printf '[coordinator]\n%s\n' "$line" > "$tmp" || { rm -f "$tmp"; return 1; }
     fi
     mv "$tmp" "$config" || { rm -f "$tmp"; return 1; }
-    echo "  Coordinator: $ws_url (set in $config)"
+    if [ -n "$ws_url" ]; then
+        echo "  Coordinator: $ws_url (set in $config)"
+    else
+        echo "  Coordinator: production default (removed [coordinator] url from $config)"
+    fi
     echo "  A provider that is already running keeps its old coordinator until darkbloom start."
 }
 

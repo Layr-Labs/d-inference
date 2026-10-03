@@ -389,8 +389,9 @@ versions, existing management, and unavailable enrollment. This checks setup
 routing only; signed Mac App Attest qualification is separate.
 It also invokes `scripts/test-install-coordinator-binding.py`, which runs the
 installer's `--bind-coordinator-test` hook (with `COORD_URL` set) against
-temporary `provider.toml` files: production leaves them unchanged, and other
-coordinators replace or add only the `[coordinator] url` line. `InstallerCoordinatorBindingTests`
+temporary `provider.toml` files: production removes only the
+`[coordinator] url` line and creates no file, and other coordinators replace or
+add only that line. `InstallerCoordinatorBindingTests`
 (`provider-swift/Tests/DarkbloomCLITests/`) loads the result through the CLI
 config loaders, and `TestServedInstallerBindsProviderToServingCoordinator`
 (`coordinator/api/install_sh_test.go`) runs the installer as the coordinator

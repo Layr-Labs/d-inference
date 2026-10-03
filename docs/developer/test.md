@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-03
 
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the
@@ -387,6 +387,18 @@ It invokes `scripts/test-install-onboarding.py`, which executes the actual setup
 function with profile/network/Settings effects mocked: macOS 27+, older and unknown
 versions, existing management, and unavailable enrollment. This checks setup
 routing only; signed Mac App Attest qualification is separate.
+It also invokes `scripts/test-install-coordinator-binding.py`, which runs the
+installer's `--bind-coordinator-test` hook (with `COORD_URL` set) against
+temporary `provider.toml` files: production leaves them unchanged, and other
+coordinators replace or add only the `[coordinator] url` line. `InstallerCoordinatorBindingTests`
+(`provider-swift/Tests/DarkbloomCLITests/`) loads the result through the CLI
+config loaders, and `TestServedInstallerBindsProviderToServingCoordinator`
+(`coordinator/api/install_sh_test.go`) runs the installer as the coordinator
+serves it.
+
+`go test ./coordinator/cmd/devnet-seed` seeds a throwaway database on a
+**disposable** `DATABASE_URL`, checks row counts and balances, and checks that
+a database with users is refused before migrations run.
 
 Build qualification regressions run in `coordinator/store/app_attest_builds_test.go`, `coordinator/appattest/service/build_qualifications_test.go`, `coordinator/api/app_attest_builds_test.go`, and `coordinator/api/app_attest_builds_auth_test.go`. The route tests validate real ES256 Privy JWTs through the mux, server-attributed audit actors, and rejection of admin-owned inference keys. The real PostgreSQL contract requires a **disposable** `DATABASE_URL` (the harness truncates test tables). Test memory/decorated/Postgres persistence, conflicting identities, publish/revoke races, cache fencing, lease expiry and reload; run the affected Go packages with `-race`. `python3 scripts/test-provider-release-publication.py` tests blocked publication, immutable artifacts, retained-byte R2 staging retries across workflow attempts, literal tag-note preservation and recovery after draft creation, interrupted upload, completed upload and publication failures without credentials or live writes; CI runs it with `scripts/test-provider-release-pipeline.py`. The annotated-tag fixture supplies its own commit/tag identity with global and system Git configuration disabled, so a developer account cannot mask missing CI setup. These checks do not replace final signed-Mac/Apple qualification.
 

@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-03
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -93,12 +93,16 @@ The script performs these actions in order (`scripts/install.sh`; failures exit
    `alias eigeninf`, `alias dginf`, `# EigenInference` and `# Darkbloom` are
    deleted and `# Darkbloom` + `export PATH="$HOME/.darkbloom/bin:$PATH"` is
    appended; the rc is then sourced.
-5. **Config location.** The script does not create, copy or migrate
-   `provider.toml` (retired `~/.dginf` / `~/.eigeninference` installs are no
-   longer migrated); the CLI reads only `~/.config/darkbloom/provider.toml` or
-   an explicit `--config` path
+5. **Config location and coordinator.** The CLI reads only
+   `~/.config/darkbloom/provider.toml` or an explicit `--config` path
    (`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`,
-   `defaultConfigPath`).
+   `defaultConfigPath`); retired `~/.dginf` / `~/.eigeninference` installs are
+   not migrated. When `$COORD_URL` is not `https://api.darkbloom.dev`,
+   `bind_provider_coordinator` writes `url = "wss://<host>/ws/provider"`
+   (`ws://` for an `http://` coordinator) under `[coordinator]` in that file.
+   It creates the file when it is missing and keeps every other line. The
+   production installer does not create or change the file. A provider that
+   is already running keeps its old coordinator until `darkbloom start`.
 6. **Step 3/5 — Secure Enclave identity.** Runs `darkbloom-enclave info`
    (`provider-swift/Sources/darkbloom-enclave-cli/EnclaveCLI.swift`), which
    creates the P-256 key if missing. Failure prints a warning; the install

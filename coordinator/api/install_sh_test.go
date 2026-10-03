@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -179,6 +180,46 @@ func TestInstallScriptTemplating(t *testing.T) {
 			}
 		}
 	})
+}
+
+// A served installer writes the coordinator that served it into provider.toml,
+// except for production, whose installer leaves the file alone.
+func TestServedInstallerBindsProviderToServingCoordinator(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	for _, tc := range []struct {
+		baseURL, want string
+	}{
+		{"https://api.dev.darkbloom.xyz", "[coordinator]\nurl = \"wss://api.dev.darkbloom.xyz/ws/provider\"\n"},
+		{"https://api.darkbloom.dev", ""},
+	} {
+		t.Run(tc.baseURL, func(t *testing.T) {
+			srv := newTestServerWithBaseURL(t, tc.baseURL)
+			defer srv.Close()
+			dir := t.TempDir()
+			installer := filepath.Join(dir, "install.sh")
+			if err := os.WriteFile(installer, []byte(fetchInstallScript(t, srv.URL)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			config := filepath.Join(dir, "provider.toml")
+			cmd := exec.Command("bash", installer, "--bind-coordinator-test", config)
+			cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + dir}
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("bind: %v\n%s", err, out)
+			}
+			got, err := os.ReadFile(config)
+			if tc.want == "" {
+				if !os.IsNotExist(err) {
+					t.Fatalf("production installer wrote provider.toml: %q, %v", got, err)
+				}
+				return
+			}
+			if err != nil || string(got) != tc.want {
+				t.Fatalf("provider.toml = %q, %v; want %q", got, err, tc.want)
+			}
+		})
+	}
 }
 
 func newTestServerWithBaseURL(t *testing.T, baseURL string) *httptest.Server {

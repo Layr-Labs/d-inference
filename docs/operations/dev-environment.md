@@ -1,6 +1,6 @@
 # Dev environment
 
-> Last updated: 2026-09-26
+> Last updated: 2026-10-03
 
 Runbook for the Darkbloom dev environment on Google Cloud (project
 `darkbloom-dev`): a GCE VM running the same coordinator container as production,
@@ -20,6 +20,9 @@ production (`darkbloom-mainnet`); that is
 - Changing a dev secret or non-secret setting (step 7).
 - Publishing a dev provider release, onboarding a dev Mac, or rolling the dev
   coordinator back to an older image.
+- Filling an empty dev database with synthetic data (step 10) to test
+  migrations and account erasure. The remaining human-only work is in the
+  [DevNet checklist](#devnet-checklist).
 
 ## Prerequisites
 
@@ -60,14 +63,24 @@ deploy/gcp/bootstrap.sh          # PROJECT/REGION/ZONE/INSTANCE/MACHINE_TYPE/SQL
 ```
 
 Idempotent. Creates the Artifact Registry repo `coordinator`, the coordinator
-service account, empty Secret Manager entries, Cloud SQL `d-inference-dev-db`,
-the data disk, the static IP, and the VM with
-`deploy/gcp/vm-startup.sh` as its startup script. It prints the static IP.
+service account, Cloud SQL `d-inference-dev-db`, the data disk, the static IP,
+and the VM with `deploy/gcp/vm-startup.sh` as its startup script. It prints the
+static IP. It creates empty Secret Manager entries for 10 secrets only
+(`create_secret` in `deploy/gcp/bootstrap.sh`): the admin key, release key,
+mnemonic, three Privy secrets, database URL, MicroMDM API key, MDM push
+certificate and R2 CDN URL. Step 2 lists the secrets you must create yourself.
 
 ### 2. Populate secrets
 
 ```bash
 echo -n '<value>' | gcloud secrets versions add <secret-name> --data-file=- --project=darkbloom-dev
+```
+
+Bootstrap does not create the profile-signing, Stripe, Datadog or ip-api
+secrets. Create each of them once before you add its first version:
+
+```bash
+gcloud secrets create <secret-name> --replication-policy=automatic --project=darkbloom-dev
 ```
 
 | Secret | Value |
@@ -79,7 +92,7 @@ echo -n '<value>' | gcloud secrets versions add <secret-name> --data-file=- --pr
 | `eigeninference-micromdm-api-key` | `openssl rand -hex 32`; injected as both `MICROMDM_API_KEY` and `EIGENINFERENCE_MDM_API_KEY` |
 | `eigeninference-mdm-push-p12-b64` | Apple MDM push PKCS#12, base64url: `base64 < push.p12 \| tr '/+' '_-' \| tr -d '\n='` |
 | `eigeninference-profile-signing-p12-b64`, `eigeninference-profile-signing-p12-password` | Optional Developer ID identity used to CMS-sign the `/v1/enroll` profile; unset serves it unsigned |
-| `eigeninference-r2-cdn-url` | Public URL of `d-inf-app-dev`, e.g. `https://pub-<id>.r2.dev`; templated into `install.sh` and required by `POST /v1/releases` |
+| `eigeninference-r2-cdn-url` | Public URL of `d-inf-app-dev`, e.g. `https://pub-<id>.r2.dev`; required by `POST /v1/releases`, which checks release URLs against it |
 | `eigeninference-stripe-secret-key`, `eigeninference-stripe-webhook-secret`, `eigeninference-stripe-connect-webhook-secret`, `eigeninference-stripe-success-url`, `eigeninference-stripe-cancel-url`, `eigeninference-stripe-connect-return-url`, `eigeninference-stripe-connect-refresh-url` | Dev Stripe account |
 | `eigeninference-dd-api-key`, `eigeninference-dd-site` | Datadog |
 | `eigeninference-ipapi-key` | Optional ip-api.com PRO key; empty falls back to the free tier |
@@ -166,10 +179,57 @@ rejected; only dispatch is supported. Details:
 curl -fsSL https://api.dev.darkbloom.xyz/install.sh | bash
 ```
 
-The dev coordinator serves `install.sh` with its own URL and CDN templated in,
-so the provider can only ever register with dev. Add the host's SSH alias to
-`deploy/provider-fleet/dev-inventory.txt`; `deploy/provider-fleet/update-fleet.sh dev`
-re-runs the installer on every listed Mac.
+The dev coordinator serves `install.sh` with its own URL templated in. Because
+that URL is not production, the installer writes
+`url = "wss://api.dev.darkbloom.xyz/ws/provider"` under `[coordinator]` in
+`~/.config/darkbloom/provider.toml` and keeps every other line of the file
+(`scripts/install.sh`, `bind_provider_coordinator`). `darkbloom start`,
+`login`, `update`, the LaunchAgent and the watchdog then use dev. A provider
+that is already running keeps its old coordinator until you run
+`darkbloom start` again.
+
+The production installer does not change `provider.toml`. To move a dev Mac
+back to production, delete the `url` line under `[coordinator]` and run
+`darkbloom start`. One Mac cannot serve dev and production at the same time.
+
+Add the host's SSH alias to `deploy/provider-fleet/dev-inventory.txt`;
+`deploy/provider-fleet/update-fleet.sh dev` re-runs the installer on every
+listed Mac.
+
+### 10. Seed synthetic data
+
+`coordinator/cmd/devnet-seed` fills an **empty** dev database with fake
+accounts (`seed-<n>@example.invalid`, `did:privy:seed-<n>`), API keys,
+provider machines (serials `SEED00000001`, …) with closed sessions, usage
+rows, provider earnings, ledger entries and balances. It writes through the
+`store` package methods the coordinator uses. It refuses to run when the
+`users` table has any row, and it checks this before it runs migrations.
+
+```bash
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/devnet-seed ./coordinator/cmd/devnet-seed
+gcloud compute scp /tmp/devnet-seed d-inference-dev:/tmp/devnet-seed \
+  --zone=us-central1-a --project=darkbloom-dev --tunnel-through-iap
+gcloud compute ssh d-inference-dev --zone=us-central1-a --project=darkbloom-dev --tunnel-through-iap -- \
+  'EIGENINFERENCE_DATABASE_URL="$(sudo sed -n "s/^EIGENINFERENCE_DATABASE_URL=//p" /etc/d-inference/env)" /tmp/devnet-seed; rm -f /tmp/devnet-seed'
+```
+
+Add flags after `/tmp/devnet-seed` to change the scale:
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--accounts` | `20` | Accounts (users) |
+| `--keys-per-account` | `1` | API keys per account |
+| `--providers` | `5` | Provider machines, owned round-robin by the accounts |
+| `--sessions-per-provider` | `3` | Closed sessions per machine; each has its own `providers` row |
+| `--requests-per-account` | `10` | Requests per account: one charge, one `usage` row and one provider earning each |
+| `--balance-micro-usd` | `5000000` | Balance each account keeps after its requests are charged |
+| `--workers` | `8` | Accounts or machines written in parallel |
+
+The defaults are small. For a production-like volume, raise the counts, for
+example `--accounts 50000 --providers 2000 --requests-per-account 100`. Every
+row is a separate store write, so a large run takes a long time on
+`db-f1-micro`; that instance also allows few connections, so keep `--workers`
+at its default while the coordinator is running.
 
 ## Verification
 
@@ -216,6 +276,27 @@ gcloud compute instances delete d-inference-dev --zone=us-central1-a --project=d
 gcloud compute disks delete d-inference-dev-data --zone=us-central1-a --project=darkbloom-dev --quiet
 gcloud sql instances delete d-inference-dev-db --project=darkbloom-dev --quiet
 ```
+
+## DevNet checklist
+
+These steps need a person with the right access. Agents cannot do them.
+
+1. Re-authenticate `gcloud` against `darkbloom-dev` (`gcloud auth login`).
+2. Bring the dev VM back up. `https://api.dev.darkbloom.xyz` timed out on
+   2026-10-03. Check `gcloud compute instances describe d-inference-dev
+   --zone=us-central1-a --project=darkbloom-dev`, start it if it is stopped,
+   then run the [verification](#verification) commands.
+3. Add the Cloud Build trigger (step 6,
+   [#1067](https://github.com/Layr-Labs/d-inference/issues/1067)).
+4. Put Stripe **test-mode** keys and the Connect test setup into dev Secret
+   Manager (step 2). Global Payouts also needs the
+   `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_*` variables
+   (`coordinator/billing/config.go`); neither `deploy/gcp/refresh-env.sh` nor
+   `deploy/gcp/vm-startup.sh` writes them today.
+5. Ask Stripe for Redaction Jobs access on the dev account, so that account
+   erasure can be tested against Stripe.
+6. Enrol at least one dev Mac (step 9).
+7. Run `devnet-seed` against the empty dev database (step 10).
 
 ## What dev does not cover
 

@@ -121,7 +121,7 @@ func (s *MemoryStore) ListProviderSessionsOverlapping(_ context.Context, start, 
 	out := []store.ProviderSession{}
 	for i := range s.providerSessions {
 		ps := s.providerSessions[i]
-		sessEnd := ps.LastSeen
+		var sessEnd time.Time
 		if ps.DisconnectedAt != nil {
 			sessEnd = *ps.DisconnectedAt
 		} else {

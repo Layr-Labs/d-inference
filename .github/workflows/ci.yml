@@ -66,7 +66,7 @@ jobs:
     runs-on: blacksmith-16vcpu-ubuntu-2404
     services:
       postgres:
-        image: postgres:17
+        image: postgres:16
         env:
           POSTGRES_USER: testbed
           POSTGRES_PASSWORD: testbed

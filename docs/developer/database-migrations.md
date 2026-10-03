@@ -80,7 +80,9 @@ mechanism is explained in
    ```
 
    Use a `pg_dump` of the same major version as production (17).
-5. Update `MemoryStore` and the docs that describe the changed tables
+5. If a query in `coordinator/store/queries/` reads the changed table, run
+   `make sqlc-generate` so `coordinator/store/storedb` matches the new schema.
+6. Update `MemoryStore` and the docs that describe the changed tables
    ([storage](../architecture/storage.md)).
 
 ## Verify
@@ -91,7 +93,12 @@ DATABASE_URL='postgres://postgres:pg@127.0.0.1:55432/postgres?sslmode=disable' \
 ```
 
 `TestMigrationsBuildCheckedInSchema` fails when `schema.sql` does not match
-what the migrations build.
+what the migrations build. CI also runs `make sqlc-check`, which runs that test
+and fails when the generated sqlc code is stale:
+
+```bash
+DATABASE_URL='postgres://postgres:pg@127.0.0.1:55432/postgres?sslmode=disable' make sqlc-check
+```
 
 ## Troubleshooting
 

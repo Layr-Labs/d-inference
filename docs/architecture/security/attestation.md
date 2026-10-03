@@ -1,6 +1,6 @@
 # Provider attestation
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-03
 
 The evidence checks behind legacy MDM/APNs verification and qualified App
 Attest authorization. The [provider trust overview](provider-trust.md) owns the
@@ -241,7 +241,9 @@ challenge, so a throttled APNs push cannot strand a genuine device.
 | Late response | A SecurityInfo webhook arriving after the await window is applied only for the exact scheduler binding and `CommandUUID` that issued it; reason `"MDM verification passed (late SecurityInfo)"` | `coordinator/api/provider/` (`ApplyLateSecurityInfo`); `coordinator/api/provider/trust/trust_reuse_grants.go` (`recordLateTrustReuse`) |
 | Webhook gate | Only responses whose `CommandUUID` matches an outstanding command (within `outstandingCommandTTL`, [enrollment](enrollment.md#coordinator--micromdm)) are honoured; only `SecurityInfo` and `DeviceInformation` may ever be sent | `coordinator/mdm/mdm.go` (`HandleWebhook`, `assertReadOnlyCommand`, `readOnlyMDMRequestTypes`) |
 | Reconnect | `RestoreProviderState` caps a stored `hardware` to `self_signed`, resets `MDAVerified`, and only *stages* a stored MDA chain. The first fresh signed challenge may re-grant via trust reuse (next table) | `coordinator/registry/persistence.go` (`RestoreProviderState`) |
+| Reconnect scheduling | A delayed challenge-settled store response may update the in-memory job only while its binding generation and prior record still match. It must not restore a running claim after the old worker has released and refreshed the job as pending | `coordinator/api/provider/trust/mdm_scheduler_queue.go` (`ChallengeSettled`); `coordinator/api/provider/trust/mdm_scheduler_reconnect_test.go` (`TestMDMSchedulerReconnectReleaseBeforeSettleReturns`) |
 | Observability | `mdm.verification{outcome}` counter; `mdm.scheduler.*` (`enqueued`, `attempts`, `grants`, `timeouts`, `queue_depth`, `retry_delay_seconds`, …); gauges `providers.by_trust_status{trust_level,status}` and `providers.by_mdm_failure{reason}` | `coordinator/api/provider/trust/mdm_scheduler_metrics.go`; `coordinator/api/provider/`; `coordinator/registry/fleet_views.go` |
+| Registration trust snapshot | Registration counters and the registration telemetry event share one trust-level snapshot read under the provider mutex, even if verification changes trust concurrently | `coordinator/api/provider/session.go` (`providerReadLoop`); `coordinator/api/tests/provider/registration_telemetry_test.go` (`TestProviderRegistrationTelemetryConcurrentTrustUpdates`) |
 
 Trust reuse — device evidence carried across a reconnect without a new
 SecurityInfo round-trip. Evaluated in `tryTrustReuseFastSkip` after a fresh

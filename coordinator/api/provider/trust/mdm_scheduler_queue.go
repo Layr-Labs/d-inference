@@ -223,6 +223,7 @@ func (s *mdmVerificationScheduler) ChallengeSettled(provider *registry.Provider,
 		return
 	}
 
+	previous := *record
 	if promote && record.Priority == store.VerificationPriorityRefresh {
 		record.Priority = store.VerificationPriorityFirstOrExpired
 	}
@@ -234,11 +235,33 @@ func (s *mdmVerificationScheduler) ChallengeSettled(provider *registry.Provider,
 		s.server.logger.Error("failed to make MDM scheduler job eligible", "error", err)
 		return
 	}
-	s.mu.Lock()
-	if current := s.jobs[key]; current != nil && current.bindingGen == generation {
-		current.record = updated
+	for {
+		s.mu.Lock()
+		current := s.jobs[key]
+		if current == nil || current.bindingGen != generation {
+			s.mu.Unlock()
+			break
+		}
+		if current.record == previous {
+			current.record = updated
+			s.mu.Unlock()
+			break
+		}
+		// A worker changed the record while the store call was in flight.
+		// Re-read instead of reviving a released claim or losing a promotion
+		// persisted after that release. Never hold mu over store I/O.
+		previous = current.record
+		s.mu.Unlock()
+		durable, err := s.store.GetVerificationJob(s.ctx, seKey, store.VerificationTaskSecurityInfo)
+		if err != nil {
+			s.server.logger.Error("failed to reconcile settled MDM scheduler job", "error", err)
+			break
+		}
+		if durable == nil {
+			break
+		}
+		updated = *durable
 	}
-	s.mu.Unlock()
 	s.signal()
 }
 

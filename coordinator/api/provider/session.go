@@ -222,17 +222,20 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 			}
 
 			// Record registration outcome metrics + telemetry.
+			provider.Mu().Lock()
+			trustLevel := string(provider.TrustLevel)
+			provider.Mu().Unlock()
 			if s.observation.Metrics() != nil {
 				s.observation.Metrics().IncCounter("provider_registrations_total",
-					observation.MetricLabel{Name: "trust_level", Value: string(provider.TrustLevel)},
+					observation.MetricLabel{Name: "trust_level", Value: trustLevel},
 				)
 			}
-			s.observation.Incr("providers.registrations", []string{"trust_level:" + string(provider.TrustLevel)})
+			s.observation.Incr("providers.registrations", []string{"trust_level:" + trustLevel})
 			s.observation.Emit(context.Background(), protocol.SeverityInfo, protocol.KindLog,
 				"provider registered",
 				map[string]any{
 					"provider_id":   providerID,
-					"trust_level":   string(provider.TrustLevel),
+					"trust_level":   trustLevel,
 					"hardware_chip": regMsg.Hardware.ChipName,
 					"memory_gb":     regMsg.Hardware.MemoryGB,
 				})

@@ -732,6 +732,12 @@ Output includes:
 - `Inference memory` is the nominal hardware budget, **not** live free RAM.
 - Schedule state (active/inactive).
 - Live daemon PID, uptime, trust verdict, and last model-load error.
+- Runtime-integrity line, when the coordinator's most recent `runtime_status`
+  marked this provider's runtime hashes outdated: the mismatch count, that
+  the provider is excluded from routing, and the fix, `darkbloom update`.
+  The coordinator only ever re-sends `verified:false` while the mismatch
+  lasts, so the line clears itself once the record is more than 15 minutes
+  old rather than waiting on an explicit `verified:true`.
 - `Memory when idle`: the idle-memory policy in force (`always ready` or
   `free after N idle`). Advertised models without a resident engine are
   separated into `Startup preload pending`, `Not loaded (loads on request)`,

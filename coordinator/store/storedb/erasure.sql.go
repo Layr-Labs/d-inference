@@ -214,19 +214,21 @@ const countOpenStripeWithdrawals = `-- name: CountOpenStripeWithdrawals :one
 SELECT COUNT(*) FROM stripe_withdrawals
 WHERE account_id = $1 AND (
     status IN ('pending', 'transferred')
+    OR (status = 'paid' AND updated_at > $2::timestamptz)
     OR (status = 'failed' AND NOT refunded AND transfer_id = '' AND payout_id = ''
         AND sweep_payout_id = '' AND amount_micro_usd > 0
-        AND starts_with(failure_reason, $2::text)))
+        AND starts_with(failure_reason, $3::text)))
 `
 
 type CountOpenStripeWithdrawalsParams struct {
 	AccountID    string
+	PaidAfter    time.Time
 	RefundPrefix string
 }
 
 // Money that is still moving blocks erasure.
 func (q *Queries) CountOpenStripeWithdrawals(ctx context.Context, arg CountOpenStripeWithdrawalsParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countOpenStripeWithdrawals, arg.AccountID, arg.RefundPrefix)
+	row := q.db.QueryRow(ctx, countOpenStripeWithdrawals, arg.AccountID, arg.PaidAfter, arg.RefundPrefix)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -575,7 +577,7 @@ func (q *Queries) GetBalanceForErasure(ctx context.Context, accountID string) (G
 
 const getErasureRequest = `-- name: GetErasureRequest :one
 
-SELECT id, account_id, actor, canceled_by, reason, state, plan, confirm_token_hash, confirm_expires_at, wallet_addresses, requested_at, scrub_after, erased_at, canceled_at, lease_until, last_error, created_at FROM erasure_requests WHERE id = $1
+SELECT id, account_id, actor, canceled_by, reason, state, plan, confirm_token_hash, confirm_expires_at, wallet_hash, wallet_addresses, requested_at, scrub_after, erased_at, canceled_at, lease_until, last_error, created_at FROM erasure_requests WHERE id = $1
 `
 
 // Account erasure: requests, outbox, key collection and the scrub statements
@@ -594,6 +596,7 @@ func (q *Queries) GetErasureRequest(ctx context.Context, id string) (ErasureRequ
 		&i.Plan,
 		&i.ConfirmTokenHash,
 		&i.ConfirmExpiresAt,
+		&i.WalletHash,
 		&i.WalletAddresses,
 		&i.RequestedAt,
 		&i.ScrubAfter,
@@ -607,7 +610,7 @@ func (q *Queries) GetErasureRequest(ctx context.Context, id string) (ErasureRequ
 }
 
 const getErasureRequestForUpdate = `-- name: GetErasureRequestForUpdate :one
-SELECT id, account_id, actor, canceled_by, reason, state, plan, confirm_token_hash, confirm_expires_at, wallet_addresses, requested_at, scrub_after, erased_at, canceled_at, lease_until, last_error, created_at FROM erasure_requests WHERE id = $1 FOR UPDATE
+SELECT id, account_id, actor, canceled_by, reason, state, plan, confirm_token_hash, confirm_expires_at, wallet_hash, wallet_addresses, requested_at, scrub_after, erased_at, canceled_at, lease_until, last_error, created_at FROM erasure_requests WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) GetErasureRequestForUpdate(ctx context.Context, id string) (ErasureRequest, error) {
@@ -623,6 +626,7 @@ func (q *Queries) GetErasureRequestForUpdate(ctx context.Context, id string) (Er
 		&i.Plan,
 		&i.ConfirmTokenHash,
 		&i.ConfirmExpiresAt,
+		&i.WalletHash,
 		&i.WalletAddresses,
 		&i.RequestedAt,
 		&i.ScrubAfter,
@@ -647,7 +651,7 @@ func (q *Queries) GetGlobalRecipientDataForErasure(ctx context.Context, accountI
 }
 
 const getLatestErasureRequest = `-- name: GetLatestErasureRequest :one
-SELECT id, account_id, actor, canceled_by, reason, state, plan, confirm_token_hash, confirm_expires_at, wallet_addresses, requested_at, scrub_after, erased_at, canceled_at, lease_until, last_error, created_at FROM erasure_requests WHERE account_id = $1 ORDER BY created_at DESC LIMIT 1
+SELECT id, account_id, actor, canceled_by, reason, state, plan, confirm_token_hash, confirm_expires_at, wallet_hash, wallet_addresses, requested_at, scrub_after, erased_at, canceled_at, lease_until, last_error, created_at FROM erasure_requests WHERE account_id = $1 ORDER BY created_at DESC LIMIT 1
 `
 
 func (q *Queries) GetLatestErasureRequest(ctx context.Context, accountID string) (ErasureRequest, error) {
@@ -663,6 +667,7 @@ func (q *Queries) GetLatestErasureRequest(ctx context.Context, accountID string)
 		&i.Plan,
 		&i.ConfirmTokenHash,
 		&i.ConfirmExpiresAt,
+		&i.WalletHash,
 		&i.WalletAddresses,
 		&i.RequestedAt,
 		&i.ScrubAfter,
@@ -676,7 +681,7 @@ func (q *Queries) GetLatestErasureRequest(ctx context.Context, accountID string)
 }
 
 const getOpenErasureRequestForUpdate = `-- name: GetOpenErasureRequestForUpdate :one
-SELECT id, account_id, actor, canceled_by, reason, state, plan, confirm_token_hash, confirm_expires_at, wallet_addresses, requested_at, scrub_after, erased_at, canceled_at, lease_until, last_error, created_at FROM erasure_requests
+SELECT id, account_id, actor, canceled_by, reason, state, plan, confirm_token_hash, confirm_expires_at, wallet_hash, wallet_addresses, requested_at, scrub_after, erased_at, canceled_at, lease_until, last_error, created_at FROM erasure_requests
 WHERE account_id = $1 AND state IN ('planned', 'pending')
 FOR UPDATE
 `
@@ -694,6 +699,7 @@ func (q *Queries) GetOpenErasureRequestForUpdate(ctx context.Context, accountID 
 		&i.Plan,
 		&i.ConfirmTokenHash,
 		&i.ConfirmExpiresAt,
+		&i.WalletHash,
 		&i.WalletAddresses,
 		&i.RequestedAt,
 		&i.ScrubAfter,
@@ -790,8 +796,8 @@ func (q *Queries) InsertErasureOutbox(ctx context.Context, arg InsertErasureOutb
 }
 
 const insertErasurePlan = `-- name: InsertErasurePlan :exec
-INSERT INTO erasure_requests (id, account_id, actor, state, plan, confirm_token_hash, confirm_expires_at)
-VALUES ($1, $2, $3, 'planned', $4, $5, $6)
+INSERT INTO erasure_requests (id, account_id, actor, state, plan, confirm_token_hash, confirm_expires_at, wallet_hash)
+VALUES ($1, $2, $3, 'planned', $4, $5, $6, $7)
 `
 
 type InsertErasurePlanParams struct {
@@ -801,6 +807,7 @@ type InsertErasurePlanParams struct {
 	Plan             []byte
 	ConfirmTokenHash string
 	ConfirmExpiresAt *time.Time
+	WalletHash       string
 }
 
 func (q *Queries) InsertErasurePlan(ctx context.Context, arg InsertErasurePlanParams) error {
@@ -811,8 +818,20 @@ func (q *Queries) InsertErasurePlan(ctx context.Context, arg InsertErasurePlanPa
 		arg.Plan,
 		arg.ConfirmTokenHash,
 		arg.ConfirmExpiresAt,
+		arg.WalletHash,
 	)
 	return err
+}
+
+const isAccountErased = `-- name: IsAccountErased :one
+SELECT EXISTS (SELECT 1 FROM erasure_requests WHERE account_id = $1 AND state = 'erased')
+`
+
+func (q *Queries) IsAccountErased(ctx context.Context, accountID string) (bool, error) {
+	row := q.db.QueryRow(ctx, isAccountErased, accountID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
 
 const leaseDueErasureRequests = `-- name: LeaseDueErasureRequests :many
@@ -936,6 +955,31 @@ func (q *Queries) ListAccountProviderKeys(ctx context.Context, accountID string)
 	return items, nil
 }
 
+const listAccountRecipientIDs = `-- name: ListAccountRecipientIDs :many
+SELECT DISTINCT (data->>'recipient_id')::text AS recipient_id FROM global_payout_withdrawals
+WHERE account_id = $1 AND COALESCE(data->>'recipient_id', '') <> ''
+`
+
+func (q *Queries) ListAccountRecipientIDs(ctx context.Context, accountID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listAccountRecipientIDs, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var recipient_id string
+		if err := rows.Scan(&recipient_id); err != nil {
+			return nil, err
+		}
+		items = append(items, recipient_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAccountSessionSerials = `-- name: ListAccountSessionSerials :many
 SELECT DISTINCT serial_number FROM provider_sessions WHERE account_id = $1 AND serial_number <> ''
 `
@@ -953,6 +997,30 @@ func (q *Queries) ListAccountSessionSerials(ctx context.Context, accountID strin
 			return nil, err
 		}
 		items = append(items, serial_number)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAccountStripeAccountIDs = `-- name: ListAccountStripeAccountIDs :many
+SELECT DISTINCT stripe_account_id FROM stripe_withdrawals WHERE account_id = $1 AND stripe_account_id <> ''
+`
+
+func (q *Queries) ListAccountStripeAccountIDs(ctx context.Context, accountID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listAccountStripeAccountIDs, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var stripe_account_id string
+		if err := rows.Scan(&stripe_account_id); err != nil {
+			return nil, err
+		}
+		items = append(items, stripe_account_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -1020,6 +1088,37 @@ func (q *Queries) ListErasureOutbox(ctx context.Context, requestID string) ([]Er
 	return items, nil
 }
 
+const listErasureRefusedCredits = `-- name: ListErasureRefusedCredits :many
+SELECT id, account_id, entry_type, amount_micro_usd, reference, created_at FROM erasure_refused_credits WHERE account_id = $1 ORDER BY created_at, id LIMIT 500
+`
+
+func (q *Queries) ListErasureRefusedCredits(ctx context.Context, accountID string) ([]ErasureRefusedCredit, error) {
+	rows, err := q.db.Query(ctx, listErasureRefusedCredits, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ErasureRefusedCredit
+	for rows.Next() {
+		var i ErasureRefusedCredit
+		if err := rows.Scan(
+			&i.ID,
+			&i.AccountID,
+			&i.EntryType,
+			&i.AmountMicroUsd,
+			&i.Reference,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMDASerialAliasesForErasure = `-- name: ListMDASerialAliasesForErasure :many
 SELECT a.digest, EXISTS (
     SELECT 1 FROM darkbloom_machine_sessions s
@@ -1052,6 +1151,90 @@ func (q *Queries) ListMDASerialAliasesForErasure(ctx context.Context, arg ListMD
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSharedAppAttestKeys = `-- name: ListSharedAppAttestKeys :many
+SELECT DISTINCT key_id FROM app_attest_evidence
+WHERE key_id = ANY($1::text[]) AND NOT (session_id = ANY($2::text[]))
+`
+
+type ListSharedAppAttestKeysParams struct {
+	KeyIds     []string
+	SessionIds []string
+}
+
+func (q *Queries) ListSharedAppAttestKeys(ctx context.Context, arg ListSharedAppAttestKeysParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listSharedAppAttestKeys, arg.KeyIds, arg.SessionIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var key_id string
+		if err := rows.Scan(&key_id); err != nil {
+			return nil, err
+		}
+		items = append(items, key_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSharedSEKeys = `-- name: ListSharedSEKeys :many
+SELECT DISTINCT se_public_key FROM providers
+WHERE se_public_key = ANY($1::text[]) AND account_id <> $2
+`
+
+type ListSharedSEKeysParams struct {
+	SeKeys    []string
+	AccountID string
+}
+
+func (q *Queries) ListSharedSEKeys(ctx context.Context, arg ListSharedSEKeysParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listSharedSEKeys, arg.SeKeys, arg.AccountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var se_public_key string
+		if err := rows.Scan(&se_public_key); err != nil {
+			return nil, err
+		}
+		items = append(items, se_public_key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockAccountBillingSessions = `-- name: LockAccountBillingSessions :many
+SELECT id FROM billing_sessions WHERE account_id = $1 ORDER BY id FOR UPDATE
+`
+
+func (q *Queries) LockAccountBillingSessions(ctx context.Context, accountID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, lockAccountBillingSessions, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -1587,7 +1770,7 @@ func (q *Queries) TombstoneGlobalRecipientRow(ctx context.Context, arg Tombstone
 
 const updateErasurePlan = `-- name: UpdateErasurePlan :exec
 UPDATE erasure_requests
-SET actor = $2, plan = $3, confirm_token_hash = $4, confirm_expires_at = $5
+SET actor = $2, plan = $3, confirm_token_hash = $4, confirm_expires_at = $5, wallet_hash = $6
 WHERE id = $1 AND state = 'planned'
 `
 
@@ -1597,6 +1780,7 @@ type UpdateErasurePlanParams struct {
 	Plan             []byte
 	ConfirmTokenHash string
 	ConfirmExpiresAt *time.Time
+	WalletHash       string
 }
 
 func (q *Queries) UpdateErasurePlan(ctx context.Context, arg UpdateErasurePlanParams) error {
@@ -1606,6 +1790,7 @@ func (q *Queries) UpdateErasurePlan(ctx context.Context, arg UpdateErasurePlanPa
 		arg.Plan,
 		arg.ConfirmTokenHash,
 		arg.ConfirmExpiresAt,
+		arg.WalletHash,
 	)
 	return err
 }

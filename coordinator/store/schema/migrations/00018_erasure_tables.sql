@@ -1,6 +1,7 @@
 -- Account erasure. erasure_requests holds one row per request and its state.
 -- It stores no personal data: the plan column has row counts only, the
--- confirm token is a SHA-256 hash, and the scrub clears wallet_addresses after
+-- confirm token and the planned wallet list are SHA-256 hashes, and the scrub
+-- clears wallet_addresses after
 -- it uses them. erasure_outbox holds the external deletions that the scrub
 -- leaves for a worker; external_id carries a Stripe ID until that deletion
 -- is confirmed and is then cleared. New tables take no lock on existing ones;
@@ -16,6 +17,7 @@ CREATE TABLE IF NOT EXISTS erasure_requests (
     plan               JSONB NOT NULL DEFAULT '{}',
     confirm_token_hash TEXT NOT NULL DEFAULT '',
     confirm_expires_at TIMESTAMPTZ,
+    wallet_hash        TEXT NOT NULL DEFAULT '',
     wallet_addresses   TEXT[] NOT NULL DEFAULT '{}',
     requested_at       TIMESTAMPTZ,
     scrub_after        TIMESTAMPTZ,
@@ -28,6 +30,7 @@ CREATE TABLE IF NOT EXISTS erasure_requests (
 CREATE UNIQUE INDEX IF NOT EXISTS erasure_requests_open ON erasure_requests (account_id) WHERE state IN ('planned', 'pending');
 CREATE INDEX IF NOT EXISTS erasure_requests_account ON erasure_requests (account_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS erasure_requests_due ON erasure_requests (scrub_after) WHERE state = 'pending';
+CREATE INDEX IF NOT EXISTS erasure_requests_erased ON erasure_requests (account_id) WHERE state = 'erased';
 
 CREATE TABLE IF NOT EXISTS erasure_outbox (
     id          TEXT PRIMARY KEY,

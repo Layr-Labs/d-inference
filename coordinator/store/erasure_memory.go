@@ -15,6 +15,7 @@ import (
 type memoryErasureRequest struct {
 	ErasureRequest
 	tokenHash  string
+	walletHash string
 	wallets    []string
 	leaseUntil time.Time
 }
@@ -41,7 +42,8 @@ func (s *MemoryStore) openWithdrawalsLocked(accountID string, now time.Time) int
 	var n int64
 	for _, id := range s.stripeWithdrawalsByAccount[accountID] {
 		w := s.stripeWithdrawalsByID[id]
-		if w != nil && (w.Status == "pending" || w.Status == "transferred" || StripeRefundRecoverable(w)) {
+		if w != nil && (w.Status == "pending" || w.Status == "transferred" || StripeRefundRecoverable(w) ||
+			(w.Status == "paid" && w.UpdatedAt.After(now.Add(-stripePayoutBounceWindow)))) {
 			n++
 		}
 	}
@@ -61,7 +63,7 @@ func (s *MemoryStore) openWithdrawalsLocked(accountID string, now time.Time) int
 func (s *MemoryStore) collectErasureKeysLocked(u *User, wallets []string) *erasureKeys {
 	account := u.AccountID
 	k := &erasureKeys{
-		AccountID: account, ConsumerKeyHash: hashKey(account), StripeAccountID: u.StripeAccountID,
+		AccountID: account, ConsumerKeyHash: hashKey(account),
 		PrivyReplacement: erasedValue("erased:"), ReferrerReplacement: erasedValue("erased-"),
 	}
 	var seKeys, serials []string
@@ -85,6 +87,14 @@ func (s *MemoryStore) collectErasureKeysLocked(u *User, wallets []string) *erasu
 		}
 	}
 	k.ProviderIDs, k.SEKeys, k.Serials = sortedUnique(k.ProviderIDs), sortedUnique(seKeys), sortedUnique(serials)
+	ownKeys := stringSet(k.SEKeys)
+	var sharedSE []string
+	for _, p := range s.providerRecords {
+		if p.AccountID != account && ownKeys[p.SEPublicKey] {
+			sharedSE = append(sharedSE, p.SEPublicKey)
+		}
+	}
+	k.SEKeys, k.SharedSEKeys = withoutKeys(k.SEKeys, sortedUnique(sharedSE))
 	providers := stringSet(k.ProviderIDs)
 	var keyIDs []string
 	for _, e := range s.appAttestEvidence {
@@ -93,6 +103,21 @@ func (s *MemoryStore) collectErasureKeysLocked(u *User, wallets []string) *erasu
 		}
 	}
 	k.AppAttestKeyIDs = sortedUnique(keyIDs)
+	ownAppKeys := stringSet(k.AppAttestKeyIDs)
+	var sharedApp []string
+	for _, e := range s.appAttestEvidence {
+		if ownAppKeys[e.Evidence.KeyID] && !providers[e.Evidence.SessionID] {
+			sharedApp = append(sharedApp, e.Evidence.KeyID)
+		}
+	}
+	k.AppAttestKeyIDs, k.SharedAppAttestKeys = withoutKeys(k.AppAttestKeyIDs, sortedUnique(sharedApp))
+	stripeAccounts := []string{u.StripeAccountID}
+	for _, id := range s.stripeWithdrawalsByAccount[account] {
+		if w := s.stripeWithdrawalsByID[id]; w != nil {
+			stripeAccounts = append(stripeAccounts, w.StripeAccountID)
+		}
+	}
+	k.StripeAccountIDs = sortedUnique(stripeAccounts)
 	if r := s.referrersByAccount[account]; r != nil {
 		k.ReferrerCode = r.Code
 	}
@@ -111,9 +136,16 @@ func (s *MemoryStore) collectErasureKeysLocked(u *User, wallets []string) *erasu
 	for _, b := range sessions {
 		k.CheckoutSessionIDs = append(k.CheckoutSessionIDs, b.ExternalID)
 	}
+	var recipients []string
 	if r, ok := s.globalRecipients[account]; ok {
-		k.GlobalRecipientID = r.RecipientID
+		recipients = append(recipients, r.RecipientID)
 	}
+	for _, p := range s.globalPayouts {
+		if p.AccountID == account {
+			recipients = append(recipients, p.RecipientID)
+		}
+	}
+	k.RecipientIDs = sortedUnique(recipients)
 	if inv := s.machineInventory; inv != nil {
 		digests := map[string]bool{}
 		for _, serial := range k.Serials {
@@ -581,11 +613,14 @@ func (s *MemoryStore) PlanAccountErasure(ctx context.Context, accountID string, 
 	plan.Rows, plan.Retained = rows, k.retained()
 	plan.StripeObjectCounts = stripeObjectCounts(plan.StripeObjects)
 	plan.OpenWithdrawals = s.openWithdrawalsLocked(accountID, time.Now())
+	for _, w := range k.Wallets {
+		plan.Wallets = append(plan.Wallets, ErasureWalletCount{Address: w.Address})
+	}
 	plan.BalanceMicroUSD, plan.WithdrawableMicroUSD = s.balances[accountID], s.withdrawable[accountID]
 	return plan, nil
 }
 
-func (s *MemoryStore) SaveErasurePlan(ctx context.Context, accountID, actor string, counts ErasureCounts, confirmToken string, expiresAt time.Time) (*ErasureRequest, error) {
+func (s *MemoryStore) SaveErasurePlan(ctx context.Context, accountID, actor string, counts ErasureCounts, walletAddresses []string, confirmToken string, expiresAt time.Time) (*ErasureRequest, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -604,6 +639,7 @@ func (s *MemoryStore) SaveErasurePlan(ctx context.Context, accountID, actor stri
 	}
 	exp := expiresAt
 	r.Actor, r.Summary, r.tokenHash, r.ConfirmExpiresAt = actor, ErasureSummary{Planned: &counts}, erasureTokenHash(confirmToken), &exp
+	r.walletHash = erasureWalletHash(walletAddresses)
 	return r.copyOut(), nil
 }
 
@@ -629,6 +665,9 @@ func (s *MemoryStore) RequestAccountErasure(ctx context.Context, in ErasureConfi
 	}
 	if normalizeErasureEmail(u.Email) != normalizeErasureEmail(in.Email) {
 		return nil, ErrErasureEmailMismatch
+	}
+	if r.walletHash != erasureWalletHash(in.WalletAddresses) {
+		return nil, ErrErasureWalletMismatch
 	}
 	if s.openWithdrawalsLocked(in.AccountID, in.Now) > 0 {
 		return nil, ErrErasureOpenWithdrawal
@@ -730,6 +769,7 @@ func (s *MemoryStore) ScrubAccount(ctx context.Context, requestID string, now ti
 	at := now
 	r.State, r.ErasedAt, r.wallets, r.leaseUntil, r.LastError = ErasureErased, &at, nil, time.Time{}, ""
 	r.Summary.Applied = &applied
+	s.erasedAccounts[r.AccountID] = true
 	return &ErasureResult{Request: r.copyOut(), SEKeys: k.SEKeys, ProviderIDs: k.ProviderIDs}, nil
 }
 
@@ -805,4 +845,38 @@ func (s *MemoryStore) PrivyUserPendingErasure(ctx context.Context, privyUserID s
 		}
 	}
 	return false, nil
+}
+
+func (s *MemoryStore) ListErasureRefusedCredits(ctx context.Context, accountID string) ([]ErasureRefusedCredit, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := []ErasureRefusedCredit{}
+	for _, c := range s.erasureRefusedCredits {
+		if c.AccountID == accountID {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+// refuseErasedCreditLocked records and refuses a credit to an erased
+// account, as the Postgres triggers in 00021_erasure_refuse_credits.sql do.
+func (s *MemoryStore) refuseErasedCreditLocked(accountID string, amount int64, entryType LedgerEntryType, reference string, at time.Time) bool {
+	if amount <= 0 || !s.erasedAccounts[accountID] {
+		return false
+	}
+	switch {
+	case entryType == LedgerAdminCredit || entryType == LedgerAdminReward:
+		reference = string(entryType)
+	case strings.HasPrefix(reference, "stripe:"):
+		reference = "stripe:erased"
+	}
+	s.erasureRefusedSeq++
+	s.erasureRefusedCredits = append(s.erasureRefusedCredits, ErasureRefusedCredit{
+		ID: s.erasureRefusedSeq, AccountID: accountID, EntryType: entryType, AmountMicroUSD: amount, Reference: reference, CreatedAt: at,
+	})
+	return true
 }

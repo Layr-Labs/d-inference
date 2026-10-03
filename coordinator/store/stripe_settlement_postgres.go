@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/store/storedb"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -82,7 +83,11 @@ func (s *PostgresStore) CompleteStripeCheckout(id, externalID, accountID string,
 	if err != nil {
 		return false, err
 	}
-	if b.Status == "erased" {
+	// A scrubbed session (pending or completed) has no Checkout ID left, so
+	// a replay would not match; answer for the erased account instead.
+	if erased, err := storedb.New(tx).IsAccountErased(ctx, b.AccountID); err != nil {
+		return false, err
+	} else if erased || b.Status == "erased" {
 		return false, ErrCheckoutErased
 	}
 	if !checkoutMatches(&b, externalID, accountID, amount) {

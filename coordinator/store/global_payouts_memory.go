@@ -112,6 +112,9 @@ func (s *MemoryStore) BeginGlobalPayout(accountID, id string, now time.Time) (*G
 	return &p, nil
 }
 func (s *MemoryStore) globalPayoutLedgerLocked(p GlobalPayout, amount int64, kind LedgerEntryType, ref string, now time.Time) {
+	if s.refuseErasedCreditLocked(p.AccountID, amount, kind, ref, now) {
+		return
+	}
 	s.balances[p.AccountID] += amount
 	s.withdrawable[p.AccountID] += amount
 	s.ledgerSeq++

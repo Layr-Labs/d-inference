@@ -10,8 +10,11 @@ import (
 // holds personal data of an account, how its rows link to the account and
 // what the scrub does to them. PostgresStore.ScrubAccount runs these rules in
 // order; MemoryStore.ScrubAccount applies the same rules to its maps. The
-// marker test (erasure_marker_test.go) fills every listed table and fails on
-// any personal data left in any table outside erasureMarkerAllowList.
+// marker test (erasure_marker_test.go) seeds every table listed here, plus a
+// second account, with marker strings, then searches every text, JSON, array
+// and bytea column of every table for the marker. It proves the rules for the
+// seeded rows; a new table or column that holds personal data needs a rule
+// here and a row in the test's fixture, or the test cannot see it.
 //
 // IDs are not personal data and stay: account IDs, provider and machine IDs,
 // request IDs, key IDs and public keys. What is kept and why is listed in
@@ -539,5 +542,7 @@ func walletStatements(k *erasureKeys,
 // erasureRetainedReasons explains the personal-looking data the scrub keeps.
 // The plan reports how many rows each one has for the account.
 const (
-	retainedSharedMDAAlias = "mda_serial alias of a machine that another account also used; deleting it would break that account's machine identity"
+	retainedSharedMDAAlias     = "mda_serial alias of a machine that another account also used; deleting it would break that account's machine identity"
+	retainedSharedSEKey        = "Secure Enclave key that another account's provider also uses; its trust, verification and code-attestation rows belong to that account too"
+	retainedSharedAppAttestKey = "App Attest key that another account's sessions also used; its receipts belong to that account too"
 )

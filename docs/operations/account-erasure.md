@@ -28,8 +28,10 @@ erasure forfeits the balance and cannot be undone after the scrub.
   payments. `payments` and `provider_payouts` have no account column, so the
   admin names the addresses. Give each one exactly as stored.
 - No withdrawal of the account may be in flight: no Stripe withdrawal in
-  `pending` or `transferred`, none waiting for a confirmed-rejection refund,
-  and no Global Payout in `pending`, `processing`, or `posted` within 90 days.
+  `pending` or `transferred`, none `paid` within the last 30 days (a bank can
+  still return it; `stripePayoutBounceWindow`), none waiting for a
+  confirmed-rejection refund, and no Global Payout in `pending`,
+  `processing`, or `posted` within 90 days.
   The plan shows `open_withdrawals`; the confirm call refuses with 409
   `open_withdrawal`.
 
@@ -43,19 +45,24 @@ erasure forfeits the balance and cannot be undone after the scrub.
      -d '{"wallet_addresses": ["0x..."]}'
    ```
 
-   Read `email`, the per-rule `rows`, `stripe_objects`, `balance_micro_usd`,
-   `withdrawable_micro_usd`, `open_withdrawals` and `retained`. Check that the
-   email matches the verified requester. Each wallet address must show rows in
-   `payments_*` or `provider_payouts_address`; zero rows means the address is
-   wrong. Keep `confirm_token`; it expires after 15 minutes
-   (`erasureConfirmTTL`).
+   Read `email`, the per-rule `rows`, `stripe_objects` (every Express account
+   and Global Payouts recipient the account ever used, and its Checkout
+   Sessions), `wallets`, `balance_micro_usd`, `withdrawable_micro_usd`,
+   `open_withdrawals` and `retained`. Check that the email matches the
+   verified requester. Each entry in `wallets` shows the rows that hold that
+   address in `payments` and `provider_payouts`; zero rows means the address
+   is wrong. `retained` lists rows that are kept because another account
+   shares them (a machine alias, a Secure Enclave key, an App Attest key).
+   Keep `confirm_token`; it expires after 15 minutes (`erasureConfirmTTL`).
+   The token is bound to this wallet list: to change the list, plan again.
 
-2. Confirm the erasure. Repeat the token and the email from the plan:
+2. Confirm the erasure. Repeat the account ID, the token, the email (when the
+   account has one) and the same wallet list as the plan:
 
    ```bash
    curl -sS -X POST "$COORD/v1/admin/accounts/$ACCOUNT/erasure" \
      -H "Authorization: Bearer $ADMIN_KEY" \
-     -d '{"confirm_token": "...", "email": "...", "reason": "ticket 1234", "wallet_addresses": ["0x..."]}'
+     -d '{"account_id": "'"$ACCOUNT"'", "confirm_token": "...", "email": "...", "reason": "ticket 1234", "wallet_addresses": ["0x..."]}'
    ```
 
    The coordinator soft deletes the account: the user and its provider rows
@@ -101,6 +108,19 @@ The user and its provider rows are live again. API keys and provider tokens
 stay revoked: the user makes new keys and links the machines again. After the
 scrub there is no cancel.
 
+## Credits after the erasure
+
+After the scrub the account's balance stays zero. Any later credit (a bank
+returns a paid payout, a Global Payout comes back after the reconcile window,
+a settlement or referral reward lands late) is refused by database triggers
+(`00021_erasure_refuse_credits.sql`) and recorded in
+`erasure_refused_credits` (amount, ledger type, reference). The caller sees
+success, so Stripe does not redeliver its webhook. `GET …/erasure` lists them
+as `refused_credits`. Review each one: the money is still with the platform
+(or Stripe) and may need a refund or a transfer to the person by another
+channel. Credits during the grace period still apply, because the erasure
+can be canceled.
+
 ## What is kept, and why
 
 | Data | Why it is kept |
@@ -111,6 +131,8 @@ scrub there is no cancel.
 | `darkbloom_machine_sessions` and observations | Chip, OS version and IDs only; no serial or key. |
 | App Attest shadow keys, enrollments, revocations and rotations | Key IDs, public keys and owner hashes keep a revoked or used key from being accepted again. Raw proofs, receipts and evidence context are deleted. |
 | An `mda_serial` machine alias that another account also used | Deleting it would break that account's machine identity. The plan lists it under `retained`. |
+| Trust-reuse, verification, code-attestation and push-budget rows of a Secure Enclave key that another account's provider also has; App Attest receipts of a key another account's session used | They belong to the other account too. The in-memory trust cache and MDM jobs of those keys also stay. The plan lists them under `retained`. |
+| `erasure_refused_credits` | Credits refused after the erasure, for manual review; IDs and amounts only. |
 | `erasure_requests` (state, actor, reason, row counts) | The record that the erasure happened. It holds no email, token or wallet address after the scrub. |
 | `erasure_outbox.external_id` | The Stripe ID waits here until Stripe confirms the deletion. |
 

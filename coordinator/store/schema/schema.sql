@@ -41,6 +41,72 @@ END $$;
 
 
 --
+-- Name: erasure_account_erased(text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.erasure_account_erased(account text) RETURNS boolean
+    LANGUAGE plpgsql STABLE
+    AS $$
+BEGIN
+    RETURN EXISTS (SELECT 1 FROM erasure_requests WHERE account_id = account AND state = 'erased');
+END $$;
+
+
+--
+-- Name: erasure_keep_balance_insert(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.erasure_keep_balance_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF (NEW.balance_micro_usd > 0 OR NEW.withdrawable_micro_usd > 0)
+       AND erasure_account_erased(NEW.account_id) THEN
+        NEW.balance_micro_usd := LEAST(NEW.balance_micro_usd, 0);
+        NEW.withdrawable_micro_usd := LEAST(NEW.withdrawable_micro_usd, 0);
+    END IF;
+    RETURN NEW;
+END $$;
+
+
+--
+-- Name: erasure_keep_balance_update(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.erasure_keep_balance_update() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF (NEW.balance_micro_usd > OLD.balance_micro_usd OR NEW.withdrawable_micro_usd > OLD.withdrawable_micro_usd)
+       AND erasure_account_erased(NEW.account_id) THEN
+        NEW.balance_micro_usd := LEAST(NEW.balance_micro_usd, OLD.balance_micro_usd);
+        NEW.withdrawable_micro_usd := LEAST(NEW.withdrawable_micro_usd, OLD.withdrawable_micro_usd);
+    END IF;
+    RETURN NEW;
+END $$;
+
+
+--
+-- Name: erasure_refuse_ledger_credit(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.erasure_refuse_ledger_credit() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF erasure_account_erased(NEW.account_id) THEN
+        INSERT INTO erasure_refused_credits (account_id, entry_type, amount_micro_usd, reference)
+        VALUES (NEW.account_id, NEW.entry_type, NEW.amount_micro_usd,
+                CASE WHEN NEW.entry_type IN ('admin_credit', 'admin_reward') THEN NEW.entry_type
+                     WHEN NEW.reference LIKE 'stripe:%' THEN 'stripe:erased'
+                     ELSE NEW.reference END);
+        RETURN NULL;
+    END IF;
+    RETURN NEW;
+END $$;
+
+
+--
 -- Name: update_model_demand_hourly(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -487,6 +553,39 @@ CREATE TABLE public.erasure_outbox (
 
 
 --
+-- Name: erasure_refused_credits; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.erasure_refused_credits (
+    id bigint NOT NULL,
+    account_id text NOT NULL,
+    entry_type text NOT NULL,
+    amount_micro_usd bigint NOT NULL,
+    reference text DEFAULT ''::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: erasure_refused_credits_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.erasure_refused_credits_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: erasure_refused_credits_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.erasure_refused_credits_id_seq OWNED BY public.erasure_refused_credits.id;
+
+
+--
 -- Name: erasure_requests; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -500,6 +599,7 @@ CREATE TABLE public.erasure_requests (
     plan jsonb DEFAULT '{}'::jsonb NOT NULL,
     confirm_token_hash text DEFAULT ''::text NOT NULL,
     confirm_expires_at timestamp with time zone,
+    wallet_hash text DEFAULT ''::text NOT NULL,
     wallet_addresses text[] DEFAULT '{}'::text[] NOT NULL,
     requested_at timestamp with time zone,
     scrub_after timestamp with time zone,
@@ -1848,6 +1948,13 @@ CREATE TABLE public.users (
 
 
 --
+-- Name: erasure_refused_credits id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.erasure_refused_credits ALTER COLUMN id SET DEFAULT nextval('public.erasure_refused_credits_id_seq'::regclass);
+
+
+--
 -- Name: fleet_snapshots id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -2189,6 +2296,14 @@ ALTER TABLE ONLY public.earnings_summary
 
 ALTER TABLE ONLY public.erasure_outbox
     ADD CONSTRAINT erasure_outbox_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: erasure_refused_credits erasure_refused_credits_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.erasure_refused_credits
+    ADD CONSTRAINT erasure_refused_credits_pkey PRIMARY KEY (id);
 
 
 --
@@ -2736,6 +2851,13 @@ CREATE INDEX erasure_outbox_request ON public.erasure_outbox USING btree (reques
 
 
 --
+-- Name: erasure_refused_credits_account; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX erasure_refused_credits_account ON public.erasure_refused_credits USING btree (account_id, created_at DESC);
+
+
+--
 -- Name: erasure_requests_account; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2747,6 +2869,13 @@ CREATE INDEX erasure_requests_account ON public.erasure_requests USING btree (ac
 --
 
 CREATE INDEX erasure_requests_due ON public.erasure_requests USING btree (scrub_after) WHERE (state = 'pending'::text);
+
+
+--
+-- Name: erasure_requests_erased; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX erasure_requests_erased ON public.erasure_requests USING btree (account_id) WHERE (state = 'erased'::text);
 
 
 --
@@ -3321,6 +3450,27 @@ CREATE TRIGGER clear_legacy_cache_affinity_key BEFORE INSERT OR UPDATE OF cache_
 --
 
 CREATE TRIGGER clear_provider_log_report_serial BEFORE INSERT OR UPDATE OF serial_number ON public.provider_log_reports FOR EACH ROW EXECUTE FUNCTION public.clear_provider_log_report_serial();
+
+
+--
+-- Name: balances erasure_keep_balance_insert; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER erasure_keep_balance_insert BEFORE INSERT ON public.balances FOR EACH ROW EXECUTE FUNCTION public.erasure_keep_balance_insert();
+
+
+--
+-- Name: balances erasure_keep_balance_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER erasure_keep_balance_update BEFORE UPDATE ON public.balances FOR EACH ROW EXECUTE FUNCTION public.erasure_keep_balance_update();
+
+
+--
+-- Name: ledger_entries erasure_refuse_ledger_credit; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER erasure_refuse_ledger_credit BEFORE INSERT ON public.ledger_entries FOR EACH ROW WHEN ((new.amount_micro_usd > 0)) EXECUTE FUNCTION public.erasure_refuse_ledger_credit();
 
 
 --

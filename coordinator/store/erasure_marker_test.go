@@ -72,8 +72,16 @@ var erasureMarkerFixture = []string{
 	`INSERT INTO global_payout_recipients (account_id, country, data)
 	 VALUES ('acct-A', 'PIIMARK', '{"id": "g1", "account_id": "acct-A", "recipient_id": "acct_PIIMARKrecipient", "payout_method_id": "PIIMARK-pm", "last4": "PIIMARK"}')`,
 	`INSERT INTO global_payout_withdrawals (id, account_id, status, submitted_at, checked_at, lease_until, expires_at, data)
-	 VALUES ('gp-A', 'acct-A', 'failed', NOW(), NOW(), NOW(), NOW(), '{"recipient_id": "acct_PIIMARKrecipient", "payout_method_id": "PIIMARK-pm", "request": {"to": "PIIMARK"}}')`,
-	`INSERT INTO stripe_withdrawals (id, account_id, stripe_account_id, amount_micro_usd, net_micro_usd, method, status) VALUES ('sw-A', 'acct-A', 'acct_PIIMARK', 1, 1, 'standard', 'paid')`,
+	 VALUES ('gp-A', 'acct-A', 'failed', NOW(), NOW(), NOW(), NOW(), '{"recipient_id": "acct_PIIMARKrecipient", "payout_method_id": "PIIMARK-pm", "request": {"to": "PIIMARK"}}'),
+	        ('gp-A2', 'acct-A', 'failed', NOW(), NOW(), NOW(), NOW(), '{"recipient_id": "acct_PIIMARKoldrecipient", "payout_method_id": "PIIMARK-pm2", "request": {}}')`,
+	// prov-A3 and prov-B2 share Secure Enclave key se-shared (one Mac moved
+	// between accounts); its trust rows belong to B too and must stay.
+	`INSERT INTO providers (id, hardware, models, backend, se_public_key, serial_number, account_id) VALUES
+	 ('prov-A3', '{}', '[]', 'mlx', 'se-shared', 'PIIMARK-SERIAL3', 'acct-A')`,
+	// sw-A2 used an earlier Express account; both must reach the outbox.
+	`INSERT INTO stripe_withdrawals (id, account_id, stripe_account_id, amount_micro_usd, net_micro_usd, method, status, updated_at) VALUES
+	 ('sw-A', 'acct-A', 'acct_PIIMARK', 1, 1, 'standard', 'paid', NOW() - interval '60 days'),
+	 ('sw-A2', 'acct-A', 'acct_PIIMARKold', 1, 1, 'standard', 'paid', NOW() - interval '400 days')`,
 	`INSERT INTO payments (consumer_address, provider_address, amount_usd, model, prompt_tokens, completion_tokens) VALUES
 	 ('PIIMARK-wallet', '0xKEEPMARK', '1', 'm', 1, 1), ('0xKEEPMARK', 'PIIMARK-wallet', '1', 'm', 1, 1)`,
 	`INSERT INTO provider_payouts (provider_address, amount_micro_usd) VALUES ('PIIMARK-wallet', 1), ('0xKEEPMARK', 1)`,
@@ -81,7 +89,9 @@ var erasureMarkerFixture = []string{
 	// Account B shares machine m-shared, was referred by A and copied A's code.
 	`INSERT INTO users (account_id, privy_user_id, email, stripe_account_id) VALUES ('acct-B', 'did:privy:KEEPMARK', 'KEEPMARK@example.com', 'acct_KEEPMARK')`,
 	`INSERT INTO providers (id, hardware, models, backend, serial_number, se_public_key, account_id) VALUES ('prov-B', '{}', '[]', 'mlx', 'KEEPMARK-SERIAL', 'se-B', 'acct-B')`,
-	`INSERT INTO provider_trust_reuse (se_pubkey, serial) VALUES ('se-B', 'KEEPMARK-SERIAL')`,
+	`INSERT INTO provider_trust_reuse (se_pubkey, serial) VALUES ('se-B', 'KEEPMARK-SERIAL'), ('se-shared', 'KEEPMARK-SHARED-SERIAL')`,
+	`INSERT INTO providers (id, hardware, models, backend, se_public_key, serial_number, account_id) VALUES ('prov-B2', '{}', '[]', 'mlx', 'se-shared', 'KEEPMARK-SHARED-SERIAL', 'acct-B')`,
+	`INSERT INTO code_attestations (se_pubkey, apns_token) VALUES ('se-shared', 'KEEPMARK-apns')`,
 	`INSERT INTO darkbloom_machine_sessions (session_id, machine_id, original_machine_id, account_id, first_seen, last_seen, observation)
 	 VALUES ('prov-B', 'm-shared', 'm-shared', 'acct-B', NOW(), NOW(), '{}')`,
 	`INSERT INTO referrals (referred_account, referrer_code) VALUES ('acct-B', 'PIIMARK-code')`,
@@ -163,11 +173,18 @@ func TestErasureMarkerPostgres(t *testing.T) {
 			t.Errorf("rule %s (%s) has no fixture rows", r.Rule, r.Table)
 		}
 	}
-	if len(plan.Retained) != 1 || plan.Retained[0].Rows != 1 {
-		t.Fatalf("retained = %+v; want the shared mda_serial alias", plan.Retained)
+	retained := map[string]int64{}
+	for _, r := range plan.Retained {
+		retained[r.Reason] = r.Rows
+	}
+	if len(retained) != 2 || retained[retainedSharedMDAAlias] != 1 || retained[retainedSharedSEKey] != 1 {
+		t.Fatalf("retained = %+v; want the shared mda_serial alias and the shared SE key", plan.Retained)
+	}
+	if len(plan.Wallets) != 1 || plan.Wallets[0].PaymentsConsumerRows != 1 || plan.Wallets[0].PaymentsProviderRows != 1 || plan.Wallets[0].ProviderPayoutRows != 1 {
+		t.Fatalf("plan wallets = %+v", plan.Wallets)
 	}
 	now := time.Now().UTC()
-	if _, err := s.SaveErasurePlan(ctx, "acct-A", "admin_key", plan.ErasureCounts, "token", now.Add(time.Minute)); err != nil {
+	if _, err := s.SaveErasurePlan(ctx, "acct-A", "admin_key", plan.ErasureCounts, wallets, "token", now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	req, err := s.RequestAccountErasure(ctx, ErasureConfirm{AccountID: "acct-A", ConfirmToken: "token", Email: "piimark@example.com", Actor: "admin_key", Reason: "ticket", WalletAddresses: wallets, Now: now})
@@ -178,9 +195,31 @@ func TestErasureMarkerPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// In-memory cleanup (trust-reuse cache, MDM scheduler) gets only keys
+	// that no other account uses.
+	for _, k := range res.SEKeys {
+		if k == "se-shared" {
+			t.Fatalf("result SE keys %v include the shared key", res.SEKeys)
+		}
+	}
 	for i, r := range res.Request.Summary.Applied.Rows {
 		if r.Rows != plan.Rows[i].Rows {
 			t.Errorf("rule %s applied %d rows, planned %d", r.Rule, r.Rows, plan.Rows[i].Rows)
+		}
+	}
+
+	// Earlier Stripe objects are queued for deletion too.
+	_, outbox, err := s.GetAccountErasure(ctx, "acct-A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	queued := map[string]bool{}
+	for _, o := range outbox {
+		queued[string(o.Target)+":"+o.ExternalID] = true
+	}
+	for _, want := range []string{"stripe_account:acct_PIIMARK", "stripe_account:acct_PIIMARKold", "global_recipient:acct_PIIMARKrecipient", "global_recipient:acct_PIIMARKoldrecipient"} {
+		if !queued[want] {
+			t.Errorf("outbox lacks %s; got %v", want, queued)
 		}
 	}
 

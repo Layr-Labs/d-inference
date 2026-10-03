@@ -653,7 +653,7 @@ Every error body has one shape (`errorResponse`, `writeJSON`, `withCode` in `coo
 
 | Status | `type` values | Raised by |
 |---|---|---|
-| 400 | `invalid_request_error`, `invalid_sealed_envelope`, `kid_mismatch`, `decryption_failed`, `invalid_request`, `bad_request`, `referral_error`, `email_mismatch` | Body/JSON validation, `n > 1`, tool-choice and vision rules, native media tools unsupported by a model's serving fleet (`param: model`), sealed-envelope faults, device-code and key-management input, unknown catalog `?type=` |
+| 400 | `invalid_request_error`, `invalid_sealed_envelope`, `kid_mismatch`, `decryption_failed`, `invalid_request`, `bad_request`, `referral_error`, `email_mismatch`, `wallet_mismatch` | Body/JSON validation, `n > 1`, tool-choice and vision rules, native media tools unsupported by a model's serving fleet (`param: model`), sealed-envelope faults, device-code and key-management input, unknown catalog `?type=` |
 | 401 | `authentication_error`, `auth_error`, `unauthorized` | Missing/invalid bearer (`requireAuth`, `requirePrivyAuth`), no account user (`requirePrivyUser`), release key |
 | 402 | `insufficient_funds` (balance below the reservation), `insufficient_quota` (per-key spend cap); `code` is `insufficient_quota` for both | `reserveInferenceBalance` (`coordinator/api/inference_admission.go`); the per-cause table, including the provider-price 402, is [Payment-required responses](../architecture/billing.md#payment-required-responses) |
 | 403 | `forbidden`, `model_not_allowed`, `account_pending_deletion`, `invalid_confirm_token` | API key on a `privy` route; non-admin on an `admin` route; model outside the key's `allowed_models` (`keyModelAllowed`, `coordinator/api/apikey_handlers.go`); Privy login of an account that waits for erasure (`writePrivyUserError`); wrong or expired erasure confirm token |
@@ -907,9 +907,9 @@ as `admin_key` or `account:<id>` (`adminActor`).
 
 | Route | Body | Success | Errors |
 |---|---|---|---|
-| `POST …/erasure/plan` | optional `{"wallet_addresses": [string]}` | 200 `erasurePlanResponse`: `account_id`, `email`, `rows[]` (`rule`, `table`, `columns`, `action`, `rows`), `stripe_objects[]` (`target`, `id`), `stripe_object_counts`, `retained[]`, `balance_micro_usd`, `withdrawable_micro_usd`, `open_withdrawals`, `request_id`, `confirm_token`, `confirm_expires_at`, `grace_seconds` | 404 `not_found`; 409 `erasure_conflict` (already pending or erased) |
-| `POST …/erasure` | `{"confirm_token", "email", "reason", "wallet_addresses", "force"}`; `confirm_token` required | 200 `{"request": ErasureRequest}` | 403 `invalid_confirm_token`; 400 `email_mismatch`; 409 `open_withdrawal`, `erasure_conflict`; 404 `not_found`; with `force`, a failed scrub answers 409 or 500 with `scrub_error` and leaves the request `pending` |
-| `GET …/erasure` | — | 200 `{"request": ErasureRequest, "outbox": [ErasureOutboxItem]}` | 404 `not_found` |
+| `POST …/erasure/plan` | optional `{"wallet_addresses": [string]}` | 200 `erasurePlanResponse`: `account_id`, `email`, `rows[]` (`rule`, `table`, `columns`, `action`, `rows`), `stripe_objects[]` (`target`, `id`; every Express account and recipient the account used), `stripe_object_counts`, `wallets[]` (`address`, `payments_consumer_rows`, `payments_provider_rows`, `provider_payouts_rows`), `retained[]`, `balance_micro_usd`, `withdrawable_micro_usd`, `open_withdrawals`, `request_id`, `confirm_token`, `confirm_expires_at`, `grace_seconds` | 404 `not_found`; 409 `erasure_conflict` (already pending or erased) |
+| `POST …/erasure` | `{"account_id", "confirm_token", "email", "reason", "wallet_addresses", "force"}`; `account_id` must equal the path and `confirm_token` is required (else 400 `invalid_request_error`); `email` must equal the account email when it has one; `wallet_addresses` must be the plan's list | 200 `{"request": ErasureRequest}` | 403 `invalid_confirm_token`; 400 `email_mismatch`, `wallet_mismatch`; 409 `open_withdrawal`, `erasure_conflict`; 404 `not_found`; with `force`, a failed scrub answers 409 or 500 with `scrub_error` and leaves the request `pending` |
+| `GET …/erasure` | — | 200 `{"request": ErasureRequest, "outbox": [ErasureOutboxItem], "refused_credits": [ErasureRefusedCredit]}` | 404 `not_found` |
 | `POST …/erasure/cancel` | — | 200 `{"request": ErasureRequest}` | 404 `not_found` (no planned or pending request); 409 `erasure_conflict` (not pending, or `scrub_after` passed) |
 
 `…` is `/v1/admin/accounts/{account_id}`. `ErasureRequest`
@@ -928,8 +928,11 @@ While a request is `pending`, a Privy login of the account answers 403
 `account_pending_deletion` instead of creating a second account
 (`auth.ErrAccountPendingDeletion`). After the scrub the stored Privy ID is
 random, and a login creates a new account. A Checkout Session of an erased
-account that completes later is acknowledged with 200 and credits nothing
-(`store.ErrCheckoutErased`).
+account that completes later, or a replayed event for a session the scrub
+cleared, is acknowledged with 200 and credits nothing
+(`store.ErrCheckoutErased`). `ErasureRefusedCredit` has `id`, `account_id`,
+`entry_type`, `amount_micro_usd`, `reference` and `created_at`: a credit that
+arrived after the erasure and was kept out of the balance.
 
 ## Code map
 

@@ -158,6 +158,7 @@ func seedMemoryMarkers(t *testing.T, s *MemoryStore, account, marker string) {
 	if err := s.UpdateStripeWithdrawal(wd); err != nil {
 		t.Fatal(err)
 	}
+	ageWithdrawal(t, s, wd.ID, now.Add(-stripePayoutBounceWindow-time.Hour))
 }
 
 func TestErasureMarkerMemory(t *testing.T) {
@@ -169,6 +170,19 @@ func TestErasureMarkerMemory(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := s.CreateBillingSession(&BillingSession{ID: "bs-B-ref", AccountID: "acct-B", PaymentMethod: "stripe", AmountMicroUSD: 1, Status: "completed", ReferralCode: piiMarker + "-acct-A-code"}); err != nil {
+		t.Fatal(err)
+	}
+	// A Mac moved between accounts: both have a provider with se-shared,
+	// whose trust row belongs to acct-B too and must stay.
+	for _, p := range []ProviderRecord{
+		{ID: "prov-A-shared", AccountID: "acct-A", SEPublicKey: "se-shared", Hardware: []byte(`{}`), Models: []byte(`[]`)},
+		{ID: "prov-B-shared", AccountID: "acct-B", SEPublicKey: "se-shared", Hardware: []byte(`{}`), Models: []byte(`[]`)},
+	} {
+		if err := s.UpsertProvider(context.Background(), p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.UpsertProviderTrustReuse(context.Background(), ProviderTrustReuse{SEPubKey: "se-shared", Serial: keepMarker + "-shared", TrustLevel: "hardware", HardwareProofVerifiedAt: time.Now()}, 0); err != nil {
 		t.Fatal(err)
 	}
 	keepBefore := len(findMemoryMarker(s, keepMarker))
@@ -183,7 +197,7 @@ func TestErasureMarkerMemory(t *testing.T) {
 		}
 	}
 	now := time.Now().UTC()
-	if _, err := s.SaveErasurePlan(ctx, "acct-A", "admin_key", plan.ErasureCounts, "token", now.Add(time.Minute)); err != nil {
+	if _, err := s.SaveErasurePlan(ctx, "acct-A", "admin_key", plan.ErasureCounts, nil, "token", now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	req, err := s.RequestAccountErasure(ctx, ErasureConfirm{AccountID: "acct-A", ConfirmToken: "token", Email: plan.Email, Now: now})

@@ -2556,7 +2556,7 @@ const maxControlPlaneBodyBytes = 64 << 10 // 64 KiB
 //     acted on, so a forged SecurityInfo can never drive a trust upgrade.
 func (s *Server) HandleMDMWebhook(w http.ResponseWriter, r *http.Request) {
 	if s.mdmWebhookSecret != "" && !s.mdmWebhookTokenValid(r) {
-		s.logger.Warn("mdm webhook rejected: missing/invalid shared secret", "remote_addr", r.RemoteAddr)
+		s.logger.Warn("mdm webhook rejected: missing/invalid shared secret")
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -2566,7 +2566,7 @@ func (s *Server) HandleMDMWebhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	s.logger.Debug("mdm webhook received", "body_size", len(body), "body_preview", string(body[:min(len(body), 500)]))
+	s.logger.Debug("mdm webhook received", "body_size", len(body))
 	if s.mdmClient != nil {
 		s.mdmClient.HandleWebhook(body)
 	}
@@ -3546,7 +3546,6 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 			"route", route,
 			"status", sw.status,
 			"duration_ms", dur.Milliseconds(),
-			"remote", r.RemoteAddr,
 			"user_id", userID,
 		)
 

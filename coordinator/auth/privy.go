@@ -133,7 +133,6 @@ func (p *PrivyAuth) GetOrCreateUser(privyUserID string) (*store.User, error) {
 	p.logger.Info("privy: created user",
 		"privy_user_id", privyUserID,
 		"account_id", user.AccountID,
-		"email", details.Email,
 	)
 
 	return user, nil

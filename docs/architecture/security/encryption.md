@@ -1,6 +1,6 @@
 # Encryption and privacy model
 
-> Last updated: 2026-09-27
+> Last updated: 2026-10-03
 
 An inference request crosses three NaCl Box hops: consumer → coordinator
 (optional), coordinator → provider (mandatory), provider → coordinator
@@ -128,12 +128,12 @@ This table is the privacy statement. [`../../consumer/privacy-expectations.md`](
 
 | Retained or logged (metadata only) | Code |
 |---|---|
-| Access log, one `request` line per HTTP request: `request_id`, `method`, `path`, `route`, `status`, `duration_ms`, `remote` (the connection's remote address), `user_id` (account, when authenticated) | `coordinator/api/server.go` (`loggingMiddleware`) |
+| Access log, one `request` line per HTTP request: `request_id`, `method`, `path`, `route`, `status`, `duration_ms`, `user_id` (account, when authenticated) | `coordinator/api/server.go` (`loggingMiddleware`) |
 | `inference request dispatched`: `trace_id`, `request_id`, `model`, `provider_id`, `stream`, `attempt` | `coordinator/api/dispatch.go` |
 | Request / route records: token counts, timing, non-content params (`temperature`, `top_p`); the record types document that they contain no prompt or response content | `coordinator/store/interface.go` |
 | Cache-affinity keys: keyed digests of identity / prefix bytes; raw bytes are never stored, logged, or returned | `coordinator/registry/cache_route_keys.go` |
 | Provider identity rows: SE public key, serial, MDA UDID and chain, posture bits (`ProviderTrustReuse`); code-identity proofs `CodeAttestation{se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash}`; push budgets keyed by SE key + APNs token hash | `coordinator/store/interface.go` (`ProviderTrustReuse`, `CodeAttestation`, `CodeAttestPushBudget`); `coordinator/api/trust_reuse.go`; `coordinator/api/code_attest_throttle.go` |
-| MDM webhook body: `body_size` and a 500-byte `body_preview` at `Debug` level (MDM plist, never inference data) | `coordinator/api/server.go` (`HandleMDMWebhook`) |
+| MDM webhook body: `body_size` at `Debug` level | `coordinator/api/server.go` (`HandleMDMWebhook`) |
 | Device-code lifecycle: `user_code`, `account_id` at `Info` level | `coordinator/api/device_auth.go` |
 
 | Explicitly avoided | Code |
@@ -143,6 +143,7 @@ This table is the privacy statement. [`../../consumer/privacy-expectations.md`](
 | The coordinator has no client telemetry ingestion route (the retired `POST /v1/telemetry/events` is unregistered), because provider telemetry had free-form `message` / `stack` fields | `coordinator/api/server.go` (`routes`); `coordinator/api/telemetry_e2e_test.go` |
 | Sealed requests never trigger remote-media fetching (no coordinator egress derived from sealed content) | `coordinator/api/sender_encryption.go` (`isSealedRequest`) |
 | Session private key and memoized shared key are dropped at request end | `coordinator/api/chunk_key_cache.go` (`forget`) |
+| Process logs carry no email address, IP address (`RemoteAddr` or `X-Forwarded-For`), device serial number or UDID; log lines name accounts and providers by `account_id` and `provider_id`. Logs go to Datadog, so erasing a store row would not erase them | `coordinator/api/log_personal_data_test.go` |
 
 ## Invariants
 

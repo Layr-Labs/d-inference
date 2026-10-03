@@ -210,7 +210,6 @@ func (s *Server) handleDeviceApprove(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("device approved",
 		"user_code", userCode,
 		"account_id", user.AccountID,
-		"email", user.Email,
 	)
 
 	writeJSON(w, http.StatusOK, map[string]any{

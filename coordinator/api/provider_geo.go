@@ -118,7 +118,7 @@ func (g *ipAPIGeoResolver) lookupIPAPI(ip net.IP) *store.ProviderLocation {
 	resp, err := client.Do(req)
 	if err != nil {
 		if g.logger != nil {
-			g.logger.Debug("ip-api lookup failed", "ip", ip.String(), "pro", g.apiKey != "", "error", err)
+			g.logger.Debug("ip-api lookup failed", "pro", g.apiKey != "", "error", err)
 		}
 		return nil
 	}
@@ -137,7 +137,7 @@ func (g *ipAPIGeoResolver) lookupIPAPI(ip net.IP) *store.ProviderLocation {
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil || result.Status != "success" {
 		if g.logger != nil {
-			g.logger.Debug("ip-api lookup unsuccessful", "ip", ip.String(), "pro", g.apiKey != "", "status", result.Status)
+			g.logger.Debug("ip-api lookup unsuccessful", "pro", g.apiKey != "", "status", result.Status)
 		}
 		return nil
 	}

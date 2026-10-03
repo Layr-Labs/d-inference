@@ -507,6 +507,9 @@ type APIKey struct {
 	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+
+	// DeletedAt marks a soft-deleted key; no read returns it.
+	DeletedAt *time.Time `json:"-"`
 }
 
 // APIKeyCreate carries the create-time options for a new API key. All limit
@@ -560,6 +563,9 @@ type User struct {
 	StripeDestinationType  string `json:"stripe_destination_type,omitempty"` // "bank" | "card" | ""
 	StripeDestinationLast4 string `json:"stripe_destination_last4,omitempty"`
 	StripeInstantEligible  bool   `json:"stripe_instant_eligible,omitempty"` // debit-card destination supports Instant Payouts
+
+	// DeletedAt marks a soft-deleted user; no read returns it.
+	DeletedAt *time.Time `json:"-"`
 }
 
 // MaxStripeWithdrawalsByStatusLimit caps ListStripeWithdrawalsByStatus result
@@ -775,6 +781,9 @@ type ProviderToken struct {
 	Label     string    `json:"label"`      // human-readable label (e.g. hostname)
 	Active    bool      `json:"active"`
 	CreatedAt time.Time `json:"created_at"`
+
+	// DeletedAt marks a soft-deleted token; no read returns it.
+	DeletedAt *time.Time `json:"-"`
 }
 
 // InviteCode represents a coordinator-generated invite code that grants credits.
@@ -890,6 +899,9 @@ type ProviderRecord struct {
 	LastSessionStats           json.RawMessage `json:"last_session_stats,omitempty"`
 	RegisteredAt               time.Time       `json:"registered_at"`
 	LastSeen                   time.Time       `json:"last_seen"`
+
+	// DeletedAt marks a soft-deleted provider record; no read returns it.
+	DeletedAt *time.Time `json:"-"`
 }
 
 // ProviderSession is one connect→disconnect lifecycle of a provider machine.

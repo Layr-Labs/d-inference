@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 )
@@ -25,19 +26,20 @@ func TestMigrationsBuildCheckedInSchema(t *testing.T) {
 	t.Cleanup(s.Close)
 
 	dumpPool := openTestPool(t, newThrowawayTestDatabase(t))
-	loadSchemaFile(t, dumpPool)
+	loadSchemaFile(t, dumpPool, checkedInSchemaFile)
 
 	assertSameSchema(t, "schema/schema.sql", schemaSnapshot(t, dumpPool), "goose", schemaSnapshot(t, s.pool))
 }
 
 // A database that a pre-goose binary migrated meets goose for the first
-// time: every migration runs, and nothing changes except the new goose
-// version table.
-func TestMigrationsLeaveLegacyDatabaseUnchanged(t *testing.T) {
+// time. The baseline and the Go steps (versions 1 to 5) change nothing
+// except the new goose version table; the later versions then bring it to
+// the checked-in schema.
+func TestMigrationsUpgradeLegacyDatabase(t *testing.T) {
 	ctx := context.Background()
 	databaseURL := newThrowawayTestDatabase(t)
 	pool := openTestPool(t, databaseURL)
-	loadSchemaFile(t, pool)
+	loadSchemaFile(t, pool, preGooseSchemaFile)
 	// The rows the pre-goose boot leaves on a fresh database.
 	for _, stmt := range []string{
 		`INSERT INTO schema_migrations (id, applied_at) VALUES
@@ -75,13 +77,25 @@ func TestMigrationsLeaveLegacyDatabaseUnchanged(t *testing.T) {
 	}
 	schemaBefore, rowsBefore := schemaSnapshot(t, pool), readRows()
 
-	s, err := NewPostgres(ctx, Config{DatabaseURL: databaseURL})
+	s := &PostgresStore{pool: pool}
+	db := stdlib.OpenDBFromPool(pool)
+	t.Cleanup(func() { _ = db.Close() })
+	provider, err := s.newMigrationProvider(db)
 	if err != nil {
-		t.Fatalf("NewPostgres on legacy database: %v", err)
+		t.Fatal(err)
 	}
-	t.Cleanup(s.Close)
+	if _, err := provider.UpTo(ctx, lastPreGooseVersion); err != nil {
+		t.Fatalf("apply versions up to %d on legacy database: %v", lastPreGooseVersion, err)
+	}
+	assertSameSchema(t, "legacy", schemaBefore, "after the baseline", schemaSnapshot(t, pool))
+	assertSameSchema(t, "legacy rows", rowsBefore, "rows after the baseline", readRows())
 
-	assertSameSchema(t, "legacy", schemaBefore, "after goose", schemaSnapshot(t, pool))
+	if err := s.migrate(ctx); err != nil {
+		t.Fatalf("migrate legacy database: %v", err)
+	}
+	dumpPool := openTestPool(t, newThrowawayTestDatabase(t))
+	loadSchemaFile(t, dumpPool, checkedInSchemaFile)
+	assertSameSchema(t, "schema/schema.sql", schemaSnapshot(t, dumpPool), "upgraded legacy", schemaSnapshot(t, pool))
 	assertSameSchema(t, "legacy rows", rowsBefore, "rows after goose", readRows())
 	var versions []int64
 	rows, err := pool.Query(ctx, `SELECT version_id FROM `+migrationVersionTable+` ORDER BY id`)
@@ -96,8 +110,9 @@ func TestMigrationsLeaveLegacyDatabaseUnchanged(t *testing.T) {
 		}
 		versions = append(versions, v)
 	}
-	if len(versions) != 6 || versions[0] != 0 || versions[5] != 5 {
-		t.Fatalf("goose versions = %v, want 0 through 5", versions)
+	want := len(provider.ListSources())
+	if len(versions) != want+1 || versions[0] != 0 || versions[want] != int64(want) {
+		t.Fatalf("goose versions = %v, want 0 through %d", versions, want)
 	}
 }
 
@@ -135,16 +150,17 @@ func TestConcurrentMigrationsApplyOnce(t *testing.T) {
 			t.Fatalf("runner %d: %v", i, err)
 		}
 	}
-	if applied[0]+applied[1] != 5 || (applied[0] != 0 && applied[1] != 0) {
-		t.Fatalf("applied = %v, want one runner to apply all 5 versions and the other none", applied)
+	want := len(runners[0].ListSources())
+	if applied[0]+applied[1] != want || (applied[0] != 0 && applied[1] != 0) {
+		t.Fatalf("applied = %v, want one runner to apply all %d versions and the other none", applied, want)
 	}
 	var rows, distinct int
 	pool := openTestPool(t, databaseURL)
 	if err := pool.QueryRow(ctx, `SELECT count(*), count(DISTINCT version_id) FROM `+migrationVersionTable).Scan(&rows, &distinct); err != nil {
 		t.Fatal(err)
 	}
-	if rows != 6 || distinct != 6 {
-		t.Fatalf("goose version rows = %d (%d distinct), want 6", rows, distinct)
+	if rows != want+1 || distinct != want+1 {
+		t.Fatalf("goose version rows = %d (%d distinct), want %d", rows, distinct, want+1)
 	}
 }
 
@@ -182,5 +198,51 @@ func TestMigrateRetriesLockTimeout(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "hit lock_timeout; retrying") {
 		t.Fatalf("migrate did not retry after a lock timeout; logs:\n%s", logs.String())
+	}
+}
+
+// A CREATE INDEX CONCURRENTLY waits for every older snapshot. A query that
+// runs longer than the 3 s session lock_timeout must not cancel it: the
+// CONCURRENTLY migrations wait up to a minute, and apply on the first attempt.
+func TestConcurrentIndexMigrationWaitsForOlderSnapshot(t *testing.T) {
+	ctx := context.Background()
+	databaseURL := newThrowawayTestDatabase(t)
+	s, err := NewPostgres(ctx, Config{DatabaseURL: databaseURL})
+	if err != nil {
+		t.Fatalf("NewPostgres: %v", err)
+	}
+	t.Cleanup(s.Close)
+	// Make version 6 pending again.
+	if _, err := s.pool.Exec(ctx, `DROP INDEX idx_provider_sessions_account`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(ctx, `DELETE FROM `+migrationVersionTable+` WHERE version_id >= 6`); err != nil {
+		t.Fatal(err)
+	}
+
+	holder := openTestPool(t, databaseURL)
+	tx, err := holder.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT count(*) FROM users`); err != nil {
+		t.Fatal(err)
+	}
+	release := time.AfterFunc(2*migrationLockTimeout, func() { _ = tx.Rollback(context.Background()) })
+	defer release.Stop()
+
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(previous)
+	if err := s.migrate(ctx); err != nil {
+		t.Fatalf("migrate behind an older snapshot: %v", err)
+	}
+	if strings.Contains(logs.String(), "retrying") {
+		t.Fatalf("the index build hit the session lock_timeout; logs:\n%s", logs.String())
+	}
+	var valid bool
+	if err := s.pool.QueryRow(ctx, `SELECT indisvalid FROM pg_index WHERE indexrelid = 'idx_provider_sessions_account'::regclass`).Scan(&valid); err != nil || !valid {
+		t.Fatalf("idx_provider_sessions_account valid=%v err=%v", valid, err)
 	}
 }

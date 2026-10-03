@@ -27,6 +27,7 @@ func (s *PostgresStore) GetProviderForRestore(ctx context.Context, serial, seKey
 		// column comes exclusively from the fixed literals above, never a caller.
 		p, err := scanProviderRecord(s.pool.QueryRow(ctx, `SELECT `+providerRecordColumns+`
 			FROM providers WHERE `+identity.column+` = $1 AND `+identity.column+` <> '' AND id <> ALL($2::text[])
+			AND deleted_at IS NULL
 			ORDER BY last_seen DESC, id DESC LIMIT 1`, identity.value, excludeIDs))
 		if errors.Is(err, pgx.ErrNoRows) {
 			continue
@@ -47,7 +48,7 @@ func (s *MemoryStore) GetProviderForRestore(ctx context.Context, serial, seKey s
 	defer s.mu.RUnlock()
 	var serialMatch, keyMatch *ProviderRecord
 	for _, p := range s.providerRecords {
-		if slices.Contains(excludeIDs, p.ID) {
+		if slices.Contains(excludeIDs, p.ID) || p.DeletedAt != nil {
 			continue
 		}
 		if serial != "" && p.SerialNumber == serial && newerProviderRecord(p, serialMatch) {

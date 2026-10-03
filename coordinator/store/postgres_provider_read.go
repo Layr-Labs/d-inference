@@ -43,7 +43,7 @@ func scanProviderRecord(row rowScanner) (*ProviderRecord, error) {
 func (s *PostgresStore) GetProviderRecord(ctx context.Context, id string) (*ProviderRecord, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	p, err := scanProviderRecord(s.pool.QueryRow(ctx, `SELECT `+providerRecordColumns+` FROM providers WHERE id = $1`, id))
+	p, err := scanProviderRecord(s.pool.QueryRow(ctx, `SELECT `+providerRecordColumns+` FROM providers WHERE id = $1 AND deleted_at IS NULL`, id))
 	if err != nil {
 		return nil, fmt.Errorf("store: provider not found: %w", err)
 	}

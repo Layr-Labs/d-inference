@@ -39,7 +39,7 @@ func (s *MemoryStore) ClaimModelTokenPromotion(account, model string, now time.T
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	u := s.usersByAccountID[account]
-	if u == nil || u.PrivyUserID == "" || u.Role == RoleService {
+	if u == nil || u.DeletedAt != nil || u.PrivyUserID == "" || u.Role == RoleService {
 		return nil, ErrPromotionIneligible
 	}
 	if _, exists := s.modelTokenGrants[account][model]; exists {

@@ -43,7 +43,7 @@ func (s *PostgresStore) ResolveMachineContinuity(ctx context.Context, sessionID,
 	// Never restore through serial or SE claims, and never cross account history
 	// even when an Apple-verified MDA serial associates two account-scoped aliases.
 	result.Previous, err = scanProviderRecord(tx.QueryRow(ctx, `SELECT `+providerRecordColumns+`
-	 FROM providers WHERE account_id=$2 AND id<>$3 AND id<>ALL($4::text[])
+	 FROM providers WHERE account_id=$2 AND id<>$3 AND id<>ALL($4::text[]) AND deleted_at IS NULL
 	 AND id IN (SELECT session_id FROM darkbloom_machine_sessions WHERE machine_id=$1 AND account_id=$2)
 	 ORDER BY last_seen DESC,id DESC LIMIT 1`, result.Machine.ID, account, sessionID, excluded))
 	if errors.Is(err, pgx.ErrNoRows) {

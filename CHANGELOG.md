@@ -5,6 +5,7 @@
 - Apply the coordinator's Postgres schema as numbered goose migrations instead of re-running every DDL statement at each boot. The first boot records the existing schema as version 1 without changing it; later boots apply only new versions. Migration statements stop waiting for a lock after 3 seconds and retry up to three times, and coordinators that start together take turns on an advisory lock.
 - Check in the schema as `coordinator/store/schema/schema.sql` and test that the migrations build exactly that schema. New schema changes go in a new numbered migration file.
 - Generate the coordinator's API-key queries with sqlc from that schema; `make sqlc-check` fails CI when the generated code or the schema file is stale. API-key behaviour does not change.
+- Prepare account erasure: add `deleted_at` to users, API keys, provider records and provider tokens, hide soft-deleted rows from every live read, let a Privy user sign up again after erasure, index the erase paths, and cascade referrer code changes to referrals. Nothing sets `deleted_at` yet. After this release runs, roll back only to coordinator images built with goose.
 
 ## Unreleased — leaderboard availability
 

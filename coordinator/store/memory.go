@@ -353,7 +353,7 @@ func (s *MemoryStore) CreateAPIKey(accountID string, opts APIKeyCreate) (string,
 func (s *MemoryStore) GetKeyAccount(key string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if rec, ok := s.keyRecords[key]; ok {
+	if rec, ok := s.keyRecords[key]; ok && rec.DeletedAt == nil {
 		return rec.OwnerAccountID
 	}
 	return ""
@@ -364,7 +364,7 @@ func (s *MemoryStore) AuthenticateKey(rawKey string) (*APIKey, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	rec, ok := s.keyRecords[rawKey]
-	if !ok {
+	if !ok || rec.DeletedAt != nil {
 		return nil, fmt.Errorf("key not found")
 	}
 	if rec.Disabled {
@@ -399,7 +399,7 @@ func (s *MemoryStore) ListAPIKeys(accountID string) ([]APIKey, error) {
 	defer s.mu.RUnlock()
 	out := make([]APIKey, 0)
 	for _, rec := range s.keyRecords {
-		if rec.OwnerAccountID != accountID || rec.ID == "" {
+		if rec.OwnerAccountID != accountID || rec.ID == "" || rec.DeletedAt != nil {
 			continue
 		}
 		out = append(out, *cloneAPIKey(rec))
@@ -417,7 +417,7 @@ func (s *MemoryStore) GetAPIKeyByID(accountID, id string) (*APIKey, error) {
 		return nil, fmt.Errorf("key not found")
 	}
 	rec, ok := s.keyRecords[raw]
-	if !ok || rec.OwnerAccountID != accountID {
+	if !ok || rec.OwnerAccountID != accountID || rec.DeletedAt != nil {
 		return nil, fmt.Errorf("key not found")
 	}
 	return cloneAPIKey(rec), nil
@@ -432,7 +432,7 @@ func (s *MemoryStore) UpdateAPIKey(accountID, id string, mutable APIKey) (*APIKe
 		return nil, fmt.Errorf("key not found")
 	}
 	rec, ok := s.keyRecords[raw]
-	if !ok || rec.OwnerAccountID != accountID {
+	if !ok || rec.OwnerAccountID != accountID || rec.DeletedAt != nil {
 		return nil, fmt.Errorf("key not found")
 	}
 	rec.Name = mutable.Name
@@ -482,7 +482,7 @@ func (s *MemoryStore) RotateAPIKey(accountID, id string) (string, *APIKey, error
 		return "", nil, fmt.Errorf("key not found")
 	}
 	old, ok := s.keyRecords[oldRaw]
-	if !ok || old.OwnerAccountID != accountID {
+	if !ok || old.OwnerAccountID != accountID || old.DeletedAt != nil {
 		return "", nil, fmt.Errorf("key not found")
 	}
 	rec := &APIKey{
@@ -1131,7 +1131,7 @@ func (s *MemoryStore) UsageFlowBuckets(since time.Time, providerLocs map[string]
 		if loc, ok := providerLocs[providerID]; ok && loc != nil {
 			return loc
 		}
-		if rec, ok := s.providerRecords[providerID]; ok {
+		if rec, ok := s.providerRecords[providerID]; ok && rec.DeletedAt == nil {
 			return rec.Location
 		}
 		return nil
@@ -1950,7 +1950,9 @@ func (s *MemoryStore) CreateUser(user *User) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.usersByPrivyID[user.PrivyUserID]; exists {
+	// A soft-deleted user does not hold its Privy ID, as with the partial
+	// unique index in Postgres.
+	if existing, exists := s.usersByPrivyID[user.PrivyUserID]; exists && existing.DeletedAt == nil {
 		return fmt.Errorf("user with Privy ID %q already exists", user.PrivyUserID)
 	}
 	if _, exists := s.usersByAccountID[user.AccountID]; exists {
@@ -1970,7 +1972,7 @@ func (s *MemoryStore) GetUserByPrivyID(privyUserID string) (*User, error) {
 	defer s.mu.RUnlock()
 
 	u, ok := s.usersByPrivyID[privyUserID]
-	if !ok {
+	if !ok || u.DeletedAt != nil {
 		return nil, fmt.Errorf("user with Privy ID %q %w", privyUserID, ErrNotFound)
 	}
 	copy := *u
@@ -1983,7 +1985,7 @@ func (s *MemoryStore) GetUserByAccountID(accountID string) (*User, error) {
 	defer s.mu.RUnlock()
 
 	u, ok := s.usersByAccountID[accountID]
-	if !ok {
+	if !ok || u.DeletedAt != nil {
 		return nil, fmt.Errorf("user with account ID %q %w", accountID, ErrNotFound)
 	}
 	copy := *u
@@ -2035,7 +2037,7 @@ func (s *MemoryStore) GetUserByStripeAccount(stripeAccountID string) (*User, err
 	defer s.mu.RUnlock()
 
 	u, ok := s.usersByStripeAccountID[stripeAccountID]
-	if !ok {
+	if !ok || u.DeletedAt != nil {
 		return nil, fmt.Errorf("user with Stripe account %q not found", stripeAccountID)
 	}
 	copy := *u
@@ -2048,7 +2050,7 @@ func (s *MemoryStore) GetUserByEmail(email string) (*User, error) {
 	defer s.mu.RUnlock()
 	lower := strings.ToLower(email)
 	for _, u := range s.usersByAccountID {
-		if strings.ToLower(u.Email) == lower {
+		if strings.ToLower(u.Email) == lower && u.DeletedAt == nil {
 			copy := *u
 			return &copy, nil
 		}
@@ -2437,7 +2439,7 @@ func (s *MemoryStore) GetProviderToken(token string) (*ProviderToken, error) {
 
 	h := hashKey(token)
 	pt, ok := s.providerTokens[h]
-	if !ok {
+	if !ok || pt.DeletedAt != nil {
 		return nil, errors.New("provider token not found")
 	}
 	if !pt.Active {
@@ -2749,7 +2751,7 @@ func (s *MemoryStore) GetProviderRecord(_ context.Context, id string) (*Provider
 	defer s.mu.RUnlock()
 
 	p, ok := s.providerRecords[id]
-	if !ok {
+	if !ok || p.DeletedAt != nil {
 		return nil, fmt.Errorf("provider %q not found", id)
 	}
 	cp := *p
@@ -2772,7 +2774,7 @@ func (s *MemoryStore) GetMDAChainBySerial(_ context.Context, serial string) (jso
 	// recently seen non-empty chain.
 	var best *ProviderRecord
 	for _, p := range s.providerRecords {
-		if p.SerialNumber != serial || len(p.MDACertChain) == 0 {
+		if p.SerialNumber != serial || len(p.MDACertChain) == 0 || p.DeletedAt != nil {
 			continue
 		}
 		if best == nil || p.LastSeen.After(best.LastSeen) {
@@ -2797,7 +2799,7 @@ func (s *MemoryStore) ListProvidersByAccount(_ context.Context, accountID string
 
 	records := make([]ProviderRecord, 0)
 	for _, p := range s.providerRecords {
-		if p.AccountID == accountID {
+		if p.AccountID == accountID && p.DeletedAt == nil {
 			cp := *p
 			if p.Location != nil {
 				loc := *p.Location

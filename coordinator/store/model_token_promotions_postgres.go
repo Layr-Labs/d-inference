@@ -60,7 +60,7 @@ func (s *PostgresStore) ClaimModelTokenPromotion(account, model string, now time
 		return nil, err
 	}
 	var user User
-	err = tx.QueryRow(ctx, `SELECT account_id,privy_user_id,role,created_at FROM users WHERE account_id=$1`, account).Scan(&user.AccountID, &user.PrivyUserID, &user.Role, &user.CreatedAt)
+	err = tx.QueryRow(ctx, `SELECT account_id,privy_user_id,role,created_at FROM users WHERE account_id=$1 AND deleted_at IS NULL`, account).Scan(&user.AccountID, &user.PrivyUserID, &user.Role, &user.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrPromotionIneligible
 	}

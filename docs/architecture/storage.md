@@ -129,6 +129,10 @@ PostgreSQL URL; there is no memory-store fallback or schema-skip mode.
 | 3 | `ensureProviderRestoreIndexes` (`coordinator/store/postgres_startup.go`) | Builds the two provider-restore indexes `CONCURRENTLY`. |
 | 4 | `ensureProviderEarningsJobIndex` (`coordinator/store/postgres.go`) | Builds the `provider_earnings(job_id)` unique index `CONCURRENTLY`. |
 | 5 | `ensureProviderEarningsWindowIndex` (`coordinator/store/postgres_earnings_window_index.go`) | Builds the BRIN time index and sets the analyze cadence. |
+| 6–12 | `00006_…` to `00012_…` | One `CONCURRENTLY` index per file for account erasure: `account_id` on `provider_sessions`, `provider_log_reports`, `device_codes`, `darkbloom_machine_sessions`, `model_token_reservations`; `consumer_key_hash` on `inference_routes` and `request_rejections`. |
+| 13 | `00013_soft_delete_columns.sql` | Adds `deleted_at TIMESTAMPTZ` (nullable, no default) to `users`, `api_keys`, `providers`, `provider_tokens`. |
+| 14–16 | `00014_…` to `00016_…` | Replaces the full unique key on `users.privy_user_id` with the partial unique index `idx_users_privy_live` (`WHERE deleted_at IS NULL`); drops `users_privy_user_id_key` and `idx_users_privy`. |
+| 17 | `00017_referrals_referrer_code_cascade.sql` | Replaces the `referrals.referrer_code` foreign key with `referrals_referrer_code_cascade_fkey` (`ON UPDATE CASCADE`), added `NOT VALID` and then validated. |
 
 Versions 2 to 5 are Go migrations (`goMigrations`). They keep the code they had
 before goose and run on the store pool. The SQL migrations run on a separate
@@ -137,9 +141,29 @@ two-connection pool whose sessions set `lock_timeout` to 3 s and
 `migrationStatementTimeout`); a value set in the database URL wins. A DDL
 statement that cannot get its lock in time fails instead of queueing every
 later query on the table behind it, and `migrate` runs goose again, up to three
-attempts. Goose holds a session advisory lock while it applies versions, so
-two coordinators that start together take turns: one applies, the other then
-finds nothing to apply. Out-of-order versions are refused.
+attempts. A `CONCURRENTLY` statement blocks no reads or writes but waits for
+every older snapshot in the database, so those files raise `lock_timeout` to
+1 min for their own statements and reset it after. Each of them first drops an
+invalid index that an interrupted attempt left behind. Goose holds a session
+advisory lock while it applies versions, so two coordinators that start
+together take turns: one applies, the other then finds nothing to apply.
+Out-of-order versions are refused.
+
+### Soft-deleted rows
+
+A row in `users`, `api_keys`, `providers` or `provider_tokens` whose
+`deleted_at` is set belongs to an erased account. Every read that returns a
+live user, key, provider record or provider token filters
+`deleted_at IS NULL`, in both `PostgresStore` and `MemoryStore` (the
+`DeletedAt` fields, never serialized). That covers user lookups by account,
+Privy ID, Stripe account and email; promotion claims; key authentication,
+listing, lookup, update and rotation; provider token lookup; provider record,
+MDA chain, account listing, restore (`GetProviderForRestore`) and machine
+continuity history; usage-flow provider locations; and the machine-inventory
+backfill. Writes and hard deletes do not filter. No code sets `deleted_at` yet;
+account erasure will, and it must also invalidate the `CachedStore` user
+cache. A Privy user ID is unique among live users only, so a person can sign up
+again after erasure.
 
 `coordinator/store/schema/schema.sql` is the `pg_dump --schema-only` of the
 schema the migrations build, without `goose_db_version`.
@@ -326,7 +350,11 @@ KV blocks under a per-model key, not tokens.
    migrations in the baseline commit their `schema_migrations` marker in the
    same statement or transaction as their update
    (`coordinator/store/schema/migrations/00001_baseline.sql`).
-4. **Boot never holds a long lock on a hot table.** The
+4. **A soft-deleted row is never returned as live.** Reads of `users`,
+   `api_keys`, `providers` and `provider_tokens` filter `deleted_at IS NULL`
+   (`coordinator/store/soft_delete_reads_test.go` covers each read on both
+   stores).
+5. **Boot never holds a long lock on a hot table.** The
    `provider_earnings(job_id)` unique index is built `CONCURRENTLY`, only after
    a duplicate check, and skipped when already valid; the dedupe that violated
    this lives in `coordinator/store/migrations/dedupe_provider_earnings.sql` and
@@ -337,16 +365,16 @@ KV blocks under a per-model key, not tokens.
    `autovacuum_analyze_scale_factor` is `0.005` so planner statistics track
    ingestion (`ensureProviderEarningsWindowIndex`,
    `coordinator/store/postgres_earnings_window_index.go`).
-5. **Money is micro-USD integers in an append-only ledger.** `LedgerStore`
+6. **Money is micro-USD integers in an append-only ledger.** `LedgerStore`
    and `balances` never store floats; see
    [`billing.md#invariants`](billing.md#invariants).
-6. **Nothing prompt-derived is persisted.** `TelemetryStore` rows carry token
+7. **Nothing prompt-derived is persisted.** `TelemetryStore` rows carry token
    counts, timings and outcomes only; the `serial_number` column of
    `provider_log_reports` and the legacy `cache_affinity_key` column are kept
    empty by the triggers `clear_provider_log_report_serial` and
    `clear_legacy_cache_affinity_key`
    (`coordinator/store/schema/migrations/00001_baseline.sql`).
-7. **Provider secrets never leave the Keychain in the clear.** The KV KEK is
+8. **Provider secrets never leave the Keychain in the clear.** The KV KEK is
    wrapped by a Secure Enclave key and the SSD cache is unreadable without it
    (`provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift`).
 
@@ -357,6 +385,7 @@ KV blocks under a per-model key, not tokens.
 | Coordinator exits 1 at boot with `store: run migrations` | A migration failed (permissions, a hand-edited schema, or a lock still held after three `lock_timeout` attempts) | The failed `postgres migration` version in the log; `pg_stat_activity` for blockers. |
 | Boot fails with `missing (out-of-order) migration` | A version below the database's highest was never applied, for example two branches added migrations and the higher one deployed first | `SELECT * FROM goose_db_version`; renumber the unapplied migration above the highest applied version. |
 | Boot fails with `found duplicate migration version` | Two migration files use the same number | Renumber one of them. |
+| A coordinator built before goose fails to boot with a unique-violation on `idx_users_privy` | It replays its boot DDL, whose non-concurrent `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_privy` fails once a soft-deleted and a live user share a Privy ID | Roll back only to images built with goose; see the [deployment rollback](../operations/coordinator-deploy.md#rollback). |
 | Boot fails with `database holds data that retired backfills never processed` or `balances.withdrawable_micro_usd is missing` | The database has billing, usage or earnings history but never ran a backfill retired after v0.9.10 | Boot a coordinator built from v0.9.10 (which still runs them) against it once, then redeploy (`checkRetiredBackfills`). |
 | Boot fails with an actionable `provider_earnings` duplicate message | Rows share a non-empty `job_id`, so the unique index cannot be built | Run `dedupe_provider_earnings.sql` offline, then redeploy. |
 | `EIGENINFERENCE_DATABASE_URL is required in production` | No DSN and no memory-store opt-in | The environment file; see [`../operations/coordinator-deploy.md`](../operations/coordinator-deploy.md). |

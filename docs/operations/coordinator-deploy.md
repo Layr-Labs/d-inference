@@ -430,9 +430,14 @@ Registry for diagnosis.
 Providers reconnect on their own; the live registry is in-process and rebuilt
 from reconnects, durable state is in Cloud SQL and on the persistent disk.
 
-A previous image built before goose boots on a goose-migrated database: it runs
-its own boot DDL and ignores `goose_db_version`. An older goose image applies
-nothing, because every version it knows is already recorded.
+An older goose image applies nothing on a newer database, because every
+version it knows is already recorded. An image built before goose runs its own
+boot DDL and ignores `goose_db_version`. That works until the soft-delete
+migrations (versions 13 to 16) run: from then on, a soft-deleted user and a
+live user can share a Privy ID, and the old boot DDL's non-concurrent
+`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_privy` fails, so the image cannot
+boot. Deploy the goose release and let it run stable before the soft-delete
+release ships; after that, every rollback image must be a goose build.
 
 ## Environment file
 

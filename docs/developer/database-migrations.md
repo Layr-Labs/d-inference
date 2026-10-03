@@ -29,11 +29,24 @@ mechanism is explained in
    ALTER TABLE providers ADD COLUMN example TEXT;
    ```
 
-   Goose runs the file in one transaction. Put `-- +goose NO TRANSACTION` at
-   the top for `CREATE INDEX CONCURRENTLY` or `DROP INDEX CONCURRENTLY`, and
-   use one such statement per file. Wrap a statement that contains `;` (a
-   `DO` block or a function body) in `-- +goose StatementBegin` and
+   Goose runs the file in one transaction. Wrap a statement that contains `;`
+   (a `DO` block or a function body) in `-- +goose StatementBegin` and
    `-- +goose StatementEnd`.
+
+   For an index on a table that has data, build one index per file, outside a
+   transaction, and drop an invalid index that an interrupted attempt left:
+
+   ```sql
+   -- +goose NO TRANSACTION
+   -- +goose Up
+   SET lock_timeout = '1min';
+   DROP INDEX CONCURRENTLY IF EXISTS idx_example_account;
+   CREATE INDEX CONCURRENTLY idx_example_account ON example (account_id);
+   RESET lock_timeout;
+   ```
+
+   A `CONCURRENTLY` build waits for every older snapshot in the database, so
+   the 3 s session `lock_timeout` would cancel it behind any long query.
 3. Keep each statement short and lock-safe. The migration session sets
    `lock_timeout` to 3 s and `statement_timeout` to 10 min. Add a column
    without a volatile default; add a constraint `NOT VALID`, then `VALIDATE`

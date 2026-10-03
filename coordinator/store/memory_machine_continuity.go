@@ -34,7 +34,7 @@ func (s *MemoryStore) ResolveMachineContinuity(ctx context.Context, sessionID, a
 			continue
 		}
 		p := s.providerRecords[priorID]
-		if p != nil && p.AccountID == account && newerProviderRecord(p, result.Previous) {
+		if p != nil && p.AccountID == account && p.DeletedAt == nil && newerProviderRecord(p, result.Previous) {
 			result.Previous = p
 		}
 	}

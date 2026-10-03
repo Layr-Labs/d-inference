@@ -294,13 +294,24 @@ install_bundle_atomically() {
     rm -rf "$stage"
 }
 
+# Accept only a bare host[:port]: the value is written into TOML. Plain
+# http:// (ws://) is accepted only for a coordinator on this Mac.
 provider_websocket_url() {
-    local base=${1%/}
+    local base=${1%/} scheme host
+    local host_pattern='^[A-Za-z0-9.-]+(:[0-9]+)?$'
     case "$base" in
-        https://?*) printf 'wss://%s/ws/provider\n' "${base#https://}" ;;
-        http://?*) printf 'ws://%s/ws/provider\n' "${base#http://}" ;;
+        https://*) scheme=wss; host=${base#https://} ;;
+        http://*) scheme=ws; host=${base#http://} ;;
         *) return 1 ;;
     esac
+    [[ $host =~ $host_pattern ]] || return 1
+    if [ "$scheme" = ws ]; then
+        case "${host%%:*}" in
+            localhost|127.0.0.1) ;;
+            *) return 1 ;;
+        esac
+    fi
+    printf '%s://%s/ws/provider\n' "$scheme" "$host"
 }
 
 # Bind the provider to the coordinator that served this installer. Without
@@ -313,7 +324,7 @@ bind_provider_coordinator() {
     [ "$coord_url" = "$PRODUCTION_COORD_URL" ] && return 0
     local ws_url
     ws_url=$(provider_websocket_url "$coord_url") || {
-        fail_install "Coordinator URL must start with https:// or http:// (got $coord_url)."
+        fail_install "Coordinator URL must be https://<host>[:port], or http:// for localhost (got $coord_url)."
         return 1
     }
     mkdir -p "$(dirname "$config")" || return 1

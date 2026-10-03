@@ -99,8 +99,10 @@ The script performs these actions in order (`scripts/install.sh`; failures exit
    `defaultConfigPath`); retired `~/.dginf` / `~/.eigeninference` installs are
    not migrated. When `$COORD_URL` is not `https://api.darkbloom.dev`,
    `bind_provider_coordinator` writes `url = "wss://<host>/ws/provider"`
-   (`ws://` for an `http://` coordinator) under `[coordinator]` in that file.
-   It creates the file when it is missing and keeps every other line. The
+   under `[coordinator]` in that file (`ws://` only for `http://localhost` or
+   `http://127.0.0.1`; any other scheme, a path, or a character outside
+   `A-Za-z0-9.-` and `:port` stops the install). It creates the file when it
+   is missing and keeps every other line. The
    production installer does not create or change the file. A provider that
    is already running keeps its old coordinator until `darkbloom start`.
 6. **Step 3/5 — Secure Enclave identity.** Runs `darkbloom-enclave info`

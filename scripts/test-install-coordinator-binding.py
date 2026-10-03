@@ -74,12 +74,18 @@ class CoordinatorBindingTests(unittest.TestCase):
         self.assertEqual(text, existing.replace('url = "old"', DEV_WS))
 
     def test_local_http_coordinator_uses_plain_websocket(self):
-        result, text, _ = self.bind("http://127.0.0.1:8080")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(text, '[coordinator]\nurl = "ws://127.0.0.1:8080/ws/provider"\n')
+        for host in ("127.0.0.1:8080", "localhost"):
+            with self.subTest(host=host):
+                result, text, _ = self.bind("http://" + host)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(text, '[coordinator]\nurl = "ws://%s/ws/provider"\n' % host)
 
     def test_unsupported_url_fails_without_writing(self):
-        for url in ("__DARKBLOOM_COORD_URL__", "ftp://x.invalid", "https://"):
+        for url in ("__DARKBLOOM_COORD_URL__", "ftp://x.invalid", "https://",
+                    "http://192.0.2.10:8080", "http://dev.example.invalid",
+                    "https://dev.example.invalid/prefix",
+                    'https://dev.example.invalid"\n[provider]\nname = "x',
+                    "https://dev.example.invalid\\n", "https://user@dev.example.invalid"):
             with self.subTest(url=url):
                 result, text, _ = self.bind(url, "[provider]\n")
                 self.assertNotEqual(result.returncode, 0)

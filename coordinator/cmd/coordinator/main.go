@@ -786,7 +786,7 @@ func main() {
 	// Configure admin accounts.
 	if len(cfg.AdminEmails) > 0 {
 		srv.SetAdminEmails(cfg.AdminEmails)
-		logger.Info("admin accounts configured", "emails", cfg.AdminEmails)
+		logger.Info("admin accounts configured", "count", len(cfg.AdminEmails))
 	}
 
 	// Configure Privy authentication.

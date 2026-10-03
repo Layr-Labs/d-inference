@@ -688,8 +688,8 @@ trust_boundaries:
       correlates the callback's CommandUUID against the outstanding commands the
       coordinator itself issued (outstandingCommandTTL 30 min) and processes only the
       read-only request types SecurityInfo and DeviceInformation; uncorrelated callbacks
-      are dropped and never matched by UDID alone. The handler logs body_size and a
-      500-byte body_preview of the plist at Debug level. MicroMDM credentials are used
+      are dropped and never matched by UDID alone. The handler logs only body_size at
+      Debug level. MicroMDM credentials are used
       only for outbound API calls to MicroMDM, not to authenticate inbound callbacks.
 
       When a provider registers, the coordinator's store-backed MDM scheduler sends a
@@ -732,10 +732,6 @@ trust_boundaries:
         processed — but a forged payload for a live CommandUUID could still grant
         hardware trust without genuine MDM enrollment. No mTLS or IP allowlist
         (server.go HandleMDMWebhook, SEC-004)."
-      - "HandleMDMWebhook logs body_size and a 500-byte body_preview of the MDM plist at
-        Debug level. MDM plists carry device identifiers (UDID, serial), so Debug-level
-        coordinator logs are identity-bearing even though they never contain inference
-        data."
       - "The MDA freshness code is sha256(SE_public_key_bytes). The SE public key remains
         visible in the privacy-redacted public attestation status. An attacker can
         pre-compute that binding value; it is not a per-challenge freshness nonce.

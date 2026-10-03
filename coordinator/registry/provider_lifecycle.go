@@ -230,7 +230,6 @@ func (r *Registry) DisconnectDuplicatesBySerial(keepID string, serial string) {
 		r.logger.Warn("evicting duplicate provider from same device",
 			"evicted_id", id,
 			"kept_id", keepID,
-			"serial", serial,
 		)
 		// Disconnect closes the socket itself.
 		r.Disconnect(id)

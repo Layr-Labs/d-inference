@@ -80,7 +80,7 @@ func (s *Server) handleAdminStateExport(w http.ResponseWriter, r *http.Request) 
 	if s.adminKey == "" || subtle.ConstantTimeCompare(providedDigest[:], expectedDigest[:]) != 1 {
 		writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "admin access required"))
 		s.logger.Warn("state-export: unauthorized access attempt",
-			"remote_addr", r.RemoteAddr, "authorized", false)
+			"authorized", false)
 		return
 	}
 
@@ -94,7 +94,7 @@ func (s *Server) handleAdminStateExport(w http.ResponseWriter, r *http.Request) 
 			"set "+envStateExportRecipient+" to an age recipient, or set "+
 				envStateExportAllowPlaintext+"=true to download unencrypted"))
 		s.logger.Warn("state-export: refused (no recipient, plaintext not allowed)",
-			"remote_addr", r.RemoteAddr, "authorized", true, "encrypted", false)
+			"authorized", true, "encrypted", false)
 		return
 	}
 
@@ -121,7 +121,7 @@ func (s *Server) handleAdminStateExport(w http.ResponseWriter, r *http.Request) 
 				"state export recipient is misconfigured"))
 			// Do not log the recipient material; log only that parsing failed.
 			s.logger.Error("state-export: recipient parse failed",
-				"remote_addr", r.RemoteAddr, "authorized", true, "encrypted", true)
+				"authorized", true, "encrypted", true)
 			return
 		}
 	}
@@ -142,7 +142,7 @@ func (s *Server) handleAdminStateExport(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusInternalServerError, errorResponse("export_error",
 			"state export could not produce a consistent snapshot"))
 		s.logger.Error("state-export: staging failed (no bytes written)",
-			"remote_addr", r.RemoteAddr, "authorized", true, "encrypted", encrypted,
+			"authorized", true, "encrypted", encrypted,
 			"root", root, "error", stageErr.Error())
 		return
 	}
@@ -168,7 +168,7 @@ func (s *Server) handleAdminStateExport(w http.ResponseWriter, r *http.Request) 
 		if err != nil {
 			// Headers already sent; we can only abort the stream.
 			s.logger.Error("state-export: age writer init failed after headers",
-				"remote_addr", r.RemoteAddr, "error", err.Error())
+				"error", err.Error())
 			return
 		}
 		ageWriter = aw
@@ -188,13 +188,12 @@ func (s *Server) handleAdminStateExport(w http.ResponseWriter, r *http.Request) 
 		// Headers/body already in flight — cannot change status. Log the failure;
 		// the truncated stream signals the error to the client.
 		s.logger.Error("state-export: archive failed mid-stream",
-			"remote_addr", r.RemoteAddr, "authorized", true, "encrypted", encrypted,
+			"authorized", true, "encrypted", encrypted,
 			"bytes", counter.n, "files", res.Files, "error", archErr.Error())
 		return
 	}
 
 	s.logger.Info("state-export: completed",
-		"remote_addr", r.RemoteAddr,
 		"authorized", true,
 		"encrypted", encrypted,
 		"files", res.Files,

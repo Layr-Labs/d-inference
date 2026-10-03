@@ -143,7 +143,7 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 	conn.SetReadLimit(10 * 1024 * 1024)
 
 	providerID := uuid.New().String()
-	s.logger.Info("provider websocket connected", "provider_id", providerID, "remote", r.RemoteAddr)
+	s.logger.Info("provider websocket connected", "provider_id", providerID)
 
 	// Run the read loop; on return the provider is disconnected.
 	s.providerReadLoop(r.Context(), conn, providerID, r)
@@ -3388,7 +3388,6 @@ func (s *Server) verifyProviderAttestation(ctx context.Context, providerID strin
 		"provider_id", providerID,
 		"hardware_model", result.HardwareModel,
 		"chip_name", result.ChipName,
-		"serial_number", result.SerialNumber,
 		"secure_enclave", result.SecureEnclaveAvailable,
 		"sip_enabled", result.SIPEnabled,
 		"secure_boot", result.SecureBootEnabled,

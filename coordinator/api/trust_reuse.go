@@ -900,7 +900,7 @@ func (s *Server) grantDeviceTrustWithoutReuseRecord(provider *registry.Provider,
 	)
 	if granted {
 		s.logger.Info("trust-reuse: hardware trust granted without reuse record (no self-reported binary hash)",
-			"serial", serial)
+			"provider_id", provider.ID)
 	}
 	return granted
 }
@@ -1223,7 +1223,6 @@ func (s *Server) tryTrustReuseFastSkip(providerID string, provider *registry.Pro
 	s.logger.Info("trust-reuse granted hardware without live MDM or APNs",
 		"provider_id", providerID,
 		"decision", result.Decision,
-		"mda_udid", result.Record.mdaUDID,
 	)
 	return true
 }

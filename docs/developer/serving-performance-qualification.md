@@ -1,6 +1,6 @@
 # Qualify a serving performance profile
 
-> Last updated: 2026-09-29
+> Last updated: 2026-10-02
 
 This procedure prepares an exact model/runtime/hardware profile for code review.
 It never installs a profile or changes a running provider. The deadline catalog
@@ -362,7 +362,7 @@ Project that file through the coordinator's real estimator and shape extractor:
 cd coordinator
 DARKBLOOM_PROMPT_COUNT_CORPUS=/tmp/corpus-bodies.jsonl \
   DARKBLOOM_PROMPT_COUNT_OUTPUT=/tmp/corpus-shapes.jsonl \
-  go test ./api -run '^TestPromptWorkQualificationCorpus$' -count=1
+  go test ./api/... -run '^TestPromptWorkQualificationCorpus$' -count=1
 ```
 
 Run `ServingPromptCountQualificationTests.collectTemplateCounts` with

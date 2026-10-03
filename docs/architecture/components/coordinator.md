@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-09-04
+> Last updated: 2026-10-02
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -42,12 +42,21 @@ Every directory under `coordinator/` and what it owns.
 
 | Package | Owns |
 |---|---|
-| `coordinator/cmd/coordinator` | `main`: configuration load, store selection, wiring, background loops, HTTP server, graceful shutdown. |
+| `coordinator/cmd/coordinator` | Command selection, logging and configuration validation before entering the application. |
+| `coordinator/app` | Service graph construction, backend selection, configuration, background-loop startup and ordered drain/shutdown. |
 | `coordinator/config` | `AppConfig` — composes every package's `ReadConfig` and runs their `Check` methods. |
 | `coordinator/env` | `EnvPrefix` (`EIGENINFERENCE`) and the `EnvOr`/`EnvInt`/`EnvFloat`/`EnvBool` helpers. |
-| `coordinator/api` | The HTTP router (`routes` in `server.go`), middleware, consumer handlers (`consumer.go`), the provider WebSocket (`provider.go`), dispatch ladder (`dispatch.go`), sender encryption, admin, release, model-registry, device-auth and Stripe handlers, drain, profiler wiring. |
-| `coordinator/registry` | In-memory fleet view, scheduler and cost model, queue, warm pool, capacity breakers, health ejection, cache routing, TTFT calibration and shadow admission. |
-| `coordinator/store` | `Store` interface, Postgres and memory backends, schema migrations. |
+| `coordinator/api` | Transport composition, route/auth binding and global middleware; domain owners hold their own mutable state. |
+| `coordinator/api/access` | Credential policy/cache, principal context and rate middleware; key and device handlers live in child packages. |
+| `coordinator/api/inference` | Shared admission, dispatch, cancellation and settlement; request lowering and response encoding are separate leaves. |
+| `coordinator/api/provider` | WebSocket sessions and typed inference-event handoff; `provider/trust` owns legacy verification and revocation state. |
+| `coordinator/api/catalog`, `coordinator/api/releases` | Ordered catalog publication and generation-fenced release policy, respectively. |
+| `coordinator/api/accounts`, `coordinator/api/billing` | Account projections and billing HTTP; the payouts child owns provider payout workflows, not a second ledger. |
+| `coordinator/api/reporting`, `coordinator/api/operations` | Public projections and operational liveness/readiness/drain handlers. |
+| `coordinator/api/observation` | Metrics, request profiles, route records and compact outcomes; their queues and flush/loss policies remain distinct. |
+| `coordinator/registry` | Live fleet state, atomic admission/reservation transitions, queues and controllers. Pure detached calculations live in `registry/admission` and `registry/selection`. |
+| `coordinator/store` | Contracts, domain records, errors, configuration, read-through decorator and capability unwrapping. |
+| `coordinator/store/memory`, `coordinator/store/postgres` | Backend owners with domain-focused operations; PostgreSQL owns its migrations. |
 | `coordinator/protocol` | Wire types for the provider WebSocket: register, heartbeat, capacity, inference frames, telemetry, profiles. |
 | `coordinator/internal/e2e` | NaCl Box (X25519 + XSalsa20-Poly1305) for coordinator↔provider and sender↔coordinator sealing. |
 | `coordinator/attestation` | Secure Enclave attestation verification and Apple MDA certificate chains. |
@@ -70,7 +79,8 @@ Every directory under `coordinator/` and what it owns.
 
 ## Startup sequence
 
-`main` (`coordinator/cmd/coordinator/main.go`) runs these steps in order; a
+`main` (`coordinator/cmd/coordinator/main.go`) validates the command/configuration
+and enters `app.Run` (`coordinator/app/app.go`). They run these steps in order; a
 failure in any step marked *fatal* exits the process before it listens.
 
 1. **Logging.** JSON `slog`; a Datadog trace handler is layered on when
@@ -114,6 +124,17 @@ failure in any step marked *fatal* exits the process before it listens.
     then `Shutdown` with a 15 s backstop; deferred closes stop Datadog and the
     Postgres pool.
 
+The dependency direction is `cmd -> app -> api composition -> domain owners`.
+HTTP owners depend on registry, store and accounting services; those services
+never import HTTP owners. Store implementations import root store contracts,
+not the reverse. Registry policies take detached values and return decisions;
+the live registry retains locks and commit-time revalidation.
+
+Provider and consumer paths converge on one inference lifecycle. Moving code
+does not create another terminal claim or settlement owner. Shared dependencies
+are passed as the same pointers, and callbacks are bound only after their owner
+exists; startup setters must update the owner actually used by the routes.
+
 ```mermaid
 flowchart TD
   A[ReadAppConfig + Check] --> B[Store: Postgres or memory]
@@ -132,7 +153,7 @@ flowchart TD
    decrypted inside the CVM, re-sealed per request to the provider's attested
    key, and never written to the store or logs; provider error strings are
    reduced to a closed vocabulary before logging
-   (`coordinator/api/consumer.go`, `coordinator/api/inference_error_sanitize.go`,
+   (`coordinator/api/inference/consumer.go`, `coordinator/api/inference/inference_error_sanitize.go`,
    `coordinator/internal/e2e/e2e.go`).
 2. **A misconfigured coordinator does not serve.** `AppConfig.Check` and the
    fatal startup steps above exit 1 before the listener opens
@@ -146,7 +167,7 @@ flowchart TD
    `providerSupportsPrivateTextLocked`).
 5. **Shutdown drains before it disconnects.** New requests get 429 with
    `Retry-After` while in-flight streams finish, bounded by the drain grace
-   (`coordinator/api/drain.go`).
+   (`coordinator/api/operations/drain.go`).
 
 ## Failure modes
 

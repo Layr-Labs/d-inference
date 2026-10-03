@@ -1,6 +1,6 @@
 # Roll out App Attest recovery with MDM coexistence
 
-> Last updated: 2026-09-23
+> Last updated: 2026-10-02
 
 Use this runbook for App Attest reliability upgrades on a fleet that may already
 serve without MDM. [Provider authorization](../reference/provider-authorization.md)
@@ -108,7 +108,7 @@ deployment procedure. This also removes the App Attest serving path; providers
 without independently valid legacy authorization lose public-serving eligibility.
 Inventory, durable evidence and receipt maintenance remain separate. Retain
 aliases, counters, qualifications, revocations and all original receipt failures.
-Code: `coordinator/appattest/service/session.go` (`startAppAttestShadow`) and
+Code: `coordinator/appattest/service/session.go` (`StartAppAttestShadow`) and
 `coordinator/appattest/service/config.go` (`ConfigFromEnvironment`).
 
 ## Related

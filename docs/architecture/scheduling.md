@@ -51,7 +51,7 @@ arrives while its commit is awaiting acknowledgement and resumes convergence
 after reopening admission. A failed receipt write or missing readiness neither
 resumes routing nor dispatches queued work. Removed-model queue cleanup persists
 through a reconciliation drain until routing resumes or disconnect (`handleModelsReplace`,
-`handleModelsReplaceReady`, `coordinator/api/provider_models_replace.go`).
+`handleModelsReplaceReady`, `coordinator/api/provider/provider_models_replace.go`).
 
 
 ## Context
@@ -174,10 +174,10 @@ anything else to `unknown`):
 |---|---|
 | `heartbeat` | A provider heartbeat for any model it serves (`Heartbeat`, `coordinator/registry/heartbeat.go`). |
 | `idle` | A provider finished a request (`SetProviderIdle`). |
-| `challenge` | A provider passed a challenge and became eligible (`coordinator/api/provider.go`, `coordinator/api/provider_codeattest.go`). |
-| `load` | A provider reported a model load complete (`coordinator/api/provider.go`). |
+| `challenge` | A provider passed a challenge and became eligible (`coordinator/api/provider/`, `coordinator/api/provider/trust/provider_codeattest.go`). |
+| `load` | A provider reported a model load complete (`coordinator/api/provider/`). |
 | `disconnect` | A provider left; queued requests it alone could have served fail fast (`Disconnect`). |
-| `kick` | Cold-dispatch kick from the API layer when a request is enqueued (`coordinator/api/cold_dispatch.go`). |
+| `kick` | Cold-dispatch kick from the API layer when a request is enqueued (`coordinator/api/inference/cold_dispatch.go`). |
 | `unknown` | Any other caller of the public drain helpers (`coordinator/registry/scheduler.go`). |
 
 `drainModelQueue` (`coordinator/registry/scheduler.go`) serializes passes per
@@ -195,8 +195,8 @@ is excluded as transient capacity until its next idle/serving heartbeat, or
 `drainStateTTL = 150 * time.Second` without a refresh. These rejections do not
 consume capacity retries or feed provider fault/capacity trackers
 (`coordinator/registry/drain_state.go`, `MarkDraining`;
-`coordinator/api/provider.go`, `handleInferenceErrorOwned`;
-`coordinator/api/provider_drain.go`, `noteProviderDraining`). Error ingress marks
+`coordinator/api/provider/`, `handleInferenceErrorOwned`;
+`coordinator/api/inference/provider_drain.go`, `noteProviderDraining`). Error ingress marks
 the provider before removing its pending slot or draining queued demand.
 Consumer classification does not repeat the mutation, so a delayed error cannot
 overwrite a newer recovery heartbeat. Wire values are listed in
@@ -503,7 +503,7 @@ model in rather than waiting out the queue. It has two entry points:
   suppressed state change. The queue *drain* uses the per-model coalescing and
   heartbeat suppression described above.
 - **Cold dispatch** ([`EIGENINFERENCE_COLD_DISPATCH`](../reference/configuration.md#routing-admission-and-ttft),
-  `coordinator/api/cold_dispatch.go`) calls `TriggerModelSwaps` directly the
+  `coordinator/api/inference/cold_dispatch.go`) calls `TriggerModelSwaps` directly the
   moment a request is enqueued; that kick is immediate and not subject to
   the heartbeat gate.
 
@@ -657,7 +657,7 @@ controller sends no `load_model`; `MaxLoadsPerTick <= 0` or
 observe-only.
 
 When Datadog is configured, `StartWarmPoolTelemetryLoop`
-(`coordinator/api/warm_pool_telemetry.go`) polls the retained snapshot every
+(`coordinator/api/observation/warm_pool_telemetry.go`) polls the retained snapshot every
 `warmPoolTelemetryPollInterval = 15 * time.Second`. It emits each newly
 observed snapshot timestamp once through the coordinator telemetry emitter as
 info/custom `warm_pool_tick`. Cold disqualifier counts become scalar
@@ -688,7 +688,7 @@ provider's faster default.
 
 **Eviction** (`StartEvictionLoop`, `evictStale`): the coordinator binary
 starts the loop with a `90*time.Second` timeout
-(`coordinator/cmd/coordinator/main.go`). The sweep runs every `timeout / 3`.
+(`coordinator/app/lifecycle.go`). The sweep runs every `timeout / 3`.
 A provider whose heartbeat age exceeds the timeout earns a strike; at
 `evictStrikeThreshold = 2` consecutive strikes it is disconnected. A provider
 must therefore be silent past the timeout at two successive sweeps — at
@@ -721,7 +721,7 @@ with `providerWriteDrainErrorString = "provider websocket writer stopped"`.
 
 `Registry.Disconnect` (`coordinator/registry/provider_lifecycle.go`) is the single
 teardown path, reached from socket close and from eviction. On socket close
-the provider handler (`coordinator/api/provider.go`) first flips the record to
+the provider handler (`coordinator/api/provider/`) first flips the record to
 `StatusOffline` — failing the routing gate `offline` at once, so a slow
 session-close write can never leave a dead provider selectable — and only then
 runs the deferred `Disconnect`. `offline` is therefore a transient state between
@@ -823,12 +823,12 @@ gate. The existing eviction-loop gate sweep handles this cleanup
 | Token-budget and memory admission | `coordinator/registry/scheduler.go` — `freeMemoryAdmits`, `pooledBudgetAdmits`, `knownZeroTokenBudget`, `committedTokenBudget` |
 | Concurrency caps | `coordinator/registry/provider.go` — `maxConcurrency`, `maxConcurrencyForModelLocked`; `coordinator/registry/config.go` — `DefaultMaxConcurrent`; `coordinator/registry/concurrency_cap.go` — `SetQualityConcurrencyCap`, `effectiveMaxConcurrencyForModelRateLocked`, `hasConcurrencyHeadroomForModelCapResolvedLocked` |
 | Pending loads and swaps | `coordinator/registry/model_loading.go` — `pendingModelLoadTTL`, `TriggerModelSwaps`, `bestModelLoadProviderLocked`; `coordinator/registry/model_commands.go` — `SendLoadModel`; `coordinator/registry/model_swap_coalesce.go` — `modelSwapPlanInterval`, `modelSwapPlanGate`, `triggerModelSwapsFromHeartbeat` |
-| Warm pool | `coordinator/registry/warm_pool_controller.go` — `tick`, `plan`, `hasDemandPressure`, `targetWarm`; `coordinator/registry/warm_pool_types.go` — `WarmPoolSnapshot`; `coordinator/registry/warm_pool_fleet.go` — `warmPoolFleetSnapshot`, `warmPoolCandidateReasonLocked`; `coordinator/registry/warm_pool_target.go` — `warmTarget`, `qualityConcurrency`, `estimateServiceTime`, `rampLoadsThisTick`; `coordinator/registry/warm_pool_state.go` — `warmPoolArrivalEWMAAlpha`; `coordinator/api/warm_pool_telemetry.go` — `StartWarmPoolTelemetryLoop`, `warmPoolTelemetryFields` |
+| Warm pool | `coordinator/registry/warm_pool_controller.go` — `tick`, `plan`, `hasDemandPressure`, `targetWarm`; `coordinator/registry/warm_pool_types.go` — `WarmPoolSnapshot`; `coordinator/registry/warm_pool_fleet.go` — `warmPoolFleetSnapshot`, `warmPoolCandidateReasonLocked`; `coordinator/registry/warm_pool_target.go` — `warmTarget`, `qualityConcurrency`, `estimateServiceTime`, `rampLoadsThisTick`; `coordinator/registry/warm_pool_state.go` — `warmPoolArrivalEWMAAlpha`; `coordinator/api/observation/warm_pool_telemetry.go` — `StartWarmPoolTelemetryLoop`, `warmPoolTelemetryFields` |
 | Warm-pool and quality-cap configuration | `coordinator/registry/config.go` — `WarmPoolConfig`, `QualityCapConfig`, `ReadConfig` |
-| Eviction | `coordinator/registry/provider_lifecycle.go` — `StartEvictionLoop`, `evictStale`, `disconnectProvider`, `evictStrikeThreshold`; wired in `coordinator/cmd/coordinator/main.go` |
+| Eviction | `coordinator/registry/provider_lifecycle.go` — `StartEvictionLoop`, `evictStale`, `disconnectProvider`, `evictStrikeThreshold`; wired in `coordinator/app/lifecycle.go` |
 | Provider writer | `coordinator/registry/provider_writer.go` — `providerWriter`, `providerWriteTimeout`, `watchWrites` |
 | Teardown | `coordinator/registry/provider_lifecycle.go` — `Disconnect` |
-| Cold dispatch and queue-before-shed flags | `coordinator/api/cold_dispatch.go` |
+| Cold dispatch and queue-before-shed flags | `coordinator/api/inference/cold_dispatch.go` |
 | Provider-side slot limit and heartbeat interval | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` — `maxModelSlots`, `heartbeatIntervalSecs` |
 | Availability validation and parsing | `provider-swift/Sources/ProviderCore/Scheduling/ScheduleConfig.swift` (`ScheduleConfig.validate`); `provider-swift/Sources/ProviderCore/Scheduling/Schedule.swift` (`Schedule.from`, `isActive`, `durationUntilInactive`, `durationUntilNextActive`) |
 | Calendar boundaries and window union | `provider-swift/Sources/ProviderCore/Scheduling/ScheduleIntervals.swift` (`Schedule.intervals`, `boundary`, `coversEntireWeek`) |
@@ -848,13 +848,13 @@ gate. The existing eviction-loop gate sweep handles this cleanup
 
 The verification scheduler is separate from inference admission. Its dispatcher
 reloads durable due rows at `mdmSchedulerDispatchInterval = time.Second` or on a
-wake with an empty queue (`coordinator/api/mdm_scheduler_exec.go`,
+wake with an empty queue (`coordinator/api/provider/trust/mdm_scheduler_exec.go`,
 `shouldLoadDueRows`). A due job blocked by occupied workers or the reserved urgent
 slot waits at most `mdmSchedulerBusyRetryDelay = 250 * time.Millisecond`; an
 earlier future job retains its shorter timer (`nextDispatchDelay`). Worker
 completion signals the dispatcher immediately. Due-row pages start at
 `min(limit, verificationDuePageHint)` with `verificationDuePageHint = 256`
-and grow to the requested limit (`coordinator/store/postgres.go`,
+and grow to the requested limit (`coordinator/store/postgres/`,
 `ListDueVerificationJobsPage`); the initial allocation does not truncate a page.
 
 Qualified first-content prediction is separate from physical scheduling limits.

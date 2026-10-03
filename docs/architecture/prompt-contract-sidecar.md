@@ -1,6 +1,6 @@
 # Prompt-contract sidecar
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-02
 
 The Go `LowerResponsesInferenceBody` serving adapter preserves ordered inline
 media; it does not broaden this sidecar's text-only cache-planning contract.
@@ -170,9 +170,9 @@ Five provider-side transformations that precede every template are mirrored in
    context once, after all other steps (`sorted_object_keys`). The planner
    never relies on wire order. Today the shared prelude re-serializes every
    provider body from the decoded map, which sorts keys
-   (`coordinator/api/inference_preprocess.go`, `parseInferencePrelude`,
-   `forwardBody.current`), but that follows from the prelude stamping the
-   request date, not from a contract: `forwardBody` forwards the caller's
+   (`coordinator/api/inference/inference_preprocess.go`, `parseInferencePrelude`,
+   `ForwardBody.Current`), but that follows from the prelude stamping the
+   request date, not from a contract: `ForwardBody` forwards the caller's
    bytes verbatim whenever nothing is dirty, and JSON carried inside strings,
    such as tool-call `arguments`, is never re-serialized. The sort is
    therefore load-bearing.

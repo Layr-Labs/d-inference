@@ -1,6 +1,6 @@
 # System overview — how a Darkbloom request works
 
-> Last updated: 2026-09-27
+> Last updated: 2026-10-02
 
 Darkbloom sells inference on other people's Apple Silicon Macs. A Go
 **coordinator** accepts OpenAI- and Anthropic-shaped HTTP requests, picks an
@@ -69,17 +69,17 @@ sequenceDiagram
    trust level, and re-challenges every
    [`DefaultChallengeInterval`](security/attestation.md#layer-2--periodic-challenge),
    allowing [`ChallengeResponseTimeout`](security/attestation.md#layer-2--periodic-challenge)
-   for the answer (`coordinator/api/provider.go`). The provider heartbeats every
+   for the answer (`coordinator/api/provider/`). The provider heartbeats every
    [`heartbeat_interval_secs`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli)
    with capacity, slot state, and telemetry; the coordinator's heartbeat timeout
    and eviction rule are in [`scheduling.md`](scheduling.md#heartbeat-cadence-and-eviction).
    Messages: [`../reference/protocol-messages.md`](../reference/protocol-messages.md).
 2. **Consumer calls.** Every route passes
    `corsMiddleware → recoverMiddleware → loggingMiddleware → bodyLimitMiddleware`;
-   inference routes add `drainGate → requireAuth → rateLimitConsumer →
-   sealedTransport` (`coordinator/api/server.go`, `routes`). `/v1/chat/completions`
-   and `/v1/responses` share `handleChatCompletions`; `/v1/completions` and
-   `/v1/messages` share `handleGenericInference` (`coordinator/api/consumer.go`).
+   inference routes add `DrainGate → RequireAuth → RateLimitConsumer →
+   SealedTransport` (`coordinator/api/routes.go`, `routes`). `/v1/chat/completions`
+   and `/v1/responses` share `HandleChatCompletions`; `/v1/completions` and
+   `/v1/messages` share `handleGenericInference` (`coordinator/api/inference/consumer.go`).
    Routes and shapes: [`../reference/api-contracts.md`](../reference/api-contracts.md).
 3. **Admission.** The handler validates the body (size cap
    [`maxInferenceBodyBytes`](../reference/api-contracts.md#limits-and-validation),
@@ -102,7 +102,7 @@ sequenceDiagram
    dispatch starts at [`speculativeTimerRatio`](routing.md#hedged-speculative-dispatch)
    of the first-content deadline; the coordinator tries at most
    [`maxDispatchAttempts`](../reference/api-contracts.md#timeouts-and-constants)
-   providers (`coordinator/api/consumer.go`). [`data-flow.md`](data-flow.md).
+   providers (`coordinator/api/inference/consumer.go`). [`data-flow.md`](data-flow.md).
 6. **Inference.** The provider decrypts in-process, runs the continuous-batching
    engine over the pinned MLX forks, and encrypts every response chunk to the
    coordinator's ephemeral key. [`inference.md`](inference.md),
@@ -160,13 +160,13 @@ consumer routing to a provider it owns (self-route) pays nothing.
    provider attested at registration (`coordinator/internal/e2e/e2e.go`).
 4. Nothing is written to the consumer's HTTP response before the first content
    chunk, so a failed dispatch can always fail over or return a JSON error
-   (`handleChatCompletions`, `coordinator/api/consumer.go`).
+   (`HandleChatCompletions`, `coordinator/api/inference/consumer.go`).
 5. Balance is reserved before dispatch (`reserveInferenceBalance`,
-   `coordinator/api/inference_admission.go`) and settled from
-   `inference_complete` (`handleComplete`, `coordinator/api/provider.go`): the
+   `coordinator/api/inference/inference_admission.go`) and settled from
+   `inference_complete` (`handleComplete`, `coordinator/api/inference/provider_inference.go`): the
    difference is refunded, an overage is charged. A request that fails before
    any provider usage is reported is refunded in full (`refundReservedBalance`,
-   `coordinator/api/consumer.go`).
+   `coordinator/api/inference/consumer.go`).
 6. The provider version the coordinator advertises (`LatestProviderVersion`,
    `coordinator/api/server.go`) equals `ProviderCore.version`; the test
    `coordinator/api/provider_version_sync_test.go` enforces it.
@@ -175,7 +175,7 @@ consumer routing to a provider it owns (self-route) pays nothing.
    path carries prompt or completion text ([`telemetry.md`](telemetry.md)).
 8. Production persistence is Postgres; the coordinator refuses to start
    without `EIGENINFERENCE_DATABASE_URL` unless
-   `EIGENINFERENCE_ALLOW_MEMORY_STORE=true` (`coordinator/cmd/coordinator/main.go`).
+   `EIGENINFERENCE_ALLOW_MEMORY_STORE=true` (`coordinator/app/store.go`).
    [`storage.md`](storage.md).
 
 ## Failure modes
@@ -185,7 +185,7 @@ consumer routing to a provider it owns (self-route) pays nothing.
 | No eligible provider for a model | 503 with a structured error before any bytes are streamed; rejection reasons tallied | [`routing.md`](routing.md) |
 | Provider slow to first content | Speculative second dispatch; the first to produce content wins; the other is cancelled | [`data-flow.md`](data-flow.md) |
 | Provider fails after commit | In-band error event on the SSE stream (the HTTP status is already sent); settlement follows whatever usage the provider reported | [`data-flow.md`](data-flow.md), [`billing.md`](billing.md) |
-| Consumer disconnects before the provider finishes | Billing record parked for [`defaultTerminalSettleGrace`](../reference/pricing-model.md#constants), then settled or refunded (`coordinator/api/settlement.go`) | [`billing.md`](billing.md) |
+| Consumer disconnects before the provider finishes | Billing record parked for [`defaultTerminalSettleGrace`](../reference/pricing-model.md#constants), then settled or refunded (`coordinator/api/inference/settlement.go`) | [`billing.md`](billing.md) |
 | Attestation challenge fails or goes stale | Provider marked untrusted / `challenge_stale`; leaves routing until re-verified | [`security/attestation.md`](security/attestation.md) |
 | Coordinator restart | Providers reconnect with backoff 1 → 30 s; state is in Postgres; trust may be reused within a window | [`components/provider.md`](components/provider.md), [`security/attestation.md`](security/attestation.md) |
 
@@ -193,14 +193,14 @@ consumer routing to a provider it owns (self-route) pays nothing.
 
 | Concern | Entry point |
 |---|---|
-| Route table and middleware | `coordinator/api/server.go` (`routes`) |
-| Chat / Responses handler | `coordinator/api/consumer.go` (`handleChatCompletions`) |
-| Completions / Messages handler | `coordinator/api/consumer.go` (`handleGenericInference`) |
-| Provider WebSocket, registration, challenges | `coordinator/api/provider.go` |
+| Route table and middleware | `coordinator/api/routes.go` (`routes`) |
+| Chat / Responses handler | `coordinator/api/inference/consumer.go` (`HandleChatCompletions`) |
+| Completions / Messages handler | `coordinator/api/inference/consumer.go` (`handleGenericInference`) |
+| Provider WebSocket, registration, challenges | `coordinator/api/provider/` |
 | Attestation verification | `coordinator/attestation/attestation.go` |
 | Eligibility gate | `coordinator/registry/routing_eligibility.go` (`providerLivenessGateReasonLocked`) |
 | Cost model and reservation | `coordinator/registry/scheduler.go` |
-| Per-request encryption | `coordinator/internal/e2e/e2e.go`; optional sender sealing `coordinator/api/sender_encryption.go` |
+| Per-request encryption | `coordinator/internal/e2e/e2e.go`; optional sender sealing `coordinator/api/inference/sender_encryption.go` |
 | Pricing and ledger | `coordinator/payments/pricing.go`, `coordinator/billing/` |
 | Provider main loop | `provider-swift/Sources/ProviderCore/ProviderLoop.swift` |
 | Provider CLI entry | `provider-swift/Sources/darkbloom/Darkbloom.swift` |

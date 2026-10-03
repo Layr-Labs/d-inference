@@ -167,7 +167,7 @@ Production publication requires independent [durable App Attest build qualificat
    provider publication are separate operations.
 
 The drain implementation lives in `provider-swift/Sources/darkbloom/ServiceDrain.swift`
-(`ServiceDrain`) and `coordinator/api/provider_completion_barrier.go`
+(`ServiceDrain`) and `coordinator/api/provider/provider_completion_barrier.go`
 (`providerCompletionBarrier`). See [CLI lifecycle behavior](../provider/cli-reference.md)
 for normal timeout and explicit-force semantics.
 
@@ -212,8 +212,8 @@ A coordinator binary upgrade is not required solely to register 0.9.2. The
 0.9.1 coordinator already validates and stores the release, refreshes active
 binary/metallib trust, preserves other active releases and serves the new
 version through `GET /v1/releases/latest`. `LatestProviderVersion` is a display
-fallback, not an exact-version admission pin (`coordinator/api/release_handlers.go`,
-`handleRegisterRelease`; `coordinator/api/server.go`, `SyncBinaryHashes` and
+fallback, not an exact-version admission pin (`coordinator/api/releases/release_handlers.go`,
+`HandleRegisterRelease`; `coordinator/api/server.go`, `SyncBinaryHashes` and
 `SyncRuntimeManifest`).
 
 The 0.9.2 assistant transition uses existing slot state `reloading`, capacity
@@ -585,7 +585,7 @@ never overwrite them. Code: `scripts/provider_release_github.py`
 [release-asset API reference](https://docs.github.com/en/rest/releases/assets).
 
 The retained production registration payload (`registerReleaseRequest` in
-`coordinator/api/release_handlers.go`; unknown fields are rejected) contains:
+`coordinator/api/releases/release_handlers.go`; unknown fields are rejected) contains:
 
 ```json
 {
@@ -605,7 +605,7 @@ The retained production registration payload (`registerReleaseRequest` in
 ```
 
 Use the downloaded payload instead of reconstructing signed-artifact hashes
-by hand. `handleRegisterRelease` authenticates the scoped release key,
+by hand. `HandleRegisterRelease` authenticates the scoped release key,
 validates semver/platform/digests and the exact configured R2 origin/path,
 then downloads and verifies the final archive and provider binary (2 GiB cap,
 two-minute timeout). New publication uses the bundle-digest path; the original
@@ -638,8 +638,8 @@ curl -fsS "$COORD/v1/admin/releases" -H "Authorization: Bearer $ADMIN_KEY" | jq 
 ```
 
 - `GET /v1/releases/latest` returns the **highest active semver** for the
-  platform (`GetLatestRelease` in `coordinator/store/postgres.go`, ordered by
-  `releaseVersionGreater` in `coordinator/store/release_version.go`), not the
+  platform (`GetLatestRelease` in `coordinator/store/postgres/`, ordered by
+  `releaseVersionGreater` in `coordinator/store/`), not the
   most recently registered row.
 - Install on a clean Mac: `curl -fsSL $COORD/install.sh | bash`;
   `scripts/install.sh` reads `/v1/releases/latest` and verifies the bundle
@@ -673,7 +673,7 @@ it** so the previous active version becomes "latest" again.
      -d '{"version":"0.9.10","platform":"macos-arm64"}'
    ```
 
-   `handleAdminDeleteRelease` answers `409 release_in_use` while connected
+   `HandleAdminDeleteRelease` answers `409 release_in_use` while connected
    providers still run that `binary_hash` (in-use protection is active when
    binary-hash enforcement is on **or** a release inventory has ever been
    published). Add `"force":true` only when the release must be pulled

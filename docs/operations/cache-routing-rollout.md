@@ -1,6 +1,6 @@
 # Cache-aware routing: activation, ramp and rollback
 
-> Last updated: 2026-09-29
+> Last updated: 2026-10-02
 
 How to turn provider-confirmed prefix-cache routing on for the production
 coordinator, widen its activation bounds one at a time, and turn it off again.
@@ -72,9 +72,9 @@ the same request from the same account remains in or out of the cohort.
   it every request gets a non-participating plan and routing `on` changes
   nothing.
 - Datadog open on the `exact_cache.*` gauges
-  (`emitExactCacheDDGauges`, `coordinator/api/exact_cache_metrics.go`) and the
+  (`EmitExactCacheDDGauges`, `coordinator/api/inference/exact_cache_metrics.go`) and the
   `routing.cache_selection_terminal`, `routing.cache_selection_precision` and
-  `routing.cache_selection_discount_ms` series (`coordinator/api/provider.go`).
+  `routing.cache_selection_discount_ms` series (`coordinator/api/provider/`).
 
 ## Steps
 
@@ -166,7 +166,7 @@ the same request from the same account remains in or out of the cohort.
    → "Refresh the env file" and "Swap", with the currently approved image. On
    boot the process logs `provider-confirmed cache routing configured` with
    `mode`, `activation_percent`, `max_plan_qps`, `ttl`, `max_holders`,
-   `max_discount_ms` and `max_cost_fraction` (`coordinator/cmd/coordinator/main.go`);
+   `max_discount_ms` and `max_cost_fraction` (`coordinator/app/registry.go`);
    `null` means no optional clipping beyond avoidable prefill work. A rejected configuration logs `cache routing configuration rejected` and
    exits before listening. With `EIGENINFERENCE_CACHE_ROUTING_PERSIST` on (the
    default), boot also logs `cache routing persistence restored` with parked

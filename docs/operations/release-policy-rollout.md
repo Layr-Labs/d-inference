@@ -1,6 +1,6 @@
 # Roll out the release-policy routing gate (shadow → enforce)
 
-> Last updated: 2026-09-04
+> Last updated: 2026-10-02
 
 Runbook for the two production changes that involve the coordinator's
 release-policy routing gate: (1) deploying a coordinator that contains the gate
@@ -15,7 +15,7 @@ gate-specific checks, acceptance criteria, and rollback lever.
 
 - First production deploy of any coordinator build that evaluates application
   evidence (the `EIGENINFERENCE_RELEASE_POLICY_MODE` switch in
-  `coordinator/cmd/coordinator/main.go`).
+  `coordinator/app/release_policy.go`).
 - Turning enforcement on after shadow coverage has been proven.
 - Turning enforcement back off (incident lever).
 
@@ -34,7 +34,7 @@ side ([`provider-release.md`](provider-release.md)).
 - Baseline captured before the swap: `/v1/models/capacity` (models and
   `routable_providers` per model) and `/v1/stats` `active_providers`.
 - Datadog access to the `release_evidence.outcome` counter (emitted by
-  `coordinator/api/server.go` (`recordReleaseEvidenceOutcome`); no-op without
+  `coordinator/api/releases/evidence.go` (`recordReleaseEvidenceOutcome`); no-op without
   DogStatsD).
 - Read [Background](#background) once; the 2026-08-31 postmortem
   ([`../reports/2026-08-31-coordinator-agent-deployment-failure-postmortem.md`](../reports/2026-08-31-coordinator-agent-deployment-failure-postmortem.md))
@@ -43,7 +43,7 @@ side ([`provider-release.md`](provider-release.md)).
 ### Background
 
 The gate has two modes, chosen at boot from `EIGENINFERENCE_RELEASE_POLICY_MODE`
-(`coordinator/cmd/coordinator/main.go`):
+(`coordinator/app/release_policy.go`):
 
 | Value | Behaviour | Startup log line |
 |---|---|---|
@@ -56,10 +56,10 @@ The boot grace defaults to `minEnforceGrace = 20 * time.Minute` and is
 clamp up, invalid values keep 20m. It exists because a restarted coordinator has
 an empty provider registry (zero evidence) and would otherwise 429 the whole
 fleet until reconnected providers complete their first challenge cycle
-(`DefaultChallengeInterval = 5 * time.Minute` in `coordinator/api/provider.go`).
+(`DefaultChallengeInterval = 5 * time.Minute` in `coordinator/api/provider/`).
 
 Application evidence proves exactly two facts, checked identically at grant
-(`coordinator/api/server.go` (`deriveApprovedReleaseTransition`,
+(`coordinator/api/server.go` (`DeriveApprovedReleaseTransition`,
 `releaseMetallibMatches`)) and at every policy sweep
 (`releaseEvidenceStillApproved`): the Secure-Enclave-signed challenge
 `binary_hash` matches an **active** release row for the provider's (version,
@@ -73,7 +73,7 @@ Where the gate lives: `coordinator/registry/attestation_policy.go`
 `SetReleasePolicyGeneration`, sweep that re-proves or clears evidence;
 `CountProvidersWithCurrentApplicationEvidence` and
 `ApplicationEvidenceModelCoverage`, the coverage counters served by
-`coordinator/api/stats.go` (`handleStats`)).
+`coordinator/api/reporting/stats.go` (`HandleStats`)).
 
 ## Steps
 
@@ -192,7 +192,7 @@ recreate the container with the same image. This is the incident lever.
 
 1. A new global trust gate ships in shadow first; enforcement is a separate,
    human-approved action after live coverage is proven.
-2. `deriveApprovedReleaseTransition` and `releaseEvidenceStillApproved`
+2. `DeriveApprovedReleaseTransition` and `releaseEvidenceStillApproved`
    (`coordinator/api/server.go`) compare the same fact set. Changing one side
    desynchronises grant from sweep and wipes evidence on every policy rebuild.
 3. Never add a release-row fact to evidence derivation unless the production

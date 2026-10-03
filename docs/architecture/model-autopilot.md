@@ -169,7 +169,7 @@ minimum, matching the other daemon diagnostics.
 
 ### Demand and placement
 
-`beginAutopilotDemand` creates a request-owned observation after entering an
+`BeginAutopilotDemand` creates a request-owned observation after entering an
 inference endpoint. Admission arms it only after public authentication, account
 limits, balance and parsing checks. Retries and speculative attempts annotate
 the same observation; terminal consumption occurs once. Owner/private traffic,
@@ -312,7 +312,7 @@ its own `Start/` folder.
 | Hard request eligibility | `coordinator/registry/autopilot/requirements.go`; `coordinator/registry/autopilot_traits.go` |
 | Demand and policy defaults | `coordinator/registry/autopilot/demand.go`; `coordinator/registry/autopilot/config.go` |
 | Activation and execution | `coordinator/registry/autopilot_activation.go`; `coordinator/registry/autopilot_commands.go`; `provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+Autopilot.swift` |
-| Durable records | `coordinator/store/postgres_autopilot.go`; `coordinator/registry/autopilot_events.go` |
+| Durable records | `coordinator/store/postgres/autopilot.go`; `coordinator/registry/autopilot_events.go` |
 | Operator view | `coordinator/api/autopilot/handler.go`; authenticated adapter `coordinator/api/autopilot_handlers.go` |
 
 ## Related

@@ -56,9 +56,9 @@ drain TTL cannot reopen this connection. Only a committing `models_replace`
 (`validate_only` omitted or false) against the latest settled drain, followed by
 successful receipt delivery and matching provider readiness, resumes the same connection; a restart instead
 registers and authorizes a new connection. Code:
-`coordinator/api/provider_completion_barrier.go` (`providerCompletionBarrier`),
-`coordinator/api/provider_drain_ack.go` (`providerDrainAcker`),
-`coordinator/api/provider.go` (`providerReadLoop`),
+`coordinator/api/provider/provider_completion_barrier.go` (`providerCompletionBarrier`),
+`coordinator/api/provider/provider_drain_ack.go` (`providerDrainAcker`),
+`coordinator/api/provider/session.go` (`providerReadLoop`),
 `coordinator/registry/drain_state.go` (`CommitProviderDrain`, `ProviderDrainPending`, `WriteProviderDrainAck`),
 `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Drain.swift`
 (`acknowledgeDrain`).
@@ -179,8 +179,8 @@ A verified registration whose durable state cannot be recovered after bounded
 retries closes with WebSocket code **1013** (`StatusTryAgainLater`). It receives
 no inference work while recovery is pending. The provider's normal reconnect
 retries registration; this is a transient store failure, not failed attestation
-(`coordinator/api/provider.go`, `verifyProviderAttestation`;
-`coordinator/api/provider_restore.go`, `restorePersistedProviderState`).
+(`coordinator/api/provider/`, `VerifyProviderAttestation`;
+`coordinator/api/provider/provider_restore.go`, `RestorePersistedProviderState`).
 
 #### `hardware`
 
@@ -400,7 +400,7 @@ cap entries at `1 << 32`, gauge bytes at `1 << 50` and other measurements at
 `1 << 60`, and prevent repeated/reordered observations rolling back a live
 baseline. Samples older than `capacitySampleFreshMS = 5 * 60 * 1000`
 remain visible with age but do not produce current gauges or counter deltas
-(`coordinator/api/provider_prefix_cache_telemetry.go`). None of these values
+(`coordinator/api/provider/provider_prefix_cache_telemetry.go`). None of these values
 change routing or memory admission.
 
 #### `slots[].paged_storage`
@@ -444,7 +444,7 @@ the baseline; a changed generation seeds a new one. No unbounded pool history
 is retained. `reconcileCapacitySamplesLocked` keeps a separate accepted-sample
 clock: rejected capacity frames update liveness without resetting sample age.
 `recordPagedStorageTelemetry`
-(`coordinator/api/provider_paged_storage_telemetry.go`) emits age/freshness even
+(`coordinator/api/provider/provider_paged_storage_telemetry.go`) emits age/freshness even
 for repeated samples, but emits ownership gauges and positive counter deltas
 only for new samples within the existing five-minute freshness limit. The
 first observation, reload, missing optional counter, or decreasing counter
@@ -624,7 +624,7 @@ clamping C and M independently. `reconcileCapacitySamples`
 or regressed samples within a generation, including providers with no loaded
 slots. Only accepted capacity replacements advance the reconciliation clock.
 New fresh captures emit gauges; repeated or stale captures emit only age and
-freshness (`coordinator/api/provider_process_memory_telemetry.go`,
+freshness (`coordinator/api/provider/provider_process_memory_telemetry.go`,
 `recordProcessMemoryTelemetry`).
 
 ### `service_reservation_released`
@@ -683,7 +683,7 @@ Go `InferenceCompleteMessage` · Swift `InferenceComplete`.
 | `stop_sequence` | `string` | `String?` | opt | exact caller stop string matched |
 | `se_signature` | `string` | `String?` | opt | Secure Enclave signature over `response_hash` |
 | `response_hash` | `string` | `String?` | opt | SHA-256 of the response data |
-| `profile` | `json.RawMessage` | `InferenceProfile?` (encoded via `saturatedToWireRanges()`) | opt | the system-profiler per-attempt object. Go keeps the **raw bytes**: the WS read loop only length-checks it (`MaxInferenceProfileBytes = 4096`) so a malformed profile can never fail the terminal decode; the typed decode runs on the profile-sink worker (`coordinator/api/profiler_provider.go`). Observability only. Field list and validation: [`../architecture/system-profiler.md`](../architecture/system-profiler.md) |
+| `profile` | `json.RawMessage` | `InferenceProfile?` (encoded via `saturatedToWireRanges()`) | opt | the system-profiler per-attempt object. Go keeps the **raw bytes**: the WS read loop only length-checks it (`MaxInferenceProfileBytes = 4096`) so a malformed profile can never fail the terminal decode; the typed decode runs on the profile-sink worker (`coordinator/api/observation/profiler_provider.go`). Observability only. Field list and validation: [`../architecture/system-profiler.md`](../architecture/system-profiler.md) |
 
 ### `inference_error`
 
@@ -693,11 +693,11 @@ these fields: [`../architecture/request-outcome-observability.md`](../architectu
 | JSON key | Go | Swift | Presence | Notes |
 |---|---|---|---|---|
 | `request_id` | `string` | `String` | req | |
-| `error` | `string` | computed `String` (`failureCode.message`) | req | Swift never emits raw error text. The coordinator never reads the provider-authored value: `sanitizeProviderInferenceError` (`coordinator/api/inference_error_sanitize.go`) replaces it with the closed message for `failure_code` before anything downstream sees the frame |
+| `error` | `string` | computed `String` (`failureCode.message`) | req | Swift never emits raw error text. The coordinator never reads the provider-authored value: `sanitizeProviderInferenceError` (`coordinator/api/inference/inference_error_sanitize.go`) replaces it with the closed message for `failure_code` before anything downstream sees the frame |
 | `status_code` | `int` | `UInt16` | req | |
-| `error_reason` | `string` | `InferenceErrorReason?` | opt | closed, privacy-safe reason (`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceFailure.swift`): `jinja_channel_tags`, `jinja_null_bridge`, `jinja_template`, `model_load`, `capacity_timeout`, `queue_full`, `token_budget_exhausted`, `media_memory_unavailable`, `request_exceeds_context`, `request_exceeds_node`, `request_exceeds_node_budget`, `request_exceeds_batch_token_budget`, `capacity_busy`, `deadline_unreachable`, `draining`, `cancelled`, `client_error`, `tool_noncompliance`. The typed `draining` reason on a 503 marks a transient update drain: no provider-health or capacity penalty, and no capacity retry charge (`coordinator/api/consumer.go`, `noteInferenceError`; `coordinator/api/dispatch.go`, `dispatchState.noteProviderError`). Swift emits it from `rejectIfDrainingForUpdate` (`provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`). |
+| `error_reason` | `string` | `InferenceErrorReason?` | opt | closed, privacy-safe reason (`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceFailure.swift`): `jinja_channel_tags`, `jinja_null_bridge`, `jinja_template`, `model_load`, `capacity_timeout`, `queue_full`, `token_budget_exhausted`, `media_memory_unavailable`, `request_exceeds_context`, `request_exceeds_node`, `request_exceeds_node_budget`, `request_exceeds_batch_token_budget`, `capacity_busy`, `deadline_unreachable`, `draining`, `cancelled`, `client_error`, `tool_noncompliance`. The typed `draining` reason on a 503 marks a transient update drain: no provider-health or capacity penalty, and no capacity retry charge (`coordinator/api/inference/consumer.go`, `noteInferenceError`; `coordinator/api/inference/dispatch.go`, `dispatchState.noteProviderError`). Swift emits it from `rejectIfDrainingForUpdate` (`provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`). |
 | `failure_code` | `InferenceFailureCode` | `InferenceFailureCode?` | opt | closed enum (`coordinator/protocol/inference_failure.go`): `invalid_request`, `invalid_media`, `media_too_large`, `unsupported_media`, `template_render`, `model_unavailable`, `capacity`, `cancelled`, `encryption_failure`, `generation_failure`, `internal_failure`. Swift always sets it (`InferenceFailure.code` is non-optional). A missing or unknown value is drift: `sanitizeProviderInferenceError` fails it closed as `generation_failure` and counts `inference.invalid_failure_code`; status, `error_reason` and `terminal_cause` never reclassify it |
-| `terminal_cause` | `string` | `InferenceTerminalCause?` | opt | closed: `admission_timeout`, `prefill_stall`, `decode_stall`, `safety_deadline`, `backpressure_timeout`, `watchdog`, `cancelled`, `engine_error`. Unknown → treated as absent plus a drift metric (`coordinator/api/terminal_cause.go`); platform-policy terminals never strike health breakers |
+| `terminal_cause` | `string` | `InferenceTerminalCause?` | opt | closed: `admission_timeout`, `prefill_stall`, `decode_stall`, `safety_deadline`, `backpressure_timeout`, `watchdog`, `cancelled`, `engine_error`. Unknown → treated as absent plus a drift metric (`coordinator/api/inference/terminal_cause.go`); platform-policy terminals never strike health breakers |
 | `attempt_usage` | `*UsageInfo` | `UsageInfo?` | opt | engine-reconciled usage of the failed attempt; observability only, never billing |
 | `rejection_reason` | `CapacityRejectionReason` | `CapacityRejectionReason?` | opt | routing-v2 enriched rejection; enum shared with [`capacity_quote`](#capacity_quote) |
 | `available_token_budget` | `*int64` | `Int64?` | ptr | **an explicit zero is encoded** (busy slot, zero free tokens); nil/absent = legacy frame |
@@ -849,7 +849,7 @@ receipt without repeating the routing transition. A newer drain invalidates
 that retry. A drain remains reusable
 after validation but not after commit or disconnect. Sources:
 `coordinator/registry/provider_models_replace.go` (`ReplaceProviderModels`, `ResumeProviderModels`),
-`coordinator/api/provider_models_replace.go` (`handleModelsReplace`, `handleModelsReplaceReady`).
+`coordinator/api/provider/provider_models_replace.go` (`handleModelsReplace`, `handleModelsReplaceReady`).
 
 Swift `prepareModelSwitch(timeout:)` returns the settled drain ID or nil.
 `validateModelSelectionAfterDrain(_:drainID:timeout:)` checks the candidate before
@@ -980,7 +980,7 @@ Go `InferenceRequestMessage` · Swift `CoordinatorMessage.InferenceRequest`.
 | `cache_receipt_nonce` | `string` | `String?` | opt | binds the prefix-cache receipts to this attempt |
 | `cache_scope` | `string` | `String?` | opt | |
 | `prefix_cache_protocol` | `int` | `Int?` | opt | |
-| `cache_receipt_boundary_mode` | `string` | `String?` | opt | `checkpoint` echoes support for the selected SSD capability. A provider emits checkpoint-mode receipts only with this echo; an older coordinator omits it and remains cold for this format. Copied from the prepared attempt and cleared on retry/fallback; `coordinator/api/provider_wire.go`, `snapshotProviderInferenceFrame` / `wireMessage`; `coordinator/registry/cache_receipts.go`, `ForgetCacheAttempt` |
+| `cache_receipt_boundary_mode` | `string` | `String?` | opt | `checkpoint` echoes support for the selected SSD capability. A provider emits checkpoint-mode receipts only with this echo; an older coordinator omits it and remains cold for this format. Copied from the prepared attempt and cleared on retry/fallback; `coordinator/api/inference/provider_wire.go`, `snapshotProviderInferenceFrame` / `wireMessage`; `coordinator/registry/cache_receipts.go`, `ForgetCacheAttempt` |
 | `cache_repeated_prefix_tokens` | `*int` | `Int?` | ptr | Coordinator-observed fleet-wide repeat demand: the deepest boundary another plan shared within the routing TTL among those a plan observes (multiples of 1,024 tokens, the final boundary, and a power-of-two ladder for very long prompts), 0 when none. Sent only with a granted scope; absent from older coordinators (providers then write every checkpoint) and cleared on retry/fallback (`CacheAttemptSnapshot.ApplyTo`, `coordinator/registry/cache_attempt_ownership.go`). Integer count only, never a key, hash or boundary. Providers gate complete-checkpoint donations on it (`skipped_novel`; `SSDCheckpointDemand.admitsWrite`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointDemand.swift`). Swift clamps a negative value to 0. The e2e wire relay projects it for `inference_request` (`copyFields`, `e2e/testbed/provider_wire_relay.go`) |
 | `tool_schema_metadata_protocol` | `int` | `Int?` | opt | `1` = the coordinator rejected client-forged reserved keys before normalisation |
 

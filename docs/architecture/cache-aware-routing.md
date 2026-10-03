@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-29
+> Last updated: 2026-10-02
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -72,7 +72,7 @@ The coordinator calls the local prompt-contract sidecar
 [`prompt-contract-sidecar.md`](prompt-contract-sidecar.md)) only after alias
 resolution, tool normalization, endpoint lowering, output-bound injection, and
 construction of the final provider-bound body (`planCacheRoute`,
-`coordinator/api/prompt_artifacts.go`). The sidecar returns the prompt contract
+`coordinator/api/inference/prompt_artifacts.go`). The sidecar returns the prompt contract
 identity, exact token count, and complete block-chain boundaries. It never
 returns or logs the normalized prompt, tokens, or hashes outside the local
 response contract.
@@ -123,7 +123,7 @@ concrete model build, aggregate hash, prompt contract, and block-hash contract
 remote scope from `prompt_cache_key`, `user`, or any other caller-controlled
 body field. The only `prompt_cache_key` the coordinator ever writes is a
 coordinator-authored cache-bust key inserted into the sealed body for
-protocol-0 providers (`bodyForCacheAttempt`, `coordinator/api/consumer.go`;
+protocol-0 providers (`bodyForCacheAttempt`, `coordinator/api/inference/consumer.go`;
 `LegacyCacheBustKeyLength`, `coordinator/registry/cache_receipts.go`).
 
 Coordinator boundary keys are domain-separated HMACs under the route key over
@@ -162,7 +162,7 @@ first accepted dequeue restores ordinary calibration eligibility; an already
 accepted cache write remains excluded. Terminal requests retain the existing
 bounded grace period for authenticated durable-ready receipts while revoking
 queued dispatch (`coordinator/registry/cache_attempt_ownership.go`,
-`coordinator/api/provider_wire.go`).
+`coordinator/api/inference/provider_wire.go`).
 
 ### Protocol v2 proof
 
@@ -200,7 +200,7 @@ demand as an integer count, which the provider uses to gate complete-checkpoint
 donations ([observed demand](#observed-demand-and-soft-prefix-affinity)). None
 of these fields changes the signed
 attestation or status canonical payload (`coordinator/protocol/messages.go`,
-`coordinator/api/provider_wire.go`; `coordinator/attestation/attestation.go`,
+`coordinator/api/inference/provider_wire.go`; `coordinator/attestation/attestation.go`,
 `StatusCanonicalInput`).
 
 Resident-ready evidence also carries at most 16 actually published input
@@ -407,7 +407,7 @@ The store writes an in-progress marker, clears both tables, and records the
 complete generation last. The reset clears demand-write deduplication, not
 new pending observations. The next boot completes an interrupted marked reset
 (`resetDurableCopy`, `coordinator/registry/cachepersist/reset.go`;
-`ResetCacheRoutingState`, `coordinator/store/cacheroutingstate_postgres.go`).
+`ResetCacheRoutingState`, `coordinator/store/postgres/cacheroutingstate.go`).
 A crash before the marker lands can still leave invalidated rows restorable.
 Serialization is process-local: concurrent coordinator writers can repopulate
 rows during a reset; no cross-process fencing is provided.
@@ -415,7 +415,7 @@ rows during a reset; no cross-process fencing is provided.
 Shutdown closes and joins provider sockets and the periodic persistence loop
 before the final bounded flush. If the socket join times out, a further bounded
 wait and flush retry run; remaining loss is logged. See
-`CloseProviderConnections` in `coordinator/api/provider.go` and
+`CloseProviderConnections` in `coordinator/api/provider/` and
 `FlushCacheRoutingState` in `coordinator/registry/cache_persistence_registry.go`.
 The [status reference](../reference/api-contracts.md#exact-cache-status) defines
 the persistence counters; the [rollout runbook](../operations/cache-routing-rollout.md#persistence-during-restarts)
@@ -541,8 +541,8 @@ No-hint requests have an empty tier and zero estimated saving. The existing
 `exact_cache_estimated_ttft_saved_ms` histogram remains **positive benefit
 only**: `PendingRequest.CacheSelectionSelected` and its savings fields are set
 only when the chosen candidate has a positive `CacheDiscountMs`
-(`coordinator/registry/scheduler.go`; `emitExactCacheEstimatedTTFTSaved`,
-`coordinator/api/exact_cache_telemetry.go`). It is not a histogram of signed net
+(`coordinator/registry/scheduler.go`; `EmitExactCacheEstimatedTTFTSaved`,
+`coordinator/api/observation/exact_cache_telemetry.go`). It is not a histogram of signed net
 performance. Neither observation is measured request latency.
 
 SSD requires a positive external stage cost; memory can report zero external
@@ -564,12 +564,12 @@ receipt-confirmed billing remain unchanged.
 
 Cache-participating attempts (`PendingRequest.CacheRoutingParticipates`) are
 excluded from TTFT calibration (`observeTTFTCalibration`,
-`coordinator/api/settlement.go`) and from the first-content reputation sample
-(`coordinator/api/dispatch.go`). Terminal cache metrics use bounded categorical
+`coordinator/api/inference/settlement.go`) and from the first-content reputation sample
+(`coordinator/api/inference/dispatch.go`). Terminal cache metrics use bounded categorical
 tags only.
 
-`GET /v1/cache/status` (`handleExactCacheStatus`,
-`coordinator/api/exact_cache_status.go`) exposes only aggregate rollout state:
+`GET /v1/cache/status` (`HandleExactCacheStatus`,
+`coordinator/api/inference/exact_cache_status.go`) exposes only aggregate rollout state:
 activation and lifecycle counters (including `fences_applied`,
 `fences_expired` and `fenced_capabilities`); sidecar enabled/running/ready, child
 generation, categorical restart reason, failure streak, timeouts/overloads/RSS,
@@ -633,8 +633,8 @@ The response never includes model IDs, provider IDs, accounts, scopes, paths,
 hashes, epochs, prompts, token IDs, request IDs, or cache keys.
 
 The response and gauge projection are implemented in
-`coordinator/api/exact_cache_status.go` and
-`coordinator/api/exact_cache_metrics.go`; bounded artifact aggregation lives in
+`coordinator/api/inference/exact_cache_status.go` and
+`coordinator/api/inference/exact_cache_metrics.go`; bounded artifact aggregation lives in
 `coordinator/promptcontract/provisioner.go` (`Counts`), protocol/eligibility
 aggregation in `coordinator/registry/cache_status.go`
 (`PrefixCacheProtocolStatus`), and holder/attempt lifecycle counts in
@@ -646,7 +646,7 @@ For each selected hint, terminal correlation stays on the in-memory
 selected-holder precision and actual cached-read success without using an
 identifier as a metric tag (`PendingRequest` in
 `coordinator/registry/pending_request.go`; `cacheSelectionTerminalTags` in
-`coordinator/api/provider.go`).
+`coordinator/api/provider/`).
 
 ### Observed demand and soft prefix affinity
 
@@ -751,7 +751,7 @@ terminals whose latest reservation scan used the soft affinity tie breaker.
 Combine these with existing receipt rejection, donation outcome, hit/miss,
 saved-token, and measured TTFT data. No scope, prefix digest, request identifier,
 or provider identifier is exported by these new metrics
-(`coordinator/api/cache_opportunity_telemetry.go`).
+(`coordinator/api/observation/cache_opportunity_telemetry.go`).
 
 ### Configuration and rollback
 
@@ -830,7 +830,7 @@ back are operator procedures, kept in the runbook
    participation (`cacheActivationGate`,
    `coordinator/registry/cache_activation.go`); a sidecar failure or a media
    request yields a non-participating plan and the request still dispatches
-   (`planCacheRoute`, `coordinator/api/prompt_artifacts.go`).
+   (`planCacheRoute`, `coordinator/api/inference/prompt_artifacts.go`).
 3. **Only exact text-token prefix proofs from protocol-v2 providers affect
    selection**; V1 receipt frames stay decodable but cannot mutate routing
    evidence (`coordinator/registry/cache_receipts.go`).
@@ -860,11 +860,11 @@ back are operator procedures, kept in the runbook
    chain hash (`holderRecordFor`), and a restored holder matches its plan
    boundary through the identifier (`anchorMatches`); `GET /v1/cache/status` and the
    terminal tags carry bounded categorical values only
-   (`handleExactCacheStatus`, `coordinator/api/exact_cache_status.go`;
-   `cacheSelectionTerminalTags`, `coordinator/api/provider.go`).
+   (`HandleExactCacheStatus`, `coordinator/api/inference/exact_cache_status.go`;
+   `cacheSelectionTerminalTags`, `coordinator/api/observation/cache_terminal.go`).
 8. **Cache-participating attempts never train TTFT calibration or
    first-content reputation** (`observeTTFTCalibration`,
-   `coordinator/api/settlement.go`; `coordinator/api/dispatch.go`).
+   `coordinator/api/inference/settlement.go`; `coordinator/api/inference/dispatch.go`).
 9. **Mode `on` without a valid master key does not start**
    (`CacheRoutingConfig.Check`, `coordinator/registry/config.go`).
 
@@ -895,7 +895,7 @@ terminals separate. `selected=true` is an expected routing benefit, not proof
 of reuse; the terminal must also report `result=hit`. Missing/invalid usage is
 not a miss, and cache usage is not a consumer-success verdict. See the
 [metric inventory](../reference/telemetry-inventory.md#cache-results-by-model-internal)
-and `coordinator/api/cache_model_telemetry.go`.
+and `coordinator/api/observation/cache_model_telemetry.go`.
 
 ## Code map
 
@@ -918,9 +918,9 @@ and `coordinator/api/cache_model_telemetry.go`.
 | Bounded proof fence and plan-scoped invalidation | `coordinator/registry/cache_proof_fence.go` — `capabilityRejected`, `rejectCapability`, `invalidateProviderPlan`; `coordinator/registry/cache_model_changes.go` — `reconcileFences` |
 | Status vocabularies and sanitization | `coordinator/registry/cache_eligibility.go`, `coordinator/registry/cache_status.go`, `coordinator/registry/cache_snapshot.go` |
 | Discount in the cost model and near-tie credit preference | `coordinator/registry/scheduler.go` — `applyCacheRoutingCost`; `coordinator/registry/candidate_selection.go` — `selectRoutingCandidate`, `selectFirstContentCandidate`; `coordinator/registry/gate_reason.go` — `SelectionCacheCredit` |
-| Plan construction and sealed body | `coordinator/api/prompt_artifacts.go` — `planCacheRoute`; `coordinator/api/consumer.go` — `bodyForCacheAttempt` |
-| Status endpoint and gauges | `coordinator/api/exact_cache_status.go`, `coordinator/api/exact_cache_metrics.go` |
-| Terminal tags, calibration/reputation exclusion | `coordinator/api/provider.go` — `cacheSelectionTerminalTags`; `coordinator/api/settlement.go` — `observeTTFTCalibration`; `coordinator/api/dispatch.go` |
+| Plan construction and sealed body | `coordinator/api/inference/prompt_artifacts.go` — `planCacheRoute`; `coordinator/api/inference/consumer.go` — `bodyForCacheAttempt` |
+| Status endpoint and gauges | `coordinator/api/inference/exact_cache_status.go`, `coordinator/api/inference/exact_cache_metrics.go` |
+| Terminal tags, calibration/reputation exclusion | `coordinator/api/provider/` — `cacheSelectionTerminalTags`; `coordinator/api/inference/settlement.go` — `observeTTFTCalibration`; `coordinator/api/inference/dispatch.go` |
 | Sidecar | `coordinator/promptcontract/` — `provisioner.go` (`Counts`) |
 | Provider-side cache | `provider-swift/Sources/ProviderCore/KVCacheSSD/`, `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` |
 

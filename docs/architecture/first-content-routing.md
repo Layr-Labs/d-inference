@@ -1,6 +1,6 @@
 # First-content routing
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-02
 
 The coordinator selects providers by expected time to delivered content, with a
 separate conservative forecast for deadline feasibility. The selection policy applies by
@@ -372,7 +372,7 @@ clock covers lock waits, cache work, quotes, queues and provider writer handoff.
 Preflight releases its CPU routing-scan permit during prompt-contract planning
 and fallback body preparation, then reacquires it against the remaining clock
 before another fleet walk (`admissionScanPermit`,
-`coordinator/api/inference_admission_scan.go`).
+`coordinator/api/inference/inference_admission_scan.go`).
 Reservation cleanup follows the existing pending-request lifecycle on refusal,
 disconnect, timeout, cancellation and terminal completion.
 
@@ -422,7 +422,7 @@ predicted refusal would actually miss in execution.
 
 The profiler persists each candidate's `first_content` object with expected and
 conservative times, class/reason, remaining budget, evidence ages, cache work and
-service-work estimate (`decisionJSON`, `coordinator/api/profiler_record.go`). The
+service-work estimate (`decisionJSON`, `coordinator/api/observation/profiler_record.go`). The
 winner carries its commit-time evidence. Existing cost and calibrated TTFT
 columns remain separate diagnostics; [profiler sampling](system-profiler.md)
 does not represent a random sample of all outcomes.
@@ -441,8 +441,8 @@ does not represent a random sample of all outcomes.
 | Cache-aware preflight | `coordinator/registry/first_content_preflight.go` — `QuickFirstContentCapacityForRequest` |
 | Retained alternatives | `coordinator/registry/dispatch_plan.go` — `ReserveNextFromPlan`, `RefreshDispatchPlan` |
 | Quote correlation | `coordinator/registry/capacity_quotes.go` — `ProbePlanCandidates` |
-| Request retry and terminal ownership | `coordinator/api/dispatch.go` — `dispatchState` |
-| Persisted forecast evidence | `coordinator/api/profiler_record.go` — `decisionJSON` |
+| Request retry and terminal ownership | `coordinator/api/inference/dispatch.go` — `dispatchState` |
+| Persisted forecast evidence | `coordinator/api/observation/profiler_record.go` — `decisionJSON` |
 | Native text measurement recovery | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+PrefillRecovery.swift` — `canRecoverPrefillEvidence`; `provider-swift/Sources/ProviderCore/Inference/Performance/PrefillEvidenceRecovery.swift` — `PrefillEvidenceRecovery` |
 | Automatic MiMo calibration and customer preemption | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+MimoCalibration.swift` — `startMimoCalibrationIfNeeded`; `provider-swift/Sources/ProviderCore/Inference/Performance/IdleCalibrationCoordinator.swift` — `beginForeground` |
 | Conservative prompt-size evidence | `coordinator/registry/prefill_workload_rates.go` — `capPrefillByWorkload`; `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EnginePerformanceMeasurements.swift` — `freshIsolatedPrefillRate` |

@@ -11,6 +11,14 @@ Capacity, queues, slot states and the warm pool are covered in
 [`scheduling.md`](scheduling.md); this page covers only choosing among
 eligible providers.
 
+`coordinator/registry/admission` owns detached slot/token/memory calculations;
+`coordinator/registry/selection` owns detached ranking and affinity decisions.
+Neither imports the live registry. The registry still captures snapshots,
+draws randomness, holds locks, revalidates a selected provider and commits its
+reservation. HTTP retry, cancellation and settlement ownership is in
+`coordinator/api/inference`; moving calculations does not split atomic fleet
+state across services.
+
 For same-ID weight updates, `CatalogAcceptsWeightHash` and catalog eligibility
 accept the desired and retained approved revisions for that same model. An
 unpromoted or explicitly retired hash is not accepted. Catalog size uses the
@@ -45,7 +53,7 @@ and the control-writer handoff even if a provider reuses a request ID. One
 connection-bound acknowledgement worker coalesces the latest barrier rather than
 dropping it when prior settlement is slow. It waits for pre-barrier reservations
 to leave the writer/pending set and for terminal billing before acknowledgement
-(`providerReadLoop` in `coordinator/api/provider.go`).
+(`providerReadLoop` in `coordinator/api/provider/`).
 
 A validation-only request checks the complete model set without changing routing.
 A committed replacement updates model indexes and stale residency/cache evidence
@@ -77,7 +85,7 @@ First-content forecasts include fresh coordinator-to-provider WebSocket RTT.
 `coordinator/registry/provider_transport.go` (`transportForecast`) requires two
 successful samples on the current connection within 90 seconds, and adds RTT
 and measured variation to the existing delivery allowances. The 30-second
-probe loop (`coordinator/api/provider_transport.go`) accepts RTT observations
+probe loop (`coordinator/api/provider/provider_transport.go`) accepts RTT observations
 up to three seconds; this is a sample limit, not a probe-specific socket
 deadline. It keeps at most one probe outstanding, and an unanswered pong waits
 for ordinary connection teardown. The WebSocket library's control-frame failure
@@ -92,8 +100,8 @@ eligibility gate requires the selected model's explicit `native_media_tools`
 advertisement, vision support and existing tool-constraint protocol. This trait
 survives alias resolution, queued requests, retries and final reservation;
 ordinary media or text-only tools do not acquire it. A model update or disconnect
-immediately removes eligibility. Code: `coordinator/api/native_media_tools.go`
-(`requestHasMediaToolResults`), `coordinator/registry/native_media_tools.go`
+immediately removes eligibility. Code: `coordinator/api/inference/native_media_tools.go`
+(`RequestHasMediaToolResults`), `coordinator/registry/native_media_tools.go`
 (`providerSupportsNativeMediaToolsLocked`) and
 `coordinator/registry/request_traits.go` (`providerEligibleForTraitsLocked`).
 
@@ -135,10 +143,10 @@ dispatch-time entry point. It scans the fleet
 winner (`selectRoutingCandidate`) and
 returns a bounded **dispatch plan** (`coordinator/registry/dispatch_plan.go`)
 holding the winner plus up to `dispatchPlanMaxAlternates = 8` retained
-alternates. The API layer (`coordinator/api/dispatch.go`) consumes the plan:
+alternates. The API layer (`coordinator/api/inference/dispatch.go`) consumes the plan:
 it dispatches to the winner, may probe alternates for capacity quotes
 (`capacityProbeWindow = 250 * time.Millisecond`,
-`dispatchPlanProbeFanout = 2`, `coordinator/api/dispatch_plan_wiring.go`) and
+`dispatchPlanProbeFanout = 2`, `coordinator/api/inference/dispatch_plan_wiring.go`) and
 falls through the plan on retry or hedge. `ReserveNextFromPlan`
 (`coordinator/registry/dispatch_plan.go`) refreshes remaining time after both
 registry and provider locks are acquired, before evaluating and debiting an
@@ -227,7 +235,7 @@ Gates run in the order below. The first failing gate names the rejection;
 | 7 | `GateCapacityCooldown` | `capacity_cooldown` | `providerRoutingGateReasonLockedEx` | Pair is in capacity-reject cooldown (black-hole 503s). |
 | 8 | `GateBreaker` | `breaker` | `providerRoutingGateReasonLockedEx` | Node-health breaker open for genuine-fault errors. |
 | 9 | `GateEjection` | `ejection` | `providerRoutingGateReasonLockedEx` | Stable-identity health ejection open. |
-| 10 | `GateOffline` | `offline` | `providerLivenessGateReasonLocked` | `Status == StatusOffline` — set by the provider socket handler (`coordinator/api/provider.go`) the moment the WebSocket dies, before the deferred `Disconnect()` removes the record ([`scheduling.md`](scheduling.md#disconnect)). |
+| 10 | `GateOffline` | `offline` | `providerLivenessGateReasonLocked` | `Status == StatusOffline` — set by the provider socket handler (`coordinator/api/provider/`) the moment the WebSocket dies, before the deferred `Disconnect()` removes the record ([`scheduling.md`](scheduling.md#disconnect)). |
 | 11 | `GateUntrusted` | `untrusted` | `providerLivenessGateReasonLocked` | `Status == StatusUntrusted`. |
 | 12 | `GateStateRestoring` | `state_restoring` | `providerLivenessGateReasonLocked` | Verified SE identity is still awaiting durable account/counter/reputation restoration. Also excludes owner self-route, capacity and model loading. |
 | 13 | `GatePrivateOnly` | `private_only` | `providerLivenessGateReasonLocked` | Provider is `PrivateOnly` and the request is not from its owner. |
@@ -252,8 +260,8 @@ providers rejected by gates 8–9 (`breakerRejected`) and providers that would
 have been routable but for gate 7 (`capacityRejections`) because both feed the
 fail-open and 429 decisions described under [Failure modes](#failure-modes).
 
-Registration recovery (`coordinator/api/provider_restore.go`,
-`restorePersistedProviderState`) retries transient reads within one bounded
+Registration recovery (`coordinator/api/provider/provider_restore.go`,
+`RestorePersistedProviderState`) retries transient reads within one bounded
 deadline. Until it completes, `providerStateRestoreRequiredLocked` keeps the
 verified identity out of routing, public capacity and warm-pool candidates.
 A sustained failure closes the new connection for retry before evicting an
@@ -360,7 +368,7 @@ retirement ownership remain enforced. See
 for the age, prompt and failure-backoff bounds.
 `SetPrefillToDecodeRatio` changes the ratio process-wide; the coordinator
 binary wires it to `EIGENINFERENCE_PREFILL_DECODE_RATIO`
-(`coordinator/cmd/coordinator/main.go`).
+(`coordinator/app/routing.go`).
 
 **Historical prefill cost weighting for long prompts.** `longPromptPenalty(promptTokens,
 ttftBlockMs)` returns `(longPromptPrefillWeight − 1) × ttftBlockMs` when a
@@ -448,12 +456,12 @@ ties. The runner-up records the next first-content alternative.
 A request that has not produced first content by its **speculative point**
 may launch one distinct feasible backup with spare service allowance. A logical
 request never launches a second hedge after retry. The mechanics live in
-`coordinator/api/dispatch.go` (`runSpeculative`, `runRace`) with timing in
-`coordinator/api/hedge_schedule.go` and `coordinator/api/first_token_clock.go`.
+`coordinator/api/inference/dispatch.go` (`runSpeculative`, `runRace`) with timing in
+`coordinator/api/inference/hedge_schedule.go` and `coordinator/api/inference/first_token_clock.go`.
 
 **Launch offset.** The initial speculative point is
 `deadline × speculativeTimerRatio`, `speculativeTimerRatio = 0.5`
-(`coordinator/api/consumer.go`). When the probe round returns a
+(`coordinator/api/inference/consumer.go`). When the probe round returns a
 high-confidence quote for the best alternate, it may deliver one strictly
 earlier absolute launch instant through `hedgeAdvanceCh`, computed by
 `hedgeLaunchOffset(deadline, backupTTFTQ90, confidence)`:
@@ -475,7 +483,7 @@ or, when the plan is exhausted, from a fresh
 provider excluded. A `PreferOwner` request being served by the owner's own
 machine never hedges onto the paid public fleet.
 
-**Governor.** `hedgeGovernor.tryAcquireHedge` (`coordinator/api/hedge_governor.go`)
+**Governor.** `hedgeGovernor.tryAcquireHedge` (`coordinator/api/inference/hedge_governor.go`)
 must return `hedgeAllow` before a backup launches; the verdict and the budget
 slot are one atomic operation. Suppression verdicts, in evaluation order:
 
@@ -492,7 +500,7 @@ cancel and releases the reservation. A backup win sets `BackupWon`, emits
 `inference.speculative_win`, and is counted by
 `recordHedgeOutcome`. Both attempts are marked `UsedBackup`; settlement
 excludes them from TTFT calibration (`observeTTFTCalibration`,
-`coordinator/api/settlement.go`). The acquired governor slot is released
+`coordinator/api/inference/settlement.go`). The acquired governor slot is released
 exactly once on every exit path (`noteHedgeResolved`).
 
 ### Early-429 servability predictor
@@ -542,7 +550,7 @@ Per-model tables (`coordinator/registry/servability.go`):
 The consumer path turns an unservable verdict into an immediate `429` instead
 of queueing; the coordinator binary enables this by default and
 `EIGENINFERENCE_SERVABILITY_GATE=false` disables it
-(`coordinator/cmd/coordinator/main.go`, `SetServabilityGate`).
+(`coordinator/app/routing.go`, `SetServabilityGate`).
 
 ### Gray-box capacity signals
 
@@ -565,9 +573,9 @@ TTL override `EIGENINFERENCE_BUDGET_CLAMP_TTL_SECONDS`.
 The typed `media_memory_unavailable` refusal describes one request's media
 preparation reservation. It is excluded from model-wide budget clamps,
 capacity-rate penalties, health breakers and reputation through
-`isProviderHealthNeutralErrorReason` (`coordinator/api/route_outcome.go`). It
+`isProviderHealthNeutralErrorReason` (`coordinator/api/inference/route_outcome.go`). It
 still receives bounded capacity failover (`classifyRejection`,
-`coordinator/api/inference_failure_class.go`). A genuine native engine terminal
+`coordinator/api/inference/inference_failure_class.go`). A genuine native engine terminal
 cannot claim this exemption. Deploy the coordinator's reason handling before
 providers that emit it; older coordinators treat unknown capacity reasons as
 ordinary capacity refusals.
@@ -592,7 +600,7 @@ accept is gated (`capacity_cooldown`) for `defaultCapacityCooldownTTL =
 `EIGENINFERENCE_CAPACITY_COOLDOWN_MAX_TTL_SECONDS`.
 
 First-content accepts carry their observation time from
-`coordinator/api/dispatch.go` (`commitFirstContent`) to
+`coordinator/api/inference/dispatch.go` (`commitFirstContent`) to
 `coordinator/registry/capacity_cooldown.go` (`RecordCapacityAcceptObserved`).
 The recorder runs asynchronously so the first client byte does not wait for
 `registry.mu`. Reject strikes after the observation survive a delayed accept;
@@ -749,7 +757,7 @@ through `RecordChallengeFailure`.
 
 ### `Retry-After` derivation
 
-When the consumer path sheds a request with `429`, `estimateRetryAfter` (`coordinator/api/consumer.go`) derives the header:
+When the consumer path sheds a request with `429`, `estimateRetryAfter` (`coordinator/api/inference/consumer.go`) derives the header:
 
 1. Base `2` seconds. If the model's queue is non-empty,
    `queueDepth × 3`, clamped to [2, 30].
@@ -849,9 +857,9 @@ must not run in parallel with other scheduler tests in the same process.
 
 | Symptom | Cause | What the code does |
 |---|---|---|
-| `no_provider` | No provider advertises the model, or every advertising provider fails a non-capacity gate (`candidateCount == 0` with no capacity rejections). | Preflight returns `429` with `Retry-After` and reason code `no_provider` (`coordinator/api/inference_admission.go`). With [`EIGENINFERENCE_COLD_DISPATCH`](../reference/configuration.md#routing-admission-and-ttft) enabled and an idle on-disk provider that could load the model, the request is queued for a cold dispatch instead (`coldSpillAvailable`, `coordinator/api/cold_dispatch.go`). With breaker-only rejections, fail-open re-scans first (`shouldBypassBreakerFailOpen`). |
+| `no_provider` | No provider advertises the model, or every advertising provider fails a non-capacity gate (`candidateCount == 0` with no capacity rejections). | Preflight returns `429` with `Retry-After` and reason code `no_provider` (`coordinator/api/inference/inference_admission.go`). With [`EIGENINFERENCE_COLD_DISPATCH`](../reference/configuration.md#routing-admission-and-ttft) enabled and an idle on-disk provider that could load the model, the request is queued for a cold dispatch instead (`coldSpillAvailable`, `coordinator/api/inference/cold_dispatch.go`). With breaker-only rejections, fail-open re-scans first (`shouldBypassBreakerFailOpen`). |
 | `model_too_large` | Every advertising provider is cold and `modelFitsHardware` fails (`rejectModelTooLarge`). | Permanent rejection for this fleet composition; `routingsim` reports `OutcomeModelTooLarge`. |
-| All gated on capacity (`machine_busy`) | Providers serve the model but all are at `no_headroom`, `free_memory` or `capacity_cooldown`. | With [`EIGENINFERENCE_QUEUE_BEFORE_SHED`](../reference/configuration.md#routing-admission-and-ttft) enabled (`coordinator/api/cold_dispatch.go`) the request queues per [`scheduling.md`](scheduling.md); otherwise `429` with `Retry-After` from `estimateRetryAfter`. |
+| All gated on capacity (`machine_busy`) | Providers serve the model but all are at `no_headroom`, `free_memory` or `capacity_cooldown`. | With [`EIGENINFERENCE_QUEUE_BEFORE_SHED`](../reference/configuration.md#routing-admission-and-ttft) enabled (`coordinator/api/inference/cold_dispatch.go`) the request queues per [`scheduling.md`](scheduling.md); otherwise `429` with `Retry-After` from `estimateRetryAfter`. |
 | `ttft_too_slow` | Every candidate with credible conservative evidence exceeds the first-content deadline. | Soft by default: the best-available provider still serves. `EIGENINFERENCE_TTFT_HARD_REJECT=true` restores the legacy `429`; vision requests and accounts outside the first-content SLA selector are never TTFT-gated. |
 | Queue timeout | A queued request found no eligible provider within the queue's wait bound. | `ErrQueueTimeout` → `429` with `Retry-After`; see [`scheduling.md`](scheduling.md#per-model-request-queue). |
 | Budget-clamped fleet | Every pair for the model is clamped after capacity 503s. | Pairs show as `free_memory` until release or `defaultBudgetClampTTL` ([above](#gray-box-capacity-signals)); heartbeat headroom plus one accept releases early. |
@@ -876,12 +884,12 @@ must not run in parallel with other scheduler tests in the same process.
 | Capacity-rate penalty and cooldown | `coordinator/registry/capacity_rate.go`, `coordinator/registry/capacity_cooldown.go` |
 | Breakers and ejection | `coordinator/registry/error_cooldown.go`, `coordinator/registry/provider_breaker.go`, `coordinator/registry/health_ejection.go` |
 | Provider operational history | `coordinator/registry/reputation.go` — `Reputation`, `RecordLatency` |
-| TTFT calibration | `coordinator/registry/ttft_calibration.go`; fed by `observeTTFTCalibration` in `coordinator/api/settlement.go` |
-| Hedge timing, governor, race | `coordinator/api/hedge_schedule.go`, `coordinator/api/hedge_governor.go`, `coordinator/api/dispatch.go` (`runSpeculative`, `runRace`), `coordinator/api/first_token_clock.go` |
-| Probes and plan wiring | `coordinator/api/dispatch_plan_wiring.go` |
-| `Retry-After`, speculative ratio, route EWMA | `coordinator/api/consumer.go` — `estimateRetryAfter`, `estimateTTFTRetryAfter`, `speculativeTimerRatio` |
-| Queue-before-shed and cold dispatch flags | `coordinator/api/cold_dispatch.go` |
-| Flag wiring at startup | `coordinator/cmd/coordinator/main.go` |
+| TTFT calibration | `coordinator/registry/ttft_calibration.go`; fed by `observeTTFTCalibration` in `coordinator/api/inference/settlement.go` |
+| Hedge timing, governor, race | `coordinator/api/inference/hedge_schedule.go`, `coordinator/api/inference/hedge_governor.go`, `coordinator/api/inference/dispatch.go` (`runSpeculative`, `runRace`), `coordinator/api/inference/first_token_clock.go` |
+| Probes and plan wiring | `coordinator/api/inference/dispatch_plan_wiring.go` |
+| `Retry-After`, speculative ratio, route EWMA | `coordinator/api/inference/consumer.go` — `estimateRetryAfter`, `estimateTTFTRetryAfter`, `speculativeTimerRatio` |
+| Queue-before-shed and cold dispatch flags | `coordinator/api/inference/cold_dispatch.go` |
+| Flag wiring at startup | `coordinator/app/routing.go` |
 | Simulation harness | `coordinator/registry/routingsim/` — `runner.go`, `fleet.go`, `fleet_ndjson.go`, `trace.go`, `report.go` |
 
 ## Related
@@ -905,7 +913,7 @@ concurrency or memory limits.
 `coordinator/modelpolicy/first_content_sla.go` (`SetFirstContentSLAsFromEnv`) configures both fixed and per-input-token terms for exact model IDs, independently of model registration. Bonsai 2 uses a 10-second upstream base plus 5 ms per estimated prompt token; the live coordinator cutoff retains the existing 1-second response margin. This is the request-absolute first-content budget, carried through admission, queueing, retries and provider writer handoff, not an independent kernel prefill clock. These budgets apply only to accounts selected by `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS`. Provision the selector privately in the deployment environment; its value must match the authenticated account ID or stored email. Other service accounts and direct consumers are exempt, including for Bonsai. An explicit public-model policy takes precedence over its resolved build. Enforcement is selected before media and admission; a concrete native-media post-fetch recount may correct the input-token term once, anchored to the original receive time. Alias fallback and retries retain that clock. Configuration details are in [configuration.md](../reference/configuration.md).
 
 Concrete native MiMo requests replace recognized media fallback costs with
-processor-aware estimates (`coordinator/api/media_prompt_work.go`,
+processor-aware estimates (`coordinator/api/inference/media_prompt_work.go`,
 `mediaPromptTokens`). The background prompt-artifact provisioner verifies and
 retains `config.json` geometry; a changed active artifact invalidates its use.
 `coordinator/mediawork` reads bounded image headers, ordinary MP4/MOV sample
@@ -924,9 +932,9 @@ top-up. The corrected deadline spends time from the original request arrival;
 it never grants a fresh clock after fetching. Provider memory and deadline
 checks remain authoritative.
 
-`coordinator/api/first_content_accounts.go` (`requestFirstContentDeadline`) selects the policy using authenticated identity. Empty selectors disable the SLA for all accounts. An email lookup storage failure returns a retryable service error before reservation rather than silently changing account policy. Missing user records do not match an email selector.
+`coordinator/api/inference/first_content_accounts.go` (`requestFirstContentDeadline`) selects the policy using authenticated identity. Empty selectors disable the SLA for all accounts. An email lookup storage failure returns a retryable service error before reservation rather than silently changing account policy. Missing user records do not match an email selector.
 
-For exempt accounts, zero explicitly disables first-content deadlines: preflight skips its TTFT ceiling, queued and dispatched requests retain an empty `FirstContentDeadline`, and the provider frame omits `first_content_budget_ms`. The Swift inbound handler already interprets an omitted budget as no coordinator first-content deadline. `coordinator/api/first_token_clock.go` (`newFirstContentTimer`) disables the timeout select arm in every first-content wait, including accepted, retry and speculative-race paths. There is no 600-second first-content fallback. Clean empty completions remain eligible for speculative arbitration even with a zero deadline.
+For exempt accounts, zero explicitly disables first-content deadlines: preflight skips its TTFT ceiling, queued and dispatched requests retain an empty `FirstContentDeadline`, and the provider frame omits `first_content_budget_ms`. The Swift inbound handler already interprets an omitted budget as no coordinator first-content deadline. `coordinator/api/inference/first_token_clock.go` (`newFirstContentTimer`) disables the timeout select arm in every first-content wait, including accepted, retry and speculative-race paths. There is no 600-second first-content fallback. Clean empty completions remain eligible for speculative arbitration even with a zero deadline.
 
 Queue limits, provider write watchdogs, client cancellation and disconnect cleanup remain. The existing response/stream timers apply after first content commits. Ranking, ordinary hedge launch hints and capacity probes remain active; exempt probes, hedges and fresh-evidence recovery after repeated predictive refusal use a finite advisory planning horizon without arming a request timeout or advancing SLA hedges. Exempt primary scans use the short admission scan-wait slice. Speculative backup scans only acquire an immediately available scan slot; saturation skips the backup and resumes reading the primary. Shadow TTFT metrics remain counterfactual measurements, not enforcement.
 

@@ -1,10 +1,10 @@
 # Request Outcome Observability
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-02
 
 Every provider dispatch attempt ends in one claimed terminal outcome, and that outcome is recorded three ways: a closed `final_status` / `error_class` / `error_reason` triple on the `inference_routes` row, a per-attempt `request_profiles` row with separate `client_outcome` and `provider_outcome` columns, and a small set of low-cardinality Datadog counters. Requests refused before dispatch land in the `request_rejections` ledger instead. This page explains the existing attempt taxonomy and protected counters. The unsampled incoming-request ledger, its coverage limits, and separate egress/completion evidence are defined in [incoming request accounting](request-accounting.md).
 
-Scope of attempt telemetry: `/v1/chat/completions`, `/v1/responses`, `/v1/completions`, `/v1/messages`. All four flow through `dispatchState` (`coordinator/api/dispatch.go`), so all four write route rows and profile rows.
+Scope of attempt telemetry: `/v1/chat/completions`, `/v1/responses`, `/v1/completions`, `/v1/messages`. All four flow through `dispatchState` (`coordinator/api/inference/dispatch.go`), so all four write route rows and profile rows.
 
 ## Context
 
@@ -19,7 +19,7 @@ Two design rules follow from that:
 
 ### One funnel for route outcomes
 
-Every terminal goes through `coordinator/api/route_outcome.go`. The constructors there (`completeRouteOutcome`, `preCommitProviderErrorOutcome`, `postCommitProviderErrorOutcome`, `preResponseTimeoutOutcome`, `noTerminalAfterCancelOutcome`, `clientGoneBeforeResponseOutcome`, `speculativeLoserOutcome`, and friends) build a `store.InferenceRouteOutcome`; `updateInferenceRouteOutcomeForPending` claims the attempt once (`PendingRequest.MarkRouteOutcomeFinalized`), copies the status into the attempt profile (`AttemptProfile.SetOutcome`), and `updateInferenceRouteOutcomeWithModel` emits the `inference.error` and `inference.timing.*` metrics before submitting the Postgres update on the telemetry worker (`submitTelemetry`). Because the claim is per attempt, provider-terminal, consumer-relay, disconnect-cleanup and settlement-grace paths can race without producing two terminals.
+Every terminal goes through `coordinator/api/inference/route_outcome.go`. The constructors there (`completeRouteOutcome`, `preCommitProviderErrorOutcome`, `postCommitProviderErrorOutcome`, `preResponseTimeoutOutcome`, `noTerminalAfterCancelOutcome`, `clientGoneBeforeResponseOutcome`, `speculativeLoserOutcome`, and friends) build a `store.InferenceRouteOutcome`; `updateInferenceRouteOutcomeForPending` claims the attempt once (`PendingRequest.MarkRouteOutcomeFinalized`), copies the status into the attempt profile (`AttemptProfile.SetOutcome`), and `updateInferenceRouteOutcomeWithModel` emits the `inference.error` and `inference.timing.*` metrics before submitting the Postgres update on the telemetry worker (`SubmitTelemetry`). Because the claim is per attempt, provider-terminal, consumer-relay, disconnect-cleanup and settlement-grace paths can race without producing two terminals.
 
 ```mermaid
 flowchart LR
@@ -35,7 +35,7 @@ flowchart LR
 
 ### `final_status`
 
-The five persisted values are constants in `coordinator/api/route_outcome.go` (`finalStatusSuccess` … `finalStatusTimeout`).
+The five persisted values are constants in `coordinator/api/inference/route_outcome.go` (`finalStatusSuccess` … `finalStatusTimeout`).
 
 | `final_status` | Meaning | `error_code` | `completion_tokens` |
 |---|---|---|---|
@@ -45,7 +45,7 @@ The five persisted values are constants in `coordinator/api/route_outcome.go` (`
 | `error` | No content reached the client and a provider or coordinator error won before a timeout class applied. | provider status, `4xx` for client-shape faults, `0` for pre-dispatch failures | forced `0`, or provider `attempt_usage` |
 | `timeout` | No content reached the client before a coordinator deadline. | `504` (the HTTP response may still be a `429`, see below) | forced `0` |
 
-`request_profiles.final_status` carries the same five values plus `rejected`, used for queued or undispatched attempts that ended in `429`/`503`/`504` before a route row existed (`coordinator/api/profiler_dispatch.go`); `inference_routes` never carries `rejected`.
+`request_profiles.final_status` carries the same five values plus `rejected`, used for queued or undispatched attempts that ended in `429`/`503`/`504` before a route row existed (`coordinator/api/inference/profiler_dispatch.go`); `inference_routes` never carries `rejected`.
 
 ### `error_class`
 
@@ -73,7 +73,7 @@ The five persisted values are constants in `coordinator/api/route_outcome.go` (`
 | `partial_success` | `provider_incomplete_after_commit` | `postCommitProviderIncompleteOutcome`, `502` | provider channel closed mid-stream with no terminal |
 | `partial_success` | `stream_timeout_after_commit` | `postCommitStreamTimeoutOutcome`, `504` | idle-stream timer expired mid-stream |
 | `partial_success` | `client_gone_after_commit_provider_completed` | `provider.go` `handleComplete` when `consumerGone` (`completeRouteOutcome`) | client left after commit; provider completed; consumer charged and provider paid |
-| `partial_success` | `client_gone_after_commit_provider_error` / `client_gone_after_commit_provider_cancelled` | `provider.go` `handleInferenceError` when `consumerGone` | client left after commit; provider then errored (refund, `admitted_but_failed = true`) or acknowledged the cancel |
+| `partial_success` | `client_gone_after_commit_provider_error` / `client_gone_after_commit_provider_cancelled` | `provider.go` `HandleInferenceError` when `consumerGone` | client left after commit; provider then errored (refund, `admitted_but_failed = true`) or acknowledged the cancel |
 | `partial_success` | `no_terminal_after_cancel` | `settlement.go` grace-expiry callback (`noTerminalAfterCancelOutcome`), `504` | client left after commit and no provider terminal arrived within the settlement grace; reservation refunded, provider unpaid |
 
 Two pairings deserve a note. `dispatchErrorClass` maps the dispatch loop's own first-content expiry to `first_chunk_timeout` with `final_status = error` (via `dispatchFailedPendingRouteOutcome`), so that class appears under both `timeout` and `error`. And an exhausted dispatch whose only failure was an untyped coordinator `504` is returned to the HTTP client as `429` with reason `first_chunk_timeout` (`classifyExhaustedStatus`), while the route row keeps its `timeout` status.
@@ -104,30 +104,30 @@ The profiler keeps the two dimensions the route row folds together. Both are clo
 
 | Column | Values | Set by |
 |---|---|---|
-| `client_outcome` | `completed`, `client_gone`, `error_response` | `dispatchState.finalizeProfile` (`coordinator/api/profiler_dispatch.go`) once the dispatch loop returns; `client_gone` when the request context is cancelled, `error_response` when nothing was committed |
-| `provider_outcome` | `completed`, `error`, `not_dispatched`, `no_terminal` | `handleComplete` / `handleInferenceError` (`coordinator/api/provider.go`), `closeUndispatchedAttempt`, and the 31 s fallback timer in `coordinator/registry/attempt_profile_finalize.go` |
-| `terminal_cause` | the `inference_error.terminal_cause` enum, verbatim | `handleInferenceError` |
+| `client_outcome` | `completed`, `client_gone`, `error_response` | `dispatchState.finalizeProfile` (`coordinator/api/inference/profiler_dispatch.go`) once the dispatch loop returns; `client_gone` when the request context is cancelled, `error_response` when nothing was committed |
+| `provider_outcome` | `completed`, `error`, `not_dispatched`, `no_terminal` | `handleComplete` / `HandleInferenceError` (`coordinator/api/inference/provider_inference.go`), `closeUndispatchedAttempt`, and the 31 s fallback timer in `coordinator/registry/attempt_profile_finalize.go` |
+| `terminal_cause` | the `inference_error.terminal_cause` enum, verbatim | `HandleInferenceError` |
 
 The full column list, retention and export rules are in [system-profiler.md](./system-profiler.md); the `terminal_cause` vocabulary is in [protocol-messages.md](../reference/protocol-messages.md).
 
 ### Pre-dispatch rejections
 
-A request that never reaches a provider has no route row. `recordRejection` (`coordinator/api/rejection_telemetry.go`) writes a `store.RejectionRecord` with `stage`, `reason_code`, `http_status`, the request shape (token estimates, flags, non-content params) and a counterfactual servability snapshot (`could_have_served = candidate_count > 0` when evaluated; `null` when skipped, plus `warm_provider_existed` and `best_ttft_ms`).
+A request that never reaches a provider has no route row. `recordRejection` (`coordinator/api/inference/rejection_telemetry.go`) writes a `store.RejectionRecord` with `stage`, `reason_code`, `http_status`, the request shape (token estimates, flags, non-content params) and a counterfactual servability snapshot (`could_have_served = candidate_count > 0` when evaluated; `null` when skipped, plus `warm_provider_existed` and `best_ttft_ms`).
 
 Routing-saturation shedding sets `skipServability` so the telemetry worker does
 not run another fleet scan under overload. `could_have_served` is then SQL NULL
 and JSON `null`, or an empty CSV cell. The admin `could_have_served=true|false`
-filters exclude unknown samples (`coordinator/api/admin_telemetry.go`,
+filters exclude unknown samples (`coordinator/api/observation/admin_telemetry.go`,
 `filterRejectionRecords`, `csvOptionalBool`). Count only non-NULL values when
 computing the false-rejection rate; unknown is not a necessary rejection.
 
 | `stage` | `reason_code` values written today |
 |---|---|
-| `validation` | `bad_param`, `messages_required`, `payload_too_large`; media fetch failures `media_blocked`, `upstream_timeout`, `upstream_error` (`mediaRejectionReason`, `coordinator/api/media_resolve.go`) |
+| `validation` | `bad_param`, `messages_required`, `payload_too_large`; media fetch failures `media_blocked`, `upstream_timeout`, `upstream_error` (`mediaRejectionReason`, `coordinator/api/inference/media_resolve.go`) |
 | `model_resolution` | `model_not_found`, `model_unavailable` |
 | `model_shed` | `model_shed` |
 | `balance` | `insufficient_funds`, `insufficient_quota` |
-| `preflight_capacity` | `machine_busy`, `model_too_large`, `no_provider`, `routing_saturated`, and the servability verdicts `context_exceeded`, `prompt_too_long` (`coordinator/api/servability_gate.go`) |
+| `preflight_capacity` | `machine_busy`, `model_too_large`, `no_provider`, `routing_saturated`, and the servability verdicts `context_exceeded`, `prompt_too_long` (`coordinator/api/inference/servability_gate.go`) |
 | `routing_ttft` | `ttft_too_slow` |
 | `queue` | `queue_full`, `queue_timeout`, `ttft_too_slow`, `model_capability_unsupported` |
 | `dispatch` | `ttft_too_slow`; the exhausted-dispatch verdicts from `resolveDominantExhaustedStatus` / `classifyExhaustedStatus`: `dispatch_exhausted` (default), `first_chunk_timeout` (untyped `504` reclassified to `429`), `client_error`, `payload_too_large`, `template_render_failed`, `oversized_request`, `routing_saturated`, `deadline_unreachable`, and `unservable_token_budget` (the servability backstop) |
@@ -140,13 +140,13 @@ All counters go through `ddIncr`/`ddHistogram`, which are no-ops when Datadog is
 
 | Metric | Tags | Emitted from | Semantics |
 |---|---|---|---|
-| `inference.request_outcome` | `model`, `class`, `kv_backend`, `kv_backend_fallback` | `recordRequestOutcome` (`coordinator/api/openrouter_uptime.go`), called from `dispatch.go` at the streaming commit, in `writeCommittedResponse` for non-streaming bodies, and at the exhausted tail of `run()`; from `recordRejection` for every non-`dispatch` stage | exactly one per client request. `class` ∈ {`success`, `provider_5xx`, `mid_stream`, `timeout`, `rate_limited`, `client_error`} from `classifyOutcomeByCode`. Uptime = `success / (success + provider_5xx + mid_stream + timeout)`; `rate_limited` and `client_error` are excluded. Commit-time approximation: a stream that fails after commit counts as `success`. `/v1/completions` and `/v1/messages` contribute only their rejections. |
+| `inference.request_outcome` | `model`, `class`, `kv_backend`, `kv_backend_fallback` | `recordRequestOutcome` (`coordinator/api/inference/openrouter_uptime.go`), called from `dispatch.go` at the streaming commit, in `writeCommittedResponse` for non-streaming bodies, and at the exhausted tail of `run()`; from `recordRejection` for every non-`dispatch` stage | exactly one per client request. `class` ∈ {`success`, `provider_5xx`, `mid_stream`, `timeout`, `rate_limited`, `client_error`} from `classifyOutcomeByCode`. Uptime = `success / (success + provider_5xx + mid_stream + timeout)`; `rate_limited` and `client_error` are excluded. Commit-time approximation: a stream that fails after commit counts as `success`. `/v1/completions` and `/v1/messages` contribute only their rejections. |
 | `inference.error` | `reason`, `model` | `emitInferenceErrorMetric` | one per non-success terminal with a reason |
-| `inference.timing.{parse_ms,reserve_ms,route_ms,encrypt_ms,queue_wait_ms,dispatch_ms,total_duration_ms}` | `model`, `final_status` | `emitTimingDecompositionMetric` (`coordinator/api/timing_metrics.go`) | histograms of the same values persisted on the route row; zero segments are skipped |
-| `inference.partial_success` | `model`, `error_class` | `handleComplete` when `consumerGone` (`coordinator/api/partial_success_metrics.go`) | subset of `inference.completions`; `error_class` is always `client_gone_after_commit_provider_completed` |
+| `inference.timing.{parse_ms,reserve_ms,route_ms,encrypt_ms,queue_wait_ms,dispatch_ms,total_duration_ms}` | `model`, `final_status` | `emitTimingDecompositionMetric` (`coordinator/api/inference/timing_metrics.go`) | histograms of the same values persisted on the route row; zero segments are skipped |
+| `inference.partial_success` | `model`, `error_class` | `handleComplete` when `consumerGone` (`coordinator/api/inference/partial_success_metrics.go`) | subset of `inference.completions`; `error_class` is always `client_gone_after_commit_provider_completed` |
 | `inference.no_terminal_after_cancel` | `model` | `settlement.go` grace expiry | payout gap: refunded, provider unpaid |
-| `routing.client_gone` | `model`, `prompt_bucket`, `chip_family`, `phase`, `deadline_bucket` | `emitClientGone` (`coordinator/api/prompt_buckets.go`) from pre-commit arms (`phase:before_first_token`) and from `handleComplete`, `handleInferenceError`, settlement expiry (`phase:after_commit`) | at most one per request; `chip_family` uses the fixed vocabulary in `coordinator/api/chip_family_tags.go`; `deadline_bucket` distinguishes early aborts from cancellations at the first-content deadline |
-| `inference.ttft_ms`, `inference.decode_tps` | `model`, `kv_backend`, `kv_backend_fallback` | `handleComplete` (`coordinator/api/kv_backend_metrics.go`) | the same values written to `inference_routes.actual_ttft_ms` / `actual_decode_tps`; skipped when unmeasurable |
+| `routing.client_gone` | `model`, `prompt_bucket`, `chip_family`, `phase`, `deadline_bucket` | `emitClientGone` (`coordinator/api/inference/prompt_buckets.go`) from pre-commit arms (`phase:before_first_token`) and from `handleComplete`, `HandleInferenceError`, settlement expiry (`phase:after_commit`) | at most one per request; `chip_family` uses the fixed vocabulary in `coordinator/api/observation/provider_labels.go`; `deadline_bucket` distinguishes early aborts from cancellations at the first-content deadline |
+| `inference.ttft_ms`, `inference.decode_tps` | `model`, `kv_backend`, `kv_backend_fallback` | `handleComplete` (`coordinator/api/inference/provider_inference.go`) | the same values written to `inference_routes.actual_ttft_ms` / `actual_decode_tps`; skipped when unmeasurable |
 | `routing.unservable_reclassified` | `model` | dispatch-exhausted backstop in `dispatch.go` | a provider token-budget/KV/context `5xx` turned into an uptime-neutral `429` |
 
 `kv_backend` uses the heartbeat vocabulary (`paged`, `contiguous`, `unspecified`, `other`, `unknown`) and `kv_backend_fallback` the slot's `kv_backend_fallback_reason` (`none` is a real value). Attribution follows the slot that served, is sticky for the provider session (`coordinator/registry/kv_backend.go`), and is never coerced: a request that never reached a slot is `unknown`/`unknown`. Nothing consults `kv_backend` for routing, admission, scoring or shedding.
@@ -156,14 +156,14 @@ Queued exits carry the transient `QueueExit` marker and instead increment
 `inference.queue_outcome{model,class}`; queue deadline expiry uses
 `queue_deadline`, while a provider silent after dispatch uses
 `first_chunk_timeout`. Typed drain and media-memory refusals count as capacity, never faults
-(`coordinator/api/attempt_outcome_metrics.go`, `emitAttemptOutcomeMetric`;
-`coordinator/api/dispatch.go`, `queuedExitOutcome`).
+(`coordinator/api/inference/attempt_outcome_metrics.go`, `emitAttemptOutcomeMetric`;
+`coordinator/api/inference/dispatch.go`, `queuedExitOutcome`).
 
 `inference.request_outcome_or_view{model,class}` also counts a TTFT rejection
 on the first reservation scan as `rate_limited`, even though that branch does
 not write a retry rejection row. The request-level outcome is independent of
 the retry-only ledger/legacy dispatch metrics
-(`coordinator/api/dispatch.go`, `dispatchPrimary`).
+(`coordinator/api/inference/dispatch.go`, `dispatchPrimary`).
 
 `inference.cancel_sent{cause,model}` counts cancels accepted by the provider
 writer; a full/stopped writer increments `inference.cancel_send_failed{reason}`.
@@ -174,25 +174,25 @@ was never accepted contributes only to `inference.cancel_unresolved` on expiry,
 even if stray chunks arrived. `inference.cancelled_terminal` includes
 `delivered:true|false` for correlated terminals. Successful enqueue marking and terminal resolution share the tracker lock,
 so an immediate terminal cannot observe an unmarked accepted cancel.
-Enqueue acceptance does not prove a frame reached the provider (`coordinator/api/cancel_lifecycle.go`,
+Enqueue acceptance does not prove a frame reached the provider (`coordinator/api/inference/cancel_lifecycle.go`,
 `sendRecordedCancel`, `resolveCancelledTerminal`, `emitExpiredCancelEntries`).
 The zombie tracker keeps at most `zombieCancelMaxEntries = 4096` entries.
 Insertions at the cap evict one least-recently-active ID with constant-time
 list operations; they do not force an expiry scan. TTL and warning-state
 cleanup remain rate-limited to `zombieSweepEvery`
-(`coordinator/api/zombie_eviction.go`, `makeRoomLocked`;
-`coordinator/api/zombie_stream.go`, `sweepLocked`).
+(`coordinator/api/inference/zombie_eviction.go`, `makeRoomLocked`;
+`coordinator/api/inference/zombie_stream.go`, `sweepLocked`).
 
 ### Read surfaces
 
 | Surface | Contents |
 |---|---|
-| `GET /v1/admin/routes` (`handleAdminRoutes`) | `store.InferenceRouteRecord`: the decision snapshot plus the merged outcome fields (`final_status`, `error_code`, `error_class`, `error_reason`, token counts, `cost_micro_usd`, `actual_ttft_ms`, `dispatch_to_first_chunk_ms`, `total_duration_ms`, the six timing segments, `actual_decode_tps`, `admitted_but_failed`, `used_backup`, `backup_won`). Filters: `since`, `limit`, `provider`, `model`, `outcome`, `final_status`. |
-| `GET /v1/admin/routes/export?format=csv|ndjson` | same fields; `routeCSVHeader` in `coordinator/api/admin_telemetry.go` is the column order |
+| `GET /v1/admin/routes` (`HandleAdminRoutes`) | `store.InferenceRouteRecord`: the decision snapshot plus the merged outcome fields (`final_status`, `error_code`, `error_class`, `error_reason`, token counts, `cost_micro_usd`, `actual_ttft_ms`, `dispatch_to_first_chunk_ms`, `total_duration_ms`, the six timing segments, `actual_decode_tps`, `admitted_but_failed`, `used_backup`, `backup_won`). Filters: `since`, `limit`, `provider`, `model`, `outcome`, `final_status`. |
+| `GET /v1/admin/routes/export?format=csv|ndjson` | same fields; `routeCSVHeader` in `coordinator/api/observation/admin_telemetry.go` is the column order |
 | `GET /v1/admin/rejections`, `/v1/admin/rejections/export` | `RejectionRecord` rows |
 | `GET /v1/admin/profiles`, `GET /v1/admin/snapshots` (each with `/export`) | per-attempt profiles and fleet snapshots ([system-profiler.md](./system-profiler.md)) |
 
-All admin reads require the admin key (`requireAdminKey`).
+All admin reads require the admin key (`RequireAdminKey`).
 
 ## Invariants
 
@@ -225,16 +225,16 @@ All admin reads require the admin key (`requireAdminKey`).
 
 | Concern | Files |
 |---|---|
-| Outcome constructors, `final_status` constants, `error_reason` derivation | `coordinator/api/route_outcome.go` |
-| Pre-commit arms, dispatch error classes, exhausted-status reclassification, `request_outcome` emit | `coordinator/api/dispatch.go`, `coordinator/api/first_token_clock.go`, `coordinator/api/openrouter_uptime.go` |
-| Post-commit and pre-response relay arms | `coordinator/api/consumer.go`, `coordinator/api/generic_endpoint_stream.go`, `coordinator/api/dispatch_terminal_write.go` |
-| Provider terminals, consumer-gone handling | `coordinator/api/provider.go`, `coordinator/api/inference_error_sanitize.go` |
-| Settlement grace and no-terminal refund | `coordinator/api/settlement.go` |
-| Client-gone and partial-success counters | `coordinator/api/prompt_buckets.go`, `coordinator/api/partial_success_metrics.go` |
-| Timing histograms, KV-backend attribution | `coordinator/api/timing_metrics.go`, `coordinator/api/kv_backend_metrics.go`, `coordinator/registry/kv_backend.go` |
-| Rejection ledger and servability gate | `coordinator/api/rejection_telemetry.go`, `coordinator/api/inference_admission.go`, `coordinator/api/servability_gate.go` |
-| Per-attempt profile outcomes | `coordinator/api/profiler_dispatch.go`, `coordinator/registry/attempt_profile.go`, `coordinator/registry/attempt_profile_finalize.go` |
-| Storage types and admin reads | `coordinator/store/interface.go` (`InferenceRouteRecord`, `InferenceRouteOutcome`, `RejectionRecord`), `coordinator/api/admin_telemetry.go` |
+| Outcome constructors, `final_status` constants, `error_reason` derivation | `coordinator/api/inference/route_outcome.go` |
+| Pre-commit arms, dispatch error classes, exhausted-status reclassification, `request_outcome` emit | `coordinator/api/inference/dispatch.go`, `coordinator/api/inference/first_token_clock.go`, `coordinator/api/inference/openrouter_uptime.go` |
+| Post-commit and pre-response relay arms | `coordinator/api/inference/consumer.go`, `coordinator/api/inference/generic_endpoint_stream.go`, `coordinator/api/inference/dispatch_terminal_write.go` |
+| Provider terminals, consumer-gone handling | `coordinator/api/provider/`, `coordinator/api/inference/inference_error_sanitize.go` |
+| Settlement grace and no-terminal refund | `coordinator/api/inference/settlement.go` |
+| Client-gone and partial-success counters | `coordinator/api/inference/prompt_buckets.go`, `coordinator/api/inference/partial_success_metrics.go` |
+| Timing histograms, KV-backend attribution | `coordinator/api/inference/timing_metrics.go`, `coordinator/api/inference/kv_backend_metrics.go`, `coordinator/registry/kv_backend.go` |
+| Rejection ledger and servability gate | `coordinator/api/inference/rejection_telemetry.go`, `coordinator/api/inference/inference_admission.go`, `coordinator/api/inference/servability_gate.go` |
+| Per-attempt profile outcomes | `coordinator/api/inference/profiler_dispatch.go`, `coordinator/registry/attempt_profile.go`, `coordinator/registry/attempt_profile_finalize.go` |
+| Storage types and admin reads | `coordinator/store/interface.go` (`InferenceRouteRecord`, `InferenceRouteOutcome`, `RejectionRecord`), `coordinator/api/observation/admin_telemetry.go` |
 | Regression pins | `coordinator/api/route_outcome_test.go`, `coordinator/api/settlement_clientgone_test.go`, `coordinator/api/nonfault_outcome_generic_test.go`, `coordinator/api/dispatch_speculative_outcome_test.go`, `coordinator/api/rejection_classify_test.go` |
 
 ## Related

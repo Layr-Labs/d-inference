@@ -5,20 +5,27 @@ Darkbloom is a decentralized private inference network for Apple Silicon Macs. C
 ## Project Structure
 
 ```text
-coordinator/          Go control plane (packages live at top level, not internal/)
-├── cmd/coordinator/  main service entrypoint
-├── api/              HTTP + WebSocket handlers
-│   ├── consumer.go         OpenAI-compatible chat/completions/responses + Anthropic messages
-│   ├── provider.go         provider registration, heartbeats, attestation, relay
-│   ├── billing_handlers.go Stripe/referral/pricing endpoints
-│   ├── device_auth.go      device code flow for linking providers to user accounts
-│   ├── enroll.go           MDM enrollment profile generation
-│   ├── invite_handlers.go  invite code admin/user flows
-│   ├── release_handlers.go binary release registration (GitHub Actions integration)
-│   ├── chunk_key_cache.go  per-request X25519 shared-key memoization for chunk decrypt
-│   ├── stats.go            public network stats
-│   ├── types/              canonical JSON shapes for consumer-facing endpoints
-│   └── server.go           route wiring, auth middleware, version gate
+coordinator/          Go control plane with domain-owned packages
+├── cmd/coordinator/  command entrypoint, logging and config validation
+├── app/              service assembly, backend selection, startup and shutdown
+├── api/              HTTP + WebSocket composition
+│   ├── server.go          constructs and connects domain owners
+│   ├── routes.go          route bindings; global middleware in middleware.go
+│   ├── access/            authentication, principal context, limits; keys/ and device/ handlers
+│   ├── accounts/          account/provider projections, invites and admin users
+│   ├── billing/           billing HTTP; payouts/ owns provider payout workflows
+│   ├── catalog/           model catalog, aliases, publication and capacity endpoints
+│   ├── inference/         shared admission, dispatch, cancellation and settlement lifecycle
+│   │   ├── request/       request normalization and validation
+│   │   └── response/      response metadata, encoding and SSE normalization
+│   ├── provider/          registration, heartbeat and typed inference-event handoff
+│   │   └── trust/         attestation, enrollment, MDM scheduling and trust reuse
+│   ├── releases/          release registration and runtime-policy publication
+│   ├── reporting/         public network stats and read projections
+│   ├── observation/       operational metrics, profiles, route records and outcomes
+│   ├── operations/        health, readiness, drain, state export and log reports
+│   ├── httpx/, readcache/, geo/, modelprice/  shared HTTP, cache, geo and pricing helpers
+│   └── types/             canonical JSON shapes for consumer-facing endpoints
 ├── apns/             APNs-push code-identity attestation
 ├── attestation/      Secure Enclave + MDA verification
 ├── auth/             Privy JWT integration
@@ -32,10 +39,14 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── ratelimit/        rate limiting
 ├── registry/         provider registry, queueing, routing, reputation, token-budget admission,
 │                     warm-pool controller, two-lane provider WS writer (provider_writer.go),
+│                     admission/ and selection/ (pure detached policy),
 │                     routingsim/ (trace-driven routing simulation harness)
 ├── saferun/          panic-safe goroutine runners
 ├── stateexport/      consistent encrypted archive of MicroMDM and other /data state (migration)
-├── store/            in-memory or Postgres persistence
+├── store/            persistence contracts, records, cache decorator and capability unwrapping
+│   ├── memory/       in-memory backend
+│   ├── postgres/     PostgreSQL backend and migrations
+│   └── tests/        cross-backend contract tests
 ├── telemetry/        telemetry event emitter (process logs + Datadog forwarding)
 ├── datadog/          Datadog APM / DogStatsD / Logs API client
 ├── deploy/           container entrypoint (start.sh)
@@ -107,10 +118,10 @@ docs/                 how-tos, runbooks, reference, architecture, design records
 - Coordinator HTTP routes include `POST /v1/chat/completions`, `POST /v1/responses`, `POST /v1/completions`, `POST /v1/messages`, `GET /v1/models`, `GET /v1/models/capacity`, billing/pricing endpoints, invite flows, stats, enrollment, device authorization, and release registration endpoints.
 - Coordinator auth is split between Privy JWTs, API keys, and device-code login (RFC 8628) for provider machines.
 - Routing uses token-budget admission with engine-reported capacity, speculative TTFT dispatch, EWMA TPS tracking, and early 429 with Retry-After for OpenRouter compatibility.
-- Billing logic is split between `coordinator/payments` (ledger + pricing) and `coordinator/billing` (Stripe, referrals).
+- Billing HTTP lives in `coordinator/api/billing` and its `payouts` child; `coordinator/payments` owns ledger/pricing and `coordinator/billing` owns Stripe/referral services. Inference reservations and settlement share the lifecycle in `coordinator/api/inference`.
 - Providers serve text inference through the Swift `darkbloom` CLI with continuous batching via MLX-Swift.
 - Model registry data is DB-backed in the coordinator and points to R2 manifests under `https://models.darkbloom.ai`; model bytes are not hardcoded in the provider or UI.
-- Streaming hot path: provider frames are decoded in a single parse (`coordinator/protocol/type_scan.go` scans the `type` key; malformed input falls back to a full envelope decode); per-request X25519 shared keys are memoized for chunk decryption and forgotten on request terminal (`coordinator/api/chunk_key_cache.go`); all writes to a provider WebSocket go through a two-lane writer (`coordinator/registry/provider_writer.go`) with a per-connection write watchdog — control frames (challenges, cancels, trust status) take strict (non-preemptive) priority over data frames, FIFO holds only within a lane, and `WriteText` blocks until the frame is on the wire.
+- Streaming hot path: provider frames are decoded in a single parse (`coordinator/protocol/type_scan.go` scans the `type` key; malformed input falls back to a full envelope decode); per-request X25519 shared keys are memoized for chunk decryption and forgotten on request terminal (`coordinator/api/inference/chunk_key_cache.go`); all writes to a provider WebSocket go through a two-lane writer (`coordinator/registry/provider_writer.go`) with a per-connection write watchdog — control frames (challenges, cancels, trust status) take strict (non-preemptive) priority over data frames, FIFO holds only within a lane, and `WriteText` blocks until the frame is on the wire.
 - Observability: Datadog metrics (DogStatsD) for attestation, routing, billing, fleet version, and provider capacity. X-Timing header decomposes per-request latency.
 
 ## Building And Testing
@@ -264,10 +275,10 @@ Dev coordinator deploy (Google Cloud): see `docs/operations/dev-environment.md`.
 - Model scan uses fast discovery (no hashing) at startup (`ModelScanner`). Weight hashing is on-demand via `WeightHasher.computeHash(for:)` only for models that need attestation/verification. Don't add hashing back to the scan path.
 - Models with broken chat templates are not auto-repaired. The provider runs a scan-time chat-template render self-check (`TemplateRenderCheck`) and reports `template_render_ok=false`; the coordinator then fences **all** requests (plain text, tools, multimodal alike) away from that (provider, model) pair — a crashing template breaks every request shape (`providerEligibleForTraitsLocked`, `registry/request_traits.go`). The tool-scoped gates key on advertised capabilities (the tool-constraint protocol for inference-enforced `tool_choice`, `providerSupportsToolConstraintLocked`), never on provider version.
 - The vision tower is driven **one image at a time** (`EngineV2VisionTowerRun.qwenPerImageVisionFeatures`). Qwen3-VL's tower attends over whatever it is handed as one sequence with an N×N intermediate, so batching a request's images made peak device memory quadratic in the image count and asked Metal for buffers many times `MTLDevice.maxBufferLength`. Do not "optimize" the loop back into a single call. `VisionTowerBudget` predicts that peak from the processor's grids and the model's own vision config — the N² multiple is 1 when MLX can fuse the head dim (64/80/128, `sdpa_full_supported_head_dim`) and `numHeads` when it falls back and materializes `[1, H, N, N]` scores — and the whole prefill runs under `MLX.withError` because MLX's default handler is `fatalError`. That handler **records and returns**, so every `eval` site must check the box (`throwIfMLXFaulted`); checking only on block exit lets the code run on after a refused allocation and lets a later Swift throw hide the cause.
-- Store selection (`cmd/coordinator/main.go`): the coordinator uses the **Postgres** store whenever `EIGENINFERENCE_DATABASE_URL` is set (prod does — durable across restarts/deploys), and refuses to start without it unless `EIGENINFERENCE_ALLOW_MEMORY_STORE=true`. The in-memory store is the dev/test fallback only (state lost on restart). Note: the live provider *registry* (WebSocket connections/attestation) is always in-process and is rebuilt on reconnect regardless of store.
+- Store selection (`coordinator/app/store.go`): the coordinator uses the **Postgres** store whenever `EIGENINFERENCE_DATABASE_URL` is set (prod does — durable across restarts/deploys), and refuses to start without it unless `EIGENINFERENCE_ALLOW_MEMORY_STORE=true`. The in-memory store is the dev/test fallback only (state lost on restart). Note: the live provider *registry* (WebSocket connections/attestation) is always in-process and is rebuilt on reconnect regardless of store.
 - Request queue timeout is 120 seconds. Initial attestation challenge is sent immediately on registration, then every 5 minutes.
 - Backend idle timeout is 1 hour (not 10 minutes as some comments may say).
-- `handleChunk` never silently drops streamed chunks: when a consumer's chunk buffer is full it gets one 250ms grace window (`chunkOverflowGrace`), then the request is failed with 499 and the provider's generation is cancelled.
+- `HandleChunk` never silently drops streamed chunks: when a consumer's chunk buffer is full it gets one 250ms grace window (`chunkOverflowGrace`), then the request is failed with 499 and the provider's generation is cancelled.
 
 ### Coordinator State Model — Multiple Overlapping Views
 

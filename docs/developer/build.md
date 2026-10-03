@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-02
 
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the
@@ -41,6 +41,14 @@ Coordinator CI builds the adversarial-number test once without instrumentation
 for its enforced performance budget, then builds the full suite with race
 detection and atomic coverage. See [numeric parsing tests](test.md#adversarial-numeric-parsing)
 for the separate commands and their timing limits.
+
+The coordinator executable still builds from `coordinator/cmd/coordinator`.
+Its command entrypoint validates configuration and delegates service assembly
+to `coordinator/app`. Memory and PostgreSQL constructors now live in
+`coordinator/store/memory` and `coordinator/store/postgres`; root `store` keeps
+contracts and the read-through decorator. The application selects and wraps the
+backend before binding the registry and HTTP domain owners. See the
+[owner map](navigation.md) before changing an import or moving a fixture.
 
 Registry-ID support changes Swift provider policy and Rust prompt normalization
 together. Build the paired coordinator/sidecar/provider candidate; the v6
@@ -438,7 +446,7 @@ make coordinator-build-linux      # GOOS=linux GOARCH=amd64 CGO_ENABLED=0 → co
 The host build writes `./coordinator/coordinator`. Version identity is injected
 only by the container build (`-ldflags -X …api.BuildVersion/BuildCommit/BuildDate`
 in `coordinator/Dockerfile`); a local `go build` reports `dev`/`unknown` on
-`GET /health` (`coordinator/api/consumer.go`, `handleHealth`).
+`GET /health` (`coordinator/api/inference/consumer.go`, `HandleHealth`).
 
 ### 4. Prompt-contract sidecar (Rust)
 
@@ -856,7 +864,7 @@ ls console-ui/.next
 
 Use the macOS 27 SDK for a candidate that needs Apple code-measurement extensions. The release workflow explicitly selects Command Line Tools 27.0 / Swift 6.4, then runs provider tests under that same SDK; ordinary development retains the Swift 6.3 minimum. Set `SDKROOT` to that SDK for both compilation and linking: a CLT 27 beta 6 Swift probe compiled with `--sdk` alone embedded the deployment target as its SDK; setting `SDKROOT` produced the correct linked SDK. Verify `LC_BUILD_VERSION` with `xcrun vtool -show-build` on the final executable. Confirm the final signed executable produces the current launch category and full CodeDirectory digest on physical macOS 27; SDK 26 builds can collect ordinary shadow proofs but cannot qualify replacement readiness. See the [observed SDK and measurement contract](../reference/app-attest-shadow.md#macos-sdk-and-signed-code-measurements).
 
-Run `go test ./appattest ./api ./store -run 'TestAppAttest|TestAuthorization|TestApple|TestMacCodeMeasurement'`
+Run `go test ./appattest/... ./api/... ./store/... -run 'TestAppAttest|TestAuthorization|TestApple|TestMacCodeMeasurement'`
 from `coordinator/`, using a disposable local `DATABASE_URL` for the store
 contracts (the test harness truncates tables). Add `-race` for concurrency checks.
 Run `swift test --filter ProviderAppAttestTests` from `provider-swift/`.

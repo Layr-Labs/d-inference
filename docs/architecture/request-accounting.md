@@ -1,6 +1,6 @@
 # Incoming request accounting
 
-> Last updated: 2026-09-26
+> Last updated: 2026-10-02
 
 `request_outcomes` records unsampled observations of incoming inference requests, including early rejections, independently of sampled attempt profiles. Operators use this source to distinguish final request outcomes from internal retries. The public Stats page exposes a narrower, explicitly scoped recorded-request view; it does not establish traffic-wide completeness.
 
@@ -12,7 +12,7 @@ The ledger is asynchronous and best effort. Unsampled means every covered reques
 
 ## Mechanism
 
-`coordinator/api/request_outcome.go` (`observeRequestOutcome`) wraps the root recovery middleware for the four covered inference POST paths, before drain, authentication, rate limiting, sealed transport and the endpoint handler. It mints an independent UUID regardless of profiler configuration; logging reuses that accounting identity. This canonical ID joins the ledger and detailed profiles. The existing `X-Request-ID` header and access-log ID retain their behavior: a supplied client ID is echoed, otherwise the coordinator generates the existing short ID. Neither supplies ledger identity.
+`coordinator/api/observation/request_outcome.go` (`ObserveRequestOutcome`) wraps the root recovery middleware for the four covered inference POST paths, before drain, authentication, rate limiting, sealed transport and the endpoint handler. It mints an independent UUID regardless of profiler configuration; logging reuses that accounting identity. This canonical ID joins the ledger and detailed profiles. The existing `X-Request-ID` header and access-log ID retain their behavior: a supplied client ID is echoed, otherwise the coordinator generates the existing short ID. Neither supplies ledger identity.
 
 ```mermaid
 flowchart LR
@@ -72,7 +72,7 @@ Finalization tracking retains only attempt identities; each published revision r
 
 ## Versioned normalization
 
-`normalizedAttemptOutcome` and `normalizedRequestOutcome` in `coordinator/api/request_outcome.go` are analytics-only mappings. Raw existing codes remain unchanged in routes, profiles and rejection records.
+`normalizedAttemptOutcome` and `normalizedRequestOutcome` in `coordinator/api/observation/request_outcome.go` are analytics-only mappings. Raw existing codes remain unchanged in routes, profiles and rejection records.
 
 | Observation | Version 1 normalized code |
 |---|---|
@@ -98,7 +98,7 @@ A raw historical `dispatch_exhausted` can represent a retained real provider err
 
 ## Public model demand
 
-`coordinator/api/model_demand_observation.go` (`markPublicModelDemand`) marks new
+`coordinator/api/inference/model_demand_observation.go` (`markPublicModelDemand`) marks new
 requests at `runInferenceAdmission`, after account gates and body preparation.
 The marker stores the requested public model and a hashed consumer identity;
 it excludes exclusive self-route, owner-preferred and machine-restricted
@@ -124,9 +124,9 @@ balance and model-resolution failures are excluded, as is a preflight
 Unknown 429 reasons stay unknown. HTTP 429 is counted separately and overlaps
 outcomes.
 
-`coordinator/store/postgres_request_outcomes.go` (`RecordRequestOutcomes`)
+`coordinator/store/postgres/request_outcomes.go` (`RecordRequestOutcomes`)
 projects the winning revision into `model_demand_requests` in the same
-transaction. Its trigger in `coordinator/store/model_demand_migration.go`
+transaction. Its trigger in `coordinator/store/postgres/model_demand_migration.go`
 applies old/new deltas to `model_demand_hourly`; duplicate snapshots, late
 terminals and stale writes cannot create additional requests. Sticky evidence
 conflicts become unknown. The compact projection keeps revisions for 31 days,
@@ -134,7 +134,7 @@ even when the detailed ledger expires, and prevents an old replay from
 regressing a terminal. Hourly counters avoid scanning a month of individual
 requests for every public read. Collection epoch metadata survives restarts.
 
-`PruneModelDemand` in `coordinator/store/postgres_model_demand.go` removes expired
+`PruneModelDemand` in `coordinator/store/postgres/model_demand.go` removes expired
 compact projections and whole expired aggregate hours in separate bounded
 transactions. Each delete is limited by the requested batch size (the shared
 `defaultTelemetryPruneBatch` applies when non-positive), with a two-second lock
@@ -149,7 +149,7 @@ remain fixed; later revisions cannot erase the conflict. This remains true
 after diagnostic-ledger expiry (`projectModelDemandSQL` and
 `projectModelDemandLocked`).
 
-`coordinator/store/postgres_model_demand_series.go` (`readModelDemandSeries`)
+`coordinator/store/postgres/model_demand_series.go` (`readModelDemandSeries`)
 applies the privacy floor to each UTC clock hour for each model before any
 public aggregation. An hour contributes only when its non-excluded observations
 include at least `ModelDemandMinRequests` requests from
@@ -166,9 +166,9 @@ summaries and differently sized intervals does not restore suppressed hours.
 Intervals with no qualifying hours have `counts: null`, never measured zeros.
 The chart, exact interval table and CSV export all use these published counts.
 
-`coordinator/store/postgres_model_demand.go` (`ModelDemand`) reads aggregates in
+`coordinator/store/postgres/model_demand.go` (`ModelDemand`) reads aggregates in
 a repeatable-read, read-only transaction with an 8-second statement timeout
-and 1-second lock timeout. `coordinator/api/model_demand.go` (`handleModelDemand`)
+and 1-second lock timeout. `coordinator/api/` (`HandleModelDemand`)
 coalesces reads per range and caches successful responses for up to five
 minutes. Failures return 503 rather than an empty successful result.
 `ModelDemandMinRequests` and `ModelDemandMinConsumers` suppress sparse cohorts;
@@ -189,12 +189,12 @@ reconciled. See [the API contract](../reference/api-contracts.md#model-demand-re
 
 | Concern | Source |
 |---|---|
-| Observation, lifecycle and mapping | `coordinator/api/request_outcome.go` |
-| Content and write evidence | `coordinator/api/request_outcome_egress.go`, `coordinator/api/sender_encryption.go` |
-| Bounded persistence and health | `coordinator/api/request_outcome_sink.go`, `coordinator/api/request_outcome_admin.go` |
-| Schema, revision merge and reads | `coordinator/store/request_outcomes.go`, `coordinator/store/postgres_request_outcomes.go`, `coordinator/store/memory_request_outcomes.go` |
+| Observation, lifecycle and mapping | `coordinator/api/observation/request_outcome.go` |
+| Content and write evidence | `coordinator/api/observation/request_outcome_egress.go`, `coordinator/api/inference/sender_encryption.go` |
+| Bounded persistence and health | `coordinator/api/observation/request_outcome_sink.go`, `coordinator/api/observation/request_outcome_admin.go` |
+| Schema, revision merge and reads | `coordinator/store/request_outcomes.go`, `coordinator/store/postgres/request_outcomes.go`, `coordinator/store/memory/request_outcomes.go` |
 | Live isolated endpoint regressions | `coordinator/api/request_outcome_integration_test.go`, `coordinator/api/request_outcome_test.go`, `coordinator/api/deadline_unreachable_integration_test.go` |
-| Memory/Postgres parity and retention | `coordinator/store/request_outcomes_test.go` |
+| Memory/Postgres parity and retention | `coordinator/store/` |
 
 ## Related
 

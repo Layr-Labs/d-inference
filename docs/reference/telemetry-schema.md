@@ -1,6 +1,6 @@
 # Telemetry event schema
 
-> Last updated: 2026-09-29
+> Last updated: 2026-10-02
 
 The shape of a telemetry *event* as it exists in three mirrors (Go, Swift,
 TypeScript), the closed enums it carries, and the tests that keep the mirrors
@@ -139,10 +139,10 @@ keys. Each event goes to three places in order:
 | Sink | What |
 |---|---|
 | `slog` | `telemetry: <message>` at the mapped level, with `kind`, `request_id` (when set) and every field as attributes |
-| in-process registry | `telemetry_events_total{source, severity, kind}` via `Metrics.IncCounterEvent` (`coordinator/api/metrics.go`), readable at `GET /v1/admin/metrics` |
+| in-process registry | `telemetry_events_total{source, severity, kind}` via `Metrics.IncCounterEvent` (`coordinator/api/`), readable at `GET /v1/admin/metrics` |
 | Datadog Logs API | `datadog.Client.ForwardLog` (`coordinator/datadog/datadog.go`) → `https://http-intake.logs.<site>/api/v2/logs`, only when `DD_API_KEY` is set |
 
-Call sites (`s.emit`, `s.emitRequest`, `s.emitPanic` in `coordinator/api/server.go`)
+Call sites (`Owner.Emit`, `Owner.EmitRequest`, `Owner.EmitPanic` in `coordinator/api/observation/events.go`)
 and their fields are enumerated in
 [`telemetry-inventory.md`](telemetry-inventory.md#coordinator-emitted-events).
 

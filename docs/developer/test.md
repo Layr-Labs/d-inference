@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-02
 
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the
@@ -166,7 +166,7 @@ and teardown; `CBv2QwenMTPIntegrationTests` independently covers allocation-refu
 ownership in the shared engine. Loaded-artifact tests remain an additional gate,
 not evidence supplied by tiny fixtures. `scripts/test-publish-model.sh`
 checks the artifact workflow payload. `TestHuggingFaceArtifactPostgresAndCache`
-in `coordinator/store/hugging_face_artifact_test.go` uses a disposable
+in `coordinator/store/` uses a disposable
 `DATABASE_URL` to check storage and cache invalidation.
 
 `ProductionPromptParityTests` drives the real model-free `MLXOpenAIService`
@@ -388,7 +388,7 @@ function with profile/network/Settings effects mocked: macOS 27+, older and unkn
 versions, existing management, and unavailable enrollment. This checks setup
 routing only; signed Mac App Attest qualification is separate.
 
-Build qualification regressions run in `coordinator/store/app_attest_builds_test.go`, `coordinator/appattest/service/build_qualifications_test.go`, `coordinator/api/app_attest_builds_test.go`, and `coordinator/api/app_attest_builds_auth_test.go`. The route tests validate real ES256 Privy JWTs through the mux, server-attributed audit actors, and rejection of admin-owned inference keys. The real PostgreSQL contract requires a **disposable** `DATABASE_URL` (the harness truncates test tables). Test memory/decorated/Postgres persistence, conflicting identities, publish/revoke races, cache fencing, lease expiry and reload; run the affected Go packages with `-race`. `python3 scripts/test-provider-release-publication.py` tests blocked publication, immutable artifacts, retained-byte R2 staging retries across workflow attempts, literal tag-note preservation and recovery after draft creation, interrupted upload, completed upload and publication failures without credentials or live writes; CI runs it with `scripts/test-provider-release-pipeline.py`. The annotated-tag fixture supplies its own commit/tag identity with global and system Git configuration disabled, so a developer account cannot mask missing CI setup. These checks do not replace final signed-Mac/Apple qualification.
+Build qualification regressions run in `coordinator/store/postgres/app_attest_builds_test.go`, `coordinator/appattest/service/build_qualifications_test.go`, `coordinator/api/app_attest_builds_test.go`, and `coordinator/api/app_attest_builds_auth_test.go`. The route tests validate real ES256 Privy JWTs through the mux, server-attributed audit actors, and rejection of admin-owned inference keys. The real PostgreSQL contract requires a **disposable** `DATABASE_URL` (the harness truncates test tables). Test memory/decorated/Postgres persistence, conflicting identities, publish/revoke races, cache fencing, lease expiry and reload; run the affected Go packages with `-race`. `python3 scripts/test-provider-release-publication.py` tests blocked publication, immutable artifacts, retained-byte R2 staging retries across workflow attempts, literal tag-note preservation and recovery after draft creation, interrupted upload, completed upload and publication failures without credentials or live writes; CI runs it with `scripts/test-provider-release-pipeline.py`. The annotated-tag fixture supplies its own commit/tag identity with global and system Git configuration disabled, so a developer account cannot mask missing CI setup. These checks do not replace final signed-Mac/Apple qualification.
 
 ### MiMo encoded audio release regression
 
@@ -819,11 +819,12 @@ shells when following the repository README examples.
 Run prediction telemetry checks from the repository root:
 
 ```bash
-go test -race ./coordinator/api ./coordinator/registry ./coordinator/protocol ./coordinator/store
+go test -race ./coordinator/api/... ./coordinator/registry/... ./coordinator/protocol ./coordinator/store/...
 ```
 
 API fixtures use isolated encrypted WebSocket providers;
-Postgres tests require an explicitly disposable `DATABASE_URL` and include an
+Postgres tests require an explicitly disposable `DATABASE_URL`, a local role
+with `CREATEDB`, and include an
 upgrade from the old profile schema. See
 [prediction telemetry](../reference/prediction-decision-telemetry.md).
 
@@ -880,6 +881,13 @@ allowlist, test-result cache, shortened production timeout, or disabled race
 detector is used. Shared environment and package-global fixtures remain isolated
 between shards; tests within each shard keep Go's normal parallelism.
 
+Private tests live with their domain owner. Public HTTP/WebSocket contracts in
+`coordinator/api/tests/` use the actual composed router through the small
+`api/tests/internal/testkit` fixture. Backend conformance lives under
+`coordinator/store/tests/`; private memory/Postgres tests remain beside each
+backend. A package move does not justify removing an assertion or exposing
+private production state.
+
 Use `--jobs 1` for one process per sharded package, or use ordinary focused Go commands
 such as `go test -race ./coordinator/api -run '^TestRequestOutcome' -count=1`.
 Keep an unsharded race/shuffle run when changing shared fixtures or the runner;
@@ -892,6 +900,10 @@ and optional coverage. Every discovered test must produce exactly one terminal
 result; a missing, duplicate,
 unexpected, or failing result fails the run. Coverage merges atomic counters by
 source block, retaining zero-hit blocks and counting their statements once.
+With coverage enabled, all binaries use the same selected production-package
+instrumentation. External contract selections also include their implementation
+owners in `-coverpkg`, even when only a contract package was requested. Testkit
+and test-database plumbing are excluded from that production coverage set.
 Malformed or missing coverage fails the run rather than publishing a partial
 success. CI uploads test evidence as `coordinator-test-timings` for 14 days.
 The separate uninstrumented adversarial-number parser check still runs in CI.
@@ -914,13 +926,15 @@ matches the difference of coordinator and provider spans. Negative values remain
 valid observations; this is not a direct nonnegative network-latency measurement.
 The focused `TestApplyProviderProfileTransportEstimateArithmetic` regression covers
 positive, negative and missing operands in
-`coordinator/api/profiler_provider_test.go`.
+`coordinator/api/observation/profiler_provider_test.go`.
 
-Store tests that need Postgres skip themselves when `DATABASE_URL` is unset
-(`coordinator/store/harness_test.go`, `testPostgresStore`); CI provides a
-`postgres:16` service with user/password/db `testbed`. The pre-push hook runs
-`go test $(go list ./... | grep -v /internal/api)` from `coordinator/` to skip
-the slow WebSocket integration tests; run the full set before merging.
+Store tests that need Postgres skip themselves when `DATABASE_URL` is unset.
+`coordinator/store/internal/testdb` creates and later drops a distinct temporary
+database for each test process; per-test truncation stays within that database.
+The connection role therefore needs `CREATEDB`. CI provides a
+`postgres:16` service with user/password/db `testbed`. The pre-push hook is not
+a substitute for the complete coordinator runner and explicit race/database
+validation; run the full set before merging.
 
 #### Coordinator startup and reconnect recovery
 
@@ -945,8 +959,8 @@ tests truncate tables and create/drop isolated databases; never point
 ```bash
 cd coordinator
 # DATABASE_URL must name a throwaway local database.
-go test -p 1 ./store ./cmd/coordinator -run 'Test(FreshDatabaseSchema|RecordProviderEarningMaintains|BaseRewardEarningPaths|ProviderEarningsJobIndex|ProviderRestore|PostgresRestore|ProviderAndReputation|Maintenance)' -count=1
-go test -race ./api ./registry -run 'Test(ProviderRestore|ProviderPendingRestore|RestoreProviderState|AttachCachedMDAProof|StageDurableMDAChain)' -count=1
+go test -p 1 ./store/... ./cmd/coordinator -run 'Test(FreshDatabaseSchema|RecordProviderEarningMaintains|BaseRewardEarningPaths|ProviderEarningsJobIndex|ProviderRestore|PostgresRestore|ProviderAndReputation|Maintenance)' -count=1
+go test -race ./api/... ./registry/... -run 'Test(ProviderRestore|ProviderPendingRestore|RestoreProviderState|AttachCachedMDAProof|StageDurableMDAChain)' -count=1
 ```
 
 These check that a fresh database gets the withdrawable balance column and the
@@ -2741,7 +2755,7 @@ a separately reviewed schema-3 comparator for this seven-case pair.
 
 ## App Attest release qualification
 
-Run `go test ./appattest ./api ./store -run 'TestAppAttest|TestAuthorization|TestApple'`
+Run `go test ./appattest/... ./api/... ./store/... -run 'TestAppAttest|TestAuthorization|TestApple'`
 from `coordinator/`, using a disposable local `DATABASE_URL` for the store
 contracts (the test harness truncates tables). Add `-race` for concurrency checks.
 Run `swift test --filter ProviderAppAttestTests` from `provider-swift/`.
@@ -2792,19 +2806,19 @@ from real Apple receipt renewal and final signed-artifact fleet qualification.
 
 ## Model token promotion and SLA checks
 
-`coordinator/api/model_token_pricing_test.go` checks exact input/output prices, fee shares, mixed paid/sponsored requests, overflow rejection, and 100 tiny completions with a lost commit acknowledgement. `coordinator/store/model_token_earnings_test.go` races fractional settlements and duplicate replays on both backends, rejects invalid fractions, and reopens PostgreSQL to verify remainder durability.
+`coordinator/api/model_token_pricing_test.go` checks exact input/output prices, fee shares, mixed paid/sponsored requests, overflow rejection, and 100 tiny completions with a lost commit acknowledgement. `coordinator/store/` races fractional settlements and duplicate replays on both backends, rejects invalid fractions, and reopens PostgreSQL to verify remainder durability.
 
-`coordinator/store/model_token_promotions_test.go` runs the grant/ledger contract on both memory and disposable PostgreSQL backends: one-time claims, day boundaries, concurrent reservations, partial paid fallback, provider earnings, refund/settlement races, media top-ups and orphan recovery. Never point these tests at a production database: the store harness truncates tables. `coordinator/store/model_token_zero_usage_test.go` rejects payouts or charges with no token usage on both backends. `coordinator/api/model_token_reconciliation_test.go` injects pre-commit failures and lost commit acknowledgements, replays reconciliation concurrently, verifies usage/key-spend/referral/platform accounting once, and exercises deterministic cash failures caused by price increases or usage overages.
+`coordinator/store/` runs the grant/ledger contract on both memory and disposable PostgreSQL backends: one-time claims, day boundaries, concurrent reservations, partial paid fallback, provider earnings, refund/settlement races, media top-ups and orphan recovery. Never point these tests at a production database: the store harness truncates tables. `coordinator/store/` rejects payouts or charges with no token usage on both backends. `coordinator/api/model_token_reconciliation_test.go` injects pre-commit failures and lost commit acknowledgements, replays reconciliation concurrently, verifies usage/key-spend/referral/platform accounting once, and exercises deterministic cash failures caused by price increases or usage overages.
 
 ```sh
 cd coordinator
 DATABASE_URL='postgres://USER@127.0.0.1:PORT/THROWAWAY_DB?sslmode=disable' \
-  go test -race ./store -run TestModelTokenPromotion -count=1
-go test -race ./api ./modelpolicy \
+  go test -race ./store/... -run TestModelTokenPromotion -count=1
+go test -race ./api/... ./modelpolicy \
   -run 'Test(ModelTokenPromotion|ModelSpecificFirstContentDeadline|Bonsai|CustomFirstContent)' -count=1
 ```
 
-`console-ui/src/components/app-providers/ModelTokenPromotionsProvider.test.tsx` covers read-only login discovery, explicit claims, sold-out/ineligible states, account-switch races and paid-fallback copy. `coordinator/store/model_token_claims_test.go` races 270 distinct claimants against a 250-grant cap and verifies the signup cutoff. `console-ui/src/lib/chat/stream-thinking.test.ts` checks that frontend thinking defaults on. `console-ui/src/lib/chat/errors.test.ts` preserves promotion errors instead of replacing them with a generic credit error. `python3 scripts/test-model-token-promotion.py` checks local-day boundaries across daylight-saving transitions. Operator steps: [model-token-promotions.md](../operations/model-token-promotions.md).
+`console-ui/src/components/app-providers/ModelTokenPromotionsProvider.test.tsx` covers read-only login discovery, explicit claims, sold-out/ineligible states, account-switch races and paid-fallback copy. `coordinator/store/` races 270 distinct claimants against a 250-grant cap and verifies the signup cutoff. `console-ui/src/lib/chat/stream-thinking.test.ts` checks that frontend thinking defaults on. `console-ui/src/lib/chat/errors.test.ts` preserves promotion errors instead of replacing them with a generic credit error. `python3 scripts/test-model-token-promotion.py` checks local-day boundaries across daylight-saving transitions. Operator steps: [model-token-promotions.md](../operations/model-token-promotions.md).
 
 ## Account-scoped first-content SLA
 
@@ -2827,7 +2841,7 @@ Run the enforced performance gate with
 The following full CI suite still runs with race detection and atomic coverage.
 
 Measure size scaling separately with
-`coordinator/api/tool_constraint_numbers_bench_test.go`
+`coordinator/api/inference/request/tool_constraint_numbers_bench_test.go`
 (`BenchmarkConstrainedExactNonnegativeIntAdversarialLiterals`):
 
 ```sh

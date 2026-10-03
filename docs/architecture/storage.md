@@ -141,17 +141,34 @@ two-connection pool whose sessions set `lock_timeout` to 3 s and
 `migrationStatementTimeout`); a value set in the database URL wins. A DDL
 statement that cannot get its lock in time fails instead of queueing every
 later query on the table behind it, and `migrate` runs goose again, up to three
-attempts. Versions 6 to 12 and 14 build indexes `CONCURRENTLY` as Go
-migrations (`indexMigrations`, `buildConcurrentIndex` in
+attempts. If a long read query keeps a table busy through all three
+attempts, the boot fails before it serves and changes nothing that it has not
+recorded; start it again later.
+
+Goose first checks for pending versions without a lock; that check also
+creates `goose_db_version` on a database that has none. When versions are
+pending, goose takes a session advisory lock, lists the versions again, and
+applies the ones still missing. Two coordinators that start together take
+turns: one applies, the other waits for the lock and then finds nothing to
+apply. The waiting coordinator gives up after goose's default lock wait of
+5 min (60 tries, 5 s apart) and exits 1. Out-of-order versions are refused.
+
+Each version runs once, so the work in it no longer repeats on every boot.
+The repair statements in the baseline (the `api_keys.id` backfill, the
+`model_registry` capability fix for `EigenLabs/Qwen3.8-27B-4bit`, the two
+`provider_trust_reuse` backfills, the `model_aliases.desired_build` and
+`global_payout_withdrawals.expires_at` backfills) and versions 2 to 5 ran at
+every start before goose. The current writers already write the repaired
+form, so running them once is enough.
+
+Versions 6 to 12 and 14 build indexes `CONCURRENTLY` as Go migrations
+(`indexMigrations`, `buildConcurrentIndex` in
 `coordinator/store/postgres_migration_indexes.go`), each on a connection of its
 own. A `CONCURRENTLY` build blocks no reads or writes but waits for every older
 snapshot in the database, so that connection sets `lock_timeout` to 1 min
 (`concurrentIndexLockTimeout`). An invalid index left by an interrupted attempt
 is dropped and built again, and the version is recorded only when the index is
-valid. Goose holds a session
-advisory lock while it applies versions, so two coordinators that start
-together take turns: one applies, the other then finds nothing to apply.
-Out-of-order versions are refused.
+valid.
 
 ### Soft-deleted rows
 
@@ -261,12 +278,13 @@ historical provider record.
 flowchart LR
   A[ReadAppConfig] --> B{DATABASE_URL set?}
   B -- yes --> C[pgxpool connect + Ping]
-  C --> L[goose advisory lock]
-  L --> V{pending versions\nin goose_db_version?}
+  C --> V{pending versions?\nno lock; creates\ngoose_db_version if missing}
   V -- none --> G[SeedKey admin key]
-  V -- some --> D[apply each pending version once:\n1 baseline, 2 retired-backfill guard,\n3-5 CONCURRENTLY indexes]
+  V -- some --> L[goose advisory lock\nwait up to 5 min]
+  L --> D[list versions again;\napply each pending version once:\n1 baseline, 2 retired-backfill guard,\n3-5 CONCURRENTLY indexes]
   D --> G
-  D -. lock_timeout .-> L
+  D -. lock_timeout, up to 3 attempts .-> V
+  L -. lock wait over .-> X
   B -- no, ALLOW_MEMORY_STORE=true --> H[NewMemory + 15 min pruner]
   B -- no --> X[exit 1]
   D -. any error .-> X

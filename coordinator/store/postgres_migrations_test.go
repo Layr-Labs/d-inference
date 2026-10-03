@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -244,6 +245,26 @@ func TestConcurrentIndexMigrationWaitsForOlderSnapshot(t *testing.T) {
 	var valid bool
 	if err := s.pool.QueryRow(ctx, `SELECT indisvalid FROM pg_index WHERE indexrelid = 'idx_provider_sessions_account'::regclass`).Scan(&valid); err != nil || !valid {
 		t.Fatalf("idx_provider_sessions_account valid=%v err=%v", valid, err)
+	}
+}
+
+// A CREATE INDEX CONCURRENTLY that fails leaves an invalid index, and an
+// SQL file's IF NOT EXISTS would then skip it and record the version. Index
+// builds therefore run as Go migrations through ensureConcurrentIndex,
+// which fails unless the index ends up valid.
+func TestSQLMigrationsDoNotBuildIndexesConcurrently(t *testing.T) {
+	entries, err := migrationFiles.ReadDir(migrationDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		b, err := migrationFiles.ReadFile(migrationDir + "/" + entry.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if regexp.MustCompile(`(?i)CREATE\s+(UNIQUE\s+)?INDEX\s+CONCURRENTLY`).Match(b) {
+			t.Errorf("%s builds an index CONCURRENTLY; use a Go migration with ensureConcurrentIndex", entry.Name())
+		}
 	}
 }
 

@@ -23,9 +23,7 @@ func TestPostgresPredictionColumnsUpgradeKeepsUnknownHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
-		if err := s.migrate(ctx); err != nil {
-			t.Fatalf("upgrade %d: %v", i, err)
-		}
+		replayMigrations(t, s)
 	}
 	rows := s.RequestProfilesSinceFiltered(time.Time{}, RequestProfileFilter{})
 	if len(rows) != 1 || rows[0].RequestID != old.RequestID || rows[0].AdmissionMode != "" || rows[0].PredictiveBypass != "" || rows[0].ReservationTTFTCeilingMs != nil || rows[0].DispatchBudgetMs != nil {

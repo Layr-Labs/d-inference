@@ -148,7 +148,7 @@ func TestRequestProfileColumnsStayAligned(t *testing.T) {
 			t.Fatalf("duplicate request_profiles column %q", col)
 		}
 		seen[col] = true
-		if !strings.Contains(requestProfilesTableDDL, "\n\t\t\t"+col+" ") {
+		if !strings.Contains(baselineStatement(t, "CREATE TABLE IF NOT EXISTS request_profiles ("), "\n\t\t\t"+col+" ") {
 			t.Errorf("request_profiles DDL lacks column %q", col)
 		}
 	}
@@ -170,7 +170,7 @@ func TestRequestProfileColumnsStayAligned(t *testing.T) {
 			t.Fatalf("duplicate fleet_snapshots column %q", col)
 		}
 		seen[col] = true
-		if !strings.Contains(fleetSnapshotsTableDDL, "\n\t\t\t"+col+" ") {
+		if !strings.Contains(baselineStatement(t, "CREATE TABLE IF NOT EXISTS fleet_snapshots ("), "\n\t\t\t"+col+" ") {
 			t.Errorf("fleet_snapshots DDL lacks column %q", col)
 		}
 	}
@@ -547,10 +547,9 @@ func TestPostgresPruneTelemetryRespectsBatch(t *testing.T) {
 func TestPostgresProfilerMigrationIdempotent(t *testing.T) {
 	s := testPostgresStore(t)
 	ctx := context.Background()
-	// NewPostgres already ran migrate once; a restart runs it again.
-	if err := s.migrate(ctx); err != nil {
-		t.Fatalf("re-running migrate: %v", err)
-	}
+	// NewPostgres already ran the migrations once; replaying them on the
+	// migrated database must change nothing.
+	replayMigrations(t, s)
 	for _, idx := range []string{
 		"idx_request_profiles_created", "idx_request_profiles_coord", "idx_request_profiles_provider",
 		"request_profiles_request_id_attempt_key",

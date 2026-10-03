@@ -59,14 +59,6 @@ type AppAttestRotationLimit struct {
 // against small thresholds, so an exact count is never needed.
 const AppAttestRotationCountCap = 100
 
-const appAttestKeyRotationDDL = `
-CREATE TABLE IF NOT EXISTS app_attest_key_rotations (
- key_id TEXT PRIMARY KEY, machine_id TEXT NOT NULL, account_id TEXT NOT NULL,
- requested_at TIMESTAMPTZ NOT NULL, failures INTEGER NOT NULL, reason TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS app_attest_key_rotations_machine ON app_attest_key_rotations(machine_id,requested_at DESC);
-`
-
 // appAttestRotationFailureContext mirrors the archived evidence context
 // fields used by the memory backend; PostgreSQL evaluates the same rule.
 type appAttestRotationFailureContext struct {

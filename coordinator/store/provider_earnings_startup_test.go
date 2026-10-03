@@ -31,24 +31,22 @@ func TestMigrate_NoBootTimeProviderEarningsDedupe(t *testing.T) {
 
 // TestProviderEarningsJobIndex_BootSafe verifies the safe replacement: startup
 // builds a valid partial unique index on provider_earnings(job_id) without a
-// dedupe DELETE, migrate() is re-entrant, and the index backs the idempotent
+// dedupe DELETE, the migrations are re-entrant, and the index backs the idempotent
 // ON CONFLICT write path. Runs only with DATABASE_URL (throwaway test DB).
 func TestProviderEarningsJobIndex_BootSafe(t *testing.T) {
 	s := testPostgresStore(t) // t.Skip()s when DATABASE_URL is unset
-	ctx := context.Background()
 
 	// NewPostgres -> migrate -> ensureProviderEarningsJobIndex left a VALID index.
 	if !jobIndexValid(t, s) {
 		t.Fatal("idx_provider_earnings_job missing or invalid after startup")
 	}
 
-	// Re-entrancy: a coordinator restart re-runs migrate() and must not error or
-	// do heavy work (the valid-index fast path makes index creation a no-op).
-	if err := s.migrate(ctx); err != nil {
-		t.Fatalf("re-running migrate (restart): %v", err)
-	}
+	// Re-entrancy: replaying the migrations (the first goose boot of a
+	// database that already has the index) must not error or do heavy work
+	// (the valid-index fast path makes index creation a no-op).
+	replayMigrations(t, s)
 	if !jobIndexValid(t, s) {
-		t.Fatal("idx_provider_earnings_job invalid after re-running migrate")
+		t.Fatal("idx_provider_earnings_job invalid after replaying migrations")
 	}
 
 	// RecordProviderEarning is idempotent for a non-empty job_id (ON CONFLICT

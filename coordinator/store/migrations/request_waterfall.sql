@@ -2,8 +2,8 @@
 -- profiler's request_profiles row with the routing-telemetry inference_routes
 -- row on (request_id, attempt). Consumed by the admin UI / ad-hoc analysis.
 --
--- THIS VIEW IS NOT IN THE COORDINATOR'S BOOT MIGRATION SLICE (postgres.go
--- migrate()). Like dedupe_provider_earnings.sql it is applied BY HAND with psql,
+-- THIS VIEW IS NOT A COORDINATOR MIGRATION (coordinator/store/schema/migrations).
+-- Like dedupe_provider_earnings.sql it is applied BY HAND with psql,
 -- out of band and off the deploy path:
 --
 --     psql "$EIGENINFERENCE_DATABASE_URL" -f coordinator/store/migrations/request_waterfall.sql

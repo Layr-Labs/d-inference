@@ -6,11 +6,6 @@ import (
 	"time"
 )
 
-const autopilotDDL = `CREATE TABLE IF NOT EXISTS autopilot_events (
- command_id TEXT NOT NULL, phase TEXT NOT NULL, at TIMESTAMPTZ NOT NULL,
- record JSONB NOT NULL, PRIMARY KEY(command_id,phase)
-); CREATE INDEX IF NOT EXISTS autopilot_events_at ON autopilot_events(at)`
-
 func (s *PostgresStore) RecordAutopilot(ctx context.Context, records []AutopilotRecord) error {
 	for _, r := range records {
 		if err := validateAutopilotRecord(r); err != nil {

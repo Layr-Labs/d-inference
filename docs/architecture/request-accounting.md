@@ -1,6 +1,6 @@
 # Incoming request accounting
 
-> Last updated: 2026-09-26
+> Last updated: 2026-10-03
 
 `request_outcomes` records unsampled observations of incoming inference requests, including early rejections, independently of sampled attempt profiles. Operators use this source to distinguish final request outcomes from internal retries. The public Stats page exposes a narrower, explicitly scoped recorded-request view; it does not establish traffic-wide completeness.
 
@@ -126,7 +126,7 @@ outcomes.
 
 `coordinator/store/postgres_request_outcomes.go` (`RecordRequestOutcomes`)
 projects the winning revision into `model_demand_requests` in the same
-transaction. Its trigger in `coordinator/store/model_demand_migration.go`
+transaction. Its trigger `model_demand_rollup` (`coordinator/store/schema/migrations/00001_baseline.sql`)
 applies old/new deltas to `model_demand_hourly`; duplicate snapshots, late
 terminals and stale writes cannot create additional requests. Sticky evidence
 conflicts become unknown. The compact projection keeps revisions for 31 days,

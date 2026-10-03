@@ -1,6 +1,6 @@
 # App Attest shadow protocol, machine inventory, and evidence
 
-> Last updated: 2026-09-27
+> Last updated: 2026-10-03
 
 App Attest shadow collection records stable machine identities, fleet adoption, submitted proofs and receipts alongside legacy verification. Shadow alone changes no routing, rewards or trust. The separately enabled [provider authorization path](provider-authorization.md) uses qualified evidence for MDM-optional serving and rewards. DeviceCheck's separate two-bit API remains deferred.
 
@@ -155,7 +155,7 @@ PostgreSQL is the durable archive itself, including its normal database backup p
 
 | Tables | Contents | Code |
 |---|---|---|
-| `darkbloom_machines`, `darkbloom_machine_aliases`, `darkbloom_machine_merges` | UUIDs, evidence level, private hashed aliases, canonical merges | `coordinator/store/machine_inventory_schema.go` |
+| `darkbloom_machines`, `darkbloom_machine_aliases`, `darkbloom_machine_merges` | UUIDs, evidence level, private hashed aliases, canonical merges | `coordinator/store/schema/migrations/00001_baseline.sql` |
 | `darkbloom_machine_sessions`, `darkbloom_machine_observations` | Original/current machine attribution, authenticated account, liveness, reported OS/build/hardware, protocol, legacy comparison, refused-frame counts | Same file |
 | `app_attest_shadow_events` | Durable stage/outcome/timing observations | Same file |
 | `app_attest_evidence`, `app_attest_evidence_blobs` | One record per processed proof submission, original proof field, decoded bytes, checksum, expected transcript, actual reply context, evaluation time, root/verifier/policy/build identifiers, result | `coordinator/store/app_attest_archive.go` |

@@ -9,18 +9,31 @@ import (
 	"time"
 )
 
+// The cache-affinity scrub and its write guard are baseline statements.
+func legacyCacheAffinityGuardFunction(t testing.TB) string {
+	return baselineStatement(t, "CREATE OR REPLACE FUNCTION clear_legacy_cache_affinity_key()")
+}
+
+func legacyCacheAffinityGuardTrigger(t testing.TB) string {
+	return baselineStatement(t, "CREATE TRIGGER clear_legacy_cache_affinity_key")
+}
+
+func legacyCacheAffinityScrubMigration(t testing.TB) string {
+	return baselineStatement(t, "VALUES ('scrub_inference_route_cache_affinity_v1')")
+}
+
 func TestLegacyCacheAffinityScrubMigration(t *testing.T) {
 	for _, required := range []string{
 		"scrub_inference_route_cache_affinity_v1",
 		"UPDATE inference_routes SET cache_affinity_key = ''",
 		"INSERT INTO schema_migrations",
 	} {
-		if !strings.Contains(legacyCacheAffinityScrubMigration, required) {
+		if !strings.Contains(legacyCacheAffinityScrubMigration(t), required) {
 			t.Fatalf("legacy cache-affinity scrub migration missing %q", required)
 		}
 	}
-	if !strings.Contains(legacyCacheAffinityGuardFunction, "NEW.cache_affinity_key := ''") ||
-		!strings.Contains(legacyCacheAffinityGuardTrigger, "BEFORE INSERT OR UPDATE OF cache_affinity_key") {
+	if !strings.Contains(legacyCacheAffinityGuardFunction(t), "NEW.cache_affinity_key := ''") ||
+		!strings.Contains(legacyCacheAffinityGuardTrigger(t), "BEFORE INSERT OR UPDATE OF cache_affinity_key") {
 		t.Fatal("legacy cache-affinity write guard is incomplete")
 	}
 	for _, required := range []string{
@@ -28,7 +41,7 @@ func TestLegacyCacheAffinityScrubMigration(t *testing.T) {
 		"target.relname = 'inference_routes'",
 		"ns.nspname = current_schema()",
 	} {
-		if !strings.Contains(legacyCacheAffinityGuardTrigger, required) {
+		if !strings.Contains(legacyCacheAffinityGuardTrigger(t), required) {
 			t.Fatalf("legacy cache-affinity trigger existence check missing %q", required)
 		}
 	}
@@ -79,9 +92,9 @@ func TestLegacyCacheAffinityMigrationScrubsAndInstallsScopedTrigger(t *testing.T
 	}
 
 	for _, migration := range []string{
-		legacyCacheAffinityGuardFunction,
-		legacyCacheAffinityGuardTrigger,
-		legacyCacheAffinityScrubMigration,
+		legacyCacheAffinityGuardFunction(t),
+		legacyCacheAffinityGuardTrigger(t),
+		legacyCacheAffinityScrubMigration(t),
 	} {
 		if _, err := conn.Exec(ctx, migration); err != nil {
 			t.Fatalf("run cache-affinity migration: %v\n%s", err, migration)
@@ -142,9 +155,9 @@ func TestLegacyCacheAffinityMigrationScrubsAndInstallsScopedTrigger(t *testing.T
 
 	// A restart must remain idempotent with both same-named triggers present.
 	for _, migration := range []string{
-		legacyCacheAffinityGuardFunction,
-		legacyCacheAffinityGuardTrigger,
-		legacyCacheAffinityScrubMigration,
+		legacyCacheAffinityGuardFunction(t),
+		legacyCacheAffinityGuardTrigger(t),
+		legacyCacheAffinityScrubMigration(t),
 	} {
 		if _, err := conn.Exec(ctx, migration); err != nil {
 			t.Fatalf("re-run cache-affinity migration: %v", err)

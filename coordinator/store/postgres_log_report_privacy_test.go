@@ -8,11 +8,24 @@ import (
 	"time"
 )
 
+// The log-report serial scrub and its write guard are baseline statements.
+func providerLogReportSerialGuardFunction(t testing.TB) string {
+	return baselineStatement(t, "CREATE OR REPLACE FUNCTION clear_provider_log_report_serial()")
+}
+
+func providerLogReportSerialGuardTrigger(t testing.TB) string {
+	return baselineStatement(t, "CREATE TRIGGER clear_provider_log_report_serial")
+}
+
+func providerLogReportSerialScrubMigration(t testing.TB) string {
+	return baselineStatement(t, "UPDATE provider_log_reports SET serial_number = ''")
+}
+
 func TestProviderLogReportSerialPrivacyMigration(t *testing.T) {
 	combined := strings.Join([]string{
-		providerLogReportSerialGuardFunction,
-		providerLogReportSerialGuardTrigger,
-		providerLogReportSerialScrubMigration,
+		providerLogReportSerialGuardFunction(t),
+		providerLogReportSerialGuardTrigger(t),
+		providerLogReportSerialScrubMigration(t),
 	}, "\n")
 	for _, required := range []string{
 		"NEW.serial_number := ''",
@@ -64,9 +77,9 @@ func TestProviderLogReportSerialPrivacyMigrationPostgres(t *testing.T) {
 			ON provider_log_reports(serial_number, created_at DESC)`,
 		`INSERT INTO provider_log_reports (serial_number, account_id, log_data)
 			VALUES ('historical-hardware-identity', 'account-1', '\x01')`,
-		providerLogReportSerialGuardFunction,
-		providerLogReportSerialGuardTrigger,
-		providerLogReportSerialScrubMigration,
+		providerLogReportSerialGuardFunction(t),
+		providerLogReportSerialGuardTrigger(t),
+		providerLogReportSerialScrubMigration(t),
 		`DROP INDEX IF EXISTS idx_log_reports_serial`,
 	} {
 		if _, err := conn.Exec(ctx, statement); err != nil {
@@ -126,9 +139,9 @@ func TestProviderLogReportSerialPrivacyMigrationPostgres(t *testing.T) {
 	}
 
 	for _, statement := range []string{
-		providerLogReportSerialGuardFunction,
-		providerLogReportSerialGuardTrigger,
-		providerLogReportSerialScrubMigration,
+		providerLogReportSerialGuardFunction(t),
+		providerLogReportSerialGuardTrigger(t),
+		providerLogReportSerialScrubMigration(t),
 		`DROP INDEX IF EXISTS idx_log_reports_serial`,
 	} {
 		if _, err := conn.Exec(ctx, statement); err != nil {

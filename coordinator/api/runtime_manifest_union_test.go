@@ -1,5 +1,9 @@
 package api
 
+// These composition tests intentionally remain at the API root: release-policy
+// publication must reach the same trust owner that runs connected providers'
+// challenge loops. Domain-local policy tests cannot verify that wiring.
+
 import (
 	"bytes"
 	"context"
@@ -56,7 +60,9 @@ func unionReleaseRow(version, binaryHash, metallib string) *store.Release {
 // provider.
 type unionProvider struct {
 	*registry.Provider
-	peer *websocket.Conn
+	peer      *websocket.Conn
+	tracker   *trustapi.ChallengeTracker
+	challenge *protocol.AttestationChallengeMessage
 }
 
 func unionFleetProvider(t *testing.T, reg *registry.Registry, id, model, version, metallib string) *unionProvider {
@@ -106,22 +112,29 @@ func unionFleetProvider(t *testing.T, reg *registry.Registry, id, model, version
 func challengeWithMetallib(t *testing.T, srv *Server, provider *unionProvider, metallib string) (policyActive, runtimeOK bool) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	done := make(chan struct{})
-	srv.SetSkipChallenge(false)
-	srv.SetChallengeInterval(time.Hour)
-	tracker := trustapi.NewChallengeTracker()
-	go func() {
-		defer close(done)
-		srv.trust.ChallengeLoop(ctx, provider.ID, provider.Provider, tracker)
-	}()
-	defer func() {
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(3 * time.Second):
-			t.Error("challenge loop failed to stop")
-		}
-	}()
+	defer cancel()
+	if provider.tracker == nil {
+		// The loop and tracker belong to the connection, not one assertion.
+		// Receiving a challenge does not acknowledge completion of its write;
+		// canceling that write can close the socket that the next call reuses.
+		loopCtx, stop := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		srv.SetSkipChallenge(false)
+		srv.SetChallengeInterval(time.Hour)
+		provider.tracker = trustapi.NewChallengeTracker()
+		go func() {
+			defer close(done)
+			srv.trust.ChallengeLoop(loopCtx, provider.ID, provider.Provider, provider.tracker)
+		}()
+		t.Cleanup(func() {
+			stop()
+			select {
+			case <-done:
+			case <-time.After(3 * time.Second):
+				t.Error("challenge loop failed to stop")
+			}
+		})
+	}
 	readChallenge := func() protocol.AttestationChallengeMessage {
 		for {
 			_, raw, err := provider.peer.Read(ctx)
@@ -137,20 +150,25 @@ func challengeWithMetallib(t *testing.T, srv *Server, provider *unionProvider, m
 			}
 		}
 	}
-	challenge := readChallenge()
+	if provider.challenge == nil {
+		challenge := readChallenge()
+		provider.challenge = &challenge
+	}
 	resp := &protocol.AttestationResponseMessage{
-		Nonce: challenge.Nonce, PublicKey: provider.PublicKey, Signature: "open-mode-fixture",
+		Nonce: provider.challenge.Nonce, PublicKey: provider.PublicKey, Signature: "open-mode-fixture",
 		RDMADisabled: trBoolPtr(true),
 		SIPEnabled:   trBoolPtr(true), SecureBootEnabled: trBoolPtr(true),
 		TemplateHashes: map[string]string{"mlx_metallib": metallib},
 	}
 	// The existing routable fixture has no attested key. Exercise the real
 	// challenge tracker and runtime policy, not the private policy helper.
-	srv.trust.HandleAttestationResponse(provider.ID, provider.Provider, resp, tracker)
+	srv.trust.HandleAttestationResponse(provider.ID, provider.Provider, resp, provider.tracker)
 	provider.RequestImmediateChallenge()
 	// A second challenge proves the synchronous first verification completed,
 	// including the invalid-runtime branch, without inspecting tracker state.
-	_ = readChallenge()
+	// Keep it pending for the next call on this same connection and tracker.
+	challenge := readChallenge()
+	provider.challenge = &challenge
 	provider.Mu().Lock()
 	runtimeOK = provider.RuntimeVerified
 	provider.Mu().Unlock()

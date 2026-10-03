@@ -1880,10 +1880,6 @@ func pendingTokenBudget(pr *PendingRequest) int {
 	return prompt + maxTok
 }
 
-func committedTokenBudget(snap *routingSnapshot) int64 {
-	return admission.CommittedTokens(snap.activeTokenBudgetUsed, snap.queuedTokenBudget, snap.maxTokensPotential)
-}
-
 // buildCandidateWithReason returns the candidate plus, on rejection,
 // the reason so callers can split metrics by failure mode.
 // now is the caller's scan clock (see snapshotProviderLockedEx). This is the

@@ -19,6 +19,8 @@ import (
 // inside a ForEachProvider callback. This test drives both handlers concurrently
 // with UpdateModelWeightHashes; run under -race it fails (DATA RACE) before the
 // handler-side locking fix and passes after.
+// This stays at the composition root to invalidate the shared private cache
+// while exercising both the reporting and trust owners through their routes.
 func TestHandlersDoNotRaceModelHashRefresh(t *testing.T) {
 	const modelID = "data-race-model"
 

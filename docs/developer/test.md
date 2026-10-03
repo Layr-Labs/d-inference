@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-03
 
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the
@@ -166,7 +166,7 @@ and teardown; `CBv2QwenMTPIntegrationTests` independently covers allocation-refu
 ownership in the shared engine. Loaded-artifact tests remain an additional gate,
 not evidence supplied by tiny fixtures. `scripts/test-publish-model.sh`
 checks the artifact workflow payload. `TestHuggingFaceArtifactPostgresAndCache`
-in `coordinator/store/` uses a disposable
+in `coordinator/store/tests/hugging_face_artifact_test.go` uses a disposable
 `DATABASE_URL` to check storage and cache invalidation.
 
 `ProductionPromptParityTests` drives the real model-free `MLXOpenAIService`
@@ -388,7 +388,7 @@ function with profile/network/Settings effects mocked: macOS 27+, older and unkn
 versions, existing management, and unavailable enrollment. This checks setup
 routing only; signed Mac App Attest qualification is separate.
 
-Build qualification regressions run in `coordinator/store/postgres/app_attest_builds_test.go`, `coordinator/appattest/service/build_qualifications_test.go`, `coordinator/api/app_attest_builds_test.go`, and `coordinator/api/app_attest_builds_auth_test.go`. The route tests validate real ES256 Privy JWTs through the mux, server-attributed audit actors, and rejection of admin-owned inference keys. The real PostgreSQL contract requires a **disposable** `DATABASE_URL` (the harness truncates test tables). Test memory/decorated/Postgres persistence, conflicting identities, publish/revoke races, cache fencing, lease expiry and reload; run the affected Go packages with `-race`. `python3 scripts/test-provider-release-publication.py` tests blocked publication, immutable artifacts, retained-byte R2 staging retries across workflow attempts, literal tag-note preservation and recovery after draft creation, interrupted upload, completed upload and publication failures without credentials or live writes; CI runs it with `scripts/test-provider-release-pipeline.py`. The annotated-tag fixture supplies its own commit/tag identity with global and system Git configuration disabled, so a developer account cannot mask missing CI setup. These checks do not replace final signed-Mac/Apple qualification.
+Build qualification regressions run in `coordinator/store/postgres/app_attest_builds_test.go`, `coordinator/appattest/service/build_qualifications_test.go`, `coordinator/api/tests/releases/app_attest_builds_test.go`, and `coordinator/api/tests/releases/app_attest_builds_auth_test.go`. The route tests validate real ES256 Privy JWTs through the mux, server-attributed audit actors, and rejection of admin-owned inference keys. The real PostgreSQL contract requires a **disposable** `DATABASE_URL` (the harness truncates test tables). Test memory/decorated/Postgres persistence, conflicting identities, publish/revoke races, cache fencing, lease expiry and reload; run the affected Go packages with `-race`. `python3 scripts/test-provider-release-publication.py` tests blocked publication, immutable artifacts, retained-byte R2 staging retries across workflow attempts, literal tag-note preservation and recovery after draft creation, interrupted upload, completed upload and publication failures without credentials or live writes; CI runs it with `scripts/test-provider-release-pipeline.py`. The annotated-tag fixture supplies its own commit/tag identity with global and system Git configuration disabled, so a developer account cannot mask missing CI setup. These checks do not replace final signed-Mac/Apple qualification.
 
 ### MiMo encoded audio release regression
 
@@ -466,7 +466,7 @@ DARKBLOOM_LAUNCHD_TESTS=1 swift test --skip-build --filter LaunchAgentDrainInteg
 
 It uses a unique temporary GUI-domain label and plist, never the installed
 provider/watchdog. `TestProviderDrainAckFollowsUsageSettlementAndKeepsControlTrafficAlive`
-in `coordinator/api/provider_drain_barrier_test.go` runs both streaming and
+in `coordinator/api/tests/provider/provider_drain_barrier_test.go` runs both streaming and
 non-streaming traffic against the actual coordinator, delays asynchronous
 settlement, sends duplicate terminals, and verifies one usage record before
 acknowledgement. Run it and the dispatch/drain tests with Go's race detector.
@@ -737,7 +737,7 @@ multi-host routing, signed key durability, raw logits or hosted account trust.
 The cache fixture also compares consumer-visible cached/reasoning counts with
 the native terminal (`e2e/flash_next_cache_usage_test.go`); observed SSD activity
 alone cannot pass this check. `TestStreamingCombinedFinishUsage` in
-`coordinator/api/chat_combined_terminal_usage_test.go` covers combined and
+`coordinator/api/inference/chat_combined_terminal_usage_test.go` covers combined and
 separate terminal shapes, absent usage, untrusted cache details, unchanged
 totals/content, public identity, signature pairing and a single `[DONE]`.
 
@@ -828,14 +828,16 @@ with `CREATEDB`, and include an
 upgrade from the old profile schema. See
 [prediction telemetry](../reference/prediction-decision-telemetry.md).
 
-`first_byte_attribution_test.go` holds the registry write lock while primary
+`coordinator/api/inference/first_byte_attribution_test.go` holds the registry write lock while primary
 and backup dispatches capture their serving-slot metrics. The encrypted
-WebSocket test in `first_byte_lock_test.go` separately requires the first
+WebSocket test in `coordinator/api/tests/inference/first_byte_lock_test.go` separately requires the first
 content to reach the HTTP client while that lock stays held. Run both with
-`go test -race ./coordinator/api -run 'TestServingSlotAttribution|TestFirstByteReachesClient' -count=25`.
+`go test -race ./coordinator/api/... -run 'TestServingSlotAttribution|TestFirstByteReachesClient' -count=25`.
 
 The [admission calibration baseline](../reports/2026-09-06-admission-calibration-baseline.md)
-gives the focused `TestTTFTPendingPrompt` comparison command. Its registry
+records the original `TestTTFTPendingPrompt` comparison. On the current layout,
+run `go test ./coordinator/registry/... ./coordinator/api/... -run TestTTFTPendingPrompt -count=1 -v`.
+Its registry
 cases exercise preflight, reservation, retained-plan revalidation and retained
 output capacity. The HTTP cases cover both a feasible alternative behind a
 long pending prompt and a long arrival completing behind a short pending prompt.
@@ -881,15 +883,31 @@ allowlist, test-result cache, shortened production timeout, or disabled race
 detector is used. Shared environment and package-global fixtures remain isolated
 between shards; tests within each shard keep Go's normal parallelism.
 
-Private tests live with their domain owner. Public HTTP/WebSocket contracts in
-`coordinator/api/tests/` use the actual composed router through the small
-`api/tests/internal/testkit` fixture. Backend conformance lives under
-`coordinator/store/tests/`; private memory/Postgres tests remain beside each
-backend. A package move does not justify removing an assertion or exposing
-private production state.
+Place tests by the behavior and private state they exercise:
+
+| Test boundary | Location and fixture |
+|---|---|
+| Public HTTP/WebSocket contracts | `coordinator/api/tests/<domain>/`; use the real composed `api.Server.Handler()` router, in-memory store and scripted local providers through `coordinator/api/tests/internal/testkit/server.go` (`New`, `NewServer`). Domains include access, accounts, billing, catalog, inference, operations, provider, releases and reporting. |
+| Private domain invariants | Beside the owning package, including `api/inference`, `api/provider/trust`, `api/access` and `api/observation`; do not export implementation state merely to relocate a test. |
+| Pure request/response behavior | `coordinator/api/inference/request/` and `coordinator/api/inference/response/`; parser, normalization, metadata and emitter tests belong with those implementations, not the router package. |
+| Composition and private global middleware | Remain in `coordinator/api/`: configuration/owner wiring, release-policy propagation, request identity and recovery middleware. For example, `coordinator/api/request_outcome_recovery_test.go` (`TestRequestOutcomeFinalizesAfterRecoveryWrite`) exercises the outer recovery boundary. |
+| Backend conformance | `coordinator/store/tests/`; private memory/Postgres invariants remain beside their backend. |
+
+Authenticated contract fixtures use `coordinator/api/tests/internal/testkit/auth.go`
+(`NewSessions`, `Sessions.Token`) to sign local ES256 Privy-compatible JWTs and
+seed users before authentication. They run the real verifier with a local public
+key, without remote Privy user or JWKS calls. A package move must preserve every
+assertion and must not substitute direct handler calls for a public router test.
+
+`coordinator/api/source_layout_test.go` (`TestAPISourceFilesHaveDeclarations`)
+walks the API tree and parses Go ASTs, rejecting declaration-free source and test
+shells left after moves. It skips `testdata` directories and permits `doc.go`.
+Use `./coordinator/api/...` from the repository root (or `./api/...` from
+`coordinator/`) when selecting all API tests; `./coordinator/api` selects only
+the remaining root-package tests.
 
 Use `--jobs 1` for one process per sharded package, or use ordinary focused Go commands
-such as `go test -race ./coordinator/api -run '^TestRequestOutcome' -count=1`.
+such as `go test -race ./coordinator/api/... -run '^TestRequestOutcome' -count=1`.
 Keep an unsharded race/shuffle run when changing shared fixtures or the runner;
 shards do not preserve cross-test process state. `GOMAXPROCS` is inherited rather
 than forced to one. Store tests are never partitioned within their package.
@@ -929,9 +947,21 @@ positive, negative and missing operands in
 `coordinator/api/observation/profiler_provider_test.go`.
 
 Store tests that need Postgres skip themselves when `DATABASE_URL` is unset.
-`coordinator/store/internal/testdb` creates and later drops a distinct temporary
-database for each test process; per-test truncation stays within that database.
-The connection role therefore needs `CREATEDB`. CI provides a
+`coordinator/store/internal/testdb/main.go` (`Main`) creates and later drops a
+distinct temporary database for each test process; per-test truncation stays
+within that database. The configured database is used only for administration,
+not migrated or truncated. The connection role therefore needs `CREATEDB`.
+Database isolation alone does not isolate PostgreSQL's connection budget:
+`acquireServerBudget` holds a session advisory lock on the administrative
+database for the test process, serializing participating store suites that use
+that same database. This keeps their production-sized pools compatible with a
+default 100-connection PostgreSQL server without raising its limit. Closing the
+administrative connection releases the lock, including on process exit; tests
+within each process remain sequential because their fixtures truncate tables.
+`coordinator/store/internal/testdb/main_test.go`
+(`TestServerBudgetSerializesIndependentConnections`,
+`TestIsolatedURLCannotSelectConfiguredDatabase`) pins lock ownership and URL
+isolation, including database query-parameter overrides. CI provides a
 `postgres:16` service with user/password/db `testbed`. The pre-push hook is not
 a substitute for the complete coordinator runner and explicit race/database
 validation; run the full set before merging.
@@ -978,7 +1008,10 @@ Startup recovery regressions also cover catalog-verified index definitions and i
 planner applicability, transient provider/reputation retries, a shared deadline,
 1013 registration teardown before duplicate eviction, and routing/capacity/load
 exclusion while a verified identity is restoring. Tests use disposable stores and
-localhost WebSockets (`coordinator/api/provider_restore_retry_test.go`,
+localhost WebSockets (`coordinator/api/provider/restore_retry_test.go`
+for transient reads, deadlines and disconnects;
+`coordinator/api/tests/provider/restore_retry_test.go`
+for registration teardown before duplicate eviction;
 `coordinator/registry/provider_restore_routing_test.go`); they do not reconnect production providers.
 
 ### 3. Prompt-contract sidecar (Rust)
@@ -2806,9 +2839,9 @@ from real Apple receipt renewal and final signed-artifact fleet qualification.
 
 ## Model token promotion and SLA checks
 
-`coordinator/api/model_token_pricing_test.go` checks exact input/output prices, fee shares, mixed paid/sponsored requests, overflow rejection, and 100 tiny completions with a lost commit acknowledgement. `coordinator/store/` races fractional settlements and duplicate replays on both backends, rejects invalid fractions, and reopens PostgreSQL to verify remainder durability.
+`coordinator/api/inference/model_token_pricing_test.go` checks exact input/output prices, fee shares, mixed paid/sponsored requests, overflow rejection, and 100 tiny completions with a lost commit acknowledgement. `coordinator/store/tests/model_token_earnings_test.go` (`TestModelTokenPromotionFractionalEarningsAtomicAndDurable`) races fractional settlements and duplicate replays on both backends, rejects invalid fractions, and reopens PostgreSQL to verify remainder durability.
 
-`coordinator/store/` runs the grant/ledger contract on both memory and disposable PostgreSQL backends: one-time claims, day boundaries, concurrent reservations, partial paid fallback, provider earnings, refund/settlement races, media top-ups and orphan recovery. Never point these tests at a production database: the store harness truncates tables. `coordinator/store/` rejects payouts or charges with no token usage on both backends. `coordinator/api/model_token_reconciliation_test.go` injects pre-commit failures and lost commit acknowledgements, replays reconciliation concurrently, verifies usage/key-spend/referral/platform accounting once, and exercises deterministic cash failures caused by price increases or usage overages.
+`coordinator/store/tests/model_token_promotions_test.go` runs the grant/ledger contract on both memory and disposable PostgreSQL backends: one-time claims, day boundaries, concurrent reservations, partial paid fallback, provider earnings, refund/settlement races, media top-ups and orphan recovery. Never point these tests at a production database: the store harness truncates tables. `coordinator/store/tests/model_token_zero_usage_test.go` (`TestModelTokenPromotionZeroUsageRejectsChargeAndPayout`) rejects payouts or charges with no token usage on both backends. `coordinator/api/inference/model_token_reconciliation_test.go` injects pre-commit failures and lost commit acknowledgements, replays reconciliation concurrently, verifies usage/key-spend/referral/platform accounting once, and exercises deterministic cash failures caused by price increases or usage overages.
 
 ```sh
 cd coordinator
@@ -2818,15 +2851,15 @@ go test -race ./api/... ./modelpolicy \
   -run 'Test(ModelTokenPromotion|ModelSpecificFirstContentDeadline|Bonsai|CustomFirstContent)' -count=1
 ```
 
-`console-ui/src/components/app-providers/ModelTokenPromotionsProvider.test.tsx` covers read-only login discovery, explicit claims, sold-out/ineligible states, account-switch races and paid-fallback copy. `coordinator/store/` races 270 distinct claimants against a 250-grant cap and verifies the signup cutoff. `console-ui/src/lib/chat/stream-thinking.test.ts` checks that frontend thinking defaults on. `console-ui/src/lib/chat/errors.test.ts` preserves promotion errors instead of replacing them with a generic credit error. `python3 scripts/test-model-token-promotion.py` checks local-day boundaries across daylight-saving transitions. Operator steps: [model-token-promotions.md](../operations/model-token-promotions.md).
+`console-ui/src/components/app-providers/ModelTokenPromotionsProvider.test.tsx` covers read-only login discovery, explicit claims, sold-out/ineligible states, account-switch races and paid-fallback copy. `coordinator/store/tests/model_token_claims_test.go` (`TestModelTokenPromotionFirst250ClaimsAreAtomic`) races 270 distinct claimants against a 250-grant cap. The backend-private `model_token_claims_test.go` files in `coordinator/store/memory/` and `coordinator/store/postgres/` verify the persisted signup cutoff (`TestModelTokenPromotionSignupCutoffUsesPersistedCreationTime`). `console-ui/src/lib/chat/stream-thinking.test.ts` checks that frontend thinking defaults on. `console-ui/src/lib/chat/errors.test.ts` preserves promotion errors instead of replacing them with a generic credit error. `python3 scripts/test-model-token-promotion.py` checks local-day boundaries across daylight-saving transitions. Operator steps: [model-token-promotions.md](../operations/model-token-promotions.md).
 
 ## Account-scoped first-content SLA
 
-`coordinator/api/first_content_accounts_test.go` covers exact account/email selection, unrelated service accounts, header spoofing, public-model override precedence, disabled clocks and identity-store failures. `coordinator/api/first_content_accounts_integration_test.go` runs streaming and non-streaming requests through chat, Responses, completions and messages past the old deadline with hard TTFT rejection enabled; exempt requests omit their wire budget and scheduler ceiling, while the configured OpenRouter email still times out. The existing deadline/queue/retry/provider-wire suites explicitly opt their fixture account into the SLA. `coordinator/api/media_resolve_test.go` verifies a pinned exemption cannot be recomputed during media fetch.
+`coordinator/api/inference/first_content_accounts_test.go` covers exact account/email selection, unrelated service accounts, header spoofing, public-model override precedence, disabled clocks and identity-store failures. `coordinator/api/tests/inference/first_content_accounts_integration_test.go` runs streaming and non-streaming requests through chat, Responses, completions and messages past the old deadline with hard TTFT rejection enabled; exempt requests omit their wire budget and scheduler ceiling, while the configured OpenRouter email still times out. The existing deadline/queue/retry/provider-wire suites explicitly opt their fixture account into the SLA. `coordinator/api/inference/media_resolve_test.go` (`TestResolveRemoteMediaPinnedSLAExemptionDoesNotRecompute`) verifies a pinned exemption cannot be recomputed during media fetch. Root `coordinator/api/first_content_accounts_test.go` retains only the environment-configuration test (`TestFirstContentSLAAccountsEnvironment`).
 
 ### Adversarial numeric parsing
 
-`coordinator/api/tool_constraints_test.go`
+`coordinator/api/inference/request/tool_constraints_test.go`
 (`TestConstrainedExactNonnegativeIntBoundsAdversarialLiterals`) checks exact
 integer results and rejects fractional, negative, huge-exponent and multi-megabyte
 inputs. The original 250 ms per-call budget remains enforced by normal tests
@@ -2837,7 +2870,7 @@ it does not replace it. Neither wall-clock budget proves linear complexity.
 No production parser limit or acceptance rule changes.
 
 Run the enforced performance gate with
-`go test -race=false -cover=false ./coordinator/api -run '^TestConstrainedExactNonnegativeIntBoundsAdversarialLiterals$' -count=1`.
+`go test -race=false -cover=false ./coordinator/api/inference/request -run '^TestConstrainedExactNonnegativeIntBoundsAdversarialLiterals$' -count=1`.
 The following full CI suite still runs with race detection and atomic coverage.
 
 Measure size scaling separately with
@@ -2845,7 +2878,7 @@ Measure size scaling separately with
 (`BenchmarkConstrainedExactNonnegativeIntAdversarialLiterals`):
 
 ```sh
-go test ./coordinator/api -run '^$' \
+go test ./coordinator/api/inference/request -run '^$' \
   -bench '^BenchmarkConstrainedExactNonnegativeIntAdversarialLiterals$' -benchmem
 ```
 
@@ -2952,7 +2985,7 @@ bounded output. Applying a refund requires an exact withdrawal ID, expected amou
 and an operator-verified Stripe request. See [the cutover runbook](../operations/stripe-migration.md).
 
 Exercise the API, funding and settlement contracts with
-`go test ./coordinator/api ./coordinator/billing/... ./coordinator/store ./coordinator/cmd/payout-audit`.
+`go test ./coordinator/api/... ./coordinator/billing/... ./coordinator/store/... ./coordinator/cmd/payout-audit`.
 Set `DATABASE_URL` to a disposable local PostgreSQL database to run transaction,
 concurrency and rollback coverage. Never point tests at production. Console
 migration coverage runs with `npm test` in `console-ui`.

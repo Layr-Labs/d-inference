@@ -79,6 +79,64 @@ class DocsImpactCheckTests(unittest.TestCase):
                                 "coordinator/store/postgres/migrations_test.go")
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_relocated_endpoints_require_api_contracts(self) -> None:
+        sources = (
+            "coordinator/api/billing/pricing.go",
+            "coordinator/api/billing/account.go",
+            "coordinator/api/billing/checkout.go",
+            "coordinator/api/billing/payouts/connect_status.go",
+            "coordinator/api/billing/payouts/global_payouts_withdraw.go",
+            "coordinator/api/catalog/models_endpoints.go",
+            "coordinator/api/catalog/openrouter_endpoint.go",
+            "coordinator/api/catalog/capacity.go",
+            "coordinator/api/accounts/summary.go",
+            "coordinator/api/access/otp.go",
+            "coordinator/api/access/keys/request.go",
+            "coordinator/api/access/device/handlers.go",
+            "coordinator/api/inference/consumer.go",
+            "coordinator/api/inference/request/body.go",
+            "coordinator/api/inference/response/responses_stream.go",
+            "coordinator/api/inference/exact_cache_status.go",
+            "coordinator/api/inference/sender_encryption.go",
+            "coordinator/api/inference/model_token_promotions.go",
+            "coordinator/api/operations/health.go",
+            "coordinator/api/operations/drain.go",
+            "coordinator/api/reporting/network_series.go",
+            "coordinator/api/reporting/model_demand.go",
+            "coordinator/api/provider/provider.go",
+            "coordinator/api/provider/trust/enroll.go",
+            "coordinator/api/provider/trust/status.go",
+            "coordinator/api/provider/trust/settings.go",
+            "coordinator/api/provider/trust/app_attest_revocation.go",
+            "coordinator/api/observation/admin_telemetry.go",
+            "coordinator/api/observation/profiler_admin.go",
+            "coordinator/api/observation/request_outcome_admin.go",
+            "coordinator/api/releases/download.go",
+            "coordinator/api/releases/app_attest_builds.go",
+            "coordinator/api/releases/read_handlers.go",
+        )
+        other_docs = ("docs/architecture/telemetry.md", "docs/operations/provider-release.md")
+        for source in sources:
+            with self.subTest(source=source):
+                # Other domains' docs must not satisfy the API contract gate.
+                self.assertTrue((ROOT / source).is_file(), source)
+                missing = self.run_check(source, *other_docs)
+                self.assertEqual(missing.returncode, 1, missing.stdout + missing.stderr)
+                self.assertIn("HTTP and API contracts source changed", missing.stderr)
+                covered = self.run_check(source, *other_docs, "docs/reference/api-contracts.md")
+                self.assertEqual(covered.returncode, 0, covered.stdout + covered.stderr)
+                test_source = source.removesuffix(".go") + "_test.go"
+                ignored = self.run_check(test_source)
+                self.assertEqual(ignored.returncode, 0, ignored.stdout + ignored.stderr)
+
+    def test_internal_helpers_do_not_require_api_contracts(self) -> None:
+        result = self.run_check(
+            "coordinator/api/readcache/cache.go",
+            "coordinator/api/inference/chunk_key_cache.go",
+            "coordinator/api/provider/trust/challenge_policy.go",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

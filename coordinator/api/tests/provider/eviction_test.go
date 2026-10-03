@@ -1,9 +1,5 @@
 package provider_test
 
-// Regression tests for the "zombie connection" bug: removing a provider from
-// the registry must also close its WebSocket. Previously Disconnect left the
-// socket open, so the provider never detected the drop and never reconnected.
-
 import (
 	"context"
 	"encoding/json"
@@ -18,6 +14,10 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"nhooyr.io/websocket"
 )
+
+// Regression tests for the "zombie connection" bug: removing a provider from
+// the registry must also close its WebSocket. Previously Disconnect left the
+// socket open, so the provider never detected the drop and never reconnected.
 
 // dialAndRegisterProvider connects + registers a provider and returns the client
 // conn and server-assigned ID. Fails the test if registration doesn't land.

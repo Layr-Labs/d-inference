@@ -20,10 +20,6 @@ func selectionCandidate(c *routingCandidate) selection.Candidate {
 	}
 }
 
-func firstContentRankMs(c *routingCandidate) float64 {
-	return selectionCandidate(c).RankMs()
-}
-
 // selectFirstContentCandidate projects immutable candidate values into policy
 // inputs. Ownership, feasibility and decode quality are narrowed by the caller;
 // provider pointers and random state never cross the policy boundary.

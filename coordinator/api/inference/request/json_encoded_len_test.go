@@ -8,7 +8,7 @@ import (
 
 // jsonLenSpecialStrings are the string shapes whose encoded length differs
 // from their byte length: every short escape, every other control byte, the
-// HTML-significant bytes, DEL (safe), invalid UTF-8 (per-byte �),
+// HTML-significant bytes, DEL (safe), invalid UTF-8 (per-byte U+FFFD),
 // U+2028/U+2029 (escaped unconditionally), a genuine U+FFFD (kept raw), and
 // multi-byte runes.
 var jsonLenSpecialStrings = []string{

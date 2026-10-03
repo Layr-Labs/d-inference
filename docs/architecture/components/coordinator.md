@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-03
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -76,6 +76,14 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/telemetry` | Structured telemetry emitter. |
 | `coordinator/saferun` | Panic-safe goroutine launcher used by every background loop. |
 | `coordinator/deploy` | `start.sh` container entrypoint (persistent disk, MicroMDM). |
+
+Tests follow these ownership boundaries: private invariants stay with each
+owner, pure codecs live in the inference `request`/`response` packages, and
+public HTTP/WebSocket contracts use the composed router under
+`coordinator/api/tests/<domain>/`. Root API tests retain composition and private
+global-middleware coverage. Backend conformance lives in
+`coordinator/store/tests/`. The [test-boundary map](../../developer/test.md#2-coordinator-go)
+defines local authentication fixtures, recursive selectors and database isolation.
 
 ## Startup sequence
 

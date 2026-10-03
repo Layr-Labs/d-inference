@@ -11,8 +11,6 @@ import (
 // Preserve the server configuration surface while the feature owns its config.
 type AppAttestShadowConfig = attestservice.Config
 
-func readAppAttestShadowConfig() AppAttestShadowConfig { return attestservice.ConfigFromEnvironment() }
-
 // The API owns HTTP/WS dispatch, shared telemetry and the generic release
 // catalog. All App Attest workers and mutable session state belong to Service.
 func (s *Owner) AppAttestFeature() *attestservice.Service {

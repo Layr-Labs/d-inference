@@ -1,0 +1,263 @@
+package access_test
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/api"
+	"github.com/eigeninference/d-inference/coordinator/api/tests/internal/testkit"
+	"github.com/eigeninference/d-inference/coordinator/api/types"
+	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
+)
+
+type keyTestServer struct {
+	*api.Server
+	store    *memory.MemoryStore
+	sessions *testkit.Sessions
+}
+
+func newKeyTestServer(t *testing.T) (*keyTestServer, *memory.MemoryStore) {
+	t.Helper()
+	f := testkit.New(t, api.ServerConfig{})
+	return &keyTestServer{Server: f.Server, store: f.Store, sessions: testkit.NewSessions(t, f.Server, f.Store)}, f.Store
+}
+
+func (s *keyTestServer) request(method, target, body, accountID string) *http.Request {
+	var r *http.Request
+	if body == "" {
+		r = httptest.NewRequest(method, target, nil)
+	} else {
+		r = httptest.NewRequest(method, target, strings.NewReader(body))
+	}
+	r.Header.Set("Authorization", "Bearer "+s.sessions.Token(accountID))
+	return r
+}
+
+func TestHandleCreateAndListAPIKeys(t *testing.T) {
+	srv, _ := newKeyTestServer(t)
+
+	// Create a key with a $10 monthly cap.
+	body := `{"name":"prod","limit_usd":10,"limit_reset":"monthly","rpm_limit":120}`
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, srv.request(http.MethodPost, "/v1/keys", body, "acct-1"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body=%s", w.Code, w.Body.String())
+	}
+	var created types.CreateAPIKeyResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	if !strings.HasPrefix(created.Key, store.KeyPrefix) {
+		t.Errorf("returned secret %q missing prefix", created.Key)
+	}
+	if created.Data.LimitUSD == nil || *created.Data.LimitUSD != 10 {
+		t.Errorf("limit_usd = %v, want 10", created.Data.LimitUSD)
+	}
+	if created.Data.LimitReset != "monthly" {
+		t.Errorf("limit_reset = %q", created.Data.LimitReset)
+	}
+	if created.Data.RPMLimit == nil || *created.Data.RPMLimit != 120 {
+		t.Errorf("rpm_limit = %v", created.Data.RPMLimit)
+	}
+	if strings.Contains(created.Data.Label, created.Key[10:40]) {
+		t.Errorf("label leaks secret: %q", created.Data.Label)
+	}
+
+	// List shows exactly one key (masked, no secret).
+	w = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, srv.request(http.MethodGet, "/v1/keys", "", "acct-1"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("list status = %d", w.Code)
+	}
+	var list types.APIKeyListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(list.Data) != 1 {
+		t.Fatalf("list len = %d, want 1", len(list.Data))
+	}
+	if strings.Contains(w.Body.String(), created.Key) {
+		t.Error("list response must not contain the raw secret")
+	}
+}
+
+func TestHandleUpdateAndDisableViaPatch(t *testing.T) {
+	srv, _ := newKeyTestServer(t)
+
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, srv.request(http.MethodPost, "/v1/keys", `{"name":"a","limit_usd":5}`, "acct-1"))
+	var created types.CreateAPIKeyResponse
+	json.Unmarshal(w.Body.Bytes(), &created)
+	id := created.Data.ID
+
+	// PATCH: disable + clear the limit (limit_usd: null) + rename.
+	patch := `{"name":"renamed","disabled":true,"limit_usd":null}`
+	r := srv.request(http.MethodPatch, "/v1/keys/"+id, patch, "acct-1")
+	w = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("patch status = %d, body=%s", w.Code, w.Body.String())
+	}
+	var updated types.APIKeyResponse
+	json.Unmarshal(w.Body.Bytes(), &updated)
+	if updated.Name != "renamed" {
+		t.Errorf("name = %q", updated.Name)
+	}
+	if !updated.Disabled {
+		t.Error("key should be disabled")
+	}
+	if updated.LimitUSD != nil {
+		t.Errorf("limit_usd should be cleared, got %v", *updated.LimitUSD)
+	}
+}
+
+func TestHandleRotateAPIKey(t *testing.T) {
+	srv, _ := newKeyTestServer(t)
+
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, srv.request(http.MethodPost, "/v1/keys", `{"name":"a","limit_usd":7,"limit_reset":"weekly"}`, "acct-1"))
+	var created types.CreateAPIKeyResponse
+	json.Unmarshal(w.Body.Bytes(), &created)
+	oldID := created.Data.ID
+	oldSecret := created.Key
+
+	r := srv.request(http.MethodPost, "/v1/keys/"+oldID+"/rotate", "", "acct-1")
+	w = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("rotate status = %d, body=%s", w.Code, w.Body.String())
+	}
+	var rotated types.CreateAPIKeyResponse
+	json.Unmarshal(w.Body.Bytes(), &rotated)
+	if rotated.Key == oldSecret {
+		t.Error("rotate must mint a new secret")
+	}
+	if rotated.Data.ID == oldID {
+		t.Error("rotate must produce a new key id")
+	}
+	// Limits carried over.
+	if rotated.Data.LimitUSD == nil || *rotated.Data.LimitUSD != 7 || rotated.Data.LimitReset != "weekly" {
+		t.Errorf("limits not carried over: %+v", rotated.Data)
+	}
+	// Old key gone.
+	if _, err := srv.store.AuthenticateKey(oldSecret); err == nil {
+		t.Error("old secret should be revoked after rotate")
+	}
+	// New key authenticates.
+	if _, err := srv.store.AuthenticateKey(rotated.Key); err != nil {
+		t.Errorf("new secret should authenticate: %v", err)
+	}
+}
+
+func TestHandleDeleteAPIKeyScoping(t *testing.T) {
+	srv, _ := newKeyTestServer(t)
+
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, srv.request(http.MethodPost, "/v1/keys", `{"name":"a"}`, "acct-1"))
+	var created types.CreateAPIKeyResponse
+	json.Unmarshal(w.Body.Bytes(), &created)
+	id := created.Data.ID
+
+	// Another account cannot delete it.
+	r := srv.request(http.MethodDelete, "/v1/keys/"+id, "", "acct-2")
+	w = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("cross-account delete status = %d, want 404", w.Code)
+	}
+
+	// Owner can.
+	r = srv.request(http.MethodDelete, "/v1/keys/"+id, "", "acct-1")
+	w = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("owner delete status = %d, want 200", w.Code)
+	}
+}
+
+func TestHandleCreateKeyInheritsSelfRouteOnly(t *testing.T) {
+	srv, st := newKeyTestServer(t)
+
+	if _, _, err := st.CreateAPIKey("acct-self", store.APIKeyCreate{Name: "mine", SelfRouteOnly: true}); err != nil {
+		t.Fatalf("seed machine-only key: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, srv.request(http.MethodPost, "/v1/auth/keys", "", "acct-self"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	var created types.CreateKeyResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	rec, err := st.AuthenticateKey(created.APIKey)
+	if err != nil {
+		t.Fatalf("AuthenticateKey: %v", err)
+	}
+	if !rec.SelfRouteOnly {
+		t.Fatal("legacy mint on a machine-only account must inherit self_route_only")
+	}
+}
+
+func TestHandleCreateKeyStaysUnrestrictedWhenAccountHasOpenKey(t *testing.T) {
+	srv, st := newKeyTestServer(t)
+
+	if _, _, err := st.CreateAPIKey("acct-mix", store.APIKeyCreate{Name: "mine", SelfRouteOnly: true}); err != nil {
+		t.Fatalf("seed machine-only key: %v", err)
+	}
+	if _, _, err := st.CreateAPIKey("acct-mix", store.APIKeyCreate{Name: "open"}); err != nil {
+		t.Fatalf("seed open key: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, srv.request(http.MethodPost, "/v1/auth/keys", "", "acct-mix"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	var created types.CreateKeyResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	rec, err := st.AuthenticateKey(created.APIKey)
+	if err != nil {
+		t.Fatalf("AuthenticateKey: %v", err)
+	}
+	if rec.SelfRouteOnly {
+		t.Fatal("legacy mint must stay unrestricted when the account already has an open key")
+	}
+}
+
+func TestHandleCreateKeyUnrestrictedForFirstKey(t *testing.T) {
+	srv, st := newKeyTestServer(t)
+
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, srv.request(http.MethodPost, "/v1/auth/keys", "", "acct-new"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	var created types.CreateKeyResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	rec, err := st.AuthenticateKey(created.APIKey)
+	if err != nil {
+		t.Fatalf("AuthenticateKey: %v", err)
+	}
+	if rec.SelfRouteOnly {
+		t.Fatal("first console key must stay unrestricted")
+	}
+}
+
+func TestHandleCreateAPIKeyRejectsBadInput(t *testing.T) {
+	srv, _ := newKeyTestServer(t)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, srv.request(http.MethodPost, "/v1/keys", `{"limit_reset":"hourly"}`, "acct-1"))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for bad reset window", w.Code)
+	}
+}

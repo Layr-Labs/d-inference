@@ -31,12 +31,6 @@ func (c *countingStore) note(name string) {
 	c.mu.Unlock()
 }
 
-func (c *countingStore) count(name string) int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.calls[name]
-}
-
 func (c *countingStore) GetUserByAccountID(accountID string) (*store.User, error) {
 	c.note("GetUserByAccountID")
 	if c.failWith != nil {
@@ -87,12 +81,6 @@ func (f *fakeClock) now() time.Time {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.t
-}
-
-func (f *fakeClock) advance(d time.Duration) {
-	f.mu.Lock()
-	f.t = f.t.Add(d)
-	f.mu.Unlock()
 }
 
 // newCachedMemoryStore composes CachedStore -> countingStore -> MemoryStore

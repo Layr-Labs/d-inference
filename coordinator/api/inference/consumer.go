@@ -2379,9 +2379,6 @@ func (s *Owner) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	d.run()
 }
 
-// usdToMicro converts a USD dollar amount to micro-USD (rounded).
-func usdToMicro(usd float64) int64 { return int64(math.Round(usd * 1_000_000)) }
-
 // microToUSD converts micro-USD to a USD float.
 func microToUSD(micro int64) float64 { return float64(micro) / 1_000_000 }
 

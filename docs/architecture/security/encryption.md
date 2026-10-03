@@ -1,6 +1,6 @@
 # Encryption and privacy model
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-03
 
 An inference request crosses three NaCl Box hops: consumer → coordinator
 (optional), coordinator → provider (mandatory), provider → coordinator
@@ -140,7 +140,7 @@ This table is the privacy statement. [`../../consumer/privacy-expectations.md`](
 |---|---|
 | Prompt content is decrypted for routing "but never logs prompt content, then re-encrypts each request to the provider" | `coordinator/api/inference/consumer.go` (package comment) |
 | Provider inference errors are reduced to a closed vocabulary before logging or returning | `coordinator/api/inference/inference_error_sanitize.go` (`sanitizeProviderInferenceError`, `clientSafeInferenceErrorMessage`) |
-| The coordinator has no client telemetry ingestion route (the retired `POST /v1/telemetry/events` is unregistered), because provider telemetry had free-form `message` / `stack` fields | `coordinator/api/routes.go` (`routes`); `coordinator/api/telemetry_e2e_test.go` |
+| The coordinator has no client telemetry ingestion route (the retired `POST /v1/telemetry/events` is unregistered), because provider telemetry had free-form `message` / `stack` fields | `coordinator/api/routes.go` (`routes`); `coordinator/api/tests/operations/telemetry_e2e_test.go` (`TestTelemetryE2E_NoClientIngestionRoute`) |
 | Sealed requests never trigger remote-media fetching (no coordinator egress derived from sealed content) | `coordinator/api/inference/sender_encryption.go` (`isSealedRequest`) |
 | Session private key and memoized shared key are dropped at request end | `coordinator/api/inference/chunk_key_cache.go` (`forget`) |
 
@@ -154,7 +154,7 @@ This table is the privacy statement. [`../../consumer/privacy-expectations.md`](
 6. A sealed request never causes the coordinator to fetch remote media — `coordinator/api/inference/media_resolve.go` (`gateRemoteMediaPreDispatch`), `coordinator/api/inference/sender_encryption.go` (`isSealedRequest`).
 7. The hop-2 session private key and the memoized hop-3 shared key exist only in the in-flight request state and are forgotten when the request completes, errors, or the provider disconnects — `coordinator/api/inference/chunk_key_cache.go` (`forget`).
 8. No request body, prompt, or completion text reaches structured logs or the store; the only content-derived artifacts are keyed digests for cache routing — `coordinator/api/inference/dispatch.go`, `coordinator/store/interface.go`, `coordinator/registry/cache_route_keys.go`.
-9. The coordinator accepts no client telemetry: no ingestion route is registered — `coordinator/api/routes.go`, pinned by `coordinator/api/telemetry_e2e_test.go` (`TestTelemetryE2E_NoClientIngestionRoute`).
+9. The coordinator accepts no client telemetry: no ingestion route is registered — `coordinator/api/routes.go`, pinned by `coordinator/api/tests/operations/telemetry_e2e_test.go` (`TestTelemetryE2E_NoClientIngestionRoute`).
 
 ## Failure modes
 
@@ -182,7 +182,7 @@ This table is the privacy statement. [`../../consumer/privacy-expectations.md`](
 | Wire types | `coordinator/protocol/messages.go` (`EncryptedPayload`, `InferenceRequestMessage`, `InferenceResponseChunkMessage`, `RegisterMessage`) |
 | Private-text routing gate | `coordinator/registry/attestation_policy.go` (`providerSupportsPrivateTextLocked`) |
 | Consumer-visible headers | `coordinator/api/inference/response/response_metadata.go` (`WriteCommittedProviderHeaders`) |
-| No telemetry ingestion route | `coordinator/api/routes.go`; `coordinator/api/telemetry_e2e_test.go` |
+| No telemetry ingestion route | `coordinator/api/routes.go`; `coordinator/api/tests/operations/telemetry_e2e_test.go` (`TestTelemetryE2E_NoClientIngestionRoute`) |
 | Provider key pair and decrypt/encrypt | `provider-swift/Sources/ProviderCore/Crypto/NodeKeyPair.swift`, `provider-swift/Sources/ProviderCore/ProviderLoop.swift` |
 | Console sealing | `console-ui/src/lib/encryption.ts` |
 

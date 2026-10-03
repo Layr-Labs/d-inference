@@ -23,7 +23,14 @@ func New(t testing.TB, cfg api.ServerConfig) *Fixture {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
+	srv := NewServer(t, reg, st, cfg, logger)
+	return &Fixture{Server: srv, Registry: reg, Store: st}
+}
+
+// NewServer binds explicit fixture dependencies before starting any owner workers.
+func NewServer(t testing.TB, reg *registry.Registry, st store.Store, cfg api.ServerConfig, logger *slog.Logger) *api.Server {
+	t.Helper()
 	srv := api.NewServer(reg, st, cfg, logger)
 	t.Cleanup(srv.Close)
-	return &Fixture{Server: srv, Registry: reg, Store: st}
+	return srv
 }

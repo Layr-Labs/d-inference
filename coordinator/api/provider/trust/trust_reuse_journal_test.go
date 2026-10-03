@@ -313,10 +313,6 @@ func TestHardUntrustJournalStoreOutageKeepsPendingAndBlocksReplay(t *testing.T) 
 }
 
 func TestHardUntrustJournalReviewerTraceThreeFailuresRestartRecovery(t *testing.T) {
-	oldBackoff := trustReuseDeleteRetryBackoff
-	trustReuseDeleteRetryBackoff = time.Millisecond
-	defer func() { trustReuseDeleteRetryBackoff = oldBackoff }()
-
 	mem := memory.NewMemory(store.Config{})
 	flaky := &flakyDeleteStore{Store: mem, failFirst: 3}
 	path := filepath.Join(t.TempDir(), "coordinator", trustReuseJournalFilename)
@@ -370,15 +366,6 @@ func TestHardUntrustJournalReviewerTraceThreeFailuresRestartRecovery(t *testing.
 }
 
 func TestHardUntrustJournalRuntimeReplayClearsFailClosedLatch(t *testing.T) {
-	oldDeleteBackoff := trustReuseDeleteRetryBackoff
-	oldReplayBackoff := trustReuseReplayInitialBackoff
-	trustReuseDeleteRetryBackoff = time.Millisecond
-	trustReuseReplayInitialBackoff = time.Millisecond
-	defer func() {
-		trustReuseDeleteRetryBackoff = oldDeleteBackoff
-		trustReuseReplayInitialBackoff = oldReplayBackoff
-	}()
-
 	mem := memory.NewMemory(store.Config{})
 	flaky := &flakyDeleteStore{Store: mem, failFirst: 3}
 	path := filepath.Join(t.TempDir(), "coordinator", trustReuseJournalFilename)

@@ -5,28 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/eigeninference/d-inference/coordinator/api/observation"
 )
 
 const envProfiler = "EIGENINFERENCE_PROFILER"
-const envProfileSampleRate = "EIGENINFERENCE_PROFILE_SAMPLE_RATE"
-
-func installOutcomeObserver(t *testing.T, s *Server) {
-	t.Helper()
-	t.Setenv(envProfiler, "off")
-	s.observation = observation.New(observation.Dependencies{Store: s.store, Registry: s.registry, Logger: s.logger, Hooks: observation.Hooks{
-		RoutePattern: func(r *http.Request) string {
-			if s.mux == nil {
-				return http.MethodPost + " " + r.URL.Path
-			}
-			_, p := s.mux.Handler(r)
-			return p
-		},
-		RequireAdminKey: func(http.ResponseWriter, *http.Request) bool { return true },
-	}})
-	t.Cleanup(s.observation.Close)
-}
 
 // Read public observer health instead of inspecting a different package's sink.
 func requestOutcomeReceived(t *testing.T, s *Server) int64 {

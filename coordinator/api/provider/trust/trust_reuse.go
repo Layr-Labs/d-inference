@@ -48,8 +48,8 @@ const (
 	trustSafetyReplayHealthReason  = "trust_reuse_revocation_replay_pending"
 )
 
-var trustReuseDeleteRetryBackoff = 200 * time.Millisecond
-var trustReuseReplayInitialBackoff = time.Second
+const trustReuseDeleteRetryBackoff = 200 * time.Millisecond
+const trustReuseReplayInitialBackoff = time.Second
 
 type trustReuseDecision string
 

@@ -1,6 +1,6 @@
 # Incoming request accounting
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-03
 
 `request_outcomes` records unsampled observations of incoming inference requests, including early rejections, independently of sampled attempt profiles. Operators use this source to distinguish final request outcomes from internal retries. The public Stats page exposes a narrower, explicitly scoped recorded-request view; it does not establish traffic-wide completeness.
 
@@ -193,8 +193,9 @@ reconciled. See [the API contract](../reference/api-contracts.md#model-demand-re
 | Content and write evidence | `coordinator/api/observation/request_outcome_egress.go`, `coordinator/api/inference/sender_encryption.go` |
 | Bounded persistence and health | `coordinator/api/observation/request_outcome_sink.go`, `coordinator/api/observation/request_outcome_admin.go` |
 | Schema, revision merge and reads | `coordinator/store/request_outcomes.go`, `coordinator/store/postgres/request_outcomes.go`, `coordinator/store/memory/request_outcomes.go` |
-| Live isolated endpoint regressions | `coordinator/api/request_outcome_integration_test.go`, `coordinator/api/request_outcome_test.go`, `coordinator/api/deadline_unreachable_integration_test.go` |
-| Memory/Postgres parity and retention | `coordinator/store/` |
+| Live isolated endpoint regressions | `coordinator/api/tests/inference/request_outcome_integration_test.go` (`TestRequestOutcomesAllEndpointsWithoutProfiler`), `coordinator/api/tests/inference/deadline_unreachable_integration_test.go` (`TestProductionConfigStreamingDeadlineExhaustionRetainsHTTP429`) |
+| Private inference outcome regressions | `coordinator/api/inference/request_outcome_test.go` (`TestRequestOutcomeQueueAndMissingTerminal`), `coordinator/api/inference/request_outcome_integration_test.go` (`TestRequestOutcomesProviderErrorAfterContentAllEndpoints`), `coordinator/api/inference/deadline_unreachable_integration_test.go` (`TestGenericDeadlineExhaustionReturnsSingle429`) |
+| Memory/Postgres parity and retention | `coordinator/store/tests/request_outcomes_test.go` (`TestRequestOutcomeTerminalStoreContract`, `TestRequestOutcomeRetention`) |
 
 ## Related
 

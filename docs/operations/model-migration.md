@@ -1,6 +1,6 @@
 # Migrate a public model to a new build
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-03
 
 Runbook for moving a public model name (an **alias**, e.g. `gemma-4-26b`) from
 one concrete build to another with no downtime and without consumers ever
@@ -43,7 +43,7 @@ Not for: registering a brand-new model (that is just steps 1–2 plus
   as `active_model_hash` at the next challenge; the coordinator accepts any
   catalog-validated hash from `model_hashes` (regression test
   `TestChallengeRetiredResidentBuildHashDoesNotUntrust`,
-  `coordinator/api/model_hash_race_test.go`). Do **not** deprecate the old
+   `coordinator/api/tests/provider/model_hash_race_test.go`). Do **not** deprecate the old
   registry record while any provider may still hold it resident (see "Retire").
 - **Canary the new build on one production-version provider** via its raw build
   id before flipping: prefetch, hash-verify, GPU-load, and serve chat, tool

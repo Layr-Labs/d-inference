@@ -213,21 +213,6 @@ func (s *Server) Close() {
 	s.observation.CloseProfilesAndOutcomes()
 }
 
-// belowMinProviderVersion reports whether a provider reporting version falls
-// below the configured routing floor. With no floor configured nothing is
-// below it. With a floor configured, an EMPTY version counts as below it: the
-// version is optional on the wire, and every provider build that clears any
-// real floor reports one, so a missing version must not bypass the floor.
-
-// providerVersionMetricTag is the Datadog tag value for a provider version,
-// naming the empty (unreported) version explicitly.
-
-// maxMDMWebhookBodyBytes caps the MicroMDM webhook body. SecurityInfo /
-// DevicePropertiesAttestation responses are a few KB; 1 MiB is generous headroom
-// while preventing an unauthenticated caller from exhausting memory via an
-// unbounded body.
-const maxMDMWebhookBodyBytes = 1 << 20 // 1 MiB
-
 // maxRequestBodyBytes is the global ceiling bodyLimitMiddleware applies to every
 // request body so no endpoint can be OOM'd by an unbounded POST. It's a coarse
 // outer bound that clears every legitimate body with headroom; the hot paths
@@ -239,17 +224,6 @@ const maxRequestBodyBytes = 64 << 20 // 64 MiB
 // control-plane JSON (enroll, device token, admin auth) — far below the global
 // ceiling so these exposed endpoints buffer at most a few KiB.
 const maxControlPlaneBodyBytes = 64 << 10 // 64 KiB
-
-// HandleMDMWebhook processes a MicroMDM webhook callback.
-// Mount this on the webhook URL configured in MicroMDM.
-//
-// Defense layers (the endpoint is reachable but cannot forge trust):
-//  1. Body cap — bounds memory for the unauthenticated path.
-//  2. Optional shared secret — when configured, rejects callers without it
-//     before reading the body.
-//  3. Solicited-command gate (in mdm.Client.HandleWebhook) — only responses
-//     whose CommandUUID matches a command the coordinator actually issued are
-//     acted on, so a forged SecurityInfo can never drive a trust upgrade.
 
 //go:embed install.sh
 var installScript []byte

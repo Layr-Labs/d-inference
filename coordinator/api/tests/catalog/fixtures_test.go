@@ -1,28 +1,21 @@
 package catalog_test
 
 import (
-	"crypto/sha256"
 	"encoding/json"
-	"fmt"
 	"github.com/eigeninference/d-inference/coordinator/api"
+	"github.com/eigeninference/d-inference/coordinator/api/tests/internal/testkit"
 	"net/http"
 	"net/http/httptest"
-	"regexp"
-	"strings"
 	"testing"
 
 	"github.com/eigeninference/d-inference/coordinator/api/types"
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 // Fixture addresses are independent of catalog's address builder. Exact address
 // validation is tested beside that builder, not by comparing it to itself.
 func testModelPrefix(model, version string) string {
-	slug := strings.Trim(regexp.MustCompile(`[^a-zA-Z0-9._-]`).ReplaceAllString(model, "-"), "-")
-	if slug == "" {
-		slug = "model"
-	}
-	sum := sha256.Sum256([]byte(model))
-	return fmt.Sprintf("v2/%s--%x/%s", slug, sum[:6], version)
+	return testkit.ModelPrefix(model, version)
 }
 
 func catalogFeedEntry(t *testing.T, s *api.Server, model string) types.OpenRouterModel {
@@ -47,4 +40,34 @@ func catalogFeedEntry(t *testing.T, s *api.Server, model string) types.OpenRoute
 	return types.OpenRouterModel{}
 }
 
-const testHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+const testHash = testkit.ModelHash
+
+const (
+	aliasFP8 = "mlx-community/gemma-4-26b-a4b-it-fp8"
+	aliasQAT = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+)
+
+func seedActiveModel(t *testing.T, st store.Store, modelID, displayName string) {
+	t.Helper()
+	entry := &store.ModelRegistryEntry{
+		ID: modelID, DisplayName: displayName, Quantization: "4bit",
+		MaxContextLength: 131072, MaxOutputLength: 8192, MinRAMGB: 24,
+		Capabilities: []string{"chat"}, Status: "active",
+	}
+	files := []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}
+	if err := st.SetModelVersion(entry, &store.ModelVersion{
+		ModelID: modelID, Version: "v1", R2Prefix: testModelPrefix(modelID, "v1"),
+		AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready",
+	}, files); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PromoteModelVersion(modelID, "v1"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func catalogRequest(path string) *http.Request {
+	r := httptest.NewRequest(http.MethodGet, path, nil)
+	r.Header.Set("Authorization", "Bearer test-key")
+	return r
+}

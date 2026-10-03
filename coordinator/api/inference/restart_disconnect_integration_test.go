@@ -7,16 +7,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
-	"nhooyr.io/websocket"
 )
-
-// closeGoingAway sends a graceful 1001 going-away close — what
-// CoordinatorClient.shutdown() emits on the provider's run() shutdown path.
-func (fp *failoverProvider) closeGoingAway() {
-	fp.closeOnce.Do(func() {
-		_ = fp.conn.Close(websocket.StatusGoingAway, "restarting")
-	})
-}
 
 // awaitCondition polls cond until it holds or timeout elapses.
 func awaitCondition(t *testing.T, timeout time.Duration, cond func() bool, what string) {

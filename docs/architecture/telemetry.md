@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-03
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is
@@ -333,7 +333,7 @@ and the `inference.timing.*` histograms are built from the same
    appears only on the per-provider memory gauges.
 5. **There is no client ingestion route.** `POST /v1/telemetry/events` is not
    registered; the mux answers 404 without reading the body
-   (`TestTelemetryE2E_NoClientIngestionRoute`, `coordinator/api/telemetry_e2e_test.go`).
+   (`TestTelemetryE2E_NoClientIngestionRoute`, `coordinator/api/tests/operations/telemetry_e2e_test.go`).
 
 ## Failure modes
 
@@ -382,7 +382,7 @@ for populations, labels and reset semantics (`coordinator/api/observation/cache_
 | Sinks | `coordinator/api/observation/telemetry_sink.go`, `coordinator/api/observation/profiler_sink.go`, `coordinator/api/observation/profiler_fleet.go` |
 | Disconnect classification | `coordinator/registry/disconnect_classify.go` |
 | Provider side | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Registration.swift` (`buildHeartbeatJSON`), `provider-swift/Sources/ProviderCore/CapacityEventHeartbeats.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Capacity.swift`, `provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift` (no-op facade) |
-| Tests | `coordinator/api/telemetry_e2e_test.go`, `coordinator/protocol/telemetry_symmetry_test.go`, `coordinator/datadog/datadog_test.go`, `coordinator/datadog/metrics_http_test.go`, `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetrySymmetryTests.swift` |
+| Tests | `coordinator/api/tests/operations/telemetry_e2e_test.go` (`TestTelemetryE2E_NoClientIngestionRoute`), `coordinator/protocol/telemetry_symmetry_test.go`, `coordinator/datadog/datadog_test.go`, `coordinator/datadog/metrics_http_test.go`, `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetrySymmetryTests.swift` |
 
 ## Related
 

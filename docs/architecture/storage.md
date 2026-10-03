@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-03
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -133,8 +133,8 @@ schema. `PostgresStore.migrate` (`coordinator/store/postgres/migrations.go`) exe
 ordered slice of idempotent statements — `CREATE TABLE IF NOT EXISTS`,
 `ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`, `DROP TABLE IF EXISTS`
 for retired tables — on every start, followed by
-`checkRetiredBackfills` (`postgres_retired_backfills.go`),
-`ensureProviderRestoreIndexes` (`postgres_startup.go`) and
+`checkRetiredBackfills` (`coordinator/store/postgres/retired_backfills.go`),
+`ensureProviderRestoreIndexes` (`coordinator/store/postgres/startup.go`) and
 `ensureProviderEarningsJobIndex`, then `ensureProviderEarningsWindowIndex`
 (`coordinator/store/postgres/earnings_window_index.go`). One-shot *data* migrations are gated by a row
 in `schema_migrations` so they run at most once. Two SQL files under
@@ -355,7 +355,7 @@ KV blocks under a per-model key, not tokens.
 | Provider identity and usage reads | `coordinator/store/postgres/provider_read.go` (`providerRecordColumns`, `scanProviderRecord`, `GetProviderRecord`); `coordinator/store/` (`GetProviderForRestore`, using the same projection); `coordinator/store/postgres/usage_read.go` (`readUsageRecords`, `UsageRecords`); `coordinator/store/postgres/row.go` (`rowScanner`) |
 | Domain files | `coordinator/store/postgres/model_registry.go`, `coordinator/store/postgres/base_rewards.go`, `coordinator/store/postgres/profiles.go`, `coordinator/store/`, `coordinator/store/`, `coordinator/store/apikey.go` |
 | Memory backend | `coordinator/store/memory/`, `coordinator/store/memory/base_rewards.go` |
-| Manual SQL | `coordinator/store/migrations/` |
+| Manual SQL | `coordinator/store/postgres/migrations/` |
 | Persistent-disk state outside Postgres (MicroMDM, journals) | `coordinator/deploy/start.sh`, `coordinator/api/provider/trust/trust_reuse_journal.go`, [`../operations/state-export.md`](../operations/state-export.md) |
 | Provider files and Keychain | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `provider-swift/Sources/ProviderCore/Service/`, `provider-swift/Sources/ProviderCore/KVCacheSSD/`, `provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift` |
 

@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-03
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -47,7 +47,7 @@ The remaining epoch allocation commits as one transaction in `coordinator/paymen
 | Storage | `model_prices(account_id, model, input_price, output_price, cache_read_price NULL)`, primary key `(account_id, model)`. Platform prices use `account_id = 'platform'`; a provider's custom prices use its own account id (`coordinator/store/postgres/`; `store.ModelPrice`). `cache_read_price` is the rate for prompt tokens a provider served from its prefix cache; `NULL` means unset. |
 | Platform price writers | `PUT /v1/admin/pricing` (`coordinator/api/billing/` `HandleAdminPricing`) and model registration, which requires positive `input_price`/`output_price` and writes them as the platform row (`coordinator/api/catalog/` `HandleRegisterModel` → `SetModelPrice`). Both accept an optional `cache_read_price` in `[0, input_price]` (`coordinator/api/modelprice/price.go` `modelprice.Input.Validate`); a cache read priced above the uncached rate is rejected, not clamped. |
 | Provider custom price | `PUT /v1/pricing` / `DELETE /v1/pricing` for the caller's own account; Privy users only (`coordinator/api/billing/pricing.go` `HandleSetPricing`, `HandleDeletePricing`). Validation is `> 0` plus the `cache_read_price` bound; there is no floor or ceiling relative to the platform price. |
-| Resolution at settlement | provider custom → platform → `DefaultInputPricePerMillion` / `DefaultOutputPricePerMillion` (`coordinator/api/provider/` `HandleCompleteAt`). Service consumers skip the first step. `payments.RatesFor` turns the winning row into `Rates{Input, Output, CacheRead}`; an unset `cache_read_price` derives as `DefaultCacheReadPrice(input)` = input less `DefaultCacheReadDiscountPercent` (50%). The reservation uses the same order with the provider chosen at dispatch (`coordinator/api/inference/consumer.go` `providerReservationCost`, `reservationCost`). |
+| Resolution at settlement | provider custom → platform → `DefaultInputPricePerMillion` / `DefaultOutputPricePerMillion` (`coordinator/api/inference/provider_inference.go` `HandleCompleteAt`). Service consumers skip the first step. `payments.RatesFor` turns the winning row into `Rates{Input, Output, CacheRead}`; an unset `cache_read_price` derives as `DefaultCacheReadPrice(input)` = input less `DefaultCacheReadDiscountPercent` (50%). The reservation uses the same order with the provider chosen at dispatch (`coordinator/api/inference/consumer.go` `providerReservationCost`, `reservationCost`). |
 | Cost | `Rates.Cost` bills `(promptTokens − cachedTokens) × in / 1M + cachedTokens × cacheRead / 1M + completionTokens × out / 1M`, flooring non-zero usage at 1 µUSD (service traffic); `Rates.CostWithMinimum` applies `minimumChargeMicroUSD` instead (`coordinator/payments/pricing.go`). Cached tokens: invariant 5. |
 | Public read | `GET /v1/pricing` returns the `platform` rows plus the fallback defaults, each with its effective `cache_read_price` (`HandleGetPricing`, `ModelPriceQuote`; shape `types.PricingResponse`); the OpenRouter model feed renders the same `Rates` as USD-per-token strings — `prompt`, `completion`, `input_cache_read` — via `coordinator/payments/pricing.go` `FormatPerTokenUSD` (`coordinator/api/catalog/openrouter_models.go` `buildModelPricing`). |
 
@@ -66,7 +66,7 @@ sequenceDiagram
   A->>S: reserveAdditionalForProvider: Debit(custom − platform) if provider price is higher
   A->>P: dispatch (E2E request)
   P-->>A: inference_complete {prompt, completion, cached tokens}
-  A->>A: handleCompleteAt: validCacheUsage, RatesFor(price), totalCost = Rates.Cost(prompt − cached, cached, completion)
+  A->>A: HandleCompleteAt: validCacheUsage, RatesFor(price), totalCost = Rates.Cost(prompt − cached, cached, completion)
   alt totalCost > reserved
     A->>S: Debit(overage, "overage:<request_id>") — clamped at reserved
   else totalCost < reserved
@@ -82,7 +82,7 @@ sequenceDiagram
 | 1. Reserve | `coordinator/api/inference/inference_admission.go` `reserveInferenceBalance` | `reserved = reservationCost(model, max(BillingPromptTokens, estimatedPromptTokens), requestedMaxTokens)` at the platform price. The output bound follows the precedence in [pricing-model.md → Formulas](../reference/pricing-model.md#formulas) (`coordinator/api/inference/consumer.go` `ensureMaxTokensBound`; an explicit value is never clamped). The per-key spend cap is checked first (`checkKeySpendCap`), then `reserveInitialBalance` debits the ledger (`LedgerCharge`, reference `reserve:<account>`) or, for a service account with holds enabled, adds to an in-memory hold (`coordinator/api/inference/reservations.go` `serviceReservationManager`). Self-route and a nil billing backend skip the step entirely. |
 | 2. Media top-up | `topUpReservationForInlinedMedia` | After remote media is fetched and inlined, the byte-bound prompt estimate is recomputed; if it exceeds the reservation the delta is reserved with the same cap check and mode. |
 | 3. Provider top-up | `coordinator/api/inference/consumer.go` `reserveAdditionalForProvider` | If the chosen provider has a custom price above the platform price, the delta is debited after a second spend-cap check against the new total. `ErrInsufficientBalance` excludes that provider and dispatch tries another; when none fits the request fails with 402 (`coordinator/api/inference/dispatch.go` `dispatchPrimary`, `run`). Service consumers and free self-route skip it. If dispatch to that provider then fails, `refundExtra` credits the delta back (metric `billing.reservation_extra_refunds`). |
-| 4. Settle | `coordinator/api/provider/` `HandleCompleteAt` | Validate the provider's cache report (`validCacheUsage`; a malformed one is cleared so it cannot lower the bill), resolve the price, compute `totalCost` with cached prompt tokens at the cache-read rate (`billableUsage`, `Rates.Cost` / `CostWithMinimum`); an owned machine serving its owner's request settles free (`totalCost = 0`). Exactly one of the settlement or refund paths wins the reservation (`registry.PendingRequest.FinalizeReservation` / `MarkReservationFinalized`). Overage: `overage = totalCost − reserved`, clamped so `totalCost ≤ 2 × reserved` (metric `billing.cost_clamped`), then `Debit(overage, "overage:<request_id>")`; if that debit fails `totalCost = reserved`. Underage: `Credit(reserved − totalCost, LedgerRefund, <request_id>)`. Service hold: `Debit(totalCost)` and release the hold; a failed debit zeroes cost and payout (`billing.uncollected_zeroed`). No reservation and not free: `Debit(totalCost)`. |
+| 4. Settle | `coordinator/api/inference/provider_inference.go` `HandleCompleteAt` | Validate the provider's cache report (`validCacheUsage`; a malformed one is cleared so it cannot lower the bill), resolve the price, compute `totalCost` with cached prompt tokens at the cache-read rate (`billableUsage`, `Rates.Cost` / `CostWithMinimum`); an owned machine serving its owner's request settles free (`totalCost = 0`). Exactly one of the settlement or refund paths wins the reservation (`registry.PendingRequest.FinalizeReservation` / `MarkReservationFinalized`). Overage: `overage = totalCost − reserved`, clamped so `totalCost ≤ 2 × reserved` (metric `billing.cost_clamped`), then `Debit(overage, "overage:<request_id>")`; if that debit fails `totalCost = reserved`. Underage: `Credit(reserved − totalCost, LedgerRefund, <request_id>)`. Service hold: `Debit(totalCost)` and release the hold; a failed debit zeroes cost and payout (`billing.uncollected_zeroed`). No reservation and not free: `Debit(totalCost)`. |
 | 5. Record usage | `coordinator/api/inference/completion_accounting.go` `completionAccounting` (called from `HandleCompleteAt`) | In-memory `payments.Ledger.RecordUsage` always (bounded recent history, lazily allocated to the [usage history limit](../reference/pricing-model.md#constants)); a persistent `usage` row (`store.RecordUsage`) unless the request was free self-route. Both carry `cached_tokens` so a cache hit's cost can be reconciled against the published rates; a model-token promotion records `0`, because that path bills cached tokens at the input rate. |
 | 6. Pay out | `HandleCompleteAt` | `feePercent` is the consumer's `users.platform_fee_percent` override, else the global default (invariant 4). `platformFee = PlatformFeeWithPercent(totalCost, feePercent)`; `DistributeReferralReward` carves the referrer's share out of it; `CreditProviderAccount` credits `totalCost − platformFee` to the provider's account as withdrawable earnings (only when the provider is linked and the payout is > 0); the remaining fee is credited to `platform` (`LedgerPlatformFee`). |
 | 7. Abort / disconnect | `coordinator/api/inference/consumer.go` `refundReservedBalance`; `coordinator/api/inference/settlement.go` `settlementHolder` | A request that fails before any provider terminal refunds the whole reservation (`LedgerRefund`, reference `reservation_refund:<request_id>`). If the consumer disconnects first, the billing record is parked for `defaultTerminalSettleGrace = 30 * time.Second` so a late terminal settles it; otherwise it is refunded. |
@@ -329,7 +329,7 @@ pages also assign it to the lower-memory M5 Pro mini; see the
 2. **The reservation is the worst case and the cap.** The reservation is
    computed at the platform price for the estimated prompt plus the bounded
    output; settlement charges more only through the overage debit, and never
-   more than `2 × reserved` (`coordinator/api/provider/` `HandleCompleteAt`;
+   more than `2 × reserved` (`coordinator/api/inference/provider_inference.go` `HandleCompleteAt`;
    `coordinator/api/inference/consumer.go` `reservationCost`, `ensureMaxTokensBound`).
 3. **Price resolution order** is provider custom → platform → hardcoded
    default, and service consumers never pay a provider custom price
@@ -367,12 +367,13 @@ pages also assign it to the lower-memory M5 Pro mini; see the
    `PrefillTokensSaved` still feeds only the `routing.cache_*` metrics
    (`coordinator/payments/pricing.go` `Rates.Cost`, `RatesFor`;
    `coordinator/api/inference/cache_usage.go` `billableUsage`, `validCacheUsage`;
-   `coordinator/api/provider/` `HandleCompleteAt`).
+   `coordinator/api/inference/provider_inference.go` `HandleCompleteAt`).
 6. **A reservation is settled or refunded at most once.**
    `PendingRequest.FinalizeReservation` / `MarkReservationFinalized` (`coordinator/registry/pending_request.go`) gate every overage debit, settlement
    refund, whole-reservation refund, and service-hold release; a terminal that
    arrives after another path finalized the reservation is logged and skipped
-   without writing a usage row (`HandleCompleteAt`; `coordinator/api/provider/`
+   without writing a usage row (`coordinator/api/inference/provider_inference.go`
+   `HandleCompleteAt`; `coordinator/api/inference/consumer.go`
    `refundReservedBalance`; `coordinator/api/inference/settlement.go` `holdForSettlement`).
 7. **Provider earnings are idempotent on `job_id`.** `CreditProviderAccount`
    inserts the `provider_earnings` row under the unique partial index
@@ -415,13 +416,13 @@ pages also assign it to the lower-memory M5 Pro mini; see the
     the provider's `GetModelPrice` row and `reserveAdditionalForProvider`, and
     a service hold whose settlement debit fails zeros both `totalCost` and
     `providerPayout` (`billing.uncollected_zeroed`) rather than paying a
-    provider from uncollected money (`coordinator/api/provider/`
+    provider from uncollected money (`coordinator/api/inference/provider_inference.go`
     `HandleCompleteAt`; `coordinator/api/inference/reservations.go`).
 13. **Self-route is free only when the owner's machine served it.**
     `HandleCompleteAt` sets `totalCost = providerPayout = 0` iff the serving
     provider's `AccountID` equals the consumer key; a `FreeSelfRoute` request
     served by another provider settles as paid, and if that charge fails
-    nothing is paid out (`coordinator/api/provider/`).
+    nothing is paid out (`coordinator/api/inference/provider_inference.go`).
 14. **Referral rewards come out of the platform fee.**
     `DistributeReferralReward` credits the referrer
     `platformFee × share / 100` and returns the remainder for the `platform`
@@ -518,7 +519,7 @@ Names are written without the Datadog namespace prefix, which is owned by [telem
 | `billing.reservation_refunds` | incr | `model`, `mode` | `coordinator/api/inference/consumer.go` `refundReservedBalance`; `coordinator/api/inference/reservations.go` |
 | `billing.reservation_releases` | incr | `model`, `mode`, `reason:refund\|early` | same |
 | `billing.reservation_extra_refunds` | incr | `model` | `coordinator/api/inference/consumer.go` `refundProviderExtra` |
-| `billing.reservation_finalize` | incr | `model`, `mode:service_hold`, `outcome:charged` | `coordinator/api/provider/` `HandleCompleteAt` |
+| `billing.reservation_finalize` | incr | `model`, `mode:service_hold`, `outcome:charged` | `coordinator/api/inference/provider_inference.go` `HandleCompleteAt` |
 | `billing.service_settlement_micro_usd` | histogram | `model` | `HandleCompleteAt` |
 | `billing.uncollected_zeroed` | incr | `model`, optional `mode:service_hold` | `HandleCompleteAt` |
 | `billing.cost_clamped` | incr | `model` | `HandleCompleteAt` |

@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-03
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -78,20 +78,26 @@ configuration files.
 Use the feature followed by the behavior: `code_attest_reuse_policy_test.go`
 groups the attestation reuse policy cases, and `stripe_transfer_reversal_test.go`
 groups transfer reversal cases. A shared fixture belongs in a domain-specific
-helper file, such as `coordinator/api/attestation_helpers_test.go`
-(`testStatusSignature`).
+helper file, such as `coordinator/api/tests/provider/helpers_test.go`
+(`setupTestServer`).
 
 Split unrelated test collections by the contracts they verify. Work-wave,
 priority, and ticket labels belong in commit history. Meaningful protocol,
 engine, model, and fixture-version identifiers belong in names when they
 distinguish supported behavior.
 
-Keep private Go invariant tests beside their owner. Public HTTP/WebSocket
-contracts belong under `coordinator/api/tests/<domain>/` and use the composed
-router fixture in `api/tests/internal/testkit`; backend conformance lives under
-`coordinator/store/tests/`. Do not export implementation state merely to move
-a test. A new directory creates a new Go package and may change access to
-unexported code. Within a SwiftPM target or UI
+Keep private Go invariant tests beside their owner. Pure request normalization
+and response emitter tests belong in `coordinator/api/inference/request/` and
+`coordinator/api/inference/response/`. Public HTTP/WebSocket contracts belong
+under `coordinator/api/tests/<domain>/` and use the real composed router fixture
+in `coordinator/api/tests/internal/testkit/server.go` (`NewServer`); authenticated
+fixtures use locally signed JWTs via `auth.go` (`NewSessions`). Root API tests
+retain composition and private global-middleware coverage, not moved domain
+tests. Backend conformance lives under `coordinator/store/tests/`. See
+[the test-boundary map](test.md#2-coordinator-go) for fixture and execution rules.
+Do not export implementation state merely to move a test. A new directory
+creates a new Go package and may change access to unexported code.
+Within a SwiftPM target or UI
 feature, use folders for cohesive subsystems. Keep small, already focused
 targets flat. Put a fixture beside its users; use a shared helper location when
 several subsystems actually need it.
@@ -116,12 +122,20 @@ tests, build or typecheck where imports or source membership changed, and run
 `make docs-check` after updating current links. A path move must still load
 the same fixture bytes and preserve the same test selection.
 
+Remove obsolete source and test shells rather than leaving package-only files.
+`coordinator/api/source_layout_test.go` (`TestAPISourceFilesHaveDeclarations`)
+checks Go AST declarations throughout the API tree, excluding `testdata` and
+allowing `doc.go`. Run recursive API package selectors after a move; a root-only
+`go test ./coordinator/api` no longer selects the domain or contract suites.
+
 The coordinator runner instruments the selected production packages and the
 owners of external contract suites before merging atomic coverage profiles.
 Do not use a contract package's own statement percentage as coverage of the
 implementation it imports. Store test processes allocate separate disposable
 databases before running backend fixtures; package parallelism must never make
-one suite truncate another suite's tables.
+one suite truncate another suite's tables. The shared administrative-database
+advisory lock also protects the server connection budget; see
+[store fixture isolation](test.md#2-coordinator-go).
 
 ## Related
 

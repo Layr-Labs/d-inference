@@ -11,7 +11,6 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
-	"github.com/eigeninference/d-inference/coordinator/store/memory"
 	"golang.org/x/crypto/nacl/box"
 	"io"
 	"log/slog"
@@ -37,12 +36,6 @@ func newTrustFixture(t testing.TB, d Dependencies, cfg Config) *Owner {
 	t.Cleanup(owner.CloseAuthority)
 	t.Cleanup(owner.Close)
 	return owner
-}
-func trustTestOwner(t testing.TB) (*Owner, *memory.MemoryStore) {
-	t.Helper()
-	logger := quietLogger()
-	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
-	return newTrustFixture(t, Dependencies{Registry: registry.New(logger), Store: st, Logger: logger}, Config{}), st
 }
 func quietLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 func testPublicKeyB64() string {

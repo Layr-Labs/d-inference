@@ -120,18 +120,8 @@ func signTestStatus(in attestation.StatusCanonicalInput, encryptionKey string) (
 	return base64.StdEncoding.EncodeToString(sigDER), nil
 }
 
-func createTestAttestationJSON(t *testing.T, encryptionKey string) json.RawMessage {
-	return buildTestAttestationJSON(t, encryptionKey, "", "")
-}
-
 func createTestAttestationJSONWithBinaryHash(t *testing.T, encryptionKey, binaryHash string) json.RawMessage {
 	return buildTestAttestationJSON(t, encryptionKey, binaryHash, "")
-}
-
-// createTestAttestationJSONWithSerial creates a signed attestation blob with a
-// specific serial number, for provider-deduplication tests.
-func createTestAttestationJSONWithSerial(t *testing.T, serial, encryptionKey string) json.RawMessage {
-	return buildTestAttestationJSON(t, encryptionKey, "", serial)
 }
 
 // buildTestAttestationJSON builds and ECDSA-signs a Secure Enclave-shaped

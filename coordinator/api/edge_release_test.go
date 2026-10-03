@@ -55,26 +55,6 @@ func buildReleaseBundleWithEntryForTest(t *testing.T, name string, typeflag byte
 	return buf.Bytes(), sha256HexBytesForReleaseTest(binary), sha256HexBytesForReleaseTest(buf.Bytes())
 }
 
-func buildOversizedBinaryReleaseBundleForTest(t *testing.T) ([]byte, string) {
-	t.Helper()
-
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	tw := tar.NewWriter(gz)
-	if err := tw.WriteHeader(&tar.Header{
-		Name: "bin/darkbloom",
-		Mode: 0o755,
-		Size: (512 << 20) + 1,
-	}); err != nil {
-		t.Fatalf("write oversized tar header: %v", err)
-	}
-	if err := gz.Close(); err != nil {
-		t.Fatalf("close gzip: %v", err)
-	}
-
-	return buf.Bytes(), sha256HexBytesForReleaseTest(buf.Bytes())
-}
-
 func sha256HexBytesForReleaseTest(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])

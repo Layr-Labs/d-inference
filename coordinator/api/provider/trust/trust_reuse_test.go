@@ -711,10 +711,6 @@ func TestInvalidateTrustReuseDeletesPersisted(t *testing.T) {
 // retry: a transient store-delete failure is retried, and the persisted row is
 // ultimately removed (so a restart cannot reseed it).
 func TestInvalidateTrustReuseRetriesPersistedDelete(t *testing.T) {
-	old := trustReuseDeleteRetryBackoff
-	trustReuseDeleteRetryBackoff = time.Millisecond // keep the test fast
-	defer func() { trustReuseDeleteRetryBackoff = old }()
-
 	srv, _ := trustReuseServer(t)
 	mem := memory.NewMemory(store.Config{})
 	flaky := &flakyDeleteStore{Store: mem, failFirst: 2} // fail twice, succeed on the 3rd
@@ -740,10 +736,6 @@ func TestInvalidateTrustReuseRetriesPersistedDelete(t *testing.T) {
 }
 
 func TestAmbiguousRevocationRetryIsIdempotent(t *testing.T) {
-	old := trustReuseDeleteRetryBackoff
-	trustReuseDeleteRetryBackoff = time.Millisecond
-	defer func() { trustReuseDeleteRetryBackoff = old }()
-
 	srv, _ := trustReuseServer(t)
 	mem := memory.NewMemory(store.Config{})
 	ambiguous := &ambiguousRevokeStore{Store: mem}

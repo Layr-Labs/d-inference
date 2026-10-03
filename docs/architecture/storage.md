@@ -135,6 +135,7 @@ PostgreSQL URL; there is no memory-store fallback or schema-skip mode.
 | 17 | `00017_referrals_referrer_code_cascade.sql` | Replaces the `referrals.referrer_code` foreign key with `referrals_referrer_code_cascade_fkey` (`ON UPDATE CASCADE`), added `NOT VALID` and then validated. |
 | 18 | `00018_erasure_tables.sql` | Creates `erasure_requests` and `erasure_outbox` for [account erasure](#account-erasure). |
 | 19–20 | Go: `indexMigrations` | `CONCURRENTLY` indexes for account erasure: `billing_sessions(referral_code)` and `users(privy_user_id) WHERE deleted_at IS NOT NULL`. |
+| 21 | `00021_erasure_outbox_stripe_job.sql` | Adds `erasure_outbox.stripe_job_id` (the Stripe redaction job of a `checkout_sessions` row). |
 
 Versions 2 to 5 are Go migrations (`goMigrations`). They keep the code they had
 before goose and run on the store pool. The SQL migrations run on a separate
@@ -333,6 +334,16 @@ stateDiagram-v2
    commit the API layer clears in-memory copies: registry providers, the
    trust-reuse cache, MDM scheduler jobs and UDID routes, and the ledger's
    usage history (`scrubErasure`, `coordinator/api/erasure_loop.go`).
+
+The outbox worker (`StartErasureOutboxLoop`,
+`coordinator/api/erasure_outbox.go`) leases due `pending` outbox rows with
+`FOR UPDATE SKIP LOCKED` every minute and delivers them: Express account
+deletion, Global Payouts recipient close, Checkout Session redaction jobs,
+and the `erasure_log` Datadog record. "Not found" counts as done; a done row
+loses its Stripe ID and job ID. A definitive refusal or 8 failed attempts
+end in `manual_action` with `last_error`; a redaction batch that is too
+recent waits 7 days without counting an attempt
+(`SaveErasureOutboxResult`).
 
 An hourly loop (`StartAccountErasureLoop`) leases due `pending` requests with
 `FOR UPDATE SKIP LOCKED` for one hour and scrubs each one; a failure is stored

@@ -372,3 +372,34 @@ SELECT COUNT(*) FROM provider_payouts WHERE provider_address = $1;
 
 -- name: ScrubProviderPayoutAddress :execrows
 UPDATE provider_payouts SET provider_address = sqlc.arg('replacement') WHERE provider_address = sqlc.arg('address');
+
+-- Outbox delivery.
+
+-- name: LeaseDueErasureOutbox :many
+WITH due AS (
+    SELECT o.id FROM erasure_outbox o
+    WHERE o.state = 'pending' AND o.next_at <= sqlc.arg('now')::timestamptz
+      AND (o.lease_until IS NULL OR o.lease_until <= sqlc.arg('now')::timestamptz)
+    ORDER BY o.next_at
+    LIMIT sqlc.arg('max_rows')::int
+    FOR UPDATE SKIP LOCKED
+), leased AS (
+    UPDATE erasure_outbox o SET lease_until = sqlc.arg('lease_until')::timestamptz
+    FROM due WHERE o.id = due.id
+    RETURNING o.*
+)
+SELECT l.id, l.request_id, l.target, l.external_id, l.state, l.attempts, l.next_at,
+       l.last_error, l.stripe_job_id, l.created_at, r.account_id, r.erased_at
+FROM leased l JOIN erasure_requests r ON r.id = l.request_id;
+
+-- name: SaveErasureOutboxResult :execrows
+UPDATE erasure_outbox
+SET state = sqlc.arg('state'),
+    attempts = sqlc.arg('attempts'),
+    next_at = sqlc.arg('next_at')::timestamptz,
+    last_error = sqlc.arg('last_error'),
+    stripe_job_id = CASE WHEN sqlc.arg('state') = 'done' THEN '' ELSE sqlc.arg('stripe_job_id')::text END,
+    external_id = CASE WHEN sqlc.arg('state') = 'done' THEN '' ELSE external_id END,
+    done_at = CASE WHEN sqlc.arg('state') = 'done' THEN sqlc.arg('next_at')::timestamptz ELSE NULL END,
+    lease_until = NULL
+WHERE id = sqlc.arg('id') AND state = 'pending';

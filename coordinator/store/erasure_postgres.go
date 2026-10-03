@@ -431,6 +431,7 @@ func (s *PostgresStore) GetAccountErasure(ctx context.Context, accountID string)
 			ID: r.ID, RequestID: r.RequestID, Target: ErasureTarget(r.Target), State: ErasureOutboxState(r.State),
 			Attempts: int(r.Attempts), NextAt: r.NextAt, LastError: r.LastError, DoneAt: r.DoneAt,
 			HasExternalID: r.ExternalID != "", ExternalID: r.ExternalID, CreatedAt: r.CreatedAt,
+			HasStripeJob: r.StripeJobID != "", StripeJobID: r.StripeJobID,
 		})
 	}
 	return req, items, nil
@@ -460,4 +461,46 @@ func (s *PostgresStore) PrivyUserPendingErasure(ctx context.Context, privyUserID
 	defer cancel()
 	n, err := s.queries().CountUsersPendingErasureByPrivyID(ctx, privyUserID)
 	return n > 0, err
+}
+
+// LeaseDueErasureOutbox leases due outbox rows with FOR UPDATE SKIP LOCKED.
+func (s *PostgresStore) LeaseDueErasureOutbox(ctx context.Context, now time.Time, lease time.Duration, limit int) ([]ErasureOutboxWork, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	rows, err := s.queries().LeaseDueErasureOutbox(ctx, storedb.LeaseDueErasureOutboxParams{
+		Now: now, LeaseUntil: now.Add(lease), MaxRows: int32(limit),
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ErasureOutboxWork, 0, len(rows))
+	for _, r := range rows {
+		w := ErasureOutboxWork{AccountID: r.AccountID, ErasureOutboxItem: ErasureOutboxItem{
+			ID: r.ID, RequestID: r.RequestID, Target: ErasureTarget(r.Target), State: ErasureOutboxState(r.State),
+			Attempts: int(r.Attempts), NextAt: r.NextAt, LastError: r.LastError, CreatedAt: r.CreatedAt,
+			ExternalID: r.ExternalID, HasExternalID: r.ExternalID != "", StripeJobID: r.StripeJobID, HasStripeJob: r.StripeJobID != "",
+		}}
+		if r.ErasedAt != nil {
+			w.ErasedAt = *r.ErasedAt
+		}
+		out = append(out, w)
+	}
+	return out, nil
+}
+
+// SaveErasureOutboxResult stores one delivery outcome.
+func (s *PostgresStore) SaveErasureOutboxResult(ctx context.Context, id string, r ErasureOutboxResult) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	n, err := s.queries().SaveErasureOutboxResult(ctx, storedb.SaveErasureOutboxResultParams{
+		ID: id, State: string(r.State), Attempts: int32(r.Attempts), NextAt: r.NextAt,
+		LastError: r.LastError, StripeJobID: r.StripeJobID,
+	})
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrErasureConflict
+	}
+	return nil
 }

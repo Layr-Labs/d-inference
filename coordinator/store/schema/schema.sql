@@ -481,6 +481,7 @@ CREATE TABLE public.erasure_outbox (
     last_error text DEFAULT ''::text NOT NULL,
     done_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
+    stripe_job_id text DEFAULT ''::text NOT NULL,
     CONSTRAINT erasure_outbox_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'done'::text, 'manual_action'::text]))),
     CONSTRAINT erasure_outbox_target_check CHECK ((target = ANY (ARRAY['stripe_account'::text, 'global_recipient'::text, 'checkout_sessions'::text, 'erasure_log'::text])))
 );

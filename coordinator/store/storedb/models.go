@@ -29,17 +29,18 @@ type ApiKey struct {
 }
 
 type ErasureOutbox struct {
-	ID         string
-	RequestID  string
-	Target     string
-	ExternalID string
-	State      string
-	Attempts   int32
-	NextAt     time.Time
-	LeaseUntil *time.Time
-	LastError  string
-	DoneAt     *time.Time
-	CreatedAt  time.Time
+	ID          string
+	RequestID   string
+	Target      string
+	ExternalID  string
+	State       string
+	Attempts    int32
+	NextAt      time.Time
+	LeaseUntil  *time.Time
+	LastError   string
+	DoneAt      *time.Time
+	CreatedAt   time.Time
+	StripeJobID string
 }
 
 type ErasureRequest struct {

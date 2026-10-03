@@ -39,7 +39,7 @@ sqlc-generate: ## Regenerate coordinator/store/storedb from coordinator/store/qu
 
 sqlc-check: ## Fail if storedb or coordinator/store/schema/schema.sql is stale (needs DATABASE_URL)
 	@test -n "$$DATABASE_URL" || { echo "sqlc-check: set DATABASE_URL to a disposable Postgres server"; exit 1; }
-	go test ./coordinator/store -run '^TestMigrationsBuildCheckedInSchema$$' -count=1
+	go test ./coordinator/store -run '^TestMigrationsBuildCheckedInSchema$$' -count=1 -v
 	$(SQLC) diff -f $(SQLC_CONFIG)
 
 # ---- Prompt-contract sidecar (Rust) ---------------------------------------

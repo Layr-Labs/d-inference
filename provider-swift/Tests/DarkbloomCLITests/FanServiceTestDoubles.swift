@@ -248,8 +248,6 @@ struct FanServiceFixture {
         try Data("binary \(Self.capabilityMarker) end".utf8).write(to: executable)
         try Data("helper binary bytes".utf8).write(to: bundledHelper)
         try setPermissions(0o755, bundledHelper)
-        let marker = app.appendingPathComponent(
-            "Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1")
         try fileManager.createDirectory(
             at: marker.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data("1\n".utf8).write(to: marker)
@@ -288,11 +286,9 @@ struct FanServiceFixture {
         sudoUID: String? = nil,
         host: FanServiceHost? = nil
     ) -> FanServiceManager {
-        var environment: [String: String] = [:]
-        environment["SUDO_UID"] = sudoUID ?? String(uid)
-        return FanServiceManager(
+        FanServiceManager(
             paths: paths,
-            environment: environment,
+            environment: ["SUDO_UID": sudoUID ?? String(uid)],
             host: host ?? self.host()
         )
     }

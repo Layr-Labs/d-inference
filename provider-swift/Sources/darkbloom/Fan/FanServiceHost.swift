@@ -1,6 +1,5 @@
 import DarkbloomFanCore
 import DarkbloomFanProtocol
-import DarkbloomFanService
 import Foundation
 
 #if canImport(Darwin)

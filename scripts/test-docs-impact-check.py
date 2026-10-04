@@ -263,6 +263,9 @@ class DocsImpactCheckTests(unittest.TestCase):
 
     def test_relocated_domain_owners_require_behavior_documentation(self) -> None:
         cases = {
+            "HTTP and API contracts": (
+                "coordinator/api/releases/artifact_metadata.go",
+            ),
             "billing and accounting": (
                 "coordinator/api/billing/pricing.go",
                 "coordinator/api/billing/payouts/global_payouts_withdraw.go",
@@ -281,6 +284,7 @@ class DocsImpactCheckTests(unittest.TestCase):
             "telemetry": (
                 "coordinator/internal/inference/metrics/attempt_outcomes.go",
                 "coordinator/internal/inference/metrics/backend.go",
+                "coordinator/internal/provider/verification/metrics.go",
             ),
             "protocol messages": (
                 "coordinator/tests/protocol/testdata/process_memory_wire.json",
@@ -294,6 +298,7 @@ class DocsImpactCheckTests(unittest.TestCase):
                 "coordinator/registry/gate_evaluation.go",
                 "coordinator/registry/gate_preparation.go",
                 "coordinator/registry/queue_assignment.go",
+                "coordinator/registry/queue_drain.go",
                 "coordinator/registry/reservation_candidates.go",
                 "coordinator/registry/candidate_selection.go",
                 "coordinator/registry/candidate_binding.go",

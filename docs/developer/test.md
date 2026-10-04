@@ -5,9 +5,11 @@
 The documentation-impact guards (`scripts/test-docs-impact-check.py`) exercise
 both production components and their adapters after package moves. Billing API
 and inference settlement owners require billing documentation; inference demand
-capture requires Autopilot documentation; inference metric emitters require
-telemetry documentation; registry eligibility, gates, queue assignments and
-candidate/quote plans require routing or scheduling documentation. The guards
+capture requires Autopilot documentation; inference and provider verification
+metric emitters require telemetry documentation; registry eligibility, gates,
+queue assignments, queue-drain admission and candidate/quote plans require
+routing or scheduling documentation. Release artifact metadata validation
+requires API-contract documentation as well as the release runbook. The guards
 supply every unrelated canonical document to ensure ownership or API-contract
 updates cannot satisfy another domain's requirement, then verify each permitted
 domain document satisfies it. Go test files remain excluded from these rules.

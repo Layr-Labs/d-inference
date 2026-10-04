@@ -54,6 +54,7 @@ func (s *Owner) HandleRegisterSmallModelsInterest(w http.ResponseWriter, r *http
 		AccountID: user.AccountID, MacType: input.MacType, Chip: input.Chip, RAMGB: input.RAMGB,
 	})
 	if err != nil {
+		s.logger.Error("failed to save small-models interest", "account", user.AccountID, "error", err)
 		httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorResponse("storage_error", "could not save interest"))
 		return
 	}
@@ -81,6 +82,7 @@ func (s *Owner) HandleGetSmallModelsInterest(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if err != nil {
+		s.logger.Error("failed to read small-models interest", "account", user.AccountID, "error", err)
 		httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorResponse("storage_error", "could not read interest"))
 		return
 	}
@@ -89,6 +91,8 @@ func (s *Owner) HandleGetSmallModelsInterest(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Owner) HandleAdminSmallModelsInterest(w http.ResponseWriter, r *http.Request) {
+	// RequireAuth loads the owning account for an API key or provider token, so
+	// one issued to an admin would otherwise pass the admin check below.
 	if access.APIKeyFromContext(r.Context()) != nil {
 		httpx.WriteJSON(w, http.StatusForbidden, httpx.ErrorResponse("forbidden", "admin key or interactive admin session required"))
 		return
@@ -112,6 +116,7 @@ func (s *Owner) HandleAdminSmallModelsInterest(w http.ResponseWriter, r *http.Re
 	}
 	rows, err := s.store.ListSmallModelsInterest(r.Context(), after, limit)
 	if err != nil {
+		s.logger.Error("failed to list small-models interest", "error", err)
 		httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorResponse("storage_error", "could not list interest"))
 		return
 	}

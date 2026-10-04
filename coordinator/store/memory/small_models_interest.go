@@ -55,8 +55,8 @@ func (s *MemoryStore) ListSmallModelsInterest(ctx context.Context, after string,
 		}
 	}
 	sort.Strings(ids)
-	if len(ids) > shared.SmallModelsInterestPageLimit(limit) {
-		ids = ids[:shared.SmallModelsInterestPageLimit(limit)]
+	if pageLimit := shared.SmallModelsInterestPageLimit(limit); len(ids) > pageLimit {
+		ids = ids[:pageLimit]
 	}
 	rows := make([]store.SmallModelsInterestContact, 0, len(ids))
 	for _, id := range ids {

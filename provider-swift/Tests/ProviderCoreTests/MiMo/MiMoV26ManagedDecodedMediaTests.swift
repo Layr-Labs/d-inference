@@ -151,7 +151,7 @@ final class MiMoV26ManagedDecodedMediaTests: XCTestCase {
                        emit: (@Sendable (TelemetryEvent) -> Void)? = nil) async throws -> ProviderEngineBundle {
         try await EngineV2SlotFactory.makeProductionBundle(modelId: "managed-mimo-fixture", modelType: "mimo_v2",
             isVLM: false, modelDirectory: value.root, container: value.container, tokenizer: value.tokenizer,
-            sizing: value.sizing, kvBytesCapacity: 64 << 20, maxConcurrentRequests: 2,
+            sizing: value.sizing, kvBytesCapacity: 2 << 30, maxConcurrentRequests: 2,
             kvBudget: budget ?? value.budget, kvBackendConfig: backend,
             specDecPreparation: intent, preparedModel: prepared, environment: environment ?? self.environment,
             startServingTelemetry: false, emitTelemetry: emit ?? { _ in })

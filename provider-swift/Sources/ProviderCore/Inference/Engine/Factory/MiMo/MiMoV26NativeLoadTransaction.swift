@@ -260,6 +260,9 @@ final class MiMoV26NativeLoadTransaction: @unchecked Sendable {
     let request: MiMoV26SerialLoadRequest
     let lifecycle: MiMoV26NativeLifecycle
     let budget: GlobalKVCacheBudget
+    /// A failed native drain remains device work for calibration purposes.
+    /// Never revive isolated-rate eligibility while the GPU owner is unknown.
+    private var retainedMediaRateActivities: [WholeMacUnboundedActivity] = []
     private weak var registry: MiMoV26NativeLoadRegistry?
     private let work = NativeConstructionWork()
     private let lock = NSLock()
@@ -908,6 +911,16 @@ final class MiMoV26NativeLoadTransaction: @unchecked Sendable {
             }
         }
         defer { endOperation(selected.0) }
+        let rateActivity = budget.serviceBudget.beginUnboundedActivity()
+        defer {
+            let nativeFault = selected.2.nativeCompletionFault != nil
+            let retained = lock.withLock { () -> Bool in
+                guard faultCode != nil || nativeFault else { return false }
+                retainedMediaRateActivities.append(rateActivity)
+                return true
+            }
+            if !retained { rateActivity.finish() }
+        }
         let cancellation = MediaCancellation()
         return try await withTaskCancellationHandler {
             var prepared: CBv2Request?
@@ -946,7 +959,8 @@ final class MiMoV26NativeLoadTransaction: @unchecked Sendable {
                             let reservation = try MiMoV26ManagedMediaReservation(plan: plan, bytes: bytes,
                                 maximumBytes: policy.maximumReservationBytes,
                                 additionalSystemReserveBytes: policy.additionalSystemReserveBytes,
-                                ledger: self.budget.processLedger,audioBinding:audio)
+                                ledger: self.budget.processLedger,
+                                serviceBudget: self.budget.serviceBudget,audioBinding:audio)
                             // Retain the real charged owner before returning it
                             // to the SDK or crossing any further veto.
                             self.lock.withLock { self.mediaReservations[reservation.id] = reservation }
@@ -1055,7 +1069,8 @@ final class MiMoV26NativeLoadTransaction: @unchecked Sendable {
         try requireServingWorkAllowed()
         let reservation = try MiMoV26ManagedMediaReservation(initialBytes:initialBytes,hostBytes:hostBytes,
             maximumBytes:policy.maximumReservationBytes,
-            additionalSystemReserveBytes:policy.additionalSystemReserveBytes,ledger:budget.processLedger)
+            additionalSystemReserveBytes:policy.additionalSystemReserveBytes,ledger:budget.processLedger,
+            serviceBudget:budget.serviceBudget)
         lock.withLock { mediaReservations[reservation.id] = reservation }
         do {
             try lease.installMediaHostCompletion(id:reservation.id) { [weak self, reservation] in

@@ -141,15 +141,16 @@ final class MiMoV26EncodedMediaIngressTests: XCTestCase {
         }
     }
 
-    private func loaded(media: Bool = true) async throws -> Loaded {
+    private func loaded(media: Bool = true, mediaPolicy: MiMoV26ServingLoad.DecodedMediaPolicy? = nil,
+        budget suppliedBudget: GlobalKVCacheBudget? = nil) async throws -> Loaded {
         try lane()
         let root = try fixture()
-        let load = try XCTUnwrap(MiMoV26ServingLoad.inspect(directory: root, decodedMediaPolicy: media ? try policy() : nil))
+        let load = try XCTUnwrap(MiMoV26ServingLoad.inspect(directory: root, decodedMediaPolicy: media ? try mediaPolicy ?? policy() : nil))
         let registry = MiMoV26NativeLoadRegistry()
         registries.append(registry)
         // Preserve real allocator/OS observations and normal activation/OS/KV
         // reserves. No zero-usage admission oracle or lower floor is used here.
-        let budget = GlobalKVCacheBudget(configReserveBytes: 4 << 30)
+        let budget = suppliedBudget ?? GlobalKVCacheBudget(configReserveBytes: 4 << 30)
         try load.claim(budget: budget, lifecycle: registry.openLifecycle(), registry: registry)
         let container = try await load.load()
         let transaction = try XCTUnwrap(load.transaction)
@@ -174,7 +175,7 @@ final class MiMoV26EncodedMediaIngressTests: XCTestCase {
                        emit: (@Sendable (TelemetryEvent) -> Void)? = nil) async throws -> ProviderEngineBundle {
         try await EngineV2SlotFactory.makeProductionBundle(modelId: "managed-mimo-fixture", modelType: "mimo_v2",
             isVLM: false, modelDirectory: value.root, container: value.container, tokenizer: value.tokenizer,
-            sizing: value.sizing, kvBytesCapacity: 64 << 20, maxConcurrentRequests: 2,
+            sizing: value.sizing, kvBytesCapacity: 2 << 30, maxConcurrentRequests: 2,
             kvBudget: budget ?? value.budget, kvBackendConfig: backend,
             specDecPreparation: intent, preparedModel: prepared, environment: environment ?? self.environment,
             startServingTelemetry: false, emitTelemetry: emit ?? { _ in })
@@ -197,11 +198,12 @@ final class MiMoV26EncodedMediaIngressTests: XCTestCase {
         return try XCTUnwrap(value as? EngineV2)
     }
 
-    private func policy(maximumBytes: UInt64 = 128 << 20) throws -> MiMoV26ServingLoad.DecodedMediaPolicy {
-        let limits = MiMoV26MultimodalLimits(maximumMedia: 4, maximumVideoFrames: 4,
+    private func policy(maximumBytes: UInt64 = 128 << 20, maximumVideoFrames: Int = 4,
+                        maximumInputElements: Int = 100000, pixelWorkingBytes: Int = 1 << 20) throws -> MiMoV26ServingLoad.DecodedMediaPolicy {
+        let limits = MiMoV26MultimodalLimits(maximumMedia: 4, maximumVideoFrames: maximumVideoFrames,
             maximumPromptTokens: 2000, maximumMetadataBytes: 65536,
             maximumMetadataNodes: 10000, maximumMetadataDepth: 32,
-            pixels: .init(maximumInputElements: 100000, maximumOutputElements: 100000, maximumWorkingBytes: 1 << 20),
+            pixels: .init(maximumInputElements: maximumInputElements, maximumOutputElements: 100000, maximumWorkingBytes: pixelWorkingBytes),
             vision: .init(maximumPatches: 256, maximumAttentionScoreElements: 131072),
             audio: .init(maximumClips: 1, maximumChannels: 2, maximumSampleRate: 48000,
                 maximumInputSamples: 100000, maximumResampledSamples: 100000,
@@ -214,9 +216,10 @@ final class MiMoV26EncodedMediaIngressTests: XCTestCase {
             additionalSystemReserveBytes: 4 << 30)
     }
 
-    private func published(mtp: Bool = false, media: Bool = true) async throws
+    private func published(mtp: Bool = false, media: Bool = true,
+                           mediaPolicy: MiMoV26ServingLoad.DecodedMediaPolicy? = nil) async throws
         -> (Loaded, ProviderEngineBundle, EngineV2) {
-        let value = try await loaded(media: media)
+        let value = try await loaded(media: media, mediaPolicy: mediaPolicy)
         let (intent, prepared) = try await prepare(value, mode: mtp ? .on : .off)
         let bundle = try await build(value, intent: intent, prepared: prepared)
         _ = try await value.load.sealConstructionForPublication()
@@ -306,6 +309,71 @@ final class MiMoV26EncodedMediaIngressTests: XCTestCase {
         XCTAssertEqual(actual.mtpMetricsSnapshot()?.draftedTokens,0,"all four actual media rows are target-only")
         try await drain(value,bundle,actual)
         for lease in owners.all { await lease.joinFromOutside() }
+    }
+
+    func testNativeMediaReleasePNGJPEGAndMP4GenerateThroughAuthenticatedRoutes() async throws {
+        // 900 source frames previously reserved > 84 MiB of raster scratch.
+        // The configured 230 GiB pixel ceiling was also charged as use even
+        // for a tiny image. Keep that ceiling and normal KV/OS floors, while
+        // the actual request's native graph and 20 sampled RGB frames fit 64 MiB.
+        let mediaPolicy = try policy(maximumBytes: 64 << 20, maximumVideoFrames: 32,
+            maximumInputElements: 1_000_000, pixelWorkingBytes: 230 << 30)
+        let (value, bundle, actual) = try await published(mtp: true, mediaPolicy: mediaPolicy)
+        let owners = Owners(), app = application(value, bundle, owners)
+        let png = "data:image/png;base64," + (try MiMoEncodedMediaFixtures.image(jpeg: false)).base64EncodedString()
+        let jpeg = "data:image/jpeg;base64," + (try MiMoEncodedMediaFixtures.image(jpeg: true)).base64EncodedString()
+        let mp4 = "data:video/mp4;base64," + (try await MiMoEncodedMediaFixtures.video(frames: 900, fps: 90)).base64EncodedString()
+        var requests: [(path: String, body: Data)] = []
+        for image in [png, jpeg] {
+            for responses in [false, true] {
+                requests.append((responses ? "/v1/responses" : "/v1/chat/completions",
+                    try body(responses: responses, stream: false, uri: image)))
+            }
+        }
+        // OpenRouter's documented video_url object, plus an image in the same
+        // request, exercises combined reservation and real visual inference.
+        var mixed = try XCTUnwrap(JSONSerialization.jsonObject(with: body(responses:false,stream:false)) as? [String:Any])
+        mixed["messages"] = [["role":"user","content":[
+            ["type":"image_url","image_url":["url":jpeg]],
+            ["type":"video_url","video_url":["url":mp4]],
+            ["type":"text","text":String(repeating:"x ",count:16)],
+        ]]]
+        requests.append(("/v1/chat/completions", try JSONSerialization.data(withJSONObject:mixed)))
+        let immutableRequests = requests
+        try await app.test(.router) { client in
+            for (index, request) in immutableRequests.enumerated() {
+                try await client.execute(uri:request.path, method:.post,
+                    headers:[.contentType:"application/json",.authorization:"Bearer synthetic-media-token"],
+                    body:ByteBuffer(bytes:request.body)) { result in
+                    XCTAssertEqual(result.status,.ok,"media request \(index): \(request.path)")
+                    let response = try XCTUnwrap(JSONSerialization.jsonObject(with:Data(result.body.readableBytesView)) as? [String:Any])
+                    XCTAssertNil(response["error"])
+                    let usage = try XCTUnwrap(response["usage"] as? [String:Any])
+                    if request.path == "/v1/responses" {
+                        let generated = try XCTUnwrap(usage["output_tokens"] as? Int)
+                        XCTAssertGreaterThan(generated,0)
+                        if response["status"] as? String == "incomplete" {
+                            let details = try XCTUnwrap(response["incomplete_details"] as? [String:Any])
+                            XCTAssertEqual(details["reason"] as? String,"max_output_tokens")
+                            XCTAssertEqual(generated,3)
+                        } else {
+                            XCTAssertEqual(response["status"] as? String,"completed")
+                        }
+                    } else {
+                        XCTAssertGreaterThan(try XCTUnwrap(usage["completion_tokens"] as? Int),0)
+                        let choices = try XCTUnwrap(response["choices"] as? [[String:Any]])
+                        let finish = try XCTUnwrap(choices.first?["finish_reason"] as? String)
+                        XCTAssertTrue(["stop","length"].contains(finish))
+                    }
+                }
+                for lease in owners.all { await lease.joinFromOutside() }
+            }
+        }
+        XCTAssertEqual(owners.acquisitions,5)
+        XCTAssertEqual(actual.mtpMetricsSnapshot()?.draftedTokens,0,"media remains target-only")
+        for lease in owners.all { await lease.joinFromOutside() }
+        XCTAssertEqual(value.transaction.managedMediaReservationCountForTesting,0)
+        try await drain(value,bundle,actual)
     }
 
     func testRealAuthenticatedIngressRefusesRemoteURIsBoundsAndUnsupportedControlsBeforeDecode() async throws {
@@ -530,9 +598,10 @@ final class MiMoV26EncodedMediaIngressTests: XCTestCase {
     }
 
     #if DEBUG
-    private func deadlineFixture(mode: PrefillDeadlineMode = .enforce, media: Bool = true) async throws
+    private func deadlineFixture(mode: PrefillDeadlineMode = .enforce, media: Bool = true,
+        budget: GlobalKVCacheBudget? = nil) async throws
         -> (Loaded, ProviderEngineBundle, EngineV2) {
-        let value = try await loaded(media: media)
+        let value = try await loaded(media: media, budget: budget)
         let env = environment.merging([
             PrefillDeadlineMode.environmentKey: mode.rawValue,
             EngineV2Factory.maxPartialPrefillsKey: "1",
@@ -544,14 +613,87 @@ final class MiMoV26EncodedMediaIngressTests: XCTestCase {
         return (value, bundle, try await engine(bundle))
     }
 
-    private func deadlineMedia(_ value: Loaded, _ bundle: ProviderEngineBundle) async throws -> CBv2Request {
+    private func deadlineMedia(_ value: Loaded, _ bundle: ProviderEngineBundle,
+        text: String = "x x x x") async throws -> CBv2Request {
         let image = MiMoV26Pixels.DecodedRGB(height: 4, width: 4,
             planarRGB: (0..<48).map { Float(($0 * 17) % 256) })
         let input = MiMoV26MultimodalInput(messages: [.init(role: .user,
-            content: [.image(image), .text("x x x x")])], maximumOutputTokens: 3)
+            content: [.image(image), .text(text)])], maximumOutputTokens: 3)
         return try await value.transaction.prepareDecodedMedia(input, policy: policy(),
             expectedContainer: XCTUnwrap(value.container.autoregressive),
             expectedBridge: bundle.bridge).request
+    }
+
+    func testNativeIdleBootstrapLearnsRealTargetRateAndKeepsTextRateIsolated() async throws {
+        let posture = DeadlinePostureState()
+        let service = WholeMacServiceBudget(posture: posture)
+        // Only the power-history input is controlled. Keep actual physical,
+        // allocator and OS headroom observations and the normal memory floors.
+        let budget = GlobalKVCacheBudget(configReserveBytes: 4 << 30, memorySnapshot: {
+            let mlx = Memory.snapshot()
+            return .init(total: ProcessInfo.processInfo.physicalMemory,
+                active: UInt64(max(0, mlx.activeMemory)), cache: UInt64(max(0, mlx.cacheMemory)),
+                systemAvailable: SystemMemory.availableBytes() ?? .max)
+        }, serviceBudget: service)
+        let (value, bundle, actual) = try await deadlineFixture(budget: budget)
+        let now = ContinuousClock.now
+        for tick in 0...12 {
+            let at = now - .milliseconds((12 - tick) * 500)
+            posture.observe(nominal: true, lowPower: false, automatic: true,
+                source: "ac", powerReadAt: at, at: at)
+        }
+        let postureUpdates = Task {
+            while !Task.isCancelled {
+                let at = ContinuousClock.now
+                posture.observe(nominal: true, lowPower: false, automatic: true,
+                    source: "ac", powerReadAt: at, at: at)
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+        defer { postureUpdates.cancel() }
+        await bundle.bridge._testSeedIsolatedPrefillEwma(0.0001)
+        // This two-layer fixture can exceed the production plausibility ceiling
+        // once kernels are warm. Keep its prompt small enough to exercise real
+        // eligible observations without raising that ceiling or changing timing.
+        let promptSizes = [16, 16, 32, 24]
+        for attempt in 0..<4 {
+            let native = try await deadlineMedia(value, bundle,
+                text: Array(repeating: "x", count: promptSizes[attempt]).joined(separator: " "))
+            let profile = RequestProfileBuilder()
+            let stream = try await bundle.bridge.submitTokenized(promptTokens: native.promptTokens,
+                request: .init(model: "managed-mimo-fixture", messages: [], max_tokens: 3),
+                requestId: "native-bootstrap-\(attempt)", cacheEnabled: false,
+                multimodal: native.multimodal,
+                firstContentDeadline: .init(relativeBudgetMilliseconds: 60_000), profile: profile)
+            var errors: [String] = []
+            for await event in stream { if case .error(let message) = event { errors.append(message) } }
+            XCTAssertTrue(errors.isEmpty)
+            let decision = try XCTUnwrap(profile.wireObject().deadlineDecision)
+            XCTAssertEqual(decision.verdict, .accepted)
+            if attempt == 0 || attempt == 2 {
+                XCTAssertEqual(decision.projection, .notAttempted)
+                XCTAssertEqual(decision.projectionReason, .unmeasuredPrefill)
+                XCTAssertNil(decision.projectedServiceUs)
+                XCTAssertNil(decision.prefillTps)
+            } else {
+                XCTAssertEqual(decision.projection, .bounded)
+                XCTAssertGreaterThan(try XCTUnwrap(decision.prefillTps), 0.0001)
+            }
+            let until = ContinuousClock.now + .seconds(5)
+            while await bundle.bridge._testLivePumpCount() > 0, ContinuousClock.now < until {
+                try await Task.sleep(for: .milliseconds(1))
+            }
+            let held = await bundle.bridge.nativeMediaBootstrapRequestID
+            XCTAssertNil(held)
+            let retryAt = await bundle.bridge.nextNativeMediaBootstrapAt
+            let measurement = String(decoding: try JSONEncoder().encode(profile.wireObject()), as: UTF8.self)
+            XCTAssertNil(retryAt, "successful samples unlock a new unknown shape after retirement; "
+                + "attempt=\(attempt) prompt=\(native.promptTokens.count) profile=\(measurement)")
+            let textRate = await bundle.bridge._testIsolatedPrefillTps()
+            XCTAssertEqual(textRate, 0.0001)
+        }
+        XCTAssertNil(actual.nativeCompletionFault)
+        try await drain(value, bundle, actual)
     }
 
     func testNativePreparedSealReachesRealAtomicDeadlineRejectionWithoutLosingCharge() async throws {
@@ -560,7 +702,8 @@ final class MiMoV26EncodedMediaIngressTests: XCTestCase {
         let media = try XCTUnwrap(native.multimodal)
         let deadline = FirstContentDeadline(relativeBudgetMilliseconds: 60_000)
         let missing = try await bundle.bridge.firstTokenDeadlineAdmission(deadline: deadline, multimodal: media)
-        XCTAssertNil(missing, "unchanged unmeasured-rate policy")
+        XCTAssertNotNil(missing?.nativeTargetPrefill,
+            "missing native evidence must be explicit, not ordinary submission or text extrapolation")
         // Controlled conservative policy boundary, NOT a measured throughput
         // claim. The SDK still projects actual queued tokens and the real clock.
         await bundle.bridge._testSeedIsolatedPrefillEwma(0.001)
@@ -583,7 +726,8 @@ final class MiMoV26EncodedMediaIngressTests: XCTestCase {
         }
         let wire = profile.wireObject()
         XCTAssertEqual(wire.deadlineDecision?.verdict, .deadlineUnreachable)
-        XCTAssertEqual(wire.deadlineDecision?.projection, .bounded)
+        XCTAssertEqual(wire.deadlineDecision?.projection, .unbounded)
+        XCTAssertEqual(wire.deadlineDecision?.unboundedReason, .prefillRateUnavailable)
         XCTAssertEqual(actual.stepCount, before)
         XCTAssertEqual(value.transaction.managedMediaChargedBytesForTesting, charged)
         let pending = await bundle.bridge._testPendingEngineIDCount()

@@ -643,7 +643,7 @@ final class MiMoV26ServingLoadTests: XCTestCase {
             let tokenizer = await container.tokenizerHandle(modelType: "mimo_v2", directory: root)
             let bundle = try await EngineV2SlotFactory.makeProductionBundle(modelId: "native-admission-fixture",
                 modelType: "mimo_v2", isVLM: false, modelDirectory: root, container: container,
-                tokenizer: tokenizer, sizing: sizing, kvBytesCapacity: 64 << 20, maxConcurrentRequests: 2,
+                tokenizer: tokenizer, sizing: sizing, kvBytesCapacity: 2 << 30, maxConcurrentRequests: 2,
                 kvBudget: budget, specDecPreparation: preparation, preparedModel: prepared,
                 environment: ["DARKBLOOM_PREFIX_CACHE": "0", "DARKBLOOM_PREFIX_CACHE_MEMORY": "0"],
                 startServingTelemetry: false)

@@ -26,14 +26,15 @@ permissions:
 jobs:
   benchmark:
     name: E2E Benchmarks
-    runs-on: blacksmith-12vcpu-macos-latest
+    runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 45
     environment: benchmarks
     env:
+      LC_ALL: en_US.UTF-8
       DARKBLOOM_REPO_ROOT: ${{ github.workspace }}
       TESTBED_PROVIDER_CONFIG: debug
       BENCHMARK_MD_PATH: /tmp/benchmark-results.md
-      RUNNER_DESC: macos-15 (M1 Virtual)
+      RUNNER_DESC: Blacksmith macOS 27 (M4, 12 vCPU, 48 GB)
       GPT_OSS_REVISION: 773a7da77e569019bb0fd17a554b263738d669a3
       GEMMA_REVISION: 0e3cbab38ce568cf6e23543010d08d03b731910c
     steps:
@@ -41,10 +42,27 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Install pinned GitHub CLI
+        run: ./scripts/install-macos-github-cli.sh
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
+      - name: Select SDK 27 provider toolchain
+        run: ./scripts/prepare-provider-release-toolchain.sh
+      - name: Install pinned Rust toolchain
+        run: ./scripts/install-release-rust.sh
+      - name: Install pinned CMake
+        run: ./scripts/install-release-cmake.sh
+      - name: Prepare source-matched Metal compiler
+        run: python3 scripts/prepare-metal-toolchain.py
+
       - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
         with:
           go-version-file: go.mod
 
+      - name: Set up Homebrew
+        run: ./scripts/setup-macos-homebrew.sh
       - name: Install Postgres
         run: brew install postgresql@16
 
@@ -56,7 +74,7 @@ jobs:
       - name: Build and stage source-matched mlx.metallib
         run: |
           set -euo pipefail
-          command -v cmake >/dev/null 2>&1 || brew install cmake
+          cmake --version
           METALLIB_CACHE_DIR="$RUNNER_TEMP/metallib-cache" \
             ./scripts/fetch-metallib.sh "$RUNNER_TEMP"
           metallib="$RUNNER_TEMP/mlx.metallib"

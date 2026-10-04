@@ -1,0 +1,96 @@
+package memory
+
+import (
+	"context"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/internal/store/shared"
+	"github.com/eigeninference/d-inference/coordinator/store"
+)
+
+func (s *MemoryStore) ListAppAttestBuildQualifications(ctx context.Context) ([]store.AppAttestBuildQualification, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]store.AppAttestBuildQualification, 0, len(s.appAttestBuilds))
+	for _, q := range s.appAttestBuilds {
+		out = append(out, q)
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) QualifyAppAttestBuild(ctx context.Context, q store.AppAttestBuildQualification) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if err := q.ValidateApproval(); err != nil {
+		return false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.appAttestBuilds == nil {
+		s.appAttestBuilds = make(map[string]store.AppAttestBuildQualification)
+	}
+	if old, ok := s.appAttestBuilds[q.Release.BinaryHash]; ok {
+		if !old.RevokedAt.IsZero() || !old.Matches(q.AppAttestBuildIdentity) {
+			return false, store.ErrBuildConflict
+		}
+		return false, nil
+	}
+	q.ApprovedAt = time.Now().UTC()
+	s.appAttestBuilds[q.Release.BinaryHash] = q
+	return true, nil
+}
+
+func (s *MemoryStore) RevokeAppAttestBuild(ctx context.Context, binary, actor, reason string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if err := shared.ValidateBuildRevocation(binary, actor, reason); err != nil {
+		return false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.appAttestBuilds == nil {
+		s.appAttestBuilds = make(map[string]store.AppAttestBuildQualification)
+	}
+	q := s.appAttestBuilds[binary]
+	if !q.RevokedAt.IsZero() {
+		return false, nil
+	}
+	q.Release.BinaryHash = binary // Tombstones also override legacy env approvals.
+	q.RevokedAt, q.RevokedBy, q.RevocationReason = time.Now().UTC(), actor, reason
+	s.appAttestBuilds[binary] = q
+	return true, nil
+}
+
+func (s *MemoryStore) SetQualifiedRelease(ctx context.Context, b store.AppAttestBuildIdentity) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := b.Validate(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	q, ok := s.appAttestBuilds[b.Release.BinaryHash]
+	if !ok || !q.RevokedAt.IsZero() || !q.Matches(b) {
+		return store.ErrBuildNotQualified
+	}
+	r := b.Release
+	key := releaseKey(r.Version, r.Platform)
+	if old := s.releases[key]; old != nil {
+		if !store.SameBuildRelease(*old, r) {
+			return store.ErrBuildConflict
+		}
+		r.CreatedAt = old.CreatedAt
+	}
+	if r.CreatedAt.IsZero() {
+		r.CreatedAt = time.Now().UTC()
+	}
+	r.Active = true
+	s.releases[key] = &r
+	return nil
+}

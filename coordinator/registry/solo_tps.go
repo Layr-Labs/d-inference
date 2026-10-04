@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/quality"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
@@ -24,10 +25,7 @@ import (
 // fallback when the family is absent. Byte-for-byte the form #526's
 // prefillChipClass uses, so the solo and prefill rings key identically.
 func chipClassKey(hw protocol.Hardware) string {
-	if hw.ChipFamily == "" {
-		return hw.ChipName
-	}
-	return hw.ChipFamily + "|" + hw.ChipTier
+	return quality.ChipClass(hw)
 }
 
 // RecordSolo adds a solo (uncontended-box) decode TPS sample for the given
@@ -124,17 +122,5 @@ func (r *TPSRegistry) SoloMedianAllChips(model string) (tps float64, samples, cl
 // observation every heartbeat. Negative counts (already clamped upstream by
 // clampBackendCapacity) are defensively ignored.
 func soloSampleEligible(bc *protocol.BackendCapacity) bool {
-	if bc == nil {
-		return false
-	}
-	load := 0
-	for _, slot := range bc.Slots {
-		if n := slot.NumRunning + slot.NumWaiting; n > 0 {
-			load += n
-		}
-		if load > 1 {
-			return false
-		}
-	}
-	return true
+	return quality.SoloSampleEligible(bc)
 }

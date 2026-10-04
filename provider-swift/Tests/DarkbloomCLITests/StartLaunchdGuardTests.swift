@@ -21,6 +21,12 @@ private func fixtureHardware(memoryGb: UInt64) -> HardwareInfo {
         gpuCores: 40, memoryBandwidthGbs: 546)
 }
 
+private let fixtureCoordinatorURL = "wss://coordinator.invalid/ws/provider"
+
+private func fixtureModel(_ id: String, modelType: String = "gpt_oss") -> ModelInfo {
+    ModelInfo(id: id, modelType: modelType, sizeBytes: 1, estimatedMemoryGb: 1)
+}
+
 private func fixtureSnapshot(models: [ModelInfo], hardware: HardwareInfo? = nil) -> RuntimeSnapshot {
     RuntimeSnapshot(
         configPath: FileManager.default.temporaryDirectory
@@ -41,23 +47,23 @@ private func recordingLaunchctl(_ arguments: [String]) throws -> LaunchctlContro
 
 /// Runs `body` with the launchctl runner and the LaunchAgent home folder
 /// bound for this task, removes the temporary home folder, and exits the
-/// child with the command's exit code, or 0 when it returned. `exit` skips
-/// `defer`, so the cleanup runs first.
+/// child with the command's exit code, or 0 when it returned.
 private func exitIsolated(_ body: () async throws -> Void) async throws -> Never {
     let home = FileManager.default.temporaryDirectory
         .appendingPathComponent("start-launchd-home-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
-    var code: Int32 = 0
+    let code: Int32
     do {
+        defer { try? FileManager.default.removeItem(at: home) }
         try await LaunchctlControl.$homeDirectoryForTesting.withValue(home) {
             try await LaunchctlControl.$runnerForTesting.withValue(recordingLaunchctl) {
                 try await body()
             }
         }
+        code = 0
     } catch let exitCode as ExitCode {
         code = exitCode.rawValue
     }
-    try? FileManager.default.removeItem(at: home)
     exit(code)
 }
 
@@ -82,14 +88,13 @@ struct StartLaunchdGuardTests {
     func foregroundWithoutModelsStops() async {
         let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
             let start = try Start.parse(["--foreground", "--model", "fixture/missing"])
-            let snapshot = fixtureSnapshot(
-                models: [ModelInfo(id: "fixture/present", modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1)])
+            let snapshot = fixtureSnapshot(models: [fixtureModel("fixture/present")])
             try await exitIsolated {
                 try await start.runForeground(
                     snapshot: snapshot,
                     hardware: fixtureHardware(memoryGb: 64),
                     config: snapshot.config,
-                    coordinatorURL: "wss://coordinator.invalid/ws/provider",
+                    coordinatorURL: fixtureCoordinatorURL,
                     runtimeCapabilities: [],
                     bootSecuritySnapshot: BootSecuritySnapshot(macOSMajorVersion: 25, sip: .disabled))
             }
@@ -105,21 +110,13 @@ struct StartLaunchdGuardTests {
     @Test("the daemon install stops when --model or --all leaves nothing eligible")
     func daemonInstallNeedsAnEligibleModel() async {
         let result = await #expect(processExitsWith: .success, observing: [\.standardErrorContent]) {
-            // A saved account token means the inline login offer returns at once.
-            let directory = FileManager.default.temporaryDirectory
-                .appendingPathComponent("start-daemon-\(UUID().uuidString)", isDirectory: true)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let tokenPath = directory.appendingPathComponent("auth_token")
-            try Data("fixture-token".utf8).write(to: tokenPath)
-            setenv("DARKBLOOM_AUTH_TOKEN_PATH", tokenPath.path, 1)
-
             let gated = ModelRuntimeRequirements.qwen38ConcreteModelID
             let snapshot = fixtureSnapshot(models: [
-                ModelInfo(id: "fixture/present", modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1),
-                ModelInfo(id: gated, modelType: "qwen3_5", sizeBytes: 1, estimatedMemoryGb: 1),
+                fixtureModel("fixture/present"),
+                fixtureModel(gated, modelType: "qwen3_5"),
             ])
             let gatedOnly = fixtureSnapshot(models: [
-                ModelInfo(id: gated, modelType: "qwen3_5", sizeBytes: 1, estimatedMemoryGb: 1),
+                fixtureModel(gated, modelType: "qwen3_5"),
             ])
             let cases: [(arguments: [String], snapshot: RuntimeSnapshot)] = [
                 (["--model", "fixture/missing"], snapshot),
@@ -127,6 +124,15 @@ struct StartLaunchdGuardTests {
                 (["--all"], gatedOnly),
             ]
             try await exitIsolated {
+                // A saved account token means the inline login offer returns at once.
+                let tokenDirectory = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("start-daemon-\(UUID().uuidString)", isDirectory: true)
+                try FileManager.default.createDirectory(at: tokenDirectory, withIntermediateDirectories: true)
+                defer { try? FileManager.default.removeItem(at: tokenDirectory) }
+                let tokenPath = tokenDirectory.appendingPathComponent("auth_token")
+                try Data("fixture-token".utf8).write(to: tokenPath)
+                setenv("DARKBLOOM_AUTH_TOKEN_PATH", tokenPath.path, 1)
+
                 // Model selection throws a ValidationError when nothing is
                 // eligible. Each refusal is written to standard error.
                 var refused = 0
@@ -136,7 +142,7 @@ struct StartLaunchdGuardTests {
                         try await start.launchDaemon(
                             snapshot: item.snapshot,
                             config: item.snapshot.config,
-                            coordinatorURL: "wss://coordinator.invalid/ws/provider",
+                            coordinatorURL: fixtureCoordinatorURL,
                             configPath: nil,
                             runtimeCapabilities: [])
                     } catch let error as ValidationError {
@@ -144,7 +150,6 @@ struct StartLaunchdGuardTests {
                         refused += 1
                     }
                 }
-                try? FileManager.default.removeItem(at: directory)
                 if refused != cases.count { throw ExitCode.failure }
             }
         }
@@ -158,13 +163,13 @@ struct StartLaunchdGuardTests {
         let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
             var start = try Start.parse(["--all"])
             let snapshot = fixtureSnapshot(
-                models: [ModelInfo(id: "fixture/present", modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1)],
+                models: [fixtureModel("fixture/present")],
                 hardware: fixtureHardware(memoryGb: 4))
             try await exitIsolated {
                 try await start.launchDaemon(
                     snapshot: snapshot,
                     config: snapshot.config,
-                    coordinatorURL: "wss://coordinator.invalid/ws/provider",
+                    coordinatorURL: fixtureCoordinatorURL,
                     configPath: nil,
                     runtimeCapabilities: [])
             }

@@ -29,6 +29,17 @@ MIMO_PROVIDER_PREPARE = ('python3 scripts/prepare-mimo-provider-fixtures.py '
 SDK_MIMO_PREPARE_NAME = "Prepare tiny MiMo fixture for media-to-text isolation"
 SDK_MIMO_GATE_NAME = "Verify media refusal leaves the native text engine usable"
 SDK_MIMO_READY = "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.sdk-mimo-isolation-fixture.outcome == 'success' }}"
+SDK_RETENTION_PREPARE_NAME = "Prepare asymmetric tiny MiMo fixture for native retention"
+SDK_RETENTION_GATE_NAME = "Verify native retained frontier after donor retirement"
+SDK_RETENTION_READY = "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.sdk-mimo-retention-fixture.outcome == 'success' }}"
+SDK_RETENTION_HOST_COMMANDS = {
+    "Verify native historical retention policy":
+        "../../scripts/run-nested-suite.sh CBv2NativeHistoricalRetentionTests --no-parallel",
+    "Verify demanded checkpoint scheduling and projection":
+        "../../scripts/run-nested-suite.sh CBv2DemandedCheckpointPartitionTests --no-parallel",
+    "Verify demanded long range continuation and projection":
+        "../../scripts/run-nested-suite.sh CBv2DemandedCheckpointContinuationTests --no-parallel",
+}
 MIMO_NATIVE_COMMANDS = {
     "Run isolated native MiMo startup gates":
         "../scripts/run-nested-suite.sh 'MiMoV26StandaloneLifecycleTests.test(ActualScannerPreloadStartsListenerWithSameNativeOwner|StartRefusesActualUnpublishedPreloadWithoutReplacingOwner)' --no-parallel",
@@ -47,6 +58,11 @@ LANES = {
     "test-provider-parity": "parity",
 }
 SDK_COMMANDS = {
+    **SDK_RETENTION_HOST_COMMANDS,
+    SDK_RETENTION_PREPARE_NAME:
+        'python3 scripts/prepare-mimo-provider-fixtures.py --output "$RUNNER_TEMP/mimo-native-retention" --asymmetric',
+    SDK_RETENTION_GATE_NAME:
+        "../../scripts/run-nested-suite.sh MiMoV26NativeHistoricalRetentionTests.testDemandedMiddleFrontierSurvivesNativePublicationAndReopenedFork --no-parallel",
     "Verify DiffusionGemma artifact and expert reduction":
         "../../scripts/run-nested-suite.sh 'DiffusionGemma(ArtifactFixture|ExpertReduction)Tests' --no-parallel",
     "Run nested MiMo media decode tests":
@@ -239,14 +255,39 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertNotIn("rustup", self.jobs["test-provider-sdk"])
 
     def test_every_sdk_gate_requires_successful_build_but_not_earlier_tests(self):
+        fixture_conditions = {
+            SDK_MIMO_GATE_NAME: SDK_MIMO_READY,
+            SDK_RETENTION_GATE_NAME: SDK_RETENTION_READY,
+        }
+        preparation_steps = {SDK_MIMO_PREPARE_NAME, SDK_RETENTION_PREPARE_NAME}
         for step in step_blocks(self.jobs["test-provider-sdk"]):
             if field(step, "run"):
                 with self.subTest(gate=field(step, "name", indent=6)):
                     name = field(step, "name", indent=6)
-                    self.assertEqual(field(step, "if"), SDK_MIMO_READY if name == SDK_MIMO_GATE_NAME else READY)
-                    expected_directory = None if name == SDK_MIMO_PREPARE_NAME else "libs/mlx-swift-lm"
+                    self.assertEqual(field(step, "if"), fixture_conditions.get(name, READY))
+                    expected_directory = None if name in preparation_steps else "libs/mlx-swift-lm"
                     self.assertEqual(field(step, "working-directory"), expected_directory)
                     self.assertNotIn("continue-on-error:", step)
+
+    def test_sdk_retention_requires_asymmetric_fixture_and_non_skipping_selectors(self):
+        steps = step_blocks(self.jobs["test-provider-sdk"])
+        by_name = {field(step, "name", indent=6): step for step in steps}
+        prepare = by_name[SDK_RETENTION_PREPARE_NAME]
+        gate = by_name[SDK_RETENTION_GATE_NAME]
+        self.assertEqual(field(prepare, "id"), "sdk-mimo-retention-fixture")
+        self.assertEqual(run_command(prepare), SDK_COMMANDS[SDK_RETENTION_PREPARE_NAME])
+        self.assertLess(steps.index(prepare), steps.index(gate))
+        self.assertEqual(field(gate, "if"), SDK_RETENTION_READY)
+        self.assertEqual(field(gate, "timeout-minutes"), "5")
+        self.assertEqual(field(gate, "MIMO_V26_SERIAL_NATIVE_TESTS", indent=10), "'1'")
+        self.assertEqual(field(gate, "MIMO_V26_SERIAL_LOAD_FIXTURES", indent=10), "${{ runner.temp }}/mimo-native-retention")
+        self.assertEqual(run_command(gate), SDK_COMMANDS[SDK_RETENTION_GATE_NAME])
+        for name, command in SDK_RETENTION_HOST_COMMANDS.items():
+            with self.subTest(gate=name):
+                host = by_name[name]
+                self.assertEqual(run_command(host), command)
+                self.assertEqual(field(host, "timeout-minutes"), "5")
+                self.assertNotIn("\n        env:", host)
 
     def test_sdk_media_isolation_requires_its_fixture_and_native_lane(self):
         steps = step_blocks(self.jobs["test-provider-sdk"])

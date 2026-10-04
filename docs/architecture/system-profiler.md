@@ -1,6 +1,6 @@
 # System profiler
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
 The profiler answers "where did the time go, and what did the router know when
 it chose?" for one request, without carrying a single prompt-derived byte. It
@@ -235,7 +235,7 @@ JSON-encoded on the sink worker.
 | `best_idle_provider_id`, `best_idle_ttft_ms` | lowest-TTFT candidate with the model resident and `backend_running + backend_waiting == 0`, computed over every gate-passing candidate before pool narrowing | `scheduler.go` |
 | `near_tie_pool_size`, `selection_path` | retained cost candidates: within `nearTieCostWindowMs` of the minimum in every pool; a restore-penalty candidate is retained only at the exact minimum. For cache-adjusted pools `near_tie_pool_size` therefore steps from 1 to the band size. Current branches `none`, `unique_min`, `tie_queue`, `tie_pending`, `random`, `prefix_affinity`, `cache_credit` (`selectionPathNames`). `prefix_affinity` is a stable repeat-demand preference among equivalent, non-quarantined cache-capable candidates; it does not prove a cache hit. `cache_credit` prefers useful validated reuse only after first-content band and whole-Mac service-work ordering; equivalents spread uniformly. Historical rows may retain `cache_tiebreak` | `coordinator/registry/candidate_selection.go`, `selectRoutingCandidateWithAffinity`; `coordinator/registry/gate_reason.go`, `SelectionPath` |
 | `snapshot_age_ms`, per-candidate `hb_age_ms` | `now − LastHeartbeat` when the routing snapshot was taken; observability only | `heartbeatAgeMs` |
-| `predicted_ttft_ms`, `raw_ttft_ms`, `ttft_calibration_ratio`, `prefill_decode_ratio`, `predicted_decode_tps` | calibrated vs raw estimate, the (model, chip) ratio applied, the decode→prefill fallback multiplier, `projectedPerRequestDecodeTPS` | `scheduler.go` |
+| `predicted_ttft_ms`, `raw_ttft_ms`, `ttft_calibration_ratio`, `prefill_decode_ratio`, `predicted_decode_tps` | calibrated vs raw estimate, the (model, chip) ratio applied, the decode→prefill fallback multiplier, `candidateSnapshot.projectedDecodeTPS` | `scheduler.go`, `candidate_snapshot.go` |
 | `pending_for_model`, `total_pending` | winner's coordinator-side pending counts before this reservation | `scheduler.go` |
 | `capacity_rate_ms`, `cache_discount_ms` | gray-box capacity-503 penalty; exact-cache discount | `scheduler.go` |
 | `shadow_would_shed`, `shadow_idle_alternative` | `NULL` unless the TTFT shadow evaluator ran | `profiler_record.go` |

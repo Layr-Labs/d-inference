@@ -15,7 +15,7 @@ import (
 // caller as fields on RoutingDecision, which the API layer emits as metrics.
 //
 //   - WouldShed: the occupancy-aware TTFT estimate
-//     (occupancyAwareTTFTMsFromSnapshot = base + the occupancy term, which is
+//     (candidateSnapshot.shadowTTFT = base + the occupancy term, which is
 //     non-zero only when EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA > 0) for the chosen
 //     provider exceeds the model's upstream deadline base (standard ~10s;
 //     exact-model policies may be shorter). This is NOT the live coordinator
@@ -172,7 +172,7 @@ func (r *Registry) evaluateTTFTShadowLocked(
 	// Occupancy-aware estimate (base + occupancy term). The occupancy term lives
 	// here, in the SHADOW path only — ttftMsFromSnapshot (the live cost / ceiling /
 	// bestTTFT input) stays occupancy-free so raising alpha cannot tighten the
-	// live request-local HARD_REJECT ceiling. See occupancyAwareTTFTMsFromSnapshot.
+	// live request-local HARD_REJECT ceiling. See candidateSnapshot.shadowTTFT.
 	estimate := snap.shadowTTFT(reqPrompt)
 	deadline := ttftDeadlineMsForPrompt(model, reqPrompt)
 	occ := snap.occupancy()

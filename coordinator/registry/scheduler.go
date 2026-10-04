@@ -81,7 +81,7 @@ const (
 	//
 	// Four systems consume this and a too-small k over-states the quality
 	// batch in all of them at once: the admission cap (concurrency_cap.go),
-	// performance.Rates and projectedPerRequestDecodeTPSAtBatch below, and
+	// performance.Rates and candidateSnapshot.projectedDecodeTPS, and
 	// the warm-pool target (warm_pool_controller.go) — which then
 	// under-warms the pool while admission packs batches that miss the
 	// decode floor.
@@ -396,7 +396,7 @@ type RoutingDecision struct {
 	// SnapshotAgeMs is the winner's heartbeat age (now − LastHeartbeat) at the
 	// moment its routing snapshot was taken.
 	SnapshotAgeMs int
-	// PredictedDecodeTPS is projectedPerRequestDecodeTPS(winner snapshot): the
+	// PredictedDecodeTPS is candidateSnapshot.projectedDecodeTPS: the
 	// per-request decode rate this request is predicted to receive once admitted.
 	PredictedDecodeTPS float64
 	// PendingForModel / TotalPending are the winner's coordinator-side pending
@@ -1843,16 +1843,15 @@ func PrefillToDecodeRatio() float64 {
 	return prefillToDecodeRatio
 }
 
-// ttftOccupancyAlpha scales the Phase-0 occupancy term (see ttftOccupancyMs),
-// which is added ONLY inside occupancyAwareTTFTMsFromSnapshot — the shadow
+// ttftOccupancyAlpha scales the Phase-0 occupancy term (ttftforecast.OccupancyDelay),
+// which is added ONLY inside candidateSnapshot.shadowTTFT — the shadow
 // evaluator's estimate — NEVER inside the live ttftMsFromSnapshot. It is the
 // decode-token-times of head-of-line wait charged per occupying peer, divided by
 // the per-request decode rate the new request would see. Because the term never
 // reaches ttftMsFromSnapshot, the routing cost's TTFTMs, the candidate-loop
 // MaxTTFTMs ceiling, and the preflight bestTTFT are occupancy-free at ANY alpha:
 // raising alpha changes only the shadow signal, not the live routing decision
-// (the HARD_REJECT safety invariant — see occupancyAwareTTFTMsFromSnapshot). 0
-// (the default) also makes ttftOccupancyMs itself a no-op. Configured once at
+// (the HARD_REJECT safety invariant). 0 (the default) disables the term. Configured once at
 // startup via SetTTFTOccupancyAlpha (EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA),
 // read-only on routing paths thereafter, mirroring prefillToDecodeRatio.
 var ttftOccupancyAlpha = 0.0
@@ -1951,37 +1950,8 @@ func resolvedPrefillTPS(p *Provider) float64 {
 	return quality.PrefillFallback(p.PrefillTPS, resolvedDecodeTPS(p), prefillToDecodeRatio)
 }
 
-// projectedPerRequestDecodeTPS estimates the decode tokens/sec a NEWLY admitted
-// request would receive on this snapshot's provider once it joins the batch
-// (backendRunning+1 concurrent). Continuous batching is memory-bandwidth bound,
-// so per-request decode degrades with batch size by the same effectiveTPSLoadFactor
-// model used elsewhere: rate(b) = solo / (1 + k·b). The measured observed decode
-// rate (when present) is unwound from the current batch to a solo rate and then
-// reapplied at b+1; otherwise the static benchmark is the solo proxy. Used by the
-// decode-floor quality preference (PendingRequest.MinDecodeTPS).
-func projectedPerRequestDecodeTPS(snap *routingSnapshot) float64 {
-	return projectedPerRequestDecodeTPSAtBatch(snap, snap.backendRunning)
-}
-
-// projectedPerRequestDecodeTPSAtBatch is projectedPerRequestDecodeTPS with an
-// EXPLICIT batch the new request would join, used when the heartbeat gauge
-// (backend_running) understates real contention. The observed-rate UNWIND always
-// uses the batch the observation was actually taken at (snap.backendRunning —
-// the heartbeat's observedDecodeTPS pairs with that gauge), while the REAPPLY
-// uses joinBatch. Passing joinBatch == snap.backendRunning reproduces the
-// original result exactly, so the decode-floor caller is byte-for-byte unchanged;
-// the occupancy term passes joinBatch == occ so a herd that has already reserved
-// peers the heartbeat has not yet reflected (occ > backend_running) is charged at
-// the contended rate it will actually see — not the idle/low-batch rate.
-func projectedPerRequestDecodeTPSAtBatch(snap *routingSnapshot, joinBatch int) float64 {
-	useFleetMedian := !(snap.observedDecodeTPS > 0) && decodeFloorUseFleetMedian()
-	return (performance.Rates{Profile: (*performance.Profile)(snap.performanceProfile),
-		StaticDecode: snap.decodeTPS, ObservedDecode: snap.observedDecodeTPS,
-		FleetMedian: snap.fleetMedianTPS, ObservedBatch: snap.backendRunning}).ProjectedDecode(joinBatch, effectiveTPSLoadFactor, useFleetMedian)
-}
-
 // decodeFloorUseFleetMedian gates the tier-2 (fleet-median) solo-rate source in
-// projectedPerRequestDecodeTPS. Read LIVE (no restart); default ON. Set
+// candidateSnapshot.projectedDecodeTPS. Read LIVE (no restart); default ON. Set
 // EIGENINFERENCE_DECODE_FLOOR_USE_FLEET_MEDIAN=false for byte-for-byte pre-fix
 // behavior (idle boxes fall straight to the static benchmark).
 func decodeFloorUseFleetMedian() bool {
@@ -2254,68 +2224,6 @@ func ttftMsFromSnapshot(snap *routingSnapshot, reqPromptTokens int) float64 {
 	return (ttftforecast.Estimate{HasCapacity: true, StatePenalty: statePenalty,
 		PrefillTPS: resolvePrefillTPS(snap), DecodeTPS: resolveEffectiveTPS(snap),
 		Work: ttftWork(snap)}).Base(reqPromptTokens)
-}
-
-// occupancyAwareTTFTMsFromSnapshot is the occupancy-aware TTFT estimate: the base
-// estimate (ttftMsFromSnapshot — what the LIVE cost / MaxTTFTMs ceiling / bestTTFT
-// consume) PLUS the Phase-0 head-of-line occupancy term (ttftOccupancyMs, gated by
-// EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA).
-//
-// It is used ONLY by the shadow evaluator today; a future enforce step will wire
-// it (against the verified ~10s base) into the live path. Keeping the occupancy
-// term OUT of ttftMsFromSnapshot is a SAFETY INVARIANT: prod runs HARD_REJECT
-// (pr.MaxTTFTMs set from the pinned request-local deadline), so if the term
-// leaked into ttftMsFromSnapshot, raising alpha would tighten the live ceiling
-// and over-shed ~2x (telemetry-db findings §2). The term may therefore only
-// ever reach the shadow estimate, never breakdown.TTFTMs.
-func occupancyAwareTTFTMsFromSnapshot(snap *routingSnapshot, reqPromptTokens int) float64 {
-	base := ttftMsFromSnapshot(snap, reqPromptTokens)
-	if base <= 0 {
-		// No reliable base (provider without BackendCapacity) → no occupancy-aware
-		// estimate either, matching ttftMsFromSnapshot's contract.
-		return base
-	}
-	return ttftforecast.Shadow(base, ttftOccupancyMs(snap))
-}
-
-// ttftOccupancyMs is the Phase-0 occupancy term: the head-of-line wait while the
-// box's already-occupying work (the herd) clears enough for a newly admitted
-// request to emit its first token. The base estimate (ttftMsFromSnapshot) counts
-// only WAITING prefill and a single decode step, so it is flat in running
-// occupancy — exactly where the ~11s of "dark time" lives. It is added ONLY in
-// occupancyAwareTTFTMsFromSnapshot (the shadow estimate), never in the live
-// ttftMsFromSnapshot.
-//
-// The term reuses the occupancy the snapshot ALREADY carries
-// (snapshotOccupancy = max(pendingForModel, backend_running+backend_waiting)),
-// not a new parallel counter, so it is herd-aware for free: a burst onto a box
-// still reporting backend_running=0 shows up through pendingForModel. Magnitude
-// per occupying peer is alpha decode-token-times divided by the per-request
-// decode rate the new request will actually see — projected at the SAME occupancy
-// (occ), not the stale backend_running gauge, so in the herd case (pendingForModel
-// > backend_running) it is charged the contended rate, not an idle-batch rate.
-// The rate itself shrinks with occ, making the term super-linear in occupancy.
-//
-// Returns 0 when EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA is 0 (the default) or
-// occupancy is 0 (an idle box never pays the term, so route-to-idle is
-// preserved). The deadline this is gated against in the shadow evaluator is the
-// model's upstream SLA (standard ~10s), not the shorter live coordinator cutoff.
-// Conflating those clocks over-sheds (telemetry-db findings §2).
-func ttftOccupancyMs(snap *routingSnapshot) float64 {
-	alpha := ttftOccupancyAlpha
-	if alpha <= 0 {
-		return 0
-	}
-	occ := snapshotOccupancy(snap)
-	if occ <= 0 {
-		return 0
-	}
-	// Project the per-request rate at the batch the request ACTUALLY joins (occ),
-	// not the bare heartbeat backend_running: in the herd case the new request
-	// waits behind occ peers, so charging the idle/low-batch rate would under-
-	// state the term in exactly the case it exists to catch.
-	perReqDecodeTPS := projectedPerRequestDecodeTPSAtBatch(snap, occ)
-	return ttftforecast.OccupancyDelay(alpha, occ, perReqDecodeTPS)
 }
 
 func queuedPrefillTokensAhead(snap *routingSnapshot, reqPromptTokens int) float64 {

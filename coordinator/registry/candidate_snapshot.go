@@ -74,11 +74,16 @@ func (s *candidateSnapshot) rates() performance.Rates {
 		ObservedBatch: s.backendRunning, Occupancy: s.occupancy()}
 }
 
+// projectedDecodeTPS unwinds the observed rate at backendRunning, then projects
+// the new request at joinBatch+1. Shadow estimates pass occupancy as joinBatch
+// to include pending peers not yet reflected in the heartbeat.
 func (s *candidateSnapshot) projectedDecodeTPS(joinBatch int) float64 {
 	useFleetMedian := !(s.observedDecodeTPS > 0) && decodeFloorUseFleetMedian()
 	return s.rates().ProjectedDecode(joinBatch, effectiveTPSLoadFactor, useFleetMedian)
 }
 
+// shadowTTFT adds occupancy delay only to the shadow estimate, never to the live
+// cost or deadline ceiling. An unknown base stays unknown even when occupied.
 func (s *candidateSnapshot) shadowTTFT(prompt int) float64 {
 	statePenalty, _ := slotStatePenalty(s.slotState)
 	rates := s.rates()

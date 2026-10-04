@@ -62,7 +62,7 @@ cache.
 |---|---|---|
 | Admin API | Four admin routes under `/v1/admin/accounts/{account_id}/erasure` | `coordinator/api/erasure_handlers.go` |
 | Grace loop | Leases due `pending` requests and scrubs them | `coordinator/api/erasure_loop.go` (`StartAccountErasureLoop`, `runDueErasures`) |
-| Store | Plan, confirm, cancel, scrub, status; one interface, two backends | `coordinator/store/erasure.go` (`AccountErasureStore`), `coordinator/store/erasure_postgres.go`, `coordinator/store/erasure_memory.go` |
+| Store | Plan, confirm, cancel, scrub, status; one interface, two backends | `coordinator/store/erasure.go` (`AccountErasureStore`), `coordinator/store/erasure_postgres.go`, `coordinator/store/erasure_memory.go`, `coordinator/store/erasure_memory_rules.go` |
 | Rule table | One rule per personal column or row kind | `coordinator/store/erasure_rules.go` (`erasureRules`) |
 | `CachedStore` | Drops the cached users after each erasure write | `coordinator/store/cached.go` (`RequestAccountErasure`, `CancelAccountErasure`, `ScrubAccount`) |
 | Post-commit clears | Registry, trust-reuse cache, MDM scheduler, ledger usage, API key cache | `coordinator/api/erasure_loop.go` (`scrubErasure`) |
@@ -219,7 +219,7 @@ sequenceDiagram
    `erasureRules` order. Each statement has a count query with the same
    predicate; the count runs first, then the update or delete. If the affected
    rows differ from the count, the scrub returns `ErrErasureCountMismatch` and
-   nothing commits. A rule whose keys are empty runs no statement (`whenAny`).
+   nothing commits. A rule whose keys are empty runs no statement (`byKeys`).
 6. **Write the outbox.** One `erasure_outbox` row per Express account, per
    Global Payouts recipient, per batch of up to `ErasureCheckoutBatch`
    Checkout Session IDs, and one `erasure_log` row (`outboxRows`).
@@ -321,7 +321,7 @@ Outside the live database:
    `TestErasureCountMismatchAborts`).
 2. **Every scrub statement is bounded by a key collected first.** Rules take
    their predicates from `erasureKeys`; a rule with no keys runs nothing
-   (`whenAny`, `walletStatements`).
+   (`byKeys`, `walletStatements`).
 3. **No erasure step runs while money moves.** Confirm and scrub both refuse
    with `ErrErasureOpenWithdrawal` (`openWithdrawals`;
    `TestAccountErasureRefusesOpenWithdrawal`).
@@ -361,11 +361,11 @@ Outside the live database:
 | Concern | File, symbol |
 |---|---|
 | Types, states, errors, interface | `coordinator/store/erasure.go` (`ErasureState`, `ErasureTarget`, `AccountErasureStore`, `ErrErasure*`) |
-| Rule table | `coordinator/store/erasure_rules.go` (`erasureRules`, `piiAction`, `erasureRetained*` reasons) |
+| Rule table | `coordinator/store/erasure_rules.go` (`erasureRules`, `piiAction`, `retainedShared*` reasons) |
 | Key collection, outbox rows | `coordinator/store/erasure_keys.go` (`collectErasureKeys`, `outboxRows`, `retained`) |
 | Postgres steps | `coordinator/store/erasure_postgres.go` (`PlanAccountErasure`, `RequestAccountErasure`, `ScrubAccount`, `applyRules`, `forfeitBalance`) |
 | SQL | `coordinator/store/queries/erasure.sql` (sqlc input), `coordinator/store/storedb/erasure.sql.go` (generated) |
-| Memory steps | `coordinator/store/erasure_memory.go` (`memoryErasureRules`, `refuseErasedCreditLocked`) |
+| Memory steps | `coordinator/store/erasure_memory.go` (`collectErasureKeysLocked`, `refuseErasedCreditLocked`), `coordinator/store/erasure_memory_rules.go` (`memoryErasureRules`) |
 | Schema | `coordinator/store/schema/migrations/00018_erasure_tables.sql`, `coordinator/store/schema/migrations/00021_erasure_refuse_credits.sql`, `coordinator/store/postgres_migration_indexes.go` (versions 19, 20) |
 | Cache invalidation | `coordinator/store/cached.go` |
 | HTTP | `coordinator/api/erasure_handlers.go` |

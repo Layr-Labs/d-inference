@@ -69,13 +69,13 @@ predicate as the apply query. "Unshared" means no other account uses the key
 Notes:
 
 - Rules 8 to 11, 13 to 18 and 21 run only when the account has keys of
-  that kind (`whenAny`); rule 23 runs only when the account has a referrer
+  that kind (`byKeys`); rule 23 runs only when the account has a referrer
   code. A rule with no statement reports 0 rows.
 - Rules 30 to 32 run one statement per wallet address (`walletStatements`).
   `payments` and `provider_payouts` have no account column, so the admin names
   the addresses in the plan and confirm calls.
 - `MemoryStore` maps every rule name to a function in `memoryErasureRules`
-  (`coordinator/store/erasure_memory.go`). It has no `payments` or
+  (`coordinator/store/erasure_memory_rules.go`). It has no `payments` or
   `provider_payouts` tables, so rules 30 to 32 are `memoryNoTable` there.
 - Before the rules, `forfeitBalance` sets `balances.balance_micro_usd` and
   `withdrawable_micro_usd` to 0 and writes one `erasure_forfeit` ledger entry

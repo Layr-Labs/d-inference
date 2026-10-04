@@ -3415,6 +3415,7 @@ threats:
       - coordinator/store/erasure_keys.go
       - coordinator/store/erasure_postgres.go
       - coordinator/store/erasure_memory.go
+      - coordinator/store/erasure_memory_rules.go
       - coordinator/store/cached.go
       - coordinator/store/schema/migrations/00021_erasure_refuse_credits.sql
       - coordinator/api/erasure_handlers.go

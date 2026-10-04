@@ -2770,10 +2770,10 @@ at a pinned version (`GREMLINS_VERSION`, default `v0.6.0`) on these files in
 non-test `first_content_*.go` files. All other registry files and subpackages
 are excluded. Each mutant runs `go test` on the registry package. The target
 calls `scripts/mutation-registry.sh`. The script installs the tool with
-`go install tool@version` into `$(MUTATION_OUT)/bin`, so the tool does not
+`go install tool@version` into `$MUTATION_OUT/bin`, so the tool does not
 enter `go.mod` or `go.sum`. Each mutant build adds tens of MB to the Go build
 cache (about 50 GB for a full run), so the script uses a private cache in
-`$(MUTATION_OUT)/gocache`, deletes entries that the run made more than 5
+`$MUTATION_OUT/gocache`, deletes entries that the run made more than 5
 minutes ago, and removes the cache at the end. Keep at least 15 GB of disk
 free for a run with 8 workers. Each worker also copies the repository into a
 temporary directory (`TMPDIR`).

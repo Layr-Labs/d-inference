@@ -141,18 +141,10 @@ Legend: blue = step, amber = decision, green = serving, red = exit 1.
 ### Soft-deleted rows
 
 A row in `users`, `api_keys`, `providers` or `provider_tokens` whose
-`deleted_at` is set belongs to an erased account. Every read that returns a
-live user, key, provider record or provider token filters
-`deleted_at IS NULL`, in both `PostgresStore` and `MemoryStore` (the
-`DeletedAt` fields, never serialized). That covers user lookups by account,
-Privy ID, Stripe account and email; promotion claims; key authentication,
-listing, lookup, update and rotation; provider token lookup; provider record,
-MDA chain, account listing, restore (`GetProviderForRestore`) and machine
-continuity history; usage-flow provider locations; and the machine-inventory
-backfill. Writes and hard deletes do not filter. No code sets `deleted_at` yet;
-account erasure will, and it must also invalidate the `CachedStore` user
-cache. A Privy user ID is unique among live users only, so a person can sign up
-again after erasure.
+`deleted_at` is set belongs to an erased account, and every live read hides
+it. No code sets `deleted_at` yet. The model is in
+[schema lifecycle](schema-lifecycle.md#soft-delete); every filtered read,
+index and effect is in the [soft-delete reference](../reference/soft-delete.md).
 
 ### Provider earnings and history
 
@@ -268,7 +260,8 @@ KV blocks under a per-model key, not tokens.
    update** (`coordinator/store/schema/migrations/00001_baseline.sql`).
 4. **A soft-deleted row is never returned as live.** Reads of `users`,
    `api_keys`, `providers` and `provider_tokens` filter `deleted_at IS NULL`
-   (`coordinator/store/soft_delete_reads_test.go` covers each read on both
+   ([soft-delete reference](../reference/soft-delete.md);
+   `coordinator/store/soft_delete_reads_test.go` covers each read on both
    stores).
 5. **Boot never holds a long lock on a hot table.** The
    `provider_earnings(job_id)` unique index is built `CONCURRENTLY`, only after
@@ -299,7 +292,7 @@ KV blocks under a per-model key, not tokens.
 | Symptom | Cause | Where to look |
 |---|---|---|
 | Coordinator exits 1 at boot with `store: run migrations` | A goose migration failed: a lock timeout, the advisory-lock wait, an invalid index, an out-of-order or duplicate version, or the retired-backfill guard | [Schema lifecycle failure modes](schema-lifecycle.md#failure-modes) and the [schema migration runbook](../operations/schema-migration.md#troubleshooting). |
-| A coordinator built before goose fails to boot with a unique-violation on `idx_users_privy` | It replays its boot DDL, whose non-concurrent `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_privy` fails once a soft-deleted and a live user share a Privy ID | Roll back only to images built with goose; see the [deployment rollback](../operations/coordinator-deploy.md#rollback). |
+| A coordinator built before goose fails to boot with a unique-violation on `idx_users_privy` | It replays its boot DDL, whose non-concurrent `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_privy` fails once a soft-deleted and a live user share a Privy ID | Roll back only to images built with goose; see the [schema migration rollback rules](../operations/schema-migration.md#rollback). |
 | `EIGENINFERENCE_DATABASE_URL is required in production` | No DSN and no memory-store opt-in | The environment file; see [`../operations/coordinator-deploy.md`](../operations/coordinator-deploy.md). |
 | Billing or key state gone after a restart | The process ran on the memory store | Startup log line `using in-memory store`. |
 | `/v1/stats` slow and pool saturated | Full scans on `usage` holding connections; the 80-connection floor is the mitigation, not a fix | `pg_stat_activity`; the read cache. |

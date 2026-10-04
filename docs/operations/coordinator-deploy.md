@@ -394,14 +394,6 @@ Rollback never reverts the schema. Which previous images are safe on a
 migrated database is in the
 [schema migration rollback rules](schema-migration.md#rollback).
 
-That old boot DDL also fails once the soft-delete migrations (versions 13 to
-16) have run: from then on, a soft-deleted user and a live user can share a
-Privy ID, and its non-concurrent `CREATE UNIQUE INDEX IF NOT EXISTS
-idx_users_privy` fails, so the image cannot boot. Deploy the goose release and
-let it run stable before the soft-delete release ships; after that, every
-rollback image must be a goose build. An older goose image applies nothing on
-a newer database, because every version it knows is already recorded.
-
 ## Environment file
 
 `/etc/d-inference/env` holds secrets and operator controls together. The

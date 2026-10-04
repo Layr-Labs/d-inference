@@ -73,6 +73,7 @@
 - [`reference/pricing-model.md`](reference/pricing-model.md): micro-USD units, price resolution, formulas, every billing constant (the single home for money constants), routes, service accounts.
 - [`reference/model-registry-format.md`](reference/model-registry-format.md): manifest schema, registration payload, alias format.
 - [`reference/qwen4-next-support.md`](reference/qwen4-next-support.md): native Flash-Next private identity, serving/state policy and explicitly incomplete qualification.
+- [`reference/soft-delete.md`](reference/soft-delete.md): the tables with `deleted_at`, every store read that hides a soft-deleted row, the paths that do not filter, the indexes, and what a soft delete changes.
 - [`reference/sqlc-type-mapping.md`](reference/sqlc-type-mapping.md): Postgres type and nullability → generated Go type in `storedb`, the `sqlc.yaml` flag behind it, and the store conversion.
 - [`reference/ssd-kv-cache.md`](reference/ssd-kv-cache.md): DBK3 on-disk format, paths, identity binding, env knobs, eviction rules, per-family reuse capability, status vocabularies.
 - [`glossary.md`](glossary.md): canonical terms and the page that owns each.

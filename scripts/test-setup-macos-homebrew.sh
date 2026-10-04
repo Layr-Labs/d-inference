@@ -63,9 +63,8 @@ cat > "$fake_installer" <<FAKE
 set -euo pipefail
 printf 'NONINTERACTIVE=%s HOMEBREW_NO_ANALYTICS=%s\n' "\$NONINTERACTIVE" "\$HOMEBREW_NO_ANALYTICS" > "$TEST_ROOT/installer-ran"
 mkdir -p "$install_prefix/bin"
-cp "$prefix/bin/brew" "$install_prefix/bin/brew"
-sed -i.bak "s|$prefix|$install_prefix|g" "$install_prefix/bin/brew"
-rm -f "$install_prefix/bin/brew.bak"
+sed "s|$prefix|$install_prefix|g" "$prefix/bin/brew" > "$install_prefix/bin/brew"
+chmod +x "$install_prefix/bin/brew"
 FAKE
 fake_sha256=$(shasum -a 256 "$fake_installer" | cut -d' ' -f1)
 
@@ -80,11 +79,13 @@ run_install() {
 }
 
 # A wrong checksum must stop the step before the installer runs.
-if run_install "$(printf '0%.0s' {1..64})" >/dev/null 2>&1; then
+if run_install "$(printf '%064d' 0)" >/dev/null 2>&1; then
   echo 'setup accepted an installer with the wrong SHA-256' >&2
   exit 1
 fi
 [ ! -e "$TEST_ROOT/installer-ran" ]
+# The EXIT trap removed the downloaded installer on the failure path.
+[ -z "$(ls -A "$runner_temp")" ]
 
 : > "$github_path"
 : > "$github_env"
@@ -95,7 +96,7 @@ fi
 grep -Fxq 'NONINTERACTIVE=1 HOMEBREW_NO_ANALYTICS=1' "$TEST_ROOT/installer-ran"
 grep -Fxq "HOMEBREW_PREFIX=$install_prefix" "$github_env"
 grep -Fxq "$install_prefix/bin" "$github_path"
-# The EXIT trap removed the downloaded installer.
+# The EXIT trap removed the downloaded installer on the success path.
 [ -z "$(ls -A "$runner_temp")" ]
 
 echo 'setup-macos-homebrew: ok'

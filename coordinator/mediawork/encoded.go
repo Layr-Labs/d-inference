@@ -2,101 +2,23 @@ package mediawork
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/binary"
-	"errors"
 	"image"
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
 	"math"
-	"strings"
+
+	encodedreader "github.com/eigeninference/d-inference/coordinator/internal/mediawork/encodedreader"
 )
 
-const maxEncodedBytes = 64 << 20
-
-var errMetadata = errors.New("media metadata unavailable")
-
-// encodedSource decodes only requested base64 blocks. Skipping a video's mdat
-// never allocates or scans its frame payloads. Parsing has a separate byte cap.
-type encodedSource struct {
-	ctx       context.Context
-	text      string
-	size      int64
-	readBytes int
-}
-
-func source(ctx context.Context, text string, raw bool) (*encodedSource, bool) {
-	if !raw {
-		meta, body, ok := strings.Cut(text, ",")
-		if !ok || len(meta) > 256 || !strings.HasPrefix(meta, "data:") || !strings.HasSuffix(meta, ";base64") {
-			return nil, false
-		}
-		text = body
-	}
-	if len(text) == 0 || len(text)%4 != 0 || len(text) > base64.StdEncoding.EncodedLen(maxEncodedBytes) {
-		return nil, false
-	}
-	n := int64(len(text) / 4 * 3)
-	if strings.HasSuffix(text, "==") {
-		n -= 2
-	} else if strings.HasSuffix(text, "=") {
-		n--
-	}
-	if n > maxEncodedBytes {
-		return nil, false
-	}
-	return &encodedSource{ctx: ctx, text: text, size: n}, true
-}
-
-func (s *encodedSource) ReadAt(dst []byte, off int64) (int, error) {
-	if s.ctx.Err() != nil {
-		return 0, s.ctx.Err()
-	}
-	if off < 0 || len(dst) > 1<<20 || s.readBytes+len(dst) > 1<<20 {
-		return 0, errMetadata
-	}
-	if len(dst) == 0 {
-		return 0, nil
-	}
-	if off >= s.size {
-		return 0, io.EOF
-	}
-	n := min(int64(len(dst)), s.size-off)
-	start := off / 3 * 4
-	end := min(int64(len(s.text)), (off+n+2)/3*4)
-	decoded, err := base64.StdEncoding.DecodeString(s.text[start:end])
-	if err != nil {
-		return 0, errMetadata
-	}
-	begin := off - off/3*3
-	if begin+n > int64(len(decoded)) {
-		return 0, errMetadata
-	}
-	copy(dst, decoded[begin:begin+n])
-	s.readBytes += int(n)
-	if n < int64(len(dst)) {
-		return int(n), io.EOF
-	}
-	return int(n), nil
-}
-
-func (s *encodedSource) bytes(off int64, n int) ([]byte, bool) {
-	if n <= 0 || n > 1<<20 {
-		return nil, false
-	}
-	b := make([]byte, n)
-	_, err := s.ReadAt(b, off)
-	return b, err == nil
-}
-
 func (p *Profile) EncodedImage(ctx context.Context, dataURI string) (int, bool) {
-	s, ok := source(ctx, dataURI, false)
+	s, ok := encodedreader.New(ctx, dataURI, false)
 	if !ok {
 		return 0, false
 	}
-	c, _, err := image.DecodeConfig(io.NewSectionReader(s, 0, min(s.size, 1<<20)))
+	c, _, err := image.DecodeConfig(io.NewSectionReader(s, 0, min(s.Size(), 1<<20)))
 	if err != nil {
 		return 0, false
 	}
@@ -116,16 +38,16 @@ func (p *Profile) audioTokens(duration float64) (int, bool) {
 }
 
 func (p *Profile) EncodedAudio(ctx context.Context, encoded string, raw bool) (int, bool) {
-	s, ok := source(ctx, encoded, raw)
+	s, ok := encodedreader.New(ctx, encoded, raw)
 	if !ok {
 		return 0, false
 	}
-	b, ok := s.bytes(0, 12)
+	b, ok := s.Bytes(0, 12)
 	if !ok || string(b[:4]) != "RIFF" || string(b[8:]) != "WAVE" {
 		return 0, false
 	}
 	end := int64(binary.LittleEndian.Uint32(b[4:8])) + 8
-	if end > s.size || end < 12 {
+	if end > s.Size() || end < 12 {
 		return 0, false
 	}
 	var rate, align uint32
@@ -134,7 +56,7 @@ func (p *Profile) EncodedAudio(ctx context.Context, encoded string, raw bool) (i
 		if parts >= 4096 {
 			return 0, false
 		}
-		h, ok := s.bytes(off, 8)
+		h, ok := s.Bytes(off, 8)
 		if !ok {
 			return 0, false
 		}
@@ -148,7 +70,7 @@ func (p *Profile) EncodedAudio(ctx context.Context, encoded string, raw bool) (i
 			if rate != 0 || n < 16 {
 				return 0, false
 			}
-			f, ok := s.bytes(start, 16)
+			f, ok := s.Bytes(start, 16)
 			if !ok {
 				return 0, false
 			}

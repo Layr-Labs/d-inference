@@ -15,10 +15,12 @@ package candidatearena
 // snapshots" contract is unchanged: nothing writes a slot after it is
 // appended to the pool.
 
-// ChunkSize keeps the richer forecast snapshots below the allocator's
-// 32-KiB large-object threshold. A fleet-scale scan of ~250 candidates needs
-// ~13 allocations while retaining stable pointers into each chunk.
-const ChunkSize = 20
+// ChunkSize is the most routing candidates that fit the allocator's largest
+// small-object size class (32 KiB). One fewer is rounded up to the same class
+// and wastes the tail; one more makes each chunk a large object. A fleet-scale
+// scan of ~250 candidates needs ~12 allocations while retaining stable
+// pointers into each chunk.
+const ChunkSize = 22
 
 // Arena is a bump allocator over chunks of request-local candidates. The
 // zero value is ready to use; it is single-goroutine (one per scan).

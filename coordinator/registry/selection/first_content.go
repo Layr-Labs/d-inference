@@ -62,14 +62,17 @@ func Rank(pool []Candidate) Ranking {
 	if len(pool) == 0 {
 		return result
 	}
-	best := pool[0]
-	for _, c := range pool[1:] {
-		if c.RankMs() < best.RankMs() {
-			best = c
+	// Every pass reads candidates in place; copying each one per pass costs
+	// more than the comparisons on a fleet-sized pool.
+	result.bestRank = pool[0].RankMs()
+	for i := 1; i < len(pool); i++ {
+		// Keep the strict comparison: unlike min, it never adopts a NaN rank.
+		if rank := pool[i].RankMs(); rank < result.bestRank {
+			result.bestRank = rank
 		}
 	}
-	result.bestRank = best.RankMs()
-	for _, c := range pool {
+	for i := range pool {
+		c := &pool[i]
 		if !result.near(c) {
 			continue
 		}
@@ -78,29 +81,30 @@ func Rank(pool []Candidate) Ranking {
 			result.work = c.ServiceMs
 		}
 	}
-	for _, c := range pool {
+	for i := range pool {
+		c := &pool[i]
 		if result.workTie(c) && c.CachedTokens > 0 && c.CacheSavedMs > 0 {
 			result.credited = true
 			result.creditWeight = max(result.creditWeight, c.CacheEvidenceWeight)
 		}
 	}
-	for _, c := range pool {
-		if result.equivalent(c) {
+	for i := range pool {
+		if result.equivalent(&pool[i]) {
 			result.Choices++
 		}
 	}
 	return result
 }
 
-func (r Ranking) near(c Candidate) bool {
+func (r Ranking) near(c *Candidate) bool {
 	return c.RankMs() <= r.bestRank+FastBandMs
 }
 
-func (r Ranking) workTie(c Candidate) bool {
+func (r Ranking) workTie(c *Candidate) bool {
 	return r.near(c) && c.ServiceMs == r.work
 }
 
-func (r Ranking) equivalent(c Candidate) bool {
+func (r Ranking) equivalent(c *Candidate) bool {
 	return r.workTie(c) && (!r.credited || (c.CachedTokens > 0 && c.CacheSavedMs > 0 && c.CacheEvidenceWeight == r.creditWeight))
 }
 
@@ -118,8 +122,8 @@ func (r Ranking) Choose(pool []Candidate, draw int, affinity string) Decision {
 	if len(pool) == 0 {
 		return result
 	}
-	for i, c := range pool {
-		if !r.equivalent(c) {
+	for i := range pool {
+		if !r.equivalent(&pool[i]) {
 			continue
 		}
 		if draw == 0 {
@@ -143,8 +147,8 @@ func (r Ranking) Choose(pool []Candidate, draw int, affinity string) Decision {
 			result.Winner, result.Path = preferred, PrefixAffinity
 		}
 	}
-	for i, c := range pool {
-		if i != result.Winner && (result.RunnerUp < 0 || c.RankMs() < pool[result.RunnerUp].RankMs()) {
+	for i := range pool {
+		if i != result.Winner && (result.RunnerUp < 0 || pool[i].RankMs() < pool[result.RunnerUp].RankMs()) {
 			result.RunnerUp = i
 		}
 	}

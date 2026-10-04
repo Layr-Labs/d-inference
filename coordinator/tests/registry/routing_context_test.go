@@ -675,32 +675,71 @@ func TestReserveProviderExTopRunnerUpAndPath(t *testing.T) {
 }
 
 func TestReserveProviderExSnapshotAgeAndPending(t *testing.T) {
-	production.ResetTTFTCalibration()
-	reg := production.New(testLogger())
-	p := makeSchedulerProvider(t, reg, "aged", ctxModel, 40)
-	reg.MergeProviderModels(p.ID, []protocol.ModelInfo{{ID: ctxOtherModel, ModelType: "chat", Quantization: "4bit"}})
-	p.Mu().Lock()
-	p.LastHeartbeat = time.Now().Add(-7 * time.Second)
-	p.Mu().Unlock()
-	p.AddPending(&production.PendingRequest{RequestID: "other-model-req", Model: ctxOtherModel, RequestedMaxTokens: 64})
+	for _, refreshHeartbeat := range []bool{false, true} {
+		name := "unchanged_heartbeat"
+		if refreshHeartbeat {
+			name = "heartbeat_refreshed_before_commit"
+		}
+		t.Run(name, func(t *testing.T) {
+			production.ResetTTFTCalibration()
+			reg, preparation := newReservationFixture()
+			p := makeSchedulerProvider(t, reg, "aged", ctxModel, 40)
+			reg.MergeProviderModels(p.ID, []protocol.ModelInfo{{ID: ctxOtherModel, ModelType: "chat", Quantization: "4bit"}})
+			scanHeartbeat := time.Now().Add(-7 * time.Second)
+			p.Mu().Lock()
+			p.LastHeartbeat = scanHeartbeat
+			p.Mu().Unlock()
+			p.AddPending(&production.PendingRequest{RequestID: "other-model-req", Model: ctxOtherModel, RequestedMaxTokens: 64})
 
-	pr := ctxRequest(ctxModel)
-	winner, d := reg.ReserveProviderEx(ctxModel, pr)
-	if winner == nil {
-		t.Fatal("no winner")
-	}
-	winner.RemovePending(pr.RequestID)
-	if d.SnapshotAgeMs < 6900 || d.SnapshotAgeMs > 9000 {
-		t.Fatalf("SnapshotAgeMs = %d, want ≈ 7000", d.SnapshotAgeMs)
-	}
-	if int(d.Top[0].HBAgeMs) != d.SnapshotAgeMs {
-		t.Fatalf("Top[0].HBAgeMs = %d, SnapshotAgeMs = %d", d.Top[0].HBAgeMs, d.SnapshotAgeMs)
-	}
-	if d.TotalPending != 1 || d.PendingForModel != 0 {
-		t.Fatalf("TotalPending=%d PendingForModel=%d, want 1/0", d.TotalPending, d.PendingForModel)
-	}
-	if d.Top[0].TotalPending != 1 {
-		t.Fatalf("Top[0].TotalPending = %d, want 1", d.Top[0].TotalPending)
+			commitHeartbeat := scanHeartbeat
+			var scanFinished, commitStarted time.Time
+			preparation.after = func(string) {
+				scanFinished = time.Now()
+				if refreshHeartbeat {
+					p.Mu().Lock()
+					commitHeartbeat = time.Now()
+					p.LastHeartbeat = commitHeartbeat
+					p.Mu().Unlock()
+				}
+				commitStarted = time.Now()
+			}
+
+			pr := ctxRequest(ctxModel)
+			scanStarted := time.Now()
+			winner, d := reg.ReserveProviderEx(ctxModel, pr)
+			commitFinished := time.Now()
+			if winner != p || d.ScanCount != 1 {
+				t.Fatalf("winner=%v scans=%d, want aged/1", winner, d.ScanCount)
+			}
+			defer winner.RemovePending(pr.RequestID)
+			if !d.Top[0].Present || d.Top[0].ProviderID != winner.ID {
+				t.Fatalf("Top[0] = %+v, want the reserved provider", d.Top[0])
+			}
+			// Top retains scan-time evidence; the decision uses the fresh
+			// pre-debit commit snapshot. Bound each by its own phase instead
+			// of assuming both clock reads (or heartbeats) were identical.
+			for _, age := range []struct {
+				name       string
+				got        int64
+				heartbeat  time.Time
+				start, end time.Time
+			}{
+				{"Top[0].HBAgeMs", int64(d.Top[0].HBAgeMs), scanHeartbeat, scanStarted, scanFinished},
+				{"SnapshotAgeMs", int64(d.SnapshotAgeMs), commitHeartbeat, commitStarted, commitFinished},
+			} {
+				minAge := age.start.Sub(age.heartbeat).Milliseconds()
+				maxAge := age.end.Sub(age.heartbeat).Milliseconds()
+				if age.got < minAge || age.got > maxAge {
+					t.Fatalf("%s = %d, want between %d and %d ms", age.name, age.got, minAge, maxAge)
+				}
+			}
+			if d.TotalPending != 1 || d.PendingForModel != 0 {
+				t.Fatalf("TotalPending=%d PendingForModel=%d, want 1/0", d.TotalPending, d.PendingForModel)
+			}
+			if d.Top[0].TotalPending != 1 {
+				t.Fatalf("Top[0].TotalPending = %d, want 1", d.Top[0].TotalPending)
+			}
+		})
 	}
 }
 

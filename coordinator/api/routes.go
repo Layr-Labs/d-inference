@@ -276,6 +276,7 @@ func (s *Server) routes() {
 	// (admin key OR Privy admin). Registered before the /v1/ catch-all. Note:
 	// /readyz stays unauthenticated. See drain.go (DAR-327 Phase 1).
 	s.mux.HandleFunc("GET /v1/admin/autopilot", s.access.RequireAuth(s.handleAdminAutopilot))
+	s.mux.HandleFunc("GET /v1/admin/autopilot/inventory", s.access.RequireAuth(s.handleAdminAutopilotInventory))
 	s.mux.HandleFunc("POST /v1/admin/autopilot", s.access.RequireAuth(s.handleAdminAutopilot))
 	s.mux.HandleFunc("POST /v1/admin/drain", s.access.RequireAuth(s.operations.HandleAdminDrain))
 

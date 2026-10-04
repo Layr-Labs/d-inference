@@ -18,14 +18,14 @@ public enum LaunchAgent: Sendable {
 
     /// Path to the launchd plist: ~/Library/LaunchAgents/io.darkbloom.provider.plist
     public static func plistPath() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
+        LaunchctlControl.homeDirectory()
             .appendingPathComponent("Library/LaunchAgents")
             .appendingPathComponent("\(label).plist")
     }
 
     /// Path to the provider log file: ~/.darkbloom/provider.log
     public static func logPath() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
+        LaunchctlControl.homeDirectory()
             .appendingPathComponent(".darkbloom/provider.log")
     }
 
@@ -163,11 +163,26 @@ public enum LaunchAgent: Sendable {
     /// Called by the separate CLI only AFTER a successful drain (or explicit
     /// force). Reload the original plist so installed jobs pick up the longer
     /// termination allowance without changing model/config arguments.
-    public static func restartAfterDrain() throws {
+    ///
+    /// `bootout` returns before the drained process has exited, and launchd
+    /// keeps the job listed until it has. An immediate `bootstrap` in that
+    /// window fails with error 5 and leaves the provider unloaded, so this
+    /// waits up to `releaseTimeout` for the job to be released before it
+    /// bootstraps. Elapsed time is the sum of the intervals slept.
+    public static func restartAfterDrain(
+        releaseTimeout: TimeInterval = 60,
+        pollInterval: TimeInterval = 0.25,
+        sleep: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
+    ) throws {
         let path = plistPath()
         guard FileManager.default.fileExists(atPath: path.path) else { throw LaunchAgentError.notInstalled }
         try refreshTerminationAllowance(at: path)
         if isLoaded() { try unloadService() }
+        var elapsed: TimeInterval = 0
+        while isLoaded(), elapsed < releaseTimeout {
+            sleep(pollInterval)
+            elapsed += pollInterval
+        }
         try loadService()
     }
 

@@ -1,6 +1,6 @@
 # Glossary — the one name for each thing
 
-> Last updated: 2026-09-26
+> Last updated: 2026-10-04
 
 Canonical terms used across the docs and the code, one line each, with the page
 that owns the full definition. Use these spellings everywhere (including code
@@ -90,6 +90,7 @@ owner page. Terms are grouped by concern and alphabetical within a group.
 
 | Term | Meaning | Owner page |
 |---|---|---|
+| **Account erasure** | GDPR removal of one account's personal data: plan, confirm (soft delete, `pending`), grace period (`EIGENINFERENCE_ERASURE_GRACE`), then one checked scrub (`erased`); IDs and financial records stay | [`architecture/account-erasure.md`](architecture/account-erasure.md) |
 | **Freshness stamp** | Line 3 of every doc: `> Last updated: YYYY-MM-DD · commit <sha>` — the date the content was verified and the code commit it was verified against | [`AGENTS.md`](AGENTS.md) |
 | **Request outcome** | Closed taxonomy classifying how every request ended (success, client, capacity, provider fault…) used by rejection telemetry | [`architecture/request-outcome-observability.md`](architecture/request-outcome-observability.md) |
 | **SHORT_SHA** | 7-character commit prefix that Cloud Build uses as the coordinator image tag in production | [`operations/coordinator-deploy.md`](operations/coordinator-deploy.md) |

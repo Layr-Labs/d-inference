@@ -3405,15 +3405,21 @@ threats:
     description: >
       An erased account's email, serial numbers, MDA chains, locations, labels,
       codes, raw logs or Stripe IDs can survive in an unlisted column, a late
-      heartbeat write, an in-memory cache or a backup. A mistyped or replayed
-      admin request can soft delete the wrong account.
+      heartbeat write, an in-memory cache, a second account made at login, a
+      backup or a log. A mistyped or replayed admin request can soft delete the
+      wrong account. A late credit can refill a forfeited balance.
     adversaries: [ADV-003]
     affected_assets: [A-007, A-008, A-009, A-010]
     affected_files:
       - coordinator/store/erasure_rules.go
+      - coordinator/store/erasure_keys.go
       - coordinator/store/erasure_postgres.go
+      - coordinator/store/erasure_memory.go
+      - coordinator/store/cached.go
+      - coordinator/store/schema/migrations/00021_erasure_refuse_credits.sql
       - coordinator/api/erasure_handlers.go
       - coordinator/api/erasure_loop.go
+      - coordinator/auth/privy.go
     mitigations:
       - description: >
           The plan returns the account email and a 15-minute confirm token; the token
@@ -3425,20 +3431,28 @@ threats:
           collects first, skips Secure Enclave and App Attest keys another account
           also uses, and checks each statement's affected rows against a count read
           in the same transaction. Every Express account and recipient the account
-          used is queued for Stripe deletion. After the scrub, database triggers keep
-          late credits out of the balance and record them for review. A marker test
-          searches every text, JSON, array and bytea column after a scrub of the
-          seeded tables. Soft-deleted provider rows ignore late heartbeat upserts,
-          and CachedStore drops cached users.
+          used is queued in the outbox for Stripe deletion. After the commit the
+          registry, trust-reuse cache, MDM scheduler, ledger usage and API key cache
+          drop the account. After the scrub, database triggers keep late credits out
+          of the balance and record them for review, and a late Checkout completion
+          credits nothing. A Privy login during the grace period answers 403
+          account_pending_deletion instead of creating a second account.
+          Soft-deleted provider rows ignore late heartbeat upserts and restores, and
+          CachedStore drops cached users. Marker tests search every text, JSON,
+          array and bytea column (and every MemoryStore value) after a scrub of the
+          seeded tables.
         status: implemented
       - description: >
           Backups, point-in-time recovery and Datadog logs keep data until their
-          retention ends. Financial records, shared mda_serial machine aliases and
-          Stripe-side data until the outbox deletes it are kept on purpose.
+          retention ends; after a restore an operator replays the completed
+          erasures. Until PR 1327 merges, some process log lines hold emails, IP
+          addresses or serial numbers. Financial records, shared mda_serial machine
+          aliases and rows of shared keys are kept on purpose. Stripe-side data stays
+          until an operator deletes it from the outbox list.
         status: accepted
     open_findings: []
     severity: medium
     detection_hint: >
-      Run the marker test after every schema change; check each new column that
+      Run the marker tests after every schema change; check each new column that
       holds user-chosen text, a device identifier or a location against
-      coordinator/store/erasure_rules.go.
+      coordinator/store/erasure_rules.go (docs/developer/personal-data.md).

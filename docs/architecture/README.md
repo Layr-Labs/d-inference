@@ -1,6 +1,6 @@
 # Architecture — how Darkbloom works
 
-> Last updated: 2026-09-28
+> Last updated: 2026-10-04
 
 Explanation pages: context, mechanism, invariants, failure modes, and a code
 map for each part of the system. The code in `coordinator/`,
@@ -66,6 +66,7 @@ how-to and runbook directories listed in [`../README.md`](../README.md).
 | Page | Concern |
 |---|---|
 | [storage.md](storage.md) | Coordinator persistence: Postgres tables and migrations, memory store, retention jobs |
+| [account-erasure.md](account-erasure.md) | GDPR account erasure: request states, the checked scrub transaction, refused credits, protections against undoing it, shared keys, what is kept |
 | [billing.md](billing.md) | Pricing, reservations, ledger, Stripe deposits and Connect payouts, referrals, base rewards |
 | [telemetry.md](telemetry.md) | What telemetry exists, Go/Swift/TS symmetry, retired client ingestion, Datadog |
 | [request-outcome-observability.md](request-outcome-observability.md) | Closed outcome taxonomy across client, provider, and billing dimensions |

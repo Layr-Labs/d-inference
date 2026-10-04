@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
 The complete public HTTP surface of the coordinator, derived from the 122 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -396,10 +396,10 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 |---|---|---|---|---|
 | PUT | `/v1/admin/pricing` | `handleAdminPricing` (`coordinator/api/billing_handlers.go`) | `admin` | Platform default price table; same body and response as `PUT /v1/pricing` (`modelPriceInput` → `types.PriceUpdateResponse`) |
 | PUT | `/v1/admin/users/role` | `handleAdminSetUserRole` (`coordinator/api/billing_handlers.go`) | `admin` | Role selects the consumer or service limiter |
-| POST | `/v1/admin/accounts/{account_id}/erasure/plan` | `handleAdminErasurePlan` (`coordinator/api/erasure_handlers.go`) | `admin` | Dry run plus a 15-minute confirm token; changes no account data. [Account erasure](#account-erasure) |
-| POST | `/v1/admin/accounts/{account_id}/erasure` | `handleAdminErasureRequest` (`coordinator/api/erasure_handlers.go`) | `admin` | Soft delete, revoke keys and provider tokens, disconnect providers; `force` scrubs at once |
-| GET | `/v1/admin/accounts/{account_id}/erasure` | `handleAdminErasureStatus` (`coordinator/api/erasure_handlers.go`) | `admin` | Newest request and its outbox rows |
-| POST | `/v1/admin/accounts/{account_id}/erasure/cancel` | `handleAdminErasureCancel` (`coordinator/api/erasure_handlers.go`) | `admin` | Grace period only; keys and tokens stay revoked |
+| POST | `/v1/admin/accounts/{account_id}/erasure/plan` | `handleAdminErasurePlan` (`coordinator/api/erasure_handlers.go`) | `admin` | Dry run plus a 15-minute confirm token; changes no account data. [Erasure plan](#erasure-plan) |
+| POST | `/v1/admin/accounts/{account_id}/erasure` | `handleAdminErasureRequest` (`coordinator/api/erasure_handlers.go`) | `admin` | Soft delete, revoke keys and provider tokens, disconnect providers; `force` scrubs at once. [Erasure confirm](#erasure-confirm) |
+| GET | `/v1/admin/accounts/{account_id}/erasure` | `handleAdminErasureStatus` (`coordinator/api/erasure_handlers.go`) | `admin` | Newest request, its outbox rows and refused credits. [Erasure status](#erasure-status) |
+| POST | `/v1/admin/accounts/{account_id}/erasure/cancel` | `handleAdminErasureCancel` (`coordinator/api/erasure_handlers.go`) | `admin` | Grace period only; keys and tokens stay revoked. [Erasure cancel](#erasure-cancel) |
 | PUT | `/v1/admin/users/platform-fee` | `handleAdminSetUserPlatformFee` (`coordinator/api/billing_handlers.go`) | `admin` | Per-user fee override; fee policy in [`../architecture/billing.md#invariants`](../architecture/billing.md#invariants) |
 | POST | `/v1/admin/models/register` | `handleRegisterModel` (`coordinator/api/model_registry_handlers.go`) | `publishing` | Publish a model build; optional `cache_read_price` beside `input_price`/`output_price` (`modelPriceInput`); the response (`registerModelResponse`) quotes the effective platform rates |
 | POST | `/v1/admin/models/` | `handleAdminModelRegistryAction` (`coordinator/api/model_registry_handlers.go`) | `publishing` | Registry actions selected by path suffix, including `publish-revision` (version plus optional pinned `hugging_face_artifact`) and `retire-revision` (version); publication returns 503 if its committed promotion has not reached live policy or desired-state delivery to a provider fails; [revision contracts](model-registry-format.md#admin-actions) |
@@ -899,40 +899,295 @@ An unknown payout outcome held for manual reconciliation remains `status=pending
 
 ## Account erasure
 
-Admin routes that erase one account's personal data. The procedure is the
-[account erasure runbook](../operations/account-erasure.md); the per-table
-rules are in [storage](../architecture/storage.md#account-erasure). Every
-route answers 403 `forbidden` without admin auth and records the acting admin
-as `admin_key` or `account:<id>` (`adminActor`).
+Four admin routes erase one account's personal data: plan, confirm, status
+and cancel (`coordinator/api/erasure_handlers.go`). How erasure works is in
+[account erasure](../architecture/account-erasure.md); the procedure is the
+[runbook](../operations/account-erasure.md); the per-column rules are in
+[personal-data rules](personal-data-rules.md).
 
-| Route | Body | Success | Errors |
+### Authentication and common errors
+
+Each route is wrapped in `requireAuth` and then checks `isAdminAuthorized`
+(`coordinator/api/release_handlers.go`). Send one of:
+
+- `Authorization: Bearer <EIGENINFERENCE_ADMIN_KEY>`, recorded as actor
+  `admin_key`;
+- `Authorization: Bearer <Privy JWT>` of a user whose email is in
+  `EIGENINFERENCE_ADMIN_EMAILS`, recorded as actor `account:<account_id>`
+  (`adminActor`). The actor never holds an email.
+
+| Status | `type` (= `code`) | When |
+|---|---|---|
+| 401 | `authentication_error` | No bearer token, an invalid Privy JWT, or an unknown API key (`requireAuth`) |
+| 403 | `forbidden` | A valid credential that is not an admin (`isAdminAuthorized`) |
+| 400 | `invalid_request_error` | Body is not JSON (`invalid JSON`) |
+| 413 | `invalid_request_error` | Body over `maxControlPlaneBodyBytes` (64 KiB) |
+| 500 | `internal_error` | Any other store error (`account erasure failed`) |
+
+Errors use the [error envelope](#error-envelope-and-status-codes);
+`writeErasureError` maps the store errors:
+
+| Store error | Status | `type` | `param` |
 |---|---|---|---|
-| `POST …/erasure/plan` | optional `{"wallet_addresses": [string]}` | 200 `erasurePlanResponse`: `account_id`, `email`, `rows[]` (`rule`, `table`, `columns`, `action`, `rows`), `stripe_objects[]` (`target`, `id`; every Express account and recipient the account used), `stripe_object_counts`, `wallets[]` (`address`, `payments_consumer_rows`, `payments_provider_rows`, `provider_payouts_rows`), `retained[]`, `balance_micro_usd`, `withdrawable_micro_usd`, `open_withdrawals`, `request_id`, `confirm_token`, `confirm_expires_at`, `grace_seconds` | 404 `not_found`; 409 `erasure_conflict` (already pending or erased) |
-| `POST …/erasure` | `{"account_id", "confirm_token", "email", "reason", "wallet_addresses", "force"}`; `account_id` must equal the path and `confirm_token` is required (else 400 `invalid_request_error`); `email` must equal the account email when it has one; `wallet_addresses` must be the plan's list | 200 `{"request": ErasureRequest}` | 403 `invalid_confirm_token`; 400 `email_mismatch`, `wallet_mismatch`; 409 `open_withdrawal`, `erasure_conflict`; 404 `not_found`; with `force`, a failed scrub answers 409 or 500 with `scrub_error` and leaves the request `pending` |
-| `GET …/erasure` | — | 200 `{"request": ErasureRequest, "outbox": [ErasureOutboxItem], "refused_credits": [ErasureRefusedCredit]}` | 404 `not_found` |
-| `POST …/erasure/cancel` | — | 200 `{"request": ErasureRequest}` | 404 `not_found` (no planned or pending request); 409 `erasure_conflict` (not pending, or `scrub_after` passed) |
+| `store.ErrNotFound` | 404 | `not_found` | — |
+| `store.ErrErasureConfirmToken` | 403 | `invalid_confirm_token` | — |
+| `store.ErrErasureWalletMismatch` | 400 | `wallet_mismatch` | `wallet_addresses` |
+| `store.ErrErasureEmailMismatch` | 400 | `email_mismatch` | `email` |
+| `store.ErrErasureOpenWithdrawal` | 409 | `open_withdrawal` | — |
+| `store.ErrErasureConflict` | 409 | `erasure_conflict` | — |
 
-`…` is `/v1/admin/accounts/{account_id}`. `ErasureRequest`
-(`coordinator/store/erasure.go`) has `id`, `account_id`, `actor`,
-`canceled_by`, `reason`, `state` (`planned` · `pending` · `erased` ·
-`canceled`), `summary` (`planned` and `applied` row counts), `requested_at`,
-`scrub_after`, `erased_at`, `canceled_at`, `last_error`,
-`wallet_address_count` and `created_at`. `ErasureOutboxItem` has `id`,
-`target` (`stripe_account` · `global_recipient` · `checkout_sessions` ·
-`erasure_log`), `state` (`pending` · `done` · `manual_action`), `attempts`,
-`next_at`, `last_error`, `done_at` and `has_external_id`; the Stripe ID itself
-is never returned. The plan returns the email and Stripe IDs for the admin to
-check; the stored plan has counts only.
+### Erasure plan
 
-While a request is `pending`, a Privy login of the account answers 403
-`account_pending_deletion` instead of creating a second account
-(`auth.ErrAccountPendingDeletion`). After the scrub the stored Privy ID is
-random, and a login creates a new account. A Checkout Session of an erased
-account that completes later, or a replayed event for a session the scrub
-cleared, is acknowledged with 200 and credits nothing
-(`store.ErrCheckoutErased`). `ErasureRefusedCredit` has `id`, `account_id`,
-`entry_type`, `amount_micro_usd`, `reference` and `created_at`: a credit that
-arrived after the erasure and was kept out of the balance.
+`POST /v1/admin/accounts/{account_id}/erasure/plan`. A dry run. It changes no account data. Handler `handleAdminErasurePlan`.
+
+Request body (optional; an empty body is allowed):
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `wallet_addresses` | array of string | no | Wallet addresses of the retired on-chain payments to replace in `payments` and `provider_payouts`. Trimmed, de-duplicated and sorted (`normalizeWallets`); give each one exactly as stored |
+
+Response 200 (`erasurePlanResponse`, embeds `store.ErasurePlan`):
+
+| Field | Type | Meaning |
+|---|---|---|
+| `account_id` | string | The account |
+| `email` | string | The account email, for the admin to check; not stored |
+| `stripe_objects` | array of `{target, id}` | Every Express account, Global Payouts recipient and Checkout Session the account used; not stored |
+| `wallets` | array of [`ErasureWalletCount`](#erasure-shapes) | Rows that hold each named address; empty when none was named (`[]` from Postgres, `null` from the memory store) |
+| `rows`, `retained`, `stripe_object_counts`, `balance_micro_usd`, `withdrawable_micro_usd`, `open_withdrawals` | [`ErasureCounts`](#erasure-shapes) fields | What the scrub would change now |
+| `request_id` | string | The `planned` request |
+| `confirm_token` | string | 64 hex characters; the only copy (the store keeps its SHA-256) |
+| `confirm_expires_at` | RFC 3339 time | Now + `erasureConfirmTTL` (15 minutes) |
+| `grace_seconds` | integer | The configured grace period in seconds |
+
+| Status | `type` | When |
+|---|---|---|
+| 404 | `not_found` | No user with this account ID |
+| 409 | `erasure_conflict` | A request is `pending`, or the account is already erased (the user row is not live) |
+
+Side effects: stores or replaces the account's `planned` request with the
+actor, the counts, the token hash, the wallet-list hash and the expiry
+(`SaveErasurePlan`). A new plan makes the earlier token invalid.
+
+Example (`seedErasureHTTPAccount`, `coordinator/api/erasure_handlers_test.go`;
+`rows` trimmed from 32 entries to 2):
+
+```http
+POST /v1/admin/accounts/acct-erase-http/erasure/plan
+Authorization: Bearer admin-key
+```
+
+```json
+{
+  "account_id": "acct-erase-http",
+  "email": "person@example.com",
+  "stripe_objects": [],
+  "wallets": null,
+  "rows": [
+    {"rule": "users", "table": "users", "columns": ["email", "privy_user_id", "stripe_account_id", "stripe_account_status", "stripe_account_country", "stripe_destination_type", "stripe_destination_last4"], "action": "update", "rows": 1},
+    {"rule": "device_codes", "table": "device_codes", "action": "delete_row", "rows": 0}
+  ],
+  "balance_micro_usd": 4000000,
+  "withdrawable_micro_usd": 0,
+  "open_withdrawals": 0,
+  "request_id": "04f52b57-c8ff-4d94-9e83-dec049a2e82a",
+  "confirm_token": "73809a8a07d09c19c7679467262bca4d435277d16de101865c8414e881fb947b",
+  "confirm_expires_at": "2026-10-04T17:40:47.306196Z",
+  "grace_seconds": 2592000
+}
+```
+
+### Erasure confirm
+
+`POST /v1/admin/accounts/{account_id}/erasure`. Soft deletes the account and starts the grace period. Handler
+`handleAdminErasureRequest`; store `RequestAccountErasure`.
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `account_id` | string | yes | Must equal the path's account ID |
+| `confirm_token` | string | yes | The token from the latest plan |
+| `email` | string | yes when the account has an email | Must equal the account email, ignoring case and outer spaces |
+| `wallet_addresses` | array of string | yes when the plan named any | Must be the plan's list (compared by hash after normalizing) |
+| `reason` | string | no | Free text kept in `erasure_requests.reason`; write no personal data |
+| `force` | bool | no | `true` scrubs at once instead of waiting for `scrub_after` |
+
+Response 200: `{"request": ErasureRequest}`, the request in `pending`, or in
+`erased` when `force` succeeded.
+
+| Status | `type` | When |
+|---|---|---|
+| 400 | `invalid_request_error`, `param: confirm_token` | `confirm_token` is empty |
+| 400 | `invalid_request_error`, `param: account_id` | `account_id` differs from the path |
+| 404 | `not_found` | No user with this account ID |
+| 403 | `invalid_confirm_token` | No `planned` request, a wrong token, or an expired token |
+| 400 | `email_mismatch` | Email differs |
+| 400 | `wallet_mismatch` | Wallet list differs from the plan |
+| 409 | `open_withdrawal` | A withdrawal is open ([open withdrawals](personal-data-rules.md#configuration-and-constants)) |
+| 409 | `erasure_conflict` | The request is already `pending`, or the user is already soft deleted |
+| 409 or 500 | — (not the error envelope) | `force` only: the soft delete committed but the scrub failed. Body `{"request": ErasureRequest, "scrub_error": "<error text>"}`; 409 for an open withdrawal, 500 otherwise. The request stays `pending` and the loop retries |
+
+The checks run in this order: body, token present, account ID, then the
+store checks (user, request state, token, email, wallets, withdrawals).
+
+Side effects, in one transaction: `deleted_at` on the user and its providers;
+API keys and provider tokens get `active = false` and `deleted_at`; the
+request becomes `pending` with `requested_at`, `scrub_after` = now + grace,
+`reason`, the wallet list, and a cleared token. After the commit the handler
+clears the API key cache, disconnects the account's providers
+(`registry.DisconnectAccount`) and logs `account erasure requested`
+(`request_id`, `account_id`, `actor`, `providers_disconnected`, `force`).
+With `force`, `scrubErasure` runs next.
+
+Example (`TestAdminErasureHTTPFlow`; `summary.planned.rows` trimmed to the `users` rule):
+
+```http
+POST /v1/admin/accounts/acct-erase-http/erasure
+Authorization: Bearer admin-key
+Content-Type: application/json
+
+{"account_id": "acct-erase-http", "confirm_token": "73809a8a…947b", "email": "person@example.com", "reason": "ticket 42"}
+```
+
+```json
+{
+  "request": {
+    "id": "5aeaf3af-e434-4fe0-b3de-c1b3950ab8e3",
+    "account_id": "acct-erase-http",
+    "actor": "admin_key",
+    "reason": "ticket 42",
+    "state": "pending",
+    "summary": {
+      "planned": {"rows": [{"rule": "users", "table": "users", "columns": ["email", "privy_user_id", "stripe_account_id", "stripe_account_status", "stripe_account_country", "stripe_destination_type", "stripe_destination_last4"], "action": "update", "rows": 1}], "balance_micro_usd": 4000000, "withdrawable_micro_usd": 0, "open_withdrawals": 0}
+    },
+    "wallet_address_count": 0,
+    "requested_at": "2026-10-04T17:25:55.365729Z",
+    "scrub_after": "2026-11-03T17:25:55.365729Z",
+    "created_at": "2026-10-04T12:25:55.364872-05:00"
+  }
+}
+```
+
+A wrong email answers:
+
+```json
+{"error": {"code": "email_mismatch", "message": "email does not match the account email shown in the plan", "param": "email", "type": "email_mismatch"}}
+```
+
+### Erasure status
+
+`GET /v1/admin/accounts/{account_id}/erasure`. The newest request of the account, its outbox rows and its refused credits.
+Handler `handleAdminErasureStatus`. No side effects.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `request` | [`ErasureRequest`](#erasure-shapes) | The newest request (`GetLatestErasureRequest`, by `created_at`) |
+| `outbox` | array of [`ErasureOutboxItem`](#erasure-shapes) | Outbox rows of that request; empty until the scrub |
+| `refused_credits` | array of [`ErasureRefusedCredit`](#erasure-shapes) | Credits refused after the erasure, oldest first, at most 500 |
+
+| Status | `type` | When |
+|---|---|---|
+| 404 | `not_found` | The account has no erasure request |
+
+Example after a forced scrub and one late 9 µUSD refund
+(`TestAdminErasureHTTPFlow` account, then a `store.LedgerRefund` credit as in `TestAdminErasureConfirmBindsAccountAndWallets`; `rows` trimmed to the `users` rule):
+
+```json
+{
+  "request": {
+    "id": "df248e6b-78ff-49b8-93b2-847891c6cebf",
+    "account_id": "acct-erase-http",
+    "actor": "admin_key",
+    "state": "erased",
+    "summary": {
+      "planned": {"rows": [{"rule": "users", "table": "users", "columns": ["email", "privy_user_id", "stripe_account_id", "stripe_account_status", "stripe_account_country", "stripe_destination_type", "stripe_destination_last4"], "action": "update", "rows": 1}], "balance_micro_usd": 4000000, "withdrawable_micro_usd": 0, "open_withdrawals": 0},
+      "applied": {"rows": [{"rule": "users", "table": "users", "columns": ["email", "privy_user_id", "stripe_account_id", "stripe_account_status", "stripe_account_country", "stripe_destination_type", "stripe_destination_last4"], "action": "update", "rows": 1}], "balance_micro_usd": 4000000, "withdrawable_micro_usd": 0, "open_withdrawals": 0}
+    },
+    "wallet_address_count": 0,
+    "requested_at": "2026-10-04T17:26:07.978892Z",
+    "scrub_after": "2026-11-03T17:26:07.978892Z",
+    "erased_at": "2026-10-04T17:26:07.978894Z",
+    "created_at": "2026-10-04T12:26:07.978735-05:00"
+  },
+  "outbox": [
+    {"id": "100279eb-6122-429b-bc0f-d412ccbeac1f", "request_id": "df248e6b-78ff-49b8-93b2-847891c6cebf", "target": "erasure_log", "state": "pending", "attempts": 0, "next_at": "2026-10-04T17:26:07.978894Z", "has_external_id": false, "created_at": "2026-10-04T17:26:07.978894Z"}
+  ],
+  "refused_credits": [
+    {"id": 1, "account_id": "acct-erase-http", "entry_type": "refund", "amount_micro_usd": 9, "reference": "late-refund", "created_at": "2026-10-04T12:26:07.979046-05:00"}
+  ]
+}
+```
+
+`summary.applied.balance_micro_usd` is the balance the scrub forfeited, not
+the balance after it.
+
+### Erasure cancel
+
+`POST /v1/admin/accounts/{account_id}/erasure/cancel`. Ends a `pending` request before `scrub_after`. No body. Handler
+`handleAdminErasureCancel`; store `CancelAccountErasure`.
+
+Response 200: `{"request": ErasureRequest}` in `canceled`, with
+`canceled_by` and `canceled_at`.
+
+| Status | `type` | When |
+|---|---|---|
+| 404 | `not_found` | No user, or no `planned` or `pending` request (also after the scrub) |
+| 409 | `erasure_conflict` | The open request is `planned`, or `scrub_after` has passed |
+
+Side effects: `deleted_at` cleared on the user and its providers; the
+request's wallet list cleared; log `account erasure canceled`. API keys and
+provider tokens stay revoked, and disconnected providers stay disconnected
+until they link again.
+
+### Erasure shapes
+
+All in `coordinator/store/erasure.go`. Times are RFC 3339. Fields marked
+"omitted" are left out when empty.
+
+| Type | Field | Type | Meaning |
+|---|---|---|---|
+| `ErasureRequest` | `id`, `account_id` | string | Request and account |
+| | `actor` | string | `admin_key` or `account:<id>` of the last planner or confirmer |
+| | `canceled_by` | string, omitted | Actor of the cancel |
+| | `reason` | string, omitted | From the confirm call |
+| | `state` | string | `planned`, `pending`, `erased`, `canceled` |
+| | `summary` | `{planned, applied}` | Each an `ErasureCounts`, omitted until set |
+| | `confirm_expires_at` | time, omitted | Only while `planned` |
+| | `wallet_address_count` | integer | Wallet addresses stored at confirm; 0 after the scrub or a cancel |
+| | `requested_at`, `scrub_after`, `erased_at`, `canceled_at` | time, omitted | Step times |
+| | `last_error` | string, omitted | Last scrub failure while `pending` |
+| | `created_at` | time | Insert time |
+| `ErasureCounts` | `rows` | array of `ErasureRowCount` | One per rule, in rule order |
+| | `retained` | array of `{table, rows, reason}`, omitted | Rows kept because another account shares them ([retained data](personal-data-rules.md#retained-data)) |
+| | `stripe_object_counts` | map of target to integer, omitted | Stripe objects per [outbox target](personal-data-rules.md#outbox-targets) |
+| | `balance_micro_usd`, `withdrawable_micro_usd` | integer | Balance at plan time, or the forfeited balance in `applied` |
+| | `open_withdrawals` | integer | Open withdrawals at plan time |
+| `ErasureRowCount` | `rule`, `table` | string | [Rule](personal-data-rules.md#rule-table) name and table |
+| | `columns` | array of string, omitted | Columns the rule changes; omitted for `delete_row` |
+| | `action` | string | `update` or `delete_row` |
+| | `rows` | integer | Rows counted (plan) or changed (applied) |
+| `ErasureWalletCount` | `address` | string | A named wallet address |
+| | `payments_consumer_rows`, `payments_provider_rows`, `provider_payouts_rows` | integer | Rows that hold it; all 0 means the address is wrong |
+| `ErasureOutboxItem` | `id`, `request_id` | string | Row and request |
+| | `target` | string | `stripe_account`, `global_recipient`, `checkout_sessions`, `erasure_log` |
+| | `state` | string | `pending`, `done`, `manual_action` |
+| | `attempts`, `next_at`, `last_error`, `done_at`, `created_at` | | Delivery bookkeeping; `last_error` and `done_at` omitted when empty |
+| | `has_external_id` | bool | The row still holds a Stripe ID; the ID itself is never returned |
+| `ErasureRefusedCredit` | `id`, `account_id`, `entry_type`, `amount_micro_usd`, `reference`, `created_at` | | A credit kept out of an erased account ([schema](personal-data-rules.md#erasure_refused_credits)) |
+
+### Erasure effects on other routes
+
+- While a request is `pending`, a Privy login of the account (any
+  `requireAuth` or `requirePrivyAuth` route) answers 403
+  `account_pending_deletion` with message `this account is scheduled for
+  deletion; contact support to cancel` instead of creating a second account
+  (`auth.ErrAccountPendingDeletion`, `writePrivyUserError`). After the scrub
+  the stored Privy ID is random, and the same login creates a new, empty
+  account.
+- The account's API keys answer 401 `authentication_error` from the confirm
+  on; they stay revoked after a cancel.
+- `POST /v1/billing/stripe/webhook`: a `checkout.session.completed` event for
+  an erased account's session, or a replay for a session the scrub cleared,
+  answers 200 and credits nothing (`store.ErrCheckoutErased`).
 
 ## Code map
 
@@ -949,6 +1204,7 @@ arrived after the erasure and was kept out of the balance.
 | Billing, Stripe, referral, invites | `coordinator/api/billing_handlers.go`, `coordinator/api/stripe_payouts.go`, `coordinator/api/stripe_withdraw.go`, `coordinator/api/stripe_payouts_webhooks.go`, `coordinator/api/invite_handlers.go`, `coordinator/api/base_rewards_handlers.go` |
 | Stats | `coordinator/api/stats.go`, `coordinator/api/cache_refresher.go`, `coordinator/api/network_totals.go`, `coordinator/api/leaderboard.go`, `coordinator/api/network_series.go` |
 | Release, enrollment, provider WS, log reports | `coordinator/api/release_handlers.go`, `coordinator/api/enroll.go`, `coordinator/api/provider.go`, `coordinator/api/log_report_handlers.go` |
+| Account erasure | `coordinator/api/erasure_handlers.go`, `coordinator/api/erasure_loop.go`, `coordinator/store/erasure.go`; tests `coordinator/api/erasure_handlers_test.go` |
 | Drain, admin telemetry, profiler, state export | `coordinator/api/drain.go`, `coordinator/api/admin_telemetry.go`, `coordinator/api/admin_utilization.go`, `coordinator/api/profiler_admin.go`, `coordinator/api/admin_state_export.go` |
 | Rate-limit bucket consumption | `coordinator/ratelimit/ratelimit.go` (`allowBucket`, `debitBucket`): fixed and per-key rate paths share token consumption and retry calculation while keeping their own admission and clamp rules |
 | Shared types and helpers | `coordinator/api/types/types.go`, `coordinator/api/httputil.go`, `coordinator/ratelimit/ratelimit.go`, `coordinator/modelpolicy/first_content_deadline.go` |

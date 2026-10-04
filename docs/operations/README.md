@@ -1,6 +1,6 @@
 # Operations runbooks
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
 Procedures for deploying, migrating, and operating Darkbloom production
 infrastructure. Every runbook has the same shape — when to use, prerequisites,
@@ -16,7 +16,7 @@ shapes under [`../reference/README.md`](../reference/README.md).
 | [mdm-optional-rollout.md](mdm-optional-rollout.md) | Qualify and activate App Attest serving, then scoped Darkbloom enrollment removal |
 | [`coordinator-deploy.md`](coordinator-deploy.md) | Swap the production coordinator container to a reviewed build, verify, roll back |
 | [`coordinator-startup-measurement.md`](coordinator-startup-measurement.md) | Measure post-stop candidate readiness, per-model routable capacity and optional disposable-test inference separately |
-| [`account-erasure.md`](account-erasure.md) | Erase an account's personal data (GDPR): plan, confirm, grace period, scrub, Stripe deletions, cancel, what is kept |
+| [`account-erasure.md`](account-erasure.md) | Erase an account's personal data (GDPR): plan, confirm, grace period, scrub, Stripe deletions, refused credits, replay after a restore, cancel |
 | [`global-payouts.md`](global-payouts.md) | Enable international bank payouts, verify bank arrival and reconcile uncertain transfers |
 | [`provider-release.md`](provider-release.md) | Ship a provider CLI release: version bump, tag, signed and notarized bundle to R2, registration with the coordinator, rollback by deactivation |
 | [`dev-environment.md`](dev-environment.md) | Stand up, operate, and tear down the GCP dev environment |

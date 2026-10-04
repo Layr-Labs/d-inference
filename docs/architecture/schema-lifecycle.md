@@ -4,8 +4,8 @@
 
 Explanation of how the coordinator's Postgres schema changes: numbered goose
 migrations that run inside `NewPostgres` before the coordinator serves, the
-locks and timeouts around them, and the checked-in schema file that tests
-compare against. Read this before you add a migration
+locks and timeouts around them, the checked-in schema file that tests compare
+against, and the sqlc code generated from that file. Read this before you add a migration
 ([how-to](../developer/database-migrations.md)) or apply one in production
 ([runbook](../operations/schema-migration.md)). What the tables hold is in
 [storage](storage.md).
@@ -160,6 +160,48 @@ from that file. `TestMigrationsLeaveLegacyDatabaseUnchanged` loads
 versions 1 to 5 change no object and no row. The
 [how-to](../developer/database-migrations.md) regenerates the file.
 
+### Generated queries (sqlc)
+
+The api_keys queries of `PostgresStore` are SQL in
+`coordinator/store/queries/api_keys.sql`. [sqlc](https://sqlc.dev) v1.31.1
+reads that file and `schema.sql` and writes typed Go into
+`coordinator/store/storedb/` (`coordinator/store/sqlc.yaml`). The store
+methods in `coordinator/store/postgres_api_keys.go` call the generated
+`storedb.Queries` and convert each row to the public store type.
+
+```mermaid
+flowchart TB
+  classDef src fill:#ede9fe,stroke:#6d28d9,color:#1e1035
+  classDef step fill:#dbeafe,stroke:#1d4ed8,color:#0b1220
+  classDef gen fill:#dcfce7,stroke:#15803d,color:#052e16
+  classDef check fill:#fef3c7,stroke:#b45309,color:#1f1300
+  M["schema/migrations/*.sql<br/>and goMigrations"]:::src -- "goose on an empty DB,<br/>then pg_dump" --> S["schema/schema.sql"]:::src
+  Q["queries/api_keys.sql"]:::src --> G["make<br/>sqlc-generate<br/>(sqlc.yaml)"]:::step
+  S --> G
+  G --> D["storedb/*.go<br/>Queries, ApiKey, *Params"]:::gen
+  D --> P["PostgresStore methods<br/>postgres_api_keys.go"]:::step
+  P --> T["store.APIKey"]:::step
+  C["CI check:<br/>make sqlc-check"]:::check -. "schema test" .-> S
+  C -. "sqlc diff" .-> D
+```
+
+Legend: purple = checked-in source, blue = step or hand-written code,
+green = generated code, amber = CI check.
+
+| Part | What it does | Where |
+|---|---|---|
+| Schema input | `schema: schema/schema.sql`. sqlc reads the dump, not the migrations: the baseline adds many columns inside `DO` blocks, which sqlc cannot see, so a query on such a column fails with `column "..." does not exist`. | `coordinator/store/sqlc.yaml` |
+| Code generation | `sql_package: pgx/v5`, `emit_pointers_for_null_types: true`, `omit_unused_structs: true`, and `timestamptz` overrides to `time.Time` and `*time.Time` ([type mapping](../reference/sqlc-type-mapping.md)) | `coordinator/store/sqlc.yaml` |
+| Database handle | `storedb.New(db DBTX)` takes the pool or a `pgx.Tx`; `PostgresStore.queries()` wraps the pool, and `RotateAPIKey` uses `storedb.New(tx)` | `coordinator/store/storedb/db.go`, `coordinator/store/postgres_api_keys.go` |
+| Row conversion | `apiKeyFromRow` maps `storedb.ApiKey` to `APIKey`; `insertAPIKeyParams` maps back | `coordinator/store/postgres_api_keys.go` |
+| Tool pin | `go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1`: sqlc v1.31.1 needs Go 1.26, newer than `go.mod`, so it is not a `go.mod` tool | `Makefile` (`SQLC`) |
+| CI check | `make sqlc-check` runs `TestMigrationsBuildCheckedInSchema`, then `sqlc diff`; the Coordinator Tests job runs it against its Postgres service | `Makefile`, `.github/workflows/ci.yml` |
+
+`SELECT *` in a query is expanded to the column list when the code is
+generated. A running binary therefore selects only the columns it was built
+with, and a new column does not break it. `MemoryStore` and `CachedStore` do
+not use sqlc. Adding a query is [Write store queries with sqlc](../developer/sqlc.md).
+
 ### Tables and files that are not goose versions
 
 `schema_migrations` is an older table. It holds the markers of the one-shot
@@ -203,10 +245,13 @@ Logs carry bounded labels only, never SQL or parameters
    checks the retry.
 5. **Migrations build exactly `schema.sql`** on a fresh database
    (`TestMigrationsBuildCheckedInSchema`).
-6. **There are no down migrations.** No migration file has a
+6. **The generated queries match `schema.sql` and the query files.**
+   `make sqlc-check` fails CI when `coordinator/store/storedb` is stale
+   (`Makefile`, `.github/workflows/ci.yml`).
+7. **There are no down migrations.** No migration file has a
    `-- +goose Down` section. A rollback starts an older image on the migrated
    schema; it never reverts the schema.
-7. **An older goose image applies nothing on a newer database.** Every version
+8. **An older goose image applies nothing on a newer database.** Every version
    it knows is recorded, and goose ignores recorded versions it does not
    know. A pre-goose image ignores `goose_db_version` and replays its own boot
    DDL.
@@ -220,6 +265,7 @@ Logs carry bounded labels only, never SQL or parameters
 | A `NO TRANSACTION` file failed after some statements | Its earlier statements committed; the version is not recorded | The next run executes the whole file again, so every statement in such a file must be safe to run twice (`IF NOT EXISTS`, `IF EXISTS`). |
 | Exit 1 with `index ... is invalid; repair the interrupted concurrent index build before retrying` | A `CONCURRENTLY` build in version 3 or 5 was interrupted | `ensureConcurrentIndex` does not repair it; [runbook](../operations/schema-migration.md#invalid-index). |
 | Exit 1 with `found duplicate migration version` | Two sources share a number | Renumber one. |
+| CI fails in `make sqlc-check` | `schema.sql` or `coordinator/store/storedb` is stale | [sqlc troubleshooting](../developer/sqlc.md#troubleshooting). |
 | Exit 1 with `missing (out-of-order) migration` | A version below the highest applied one was never applied, for example after two branches added migrations | `SELECT version_id FROM goose_db_version ORDER BY id`; renumber the unapplied version above the highest one. |
 | Exit 1 with `database holds data that retired backfills never processed` or `balances.withdrawable_micro_usd is missing` | The database has history but never ran a backfill retired after v0.9.10 | Boot a v0.9.10 coordinator against it once, then redeploy (`checkRetiredBackfills`). |
 | Exit 1 with a `provider_earnings` duplicate `job_id` message | Rows share a non-empty `job_id`, so version 4 cannot build its unique index | Run `coordinator/store/migrations/dedupe_provider_earnings.sql` offline, then redeploy. |
@@ -236,6 +282,9 @@ Logs carry bounded labels only, never SQL or parameters
 | Concurrent index helper and startup log line | `coordinator/store/postgres_startup.go` (`ensureConcurrentIndex`, `logStartupMigration`) |
 | Go migration bodies | `coordinator/store/postgres_retired_backfills.go`, `coordinator/store/postgres.go` (`ensureProviderEarningsJobIndex`), `coordinator/store/postgres_earnings_window_index.go` |
 | Database-only command | `coordinator/cmd/coordinator/maintenance.go` (`runMaintenanceCommand`) |
+| sqlc config, queries, generated code | `coordinator/store/sqlc.yaml`, `coordinator/store/queries/`, `coordinator/store/storedb/` |
+| api_keys store methods | `coordinator/store/postgres_api_keys.go` (`queries`, `apiKeyFromRow`, `insertAPIKeyParams`) |
+| sqlc targets | `Makefile` (`sqlc-generate`, `sqlc-check`) |
 | Tests | `coordinator/store/postgres_migrations_test.go`, `coordinator/store/migration_harness_test.go` |
 | Manual SQL | `coordinator/store/migrations/` |
 
@@ -243,5 +292,6 @@ Logs carry bounded labels only, never SQL or parameters
 
 - [Add a database migration](../developer/database-migrations.md) — the steps
 - [Apply schema migrations in production](../operations/schema-migration.md) — backup, checks, rollback
+- [Write store queries with sqlc](../developer/sqlc.md) and [sqlc type mapping](../reference/sqlc-type-mapping.md)
 - [Storage](storage.md) — what the tables hold and which backend runs
 - [Deploy the coordinator](../operations/coordinator-deploy.md) — the container swap that runs the migrations

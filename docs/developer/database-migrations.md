@@ -126,7 +126,8 @@ in production is the [schema migration runbook](../operations/schema-migration.m
    must show only your change.
 
 6. **Regenerate the sqlc code** if a query in `coordinator/store/queries/`
-   reads the changed table: `make sqlc-generate`.
+   reads the changed table: `make sqlc-generate`
+   ([Write store queries with sqlc](sqlc.md)).
 
 7. **Update the rest of the store.** Make `MemoryStore`
    (`coordinator/store/memory.go`) match, and update the docs that describe
@@ -218,5 +219,6 @@ safe.
 
 - [Schema lifecycle](../architecture/schema-lifecycle.md) — how goose runs, locks, timeouts, failure modes
 - [Apply schema migrations in production](../operations/schema-migration.md) — backup, checks, rollback
+- [Write store queries with sqlc](sqlc.md) — queries generated from `schema.sql`
 - [Storage](../architecture/storage.md) — what the tables hold
 - [Test](test.md) — running the Postgres tests

@@ -116,8 +116,9 @@ the only connection-level knob; there is no separate host/user/password set.
 `NewPostgres` applies every pending goose migration before it returns; the
 coordinator serves only after they all succeed. Each version runs once and is
 recorded in `goose_db_version`. `coordinator/store/schema/schema.sql` is the
-checked-in `pg_dump` of the schema that the migrations build. The versions,
-locks, timeouts and failure modes are in
+checked-in `pg_dump` of the schema that the migrations build; sqlc generates
+the api_keys queries from it. The versions,
+locks, timeouts, sqlc and failure modes are in
 [schema lifecycle](schema-lifecycle.md); adding a migration is
 [Add a database migration](../developer/database-migrations.md).
 

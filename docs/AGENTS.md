@@ -175,6 +175,7 @@ and tests both historical-link handling and date-preserving, idempotent stamping
 | Trust level, attestation, enrollment, encryption | `architecture/security/*.md`; `provider/attestation.md`; `consumer/verification.md`; `threat-model.yaml` |
 | Pricing, ledger, payouts, referral | `architecture/billing.md`, `reference/pricing-model.md`, `consumer/billing.md` |
 | Store schema / migration | `architecture/schema-lifecycle.md` (versions, kinds, locks); `architecture/storage.md` (tables); `operations/schema-migration.md` if the change affects the production procedure or rollback rules |
+| sqlc config, query file or generated type (`coordinator/store/sqlc.yaml`, `coordinator/store/queries/`) | `reference/sqlc-type-mapping.md` for a new type or override; `developer/sqlc.md` for a workflow or convention change |
 | Provider version bump (`ProviderCore.version` ↔ `LatestProviderVersion`) | `operations/provider-release.md`; `CHANGELOG.md` |
 | Build, test, CI, or script | `developer/build.md`, `developer/test.md`; `operations/` runbook that invokes it |
 | New model family or engine capability | `architecture/inference.md`, `consumer/models.md`, `provider/hardware-requirements.md` |

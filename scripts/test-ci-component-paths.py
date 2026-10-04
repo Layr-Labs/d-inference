@@ -124,7 +124,7 @@ class GitDiffTests(unittest.TestCase):
         if not success:
             self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertFalse(output.exists(), "Failed detection must not emit skip outputs")
-            return
+            return {}
         self.assertEqual(result.returncode, 0, result.stderr)
         values = dict(line.split("=") for line in output.read_text().splitlines())
         self.assertEqual(set(values), set(routing.COMPONENTS))

@@ -15,9 +15,21 @@ type Lease struct {
 }
 
 func (l *Lease) Active(state *protocol.ModelAutopilotState, session string, now time.Time) bool {
+	return l.grantMatches(state, session) && now.Before(l.until)
+}
+
+// activeNow is Active for checks that run per provider on every request. It
+// reads the clock only for a matching grant, so a provider without one costs
+// no clock read.
+func (l *Lease) activeNow(state *protocol.ModelAutopilotState, session string, now func() time.Time) bool {
+	return l.grantMatches(state, session) && now().Before(l.until)
+}
+
+// grantMatches reports every lease condition except expiry.
+func (l *Lease) grantMatches(state *protocol.ModelAutopilotState, session string) bool {
 	return l != nil && Consented(state) && !state.Paused && state.Active &&
 		!state.ObserveOnly && !l.observeOnly && state.SessionID == session &&
-		state.Revision == l.revision && now.Before(l.until)
+		state.Revision == l.revision
 }
 
 func (l *Lease) Accept(state *protocol.ModelAutopilotState, control protocol.ModelAutopilotControl) {

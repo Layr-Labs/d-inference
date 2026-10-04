@@ -54,8 +54,8 @@ func (s *Inventory) ReplaceSelection(serving []protocol.ModelInfo) []protocol.Mo
 
 func (s *Inventory) ObserverOnly(model string) bool { return s != nil && s.onlyModels[model] }
 
-func (s *State) OrdinaryAllowed(state *protocol.ModelAutopilotState, session, model string, now time.Time) bool {
-	return s == nil || !s.ObserverOnly(model) || (s.ControlActive(state, session, now) && Allows(state, model))
+func (s *State) OrdinaryAllowed(state *protocol.ModelAutopilotState, session, model string, now func() time.Time) bool {
+	return s == nil || !s.ObserverOnly(model) || (s.control().activeNow(state, session, now) && Allows(state, model))
 }
 
 func (s *Inventory) Selected(models []protocol.ModelInfo, id string) bool {

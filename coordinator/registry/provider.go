@@ -6,6 +6,22 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/attestation"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/autopilotstate"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/cachepeer"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/capacityvalue"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/connectiontime"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/deadline"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/identitygate"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/kvbackend"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/measurements"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/modelindex"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/performance"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/providerdrain"
+	providerwrite "github.com/eigeninference/d-inference/coordinator/internal/registry/providerwrite"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/quality"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/serviceretirement"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/transport"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/warmplan"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"nhooyr.io/websocket"
@@ -42,11 +58,9 @@ func BackendUsesSwiftRuntime(backend string) bool {
 
 // Provider represents a connected provider agent.
 type Provider struct {
-	ID                  string
-	Hardware            protocol.Hardware
-	Models              []protocol.ModelInfo
-	autopilotInventory  []protocol.ModelInfo
-	autopilotOnlyModels map[string]bool
+	ID       string
+	Hardware protocol.Hardware
+	Models   []protocol.ModelInfo
 	// CapacityModelIDs is the catalog/capability-accepted inventory used by
 	// the last applied heartbeat to canonicalize warm models and slots.
 	// Guarded by mu; nil until the first applied heartbeat.
@@ -107,35 +121,20 @@ type Provider struct {
 	MDMFailureReason string
 
 	Status ProviderStatus
-	// drainingUntil is non-zero while the provider has declared itself
-	// draining (heartbeat status "draining" or a typed draining rejection);
-	// routing skips it until its next idle/serving heartbeat or the TTL
-	// (drain_state.go). Guarded by p.mu.
-	drainCommitted              bool // fenced until matching provider readiness or disconnect
-	drainRequestID              string
-	drainGeneration             uint64 // increases per barrier, including reused wire request IDs
-	drainReady                  bool   // preceding reservations and terminal usage have settled
-	drainReplacementPending     bool   // inventory committed, waiting for receipt and provider readiness
-	drainReplacementAcked       bool
-	drainReplacementReadySeq    uint64 // heartbeat seq built after local admission reopened
-	drainReplacementAppliedSeq  uint64 // accepted serving heartbeat for this replacement
-	drainReplacementID          string
-	drainRemovedModels          []string                             // accumulated across reconciliation drains until readiness
-	lastResumedModelReplacement protocol.ModelsReplaceResumedMessage // exact-session duplicate receipt
-	drainingUntil               time.Time
-	Conn                        *websocket.Conn
-	writer                      *providerWriter
-	LastHeartbeat               time.Time
-	registeredAt                time.Time               // immutable connection creation order for verified duplicate arbitration
-	Stats                       protocol.HeartbeatStats // lifetime counters shown to users
-	lastSessionStats            protocol.HeartbeatStats // raw counters from the current provider process
+	// drain owns admission barriers and inventory-replacement receipts under p.mu.
+	drain            *providerdrain.Authority
+	Conn             *websocket.Conn
+	writer           *providerwrite.Writer
+	LastHeartbeat    time.Time
+	connectionOrigin *connectiontime.Origin  // immutable connection creation order for verified duplicate arbitration
+	Stats            protocol.HeartbeatStats // lifetime counters shown to users
+	lastSessionStats protocol.HeartbeatStats // raw counters from the current provider process
 
 	// Until restore finishes, verified identities cannot route, and persisted
 	// records must not advertise a reusable serial/SE identity. Includes
 	// disconnected registrations whose IO finishes late.
-	stateRestorePending bool
-	historyRestored     bool       // a historical baseline has already been applied on this connection
-	persistMu           sync.Mutex // serialize snapshots/writes so an older partial snapshot cannot land last
+	persistence     ProviderPersistence
+	historyRestored bool // a historical baseline has already been applied on this connection
 
 	// Account linkage (set when provider authenticates via device auth token)
 	AccountID string // internal account ID (from device auth flow)
@@ -177,15 +176,12 @@ type Provider struct {
 	// prefixCacheRevision changes whenever capability identity or quarantine
 	// state changes. Scheduler hints snapshot it and revalidate under p.mu so a
 	// concurrent heartbeat/proof failure cannot apply a stale cache discount.
-	prefixCacheRevision uint64
+	prefixCacheRevision *cachepeer.Revision
 
-	// modelIndexIDs is the advertised model-id list the registry's per-model
-	// provider index currently holds for this session (model_index.go) — the
-	// diff baseline for syncModelIndexLocked. modelIndexDetached is set by
-	// Disconnect so a models_update racing the disconnect can only ever remove
-	// entries, never re-insert the dead session. Both guarded by p.mu.
-	modelIndexIDs      []string
-	modelIndexDetached bool
+	// modelMembership owns the ordered index baseline and permanent detached
+	// fence for this session. Guarded by p.mu.
+	modelMembership *modelindex.Membership
+	modelCommands   ModelCommandTransport
 
 	// Warm model cache tracking
 	WarmModels   []string // models currently loaded in provider's memory
@@ -203,33 +199,29 @@ type Provider struct {
 	IdleUnloadMins *int
 
 	// Live backend capacity from heartbeats (nil for providers without capacity reporting)
-	BackendCapacity             *protocol.BackendCapacity
-	ModelAutopilot              *protocol.ModelAutopilotState
-	autopilotPending            *autopilotPendingCommand
-	autopilotControlUntil       time.Time
-	autopilotControlRevision    string
-	autopilotControlObserveOnly bool
-	autopilotBackoffUntil       time.Time
+	BackendCapacity *protocol.BackendCapacity
+	ModelAutopilot  *protocol.ModelAutopilotState
+	autopilotState  *autopilotstate.State
 	// CapacityAcceptedAt advances only when the backend-capacity frame is
 	// applied. Rejected sequence frames advance LastHeartbeat but leave this
 	// owner-diagnostic clock unchanged. Guarded by p.mu.
 	CapacityAcceptedAt time.Time
 
-	// Session-local invalidation clocks for reviewed deadline applicability.
-	// Provider idle references cannot erase intervening coordinator-owned work.
-	// Both clocks are monotonic maxima and guarded by p.mu.
-	deadlineActivityAt       time.Time
-	deadlinePostureInvalidAt time.Time
+	// Session-local invalidation policy for reviewed deadline applicability.
+	// Idle references cannot erase intervening coordinator-owned work. Its clocks
+	// remain private monotonic maxima serialized by p.mu.
+	deadlinePosture deadline.PosturePolicy
 
-	// capacitySamplesAt is the coordinator time of the last accepted slot
+	// capacitySamples tracks coordinator time of the last accepted slot
 	// sample reconciliation. Separate from LastHeartbeat: rejected capacity
 	// frames prove liveness but must not erase elapsed sample age. Guarded by p.mu.
-	capacitySamplesAt        time.Time
-	firstContentMeasurements map[string]firstContentMeasurement
-	warmWorkCounters         map[string]warmWorkCounters
-	lastWarmPlacementAt      time.Time
-	modelLoadSendRetryAt     time.Time // Session-local proactive-load write backoff; guarded by p.mu.
-	transport                transportMeasurement
+	capacitySamples          *capacityvalue.SampleHistory
+	firstContentMeasurements *measurements.History
+	performanceProfiles      *performance.Catalog
+	deadlineProfiles         *deadline.Catalog
+	warmWork                 *warmplan.WorkHistory
+	warmLoads                warmplan.LoadLifecycle // Placement and session-local write backoff; guarded by p.mu.
+	transport                *transport.History
 
 	// capacitySeq is the highest BackendCapacity.CapacitySeq applied on THIS
 	// connection; capacityQuoteCapable latches true the first time a heartbeat
@@ -252,7 +244,7 @@ type Provider struct {
 	// BackendCapacity, so a slot that crashes or is evicted mid-request can
 	// still be attributed. A missing key is UNKNOWN and must never read as a
 	// backend kind. Guarded by p.mu; see kv_backend.go for the full contract.
-	kvBackends map[string]slotKVBackend
+	kvBackends *kvbackend.History
 
 	// Reputation tracking
 	Reputation Reputation
@@ -339,9 +331,10 @@ type Provider struct {
 	pendingReqs map[string]*PendingRequest
 	// Sticky per connection. Terminal request cleanup does not retire a service
 	// lease; only explicit producer proof or a definitive unsent handoff can.
-	serviceRetirementProtocol bool
-	serviceRetirementShadows  map[string]float64
-	drainPendingDone          chan struct{} // allocated only while a committed drain has reservations
+	serviceRetirementProtocol  bool
+	serviceRetirement          *serviceretirement.Ledger
+	serviceReservations        *ServiceReservations
+	defaultServiceReservations ServiceReservations
 
 	// registry back-pointer, set once in Register (nil for bare test Providers).
 	// SetAttestationResult uses it to bind this session's id to its stable
@@ -354,8 +347,7 @@ type Provider struct {
 	// the recorders (without p.mu) read it without another lock; written only
 	// under r.gatesMu (attachSessionGate / bindStableFaultKey). nil for a bare
 	// test Provider — every gate read treats nil as "no state".
-	gate                 atomic.Pointer[gateState]
-	gateDisconnectedAtNS atomic.Int64
+	gateSession *identitygate.Session
 }
 
 // AddPending registers a pending request on this provider.
@@ -367,19 +359,7 @@ func (p *Provider) AddPending(pr *PendingRequest) {
 
 // addPendingLocked registers a pending request. Caller must hold p.mu.
 func (p *Provider) addPendingLocked(pr *PendingRequest) {
-	pr.providerAuthorizationBinding = providerRequestAuthorizationBindingLocked(p)
-	pr.reservedAt = time.Now()
-	p.recordDeadlineActivityLocked(pr.reservedAt)
-	pr.reservedServiceCharge = p.serviceChargeForModelLocked(pr.Model)
-	pr.serviceRetirementTracked = p.serviceRetirementProtocol
-	pr.serviceHandoffAuthorized = false
-	pr.serviceHandoffAborted = false
-	pr.serviceReservationReleased = false
-	pr.serviceReservationID.Store(newServiceReservationIdentity())
-	p.pendingReqs[pr.RequestID] = pr
-	if p.drainCommitted && p.drainPendingDone == nil {
-		p.drainPendingDone = make(chan struct{})
-	}
+	p.serviceReservationsLocked().Add(pr, p.serviceChargeForModelLocked(pr.Model))
 }
 
 // RemovePending removes and returns a pending request.
@@ -535,50 +515,13 @@ func (p *Provider) ReportedTokenBudgetMaxForModel(model string) int64 {
 // the memory-derived ceiling. Pushing past it makes each request slow
 // without increasing fleet throughput.
 func (p *Provider) maxConcurrency() int {
-	if p.BackendCapacity == nil {
-		return DefaultMaxConcurrent
-	}
-
-	// Token-budget providers use budget-based admission; the concurrency
-	// cap is just a safety valve.
-	for _, slot := range p.BackendCapacity.Slots {
-		if slot.ActiveTokenBudgetMax > 0 {
-			return 24
-		}
-	}
-
-	// Hardware-based cap using total memory reported by the provider.
-	memGB := p.BackendCapacity.TotalMemoryGB
-	if memGB <= 0 {
-		memGB = float64(p.Hardware.MemoryGB)
-	}
-	var cap int
-	switch {
-	case memGB <= 24:
-		cap = 2
-	case memGB <= 48:
-		cap = 4
-	case memGB <= 96:
-		cap = 6
-	case memGB <= 128:
-		cap = 8
-	default:
-		cap = 12
-	}
-	return cap
+	return quality.ProviderConcurrencyLimit(p.BackendCapacity, p.Hardware, DefaultMaxConcurrent)
 }
 
 // maxConcurrencyForModelLocked is the lock-free model-aware concurrency cap.
 // Caller must hold p.mu.
 func (p *Provider) maxConcurrencyForModelLocked(model string) int {
-	if p.BackendCapacity != nil {
-		for _, slot := range p.BackendCapacity.Slots {
-			if slot.Model == model && slot.MaxConcurrency > 0 {
-				return slot.MaxConcurrency
-			}
-		}
-	}
-	return p.maxConcurrency()
+	return quality.ConcurrencyLimit(p.BackendCapacity, p.Hardware, model, DefaultMaxConcurrent)
 }
 
 func (p *Provider) pendingCountForModelLocked(model string) int {

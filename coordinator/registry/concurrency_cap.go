@@ -1,12 +1,12 @@
 package registry
 
 import (
-	"math"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/eigeninference/d-inference/coordinator/env"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/performance"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/quality"
 )
 
 // Quality-concurrency admission cap.
@@ -54,7 +54,7 @@ import (
 // measured gemma-4-26b at p50 8 tok/s against the 15 tok/s floor, with 81% of
 // successful requests below it. 1.2 bounds the dilution at ~floor/1.2 — the
 // floor holds within the overcommit allowance instead of collapsing to half.
-const defaultQualityCapOvercommit = 1.2
+const defaultQualityCapOvercommit = quality.DefaultOvercommit
 
 // qualityCapOvercommitByModelEnv is the per-model overcommit override map,
 // e.g. EIGENINFERENCE_QUALITY_CONCURRENCY_OVERCOMMIT_BY_MODEL=
@@ -88,41 +88,7 @@ const (
 
 // defaultQualityCapSoloMinSamples is the solo-median trust floor when
 // EIGENINFERENCE_QUALITY_CAP_SOLO_MIN_SAMPLES is unset.
-const defaultQualityCapSoloMinSamples = 5
-
-// qualityCapOvercommitByModel holds the parsed per-model overrides. Like the
-// package's other startup-configured routing knobs (prefillToDecodeRatio,
-// ttftOccupancyAlpha), it is written once by SetQualityConcurrencyCap before
-// the coordinator serves and only read on routing paths thereafter.
-var qualityCapOvercommitByModel map[string]float64
-
-// qualityCapPerModelTPS / qualityCapSoloMinSamples / modelSoloTPSSeed /
-// modelSoloTPSSeedFleet are the parsed per-model solo-TPS knobs. Same
-// lifecycle as qualityCapOvercommitByModel: written once by
-// SetQualityConcurrencyCap before serving, read-only on routing paths.
-//
-// modelSoloTPSSeed holds EVERY parsed seed entry as the operator wrote it,
-// class-qualified ("gemma-4-26b-qat-4bit@m4|max") and unqualified
-// ("gemma-4-26b-qat-4bit") alike. It is the PARSE result, not a lookup table:
-// routing never reads it.
-//
-// modelSoloTPSSeedByClass is the routing-path table, nested model → class →
-// rate. Nested rather than flat-with-a-composite-key because the flat form
-// forced soloTPSSeedForClass to BUILD "model@class" on every probe — and that
-// probe runs once per candidate provider per request inside
-// snapshotProviderIntoLockedEx, under both r.mu and p.mu, ~94 times on a full fleet.
-// Two map reads allocate nothing; one string concatenation allocates every
-// time.
-//
-// modelSoloTPSSeedFleet holds only the unqualified entries, each already
-// clamped by soloSeedFleetFallbacks.
-var (
-	qualityCapPerModelTPS    = true
-	qualityCapSoloMinSamples = defaultQualityCapSoloMinSamples
-	modelSoloTPSSeed         map[string]float64
-	modelSoloTPSSeedByClass  map[string]map[string]float64
-	modelSoloTPSSeedFleet    map[string]float64
-)
+const defaultQualityCapSoloMinSamples = quality.DefaultMinSamples
 
 // SetQualityConcurrencyCap configures the per-provider quality-concurrency
 // admission cap. enabled=false leaves the legacy flat cap unchanged. floorTPS
@@ -148,17 +114,17 @@ func (r *Registry) SetQualityConcurrencyCap(enabled bool, overcommit, floorTPS f
 	if fallback < 1 {
 		fallback = 1
 	}
-	qualityCapOvercommitByModel = parseModelFloatMap(os.Getenv(qualityCapOvercommitByModelEnv))
-	qualityCapPerModelTPS = env.EnvBool(qualityCapPerModelTPSEnv, true)
-	qualityCapSoloMinSamples = env.EnvInt(qualityCapSoloMinSamplesEnv, defaultQualityCapSoloMinSamples)
-	if qualityCapSoloMinSamples < 1 {
-		qualityCapSoloMinSamples = 1
-	}
-	modelSoloTPSSeed = parseModelFloatMap(os.Getenv(modelSoloTPSSeedEnv))
-	modelSoloTPSSeedByClass = soloSeedByClass(modelSoloTPSSeed)
-	modelSoloTPSSeedFleet = soloSeedFleetFallbacks(modelSoloTPSSeed)
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.qualityPolicy == nil {
+		r.qualityPolicy = &quality.Policy{}
+	}
+	r.qualityPolicy.Configure(quality.Config{
+		Enabled: enabled, Overcommit: overcommit, FloorTPS: floorTPS, Fallback: fallback,
+		PerModelTPS: env.EnvBool(qualityCapPerModelTPSEnv, true),
+		MinSamples:  env.EnvInt(qualityCapSoloMinSamplesEnv, defaultQualityCapSoloMinSamples),
+		SoloSeed:    os.Getenv(modelSoloTPSSeedEnv), ModelOvercommit: os.Getenv(qualityCapOvercommitByModelEnv),
+	})
 	r.qualityCapEnabled = enabled
 	r.qualityCapOvercommit = overcommit
 	r.qualityCapFloorTPS = floorTPS
@@ -174,202 +140,11 @@ func (r *Registry) QualityCapOvercommit() float64 {
 	return r.qualityCapOvercommit
 }
 
-// parseModelFloatMap parses the "model=value,..." CSV form (mirroring
-// envModelIntMap for EIGENINFERENCE_WARM_POOL_MIN_WARM, with float values).
-// Keys are lowercased so lookups on resolved build ids match
-// case-insensitively. Malformed, non-positive, and non-finite values are all
-// skipped — strconv.ParseFloat happily yields NaN and ±Inf ("m=NaN" passes a
-// naive v <= 0 filter because NaN comparisons are always false), and either
-// one flows into int(math.Ceil(...)) / qualityConcurrency as an
-// implementation-defined integer, silently strangling the model to cap 1.
-// An empty or all-invalid input yields nil (no entries). Shared by the
-// per-model overcommit overrides (qualityCapOvercommitByModelEnv) and the
-// solo-TPS seed (modelSoloTPSSeedEnv).
-func parseModelFloatMap(raw string) map[string]float64 {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil
+func (r *Registry) qualityPolicyLocked() *quality.Policy {
+	if r.qualityPolicy != nil {
+		return r.qualityPolicy
 	}
-	out := make(map[string]float64)
-	for _, entry := range strings.Split(raw, ",") {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
-		}
-		model, value, ok := strings.Cut(entry, "=")
-		if !ok {
-			continue
-		}
-		model = strings.ToLower(strings.TrimSpace(model))
-		if model == "" {
-			continue
-		}
-		v, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
-		if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
-			continue
-		}
-		out[model] = v
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-// soloSeedClassSep separates the build id from an optional chip-CLASS
-// qualifier inside a modelSoloTPSSeedEnv key:
-// "gemma-4-26b-qat-4bit@M4|Max=70". The qualifier is a chipClassKey
-// (solo_tps.go) — ChipFamily|ChipTier, or the raw ChipName when the family is
-// absent — so the seed table keys exactly the way the solo-sample store does
-// and an operator reads one class vocabulary, not two. "@" cannot collide
-// with a build id (they are model-name/quantization slugs) and "," is already
-// the entry separator, so the grammar stays inside parseModelFloatMap.
-const soloSeedClassSep = "@"
-
-// soloSeedByClass pivots the flat parsed seed table into model → class → rate,
-// so the routing-path lookup is two map reads instead of a concatenation.
-// Unqualified entries are NOT folded in: they resolve through
-// modelSoloTPSSeedFleet, which applies the slowest-class clamp below, and
-// putting them here under a synthetic class key would let a provider match the
-// unclamped value.
-//
-// Precomputed at startup, read-only thereafter, same lifecycle as everything
-// else SetQualityConcurrencyCap writes.
-func soloSeedByClass(seed map[string]float64) map[string]map[string]float64 {
-	if len(seed) == 0 {
-		return nil
-	}
-	out := make(map[string]map[string]float64)
-	for key, v := range seed {
-		model, class, qualified := strings.Cut(key, soloSeedClassSep)
-		if !qualified {
-			continue
-		}
-		byClass := out[model]
-		if byClass == nil {
-			byClass = make(map[string]float64, 1)
-			out[model] = byClass
-		}
-		byClass[class] = v
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-// soloSeedFleetFallbacks extracts the UNQUALIFIED seed entries and clamps each
-// to the slowest class-qualified seed declared for the same model.
-//
-// SAFETY INVARIANT — the same one SoloMedianAllChips enforces for MEASURED
-// medians, applied to CONFIGURED ones: a chip class the operator did not name
-// must never be credited with more than the slowest class they did name. A
-// seed is a measurement of one class. The 70 tok/s gemma seed came off an M4
-// Max (~99.5 tok/s solo paged); an M1 Pro that decodes gemma at 14 tok/s and
-// inherits it is granted cap 8 and projects ~3.4 tok/s per request at batch
-// 8, far under the 15 tok/s quality floor — the over-admission the whole
-// quality cap exists to prevent, arriving through its own cold-start knob.
-// Clamping makes an unrecognized class degrade toward UNDER-admission
-// whatever order the operator writes the CSV in.
-//
-// Precomputed at startup so the routing path never iterates the seed table.
-func soloSeedFleetFallbacks(seed map[string]float64) map[string]float64 {
-	if len(seed) == 0 {
-		return nil
-	}
-	slowestClass := make(map[string]float64)
-	for key, v := range seed {
-		model, _, qualified := strings.Cut(key, soloSeedClassSep)
-		if !qualified {
-			continue
-		}
-		if cur, ok := slowestClass[model]; !ok || v < cur {
-			slowestClass[model] = v
-		}
-	}
-	out := make(map[string]float64, len(seed))
-	for key, v := range seed {
-		if strings.Contains(key, soloSeedClassSep) {
-			continue
-		}
-		if floor, ok := slowestClass[key]; ok && floor < v {
-			v = floor
-		}
-		out[key] = v
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-// soloTPSSeedForClass resolves the cold-start seed for (model, chip class):
-//
-//  1. the class-qualified entry for the provider's OWN chip class, when the
-//     operator declared one — the only place a class-specific measurement is
-//     allowed to apply;
-//  2. the unqualified fleet-wide entry, already clamped to the slowest class
-//     the operator named (soloSeedFleetFallbacks);
-//  3. no seed at all, which drops the resolver to resolvedDecodeTPS(p) —
-//     exactly the pre-seed behaviour, and the conservative outcome when an
-//     operator seeds only the class they measured.
-//
-// An unrecognized chip reaches the coordinator as ChipFamily "Unknown" /
-// ChipTier "Unknown" (HardwareDetector.parseChipIdentity), i.e. class
-// "Unknown|Unknown", so it matches no class-qualified entry and takes (2) or
-// (3). Both are floors, never the fast class's rate.
-// HOT PATH: once per candidate provider per request, inside
-// snapshotProviderIntoLockedEx under both r.mu and p.mu. Every lookup here is a map
-// read against an already-lowered key; nothing is concatenated and nothing is
-// allocated when the strings are already lower-case ASCII (strings.ToLower
-// returns its argument unchanged in that case, which is the common one — the
-// class key is built from a fixed vocabulary and most build ids are slugs).
-func soloTPSSeedForClass(model, chipClass string) (float64, bool) {
-	m := strings.ToLower(model)
-	if chipClass != "" && modelSoloTPSSeedByClass != nil {
-		if byClass := modelSoloTPSSeedByClass[m]; byClass != nil {
-			if v, ok := byClass[strings.ToLower(chipClass)]; ok {
-				return v, true
-			}
-		}
-	}
-	v, ok := modelSoloTPSSeedFleet[m]
-	return v, ok
-}
-
-// soloTransferDestBoundLocked is the upper bound the DESTINATION provider's own
-// hardware places on a cross-class solo transfer, for use when that provider's
-// chip class contributed no sample of its own.
-//
-// It is resolvedDecodeTPS(p) — the registration benchmark, else the
-// sqrt(memory_bandwidth) proxy — with one exclusion: resolvedDecodeTPS returns
-// a hard-coded 1.0 for a provider that reports neither, and clamping to that
-// sentinel would pin an otherwise-fine box to cap 1 purely because it went
-// quiet. A provider is never capped at 1 by its own silence (see the
-// before-first-completion note on resolvedSoloModelTPSLocked), so absent both
-// signals this reports no bound and the transfer keeps whatever the seed and
-// class-count arms gave it.
-//
-// The rate is model-AGNOSTIC, which is exactly why it may only ever lower a
-// transferred value and never raise one: it under-states fast models (a ~57
-// tok/s gpt-oss reads ~28 through the bandwidth proxy), so using it as a
-// ceiling is conservative while using it as a floor would not be. Caller holds
-// p.mu.
-func soloTransferDestBoundLocked(p *Provider) (float64, bool) {
-	if p.DecodeTPS <= 0 && p.Hardware.MemoryBandwidthGBs <= 0 {
-		return 0, false
-	}
-	return resolvedDecodeTPS(p), true
-}
-
-// qualityCapOvercommitForModelLocked resolves the overcommit for a model: the
-// per-model override when one exists for the resolved build id, else the global
-// value. Caller holds r.mu.
-func (r *Registry) qualityCapOvercommitForModelLocked(model string) float64 {
-	if v, ok := qualityCapOvercommitByModel[strings.ToLower(model)]; ok {
-		return v
-	}
-	return r.qualityCapOvercommit
+	return &quality.Policy{}
 }
 
 // soloModelTPS is a static single-stream decode rate for a (provider, model)
@@ -430,7 +205,7 @@ type soloModelTPS struct {
 //     tok/s), so refusing would LOOSEN the cap in most fleet shapes rather
 //     than tighten it. Measured: over 600 shapes where this arm is the sole
 //     admission reason, refusing loosens 338, tightens 81, no change in 181.
-//     soloTransferDestBoundLocked below supplies the bound this arm lacks.
+//     The destination-bound input to quality.Policy supplies the missing bound.
 //
 // With none of them, the "min of per-class medians" is a single fast class's
 // rate being applied to an unsampled slower one — one M4 Max sample setting an
@@ -442,7 +217,7 @@ type soloModelTPS struct {
 // cannot fire on the current production fleet. The shipped
 // EIGENINFERENCE_MODEL_SOLO_TPS_SEED carries UNQUALIFIED entries for both
 // served models ("gemma-4-26b-qat-4bit=14,gpt-oss-20b=30"), and an unqualified
-// entry resolves through modelSoloTPSSeedFleet for EVERY chip class, so
+// entry resolves through the policy's fleet seed index for EVERY chip class, so
 // hasSeed is true fleet-wide and the first arm always short-circuits it. The
 // arm is live only for a model added without an unqualified seed entry.
 // TestSoloSeedUnqualifiedEntryMakesEveryClassSeeded pins that.
@@ -467,68 +242,21 @@ type soloModelTPS struct {
 // drive the cap to 1 in a feedback loop. Solo medians preserve that property
 // because ingest is gated on a fully uncontended box.
 //
-// The qualityCapPerModelTPSEnv kill switch (false) short-circuits to (4),
+// The qualityCapPerModelTPSEnv kill switch (false) short-circuits to (5),
 // restoring resolvedDecodeTPS(p) at every wired site exactly. Caller holds
 // r.mu and p.mu.
 func (r *Registry) resolvedSoloModelTPSLocked(p *Provider, model string) soloModelTPS {
-	if qualityCapPerModelTPS {
-		chipClass := chipClassKey(p.Hardware)
-		classTPS, classN := r.tpsRegistry.SoloMedian(model, chipClass)
-		if classN >= qualityCapSoloMinSamples && classTPS > 0 {
-			return soloModelTPS{tps: classTPS, perModel: true}
-		}
-		seed, hasSeed := soloTPSSeedForClass(model, chipClass)
-		allTPS, allN, allClasses := r.tpsRegistry.SoloMedianAllChips(model)
-		// Seed-clamp the cross-class transfer: observations from faster classes
-		// cannot widen an unsampled slower class's cap above its configured
-		// cold-start estimate. Applies at both sample floors.
-		if allTPS > 0 && hasSeed && seed < allTPS {
-			allTPS = seed
-		}
-		// Destination-clamp it too, when this provider's own class contributed
-		// nothing. The seed clamp above only fires for a seeded class, and
-		// allClasses > 1 bounds the transfer against the sampled POPULATION,
-		// not against the box receiving it. This box's own hardware evidence
-		// does bound it: a rate it cannot sustain on any model is not one it
-		// sustains on this one. Model-agnostic, so it can only ever LOWER a
-		// transferred rate — never widen one, and never applied when the class
-		// has its own samples (those are strictly better evidence).
-		if allTPS > 0 && classN == 0 {
-			if own, ok := soloTransferDestBoundLocked(p); ok && own < allTPS {
-				allTPS = own
-			}
-		}
-		// ...and refuse it outright when nothing bounds it (see above). An
-		// unbounded transfer is not conservative just because the function it
-		// came from is named for a minimum.
-		crossClassBounded := hasSeed || classN > 0 || allClasses > 1
-		if crossClassBounded && allN >= qualityCapSoloMinSamples && allTPS > 0 {
-			return soloModelTPS{tps: allTPS, perModel: true}
-		}
-		// Measured but under-sampled. Ranked below both trusted medians and
-		// above the seed: a real solo-gated measurement of THIS model beats a
-		// fleet-wide configured guess, and both beat the model-agnostic
-		// sqrt-bandwidth proxy that pins a fast model to cap 1-2.
-		if classN > 0 && classTPS > 0 {
-			return soloModelTPS{tps: classTPS, perModel: true}
-		}
-		if crossClassBounded && allN > 0 && allTPS > 0 {
-			return soloModelTPS{tps: allTPS, perModel: true}
-		}
-		if hasSeed {
-			return soloModelTPS{tps: seed, perModel: true}
-		}
+	policy := r.qualityPolicyLocked()
+	var evidence quality.SoloEvidence
+	chipClass := ""
+	if policy.PerModelEnabled() {
+		chipClass = chipClassKey(p.Hardware)
+		evidence.ClassTPS, evidence.ClassSamples = r.tpsRegistry.SoloMedian(model, chipClass)
+		evidence.MinimumTPS, evidence.TotalSamples, evidence.Classes = r.tpsRegistry.SoloMedianAllChips(model)
 	}
-	return soloModelTPS{tps: resolvedDecodeTPS(p), perModel: false}
-}
-
-// effectiveMaxConcurrencyForModelLocked returns the per-provider admission
-// concurrency cap for model from an explicit provider-level static rate
-// (resolvedDecodeTPS). Kept for callers/tests that already resolved the rate;
-// production admission paths use effectiveMaxConcurrencyForModelResolvedLocked
-// so the cap consumes the per-model solo rate. Caller holds r.mu and p.mu.
-func (r *Registry) effectiveMaxConcurrencyForModelLocked(p *Provider, model string, staticDecodeTPS float64) int {
-	return r.effectiveMaxConcurrencyForModelRateLocked(p, model, soloModelTPS{tps: staticDecodeTPS})
+	rate := policy.Resolve(evidence, model, chipClass,
+		quality.DecodeFallback(p.DecodeTPS, p.Hardware), p.DecodeTPS > 0 || p.Hardware.MemoryBandwidthGBs > 0)
+	return soloModelTPS{tps: rate.TPS, perModel: rate.PerModel}
 }
 
 // effectiveMaxConcurrencyForModelResolvedLocked is the per-model admission cap
@@ -553,41 +281,9 @@ func (r *Registry) effectiveMaxConcurrencyForModelResolvedLocked(p *Provider, mo
 // Caller holds r.mu and p.mu.
 func (r *Registry) effectiveMaxConcurrencyForModelRateLocked(p *Provider, model string, rate soloModelTPS) int {
 	base := p.maxConcurrencyForModelLocked(model)
-	if profile := qualifiedPerformanceProfileLocked(p, model); profile != nil {
-		floor := 0.0
-		if r.qualityCapEnabled {
-			floor = r.qualityCapFloorTPS
-		}
-		return profile.concurrencyForDecodeFloor(base, floor)
-	}
-	if !r.qualityCapEnabled {
-		return base
-	}
-	// The cap needs a trustworthy single-stream rate. p.DecodeTPS is the
-	// provider-reported registration benchmark; without it, resolvedDecodeTPS falls
-	// back to sqrt(memory_bandwidth) — a coarse, MODEL-AGNOSTIC hardware proxy that
-	// under-estimates fast models (a ~57 tok/s gpt-oss reads as ~28), so hard-capping
-	// a fast non-dedicated model from it could shed healthy traffic. Only cap from
-	// the bandwidth fallback for DEDICATED models, which are known-slow and urgently
-	// need it; a non-dedicated model without a real benchmark keeps the legacy flat
-	// cap until its provider reports decode_tps. A PER-MODEL rate (solo median or
-	// seed — rate.perModel) is model-specific by construction, so the guard does
-	// not apply to it: those models are capped even without a registration
-	// benchmark.
-	if p.DecodeTPS <= 0 && !rate.perModel {
-		if _, dedicated := r.dedicatedPatternForLocked(model); !dedicated {
-			return base
-		}
-	}
-	qc := qualityConcurrency(rate.tps, r.qualityCapFloorTPS, effectiveTPSLoadFactor, base, r.qualityCapFallback)
-	capped := int(math.Ceil(float64(qc) * r.qualityCapOvercommitForModelLocked(model)))
-	if capped < 1 {
-		capped = 1
-	}
-	if capped < base {
-		return capped
-	}
-	return base
+	_, dedicated := r.dedicatedPatternForLocked(model)
+	return r.qualityPolicyLocked().Cap(model, base, quality.Rate{TPS: rate.tps, PerModel: rate.perModel},
+		p.DecodeTPS > 0, dedicated, effectiveTPSLoadFactor, (*performance.Profile)(qualifiedPerformanceProfileLocked(p, model)))
 }
 
 // hasConcurrencyHeadroomForModelCapResolvedLocked mirrors

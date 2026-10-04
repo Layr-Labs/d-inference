@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased - verification concurrency
+
+- Keep a reconnected provider's verification job eligible after its old worker releases the claim. A delayed challenge callback no longer restores the stale running snapshot and postpones verification until claim expiry.
+- Read one synchronized trust-level snapshot for registration metrics and telemetry while verification updates run concurrently.
+
 ## Unreleased — leaderboard availability
 
 - Add a concurrent BRIN time index for recent provider-earnings rankings, enable range autosummarization, and keep planner statistics current. Return an uncached 503 when ranking queries fail instead of showing and caching an empty leaderboard.

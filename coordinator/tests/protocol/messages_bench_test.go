@@ -1,0 +1,88 @@
+package protocol_test
+
+import (
+	"encoding/json"
+	"testing"
+
+	production "github.com/eigeninference/d-inference/coordinator/protocol"
+)
+
+func BenchmarkMarshalRegisterMessage(b *testing.B) {
+	b.ReportAllocs()
+	msg := production.RegisterMessage{
+		Type: production.TypeRegister,
+		Hardware: production.Hardware{
+			MachineModel:       "Mac15,8",
+			ChipName:           "Apple M3 Max",
+			ChipFamily:         "M3",
+			ChipTier:           "Max",
+			MemoryGB:           64,
+			MemoryAvailableGB:  58.5,
+			CPUCores:           production.CPUCores{Total: 16, Performance: 12, Efficiency: 4},
+			GPUCores:           40,
+			MemoryBandwidthGBs: 400,
+		},
+		Models: []production.ModelInfo{
+			{ID: "mlx-community/Qwen3.5-9B-Instruct-4bit", SizeBytes: 5_700_000_000, ModelType: "qwen3", Quantization: "4bit"},
+			{ID: "mlx-community/Trinity-Mini-8bit", SizeBytes: 14_200_000_000, ModelType: "qwen2_moe", Quantization: "8bit"},
+		},
+		Backend:    "vllm_mlx",
+		PublicKey:  "dGVzdC1wdWJsaWMta2V5LWJhc2U2NC1lbmNvZGVk",
+		PrefillTPS: 210.5,
+		DecodeTPS:  55.3,
+	}
+
+	b.ResetTimer()
+	for range b.N {
+		_, _ = json.Marshal(msg)
+	}
+}
+
+func BenchmarkUnmarshalProviderMessage(b *testing.B) {
+	b.ReportAllocs()
+	// Pre-serialize a heartbeat message (common provider->coordinator message).
+	hb := production.HeartbeatMessage{
+		Type:   production.TypeHeartbeat,
+		Status: "idle",
+		Stats: production.HeartbeatStats{
+			RequestsServed:  1523,
+			TokensGenerated: 4_892_310,
+		},
+		WarmModels: []string{
+			"mlx-community/Qwen3.5-9B-Instruct-4bit",
+			"mlx-community/Trinity-Mini-8bit",
+		},
+		SystemMetrics: production.SystemMetrics{
+			MemoryPressure: 0.35,
+			CPUUsage:       0.22,
+			ThermalState:   "nominal",
+		},
+	}
+	activeModel := "mlx-community/Qwen3.5-9B-Instruct-4bit"
+	hb.ActiveModel = &activeModel
+
+	data, _ := json.Marshal(hb)
+
+	b.ResetTimer()
+	for range b.N {
+		var pm production.ProviderMessage
+		_ = pm.UnmarshalJSON(data)
+	}
+}
+
+func BenchmarkMarshalInferenceRequest(b *testing.B) {
+	b.ReportAllocs()
+	msg := production.InferenceRequestMessage{
+		Type:      production.TypeInferenceRequest,
+		RequestID: "req-abc123-def456-789012",
+		EncryptedBody: &production.EncryptedPayload{
+			EphemeralPublicKey: "dGVzdC1lcGhlbWVyYWwtcHVibGljLWtleS0zMi1ieXRlcw==",
+			Ciphertext:         "bm9uY2UtMjQtYnl0ZXMtaGVyZS4uLi5lbmNyeXB0ZWQtcGF5bG9hZC1kYXRhLXRoYXQtaXMtcXVpdGUtbG9uZy1mb3ItcmVhbGlzdGljLWJlbmNobWFyaw==",
+		},
+	}
+
+	b.ResetTimer()
+	for range b.N {
+		_, _ = json.Marshal(msg)
+	}
+}

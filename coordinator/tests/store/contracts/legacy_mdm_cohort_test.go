@@ -126,7 +126,11 @@ func TestLegacyMDMCohortEvidence(t *testing.T) {
 				t.Fatal("optional interface not discoverable through cache")
 			}
 			got, err := freeze.FreezeLegacyMDMCohort(ctx)
-			want := []store.LegacyMDMMachine{{"eligible", eligible.SEPublicKey, eligible.SerialNumber}, {"hashless", "se-hashless", "serial-hashless"}, {"revoked", revoked.SEPublicKey, revoked.SerialNumber}}
+			want := []store.LegacyMDMMachine{
+				{AccountID: "eligible", SEPublicKey: eligible.SEPublicKey, SerialNumber: eligible.SerialNumber},
+				{AccountID: "hashless", SEPublicKey: "se-hashless", SerialNumber: "serial-hashless"},
+				{AccountID: "revoked", SEPublicKey: revoked.SEPublicKey, SerialNumber: revoked.SerialNumber},
+			}
 			if err != nil || !reflect.DeepEqual(got, want) {
 				t.Fatalf("freeze = %+v, %v; want %+v", got, err, want)
 			}
@@ -250,7 +254,7 @@ func TestLegacyMDMCohortConflictingSerials(t *testing.T) {
 			}
 			freeze, _ := store.As[store.LegacyMDMCohortStore](s)
 			got, err := freeze.FreezeLegacyMDMCohort(ctx)
-			want := []store.LegacyMDMMachine{{"unproved-conflict", "se-unproved-conflict", "serial-unproved-conflict"}}
+			want := []store.LegacyMDMMachine{{AccountID: "unproved-conflict", SEPublicKey: "se-unproved-conflict", SerialNumber: "serial-unproved-conflict"}}
 			if err != nil || !reflect.DeepEqual(got, want) {
 				t.Fatalf("serial conflict freeze = %+v, %v; want %+v", got, err, want)
 			}
@@ -275,7 +279,10 @@ func TestLegacyMDMCohortMultipleAuthenticatedScopes(t *testing.T) {
 			}
 			freeze, _ := store.As[store.LegacyMDMCohortStore](s)
 			rows, err := freeze.FreezeLegacyMDMCohort(ctx)
-			want := []store.LegacyMDMMachine{{first.AccountID, first.SEPublicKey, first.SerialNumber}, {second.AccountID, second.SEPublicKey, second.SerialNumber}}
+			want := []store.LegacyMDMMachine{
+				{AccountID: first.AccountID, SEPublicKey: first.SEPublicKey, SerialNumber: first.SerialNumber},
+				{AccountID: second.AccountID, SEPublicKey: second.SEPublicKey, SerialNumber: second.SerialNumber},
+			}
 			if err != nil || !reflect.DeepEqual(rows, want) {
 				t.Fatalf("multiple authenticated scopes = %+v, %v; want %+v", rows, err, want)
 			}
@@ -295,7 +302,7 @@ func TestLegacyMDMCohortCancelledFreeze(t *testing.T) {
 			p := legacyMDMFixture(t, s, "retry", true)
 			legacyMDMProof(t, s, p)
 			rows, err := freeze.FreezeLegacyMDMCohort(context.Background())
-			want := []store.LegacyMDMMachine{{p.AccountID, p.SEPublicKey, p.SerialNumber}}
+			want := []store.LegacyMDMMachine{{AccountID: p.AccountID, SEPublicKey: p.SEPublicKey, SerialNumber: p.SerialNumber}}
 			if err != nil || !reflect.DeepEqual(rows, want) {
 				t.Fatalf("retry freeze = %+v, %v; want %+v", rows, err, want)
 			}

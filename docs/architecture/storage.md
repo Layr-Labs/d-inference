@@ -107,9 +107,10 @@ imports a backend. Application assembly applies `store.NewCached` to the chosen
 instance. `CachedStore` invalidation and `store.As` capability unwrapping remain
 at the contract layer. Moving a method must not bypass either mechanism.
 
-Private backend tests live beside the implementation. Public parity cases live
-under `coordinator/tests/store/contracts/`; each test process uses
-`coordinator/store/internal/testdb` to allocate its own disposable database before
+Backend-specific tests live in the mirrored `coordinator/tests/store/memory/`
+and `coordinator/tests/store/postgres/` directories. Public parity cases live
+under `coordinator/tests/store/contracts/`; each database test process uses
+`coordinator/tests/internal/testdb` to allocate its own disposable database before
 running fixtures. The local test role needs `CREATEDB`. Packages can execute
 concurrently without truncating one another's tables; these fixtures never use
 a shared production database.

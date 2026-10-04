@@ -88,8 +88,11 @@ func (s *PostgresStore) buildConcurrentIndexOnce(ctx context.Context, name, ddl 
 	if err := run(ddl); err != nil {
 		return fmt.Errorf("store: create index %s: %w", name, err)
 	}
-	if _, valid, err = concurrentIndexState(ctx, conn, name); err != nil || !valid {
-		return fmt.Errorf("store: index %s did not become valid (query error: %v)", name, err)
+	if _, valid, err = concurrentIndexState(ctx, conn, name); err != nil {
+		return err
+	}
+	if !valid {
+		return fmt.Errorf("store: index %s did not become valid", name)
 	}
 	return nil
 }

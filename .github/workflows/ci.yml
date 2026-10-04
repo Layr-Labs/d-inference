@@ -137,14 +137,11 @@ jobs:
           # The profile also holds e2e/testbed and a frozen docs evidence
           # package. The reported number counts coordinator packages only.
           scoped="$RUNNER_TEMP/coverage-coordinator.out"
-          if ! grep -q '^github.com/eigeninference/d-inference/coordinator/' "$RUNNER_TEMP/coverage.out"; then
+          head -n 1 "$RUNNER_TEMP/coverage.out" > "$scoped"
+          if ! grep '^github.com/eigeninference/d-inference/coordinator/' "$RUNNER_TEMP/coverage.out" >> "$scoped"; then
             echo "coverage.out has no coordinator rows"
             exit 1
           fi
-          {
-            head -n 1 "$RUNNER_TEMP/coverage.out"
-            grep '^github.com/eigeninference/d-inference/coordinator/' "$RUNNER_TEMP/coverage.out"
-          } > "$scoped"
           statements=$(go tool cover -func="$scoped" | awk '$1 == "total:" && $2 == "(statements)" {print $3}')
           if ! [[ "$statements" =~ ^[0-9]+(\.[0-9]+)?%$ ]]; then
             echo "Missing statement coverage: '$statements'"
@@ -224,7 +221,6 @@ jobs:
       - name: Report coverage
         working-directory: coordinator/promptsidecar
         run: |
-          set -o pipefail
           cargo llvm-cov --locked --all-targets --no-report
           cargo llvm-cov report --summary-only
           json="$RUNNER_TEMP/sidecar-coverage.json"

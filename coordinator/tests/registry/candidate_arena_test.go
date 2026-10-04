@@ -3,6 +3,7 @@ package registry_test
 import (
 	"fmt"
 	"testing"
+	"unsafe"
 
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/candidatearena"
 	production "github.com/eigeninference/d-inference/coordinator/registry"
@@ -115,4 +116,17 @@ func TestCandidateArenaReleaseReusesAndZeroes(t *testing.T) {
 		t.Fatal("kept slot was disturbed")
 	}
 	_ = c
+}
+
+// The Go allocator's largest small-object size class is 32 KiB. A chunk that
+// does not fill it wastes the tail of every allocation the scan makes, and a
+// chunk past it becomes a large object. Retune ChunkSize when Candidate changes.
+func TestCandidateArenaChunkFillsLargestSmallSizeClass(t *testing.T) {
+	const largestSmallSizeClass = 32 << 10
+	candidateBytes := unsafe.Sizeof(production.Candidate{})
+	chunkBytes := uintptr(candidatearena.ChunkSize) * candidateBytes
+	if chunkBytes > largestSmallSizeClass || chunkBytes+candidateBytes <= largestSmallSizeClass {
+		t.Fatalf("chunk of %d candidates x %d bytes = %d bytes; want the most candidates that fit %d bytes (%d)",
+			candidatearena.ChunkSize, candidateBytes, chunkBytes, largestSmallSizeClass, largestSmallSizeClass/candidateBytes)
+	}
 }

@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -61,6 +61,7 @@ components for the specific invariant:
 | Restore publication and pending service charges | `coordinator/registry/provider_persistence.go` (`ProviderPersistence`), `coordinator/registry/service_reservations.go` (`ServiceReservations`); both retain the provider's existing lock boundaries |
 | Cache restore, maintenance and capability publication | `coordinator/registry/cache_restoration.go`, `coordinator/registry/cache_maintenance.go`, `coordinator/registry/cache_snapshot.go`; factories in `coordinator/registry/cache_dependencies.go` retain the actual tracker/registry |
 | Autopilot session authority, bounded control and pending durable phases | `coordinator/internal/registry/autopilotstate/`, `autopilotcontrol/`, `autopilotledger/`; pure placement and demand contracts remain under `coordinator/registry/autopilot/` |
+| Routing scan candidate storage | `coordinator/internal/registry/candidatearena/arena.go` (`Arena`, `ChunkSize`); the chunk is sized against `Candidate` (`coordinator/registry/scheduler.go`) and guarded by `coordinator/tests/registry/candidate_arena_test.go` |
 | Cache generations, memory history, shared records and SQL helpers | `coordinator/internal/store/` |
 | Sidecar identity, protocol, artifacts, catalog/preload and endpoint lowering | `coordinator/internal/promptcontract/` |
 | Remote media policy, read budgets and reference grouping | `coordinator/internal/mediafetch/` |

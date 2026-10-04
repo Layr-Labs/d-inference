@@ -108,7 +108,7 @@ func serviceColdCandidate(id string, cost float64, queue, pending int, discount 
 
 func selectServiceCandidate(pool []*serviceCostCandidate) (winner, runnerUp *serviceCostCandidate, near int, path production.SelectionPath) {
 	decision := selection.Select(pool, func(c *serviceCostCandidate) selection.Candidate {
-		return selection.Project(c.provider.ID, c.firstContent, c.Breakdown, c.EstimatedTTFTSavedMs, c.EvidenceWeight, false)
+		return selection.Project(c.provider.ID, &c.firstContent, &c.Breakdown, c.EstimatedTTFTSavedMs, c.EvidenceWeight, false)
 	}, rand.Intn, "")
 	if decision.Winner >= 0 {
 		winner = pool[decision.Winner]

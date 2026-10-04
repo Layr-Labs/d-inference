@@ -392,6 +392,21 @@
       ]
     },
     {
+      "name": "component CI routing",
+      "source_patterns": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/component-changes.yml",
+        ".github/workflows/integration.yml",
+        ".github/workflows/benchmarks.yml",
+        "scripts/ci-component-paths.py",
+        "scripts/test-ci-component-paths.py"
+      ],
+      "docs_any_of": [
+        "docs/developer/build.md",
+        "docs/developer/test.md"
+      ]
+    },
+    {
       "name": "coordinator test tooling",
       "source_patterns": [
         "scripts/coordinator-tests.sh",

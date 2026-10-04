@@ -125,7 +125,7 @@ func TestAutopilotInventoryRegistrationPreservesNormalIdentity(t *testing.T) {
 	}
 	r.Disconnect(p.ID)
 	fresh := r.Register("fresh", nil, &protocol.RegisterMessage{Models: []protocol.ModelInfo{normal}, ModelAutopilot: state, AutopilotInventory: []protocol.ModelInfo{observer}})
-	if r.states[fresh.ID].OrdinaryAllowed(fresh.ModelAutopilot, fresh.ID, observer.ID, time.Now()) {
+	if r.states[fresh.ID].OrdinaryAllowed(fresh.ModelAutopilot, fresh.ID, observer.ID, time.Now) {
 		t.Fatal("reconnect inherited previous control")
 	}
 }

@@ -30,7 +30,7 @@ func makeSelectionTestCandidate(id string, cost float64, queue, pending int, dis
 }
 
 func projectSelectionTestCandidate(c *selectionTestCandidate) selection.Candidate {
-	return selection.Project(c.id, c.firstContent, c.breakdown, c.cacheEstimatedTTFTSavedMs, c.cacheEvidenceWeight, c.cacheAffinityEligible)
+	return selection.Project(c.id, &c.firstContent, &c.breakdown, c.cacheEstimatedTTFTSavedMs, c.cacheEvidenceWeight, c.cacheAffinityEligible)
 }
 
 func TestRoutingPreferencesPreserveFallbackAndOrder(t *testing.T) {

@@ -1,8 +1,16 @@
 # Changelog
 
+## Unreleased - Autopilot inventory reporting
+
+- Add an admin-only connected Autopilot inventory report with exact per-model last-reported approval counts, deduplicated approval totals and a models-per-provider distribution. Distinguish unpaused, paused and stale connections without exposing provider identities or claiming fresh disk verification, residency or routing eligibility. The read does not depend on the operation ledger.
+
 ## Unreleased — routing scan cost
 
 - Reduce the per-request provider scan cost after the coordinator reorganization. Autopilot eligibility reads the clock only for a provider holding a matching control grant, candidate ranking reads the projected pool in place, and candidate storage fills one allocation size class. Routing outcomes are unchanged.
+
+## Unreleased — canceled PostgreSQL debits
+
+- Keep a PostgreSQL debit uncommitted until its statement succeeds, preventing a timed-out row-lock wait from later becoming a charge. Lost commit acknowledgements remain uncertain and must not be blindly retried.
 
 ## Unreleased - verification concurrency
 
@@ -30,6 +38,10 @@
 ## Unreleased — status page placeholder
 
 - Add a standalone static status-page placeholder: "The status page will return in the future." Publishing it requires a separate hosting change; the existing Instatus content is preserved.
+
+## Unreleased — preflight routing permits
+
+- Release shared routing scan capacity once rejection evaluation finishes, before refunds, self-route store lookups and response writes. Preserve admission gates, rejection responses and billing behavior.
 
 ## Unreleased - provider availability wizard
 
@@ -76,10 +88,6 @@
 - Preserve an enrolled provider's pause during ordinary start, `enable` and inventory refresh; resumption requires explicit `resume`. Validate saved inventory all-or-nothing before persistence/drain, including transient verification failures; only explicit refresh may prune excluded builds.
 - Apply current full Autopilot settings at each new scheduled window. Disabling between windows restores ordinary saved model selection even if unchanged; other runtime inputs remain frozen.
 - Queue pending-operation uncertainty before removing a disconnected provider, persisting outside registry/provider locks. Connection loss never implies rollback or a confirmed terminal resident set.
-
-## Unreleased — preflight routing permits
-
-- Release shared routing scan capacity once rejection evaluation finishes, before refunds, self-route store lookups and response writes. Preserve admission gates, rejection responses and billing behavior.
 
 ## Unreleased — canceled queue waiters
 

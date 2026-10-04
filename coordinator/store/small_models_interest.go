@@ -26,11 +26,3 @@ type SmallModelsInterestStore interface {
 	GetSmallModelsInterest(context.Context, string) (*SmallModelsInterest, error)
 	ListSmallModelsInterest(context.Context, string, int) ([]SmallModelsInterestContact, error)
 }
-
-// Both implementations bound admin reads even when called without the HTTP layer.
-func interestPageLimit(limit int) int {
-	if limit < 1 || limit > 100 {
-		return 100
-	}
-	return limit
-}

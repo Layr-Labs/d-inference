@@ -1,38 +1,24 @@
 package registry
 
-import "time"
-
-// firstContentEvidenceExplorationAfter is a policy threshold, not a measured
-// optimum or a service guarantee. Short gaps retain feasible-first selection.
-const firstContentEvidenceExplorationAfter = 5 * time.Minute
+import (
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/connectiontime"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/forecast"
+	"time"
+)
 
 // firstContentEvidenceGapAgeMs uses the older paired measurement's age, or
 // connection age when either measurement is undated. It is not time spent idle
 // or time since evidence expired. Unknown connection age returns -1.
-func firstContentEvidenceGapAgeMs(s *routingSnapshot, registeredAt, now time.Time) int32 {
-	if s.performanceAgeMs >= 0 {
-		return s.performanceAgeMs
-	}
-	if registeredAt.IsZero() {
-		return -1
-	}
-	return heartbeatAgeMs(now, registeredAt)
+func firstContentEvidenceGapAgeMs(s *routingSnapshot, origin *connectiontime.Origin, now time.Time) int32 {
+	return forecast.EvidenceGapAgeMS(s.performanceAgeMs, origin, now)
 }
 
 // firstContentEvidenceExplorable lets idle providers compete for work that can
 // renew their measurements. They remain unknown: ranking need not select them,
 // and hedge/fresh-feasible requests still require qualified evidence.
 func firstContentEvidenceExplorable(c *routingCandidate) bool {
-	if c.firstContent.Status != FirstContentUnknown {
-		return false
-	}
-	switch c.firstContent.Reason {
-	case "performance_age_unknown_or_stale", "performance_missing":
-	default:
-		return false
-	}
 	s := &c.snapshot
-	return s.modelLoaded && s.wholeMacWorkKnown && !s.wholeMacBusy && s.partialPrefillRows == 0 &&
-		s.totalPending == 0 && s.evidenceGapAgeMs >= 0 &&
-		time.Duration(s.evidenceGapAgeMs)*time.Millisecond >= firstContentEvidenceExplorationAfter
+	return forecast.EvidenceExplorable(c.firstContent, s.modelLoaded, forecast.Workload{
+		WholeMacKnown: s.wholeMacWorkKnown, WholeMacBusy: s.wholeMacBusy, PartialPrefillRows: s.partialPrefillRows,
+	}, s.totalPending, s.evidenceGapAgeMs)
 }

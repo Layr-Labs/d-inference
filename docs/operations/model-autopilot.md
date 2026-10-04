@@ -1,6 +1,6 @@
 # Experimental Autopilot operation and recovery
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-03
 
 Use this runbook to observe explicitly enrolled providers in shadow and prepare
 a separately approved live rollout. Startup opt-in records interest/consent, not
@@ -96,6 +96,9 @@ liveness, loaded models, authorization and shadow/live mode.
 ## Verification
 
 - Run `go test ./coordinator/...` and focused race tests for Autopilot and routing.
+- Select mirrored policy and operational-owner suites with
+  `go test -race ./coordinator/tests/registry/... -run 'Test(Autopilot|ModelAutopilot)' -count=1`.
+  Production package selectors alone do not select the separate test tree.
 - Run `make provider-test` with the source-matched Metal library.
 - Exercise expired/old-session commands, selection changes, opt-out during a
   transition, local/network work, protected donor floors, mixed shapes,
@@ -121,7 +124,18 @@ liveness, loaded models, authorization and shadow/live mode.
    restores its saved idle policy. Selected files remain downloaded.
 4. Inspect actual resident sets and uncertain records. A failed operation may
    have released a model before failing to load another. Do not report rollback
-   success until the resulting capacity is confirmed.
+    success until the resulting capacity is confirmed.
+
+When ledger writes fail, inspect the existing pending phases and retry the
+durable path rather than clearing command ownership. `autopilotledger.Events.Flush`
+(`coordinator/internal/registry/autopilotledger/events.go`) leaves failed writes
+pending; `autopilotcontrol.Controller.Tick`
+(`coordinator/internal/registry/autopilotcontrol/controller.go`) suppresses new
+mutations while that flush is unavailable. Pending commands and control leases
+remain owned by `autopilotstate.State`
+(`coordinator/internal/registry/autopilotstate/state.go`, `commands.go` in the same
+directory). This is an ownership map for existing recovery behavior, not a new
+rollback action or proof that an uncertain provider command was unsent.
 
 ## Related
 

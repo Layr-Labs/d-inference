@@ -73,15 +73,15 @@ func openWithdrawals(ctx context.Context, q *storedb.Queries, accountID string, 
 func countRules(ctx context.Context, q *storedb.Queries, k *erasureKeys) ([]ErasureRowCount, error) {
 	out := make([]ErasureRowCount, 0, len(erasureRules))
 	for _, rule := range erasureRules {
-		row := ErasureRowCount{Rule: rule.Name, Table: rule.Table, Columns: rule.columnNames(), Action: rule.action()}
+		var rows int64
 		for _, st := range rule.statements(k) {
 			n, err := st.count(ctx, q)
 			if err != nil {
 				return nil, fmt.Errorf("store: erasure count %s: %w", rule.Name, err)
 			}
-			row.Rows += n
+			rows += n
 		}
-		out = append(out, row)
+		out = append(out, rule.rowCount(rows))
 	}
 	return out, nil
 }
@@ -396,7 +396,7 @@ func forfeitBalance(ctx context.Context, q *storedb.Queries, accountID, requestI
 func applyRules(ctx context.Context, q *storedb.Queries, k *erasureKeys) ([]ErasureRowCount, error) {
 	out := make([]ErasureRowCount, 0, len(erasureRules))
 	for _, rule := range erasureRules {
-		row := ErasureRowCount{Rule: rule.Name, Table: rule.Table, Columns: rule.columnNames(), Action: rule.action()}
+		var rows int64
 		for _, st := range rule.statements(k) {
 			want, err := st.count(ctx, q)
 			if err != nil {
@@ -409,9 +409,9 @@ func applyRules(ctx context.Context, q *storedb.Queries, k *erasureKeys) ([]Eras
 			if got != want {
 				return nil, fmt.Errorf("%w: %s counted %d, changed %d", ErrErasureCountMismatch, rule.Name, want, got)
 			}
-			row.Rows += got
+			rows += got
 		}
-		out = append(out, row)
+		out = append(out, rule.rowCount(rows))
 	}
 	return out, nil
 }

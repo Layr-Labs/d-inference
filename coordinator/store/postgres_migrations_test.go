@@ -5,6 +5,7 @@ import (
 	"context"
 	"log/slog"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -29,7 +30,7 @@ func TestMigrationsBuildCheckedInSchema(t *testing.T) {
 	dumpPool := openTestPool(t, newThrowawayTestDatabase(t))
 	loadSchemaFile(t, dumpPool, checkedInSchemaFile)
 
-	assertSameSchema(t, "schema/schema.sql", schemaSnapshot(t, dumpPool), "goose", schemaSnapshot(t, s.pool))
+	assertSameLines(t, "schema/schema.sql", schemaSnapshot(t, dumpPool), "goose", schemaSnapshot(t, s.pool))
 }
 
 // A database that a pre-goose binary migrated meets goose for the first
@@ -60,23 +61,7 @@ func TestMigrationsUpgradeLegacyDatabase(t *testing.T) {
 		UNION ALL SELECT 'usage_totals ' || id || ' ' || total_requests FROM usage_totals
 		UNION ALL SELECT 'collection ' || started_at FROM model_demand_collection
 		ORDER BY 1`
-	readRows := func() []string {
-		rows, err := pool.Query(ctx, rowsSQL)
-		if err != nil {
-			t.Fatalf("read rows: %v", err)
-		}
-		defer rows.Close()
-		var out []string
-		for rows.Next() {
-			var line string
-			if err := rows.Scan(&line); err != nil {
-				t.Fatalf("scan row: %v", err)
-			}
-			out = append(out, line)
-		}
-		return out
-	}
-	schemaBefore, rowsBefore := schemaSnapshot(t, pool), readRows()
+	schemaBefore, rowsBefore := schemaSnapshot(t, pool), queryLines(t, pool, rowsSQL)
 
 	s := &PostgresStore{pool: pool}
 	db := stdlib.OpenDBFromPool(pool)
@@ -88,31 +73,19 @@ func TestMigrationsUpgradeLegacyDatabase(t *testing.T) {
 	if _, err := provider.UpTo(ctx, lastPreGooseVersion); err != nil {
 		t.Fatalf("apply versions up to %d on legacy database: %v", lastPreGooseVersion, err)
 	}
-	assertSameSchema(t, "legacy", schemaBefore, "after the baseline", schemaSnapshot(t, pool))
-	assertSameSchema(t, "legacy rows", rowsBefore, "rows after the baseline", readRows())
+	assertSameLines(t, "legacy", schemaBefore, "after the baseline", schemaSnapshot(t, pool))
+	assertSameLines(t, "legacy rows", rowsBefore, "rows after the baseline", queryLines(t, pool, rowsSQL))
 
 	if err := s.migrate(ctx); err != nil {
 		t.Fatalf("migrate legacy database: %v", err)
 	}
 	dumpPool := openTestPool(t, newThrowawayTestDatabase(t))
 	loadSchemaFile(t, dumpPool, checkedInSchemaFile)
-	assertSameSchema(t, "schema/schema.sql", schemaSnapshot(t, dumpPool), "upgraded legacy", schemaSnapshot(t, pool))
-	assertSameSchema(t, "legacy rows", rowsBefore, "rows after goose", readRows())
-	var versions []int64
-	rows, err := pool.Query(ctx, `SELECT version_id FROM `+migrationVersionTable+` ORDER BY id`)
-	if err != nil {
-		t.Fatalf("read goose versions: %v", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var v int64
-		if err := rows.Scan(&v); err != nil {
-			t.Fatal(err)
-		}
-		versions = append(versions, v)
-	}
+	assertSameLines(t, "schema/schema.sql", schemaSnapshot(t, dumpPool), "upgraded legacy", schemaSnapshot(t, pool))
+	assertSameLines(t, "legacy rows", rowsBefore, "rows after goose", queryLines(t, pool, rowsSQL))
+	versions := queryLines(t, pool, `SELECT version_id::text FROM `+migrationVersionTable+` ORDER BY id`)
 	want := len(provider.ListSources())
-	if len(versions) != want+1 || versions[0] != 0 || versions[want] != int64(want) {
+	if len(versions) != want+1 || versions[0] != "0" || versions[want] != strconv.Itoa(want) {
 		t.Fatalf("goose versions = %v, want 0 through %d", versions, want)
 	}
 }

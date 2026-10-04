@@ -66,18 +66,11 @@ func mdaSerialDigest(serial string) string {
 
 // normalizeWallets trims, drops empty and duplicate addresses and sorts them.
 func normalizeWallets(in []string) []string {
-	seen := map[string]bool{}
-	out := []string{}
+	trimmed := make([]string, 0, len(in))
 	for _, a := range in {
-		a = strings.TrimSpace(a)
-		if a == "" || seen[a] {
-			continue
-		}
-		seen[a] = true
-		out = append(out, a)
+		trimmed = append(trimmed, strings.TrimSpace(a))
 	}
-	sort.Strings(out)
-	return out
+	return sortedUnique(trimmed)
 }
 
 // sortedUnique returns the non-empty values once each, sorted.
@@ -96,14 +89,24 @@ func sortedUnique(in []string) []string {
 
 func noRows(err error) bool { return errors.Is(err, pgx.ErrNoRows) }
 
-// collectErasureKeys reads every key of the account in q's transaction.
-func collectErasureKeys(ctx context.Context, q *storedb.Queries, accountID, stripeAccountID string, wallets []string) (*erasureKeys, error) {
+// newErasureKeys returns the keys that need no store read: the account
+// hashes, fresh replacement values and the planned wallet addresses.
+func newErasureKeys(accountID string, wallets []string) *erasureKeys {
 	k := &erasureKeys{
 		AccountID:           accountID,
 		ConsumerKeyHash:     hashKey(accountID),
 		PrivyReplacement:    erasedValue("erased:"),
 		ReferrerReplacement: erasedValue("erased-"),
 	}
+	for _, w := range normalizeWallets(wallets) {
+		k.Wallets = append(k.Wallets, walletReplacement{Address: w, Replacement: erasedValue("erased-")})
+	}
+	return k
+}
+
+// collectErasureKeys reads every key of the account in q's transaction.
+func collectErasureKeys(ctx context.Context, q *storedb.Queries, accountID, stripeAccountID string, wallets []string) (*erasureKeys, error) {
+	k := newErasureKeys(accountID, wallets)
 	providers, err := q.ListAccountProviderKeys(ctx, accountID)
 	if err != nil {
 		return nil, err
@@ -194,10 +197,6 @@ func collectErasureKeys(ctx context.Context, q *storedb.Queries, accountID, stri
 			}
 		}
 		sort.Strings(k.MDADigestsToDelete)
-	}
-
-	for _, w := range normalizeWallets(wallets) {
-		k.Wallets = append(k.Wallets, walletReplacement{Address: w, Replacement: erasedValue("erased-")})
 	}
 	return k, nil
 }

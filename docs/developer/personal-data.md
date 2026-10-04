@@ -76,17 +76,16 @@ and amounts are not personal data alone
 5. Add a `piiRule` to `erasureRules` (`coordinator/store/erasure_rules.go`):
    a unique `Name`, the `Table`, a `Link` that says how rows reach the
    account, and either `Columns` with a `piiAction` each or `Delete: true`
-   with no columns. Wrap a statement that needs a key set in `whenAny`, so an
-   account with no such keys runs nothing:
+   with no columns. A count and apply query pair that takes one key is
+   `byKey`; one that takes a key set is `byKeys`, which runs nothing for an
+   account with no such keys. Use `one` when a query takes other parameters:
 
    ```go
    {
        Name: "widgets", Table: "widgets", Link: "account_id",
        Columns: []piiColumn{{"label", piiSetEmpty}},
        statements: func(k *erasureKeys) []piiStatement {
-           return one(
-               func(ctx context.Context, q *storedb.Queries) (int64, error) { return q.CountWidgetLabelRows(ctx, k.AccountID) },
-               func(ctx context.Context, q *storedb.Queries) (int64, error) { return q.ScrubWidgetLabelRows(ctx, k.AccountID) })
+           return byKey(k.AccountID, (*storedb.Queries).CountWidgetLabelRows, (*storedb.Queries).ScrubWidgetLabelRows)
        },
    },
    ```
@@ -96,7 +95,7 @@ and amounts are not personal data alone
    constraint; use a tombstone when other code reads the row's existence.
 
 6. Add the memory form under the same name in `memoryErasureRules`
-   (`coordinator/store/erasure_memory.go`). It returns the number of linked
+   (`coordinator/store/erasure_memory_rules.go`). It returns the number of linked
    items, and changes them only when `apply` is true. Use `memoryNoTable`
    only when `MemoryStore` holds no such data. If `MemoryStore` keeps the
    key elsewhere, read it in `collectErasureKeysLocked` too.

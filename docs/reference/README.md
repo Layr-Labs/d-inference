@@ -29,6 +29,8 @@ Every row cites the code that defines it. For how and why things work, use
 | [personal-data-rules.md](personal-data-rules.md) | Account erasure: every personal column and its rule, retained data with reasons, outbox targets, erasure table schemas, constants |
 | [pricing-model.md](pricing-model.md) | Micro-USD units, price resolution order, formulas, every billing constant (single home for money constants), routes, service accounts |
 | [model-registry-format.md](model-registry-format.md) | Manifest schema, registration payload, alias format |
+| [soft-delete.md](soft-delete.md) | Tables with `deleted_at`, every store read that hides a soft-deleted row (Postgres and MemoryStore), unfiltered paths, indexes, effects |
+| [sqlc-type-mapping.md](sqlc-type-mapping.md) | Postgres type and nullability → generated Go type in `coordinator/store/storedb`, the `sqlc.yaml` flag that causes it, and the store conversion |
 | [qwen4-next-support.md](qwen4-next-support.md) | Native Flash-Next private serving/state contract and pending qualification; not a catalog or release claim |
 
 ## Prefix cache formats

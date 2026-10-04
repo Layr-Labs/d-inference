@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -56,10 +56,12 @@ The application, transport and service owners under `coordinator/`:
 | `coordinator/api/observation` | Metrics, request profiles, route records and compact outcomes; their queues and flush/loss policies remain distinct. |
 | `coordinator/internal/api` | Production-consumed middleware, account projections, catalog validation and reporting calculations; HTTP binding stays with API owners. |
 | `coordinator/internal/inference` | Cohesive request components: media preparation, provider-body sealing/memoization, first-content and scan/backoff policy, relay, cancellation, promotions, monetary reservations, settlement and outcome recording. Each retains its own dependencies and private state; the inference owner coordinates them. |
+| `coordinator/internal/inference/firstcontent`, `coordinator/internal/inference/attempt` | `Clock.ForPending` selects each reserved renderer's ingress-anchored cutoff; `Race.expireBoundRacer` retires an expired racer while preserving its survivor. `coordinator/api/inference/first_content_prompt_deadline.go` (`Owner.PromptWorkDeadlineForRequest`) binds current exact prompt counts and the caller cutoff before admission. See [first-content routing](../first-content-routing.md). |
 | `coordinator/internal/provider` | Challenge verification, session/inventory/heartbeat components, identity budget/push/coverage, MDM scheduling, trust authority, reuse cache and revocation journal. Trust adapters bind these to live provider sessions. |
 | `coordinator/internal/observation` | Independent route, profile and compact-outcome pipelines; queues, backpressure, flush cadence and shutdown remain pipeline-specific. |
 | `coordinator/registry` | Live fleet state, atomic admission/reservation transitions, queues and controllers. Pure detached calculations live in `registry/admission` and `registry/selection`. |
 | `coordinator/internal/registry` | Provider-write transport/lanes/watchdog, connection drain authority, immutable connection age/order, eviction grace, identity-gate directory and retained fault evidence, bounded demand windows, detached residency/capacity/forecast policies, reviewed deadline catalog/posture, Autopilot state/control/ledger, cache activation and persistence. Registry/provider critical sections remain authoritative; owned directory and identity-state locks are private to `identitygate`. |
+| `coordinator/internal/registry/cachetracker` | `Tracker.MatchBoundaries` uses bounded `cacheMatchGroups` to retain complete cache hints without materializing every equivalent holder depth. Registry adapters retain live provider and generation authority; see [cache-aware routing](../cache-aware-routing.md). |
 | `coordinator/store` | Contracts, domain records, errors, configuration, read-through decorator and capability unwrapping. |
 | `coordinator/store/memory`, `coordinator/store/postgres` | Backend owners with domain-focused operations; PostgreSQL owns its migrations. |
 | `coordinator/internal/store` | Shared record normalization, read-cache domain generations, bounded memory history and focused PostgreSQL query/schema helpers; backends retain storage ownership. |

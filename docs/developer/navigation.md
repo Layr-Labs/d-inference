@@ -52,6 +52,8 @@ components for the specific invariant:
 |---|---|
 | Middleware, projections and reporting calculations | `coordinator/internal/api/` |
 | Media, provider-body memo/sealing, relay, cancellation, promotions/reservations and outcomes | `coordinator/internal/inference/` |
+| Renderer-specific first-content deadlines and attempt clocks | `coordinator/api/inference/first_content_prompt_deadline.go` (`Owner.PromptWorkDeadlineForRequest`); `coordinator/internal/inference/firstcontent/attempt_clock.go` (`Clock.ForPending`) selects the reserved attempt's cutoff |
+| Independent expiry during a speculative race | `coordinator/internal/inference/attempt/race_deadlines.go` (`Race.expireBoundRacer`) retires only the expired attempt after checking ready content |
 | Session/inventory/heartbeat, challenge, identity, MDM and trust authority | `coordinator/internal/provider/` |
 | Apple transcript, exchange/evidence/storage, recovery, qualification and authorization | `coordinator/internal/appattest/`; `coordinator/appattest/service/` binds the live session lifecycle and collaborators |
 | Independent route/profile/outcome pipelines | `coordinator/internal/observation/` |
@@ -60,6 +62,7 @@ components for the specific invariant:
 | Live connection membership and advertisement counts | `coordinator/registry/provider_directory.go` (`ProviderDirectory`) shares `Registry.mu`; `coordinator/internal/registry/modelindex/counts.go` (`Counts`) owns live-advertisement counts |
 | Restore publication and pending service charges | `coordinator/registry/provider_persistence.go` (`ProviderPersistence`), `coordinator/registry/service_reservations.go` (`ServiceReservations`); both retain the provider's existing lock boundaries |
 | Cache restore, maintenance and capability publication | `coordinator/registry/cache_restoration.go`, `coordinator/registry/cache_maintenance.go`, `coordinator/registry/cache_snapshot.go`; factories in `coordinator/registry/cache_dependencies.go` retain the actual tracker/registry |
+| Bounded holder matching with complete cache hints | `coordinator/internal/registry/cachetracker/matching.go` (`Tracker.MatchBoundaries`) and `match_groups.go` (`cacheMatchGroups`); live registry adapters supply the holders and proof fences |
 | Autopilot session authority, bounded control and pending durable phases | `coordinator/internal/registry/autopilotstate/`, `autopilotcontrol/`, `autopilotledger/`; pure placement and demand contracts remain under `coordinator/registry/autopilot/` |
 | Routing scan candidate storage | `coordinator/internal/registry/candidatearena/arena.go` (`Arena`, `ChunkSize`); the chunk is sized against `Candidate` (`coordinator/registry/scheduler.go`) and guarded by `coordinator/tests/registry/candidate_arena_test.go` |
 | Cache generations, memory history, shared records and SQL helpers | `coordinator/internal/store/` |

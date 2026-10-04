@@ -342,9 +342,30 @@ Keep the codebase modular, never monolithic.
 
 - Prefer small, single-responsibility files over large catch-all ones. Split by concern: types, pure helpers, data/IO hooks, UI pieces, and a thin orchestrator that wires them together.
 - Group a feature's files into a dedicated module/folder with a thin entry point. Examples: the coordinator's top-level Go packages (`registry/`, `billing/`, `store/`), and `console-ui/src/components/api-keys/` (`constants`, `format`, `limits`, `Modal`, `KeyForm`, `KeyCard`, a `useApiKeys` data hook, and a thin `ApiKeysManager` orchestrator).
-- One file/component should do one thing. If a file mixes several concerns or grows past a few hundred lines, that's a signal to split it.
-- Name files for their responsibility or the behavior they verify. Avoid work-wave, ticket, priority, and follow-up labels such as `w5fix2` or `p1`; keep meaningful model, engine, and protocol version identifiers. Name shared test helpers for their domain. Mirror coordinator Go owners under `coordinator/tests/`; group Swift and UI files by subsystem without changing their target or imports unnecessarily. See [the repository navigation guide](docs/developer/navigation.md).
-- **At the end of every large piece of work, do a refactor pass to make it modular before calling it done.** Extract helpers/types/hooks into focused files, delete dead code, and keep the public entry point thin. The refactor must be behavior-preserving — build, lint, and tests stay green.
+- One file/component should own one cohesive responsibility. If a file mixes several concerns or grows past a few hundred lines, inspect its boundaries; split by responsibility, not an arbitrary line limit. Do not scatter a cohesive operation across tiny files merely to reduce file size.
+- Organize by domain first, then by responsibility within that domain. Keep implementation details private to their owner; move code into shared modules only when real callers need it. Avoid catch-all `utils`, `helpers`, or `common` modules and unrelated functions collected in a single file.
+- Keep entry points thin: parse inputs, invoke the domain operation, and translate its result. Separate transport, business policy, persistence, and presentation where they have distinct responsibilities. Dependencies must flow through explicit contracts; do not create import cycles or duplicate ownership of mutable state.
+- Name files for their responsibility or the behavior they verify. Avoid work-wave, ticket, priority, and follow-up labels such as `w5fix2` or `p1`; keep meaningful model, engine, and protocol version identifiers. Name shared test helpers for their domain. Keep coordinator Go tests under the mirrored `coordinator/tests/` tree; group Swift and UI files by subsystem without changing their target or imports unnecessarily. See [the repository navigation guide](docs/developer/navigation.md).
+
+## Clean Code
+
+- Prefer the smallest correct change. Follow existing domain conventions; do not introduce speculative abstractions, generic frameworks, configuration switches, or compatibility layers without a concrete requirement.
+- Use precise domain names for variables, functions, types, and errors. Make ownership, units, optionality, and lifecycle states explicit rather than relying on comments or boolean flags whose meaning changes by caller.
+- Keep functions focused and control flow readable. Prefer guard clauses over deeply nested branches. Extract a function when it names a meaningful operation, isolates a distinct responsibility, or serves real reuse; keep straightforward one-off logic together.
+- Keep business policy independent of incidental IO where practical. Pass dependencies explicitly; avoid hidden global state, duplicated sources of truth, and test-only accessors or alternate implementations.
+- Handle errors at the boundary that can act on them. Preserve useful context, never silently swallow failures, and make cancellation, resource cleanup, locking, and terminal-state ownership clear on success and failure paths.
+- Remove dead code, obsolete comments, unused dependencies, and duplication introduced by the change. Comments explain non-obvious intent or invariants, not the mechanics already visible in the code.
+- Preserve behavior and safeguards during refactoring. Keep meaningful regression assertions, boundary cases, and deterministic concurrency schedules; do not weaken tests, admission checks, or security controls to make a cleanup pass.
+
+## Required Refactor Pass
+
+**After the first working version is implemented and its applicable focused validation passes (tests for code changes; documentation/config checks for docs/config-only changes), the agent MUST spin up a dedicated refactor subagent before opening the PR. A self-review alone does not satisfy this requirement.**
+
+1. Give the subagent the task scope, changed files/diff, applicable `AGENTS.md` instructions, behavioral invariants, and validation commands. Assign explicit file ownership so parent and subagent do not edit the same files concurrently.
+2. Ask the subagent to perform a behavior-preserving cleanup of the first version: improve domain/file boundaries, naming, control flow, and dependency clarity; remove dead code and unnecessary abstractions. It must stay within the task scope, preserve tests and public contracts, and avoid unrelated rewrites. For docs/config-only work, it checks organization, clarity, duplication, and consistency instead of inventing code changes.
+3. Wait for the subagent to finish. Inspect its diff and findings, integrate justified changes, and resolve any regressions. If no changes are warranted, retain its explicit no-change assessment rather than forcing a cosmetic refactor.
+4. Rerun the affected tests, build/lint checks, and required documentation checks on the final combined version. Report any unavailable validation honestly; do not claim the PR is ready while a required gate remains unresolved.
+5. Only then open the PR when PR creation is authorized. Include a brief refactor-pass outcome and concrete validation evidence in the description alongside the required before-and-after diagrams. If subagents are unavailable, report the blocker rather than silently skipping this gate.
 
 ## Pull Requests
 

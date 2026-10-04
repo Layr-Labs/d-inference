@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — update and restart relaunch
+
+- Make `darkbloom update` and `darkbloom restart` wait up to 60 s for launchd to release the drained job before bootstrapping it again. Bootstrapping while launchd still listed the old job failed with `launchctl bootstrap failed: 5` and left the provider unloaded (#1306). A failed relaunch now re-arms the watchdog when auto-restart is on.
+
 ## Unreleased — leaderboard availability
 
 - Add a concurrent BRIN time index for recent provider-earnings rankings, enable range autosummarization, and keep planner statistics current. Return an uncached 503 when ranking queries fail instead of showing and caching an empty leaderboard.

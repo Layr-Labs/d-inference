@@ -20,6 +20,13 @@
 - Separate cached candidates from serving advertisements in Autopilot protocol 3; retain full shadow planning and require an acknowledged live lease before additional models become loadable. Older coordinators keep the selected models serving without activating the new protocol.
 - Preserve normal selected-model successor updates independently of Autopilot inventory, and show the serving selection in My Macs instead of observational candidates.
 
+## Unreleased - frozen legacy MDM authorization
+
+- Freeze a durable authenticated account/SE-key/serial cohort of already successfully MDM-verified devices on the first upgraded coordinator startup after revocation replay. Restarts preserve even an empty cohort; new accounts/devices and new associations cannot expand it. Gate identity recovery, scheduling, live/late MDM results and cached trust reuse. No grace period has been chosen and no expiry is implemented.
+- Require a linked provider Bearer token and fresh signed SE-key proof for `/v1/enroll`; reenrollment is limited to the existing key under its frozen account. New identities require qualified App Attest, with no unsupported-OS fallback. Generic copied profiles can still enroll directly in MicroMDM; the restriction guarantees coordinator MDM authorization, not prevention of that direct enrollment.
+- Require App Attest for noncohort owner self/prefer routing as well as public serving. Validate enabled production App Attest serving with full rollout before the startup freeze; invalid configuration fails closed without freezing membership.
+- Require current qualified App Attest authorization for base rewards, including machines with both MDM and App Attest evidence; legacy MDM-only machines remain eligible for grandfathered serving but not base rewards. Existing economics guards and inference/work earnings remain unchanged, with no retroactive reward clawback.
+
 ## Unreleased — provider 0.9.16
 
 - Offer the Autopilot yes/no choice on every normal interactive start, using the saved choice as default and retaining the normal startup model and memory selector, including explicit `--model` selection.

@@ -3,7 +3,8 @@
 /// macOS 27+ returns App Attest guidance without network or profile operations.
 /// On older macOS:
 ///
-///   1. POST an empty JSON object to `${coordinator}/v1/enroll`.
+///   1. POST an authenticated proof from the existing linked account and
+///      persistent Secure Enclave key to `${coordinator}/v1/enroll`.
 ///   2. Coordinator returns a generic `.mobileconfig` profile.
 ///   3. Save it to a temp path, `open` it (registers with System Settings),
 ///      then `open x-apple.systempreferences:com.apple.Profiles-Settings.extension`
@@ -16,11 +17,14 @@
 /// profile via System Settings), so unenroll just opens the profiles pane
 /// and optionally cleans up local state.
 
+import CryptoKit
 import Foundation
+import Security
 
 // MARK: - Errors
 
 public enum EnrollmentError: Error, CustomStringConvertible, Sendable {
+    case linkedCredentialsRequired
     case coordinatorRequestFailed(String)
     case coordinatorReturnedHTTP(Int, body: String)
     case profileWriteFailed(String)
@@ -28,6 +32,8 @@ public enum EnrollmentError: Error, CustomStringConvertible, Sendable {
 
     public var description: String {
         switch self {
+        case .linkedCredentialsRequired:
+            return "MDM enrollment requires an existing linked account. Run 'darkbloom login' first."
         case .coordinatorRequestFailed(let detail):
             return "Failed to reach coordinator: \(detail)"
         case .coordinatorReturnedHTTP(let status, let body):
@@ -100,11 +106,7 @@ public struct EnrollmentService: Sendable {
             throw EnrollmentError.coordinatorRequestFailed("invalid URL: \(baseURL)/v1/enroll")
         }
 
-        var request = URLRequest(url: endpoint)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 30
-        request.httpBody = Data("{}".utf8)
+        let request = try Self.profileRequest(endpoint: endpoint)
 
         let data: Data
         let response: URLResponse
@@ -144,6 +146,41 @@ public struct EnrollmentService: Sendable {
         )
     }
 
+    /// Builds the proof before any network or profile operations. The server
+    /// decides whether this account/key pair is in its frozen legacy cohort.
+    static func profileRequest(
+        endpoint: URL,
+        loadToken: () -> String? = { AuthTokenStore.load() },
+        loadSigner: () throws -> any AttestationSigner = { try EnrollmentPersistentSigner() },
+        timestamp: Int64 = Int64(Date().timeIntervalSince1970)
+    ) throws -> URLRequest {
+        guard let token = loadToken(), !token.isEmpty else {
+            throw EnrollmentError.linkedCredentialsRequired
+        }
+        let signer = try loadSigner()
+        let publicKey = signer.publicKeyBase64
+        let tokenHash = SHA256.hash(data: Data(token.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        let message = Data("darkbloom-mdm-enroll-v1\n\(tokenHash)\n\(publicKey)\n\(timestamp)".utf8)
+        let signature = try signer.sign(message)
+
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 30
+        request.httpBody = try JSONEncoder().encode(ProfileProof(
+            se_public_key: publicKey, timestamp: timestamp,
+            signature: signature.base64EncodedString()))
+        return request
+    }
+
+    private struct ProfileProof: Encodable {
+        let se_public_key: String
+        let timestamp: Int64
+        let signature: String
+    }
+
     /// Open the System Settings → Device Management pane so the user can
     /// remove the profile. Apple requires user interaction; we cannot remove
     /// it programmatically.
@@ -165,6 +202,64 @@ public struct EnrollmentService: Sendable {
     }
 }
 
+/// Lookup-only access to the attestation identity: loadOrCreate and its repair
+/// path must not mint a replacement key that cannot be grandfathered.
+private struct EnrollmentPersistentSigner: AttestationSigner, @unchecked Sendable {
+    let privateKey: SecKey
+    let publicKeyBase64: String
+
+    init() throws {
+        let override = ProcessInfo.processInfo.environment["DARKBLOOM_KEYCHAIN_ACCESS_GROUP"]
+        let group = override.flatMap { $0.isEmpty ? nil : $0 } ?? PersistentEnclaveKey.defaultAccessGroup
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassKey,
+            kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
+            kSecAttrKeySizeInBits as String: 256,
+            kSecAttrKeyClass as String: kSecAttrKeyClassPrivate,
+            kSecAttrLabel as String: PersistentEnclaveKey.defaultLabel,
+            kSecAttrAccessGroup as String: group,
+            kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave,
+            kSecUseDataProtectionKeychain as String: true,
+            kSecReturnRef as String: true,
+        ]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecMissingEntitlement {
+            throw PersistentEnclaveKeyError.missingEntitlement
+        }
+        guard status == errSecSuccess, let result else {
+            throw PersistentEnclaveKeyError.keyLookupFailed(status: status)
+        }
+        privateKey = result as! SecKey
+        guard let publicKey = SecKeyCopyPublicKey(privateKey) else {
+            throw PersistentEnclaveKeyError.publicKeyExtractionFailed
+        }
+        var error: Unmanaged<CFError>?
+        guard let raw = SecKeyCopyExternalRepresentation(publicKey, &error) as Data? else {
+            let detail = error?.takeRetainedValue() as Error? as NSError?
+            throw PersistentEnclaveKeyError.publicKeySerializationFailed(
+                status: OSStatus(detail?.code ?? Int(errSecInternalError)))
+        }
+        guard raw.count == 65, raw[0] == 0x04 else {
+            throw PersistentEnclaveKeyError.publicKeyExtractionFailed
+        }
+        publicKeyBase64 = Data(raw.dropFirst()).base64EncodedString()
+    }
+
+    func sign(_ data: Data) throws -> Data {
+        var error: Unmanaged<CFError>?
+        guard let signature = SecKeyCreateSignature(
+            privateKey, .ecdsaSignatureMessageX962SHA256, data as CFData, &error
+        ) as Data? else {
+            let detail = error?.takeRetainedValue() as Error? as NSError?
+            throw PersistentEnclaveKeyError.signingFailed(
+                status: OSStatus(detail?.code ?? Int(errSecInternalError)),
+                message: detail?.localizedDescription ?? "unknown error")
+        }
+        return signature
+    }
+}
+
 // MARK: - Local cleanup helpers (used by unenroll)
 
 public enum LocalDataCleanup: Sendable {
@@ -173,9 +268,8 @@ public enum LocalDataCleanup: Sendable {
     /// files are not an error.
     ///
     /// `secureEnclaveKey` (default true) also removes the persistent Secure
-    /// Enclave attestation signing key. This is what makes un-enroll /
-    /// re-enroll actually fix a bad or derouted key: without it, the same
-    /// keychain-backed key survives and the provider keeps failing challenges.
+    /// Enclave attestation signing key. Provider startup can create a new key,
+    /// but that replacement does not inherit legacy MDM enrollment eligibility.
     public static func purge(
         configDirectory: Bool = true,
         legacyKeyFiles: Bool = true,
@@ -202,7 +296,7 @@ public enum LocalDataCleanup: Sendable {
         }
         if secureEnclaveKey {
             // Remove the persistent Secure Enclave attestation signing key so a
-            // bad/derouted key is regenerated on the next enroll. Best-effort:
+            // bad/derouted key can be regenerated on provider startup. Best-effort:
             // missing entitlements or an absent key are not errors.
             try? PersistentEnclaveKey.delete()
         }

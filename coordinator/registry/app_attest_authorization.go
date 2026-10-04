@@ -33,6 +33,15 @@ func (r *Registry) appAttestNow(observed time.Time) time.Time {
 	return observed
 }
 
+// RequireAppAttestServingAuthorization must run before attaching registration
+// evidence for a non-legacy connection. The requirement cannot be unset, is not
+// persisted, and survives lease expiry or clearing, including for owner routes.
+func (p *Provider) RequireAppAttestServingAuthorization() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.requireAppAttestServingAuthorization = true
+}
+
 // SetAppAttestServingPolicy changes serving authorization, not enrollment or
 // MDM-removal rollout. Operators may stop new migrations while keeping serving
 // enabled for machines already unenrolled. A generation change invalidates all
@@ -235,7 +244,8 @@ func (r *Registry) ProviderLegacyServingAuthorized(p *Provider) bool {
 }
 
 func (r *Registry) providerLegacyServingAuthorizedLocked(p *Provider, now time.Time) bool {
-	return p.Status != StatusOffline && p.Status != StatusUntrusted && !p.appAttestSecurityDenied &&
+	return !p.requireAppAttestServingAuthorization &&
+		p.Status != StatusOffline && p.Status != StatusUntrusted && !p.appAttestSecurityDenied &&
 		!providerStateRestoreRequiredLocked(p) && r.trustMeetsMinimum(p.TrustLevel) &&
 		p.RuntimeVerified && r.providerSupportsPrivateTextAuthorizationAtLocked(p, r.releasePolicyEnforcedAtLocked(now), false, now) &&
 		!p.LastChallengeVerified.IsZero() && now.Sub(p.LastChallengeVerified) <= challengeFreshnessMaxAge
@@ -268,7 +278,8 @@ func (r *Registry) ProviderServingDenialReason(p *Provider) string {
 }
 
 func (r *Registry) providerTrustMeetsMinimumAtLocked(p *Provider, minimum TrustLevel, now time.Time) bool {
-	return r.providerHasAppAttestAuthorizationLocked(p, now) || trustRank(p.TrustLevel) >= trustRank(minimum)
+	appAttest := r.providerHasAppAttestAuthorizationLocked(p, now)
+	return appAttest || (!p.requireAppAttestServingAuthorization && trustRank(p.TrustLevel) >= trustRank(minimum))
 }
 
 func (r *Registry) providerChallengeFreshAtLocked(p *Provider, now time.Time) bool {

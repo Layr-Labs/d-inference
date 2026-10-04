@@ -35,24 +35,22 @@ func TestRewardPlanKeepsHealthyDuplicateAfterPreferredAliasLosesAuthorization(t 
 	epoch, start, end, clock := closedEpoch()
 	reg := registry.New(testLogger())
 	st := &aliasRetryStore{machineEngineStore: &machineEngineStore{engineStore: newEngineStore()}, registry: reg}
-	machine, err := st.inner.ObserveMachine(ctx, store.MachineObservation{SessionID: "known", AccountID: "owner", VerifiedAppAttestKey: "apple", At: time.Now()})
-	if err != nil {
-		t.Fatal(err)
-	}
+	var canonical string
 	for _, id := range []string{"known", "new"} {
-		p := addProvider(reg, id, "endpoint", id, "Mac15,8", 64)
-		setSerial(p, id, "Mac15,8")
-		p.AccountID = "owner"
-		if id == "known" && !reg.BindVerifiedMachineIdentity(p, "owner", machine.ID) {
-			t.Fatal("bind")
+		addMachineRewardProvider(t, st.machineEngineStore, reg, id, id+"-endpoint", "owner", "apple-"+id)
+		st.sessions = append(st.sessions, fullUptimeSession(id, id+"-endpoint", id, "owner", start, end))
+	}
+	// Candidates were built as two authorized machines. Verified continuity
+	// merges them before credit, forcing a duplicate retry before the preferred
+	// live alias loses authorization during the second batch.
+	st.onEpochLock = func() {
+		for _, id := range []string{"known", "new"} {
+			machine, err := st.inner.ObserveMachine(ctx, store.MachineObservation{SessionID: id, AccountID: "owner", SEKey: "shared-se", VerifiedAppAttestKey: "apple-" + id, At: time.Now()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			canonical = machine.ID
 		}
-		if err := st.inner.OpenProviderSession(ctx, id, "", "owner"); err != nil {
-			t.Fatal(err)
-		}
-		if err := st.inner.TouchProviderSession(ctx, id, "", "owner", "endpoint", time.Now()); err != nil {
-			t.Fatal(err)
-		}
-		st.sessions = append(st.sessions, fullUptimeSession(id, "endpoint", id, "owner", start, end))
 	}
 	e := newTestEngine(st, reg, clock)
 	result, err := e.SettleEpoch(ctx, epoch)
@@ -60,7 +58,7 @@ func TestRewardPlanKeepsHealthyDuplicateAfterPreferredAliasLosesAuthorization(t 
 		t.Fatalf("healthy alternate was lost: %+v batches=%d %v", result, st.batches, err)
 	}
 	draws, err := st.ListFloorDrawsForEpoch(ctx, epoch)
-	if err != nil || len(draws) != 1 || draws[0].ProviderKey != store.MachineFloorKey(machine.ID) || st.inner.GetBalance("owner") != 2016 {
+	if err != nil || len(draws) != 1 || draws[0].ProviderKey != store.MachineFloorKey(canonical) || st.inner.GetBalance("owner") != 2016 {
 		t.Fatalf("duplicate payment: %+v %v", draws, err)
 	}
 	if st.deniedSession == "" {

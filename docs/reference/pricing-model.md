@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -178,7 +178,8 @@ Connected-account status `users.stripe_account_status`
 | `MinUptimeForAvail` / `FullUptimeForAvail` | `0.90` / `1.00` | `floor.go` |
 | `defaultGraceSeconds` | `90` (open sessions accrue to `last_seen + grace`) | `engine.go` |
 | `FloorDrawBatchLimit` | `4096` pending rows; a larger plan returns an error without truncation or credit | `coordinator/store/floor_draw_batch.go` |
-| Health gates | Current complete public serving authorization; memory/thermal health and loaded-model readiness; linked account; qualified hardware capped by `hardware.ModelMaxMemoryGB` | `machine_candidates.go` (`rewardSnapshotEligible`, `rewardMemoryGB`) |
+| Authorization gate | Current qualified App Attest public serving authorization, including for machines also enrolled in MDM; grandfathered legacy MDM alone never earns new base rewards. Expired, revoked or unqualified App Attest fails this gate even when legacy serving remains available. | `coordinator/payments/baserewards/machine_candidates.go` (`rewardSnapshotEligible`, `candidateSessionAuthorized`) |
+| Health gates | Memory/thermal health and loaded-model readiness; linked account and durable machine binding; qualified hardware capped by `hardware.ModelMaxMemoryGB` | `coordinator/payments/baserewards/machine_candidates.go` (`buildCandidates`, `rewardSnapshotEligible`); `coordinator/internal/payments/rewardpolicy/memory.go` (`RewardMemoryGB`) |
 
 Tier table (`floor.go` `floorTiers`; a machine takes the largest tier whose
 `MinGB` it meets; below 24 GB → `0`):

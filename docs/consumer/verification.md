@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-04
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -13,6 +13,10 @@ remain visible and can link successive public sessions.
 An App Attest grant also depends on a fresh [durable build qualification](../reference/provider-authorization.md#durable-build-qualification). Withdrawing it fences old qualification generations; cached download metadata or a prior successful signature cannot grant new dispatch. Independently valid legacy verification remains a separate serving path.
 
 Local profile-inventory authentication during `darkbloom unenroll` only identifies the Darkbloom enrollment for user-guided removal. It does not verify or extend serving authorization; the [provider procedure](../provider/attestation.md#app-attest-without-darkbloom-mdm) explains the separate coordinator readiness requirement.
+
+Under the upcoming [frozen legacy MDM policy](../architecture/security/enrollment.md#frozen-legacy-authorization-cohort), legacy MDM authorization is restricted to already successfully verified devices with a durable frozen authenticated account/key/serial association. New accounts, devices and associations cannot join it after the first upgraded startup, and restarts do not reopen it. Membership alone is not verification: current posture, freshness, revocation and code-identity gates still apply. New identities require qualified App Attest; unsupported OS versions do not create a legacy fallback. No grace period has been chosen and no cohort expiry is implemented.
+
+A generic profile remains copyable, and direct SCEP/check-in can enroll another Mac in MicroMDM without passing the coordinator's profile-download checks. That enrollment is not coordinator MDM authorization or consumer verification; see the [copied-profile boundary](../architecture/security/enrollment.md#copied-profile-boundary).
 
 Provider troubleshooting diagnostics do not establish consumer verification.
 Optional App Attest process/boot history, local signing and security observations,

@@ -1026,6 +1026,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 	}
 
 	migrations = append(migrations, autopilotDDL)
+	migrations = append(migrations, legacyMDMCohortDDL)
 	migrations = append(migrations, appAttestShadowDDL, machineInventoryDDL, appAttestArchiveDDL, appAttestEnrollmentDDL, appAttestReceiptDDL)
 	migrations = append(migrations, appAttestRevocationDDL, appAttestBuildDDL, appAttestKeyRotationDDL, modelTokenPromotionDDL)
 	migrations = append(migrations, cacheRoutingHoldersDDL, cachemigrations.BackfillColumnsDDL, cachemigrations.DropChainHashDDL, cacheRoutingHoldersExpiryIndexDDL, cacheRoutingHoldersUpdatedIndexDDL, cacheRoutingDemandDDL, cacheRoutingDemandSeenIndexDDL, cacheRoutingMetaDDL)

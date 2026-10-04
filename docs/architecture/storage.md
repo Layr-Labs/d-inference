@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -86,6 +86,31 @@ reads use bounded read-only transactions.
 
 Telemetry *events* are not in the store at all: the coordinator emitter sends
 them to Datadog only (see [`telemetry.md`](telemetry.md)).
+
+### Frozen legacy MDM cohort (upcoming)
+
+`LegacyMDMCohortStore` (`coordinator/store/legacy_mdm_cohort.go`) is an optional
+capability discovered through `store.As`. Its `FreezeLegacyMDMCohort` operation
+persists the one-time cutoff in `legacy_mdm_cohort_freeze` and authenticated
+account + SE public key + serial membership in `legacy_mdm_cohort`, derived from
+already successful MDM verification. `Policy.Initialize`
+(`coordinator/internal/provider/legacymdm/policy.go`), wired through
+`configureBillingAndTrust` (`coordinator/app/services.go`), runs on the first upgraded startup **after
+revocation replay**, not during schema preparation. Later startups load the same
+cohort instead of rebuilding it from newly enrolled devices or new account
+associations. A recorded empty cohort remains frozen too.
+
+Lost or hashless historical records may be conservatively omitted. Retained
+hardware snapshots plus authenticated inventory may supplement durable evidence;
+current MicroMDM enrollment or a self-reported identity alone cannot seed it.
+The freeze survives PostgreSQL-backed restarts; the explicitly enabled memory
+store remains test/local-only and loses state on process exit. Neither membership
+nor a restored provider row grants live hardware trust. Registration identity
+recovery, scheduler submission, live/late MDM results and cached trust reuse all
+apply `Policy.RegistrationAllowed` or `Policy.ProviderAllowed` to the frozen
+association. No grace period is selected
+and no expiry is implemented. See [policy and residual enrollment
+limits](security/enrollment.md#frozen-legacy-authorization-cohort).
 
 ### Two implementations and when each runs
 

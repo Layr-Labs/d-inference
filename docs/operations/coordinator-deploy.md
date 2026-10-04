@@ -163,6 +163,51 @@ sudo sh -c 'umask 077; awk -F= '\''$1 ~ /^EIGENINFERENCE_CACHE_ROUTING_/ || $1 =
   /etc/d-inference/env | LC_ALL=C sort | sha256sum | cut -d" " -f1 > /tmp/darkbloom-cache-env.before.sha256'
 ```
 
+### Frozen legacy MDM cutover prerequisites
+
+For the upcoming frozen legacy MDM policy, schema preparation is **not** the
+cohort freeze. The first upgraded ordinary startup calls
+`Owner.InitializeLegacyMDMPolicy` (`coordinator/api/provider/trust/owner.go`),
+wired in `configureBillingAndTrust` (`coordinator/app/services.go`), after revocation
+replay and before accepting providers. `FreezeLegacyMDMCohort`
+(`coordinator/store/legacy_mdm_cohort.go`) records a durable cutoff and
+authenticated account/key/serial cohort; later restarts reuse it, even if empty.
+New accounts/devices/associations must not enlarge it. Before approving cutover,
+review historical evidence completeness: lost or hashless records may be
+conservatively excluded, while retained hardware snapshots plus authenticated
+inventory can supplement them. Do not repair omissions by clearing the freeze
+or manually adding newly enrolled identities.
+
+Before starting the upgraded binary, explicitly approve and configure production
+App Attest serving: `EIGENINFERENCE_APP_ATTEST_SERVING=true`,
+`EIGENINFERENCE_APP_ATTEST_ENVIRONMENT=production` and
+`EIGENINFERENCE_APP_ATTEST_ROLLOUT_PERCENT=100`. The startup policy validates
+these prerequisites **before** freezing membership and fails closed on invalid
+configuration; it must not silently freeze or start with new identities unable
+to use the required path. These settings do not qualify a build or waive any
+proof, receipt or runtime check. See [qualification](app-attest-build-qualification.md)
+and [authorization controls](../reference/provider-authorization.md#controls).
+
+Inspect the host ingress configuration read-only for anonymous static enrollment
+profile routes, including `/enroll.mobileconfig`. Production uses host Caddy:
+removing a handler from the checked-in `coordinator/Caddyfile` does not remove
+the host's route through a coordinator container swap. Any host Caddy change
+needs separate approval for that mutation; do not claim the container upgrade
+alone closes an anonymous static-profile route. Direct MicroMDM SCEP/check-in
+remains the separate copied-profile limitation described below.
+
+After the approved swap, verify that the frozen cohort loaded, an existing
+allowed identity can reverify, and a nonmember cannot gain MDM authorization
+through registration recovery, scheduling, live/late results or cached trust
+reuse. Authenticated reenrollment needs the linked provider token and signed
+[SE-key proof](../reference/api-contracts.md#legacy-mdm-enrollment-proof).
+MicroMDM enrollment alone is not this check: [copied profiles can still use
+direct SCEP/check-in](../architecture/security/enrollment.md#copied-profile-boundary).
+New identities need qualified App Attest, with no unsupported-OS fallback.
+No grace period is selected and no expiry is implemented. Preserve the cutoff
+and cohort during rollback; rolling back to code without these gates removes
+their enforcement, so review that security regression before approval.
+
 ### Optional: prepare compatible migrations before draining
 
 After reviewing the exact candidate's schema changes, a human-approved operator

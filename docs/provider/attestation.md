@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-09-26
+> Last updated: 2026-10-04
 
 How to take a provider Mac from `self_signed` to `hardware` trust and keep it
 there, so the coordinator routes public inference to it. For operators; the
@@ -70,12 +70,34 @@ qualified; do not delete a working credential to bypass that check.
 
 New setup on macOS 27 or later skips MDM profile download in both the installer and `darkbloom enroll`. Darkbloom MDM will be deactivated soon; upgrade to macOS 27 to avoid legacy enrollment. A qualified macOS 27 provider can use [App Attest authorization](../reference/provider-authorization.md) when the coordinator explicitly enables it. Start the signed provider and check `darkbloom status` / `darkbloom doctor` for current App Attest authorization. Company-managed Macs keep their employer profile; they do not enroll into Darkbloom MDM for this path.
 
-After the coordinator enables removal and reports readiness, run `darkbloom unenroll` and choose the App Attest option. Removal guidance requires a coordinator decision received within the last 10 seconds, as well as a current daemon snapshot and unexpired authorization; a local state-file rewrite cannot extend readiness. It requires macOS 27 or later; `--keep-serving` remains a direct shortcut. The command preserves credentials/account data, validates the exact Darkbloom enrollment and guides removal in System Settings. If the read-only administrator inventory is needed, run the command in the foreground of an interactive terminal: `sudo` reads the password with terminal echo disabled. Refusing authentication, running without a terminal, or running as a background job withholds guidance; no profile is removed by the CLI. The full-exit option stops the provider and offers identity cleanup, so choose App Attest to retain provider identity. Older macOS uses the complete legacy path below. New macOS 27+ setup remains pending if App Attest is unavailable or unqualified; diagnose with `darkbloom doctor` instead of installing an MDM profile. The legacy steps below apply only to older macOS and existing enrollments.
+After the coordinator enables removal and reports readiness, run `darkbloom unenroll` and choose the App Attest option. Removal guidance requires a coordinator decision received within the last 10 seconds, as well as a current daemon snapshot and unexpired authorization; a local state-file rewrite cannot extend readiness. It requires macOS 27 or later; `--keep-serving` remains a direct shortcut. The command preserves credentials/account data, validates the exact Darkbloom enrollment and guides removal in System Settings. If the read-only administrator inventory is needed, run the command in the foreground of an interactive terminal: `sudo` reads the password with terminal echo disabled. Refusing authentication, running without a terminal, or running as a background job withholds guidance; no profile is removed by the CLI. The full-exit option stops the provider and offers identity cleanup, so choose App Attest to retain provider identity.
+
+New setup remains pending if App Attest is unavailable or unqualified; diagnose
+with `darkbloom doctor` instead of installing an MDM profile. Under the upcoming
+policy, the legacy steps below apply only to frozen identities, not to every
+older-macOS machine or existing local enrollment.
 
 ## Existing machines and upgrade notices
 
-Existing eligible machines continue through legacy verification during the
-transition. Upgrading macOS does not uninstall MDM. After upgrading to macOS 27
+Under the upcoming [frozen legacy policy](../architecture/security/enrollment.md#frozen-legacy-authorization-cohort), only already successfully MDM-verified
+devices whose authenticated account, SE key and serial enter the durable cohort
+continue through legacy verification. The first upgraded coordinator startup
+freezes it after revocation replay; restart, a new account, a new device or a new
+account association does not reopen eligibility. Reenrollment requires the
+existing key under its frozen account and the [authenticated signed enrollment
+request](../reference/api-contracts.md#legacy-mdm-enrollment-proof). Preserve your
+key and account; a replacement identity must use qualified App Attest, with no
+unsupported-OS fallback. Lost or hashless historical evidence may conservatively
+omit a device; a previous local profile alone does not establish eligibility.
+No grace period has been chosen and no expiry is implemented.
+
+Grandfathered legacy MDM-only serving does not qualify your Mac for base rewards.
+Base rewards require current qualified App Attest authorization, including when
+the Mac also retains MDM evidence; existing economics guards still apply.
+Inference/work earnings are unchanged, with no retroactive clawback of rewards.
+See [billing](../consumer/billing.md) for the reward policy.
+
+Upgrading macOS does not uninstall MDM. After upgrading to macOS 27
 and updating the provider, restart it and check `darkbloom status`; remove only
 the Darkbloom profile through the approved `darkbloom unenroll` App Attest path.
 Keep employer management installed.
@@ -83,8 +105,9 @@ Keep employer management installed.
 Every command in the updated CLI warns on stderr when the local OS is below
 27. The setup page and dashboard also show the transition notice; machine
 warnings use current/last reported OS versions, with missing reports labelled
-unknown. The notice does not enact a retirement deadline or disable legacy
-serving. Older installed binaries receive the CLI notice only after updating.
+unknown. The notice does not enact a retirement deadline; the cohort restriction
+is a separate coordinator gate. Older installed binaries receive the CLI notice
+only after updating.
 
 ## Prerequisites
 
@@ -97,6 +120,9 @@ serving. Older installed binaries receive the CLI notice only after updating.
   (`managedByOtherMDM`) and `darkbloom doctor` reports "enrolled in another
   MDM … hardware trust unavailable on this Mac"
   ([`../architecture/security/enrollment.md#failure-modes`](../architecture/security/enrollment.md#failure-modes)).
+- Under the upcoming policy, the legacy steps below are for a frozen identity
+  only, not new onboarding on older macOS. Use the linked provider account and
+  existing SE key; new identities need qualified App Attest.
 - A real console user logged in (Aqua session), automatic login enabled,
   auto-logout on idle disabled, and sleep prevented. APNs registration, which
   the code-identity flag depends on, only works inside a logged-in GUI session;
@@ -115,8 +141,9 @@ serving. Older installed binaries receive the CLI notice only after updating.
 darkbloom enroll
 ```
 
-The command downloads the enrolment profile from `POST /v1/enroll`, saves it as
-`Darkbloom-Enroll-<uuid>.mobileconfig`, registers it with System Settings and
+For a frozen identity, the command downloads the enrolment profile from
+`POST /v1/enroll` using linked provider credentials and a fresh SE-key proof,
+saves it as `Darkbloom-Enroll-<uuid>.mobileconfig`, registers it with System Settings and
 opens the Profiles pane (`EnrollCommand.swift`; options in
 [`cli-reference.md`](./cli-reference.md#darkbloom-enroll--darkbloom-unenroll)).
 "Already enrolled" means the Darkbloom profile is present and you can skip to
@@ -186,7 +213,7 @@ darkbloom status
   If the keychain path fails — for example a binary without the
   `keychain-access-groups` entitlement — `ProviderLoop.swift` falls back to an
   ephemeral key with a warning, you appear as a brand-new identity, and you
-  re-earn every flag from scratch.
+  cannot rejoin the frozen legacy cohort; use qualified App Attest instead.
 - **Run a released build.** Binary, metallib and model-hash drift against
   registration untrusts you; `darkbloom update` returns you to a build in the
   release record ([`cli-reference.md`](./cli-reference.md#darkbloom-update)).
@@ -240,7 +267,7 @@ format and failure policy are in [Layer 2](../architecture/security/attestation.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `trust_level: self_signed` persists | MDM verification not completed | `darkbloom enroll`, install the profile, approve MDM in System Settings → Device Management; the scheduler retries on its own |
+| `trust_level: self_signed` persists | MDM verification not completed, or identity excluded from frozen cohort | For a frozen identity, reenroll with linked credentials and signed proof; for a new identity, use qualified App Attest and inspect its separate coordinator verdict |
 | `mdm_verified: false` | Not enrolled, or `SecurityInfo` timed out | Confirm enrolment; wait for the next retry on the [scheduler backoff](../architecture/security/attestation.md#layer-3--mdm-securityinfo-the-hardware-grant) |
 | `mda_verified: false` while `hardware` | Apple has not issued a fresh attestation yet or the chain did not bind your SE key | Wait; informational only, routing is unaffected |
 | `trust_status` reason `posture-mismatch` / status `untrusted` | MDM says SIP or Secure Boot differs from your blob | Fix the posture in Recovery (`csrutil enable`, Full Security), reboot, restart the provider |

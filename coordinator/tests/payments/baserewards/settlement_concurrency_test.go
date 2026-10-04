@@ -13,7 +13,7 @@ import (
 )
 
 type sharedEpochEngineStore struct {
-	*engineStore
+	*machineEngineStore
 	read    chan struct{}
 	release chan struct{}
 }
@@ -44,16 +44,14 @@ func TestConcurrentDisjointRewardCohortsShareOneEpochBudget(t *testing.T) {
 	defer cancel()
 	engines := make([]*production.Engine, 0, 2)
 	for _, id := range []string{"a", "b"} {
-		st := &sharedEpochEngineStore{engineStore: newEngineStore()}
+		st := &sharedEpochEngineStore{machineEngineStore: &machineEngineStore{engineStore: newEngineStore()}}
 		st.inner = shared
 		if id == "a" {
 			st.read = firstRead
 			st.release = release
 		}
 		reg := registry.New(testLogger())
-		p := addProvider(reg, id, id, id, "Mac15,8", 64)
-		setSerial(p, id, "Mac15,8")
-		p.AccountID = id
+		addMachineRewardProvider(t, st.machineEngineStore, reg, id, id, id, "apple-"+id)
 		st.sessions = []store.ProviderSession{fullUptimeSession(id, id, id, id, start, end)}
 		e := newTestEngine(st, reg, clock, func(cfg *production.Config) { cfg.PoolBudgetMicroUSD = 1000 * 8928 })
 		engines = append(engines, e)

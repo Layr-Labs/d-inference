@@ -1,6 +1,6 @@
 # MDM enrollment
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
 How a provider Mac joins Darkbloom's MDM so the coordinator can ask Apple's
 management subsystem, rather than the provider binary, whether SIP and Secure
@@ -12,8 +12,9 @@ The installer (`scripts/install.sh`, `configure_device_verification`) and CLI
 (`provider-swift/Sources/ProviderCore/Auth/Enrollment.swift`, `EnrollmentService.enroll`)
 select the setup path locally; [serving authorization](../../reference/provider-authorization.md)
 still comes from the coordinator. Existing profiles remain installed until the
-separate removal readiness check passes. Older macOS receives legacy enrollment
-and an upgrade/upcoming deactivation notice.
+separate removal readiness check passes. Under the upcoming frozen legacy MDM
+policy, older macOS does not qualify a new identity for legacy enrollment or
+provide an unsupported-OS fallback.
 
 ## Context
 
@@ -27,6 +28,40 @@ and removable by the operator at any time.
 
 ## Mechanism
 
+### Frozen legacy authorization cohort
+
+The upcoming policy freezes a durable cohort on the first upgraded coordinator
+startup, **after revocation replay**. Membership binds the authenticated account,
+Secure Enclave public key and serial of a device already successfully
+MDM-verified before the freeze. It is not a list of every MicroMDM enrollment,
+every saved `hardware` label, or every account that owns a provider. Subsequent
+restarts reuse the frozen cohort, even when empty; new accounts, devices, keys and new
+account/device associations cannot expand it. Reenrollment requires the
+existing key under its frozen account. A new identity must use qualified
+[App Attest authorization](../../reference/provider-authorization.md); existing
+qualification and runtime checks still apply, without an unsupported-OS fallback.
+
+Durable historical evidence can conservatively omit lost or hashless historical
+records. Retained hardware snapshots together with authenticated inventory may
+supplement that evidence; neither unauthenticated association nor an enrollment
+alone establishes membership. A grace period has **not** been chosen and no
+cohort expiry is implemented. Membership is a prerequisite, not a permanent trust
+grant: revocation, posture, freshness and code-identity checks remain in force.
+
+The implementation entry points for this upcoming change are
+`Policy.Initialize`, `Policy.RegistrationAllowed` and `Policy.ProviderAllowed` in
+`coordinator/internal/provider/legacymdm/policy.go`, and the `FreezeLegacyMDMCohort` operation on
+`LegacyMDMCohortStore` in `coordinator/store/legacy_mdm_cohort.go`.
+The policy gate applies at registration identity recovery, scheduler submission,
+live MDM verification, late callbacks and cached trust reuse. A saved grant or an
+already outstanding command cannot authorize a nonmember.
+
+`Policy.Initialize` requires production App Attest serving enabled with
+full rollout before freezing; invalid configuration fails startup before the
+freeze. The [deployment prerequisites](../../operations/coordinator-deploy.md#frozen-legacy-mdm-cutover-prerequisites)
+own the required settings. New identities also require App Attest on owner
+self/prefer routes; lowering the legacy trust floor cannot bypass that gate.
+
 ```mermaid
 sequenceDiagram
     participant O as Operator (darkbloom enroll)
@@ -36,7 +71,8 @@ sequenceDiagram
     participant D as macOS (mdmclient)
 
     O->>O: profiles status -type enrollment<br/>(already in Darkbloom MDM → stop, other MDM → refuse)
-    O->>K: POST /v1/enroll {} (no auth, body ≤ maxControlPlaneBodyBytes)
+    O->>K: POST /v1/enroll (linked provider Bearer token + signed SE-key proof)
+    K->>K: Verify fresh proof and existing key under frozen account
     K-->>O: application/x-apple-aspen-config<br/>Darkbloom-Enroll.mobileconfig: SCEP + MDM payloads<br/>PayloadIdentifier io.darkbloom.enroll · AccessRights 1041<br/>CMS-signed when PROFILE_SIGNING_P12_* is set
     O->>D: open the .mobileconfig → System Settings → Profiles → operator clicks Install
     D->>X: SCEP GetCACert / PKIOperation (RSA 2048, challenge "micromdm")
@@ -52,25 +88,34 @@ sequenceDiagram
     M->>D: APNs wake → device connects to /mdm/connect
     D->>M: SecurityInfo result (CommandUUID)
     M->>K: POST /v1/mdm/webhook<br/>X-Webhook-Token or ?token= EIGENINFERENCE_MDM_WEBHOOK_SECRET · body ≤ maxMDMWebhookBodyBytes
-    K-->>K: HandleWebhook: Acknowledged + CommandUUID outstanding (outstandingCommandTTL)<br/>→ verifyProviderViaMDM → hardware grant · DeviceInformation → MDA flag
+    K-->>K: HandleWebhook: Acknowledged + CommandUUID outstanding (outstandingCommandTTL)<br/>→ frozen cohort gate + verifyProviderViaMDM → hardware grant · DeviceInformation → MDA flag
 ```
 
-Source: `docs/assets/diagrams/enrollment-flow.mmd` (updated for this
-revision; the checked-in `enrollment-flow.svg` predates it and was not
-re-rendered).
+This inline flow includes the upcoming authorization gates; the checked-in
+`docs/assets/diagrams/enrollment-flow.mmd` and `enrollment-flow.svg` predate them.
+
+### Copied-profile boundary
+
+The profile remains generic and inherently copyable. Its SCEP and MDM check-in
+requests go directly through the reverse proxy to MicroMDM, bypassing the
+coordinator's `/v1/enroll` checks. A copied profile can therefore still enroll a
+different Mac directly in MicroMDM. The restriction guarantees **coordinator MDM
+authorization**, not literal prevention of direct MicroMDM enrollment. MicroMDM
+presence, a valid check-in or possession of a signed profile cannot add the new
+identity to the frozen cohort or authorize its legacy serving path.
 
 ### The profile
 
 | Property | Value | Code |
 |---|---|---|
-| Endpoint | `POST /v1/enroll`, no authentication, JSON body decoded into an empty struct, capped at [`maxControlPlaneBodyBytes`](../../reference/api-contracts.md#limits-and-validation); a legacy `serial_number` field is ignored, never stored or logged | `coordinator/api/routes.go` (route), `coordinator/api/provider/trust/enroll.go` (`HandleEnroll`) |
+| Endpoint | Upcoming `POST /v1/enroll`: linked provider Bearer token plus fresh SE-key proof and frozen-account/key membership; JSON fields and signed bytes in the [API contract](../../reference/api-contracts.md#legacy-mdm-enrollment-proof); capped at [`maxControlPlaneBodyBytes`](../../reference/api-contracts.md#limits-and-validation) | `coordinator/api/routes.go` (route), `coordinator/api/provider/trust/enroll.go` (`HandleEnroll`) |
 | Response | `200`, `Content-Type: application/x-apple-aspen-config`, `Content-Disposition: attachment; filename="Darkbloom-Enroll.mobileconfig"` | `coordinator/api/provider/trust/enroll.go` (`HandleEnroll`) |
 | Base URL | `EIGENINFERENCE_BASE_URL` when set; only in local/dev does it fall back to `X-Forwarded-Proto` + request `Host`, because a signed profile pointing at an attacker host would launder a malicious enrollment | `coordinator/api/server.go` (`resolveBaseURL`); `coordinator/api/server_config.go` |
-| Top-level payload | `PayloadType Configuration`, `PayloadIdentifier io.darkbloom.enroll`, `PayloadDisplayName "Darkbloom Provider Enrollment"`, `PayloadOrganization Darkbloom`, fresh `PayloadUUID` per download | `coordinator/api/provider/trust/enroll.go` (`generateCombinedProfile`) |
-| Payload 1 — SCEP | `PayloadType com.apple.security.scep`, `PayloadIdentifier io.darkbloom.enroll.scep`, `PayloadUUID D01D95F9-762E-4538-A9B3-4D949D55577C`; `URL <base>/scep`, `Challenge micromdm`, RSA 2048, `Key Usage 5`, Subject `O=Darkbloom`, `CN=Darkbloom Identity` | `coordinator/api/provider/trust/enroll.go` (`generateCombinedProfile`) |
-| Payload 2 — MDM | `PayloadType com.apple.mdm`, `PayloadIdentifier io.darkbloom.enroll.mdm`, `PayloadUUID 4DF05DBF-6D20-41A4-8072-A51D327258E7`; `IdentityCertificateUUID` = SCEP UUID; `CheckInURL <base>/mdm/checkin`; `ServerURL <base>/mdm/connect`; `Topic com.apple.mgmt.External.10520cbe-9635-453d-ac4e-c79aab56f8ce`; `SignMessage true`; `CheckOutWhenRemoved true`; `ServerCapabilities [com.apple.mdm.per-user-connections, com.apple.mdm.bootstraptoken]` | `coordinator/api/provider/trust/enroll.go` (`generateCombinedProfile`) |
-| `AccessRights` | 1041 = 1 (inspect installed profiles) + 16 (query device information) + 1024 (security queries). Not requested: install/remove profiles (2), lock/passcode (4), erase (8), network queries (32), provisioning profiles (64, 128), installed apps (256), restrictions (512), settings (2048), app management (4096) | `coordinator/api/provider/trust/enroll.go` (`generateCombinedProfile` comment) |
-| Stable identifiers | PayloadIdentifiers, the two PayloadUUIDs, and the push `Topic` never change, so re-enrolling replaces the profile in place (and drops the old ACME payload on devices that still carry it) | `coordinator/api/provider/trust/enroll.go` |
+| Top-level payload | `PayloadType Configuration`, `PayloadIdentifier io.darkbloom.enroll`, `PayloadDisplayName "Darkbloom Provider Enrollment"`, `PayloadOrganization Darkbloom`, fresh `PayloadUUID` per download | `coordinator/internal/provider/enrollment/enrollment_profile.go` (`Profile`) |
+| Payload 1 — SCEP | `PayloadType com.apple.security.scep`, `PayloadIdentifier io.darkbloom.enroll.scep`, `PayloadUUID D01D95F9-762E-4538-A9B3-4D949D55577C`; `URL <base>/scep`, `Challenge micromdm`, RSA 2048, `Key Usage 5`, Subject `O=Darkbloom`, `CN=Darkbloom Identity` | `coordinator/internal/provider/enrollment/enrollment_profile.go` (`Profile`) |
+| Payload 2 — MDM | `PayloadType com.apple.mdm`, `PayloadIdentifier io.darkbloom.enroll.mdm`, `PayloadUUID 4DF05DBF-6D20-41A4-8072-A51D327258E7`; `IdentityCertificateUUID` = SCEP UUID; `CheckInURL <base>/mdm/checkin`; `ServerURL <base>/mdm/connect`; `Topic com.apple.mgmt.External.10520cbe-9635-453d-ac4e-c79aab56f8ce`; `SignMessage true`; `CheckOutWhenRemoved true`; `ServerCapabilities [com.apple.mdm.per-user-connections, com.apple.mdm.bootstraptoken]` | `coordinator/internal/provider/enrollment/enrollment_profile.go` (`Profile`) |
+| `AccessRights` | 1041 = 1 (inspect installed profiles) + 16 (query device information) + 1024 (security queries). Not requested: install/remove profiles (2), lock/passcode (4), erase (8), network queries (32), provisioning profiles (64, 128), installed apps (256), restrictions (512), settings (2048), app management (4096) | `coordinator/internal/provider/enrollment/enrollment_profile.go` (`Profile` comment) |
+| Stable identifiers | PayloadIdentifiers, the two PayloadUUIDs, and the push `Topic` never change, so re-enrolling replaces the profile in place (and drops the old ACME payload on devices that still carry it) | `coordinator/internal/provider/enrollment/enrollment_profile.go` (`Profile`) |
 | Removed | The ACME `device-attest-01` payload and its coordinator verification leg; `acme_verified` remains in `GET /v1/providers/attestation` as a constant `false` because shipped provider builds decode it | `coordinator/api/provider/trust/enroll.go`; `coordinator/api/provider/trust/status.go` (`HandleProviderAttestation`) |
 
 ### Profile signing
@@ -92,8 +137,11 @@ re-rendered).
    `enrolledDarkbloom` → print "Already enrolled" and stop;
    `enrolledOtherMDM` → `EnrollmentError.managedByOtherMDM`; `notEnrolled` or
    `checkFailed` → continue (a redundant download is idempotent).
-2. `POST <https base>/v1/enroll` with `Content-Type: application/json`; a
-   non-2xx → `coordinatorReturnedHTTP`.
+2. For an existing frozen identity, `POST <https base>/v1/enroll` with
+   `Content-Type: application/json`, the linked provider Bearer token and the
+   [signed proof](../../reference/api-contracts.md#legacy-mdm-enrollment-proof).
+   A non-2xx → `coordinatorReturnedHTTP`. Clients using the old unauthenticated
+   request cannot download a profile under the upcoming policy.
 3. Save to a temp `Darkbloom-Enroll-<uuid>.mobileconfig`; unless `--no-open`,
    `open` the file (registers it with System Settings) and then `open
    x-apple.systempreferences:com.apple.Profiles-Settings.extension`.
@@ -138,8 +186,8 @@ anything under the unrequested `AccessRights` bits.
 
 ## Invariants
 
-1. The enrollment profile contains no device identity and grants only read-only rights (`AccessRights` 1041) — `coordinator/api/provider/trust/enroll.go` (`generateCombinedProfile`).
-2. `POST /v1/enroll` never reads, stores, or logs a serial number; enrollment identity comes from the authenticated MDM check-in — `coordinator/api/provider/trust/enroll.go` (`HandleEnroll`).
+1. The enrollment profile contains no device identity and grants only read-only rights (`AccessRights` 1041) — `coordinator/internal/provider/enrollment/enrollment_profile.go` (`Profile`).
+2. Under the upcoming policy, `POST /v1/enroll` requires authenticated account/key possession and frozen membership; a caller-supplied serial cannot create membership — `coordinator/api/provider/trust/enroll.go` (`HandleEnroll`).
 3. SCEP/MDM URLs in a signed profile come from `EIGENINFERENCE_BASE_URL`, not from the request `Host` — `coordinator/api/server.go` (`resolveBaseURL`).
 4. Signing failures degrade to an unsigned profile with an error log and metric; they never block enrollment — `coordinator/api/provider/trust/enroll.go` (`HandleEnroll`).
 5. The coordinator issues only `SecurityInfo` and `DeviceInformation` commands — `coordinator/mdm/mdm.go` (`assertReadOnlyCommand`).
@@ -153,7 +201,7 @@ anything under the unrequested `AccessRights` bits.
 |---|---|---|
 | Mac already managed by another MDM | `darkbloom enroll` refuses (`managedByOtherMDM`); doctor reports "enrolled in another MDM … hardware trust unavailable on this Mac" | `provider-swift/Sources/ProviderCore/Auth/Enrollment.swift`; `provider-swift/Sources/darkbloom/DoctorCommand.swift` |
 | Profile downloaded but never installed | MDM lookup returns `device-not-found`; provider stays `self_signed` and the scheduler retries | `coordinator/internal/provider/deviceverification/mdm_verification.go` (`VerifyProviderViaMDM`) |
-| Enrolled but SecurityInfo never arrives (asleep, APNs delivery, Apple throttling) | `securityinfo-timeout`; retried on the MDM scheduler cadence ([attestation, Layer 3](./attestation.md#layer-3--mdm-securityinfo-the-hardware-grant)); a late webhook still grants | `coordinator/internal/provider/verification/scheduler.go`; `coordinator/api/provider/` (`ApplyLateSecurityInfo`) |
+| Enrolled but SecurityInfo never arrives (asleep, APNs delivery, Apple throttling) | `securityinfo-timeout`; retried on the MDM scheduler cadence ([attestation, Layer 3](./attestation.md#layer-3--mdm-securityinfo-the-hardware-grant)); a late webhook grants only if current identity remains allowed | `coordinator/internal/provider/verification/scheduler.go`; `coordinator/api/provider/` (`ApplyLateSecurityInfo`) |
 | `EIGENINFERENCE_MDM_URL` unset | No MDM client, no scheduler; no provider can reach `hardware` | `coordinator/app/services.go` |
 | Webhook secret mismatch | `403`; SecurityInfo responses are lost until MicroMDM's `command-webhook-url` token matches | `coordinator/api/provider/trust/settings.go` (`mdmWebhookTokenValid`) |
 | Webhook body over `maxMDMWebhookBodyBytes` | `400 bad request`; payload ignored | `coordinator/api/provider/trust/settings.go` (`HandleMDMWebhook`) |
@@ -164,7 +212,8 @@ anything under the unrequested `AccessRights` bits.
 
 | Concern | File (symbol) |
 |---|---|
-| Profile generation and serving | `coordinator/api/provider/trust/enroll.go` (`HandleEnroll`, `generateCombinedProfile`) |
+| Profile generation and serving | `coordinator/internal/provider/enrollment/enrollment_profile.go` (`Profile`); `coordinator/api/provider/trust/enroll.go` (`HandleEnroll`) |
+| Frozen eligibility and enrollment proof | `coordinator/internal/provider/legacymdm/policy.go` (`Policy.Initialize`, `Policy.RegistrationAllowed`, `Policy.ProviderAllowed`, `Policy.AuthorizeEnrollment`); `coordinator/store/legacy_mdm_cohort.go` (`LegacyMDMCohortStore`) |
 | Profile signing | `coordinator/profilesign/signer.go` (`LoadFromEnv`, `Sign`) |
 | Base URL pinning | `coordinator/api/server.go` (`resolveBaseURL`); `coordinator/api/server_config.go` |
 | Webhook | `coordinator/api/provider/trust/settings.go` (`HandleMDMWebhook`, `mdmWebhookTokenValid`, `maxMDMWebhookBodyBytes`) |

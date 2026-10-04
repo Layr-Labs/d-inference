@@ -116,7 +116,9 @@ type MemoryStore struct {
 	// codeAttestations: lost on restart in the memory store (same as the in-memory
 	// cache it backs), but the methods exist so the store seam is uniform and
 	// Postgres persists for real as the production backend.
-	providerTrustReuse map[string]store.ProviderTrustReuse
+	providerTrustReuse    map[string]store.ProviderTrustReuse
+	legacyMDMCohortCutoff time.Time
+	legacyMDMCohort       []store.LegacyMDMMachine
 
 	// Durable scheduler parity for tests/development. Key is SE key + task kind.
 	verificationJobs map[string]store.VerificationJob

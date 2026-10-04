@@ -175,21 +175,21 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 				_ = conn.Close(websocket.StatusPolicyViolation, "invalid prefix-cache capabilities")
 				return
 			}
-			// Resolve the token once before choosing the identity rollout path.
+			// Resolve the token once before choosing legacy membership or identity rollout.
 			// Keep linkage after attestation restoration, as with legacy clients;
-			// only this validated account may select the App Attest cohort.
+			// only this validated account may select either cohort.
 			authenticatedAccountID, authenticatedTokenLabel := "", ""
 			accountResolved := false
 			resolveAccount := func() {
 				accountResolved = true
 				pt, err := s.store.GetProviderToken(regMsg.AuthToken)
-				if err != nil || pt == nil {
+				if err != nil || pt == nil || !pt.Active {
 					s.logger.Warn("provider auth token invalid", "provider_id", providerID, "error", err)
 				} else {
 					authenticatedAccountID, authenticatedTokenLabel = pt.AccountID, pt.Label
 				}
 			}
-			if regMsg.AuthToken != "" && s.trust.AppAttestFeature().NeedsIdentityAccount(regMsg) {
+			if regMsg.AuthToken != "" && (s.trust.LegacyMDM.Initialized() || s.trust.AppAttestFeature().NeedsIdentityAccount(regMsg)) {
 				resolveAccount()
 			}
 			provider = s.registry.Register(providerID, conn, regMsg)
@@ -213,6 +213,9 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 			}
 			if s.trust.AppAttestIdentityCandidate(regMsg, authenticatedAccountID) {
 				provider.RequireVerifiedMachineIdentity()
+			}
+			if s.trust.LegacyMDM.Initialized() && !s.trust.LegacyMDM.RegistrationAllowed(regMsg, authenticatedAccountID) {
+				provider.RequireAppAttestServingAuthorization()
 			}
 			s.attachProviderLocation(providerID, provider, r)
 			if err := s.trust.VerifyProviderAttestation(loopCtx, providerID, provider, regMsg, authenticatedAccountID); err != nil {
@@ -242,13 +245,13 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 					"memory_gb":     regMsg.Hardware.MemoryGB,
 				})
 
-			// Legacy-only providers keep their original post-restoration lookup.
-			// A structurally eligible App Attest registration already resolved
-			// this token; never reroll its cohort through a second store read.
+			// Outside the frozen policy, legacy-only providers retain their
+			// post-restoration lookup. Never reroll either cohort through a
+			// second store read; frozen-policy sessions also clear stale linkage.
 			if regMsg.AuthToken != "" && !accountResolved {
 				resolveAccount()
 			}
-			if authenticatedAccountID != "" {
+			if s.trust.LegacyMDM.Initialized() || authenticatedAccountID != "" {
 				provider.Mu().Lock()
 				provider.AccountID = authenticatedAccountID
 				provider.Mu().Unlock()

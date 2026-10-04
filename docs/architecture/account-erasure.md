@@ -82,7 +82,6 @@ stateDiagram-v2
 
   [*] --> planned: plan (dry run, confirm token)
   planned --> pending: confirm (soft delete)
-  pending --> pending: scrub refused or failed (last_error)
   pending --> canceled: cancel before scrub_after
   pending --> erased: scrub after scrub_after, or force
   canceled --> [*]
@@ -97,7 +96,7 @@ stateDiagram-v2
 | State | Meaning | Set by |
 |---|---|---|
 | `planned` | A dry run is stored with row counts and the hashes of a confirm token and the wallet list. The account is live. | `SaveErasurePlan` (`InsertErasurePlan`, `UpdateErasurePlan`) |
-| `pending` | The account is soft deleted and waits for `scrub_after`. | `RequestAccountErasure` (`MarkErasurePending`) |
+| `pending` | The account is soft deleted and waits for `scrub_after`. A refused or failed scrub leaves it here with `last_error`, and the loop tries again. | `RequestAccountErasure` (`MarkErasurePending`) |
 | `erased` | The scrub committed. | `ScrubAccount` (`MarkErasureErased`) |
 | `canceled` | An admin ended the request during the grace period. | `CancelAccountErasure` (`MarkErasureCanceled`) |
 

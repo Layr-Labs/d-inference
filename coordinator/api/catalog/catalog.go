@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/api/httpx"
+	registration "github.com/eigeninference/d-inference/coordinator/internal/api/catalog/registration"
 )
 
 // HandleModelCatalog handles GET /v1/models/catalog.
@@ -43,7 +44,7 @@ func (s *Owner) HandleModelCatalog(w http.ResponseWriter, r *http.Request) {
 	models := make([]map[string]any, 0, len(registryRows))
 	if typeFilter == "" || typeFilter == "text" {
 		for i := range registryRows {
-			models = append(models, catalogModelFromRegistryRecord(&registryRows[i]))
+			models = append(models, registration.CatalogModelFromRegistryRecord(&registryRows[i]))
 		}
 	}
 	response := map[string]any{"models": models}
@@ -52,7 +53,7 @@ func (s *Owner) HandleModelCatalog(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			s.logger.Warn("model registry: failed to list aliases for catalog response", "error", err)
 		} else {
-			response["aliases"] = catalogAliasesForResponse(models, aliases)
+			response["aliases"] = registration.CatalogAliasesForResponse(models, aliases)
 		}
 	}
 

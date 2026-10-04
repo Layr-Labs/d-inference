@@ -3,6 +3,7 @@
 
 import collections
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -14,7 +15,7 @@ import unittest
 import unittest.mock
 
 from coordinator_tests.results import merge_coverage, partition, test_names, verify_events
-from coordinator_tests.runner import API, REGISTRY, ROOT, Processes, run, run_task
+from coordinator_tests.runner import API, API_SHARDS, COORDINATOR, REGISTRY, ROOT, Processes, run, run_task
 
 
 class CoordinatorRunnerTests(unittest.TestCase):
@@ -46,7 +47,7 @@ class CoordinatorRunnerTests(unittest.TestCase):
 
     def test_uninstrumented_numeric_gate_follows_its_test_owner(self):
         name = "TestConstrainedExactNonnegativeIntBoundsAdversarialLiterals"
-        package = "coordinator/api/inference/request"
+        package = "coordinator/tests/api/inference/request"
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         command = f"go test -race=false -cover=false ./{package} -run '^{name}$' -count=1"
         self.assertTrue(command in workflow, "CI must run the numeric gate in its owning request package")
@@ -128,11 +129,14 @@ class CoordinatorRunnerTests(unittest.TestCase):
                 self.assertEqual(waits, [timeout])
 
     def test_selected_packages_flags_and_profiles_survive_sharding(self):
-        store = API.rsplit("/", 1)[0] + "/store"
+        store = COORDINATOR + "/store"
         nested = REGISTRY + "/routingsim"
-        contracts = API + "/tests/operations"
-        testkit = API + "/tests/internal/testkit"
+        contracts = API + "/operations/contracts"
+        testkit = COORDINATOR + "/tests/internal/testkit"
         selected_packages = [API, REGISTRY, store, nested, contracts, testkit]
+        production = [COORDINATOR + "/api", COORDINATOR + "/registry", store,
+                      COORDINATOR + "/registry/routingsim"]
+        covered = [store, *production[:2], production[-1]]
         for race, jobs in ((True, 4), (True, 1), (False, 4)):
             with self.subTest(race=race, jobs=jobs):
                 output = self.root / f"{race}-{jobs}"
@@ -144,13 +148,17 @@ class CoordinatorRunnerTests(unittest.TestCase):
 
                 def checked(command, cwd, processes, env=None):
                     if command[:2] == ["go", "list"]:
+                        if command[-1] == COORDINATOR + "/...":
+                            return "\n".join([*production, *selected_packages])
                         return "\n".join([*selected_packages, API])
                     if command[:3] == ["go", "test", "-c"]:
                         self.assertTrue(aggregate_started.wait(5), "aggregate must start before compilation")
                         builds.append(command)
                         return ""
                     self.assertEqual(command[-1], "-test.list=.")
-                    self.assertEqual(cwd, ROOT / "coordinator" / Path(command[0]).stem)
+                    relative = cwd.relative_to(ROOT / "coordinator").as_posix()
+                    self.assertEqual(Path(command[0]).stem, relative.replace("/", "-"))
+                    self.assertTrue(relative.startswith("tests/"))
                     self.assertTrue(Path(env["GOCOVERDIR"]).is_dir())
                     return "TestA\nExampleB\nFuzzC\n"
 
@@ -169,9 +177,9 @@ class CoordinatorRunnerTests(unittest.TestCase):
                 for command in builds:
                     self.assertEqual("-race" in command, race)
                     self.assertIn("-covermode=atomic", command)
-                    self.assertIn("-coverpkg=" + ",".join([API, REGISTRY, store, nested]), command)
+                    self.assertIn("-coverpkg=" + ",".join(covered), command)
                 aggregate = next(task for task in tasks if task[0] == "packages")
-                self.assertIn("-coverpkg=" + ",".join([API, REGISTRY, store, nested]), aggregate[1])
+                self.assertIn("-coverpkg=" + ",".join(covered), aggregate[1])
                 self.assertEqual(aggregate[3], [package for package in selected_packages
                                                  if package not in sharded])
                 for package in sharded:
@@ -187,9 +195,10 @@ class CoordinatorRunnerTests(unittest.TestCase):
                     self.assertIn(flag + str(output / f"{label}.cover"), command)
 
     def test_contract_only_selection_instruments_owners_without_running_them(self):
-        contract = API + "/tests/operations"
-        testkit = API + "/tests/internal/testkit"
-        httpx = API + "/httpx"
+        contract = API + "/operations/contracts"
+        testkit = COORDINATOR + "/tests/internal/testkit"
+        api = COORDINATOR + "/api"
+        httpx = api + "/httpx"
         args = SimpleNamespace(packages=[contract], race=True, jobs=1,
                                coverprofile=str(self.root / "merged.cover"))
         lists = []
@@ -198,14 +207,14 @@ class CoordinatorRunnerTests(unittest.TestCase):
             lists.append(command)
             if command == ["go", "list", contract]:
                 return contract
-            self.assertEqual(command, ["go", "list", API + "/..."])
-            return "\n".join([API, httpx, contract, testkit])
+            self.assertEqual(command, ["go", "list", COORDINATOR + "/..."])
+            return "\n".join([api, httpx, contract, testkit])
 
         def task(label, command, cwd, output, expected, processes, packages):
             self.assertEqual(label, "packages")
             self.assertEqual(packages, [contract])
             self.assertEqual(command[-1], contract)
-            self.assertIn(f"-coverpkg={API},{httpx}", command)
+            self.assertIn(f"-coverpkg={api},{httpx}", command)
             return {"task": label, "seconds": 0, "passed": True}
 
         with unittest.mock.patch("coordinator_tests.runner.checked_output", side_effect=checked), \
@@ -213,6 +222,38 @@ class CoordinatorRunnerTests(unittest.TestCase):
                 unittest.mock.patch("coordinator_tests.runner.merge_coverage"):
             self.assertEqual(run(args, self.root, Processes()), 0)
         self.assertEqual(len(lists), 2)
+
+    def test_nested_api_shards_keep_distinct_artifacts_and_working_directories(self):
+        packages = list(API_SHARDS)
+        args = SimpleNamespace(packages=[API + "/..."], race=False, jobs=2, coverprofile=None)
+        binaries, directories, labels = set(), set(), set()
+
+        def checked(command, cwd, processes, env=None):
+            if command[:2] == ["go", "list"]:
+                return "\n".join(packages)
+            if command[:3] == ["go", "test", "-c"]:
+                binary = command[command.index("-o") + 1]
+                self.assertNotIn(binary, binaries)
+                binaries.add(binary)
+                return ""
+            self.assertEqual(command[-1], "-test.list=.")
+            self.assertNotIn(cwd, directories)
+            directories.add(cwd)
+            return "TestCase\n"
+
+        def task(label, command, cwd, output, expected, processes, selected):
+            self.assertNotIn(label, labels)
+            labels.add(label)
+            self.assertEqual(expected, ["TestCase"])
+            self.assertEqual(cwd, ROOT / "coordinator" / selected[0].removeprefix(COORDINATOR + "/"))
+            return {"task": label, "seconds": 0, "passed": True}
+
+        with unittest.mock.patch("coordinator_tests.runner.checked_output", side_effect=checked), \
+                unittest.mock.patch("coordinator_tests.runner.run_task", side_effect=task):
+            self.assertEqual(run(args, self.root, Processes()), 0)
+        self.assertEqual(len(binaries), len(packages))
+        self.assertEqual(len(directories), len(packages))
+        self.assertEqual(len(labels), len(packages))
 
     def test_preparation_failure_cancels_running_aggregate(self):
         started = threading.Event()
@@ -222,7 +263,7 @@ class CoordinatorRunnerTests(unittest.TestCase):
 
         def checked(command, cwd, processes, env=None):
             if command[:2] == ["go", "list"]:
-                return API + "\n" + API.rsplit("/", 1)[0] + "/store"
+                return API + "\n" + COORDINATOR + "/store"
             self.assertTrue(started.wait(5))
             raise ValueError("compilation failed")
 
@@ -315,6 +356,44 @@ class CoordinatorRunnerTests(unittest.TestCase):
                 child.kill()
                 child.wait()
             processes.finish(child)
+
+
+class CoordinatorPushHookTests(unittest.TestCase):
+    def run_hook(self, go_exit):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "coordinator").mkdir()
+            binaries = root / "bin"
+            binaries.mkdir()
+            scripts = {
+                "git": "#!/bin/sh\nprintf '%s\\n' coordinator/tests/api/inference/contracts/example_test.go\n",
+                "gofmt": "#!/bin/sh\nexit 0\n",
+                "go": "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$GO_CALLS\"\nexit \"$GO_TEST_EXIT\"\n",
+            }
+            for name, source in scripts.items():
+                executable = binaries / name
+                executable.write_text(source)
+                executable.chmod(0o755)
+            calls = root / "go-calls"
+            env = dict(os.environ, PATH=str(binaries) + os.pathsep + os.environ["PATH"],
+                       GO_CALLS=str(calls), GO_TEST_EXIT=str(go_exit))
+            result = subprocess.run(
+                ["bash", str(ROOT / ".githooks/pre-push"), "origin"], cwd=root, env=env,
+                input="refs/heads/topic " + "1" * 40 + " refs/heads/topic " + "2" * 40 + "\n",
+                text=True, capture_output=True, timeout=10,
+            )
+            return result, calls.read_text().splitlines()
+
+    def test_standard_discovery_includes_all_mirrored_domains(self):
+        result, calls = self.run_hook(0)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(calls, ["test ./coordinator/..."])
+
+    def test_go_failure_blocks_push(self):
+        result, calls = self.run_hook(13)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, ["test ./coordinator/..."])
+        self.assertIn("Go tests failed", result.stdout)
 
 
 if __name__ == "__main__":

@@ -18,7 +18,6 @@ import (
 	_ "embed"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -40,10 +39,18 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/api/reporting"
 	attestservice "github.com/eigeninference/d-inference/coordinator/appattest/service"
 	"github.com/eigeninference/d-inference/coordinator/billing"
+	"github.com/eigeninference/d-inference/coordinator/internal/inference/backoff"
+	"github.com/eigeninference/d-inference/coordinator/internal/inference/cancellation"
+	"github.com/eigeninference/d-inference/coordinator/internal/inference/chunkkeys"
+	"github.com/eigeninference/d-inference/coordinator/internal/inference/firstcontent"
+	inferhedge "github.com/eigeninference/d-inference/coordinator/internal/inference/hedge"
+	"github.com/eigeninference/d-inference/coordinator/internal/inference/promotions"
+	"github.com/eigeninference/d-inference/coordinator/internal/inference/reservations"
+	"github.com/eigeninference/d-inference/coordinator/internal/inference/scangate"
+	"github.com/eigeninference/d-inference/coordinator/internal/inference/settlement"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/payments/baserewards"
 	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -102,19 +109,55 @@ func (s *Server) Inference() *infer.Owner { return s.inference }
 // Trust exposes the verification owner for application callback wiring.
 func (s *Server) Trust() *trustapi.Owner { return s.trust }
 
+// Runtime keeps the transport and its shared application dependencies together for
+// application startup configuration. Both references use the same service graph.
+type Runtime struct {
+	Server      *Server
+	Observation *observation.Owner
+}
+
+// RuntimeDependencies are the shared resources owned by application assembly.
+// Shared resources are required; optional controllers default to owner-managed
+// instances. Every domain owner receives the same shared resources.
+type RuntimeDependencies struct {
+	Registry                    *registry.Registry
+	Store                       store.Store
+	Ledger                      *payments.Ledger
+	ReadCache                   *readcache.Cache
+	Logger                      *slog.Logger
+	InferenceCancellation       *cancellation.Controller
+	InferenceSettlement         *settlement.Controller
+	InferencePromotions         *promotions.Engine
+	InferenceReservations       *reservations.Controller
+	InferenceScanGate           *scangate.Gate
+	InferenceBackoff            *backoff.Policy
+	InferenceChunkKeys          *chunkkeys.Cache
+	InferenceFirstContentPolicy *firstcontent.AccountPolicy
+	InferenceHedgeGovernor      *inferhedge.Governor
+}
+
 // NewServer creates a configured Server with all routes mounted.
 func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger *slog.Logger) *Server {
+	return NewRuntime(RuntimeDependencies{
+		Registry: reg, Store: st, Ledger: payments.NewLedger(st),
+		ReadCache: readcache.New(), Logger: logger,
+	}, cfg).Server
+}
+
+// NewRuntime composes the transport and the owners configured by application startup.
+func NewRuntime(d RuntimeDependencies, cfg ServerConfig) *Runtime {
+	reg, st, logger := d.Registry, d.Store, d.Logger
 	// Wire the store into the registry for provider fleet persistence.
 	reg.SetStore(st)
 
 	s := &Server{
 		registry: reg,
 		store:    st,
-		ledger:   payments.NewLedger(st),
+		ledger:   d.Ledger,
 		logger:   logger,
 		mux:      http.NewServeMux(),
 
-		readCache:   readcache.New(),
+		readCache:   d.ReadCache,
 		geoResolver: geo.NewResolverFromEnv(logger),
 		access:      access.New(st, logger, maxControlPlaneBodyBytes, access.Hooks{SetOutcomeStage: observation.SetOutcomeStage, StampAuth: observation.StampAuth}),
 	}
@@ -132,6 +175,14 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	s.inference = infer.New(infer.Dependencies{
 		Registry: reg, Store: st, Ledger: s.ledger, Access: s.access,
 		Observation: s.observation, Geo: s.geoResolver, Logger: logger,
+		Cancellation: d.InferenceCancellation, Settlement: d.InferenceSettlement,
+		Promotions:         d.InferencePromotions,
+		Reservations:       d.InferenceReservations,
+		ScanGate:           d.InferenceScanGate,
+		Backoff:            d.InferenceBackoff,
+		ChunkKeys:          d.InferenceChunkKeys,
+		FirstContentPolicy: d.InferenceFirstContentPolicy,
+		HedgeGovernor:      d.InferenceHedgeGovernor,
 	}, infer.Config{
 		ServiceReservations:      cfg.ServiceReservations,
 		FirstContentDeadlineBase: cfg.FirstContentDeadlineBase,
@@ -201,7 +252,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	s.baseURL = strings.TrimRight(cfg.BaseURL, "/")
 	s.access.SetReleaseKey(cfg.ReleaseKey)
 
-	return s
+	return &Runtime{Server: s, Observation: s.observation}
 }
 
 // Close releases background resources owned by the Server.
@@ -213,12 +264,7 @@ func (s *Server) Close() {
 	s.observation.CloseProfilesAndOutcomes()
 }
 
-// maxRequestBodyBytes is the global ceiling bodyLimitMiddleware applies to every
-// request body so no endpoint can be OOM'd by an unbounded POST. It's a coarse
-// outer bound that clears every legitimate body with headroom; the hot paths
-// self-cap tighter on top (the plaintext-inference path at 16 MiB, sized to the
-// provider WS frame budget — see maxInferenceBodyBytes).
-const maxRequestBodyBytes = 64 << 20 // 64 MiB
+// 64 MiB
 
 // maxControlPlaneBodyBytes is the tight cap for small unauthenticated
 // control-plane JSON (enroll, device token, admin auth) — far below the global
@@ -255,35 +301,7 @@ func (s *Server) resolveBaseURL(r *http.Request) string {
 	return scheme + "://" + r.Host
 }
 
-// readCacheJanitorInterval is how often expired readCache entries are reclaimed.
-// Get already skips expired entries, so this only frees memory — but without it
-// high-cardinality keys (e.g. the per-account "account-earnings:" entries) are
-// written and never re-read, so they linger forever and the cache grows unbounded.
-const readCacheJanitorInterval = time.Minute
-
-// StartReadCacheJanitor periodically purges expired entries from the read cache
-// so it can't grow unbounded. Call as a goroutine; stops when ctx is cancelled.
-func (s *Server) StartReadCacheJanitor(ctx context.Context) {
-	saferun.Go(s.logger, "model_token_promotion_maintenance", func() { s.inference.RunModelTokenMaintenance(ctx) })
-	s.readCache.RunJanitor(ctx, readCacheJanitorInterval)
-}
-
 // StartCacheRefreshers starts the reporting owner's independent refresh loops.
 func (s *Server) StartCacheRefreshers(ctx context.Context) {
 	s.reporting.StartCacheRefreshers(ctx)
 }
-
-// httpPathLabel returns a bounded label for HTTP metrics.
-// We use the mux route pattern (e.g. "POST-/v1/chat/completions")
-// instead of URL.Path so attacker-controlled unmatched paths cannot create
-// unbounded metric cardinality. Dashes replace spaces so DogStatsD tags
-// parse cleanly (spaces break tag parsing).
-func httpPathLabel(route string) string {
-	if route == "" {
-		return "unmatched"
-	}
-	return strings.ReplaceAll(route, " ", "-")
-}
-
-// strconvItoa is a shim to avoid pulling strconv into every middleware file.
-func strconvItoa(i int) string { return strconv.Itoa(i) }

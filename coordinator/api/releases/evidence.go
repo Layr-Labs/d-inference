@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	compiledpolicy "github.com/eigeninference/d-inference/coordinator/internal/api/releases/compiledpolicy"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
@@ -17,13 +18,13 @@ import (
 // them; requiring them made evidence underivable fleet-wide, 2026-08-31
 // incident). Binary hash and metallib fail closed on absence or mismatch.
 func releaseEvidenceStillApproved(
-	snapshot *releaseTrustPolicySnapshot,
+	snapshot *compiledpolicy.Snapshot,
 	evidence registry.ApplicationEvidence,
 ) bool {
 	if evidence.BinaryHash == "" || evidence.MetallibHash == "" {
 		return false
 	}
-	for _, candidate := range snapshot.ByBinaryHash[evidence.BinaryHash] {
+	for _, candidate := range snapshot.Inventory()[evidence.BinaryHash] {
 		if candidate.Version != evidence.Version ||
 			candidate.Platform != evidence.Platform ||
 			candidate.Platform == "" {
@@ -146,9 +147,9 @@ func (s *Owner) DeriveApprovedReleaseTransition(
 	// preferred when both exist), and the derived fact/evidence is stamped with
 	// the provider-reported backend so routing's evidence.Backend == p.Backend
 	// check keeps holding.
-	var current approvedReleasePolicy
+	var current compiledpolicy.Entry
 	found := false
-	for _, candidate := range snapshot.ByBinaryHash[freshHash] {
+	for _, candidate := range snapshot.Inventory()[freshHash] {
 		if candidate.Version == version && candidate.Backend == backend &&
 			candidate.Platform != "" {
 			current = candidate
@@ -157,7 +158,7 @@ func (s *Owner) DeriveApprovedReleaseTransition(
 		}
 	}
 	if !found {
-		for _, candidate := range snapshot.ByBinaryHash[freshHash] {
+		for _, candidate := range snapshot.Inventory()[freshHash] {
 			if candidate.Version == version && candidate.Backend == "" &&
 				candidate.Platform != "" {
 				current = candidate
@@ -175,7 +176,7 @@ func (s *Owner) DeriveApprovedReleaseTransition(
 	}
 
 	approvedFrom := make(map[string]struct{})
-	for binaryHash := range snapshot.ByBinaryHash {
+	for binaryHash := range snapshot.Inventory() {
 		if approvedTransitionPredecessor(
 			snapshot, binaryHash,
 			current.Platform, current.Backend, current.Version,
@@ -214,7 +215,7 @@ func (s *Owner) DeriveApprovedReleaseTransition(
 // requiring provider coverage of those made application evidence underivable
 // for 100% of the production fleet (2026-08-31 zero-capacity incident).
 // Binary-hash ↔ active-release matching is the caller's job.
-func releaseMetallibMatches(policy approvedReleasePolicy, resp *protocol.AttestationResponseMessage) bool {
+func releaseMetallibMatches(policy compiledpolicy.Entry, resp *protocol.AttestationResponseMessage) bool {
 	if policy.MetallibHash == "" {
 		return false
 	}

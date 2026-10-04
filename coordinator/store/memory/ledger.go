@@ -51,10 +51,10 @@ func (s *MemoryStore) CreditWithdrawable(accountID string, amountMicroUSD int64,
 func (s *MemoryStore) CreditWithdrawableOnce(accountID string, amountMicroUSD int64, entryType store.LedgerEntryType, reference string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for i := range s.ledgerEntries {
-		if s.ledgerEntries[i].AccountID == accountID &&
-			s.ledgerEntries[i].Type == entryType &&
-			s.ledgerEntries[i].Reference == reference {
+	for i := range s.history.LedgerEntries {
+		if s.history.LedgerEntries[i].AccountID == accountID &&
+			s.history.LedgerEntries[i].Type == entryType &&
+			s.history.LedgerEntries[i].Reference == reference {
 			return false, nil
 		}
 	}
@@ -83,7 +83,7 @@ func (s *MemoryStore) debitLocked(accountID string, amountMicroUSD int64, entryT
 		s.withdrawable[accountID] = s.balances[accountID]
 	}
 	s.ledgerSeq++
-	s.ledgerEntries = append(s.ledgerEntries, store.LedgerEntry{
+	s.history.LedgerEntries = append(s.history.LedgerEntries, store.LedgerEntry{
 		ID:             s.ledgerSeq,
 		AccountID:      accountID,
 		Type:           entryType,
@@ -115,7 +115,7 @@ func (s *MemoryStore) MigrateAccountBalance(from, to string) (bool, error) {
 	s.balances[from] = 0
 	s.withdrawable[from] = 0
 	s.ledgerSeq++
-	s.ledgerEntries = append(s.ledgerEntries, store.LedgerEntry{
+	s.history.LedgerEntries = append(s.history.LedgerEntries, store.LedgerEntry{
 		ID:             s.ledgerSeq,
 		AccountID:      from,
 		Type:           store.LedgerMigration,
@@ -128,7 +128,7 @@ func (s *MemoryStore) MigrateAccountBalance(from, to string) (bool, error) {
 	s.balances[to] += bal
 	s.withdrawable[to] += wdr
 	s.ledgerSeq++
-	s.ledgerEntries = append(s.ledgerEntries, store.LedgerEntry{
+	s.history.LedgerEntries = append(s.history.LedgerEntries, store.LedgerEntry{
 		ID:             s.ledgerSeq,
 		AccountID:      to,
 		Type:           store.LedgerMigration,
@@ -146,9 +146,9 @@ func (s *MemoryStore) LedgerHistory(accountID string) []store.LedgerEntry {
 	defer s.mu.RUnlock()
 
 	var entries []store.LedgerEntry
-	for i := len(s.ledgerEntries) - 1; i >= 0; i-- {
-		if s.ledgerEntries[i].AccountID == accountID {
-			entries = append(entries, s.ledgerEntries[i])
+	for i := len(s.history.LedgerEntries) - 1; i >= 0; i-- {
+		if s.history.LedgerEntries[i].AccountID == accountID {
+			entries = append(entries, s.history.LedgerEntries[i])
 		}
 	}
 	if entries == nil {
@@ -160,7 +160,7 @@ func (s *MemoryStore) LedgerHistory(accountID string) []store.LedgerEntry {
 func (s *MemoryStore) creditLocked(accountID string, amountMicroUSD int64, entryType store.LedgerEntryType, reference string, createdAt time.Time) {
 	s.balances[accountID] += amountMicroUSD
 	s.ledgerSeq++
-	s.ledgerEntries = append(s.ledgerEntries, store.LedgerEntry{
+	s.history.LedgerEntries = append(s.history.LedgerEntries, store.LedgerEntry{
 		ID:             s.ledgerSeq,
 		AccountID:      accountID,
 		Type:           entryType,

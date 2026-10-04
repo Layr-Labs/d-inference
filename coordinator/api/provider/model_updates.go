@@ -7,17 +7,6 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
-func validLoadModelStatus(status string) bool {
-	switch status {
-	case protocol.LoadModelStatusStarted,
-		protocol.LoadModelStatusSucceeded,
-		protocol.LoadModelStatusFailed:
-		return true
-	default:
-		return false
-	}
-}
-
 // handleModelsUpdate merges a provider's authoritative model inventory update
 // (sent after a verified prefetch) into its advertised models in place. Each
 // build's weight hash is cross-checked against the catalog before it becomes

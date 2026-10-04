@@ -9,17 +9,12 @@ package observation
 
 import (
 	"fmt"
+	metriclabels "github.com/eigeninference/d-inference/coordinator/internal/observation/labels"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 )
-
-// MetricLabel is a single label (name, value) attached to a metric sample.
-type MetricLabel struct {
-	Name  string
-	Value string
-}
 
 // Metrics is the registry of counters, histograms, and computed gauges.
 type Metrics struct {
@@ -43,7 +38,7 @@ func NewMetrics() *Metrics {
 }
 
 // IncCounter atomically increments the named counter by 1.
-func (m *Metrics) IncCounter(name string, labels ...MetricLabel) {
+func (m *Metrics) IncCounter(name string, labels ...metriclabels.MetricLabel) {
 	m.AddCounter(name, 1, labels...)
 }
 
@@ -51,15 +46,15 @@ func (m *Metrics) IncCounter(name string, labels ...MetricLabel) {
 // telemetry.Emitter — hides our MetricLabel type behind a stable signature.
 func (m *Metrics) IncCounterEvent(source, severity, kind string) {
 	m.IncCounter("telemetry_events_total",
-		MetricLabel{"source", source},
-		MetricLabel{"severity", severity},
-		MetricLabel{"kind", kind},
+		metriclabels.MetricLabel{Name: "source", Value: source},
+		metriclabels.MetricLabel{Name: "severity", Value: severity},
+		metriclabels.MetricLabel{Name: "kind", Value: kind},
 	)
 }
 
 // AddCounter atomically adds delta to the named counter.
-func (m *Metrics) AddCounter(name string, delta int64, labels ...MetricLabel) {
-	key := metricKey(name, labels)
+func (m *Metrics) AddCounter(name string, delta int64, labels ...metriclabels.MetricLabel) {
+	key := metriclabels.Key(name, labels)
 	m.mu.RLock()
 	c, ok := m.counters[key]
 	m.mu.RUnlock()
@@ -76,8 +71,8 @@ func (m *Metrics) AddCounter(name string, delta int64, labels ...MetricLabel) {
 }
 
 // ObserveHistogram records a sample into a histogram with default buckets.
-func (m *Metrics) ObserveHistogram(name string, value float64, labels ...MetricLabel) {
-	key := metricKey(name, labels)
+func (m *Metrics) ObserveHistogram(name string, value float64, labels ...metriclabels.MetricLabel) {
+	key := metriclabels.Key(name, labels)
 	m.mu.RLock()
 	h, ok := m.histograms[key]
 	m.mu.RUnlock()
@@ -100,10 +95,10 @@ func (m *Metrics) RegisterGauge(name string, fn GaugeFunc) {
 }
 
 // RegisterGaugeLabels registers a computed gauge with a bounded label set.
-func (m *Metrics) RegisterGaugeLabels(name string, fn GaugeFunc, labels ...MetricLabel) {
+func (m *Metrics) RegisterGaugeLabels(name string, fn GaugeFunc, labels ...metriclabels.MetricLabel) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.gauges[metricKey(name, labels)] = fn
+	m.gauges[metriclabels.Key(name, labels)] = fn
 }
 
 // RegisterSnapshotHook registers bounded work that runs once before every
@@ -164,28 +159,6 @@ type MetricsSnapshot struct {
 	Counters   map[string]int64             `json:"counters"`
 	Histograms map[string]HistogramSnapshot `json:"histograms"`
 	Gauges     map[string]float64           `json:"gauges"`
-}
-
-// metricKey serializes name + labels into a stable map key used for lookups.
-// Labels are sorted so the order callers pass them in doesn't matter.
-func metricKey(name string, labels []MetricLabel) string {
-	if len(labels) == 0 {
-		return name
-	}
-	sort.SliceStable(labels, func(i, j int) bool { return labels[i].Name < labels[j].Name })
-	var b strings.Builder
-	b.WriteString(name)
-	b.WriteByte('{')
-	for i, l := range labels {
-		if i > 0 {
-			b.WriteByte(',')
-		}
-		b.WriteString(l.Name)
-		b.WriteByte('=')
-		b.WriteString(l.Value)
-	}
-	b.WriteByte('}')
-	return b.String()
 }
 
 // ---------------------------------------------------------------------------

@@ -4,25 +4,9 @@ import (
 	"context"
 	"fmt"
 	"strings"
-)
 
-// retiredBackfills are the one-shot data migrations that coordinators up to
-// v0.9.10 ran at boot and later builds no longer carry. Each rebuilt state
-// from the rows in dataTable that the current write paths only maintain going
-// forward:
-//   - backfill_withdrawable_balance_v1 added balances.withdrawable_micro_usd
-//     and reconstructed it from the ledger;
-//   - backfill_usage_totals_v1 created the usage_totals counter row from the
-//     usage history;
-//   - backfill_earnings_summary_v1 built earnings_summary from
-//     provider_earnings.
-//
-// The table names are constants spliced into SQL; never feed input here.
-var retiredBackfills = []struct{ id, dataTable string }{
-	{"backfill_withdrawable_balance_v1", "balances"},
-	{"backfill_usage_totals_v1", "usage"},
-	{"backfill_earnings_summary_v1", "provider_earnings"},
-}
+	backfills "github.com/eigeninference/d-inference/coordinator/internal/store/backfills"
+)
 
 // retiredBackfillRemedy tells the operator how to repair a database that
 // skipped the retired backfills.
@@ -66,12 +50,12 @@ func (s *PostgresStore) checkRetiredBackfills(ctx context.Context) error {
 			retiredBackfillRemedy)
 	}
 
-	for _, b := range retiredBackfills {
+	for _, b := range backfills.Retired {
 		if _, err := s.pool.Exec(ctx, `
 			INSERT INTO schema_migrations (id)
-			SELECT $1 WHERE NOT EXISTS (SELECT 1 FROM `+b.dataTable+`)
-			ON CONFLICT (id) DO NOTHING`, b.id); err != nil {
-			return fmt.Errorf("store: record %s on an empty %s table: %w", b.id, b.dataTable, err)
+			SELECT $1 WHERE NOT EXISTS (SELECT 1 FROM `+b.DataTable+`)
+			ON CONFLICT (id) DO NOTHING`, b.ID); err != nil {
+			return fmt.Errorf("store: record %s on an empty %s table: %w", b.ID, b.DataTable, err)
 		}
 	}
 	if _, err := s.pool.Exec(ctx, `
@@ -82,15 +66,15 @@ func (s *PostgresStore) checkRetiredBackfills(ctx context.Context) error {
 	}
 
 	var missing []string
-	for _, b := range retiredBackfills {
+	for _, b := range backfills.Retired {
 		var recorded bool
 		if err := s.pool.QueryRow(ctx,
-			`SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE id = $1)`, b.id,
+			`SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE id = $1)`, b.ID,
 		).Scan(&recorded); err != nil {
-			return fmt.Errorf("store: read %s marker: %w", b.id, err)
+			return fmt.Errorf("store: read %s marker: %w", b.ID, err)
 		}
 		if !recorded {
-			missing = append(missing, fmt.Sprintf("%s (%s has rows)", b.id, b.dataTable))
+			missing = append(missing, fmt.Sprintf("%s (%s has rows)", b.ID, b.DataTable))
 		}
 	}
 	if len(missing) > 0 {

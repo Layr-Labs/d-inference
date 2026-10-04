@@ -1,49 +1,10 @@
 package observation
 
 import (
-	"math"
-	"strings"
-
+	metriclabels "github.com/eigeninference/d-inference/coordinator/internal/observation/labels"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
-
-// Model breakdowns are internal operational metrics. The public status and
-// existing exact_cache metrics retain their aggregate-only contract. Never use
-// a caller's alias, provider identity, request ID, receipt nonce or prompt hash.
-func (s *Owner) cacheModelLabel(model string) string {
-	if s != nil && s.registry != nil {
-		if id, ok := s.registry.CatalogModelID(model); ok && id != "" && len(id) <= 200 && !strings.ContainsAny(id, ",|\n\r\x00") {
-			return id
-		}
-	}
-	return "unknown"
-}
-
-func (s *Owner) cacheModelCount(name string, value int64, labels ...MetricLabel) {
-	if s.Metrics() != nil {
-		s.Metrics().AddCounter("cache_model_"+name+"_total", value, labels...)
-	}
-	tags := make([]string, 0, len(labels))
-	for _, label := range labels {
-		tags = append(tags, label.Name+":"+label.Value)
-	}
-	s.Count("routing.cache_model."+name, value, tags)
-}
-
-// Sum/sample counters work with both Datadog HTTPS and DogStatsD. The admin
-// histogram preserves milliseconds for percentiles; the estimate is not a
-// measured counterfactual or a claim of successful end-to-end delivery.
-func (s *Owner) cacheModelTiming(name string, ms float64, labels ...MetricLabel) {
-	if ms < 0 || math.IsNaN(ms) || math.IsInf(ms, 0) || ms >= float64(math.MaxInt64)/1000 {
-		return
-	}
-	s.cacheModelCount(name+"_us", int64(math.Round(ms*1000)), labels...)
-	s.cacheModelCount(name+"_samples", 1, labels...)
-	if s.Metrics() != nil {
-		s.Metrics().ObserveHistogram("cache_model_"+name+"_ms", ms, labels...)
-	}
-}
 
 // Same terminal-completion population as aggregate provider usage; includes
 // parked completions, excludes unknown/duplicate/abandoned terminals. Invalid
@@ -52,20 +13,20 @@ func (s *Owner) EmitModelCacheUsage(pr *registry.PendingRequest, usage protocol.
 	if pr == nil {
 		return
 	}
-	model := MetricLabel{"model", s.cacheModelLabel(pr.Model)}
+	model := metriclabels.MetricLabel{Name: "model", Value: s.cacheModelLabel(pr.Model)}
 	outcome, tier := "unreported", "none"
 	if present && !valid {
 		outcome = "invalid"
 	} else if valid {
-		outcome, tier = usage.CacheOutcome, LowCardinalityCacheTier(usage.CacheTier)
+		outcome, tier = usage.CacheOutcome, metriclabels.LowCardinalityCacheTier(usage.CacheTier)
 	}
-	labels := []MetricLabel{model, {"outcome", outcome}, {"tier", tier}}
+	labels := []metriclabels.MetricLabel{model, {Name: "outcome", Value: outcome}, {Name: "tier", Value: tier}}
 	s.cacheModelCount("usage", 1, labels...)
 	if !valid {
 		return
 	}
-	s.cacheModelCount("cached_tokens", int64(usage.CachedTokens), model, MetricLabel{"tier", tier})
-	s.cacheModelCount("prefill_tokens_saved", int64(usage.PrefillTokensSaved), model, MetricLabel{"tier", tier})
+	s.cacheModelCount("cached_tokens", int64(usage.CachedTokens), model, metriclabels.MetricLabel{Name: "tier", Value: tier})
+	s.cacheModelCount("prefill_tokens_saved", int64(usage.PrefillTokensSaved), model, metriclabels.MetricLabel{Name: "tier", Value: tier})
 	s.cacheModelTiming("provider_stage", usage.CacheStageMs, labels...)
 	s.emitModelCacheCoverage("usage", usage, labels)
 }
@@ -76,7 +37,7 @@ func (s *Owner) EmitModelCacheLookup(msg *protocol.PrefixCacheLookupV2Message, r
 	if msg == nil || !receipt.Accepted {
 		return
 	}
-	labels := []MetricLabel{{"model", s.cacheModelLabel(msg.ModelID)}, {"outcome", msg.Outcome}, {"tier", LowCardinalityCacheTier(msg.Tier)}}
+	labels := []metriclabels.MetricLabel{{Name: "model", Value: s.cacheModelLabel(msg.ModelID)}, {Name: "outcome", Value: msg.Outcome}, {Name: "tier", Value: metriclabels.LowCardinalityCacheTier(msg.Tier)}}
 	s.cacheModelCount("lookup", 1, labels...)
 	// The denominator is the coordinator's exact plan, never a provider value.
 	if receipt.PromptTokens > 0 {
@@ -90,8 +51,8 @@ func (s *Owner) EmitModelCacheDonation(msg *protocol.PrefixCacheReadyV2Message, 
 		return
 	}
 	s.cacheModelCount("donation", 1,
-		MetricLabel{"model", s.cacheModelLabel(msg.ModelID)},
-		MetricLabel{"tier", LowCardinalityCacheTier(msg.Tier)})
+		metriclabels.MetricLabel{Name: "model", Value: s.cacheModelLabel(msg.ModelID)},
+		metriclabels.MetricLabel{Name: "tier", Value: metriclabels.LowCardinalityCacheTier(msg.Tier)})
 }
 
 // Runs inside the existing exactly-once cache terminal claim. "result" is the
@@ -109,20 +70,11 @@ func (s *Owner) EmitModelCacheSelection(pr *registry.PendingRequest, tags []stri
 	}
 }
 
-func (s *Owner) cacheModelSelectionLabels(model string, tags []string) []MetricLabel {
-	labels := []MetricLabel{{"model", s.cacheModelLabel(model)}}
-	for _, tag := range tags {
-		name, value, _ := strings.Cut(tag, ":")
-		labels = append(labels, MetricLabel{name, value})
-	}
-	return labels
-}
-
 // Same-label numerator and denominator permit token-weighted coverage or
 // hit-conditioned coverage without joining different request populations.
 // Counts are only called from existing exactly-once terminal hooks. Invalid
 // prompt counts do not contaminate denominators or create a division by zero.
-func (s *Owner) emitModelCacheCoverage(population string, usage protocol.UsageInfo, labels []MetricLabel) {
+func (s *Owner) emitModelCacheCoverage(population string, usage protocol.UsageInfo, labels []metriclabels.MetricLabel) {
 	if usage.PromptTokens <= 0 || usage.PromptTokens > 1_000_000 {
 		return
 	}
@@ -139,10 +91,10 @@ func (s *Owner) EmitModelCacheReceipt(model, tier, kind string, receipt registry
 		outcome = "accepted"
 	}
 	s.cacheModelCount("receipt", 1,
-		MetricLabel{"model", s.cacheModelLabel(model)}, MetricLabel{"tier", LowCardinalityCacheTier(tier)},
-		MetricLabel{"type", kind}, MetricLabel{"outcome", outcome}, MetricLabel{"reason", string(receipt.Reason)})
+		metriclabels.MetricLabel{Name: "model", Value: s.cacheModelLabel(model)}, metriclabels.MetricLabel{Name: "tier", Value: metriclabels.LowCardinalityCacheTier(tier)},
+		metriclabels.MetricLabel{Name: "type", Value: kind}, metriclabels.MetricLabel{Name: "outcome", Value: outcome}, metriclabels.MetricLabel{Name: "reason", Value: string(receipt.Reason)})
 	if receipt.PromptMismatch != "" {
-		s.cacheModelCount("prompt_mismatch", 1, MetricLabel{"model", s.cacheModelLabel(model)},
-			MetricLabel{"tier", LowCardinalityCacheTier(tier)}, MetricLabel{"detail", string(receipt.PromptMismatch)})
+		s.cacheModelCount("prompt_mismatch", 1, metriclabels.MetricLabel{Name: "model", Value: s.cacheModelLabel(model)},
+			metriclabels.MetricLabel{Name: "tier", Value: metriclabels.LowCardinalityCacheTier(tier)}, metriclabels.MetricLabel{Name: "detail", Value: string(receipt.PromptMismatch)})
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	attestservice "github.com/eigeninference/d-inference/coordinator/appattest/service"
+	"github.com/eigeninference/d-inference/coordinator/internal/provider/application"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
@@ -42,31 +43,10 @@ func (s *Owner) AppAttestIdentityCandidate(r *protocol.RegisterMessage, account 
 }
 
 func (s *Owner) providerServingAuthorizationStatus(p *registry.Provider) *protocol.ProviderServingAuthorization {
-	status := s.AppAttestFeature().Status(p)
-	if status != nil && status.Path != "none" {
-		return status
-	}
-	if p != nil && s.registry.ProviderLegacyServingAuthorized(p) {
-		return &protocol.ProviderServingAuthorization{Protocol: 1, Path: "legacy", Reason: "legacy_verification_active", SessionID: p.ID}
-	}
-	if s.registry.ProviderOwnerServingAuthorized(p) {
-		if status == nil {
-			status = &protocol.ProviderServingAuthorization{Protocol: 1, SessionID: p.ID}
-		}
-		status.Path, status.Reason = "self_route", "owner_serving_authorized"
-	}
-	return status
+	return application.ServingStatus(s.registry, s.AppAttestFeature(), p)
 }
 
 // Approval and generation close over the same immutable shared release view.
 func (s *Owner) currentAppAttestReleasePolicy() attestservice.ReleasePolicy {
-	snapshot := s.releases.Policy()
-	if snapshot == nil {
-		return attestservice.ReleasePolicy{}
-	}
-	return attestservice.ReleasePolicy{Generation: snapshot.Generation, Known: snapshot.Known(),
-		ContainsQualifiedRelease: snapshot.ContainsQualifiedRelease,
-		Approves: func(p *registry.Provider, status *protocol.AppAttestStatus) bool {
-			return snapshot.AppAttestReleaseApproved(p, status)
-		}}
+	return application.ReleasePolicy(s.releases.Policy())
 }

@@ -57,18 +57,32 @@ type ipAPIGeoResolver struct {
 }
 
 func NewResolverFromEnv(logger *slog.Logger) Resolver {
-	trustHeaders := os.Getenv(envTrustGeoHeaders) == "1"
-	apiKey := strings.TrimSpace(os.Getenv(envIPAPIKey))
-	baseURL := ipAPIFreeBaseURL
-	if apiKey != "" {
-		baseURL = ipAPIProBaseURL
+	return NewResolver(Config{TrustHeaders: os.Getenv(envTrustGeoHeaders) == "1", APIKey: strings.TrimSpace(os.Getenv(envIPAPIKey)), Logger: logger})
+}
+
+// Config supplies geolocation transport and trusted-proxy policy.
+type Config struct {
+	TrustHeaders bool
+	APIKey       string
+	BaseURL      string
+	HTTPClient   *http.Client
+	Logger       *slog.Logger
+}
+
+func NewResolver(config Config) Resolver {
+	baseURL := config.BaseURL
+	if baseURL == "" {
+		baseURL = ipAPIFreeBaseURL
+		if config.APIKey != "" {
+			baseURL = ipAPIProBaseURL
+		}
 	}
 	return &ipAPIGeoResolver{
-		trustHeaders: trustHeaders,
-		apiKey:       apiKey,
+		trustHeaders: config.TrustHeaders,
+		apiKey:       config.APIKey,
 		baseURL:      baseURL,
-		httpClient:   http.DefaultClient,
-		logger:       logger,
+		httpClient:   config.HTTPClient,
+		logger:       config.Logger,
 	}
 }
 

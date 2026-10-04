@@ -4,8 +4,6 @@ import (
 	"net/http"
 
 	"github.com/eigeninference/d-inference/coordinator/api/access"
-	httpx "github.com/eigeninference/d-inference/coordinator/api/httpx"
-	inreq "github.com/eigeninference/d-inference/coordinator/api/inference/request"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -21,24 +19,14 @@ import (
 // The retired DARKBLOOM_VISION_REJECT_REMOTE_URLS kill switch no longer gates
 // it: disabling fetch must never re-enable forwarding.
 func (s *Owner) rejectRemoteMediaURLs(w http.ResponseWriter, r *http.Request, parsed map[string]any, model, publicModel string, requiresVision, hasTools bool) (handled bool) {
-	if !requiresVision {
-		return false
-	}
-	badRef, ok := inreq.ValidateMediaParts(parsed)
-	if ok {
-		return false
-	}
-	s.writeRemoteMediaRejection(w, r, parsed, model, publicModel, hasTools,
-		"image/video input must be an inline base64 data: URI (e.g. \"data:image/jpeg;base64,…\"); "+
-			"remote http(s):// and file:// media URLs are not supported on this endpoint. Got: "+inreq.TruncateMediaRef(badRef))
-	return true
+	return s.mediaBridge().RejectURLs(w, r, parsed, model, publicModel, requiresVision, hasTools)
 }
 
-// writeRemoteMediaRejection records + writes the standard pre-dispatch remote
-// media 400 (identical telemetry shape for every remote-media rejection path:
+// recordRemoteMediaRejection records the standard pre-dispatch remote
+// media rejection (identical telemetry shape for every remote-media rejection path:
 // legacy data:-only, sealed-request, and unfetchable-shape — see
 // gateRemoteMediaPreDispatch in media_resolve.go).
-func (s *Owner) writeRemoteMediaRejection(w http.ResponseWriter, r *http.Request, parsed map[string]any, model, publicModel string, hasTools bool, message string) {
+func (s *Owner) recordRemoteMediaRejection(r *http.Request, parsed map[string]any, model, publicModel string, hasTools bool) {
 	stream, _ := parsed["stream"].(bool)
 	s.recordRejection(rejectionInfo{
 		r:               r,
@@ -54,6 +42,4 @@ func (s *Owner) writeRemoteMediaRejection(w http.ResponseWriter, r *http.Request
 		hasTools:        hasTools,
 		params:          rejectionSamplingParams(parsed),
 	})
-	s.observation.Incr("inference.media_remote_url_rejected", []string{"model:" + model})
-	httpx.WriteJSON(w, http.StatusBadRequest, httpx.ErrorResponse("invalid_request_error", message, httpx.WithParam("messages")))
 }

@@ -17,11 +17,6 @@ var _ store.Store = (*PostgresStore)(nil)
 type PostgresStore struct {
 	pool *pgxpool.Pool
 
-	// afterCacheRoutingResetMarker, when set (tests only), runs once
-	// ResetCacheRoutingState has recorded the in-progress marker and before
-	// it deletes anything: the point an interrupted reset is observed from.
-	afterCacheRoutingResetMarker func()
-
 	// In-memory cache for model prices. Keyed by "accountID:model".
 	// Eliminates a DB round trip on every inference request for
 	// platform pricing lookups (which change rarely).
@@ -37,13 +32,6 @@ type cachedPrice struct {
 // NewPostgres creates a new PostgresStore connected to the given database URL.
 // It runs schema migrations on startup.
 func NewPostgres(ctx context.Context, scfg store.Config) (*PostgresStore, error) {
-	return newPostgresWithPoolConfig(ctx, scfg, nil)
-}
-
-// newPostgresWithPoolConfig is NewPostgres with a hook that may adjust the
-// parsed pool configuration before the pool is created. Production passes nil;
-// package tests use it to attach a pgx query tracer.
-func newPostgresWithPoolConfig(ctx context.Context, scfg store.Config, tune func(*pgxpool.Config)) (*PostgresStore, error) {
 	cfg, err := pgxpool.ParseConfig(scfg.DatabaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("store: parse postgres config: %w", err)
@@ -62,10 +50,6 @@ func newPostgresWithPoolConfig(ctx context.Context, scfg store.Config, tune func
 	cfg.MaxConnLifetime = 30 * time.Minute
 	cfg.MaxConnIdleTime = 5 * time.Minute
 	cfg.HealthCheckPeriod = 30 * time.Second
-	if tune != nil {
-		tune(cfg)
-	}
-
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("store: connect to postgres: %w", err)
@@ -80,16 +64,22 @@ func newPostgresWithPoolConfig(ctx context.Context, scfg store.Config, tune func
 		return nil, fmt.Errorf("store: ping postgres: %w", err)
 	}
 
-	s := &PostgresStore{
-		pool:       pool,
-		priceCache: make(map[string]cachedPrice),
-	}
+	s := NewPostgresWithPool(pool)
 	if err := s.migrate(ctx); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("store: run migrations: %w", err)
 	}
 
 	return s, nil
+}
+
+// NewPostgresWithPool binds a store to an application-owned database pool.
+// The database must already have the coordinator schema; NewPostgres instead
+// creates a pool and migrates the schema. This lower-level lifecycle supports
+// separately managed migration and query connections, including read-only
+// connections and instrumented transports. Close closes the supplied pool.
+func NewPostgresWithPool(pool *pgxpool.Pool) *PostgresStore {
+	return &PostgresStore{pool: pool, priceCache: make(map[string]cachedPrice)}
 }
 
 // Close shuts down the connection pool.

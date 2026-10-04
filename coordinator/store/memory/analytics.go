@@ -27,7 +27,7 @@ func (s *MemoryStore) Leaderboard(metric store.LeaderboardMetric, since time.Tim
 		return row
 	}
 	// Provider earnings rows: inference work plus base_reward rows.
-	for _, e := range s.providerEarnings {
+	for _, e := range s.history.ProviderEarnings {
 		if e.AccountID == "" {
 			continue
 		}
@@ -47,7 +47,7 @@ func (s *MemoryStore) Leaderboard(metric store.LeaderboardMetric, since time.Tim
 	// that already have inference work above). Reward-only accounts (e.g.
 	// consumer-only referrers) are intentionally not added to the provider
 	// leaderboard.
-	for _, e := range s.ledgerEntries {
+	for _, e := range s.history.LedgerEntries {
 		if e.AccountID == "" || !store.IsRewardLedgerType(e.Type) {
 			continue
 		}
@@ -95,7 +95,7 @@ func (s *MemoryStore) NetworkTotals(since time.Time) (store.NetworkTotalsRow, er
 	defer s.mu.RUnlock()
 	var t store.NetworkTotalsRow
 	providers := make(map[string]struct{})
-	for _, e := range s.providerEarnings {
+	for _, e := range s.history.ProviderEarnings {
 		if !since.IsZero() && e.CreatedAt.Before(since) {
 			continue
 		}
@@ -110,7 +110,7 @@ func (s *MemoryStore) NetworkTotals(since time.Time) (store.NetworkTotalsRow, er
 		t.Tokens += int64(e.PromptTokens + e.CompletionTokens)
 		t.Jobs++
 	}
-	for _, e := range s.ledgerEntries {
+	for _, e := range s.history.LedgerEntries {
 		if !store.IsRewardLedgerType(e.Type) {
 			continue
 		}
@@ -146,7 +146,7 @@ func (s *MemoryStore) UsageLocationBuckets(since time.Time) ([]store.UsageLocati
 		providers                        map[string]struct{}
 	}
 	buckets := make(map[bucketKey]*agg)
-	for _, r := range s.usage {
+	for _, r := range s.history.Usage {
 		ts := r.Timestamp
 		if ts.IsZero() {
 			ts = r.CreatedAt
@@ -239,7 +239,7 @@ func (s *MemoryStore) UsageFlowBuckets(since time.Time, providerLocs map[string]
 	}
 
 	flows := make(map[flowKey]*agg)
-	for _, r := range s.usage {
+	for _, r := range s.history.Usage {
 		ts := r.Timestamp
 		if ts.IsZero() {
 			ts = r.CreatedAt

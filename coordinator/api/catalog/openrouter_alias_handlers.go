@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	httpx "github.com/eigeninference/d-inference/coordinator/api/httpx"
+	aliaspolicy "github.com/eigeninference/d-inference/coordinator/internal/api/catalog/aliaspolicy"
+	registration "github.com/eigeninference/d-inference/coordinator/internal/api/catalog/registration"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -43,7 +45,7 @@ func (s *Owner) HandleOpenRouterAliasUpsert(w http.ResponseWriter, r *http.Reque
 	case req.ID == "":
 		httpx.WriteJSON(w, http.StatusBadRequest, httpx.ErrorResponse("invalid_request_error", "id is required", httpx.WithParam("id")))
 		return
-	case len(req.ID) > maxAliasIDLength || !validRegistryIdentifier(req.ID, false):
+	case len(req.ID) > maxAliasIDLength || !registration.ValidRegistryIdentifier(req.ID, false):
 		httpx.WriteJSON(w, http.StatusBadRequest, httpx.ErrorResponse("invalid_request_error", "id may only contain letters, digits, '.', '_' and '-' (max 128 chars)", httpx.WithParam("id")))
 		return
 	case req.SourceModel == "":
@@ -77,7 +79,7 @@ func (s *Owner) HandleOpenRouterAliasUpsert(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		_, concreteFound := catalogByID[req.SourceModel]
-		if concreteFound && !concreteModelEligibleForOpenRouterFeed(req.SourceModel, catalogByID, s.openRouterAggregateTypeByID()) {
+		if concreteFound && !aliaspolicy.ConcreteModelEligibleForOpenRouterFeed(req.SourceModel, catalogByID, s.openRouterAggregateTypeByID()) {
 			httpx.WriteJSON(w, http.StatusBadRequest, httpx.ErrorResponse("invalid_request_error", "concrete source_model is not eligible for the OpenRouter text feed", httpx.WithParam("source_model")))
 			return
 		}
@@ -88,7 +90,7 @@ func (s *Owner) HandleOpenRouterAliasUpsert(w http.ResponseWriter, r *http.Reque
 				httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorResponse("internal_error", "failed to validate source model"))
 				return
 			}
-			if coveringAlias, covered := standardAliasCoveringBuild(aliases, req.SourceModel); covered {
+			if coveringAlias, covered := aliaspolicy.StandardAliasCoveringBuild(aliases, req.SourceModel); covered {
 				httpx.WriteJSON(w, http.StatusConflict, httpx.ErrorResponse("invalid_request_error", "concrete source_model is covered by standard alias "+coveringAlias+"; use that alias as source_model", httpx.WithParam("source_model")))
 				return
 			}

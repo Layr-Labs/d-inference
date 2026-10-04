@@ -11,7 +11,10 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/api"
+	"github.com/eigeninference/d-inference/coordinator/api/readcache"
 	"github.com/eigeninference/d-inference/coordinator/config"
+	startup "github.com/eigeninference/d-inference/coordinator/internal/startup"
+	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 )
 
@@ -52,15 +55,19 @@ func Run(cfg config.AppConfig, logger *slog.Logger) {
 	// 5000ms ordinary-unit default. Exact model policy may tighten this base but
 	// never loosen a lower operator value. Every request adds 1ms per prompt token.
 	if v := os.Getenv("EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS"); v != "" {
-		if base, ok := validateTTFTDeadlineBaseMs(v); ok {
+		if base, ok := startup.ValidateTTFTDeadlineBaseMs(v); ok {
 			serverCfg.FirstContentDeadlineBase = time.Duration(base) * time.Millisecond
 			logger.Warn("LIVE TTFT deadline base OVERRIDDEN via EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS (changes the HARD_REJECT cutoff)", "base_ms", base)
 		} else {
 			logger.Warn("invalid or out-of-range EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS; keeping default 5000",
-				"value", v, "min_ms", minTTFTDeadlineBaseMs, "max_ms", maxTTFTDeadlineBaseMs)
+				"value", v, "min_ms", startup.MinTTFTDeadlineBaseMs, "max_ms", startup.MaxTTFTDeadlineBaseMs)
 		}
 	}
-	srv := api.NewServer(reg, st, serverCfg, logger)
+	ledger, cache := payments.NewLedger(st), readcache.New()
+	runtime := api.NewRuntime(api.RuntimeDependencies{
+		Registry: reg, Store: st, Ledger: ledger, ReadCache: cache, Logger: logger,
+	}, serverCfg)
+	srv := runtime.Server
 	// The server handed the store to the registry; restore the durable cache
 	// routing indexes now so the holder index is not empty after a restart.
 	// The write-behind loop keeps running through the drain (the main ctx is
@@ -87,7 +94,7 @@ func Run(cfg config.AppConfig, logger *slog.Logger) {
 
 	configureRateLimits(ctx, cfg, srv, logger)
 
-	stopObservability := configureObservability(cfg, srv, logger)
+	stopObservability := configureObservability(cfg, runtime.Observation, logger)
 	defer stopObservability()
 
 	configureReleasePolicy(srv, reg, logger)
@@ -96,9 +103,9 @@ func Run(cfg config.AppConfig, logger *slog.Logger) {
 
 	configureRuntimePolicy(srv, logger)
 
-	configureBillingAndTrust(ctx, cfg, srv, reg, st, logger)
+	configureBillingAndTrust(ctx, cfg, srv, reg, st, ledger, logger)
 
-	startBackgroundLoops(ctx, srv, reg, logger)
+	startBackgroundLoops(ctx, srv, reg, cache, logger)
 
 	// HTTP server with graceful shutdown.
 	httpServer := &http.Server{

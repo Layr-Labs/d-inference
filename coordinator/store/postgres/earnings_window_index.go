@@ -4,16 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
-)
 
-const (
-	providerEarningsWindowIndex = "idx_provider_earnings_created_at_brin"
-	// providerEarningsAnalyzeScaleFactor re-analyzes provider_earnings after
-	// 0.5% of its rows change instead of the 10% default. At millions of
-	// inserts/day the default lets the created_at histogram trail ingestion
-	// by days, and the planner then costs a 24h
-	// window as a few thousand rows.
-	providerEarningsAnalyzeScaleFactor = "0.005"
+	earningssql "github.com/eigeninference/d-inference/coordinator/internal/store/earningssql"
 )
 
 // ensureProviderEarningsWindowIndex builds the BRIN index behind the windowed
@@ -26,9 +18,9 @@ const (
 // The CONCURRENTLY build permits an old coordinator to continue writing.
 func (s *PostgresStore) ensureProviderEarningsWindowIndex(ctx context.Context) error {
 	started := time.Now()
-	err := s.ensureConcurrentIndex(ctx, providerEarningsWindowIndex,
-		`CREATE INDEX CONCURRENTLY IF NOT EXISTS `+providerEarningsWindowIndex+` ON provider_earnings USING brin (created_at) WITH (autosummarize = on)`)
-	logStartupMigration(providerEarningsWindowIndex, started, err)
+	err := s.ensureConcurrentIndex(ctx, earningssql.WindowIndex,
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS `+earningssql.WindowIndex+` ON provider_earnings USING brin (created_at) WITH (autosummarize = on)`)
+	logStartupMigration(earningssql.WindowIndex, started, err)
 	if err != nil {
 		return err
 	}
@@ -50,11 +42,11 @@ func (s *PostgresStore) ensureProviderEarningsAnalyzeCadence(ctx context.Context
 		), '')`).Scan(&current); err != nil {
 		return fmt.Errorf("store: inspect provider_earnings reloptions: %w", err)
 	}
-	if current == providerEarningsAnalyzeScaleFactor {
+	if current == earningssql.AnalyzeScaleFactor {
 		return nil
 	}
 	if _, err := s.pool.Exec(ctx,
-		`ALTER TABLE provider_earnings SET (autovacuum_analyze_scale_factor = `+providerEarningsAnalyzeScaleFactor+`)`); err != nil {
+		`ALTER TABLE provider_earnings SET (autovacuum_analyze_scale_factor = `+earningssql.AnalyzeScaleFactor+`)`); err != nil {
 		return fmt.Errorf("store: set provider_earnings analyze scale factor: %w", err)
 	}
 	return nil

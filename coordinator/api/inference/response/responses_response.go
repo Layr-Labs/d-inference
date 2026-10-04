@@ -6,20 +6,11 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/api/types"
+	responsepolicy "github.com/eigeninference/d-inference/coordinator/internal/inference/responsepolicy"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/google/uuid"
 )
-
-func buildResponsesUsage(promptTokens, completionTokens, reasoningTokens, cachedTokens uint64) types.ResponsesUsage {
-	return types.ResponsesUsage{
-		InputTokens:        int(promptTokens),
-		InputTokensDetail:  types.ResponsesUsageDetail{CachedTokens: int(cachedTokens)},
-		OutputTokens:       int(completionTokens),
-		OutputTokensDetail: types.ResponsesUsageDetail{ReasoningTokens: int(reasoningTokens)},
-		TotalTokens:        int(promptTokens) + int(completionTokens),
-	}
-}
 
 func buildResponsesIncompleteDetails(finishReason string) *types.ResponsesIncompleteDetail {
 	switch finishReason {
@@ -97,7 +88,7 @@ func finalizeResponsesEnvelope(
 	} else {
 		r.Status = "completed"
 	}
-	r.ToolChoice, r.ParallelToolCalls = responsesToolPolicy(traits)
+	r.ToolChoice, r.ParallelToolCalls = responsepolicy.ResponsesToolPolicy(traits)
 	if r.Tools == nil {
 		r.Tools = []any{}
 	}
@@ -107,15 +98,15 @@ func finalizeResponsesEnvelope(
 }
 
 func BuildResponsesResponse(requestID, model string, msg ExtractedMessage, usage protocol.UsageInfo, requestedMax int, seSignature, responseHash string, policies ...registry.RequestTraits) types.ResponsesResponse {
-	reasoningTokens := resolveReasoningTokens(usage, msg.Reasoning)
-	finishReason := effectiveFinishReason(msg.FinishReason, len(msg.ToolCalls) > 0, usage, requestedMax)
+	reasoningTokens := responsepolicy.ResolveReasoningTokens(usage, msg.Reasoning)
+	finishReason := responsepolicy.EffectiveFinishReason(msg.FinishReason, len(msg.ToolCalls) > 0, usage, requestedMax)
 	resp := types.ResponsesResponse{
 		ID:               "resp_" + strings.ReplaceAll(requestID, "-", ""),
 		Object:           "response",
 		CreatedAt:        time.Now().Unix(),
 		Model:            model,
 		Output:           appendResponsesOutputItems(nil, requestID, msg),
-		Usage:            buildResponsesUsage(uint64(usage.PromptTokens), uint64(usage.CompletionTokens), reasoningTokens, uint64(usage.CachedTokens)),
+		Usage:            responsepolicy.BuildResponsesUsage(uint64(usage.PromptTokens), uint64(usage.CompletionTokens), reasoningTokens, uint64(usage.CachedTokens)),
 		IncompleteDetail: buildResponsesIncompleteDetails(finishReason),
 	}
 	var traits registry.RequestTraits
@@ -148,7 +139,7 @@ func chatUsageToResponsesUsage(resp types.ChatCompletionResponse, reasoning stri
 	if details := resp.Usage.PromptTokensDetails; details != nil {
 		cachedTokens = details.CachedTokens
 	}
-	return buildResponsesUsage(uint64(resp.Usage.PromptTokens), uint64(resp.Usage.CompletionTokens), uint64(reasoningTokens), uint64(cachedTokens))
+	return responsepolicy.BuildResponsesUsage(uint64(resp.Usage.PromptTokens), uint64(resp.Usage.CompletionTokens), uint64(reasoningTokens), uint64(cachedTokens))
 }
 
 func ChatCompletionToResponses(resp types.ChatCompletionResponse, requestedModel, seSignature, responseHash string, policies ...registry.RequestTraits) types.ResponsesResponse {

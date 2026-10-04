@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	httpx "github.com/eigeninference/d-inference/coordinator/api/httpx"
+	registration "github.com/eigeninference/d-inference/coordinator/internal/api/catalog/registration"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -54,17 +55,10 @@ func (s *Owner) writeModelRegistryStoreError(w http.ResponseWriter, operation st
 		httpx.WriteJSON(w, http.StatusConflict, httpx.ErrorResponse("invalid_request_error", err.Error()))
 		return
 	}
-	if isModelRegistryNotFound(err) {
+	if registration.IsModelRegistryNotFound(err) {
 		httpx.WriteJSON(w, http.StatusNotFound, httpx.ErrorResponse("not_found", err.Error()))
 		return
 	}
 	s.logger.Error("model registry store error", "operation", operation, "error", err)
 	httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorResponse("internal_error", "model registry store error"))
-}
-
-func isModelRegistryNotFound(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(strings.ToLower(err.Error()), "not found")
 }

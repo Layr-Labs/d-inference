@@ -12,6 +12,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/config"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
+	startup "github.com/eigeninference/d-inference/coordinator/internal/startup"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/payments/baserewards"
@@ -20,9 +21,8 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-func configureBillingAndTrust(ctx context.Context, cfg config.AppConfig, srv *api.Server, reg *registry.Registry, st store.Store, logger *slog.Logger) {
+func configureBillingAndTrust(ctx context.Context, cfg config.AppConfig, srv *api.Server, reg *registry.Registry, st store.Store, ledger *payments.Ledger, logger *slog.Logger) {
 	billingCfg := cfg.BillingConfig
-	ledger := payments.NewLedger(st)
 	billingSvc := billing.NewService(st, ledger, logger, billingCfg)
 	srv.SetBilling(billingSvc)
 
@@ -137,7 +137,7 @@ func configureBillingAndTrust(ctx context.Context, cfg config.AppConfig, srv *ap
 		// prod (Postgres store; see the store selection above); a no-op only under
 		// the in-memory store fallback.
 		srv.SeedCodeAttestCache(ctx)
-		deadline, err := parseAPNsEnforceAfter()
+		deadline, err := startup.ParseAPNsEnforceAfter()
 		if err != nil {
 			// A non-empty but malformed APNS_ENFORCE_AFTER is an operator error on a
 			// security-critical knob; falling back to grace would silently keep

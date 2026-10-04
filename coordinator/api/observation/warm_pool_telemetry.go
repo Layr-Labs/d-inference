@@ -2,9 +2,10 @@ package observation
 
 import (
 	"context"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
 	"time"
+
+	fleet "github.com/eigeninference/d-inference/coordinator/internal/observation/fleet"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 // Poll more frequently than the default 30-second controller interval so the
@@ -29,7 +30,7 @@ func (s *Owner) StartWarmPoolTelemetryLoop(ctx context.Context) {
 		}
 		for _, snap := range snaps {
 			s.Emit(ctx, protocol.SeverityInfo, protocol.KindCustom, "warm_pool_tick",
-				warmPoolTelemetryFields(snap))
+				fleet.WarmPoolFields(snap))
 		}
 		lastEmittedAt = at
 	}
@@ -45,38 +46,4 @@ func (s *Owner) StartWarmPoolTelemetryLoop(ctx context.Context) {
 			emitLatest()
 		}
 	}
-}
-
-func warmPoolTelemetryFields(snap registry.WarmPoolSnapshot) map[string]any {
-	fields := map[string]any{
-		"model":                 snap.Model,
-		"target_warm":           snap.TargetWarm,
-		"warm":                  snap.WarmProviders,
-		"eligible_cold":         snap.EligibleCold,
-		"cold_ineligible":       snap.ColdIneligible,
-		"warm_saturated":        snap.WarmSaturated,
-		"warm_foreign_blocked":  snap.WarmForeignBlocked,
-		"occupancy_ramp":        snap.OccupancyRamp,
-		"headroom_providers":    snap.HeadroomProviders,
-		"running":               snap.RunningRequests,
-		"waiting":               snap.WaitingRequests,
-		"queue_depth":           snap.QueueDepth,
-		"oldest_queue_age_ms":   snap.OldestQueueAge.Milliseconds(),
-		"spill_arrival_rate":    snap.SpillArrivalRate,
-		"service_time_ms":       snap.ServiceTime.Milliseconds(),
-		"quality_concurrency":   snap.QualityConcurrency,
-		"demand_concurrency":    snap.DemandConcurrency,
-		"capacity_rejects":      snap.CapacityRejects,
-		"ttft_misses":           snap.TTFTMisses,
-		"speculative_started":   snap.SpeculativeStarted,
-		"speculative_won":       snap.SpeculativeWon,
-		"cold_dispatches":       snap.ColdDispatches,
-		"load_duration_ewma_ms": snap.LoadDurationEWMA.Milliseconds(),
-		"actions":               len(snap.Actions),
-		"observe_only":          snap.ObserveOnly,
-	}
-	for reason, count := range snap.ColdDisqualifiers {
-		fields["cold_disq_"+reason] = count
-	}
-	return fields
 }

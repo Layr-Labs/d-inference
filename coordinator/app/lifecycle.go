@@ -8,12 +8,13 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/api"
 	"github.com/eigeninference/d-inference/coordinator/api/operations"
+	"github.com/eigeninference/d-inference/coordinator/api/readcache"
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 )
 
-func startBackgroundLoops(ctx context.Context, srv *api.Server, reg *registry.Registry, logger *slog.Logger) {
+func startBackgroundLoops(ctx context.Context, srv *api.Server, reg *registry.Registry, cache *readcache.Cache, logger *slog.Logger) {
 	// Start background eviction of stale providers.
 	reg.StartEvictionLoop(ctx, registry.DefaultProviderHeartbeatTimeout)
 
@@ -23,7 +24,10 @@ func startBackgroundLoops(ctx context.Context, srv *api.Server, reg *registry.Re
 	srv.StartProfilerLoops(ctx)
 
 	// Reclaim expired read-cache entries periodically (bounds memory growth).
-	go srv.StartReadCacheJanitor(ctx)
+	go func() {
+		saferun.Go(logger, "model_token_promotion_maintenance", func() { srv.Inference().RunModelTokenMaintenance(ctx) })
+		cache.RunJanitor(ctx, time.Minute)
+	}()
 
 	// Background goroutines own the /v1/stats and /v1/network/totals cache
 	// entries; handlers only read them.

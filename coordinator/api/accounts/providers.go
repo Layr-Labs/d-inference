@@ -6,6 +6,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/api/access"
 	"github.com/eigeninference/d-inference/coordinator/api/httpx"
+	fleetview "github.com/eigeninference/d-inference/coordinator/internal/api/accounts/fleetview"
 )
 
 func (s *Owner) HandleMyProviders(w http.ResponseWriter, r *http.Request) {
@@ -14,7 +15,7 @@ func (s *Owner) HandleMyProviders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fleet, err := s.mergeFleet(r.Context(), user.AccountID)
+	fleet, err := fleetview.Merge(s.store, s.registry, r.Context(), user.AccountID)
 	if err != nil {
 		s.logger.Error("merge fleet failed", "account_id", user.AccountID, "error", err)
 		httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorResponse("internal_error", "failed to list providers"))
@@ -23,11 +24,11 @@ func (s *Owner) HandleMyProviders(w http.ResponseWriter, r *http.Request) {
 
 	s.attachStoredReputations(r.Context(), fleet)
 
-	resp := myProvidersResponse{
+	resp := fleetview.ProvidersResponse{
 		Providers:             fleet,
 		LatestProviderVersion: s.latestReleasedVersion(),
 		MinProviderVersion:    s.minProviderVersion,
-		HeartbeatTimeoutSec:   ownerHeartbeatTimeoutSeconds,
+		HeartbeatTimeoutSec:   fleetview.OwnerHeartbeatTimeoutSeconds,
 		ChallengeMaxAgeSec:    int((6 * time.Minute).Seconds()),
 	}
 	httpx.WriteJSON(w, http.StatusOK, resp)

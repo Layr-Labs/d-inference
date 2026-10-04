@@ -1,6 +1,7 @@
 package releases
 
 import (
+	compiledpolicy "github.com/eigeninference/d-inference/coordinator/internal/api/releases/compiledpolicy"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
@@ -8,7 +9,7 @@ import (
 // CodeDirectory identifies the main executable. The separately loaded Metal
 // library must ALSO remain approved under the current release generation.
 // Its measurement is signed by the SE identity bound in the App Attest status.
-func appAttestReleaseApproved(snapshot *releaseTrustPolicySnapshot, p *registry.Provider, status *protocol.AppAttestStatus) bool {
+func appAttestReleaseApproved(snapshot *compiledpolicy.Snapshot, p *registry.Provider, status *protocol.AppAttestStatus) bool {
 	if snapshot == nil || p == nil || status == nil {
 		return false
 	}

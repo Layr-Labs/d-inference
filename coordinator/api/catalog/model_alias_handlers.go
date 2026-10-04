@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	httpx "github.com/eigeninference/d-inference/coordinator/api/httpx"
+	aliaspolicy "github.com/eigeninference/d-inference/coordinator/internal/api/catalog/aliaspolicy"
+	registration "github.com/eigeninference/d-inference/coordinator/internal/api/catalog/registration"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -63,7 +65,7 @@ func (s *Owner) HandleModelAliasUpsert(w http.ResponseWriter, r *http.Request) {
 	// chunk rewriting) and into the DELETE URL path — restrict it to the same
 	// safe charset as registry ids (letters, digits, '.', '_', '-'; no slash so
 	// it stays a single path segment) and a sane length.
-	if len(req.AliasID) > maxAliasIDLength || !validRegistryIdentifier(req.AliasID, false) {
+	if len(req.AliasID) > maxAliasIDLength || !registration.ValidRegistryIdentifier(req.AliasID, false) {
 		httpx.WriteJSON(w, http.StatusBadRequest, httpx.ErrorResponse("invalid_request_error",
 			"alias_id may only contain letters, digits, '.', '_' and '-' (max 128 chars)", httpx.WithParam("alias_id")))
 		return
@@ -136,7 +138,7 @@ func (s *Owner) HandleModelAliasUpsert(w http.ResponseWriter, r *http.Request) {
 	if req.Active != nil {
 		active = *req.Active
 	}
-	retiredBuilds := retiredBuildsAfterUpsert(prior, req.DesiredBuild, req.PreviousBuild)
+	retiredBuilds := aliaspolicy.RetiredBuildsAfterUpsert(prior, req.DesiredBuild, req.PreviousBuild)
 	if active {
 		aliases, err := s.store.ListModelAliases()
 		if err != nil {
@@ -151,7 +153,7 @@ func (s *Owner) HandleModelAliasUpsert(w http.ResponseWriter, r *http.Request) {
 		for _, retired := range retiredBuilds {
 			members[retired] = struct{}{}
 		}
-		if clone, conflict := concreteOpenRouterAliasUsingBuild(aliases, members); conflict {
+		if clone, conflict := aliaspolicy.ConcreteOpenRouterAliasUsingBuild(aliases, members); conflict {
 			httpx.WriteJSON(w, http.StatusConflict, httpx.ErrorResponse("invalid_request_error", "concrete model "+clone.SourceModel+" is pinned by OpenRouter alias "+clone.AliasID+"; delete or retarget that alias first"))
 			return
 		}
@@ -181,10 +183,6 @@ func (s *Owner) HandleModelAliasUpsert(w http.ResponseWriter, r *http.Request) {
 // bodies, and SSE chunks, so it must stay short and single-segment.
 const maxAliasIDLength = 128
 
-// maxRetiredBuilds bounds the per-alias lineage list; the oldest retirements
-// are dropped first once a (pathologically) churned alias exceeds it.
-const maxRetiredBuilds = 16
-
 // priorAlias fetches the existing alias definition, or nil when none exists
 // (or the store errored — treated as "no prior" since upsert will surface real
 // store failures itself).
@@ -194,40 +192,6 @@ func (s *Owner) priorAlias(aliasID string) *store.ModelAlias {
 		return nil
 	}
 	return prior
-}
-
-// retiredBuildsAfterUpsert computes the alias's lineage after an upsert: prior
-// retired builds, plus any prior desired/previous member rotated out by the new
-// pointers, minus any build the new pointers re-promote to membership. Bounded
-// to maxRetiredBuilds (oldest dropped first). The lineage lets the registration
-// gate recognize a provider that was offline through a retirement as part of
-// the alias's fleet.
-func retiredBuildsAfterUpsert(prior *store.ModelAlias, newDesired, newPrevious string) []string {
-	if prior == nil {
-		return nil
-	}
-	isMember := func(b string) bool { return b == newDesired || b == newPrevious }
-	var retired []string
-	seen := make(map[string]struct{})
-	add := func(b string) {
-		if b == "" || isMember(b) {
-			return
-		}
-		if _, dup := seen[b]; dup {
-			return
-		}
-		seen[b] = struct{}{}
-		retired = append(retired, b)
-	}
-	for _, b := range prior.RetiredBuilds {
-		add(b)
-	}
-	add(prior.DesiredBuild)
-	add(prior.PreviousBuild)
-	if len(retired) > maxRetiredBuilds {
-		retired = retired[len(retired)-maxRetiredBuilds:]
-	}
-	return retired
 }
 
 // HandleModelAliasList returns standard rollout aliases. OpenRouter-only feed

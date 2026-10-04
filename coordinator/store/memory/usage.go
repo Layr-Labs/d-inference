@@ -4,16 +4,16 @@ import (
 	"sort"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/store/shared"
 	"github.com/eigeninference/d-inference/coordinator/store"
-	"github.com/eigeninference/d-inference/coordinator/store/internal/shared"
 )
 
 // UsageRecords returns a copy of all usage records.
 func (s *MemoryStore) UsageRecords() []store.UsageRecord {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([]store.UsageRecord, len(s.usage))
-	copy(out, s.usage)
+	out := make([]store.UsageRecord, len(s.history.Usage))
+	copy(out, s.history.Usage)
 	for i := range out {
 		if out[i].RequestLocation != nil {
 			loc := *out[i].RequestLocation
@@ -28,10 +28,10 @@ func (s *MemoryStore) UsageCountSince(since time.Time) (int64, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if since.IsZero() {
-		return int64(len(s.usage)), nil
+		return int64(len(s.history.Usage)), nil
 	}
 	var count int64
-	for _, r := range s.usage {
+	for _, r := range s.history.Usage {
 		ts := r.Timestamp
 		if ts.IsZero() {
 			ts = r.CreatedAt
@@ -48,7 +48,7 @@ func (s *MemoryStore) UsageTotals() (store.UsageTotals, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var t store.UsageTotals
-	for _, r := range s.usage {
+	for _, r := range s.history.Usage {
 		t.Requests++
 		t.PromptTokens += int64(r.PromptTokens)
 		t.CompletionTokens += int64(r.CompletionTokens)
@@ -61,7 +61,7 @@ func (s *MemoryStore) UsageTotalsSince(since time.Time) (store.UsageTotals, erro
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var t store.UsageTotals
-	for _, r := range s.usage {
+	for _, r := range s.history.Usage {
 		ts := r.Timestamp
 		if ts.IsZero() {
 			ts = r.CreatedAt
@@ -82,7 +82,7 @@ func (s *MemoryStore) UsageTimeSeries(since, until time.Time, bucketSize time.Du
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	buckets := make(map[int64]*store.UsageBucket)
-	for _, r := range s.usage {
+	for _, r := range s.history.Usage {
 		ts := r.Timestamp
 		if ts.IsZero() {
 			ts = r.CreatedAt
@@ -114,7 +114,7 @@ func (s *MemoryStore) UsageByConsumer(consumerKey string) []store.UsageRecord {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var out []store.UsageRecord
-	for _, u := range s.usage {
+	for _, u := range s.history.Usage {
 		if u.ConsumerKey == consumerKey {
 			out = append(out, u)
 		}
@@ -135,7 +135,7 @@ func (s *MemoryStore) RecordUsage(rec store.UsageRecord) {
 	}
 	rec.Timestamp = now
 	rec.CreatedAt = now
-	s.usage = append(s.usage, rec)
+	s.history.Usage = append(s.history.Usage, rec)
 	if rec.KeyID != "" && rec.CostMicroUSD > 0 {
 		s.addKeySpendLocked(rec.KeyID, rec.CostMicroUSD, now)
 	}

@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/store/shared"
 	"github.com/eigeninference/d-inference/coordinator/store"
-	"github.com/eigeninference/d-inference/coordinator/store/internal/shared"
 )
 
 const autopilotDDL = `CREATE TABLE IF NOT EXISTS autopilot_events (

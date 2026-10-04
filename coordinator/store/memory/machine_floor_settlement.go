@@ -36,34 +36,34 @@ func (s *MemoryStore) resolveMachineFloorDrawLocked(machine string, draw *store.
 		return store.ProviderFloorDraw{}, false, store.ErrMachineContinuityUnverified
 	}
 	canonical := machine
-	for i := 0; i < 100 && m.merged[canonical] != ""; i++ {
-		canonical = m.merged[canonical]
+	for i := 0; i < 100 && m.Merged[canonical] != ""; i++ {
+		canonical = m.Merged[canonical]
 	}
-	if identity, ok := m.machines[canonical]; !ok || identity.Assurance == "provisional" {
+	if identity, ok := m.Machines[canonical]; !ok || identity.Assurance == "provisional" {
 		return store.ProviderFloorDraw{}, false, store.ErrMachineContinuityUnverified
 	}
 	previousKeys := map[string]bool{store.MachineFloorKey(canonical): true}
-	for source := range m.merged {
+	for source := range m.Merged {
 		next := source
 		for i := 0; i < 100 && next != ""; i++ {
 			if next == canonical {
 				previousKeys[store.MachineFloorKey(source)] = true
 				break
 			}
-			next = m.merged[next]
+			next = m.Merged[next]
 		}
 	}
 	accountKnown := false
-	for sessionID, id := range m.sessionMachines {
+	for sessionID, id := range m.SessionMachines {
 		if id != canonical {
 			continue
 		}
-		if m.sessions[sessionID].AccountID == draw.AccountID {
+		if m.Sessions[sessionID].AccountID == draw.AccountID {
 			accountKnown = true
 		}
 	}
-	for _, session := range s.providerSessions {
-		if m.sessionMachines[session.SessionID] == canonical && session.ProviderKey != "" {
+	for _, session := range s.history.ProviderSessions {
+		if m.SessionMachines[session.SessionID] == canonical && session.ProviderKey != "" {
 			previousKeys[session.ProviderKey] = true
 		}
 	}
@@ -88,12 +88,12 @@ func (s *MemoryStore) resolveMachineFloorDrawLocked(machine string, draw *store.
 // merge barrier and cannot create two floors for the same epoch.
 func (s *MemoryStore) resolveSessionFloorDrawLocked(sessionID string, draw *store.ProviderFloorDraw) (store.ProviderFloorDraw, bool, error) {
 	if m := s.machineInventory; m != nil {
-		if o, exists := m.sessions[sessionID]; exists {
+		if o, exists := m.Sessions[sessionID]; exists {
 			if o.AccountID != "" && o.AccountID != draw.AccountID {
 				return store.ProviderFloorDraw{}, false, store.ErrMachineContinuityUnverified
 			}
-			id := m.sessionMachines[sessionID]
-			if identity, known := m.machines[id]; known && identity.Assurance != "provisional" {
+			id := m.SessionMachines[sessionID]
+			if identity, known := m.Machines[id]; known && identity.Assurance != "provisional" {
 				return s.resolveMachineFloorDrawLocked(id, draw)
 			}
 		}
@@ -101,12 +101,12 @@ func (s *MemoryStore) resolveSessionFloorDrawLocked(sessionID string, draw *stor
 		// write lands. The live caller already proved this endpoint key; reuse
 		// only its same-account durable association, never a claimed serial.
 		machine := ""
-		for _, prior := range s.providerSessions {
-			if prior.ProviderKey != draw.ProviderKey || prior.AccountID != draw.AccountID || m.sessions[prior.SessionID].AccountID != draw.AccountID {
+		for _, prior := range s.history.ProviderSessions {
+			if prior.ProviderKey != draw.ProviderKey || prior.AccountID != draw.AccountID || m.Sessions[prior.SessionID].AccountID != draw.AccountID {
 				continue
 			}
-			id := m.sessionMachines[prior.SessionID]
-			identity, known := m.machines[id]
+			id := m.SessionMachines[prior.SessionID]
+			identity, known := m.Machines[id]
 			if !known || identity.Assurance == "provisional" {
 				continue
 			}

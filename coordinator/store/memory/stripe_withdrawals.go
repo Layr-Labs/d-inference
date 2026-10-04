@@ -51,7 +51,7 @@ func (s *MemoryStore) CreateStripeWithdrawalWithDebit(w *store.StripeWithdrawal,
 	s.balances[w.AccountID] -= amount
 	s.withdrawable[w.AccountID] -= amount
 	s.ledgerSeq++
-	s.ledgerEntries = append(s.ledgerEntries, store.LedgerEntry{
+	s.history.LedgerEntries = append(s.history.LedgerEntries, store.LedgerEntry{
 		ID:             s.ledgerSeq,
 		AccountID:      w.AccountID,
 		Type:           entryType,

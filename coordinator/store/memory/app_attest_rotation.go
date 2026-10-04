@@ -116,7 +116,7 @@ func (s *MemoryStore) rotationScopeFamily(scope string) map[string]bool {
 	}
 	for grew := true; grew; {
 		grew = false
-		for old, next := range s.machineInventory.merged {
+		for old, next := range s.machineInventory.Merged {
 			if family[next] && !family[old] {
 				family[old], grew = true, true
 			}
@@ -172,10 +172,10 @@ func (s *MemoryStore) AppAttestEnrollmentInvalidKeyFailureTimes(ctx context.Cont
 			continue
 		}
 		session := e.Evidence.SessionID
-		if _, known := m.sessions[session]; !known {
+		if _, known := m.Sessions[session]; !known {
 			continue
 		}
-		if machineID != "" && m.sessionMachines[session] == machineID || machineID == "" && m.sessions[session].AccountID == accountID {
+		if machineID != "" && m.SessionMachines[session] == machineID || machineID == "" && m.Sessions[session].AccountID == accountID {
 			times = append(times, e.Evidence.ReceivedAt)
 		}
 	}

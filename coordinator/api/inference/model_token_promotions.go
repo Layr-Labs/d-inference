@@ -1,7 +1,6 @@
 package inference
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -125,57 +124,4 @@ func (s *Owner) HandleMyModelTokenPromotions(w http.ResponseWriter, r *http.Requ
 		offers = append(offers, promotion.Offer(user, now, claimed[promotion.ModelID]))
 	}
 	httpx.WriteJSON(w, 200, map[string]any{"grants": grants, "offers": offers})
-}
-
-type modelTokenRequestKey struct{}
-
-type modelTokenRequestState struct{ reservation *store.ModelTokenReservation }
-
-func withModelTokenRequest(r *http.Request) *http.Request {
-	return r.WithContext(context.WithValue(r.Context(), modelTokenRequestKey{}, &modelTokenRequestState{}))
-}
-
-func modelTokenRequest(r *http.Request) *modelTokenRequestState {
-	if r == nil {
-		return nil
-	}
-	state, _ := r.Context().Value(modelTokenRequestKey{}).(*modelTokenRequestState)
-	return state
-}
-
-func modelTokenReservation(r *http.Request) *store.ModelTokenReservation {
-	if state := modelTokenRequest(r); state != nil {
-		return state.reservation
-	}
-	return nil
-}
-
-func (s *Owner) releaseModelTokenRequest(r *http.Request) bool {
-	reservation := modelTokenReservation(r)
-	if reservation == nil {
-		return false
-	}
-	_, err := s.releaseModelTokenReservation(reservation.ID)
-	if err != nil {
-		s.logger.Error("promotion reservation refund failed", "reservation_id", reservation.ID, "error", err)
-	}
-	return true
-}
-
-func (s *Owner) releaseModelTokenReservation(id string) (bool, error) {
-	if _, pending := s.modelTokenSettlements.Load(id); pending {
-		return false, nil
-	}
-	backend, ok := store.As[store.ModelTokenPromotionStore](s.store)
-	if !ok {
-		return false, errors.New("promotion store unavailable")
-	}
-	released, err := backend.ReleaseModelTokenReservation(id)
-	if err == nil {
-		s.modelTokenActive.Delete(id)
-		s.modelTokenRefunds.Delete(id)
-	} else {
-		s.modelTokenRefunds.Store(id, struct{}{})
-	}
-	return released, err
 }

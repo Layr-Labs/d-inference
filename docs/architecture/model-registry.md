@@ -1,6 +1,6 @@
 # Model registry
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-03
 
 How Darkbloom decides which model builds exist, which bytes are trusted, which
 providers may serve them, and what public name a consumer uses for them. The
@@ -26,7 +26,7 @@ database and one hash:
 | Question | Answer | Where |
 |---|---|---|
 | Is this build real? | A `model_registry` row with an `active`/`beta` status **and** a `ready` version pointed to by `model_active_versions` | `coordinator/store/postgres/model_registry.go` (`activeModelRegistryQuery`) |
-| Are these the right bytes? | The version's `aggregate_sha256` — a SHA-256 over the sorted per-file digests — must match what the provider computed after download | `coordinator/api/catalog/registry_validation.go` (`aggregateManifestFileHashes`); `provider-swift/Sources/ProviderCoreFoundation/ManifestBuilder.swift` |
+| Are these the right bytes? | The version's `aggregate_sha256` — a SHA-256 over the sorted per-file digests — must match what the provider computed after download | `coordinator/internal/api/catalog/registration/registry_validation.go` (`AggregateManifestFileHashes`); `provider-swift/Sources/ProviderCoreFoundation/ManifestBuilder.swift` |
 | What does `gemma-4-26b` mean today? | A `model_aliases` row: `desired_build`, optional `previous_build`, lineage in `retired_builds` | `coordinator/registry/model_aliases.go` (`ResolveModel`) |
 
 ## Mechanism
@@ -81,7 +81,7 @@ existing model while preserving metadata and pricing. Both validate the upload. 
 (`RequirePublishingAPIKey`), recomputes the R2 prefix from `model_id` and
 `version` (`modelR2Prefix`, byte-identical to the Swift builder), fetches
 `<cdn>/<prefix>/manifest.json`, and rejects the request unless
-`validateModelManifest` passes (schema version 1, ids match, every path is a
+`ValidateModelManifest` passes (schema version 1, ids match, every path is a
 safe relative path, `file_count` and `total_size_bytes` agree with the file
 list, and the recomputed aggregate hash equals `aggregate_sha256`). It then
 issues an HTTP `HEAD` for every file with 8 workers (`verifyManifestFiles`)
@@ -234,8 +234,8 @@ the single publish command.
    fetched its manifest and HEAD-verified every file — `HandleRegisterModel`
    returns 400 and writes nothing otherwise.
 2. **One hash, computed three ways, must agree.** Publisher
-   (`ManifestBuilder.build`), coordinator (`aggregateManifestFileHashes` at
-   registration; `validateModelManifest`), and provider
+   (`ManifestBuilder.build`), coordinator (`AggregateManifestFileHashes` at
+   registration; `ValidateModelManifest`), and provider
    (`WeightHasher.hashFilesWithRelativeKey` in `finalizeStagedManifest`) all
    hash the sorted per-file digests. The catalog pins the result as
    `CatalogEntry.WeightHash`, and `mergeProviderModels` refuses a build whose
@@ -287,7 +287,7 @@ the single publish command.
 | Store types (`ModelRegistryEntry`, `ModelVersion`, `ModelVersionFile`, `ModelManifest`, `ManifestFile`, `ModelAlias`, `PublishingAPIKey`, `SupportedModel`) | `coordinator/store/interface.go` |
 | Registration, admin actions, publishing-key auth, manifest validation, R2 prefix | `coordinator/api/catalog/` |
 | Alias upsert/list/delete, lineage, `desired_models` fan-out | `coordinator/api/catalog/model_alias_handlers.go` |
-| OpenRouter-only aliases | `coordinator/api/catalog/openrouter_alias_handlers.go`, `coordinator/api/catalog/openrouter_alias_invariants.go` |
+| OpenRouter-only aliases | `coordinator/api/catalog/openrouter_alias_handlers.go`, `coordinator/internal/api/catalog/aliaspolicy/openrouter_alias_invariants.go` |
 | Public catalog endpoints | `coordinator/api/catalog/catalog.go` (`HandleModelCatalog`); `coordinator/api/catalog/model_registry_handlers.go` (`HandleModelCatalogItem`, `HandleModelCatalogManifest`) |
 | Catalog → registry handoff | `coordinator/api/catalog/publication.go` (`SyncModelCatalog`, `syncModelAliases`) |
 | In-memory catalog, alias resolution, `desired_models` computation, models_update merge | `coordinator/registry/model_catalog.go` (`SetModelCatalog`, `modelAllowedByCatalogLocked`); `coordinator/registry/model_aliases.go` (`SetModelAliases`, `ResolveModel`, `ResolveModelConstrainedWithTraits`, `PublicNameForBuild`); `coordinator/registry/model_commands.go` (`DesiredModelsForProvider`, `SendDesiredModels`); `coordinator/registry/provider_models.go` (`mergeProviderModels`) |

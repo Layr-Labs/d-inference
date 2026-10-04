@@ -6,6 +6,6 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/api/observation"
 )
 
-func markPublicModelDemand(r *http.Request, p inferenceAdmissionParams) {
-	observation.MarkPublicModelDemand(r, p.policy.enabled, p.policy.prefer, p.allowedProviderSerials, p.publicModel, p.model)
+func markPublicModelDemand(r *http.Request, p AdmissionRequest) {
+	observation.MarkPublicModelDemand(r, p.Policy.Enabled, p.Policy.Prefer, p.AllowedProviderSerials, p.PublicModel, p.Model)
 }

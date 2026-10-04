@@ -10,17 +10,16 @@ package device
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"math/big"
 	"net/http"
 	"strings"
 	"time"
 
 	httpx "github.com/eigeninference/d-inference/coordinator/api/httpx"
 	"github.com/eigeninference/d-inference/coordinator/auth"
+	"github.com/eigeninference/d-inference/coordinator/internal/api/access/devicecode"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -45,7 +44,7 @@ func (s *Handler) HandleDeviceCode(w http.ResponseWriter, r *http.Request) {
 	deviceCode := hex.EncodeToString(deviceCodeBytes)
 
 	// Generate user code (short, human-readable, uppercase alphanumeric).
-	userCode, err := generateUserCode()
+	userCode, err := devicecode.Generate()
 	if err != nil {
 		httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorResponse("server_error", "failed to generate user code"))
 		return
@@ -60,7 +59,7 @@ func (s *Handler) HandleDeviceCode(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.store.CreateDeviceCode(dc); err != nil {
 		// User code collision — retry once.
-		userCode, _ = generateUserCode()
+		userCode, _ = devicecode.Generate()
 		dc.UserCode = userCode
 		if err := s.store.CreateDeviceCode(dc); err != nil {
 			httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorResponse("server_error", "failed to create device code"))
@@ -137,7 +136,7 @@ func (s *Handler) HandleDeviceToken(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		rawToken := "eigeninference-pt-" + hex.EncodeToString(tokenBytes)
-		tokenHash := sha256Hash(rawToken)
+		tokenHash := devicecode.Hash(rawToken)
 
 		pt := &store.ProviderToken{
 			TokenHash: tokenHash,
@@ -216,28 +215,4 @@ func (s *Handler) HandleDeviceApprove(w http.ResponseWriter, r *http.Request) {
 		"status":  "approved",
 		"message": "Device linked successfully. Your provider will connect to your account shortly.",
 	})
-}
-
-// generateUserCode creates a short, human-readable code like "ABCD-1234".
-func generateUserCode() (string, error) {
-	// Use alphanumeric chars (no ambiguous chars: 0/O, 1/I/L).
-	const charset = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
-
-	code := make([]byte, 8)
-	for i := range code {
-		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
-		if err != nil {
-			return "", err
-		}
-		code[i] = charset[n.Int64()]
-	}
-
-	// Format as XXXX-XXXX for readability.
-	return string(code[:4]) + "-" + string(code[4:]), nil
-}
-
-// sha256Hash returns the hex-encoded SHA-256 digest.
-func sha256Hash(s string) string {
-	h := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(h[:])
 }

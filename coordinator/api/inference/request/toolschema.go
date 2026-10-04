@@ -7,6 +7,8 @@ import (
 	"io"
 	"slices"
 	"strings"
+
+	toolpolicy "github.com/eigeninference/d-inference/coordinator/internal/inference/toolpolicy"
 )
 
 // maxToolNormalizationBytes is the upper bound on the body we'll JSON
@@ -28,8 +30,6 @@ const maxToolNormalizationBytes = 4 * 1024 * 1024
 // render could still throw (the pre-DAR-130 status quo for that one node),
 // whereas the harm we are preventing is unbounded recursion on every request.
 const maxToolSchemaDepth = 64
-
-const originalBooleanSchemaKey = "x-darkbloom-original-boolean-schema"
 
 // toolsKeyNeedle is the cheap byte gate: only bodies carrying these bytes pay
 // the JSON round-trip.
@@ -196,8 +196,8 @@ func injectTypes(node any, depth int, changed *bool, positional bool) any {
 		if positional {
 			*changed = true
 			return map[string]any{
-				"type":                   "string",
-				originalBooleanSchemaKey: n,
+				"type":                              "string",
+				toolpolicy.OriginalBooleanSchemaKey: n,
 			}
 		}
 		return node
@@ -234,8 +234,8 @@ func injectDefaultTypesIntoSchema(dict map[string]any, depth int, changed *bool,
 	if positional && len(dict) == 0 {
 		*changed = true
 		return map[string]any{
-			"type":                   "string",
-			originalBooleanSchemaKey: true,
+			"type":                              "string",
+			toolpolicy.OriginalBooleanSchemaKey: true,
 		}
 	}
 	for _, key := range []string{"properties", "patternProperties"} {
@@ -281,7 +281,7 @@ func injectDefaultTypesIntoSchema(dict map[string]any, depth int, changed *bool,
 		if accepts, annotations, ok := constantMarkedCombinator(dict); ok {
 			clear(dict)
 			dict["type"] = "string"
-			dict[originalBooleanSchemaKey] = accepts
+			dict[toolpolicy.OriginalBooleanSchemaKey] = accepts
 			for key, value := range annotations {
 				dict[key] = value
 			}
@@ -473,12 +473,12 @@ func renderMarkerBoolean(dict map[string]any) (bool, bool) {
 	if dict["type"] != "string" {
 		return false, false
 	}
-	marker, ok := dict[originalBooleanSchemaKey].(bool)
+	marker, ok := dict[toolpolicy.OriginalBooleanSchemaKey].(bool)
 	if !ok {
 		return false, false
 	}
 	for key := range dict {
-		if key == "type" || key == originalBooleanSchemaKey {
+		if key == "type" || key == toolpolicy.OriginalBooleanSchemaKey {
 			continue
 		}
 		if _, annotation := schemaAnnotationKeys[key]; !annotation {

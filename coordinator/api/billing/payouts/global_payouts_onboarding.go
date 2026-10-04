@@ -8,15 +8,13 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/api/httpx"
 	"github.com/eigeninference/d-inference/coordinator/billing/globalpayouts"
+	payoutrecovery "github.com/eigeninference/d-inference/coordinator/internal/billing/payoutrecovery"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/google/uuid"
 )
 
 func (s *Owner) globalPayoutStore() (store.GlobalPayoutStore, bool) {
-	if s.billing == nil {
-		return nil, false
-	}
-	return store.As[store.GlobalPayoutStore](s.billing.Store())
+	return payoutrecovery.Store(s.billing)
 }
 
 func (s *Owner) payoutCountries() []globalpayouts.Country {

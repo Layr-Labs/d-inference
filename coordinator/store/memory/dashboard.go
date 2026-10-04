@@ -15,7 +15,7 @@ func (s *MemoryStore) AccountEarningsWindows(accountID string, now time.Time) (s
 	cutoff24h := now.Add(-24 * time.Hour)
 	cutoff7d := now.Add(-7 * 24 * time.Hour)
 	var w store.AccountEarningsWindows
-	for _, e := range s.providerEarnings {
+	for _, e := range s.history.ProviderEarnings {
 		if e.AccountID != accountID || e.CreatedAt.Before(cutoff7d) {
 			continue
 		}

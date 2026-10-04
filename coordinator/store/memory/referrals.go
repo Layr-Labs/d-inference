@@ -97,7 +97,7 @@ func (s *MemoryStore) GetReferralStats(code string) (*store.ReferralStats, error
 
 	// Sum referral rewards from ledger
 	var totalRewards int64
-	for _, entry := range s.ledgerEntries {
+	for _, entry := range s.history.LedgerEntries {
 		if entry.AccountID == ref.AccountID && entry.Type == store.LedgerReferralReward {
 			totalRewards += entry.AmountMicroUSD
 		}

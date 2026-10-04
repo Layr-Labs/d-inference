@@ -1,115 +1,34 @@
 package inference
 
 import (
-	"sync"
-	"time"
+	"net/http"
 
+	"github.com/eigeninference/d-inference/coordinator/api/access"
+	"github.com/eigeninference/d-inference/coordinator/internal/inference/reservations"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-type serviceReservationManager struct {
-	store   store.Store
-	enabled bool
-
-	mu          sync.Mutex
-	outstanding map[string]int64
-}
-
-func newServiceReservationManager(st store.Store, enabled bool) *serviceReservationManager {
-	return &serviceReservationManager{store: st, enabled: enabled, outstanding: make(map[string]int64)}
-}
-
-func (m *serviceReservationManager) Enabled() bool {
-	return m != nil && m.enabled
-}
-
-func (m *serviceReservationManager) Reserve(accountID string, amount int64) error {
-	if m == nil || !m.enabled || amount <= 0 {
-		return nil
-	}
-	balance := m.store.GetBalance(accountID)
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if balance-m.outstanding[accountID] < amount {
-		return store.ErrInsufficientBalance
-	}
-	m.outstanding[accountID] += amount
-	return nil
-}
-
-func (m *serviceReservationManager) Release(accountID string, amount int64) {
-	if m == nil || !m.enabled || amount <= 0 {
-		return
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	current := m.outstanding[accountID]
-	if amount >= current {
-		delete(m.outstanding, accountID)
-		return
-	}
-	m.outstanding[accountID] = current - amount
-}
-
-func reservationMetricMode(service bool) string {
-	if service {
-		return "service_hold"
-	}
-	return "ledger"
-}
-
-func (s *Owner) useServiceReservation(accountID string) bool {
-	return s.serviceReservations != nil && s.serviceReservations.Enabled() && s.isServiceConsumer(accountID)
+func reservationParams(p balanceReservationParams) reservations.Params {
+	return reservations.Params{Model: p.model, PublicModel: p.publicModel, BillingPromptTokens: p.billingPromptTokens, EstimatedPromptTokens: p.estimatedPromptTokens, RequestedMaxTokens: p.requestedMaxTokens, Stream: p.stream, RequiresVision: p.requiresVision, HasTools: p.hasTools, SelfRoute: p.policy.enabled}
 }
 
 func (s *Owner) reserveInitialBalance(accountID, model string, amount int64) (bool, error) {
-	serviceMode := s.useServiceReservation(accountID)
-	start := time.Now()
-	if serviceMode {
-		if err := s.serviceReservations.Reserve(accountID, amount); err != nil {
-			s.observation.Incr("billing.reservations", []string{"model:" + model, "mode:service_hold", "outcome:rejected"})
-			return true, err
-		}
-		s.observation.Incr("billing.reservations", []string{"model:" + model, "mode:service_hold", "outcome:reserved"})
-		s.observation.Histogram("billing.reserved_micro_usd", float64(amount), []string{"model:" + model, "mode:service_hold"})
-		return true, nil
-	}
-	if err := s.ledger.Charge(accountID, amount, "reserve:"+accountID); err != nil {
-		s.observation.Incr("billing.reservations", []string{"model:" + model, "mode:ledger", "outcome:rejected"})
-		return false, err
-	}
-	s.observation.Incr("billing.reservations", []string{"model:" + model, "mode:ledger", "outcome:reserved"})
-	s.observation.Histogram("billing.reserved_micro_usd", float64(amount), []string{"model:" + model, "mode:ledger"})
-	s.observation.Histogram("store.debit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reserve"})
-	return false, nil
+	return s.reservations.ReserveInitial(accountID, model, amount)
 }
-
 func (s *Owner) releaseInitialReservation(accountID, model string, amount int64, serviceMode bool) {
-	if amount <= 0 {
-		return
-	}
-	tags := []string{"model:" + model, "mode:" + reservationMetricMode(serviceMode)}
-	if serviceMode {
-		s.serviceReservations.Release(accountID, amount)
-		s.observation.Incr("billing.reservation_releases", append(tags, "reason:early"))
-		return
-	}
-	start := time.Now()
-	_ = s.store.Credit(accountID, amount, store.LedgerRefund, "reservation_refund")
-	s.observation.Incr("billing.reservation_refunds", tags)
-	s.observation.Incr("billing.reservation_releases", append(tags, "reason:early"))
-	s.observation.Histogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reservation_refund"})
+	s.reservations.ReleaseInitial(accountID, model, amount, serviceMode)
+}
+func (s *Owner) releaseServiceReservation(pr *registry.PendingRequest, reason string) {
+	s.reservations.ReleaseService(pr, reason)
 }
 
-func (s *Owner) releaseServiceReservation(pr *registry.PendingRequest, reason string) {
-	if pr == nil || !pr.ServiceReservation {
-		return
-	}
-	s.serviceReservations.Release(pr.ConsumerKey, pr.ReservedMicroUSD)
-	if reason == "" {
-		reason = "unknown"
-	}
-	s.observation.Incr("billing.reservation_releases", []string{"model:" + pr.Model, "mode:service_hold", "reason:" + reason})
+func (s *Owner) recordBalanceRejection(r *http.Request, parsed map[string]any, p reservations.Params, reason string) {
+	s.recordRejection(rejectionInfo{
+		r: r, stage: "balance", reasonCode: reason, httpStatus: http.StatusPaymentRequired,
+		keyID: access.KeyIDFromContext(r.Context()), consumerKeyHash: store.HashKey(access.ConsumerKeyFromContext(r.Context())),
+		requestedModel: p.PublicModel, resolvedModel: p.Model, stream: p.Stream,
+		estimatedPromptTokens: p.EstimatedPromptTokens, requestedMaxTokens: p.RequestedMaxTokens,
+		requiresVision: p.RequiresVision, hasTools: p.HasTools, params: rejectionSamplingParams(parsed),
+	})
 }

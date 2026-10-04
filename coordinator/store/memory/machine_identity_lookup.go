@@ -20,9 +20,9 @@ func (s *MemoryStore) canonicalMachineIDLocked(id string) (string, error) {
 		return "", nil
 	}
 	for i := 0; i < 100; i++ {
-		next := s.machineInventory.merged[id]
+		next := s.machineInventory.Merged[id]
 		if next == "" {
-			if _, ok := s.machineInventory.machines[id]; ok {
+			if _, ok := s.machineInventory.Machines[id]; ok {
 				return id, nil
 			}
 			return "", nil

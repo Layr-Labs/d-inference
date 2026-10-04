@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	aliaspolicy "github.com/eigeninference/d-inference/coordinator/internal/api/catalog/aliaspolicy"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -100,7 +101,7 @@ func (s *Owner) syncModelAliases(registryRows []store.ModelRegistryRecord) bool 
 		}
 		var target registry.AliasTarget
 		var ok bool
-		if openRouterAliasUsesConcreteSource(a) {
+		if aliaspolicy.OpenRouterAliasUsesConcreteSource(a) {
 			if _, ok = activeConcreteModels[a.SourceModel]; ok {
 				target = registry.AliasTarget{Desired: a.SourceModel}
 			}

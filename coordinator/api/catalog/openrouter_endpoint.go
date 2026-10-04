@@ -7,6 +7,8 @@ import (
 
 	httpx "github.com/eigeninference/d-inference/coordinator/api/httpx"
 	"github.com/eigeninference/d-inference/coordinator/api/types"
+	aliaspolicy "github.com/eigeninference/d-inference/coordinator/internal/api/catalog/aliaspolicy"
+	metadata "github.com/eigeninference/d-inference/coordinator/internal/api/catalog/metadata"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -133,10 +135,10 @@ func (s *Owner) openRouterAliasEntries(
 		// Never sell a raw build behind a public alias: hide EVERY build the
 		// alias references — desired, previous, AND the retired lineage — from
 		// the marketplace feed, even if the alias itself isn't listable right now.
-		hideAliasBuild(hidden, catalogByID, a.DesiredBuild)
-		hideAliasBuild(hidden, catalogByID, a.PreviousBuild)
+		aliaspolicy.HideAliasBuild(hidden, catalogByID, a.DesiredBuild)
+		aliaspolicy.HideAliasBuild(hidden, catalogByID, a.PreviousBuild)
 		for _, b := range a.RetiredBuilds {
-			hideAliasBuild(hidden, catalogByID, b)
+			aliaspolicy.HideAliasBuild(hidden, catalogByID, b)
 		}
 		members := make([]string, 0, 2)
 		if _, ok := catalogByID[a.DesiredBuild]; ok {
@@ -157,7 +159,7 @@ func (s *Owner) openRouterAliasEntries(
 		if at, ok := aggTypeByID[primary]; ok {
 			modelType = at
 		}
-		if isNonTextModelType(modelType) {
+		if metadata.IsNonTextModelType(modelType) {
 			continue
 		}
 
@@ -166,14 +168,14 @@ func (s *Owner) openRouterAliasEntries(
 		if hasReg {
 			capabilities = reg.Capabilities
 		}
-		inputModalities, outputModalities := deriveModalities(modelType, capabilities)
+		inputModalities, outputModalities := metadata.DeriveModalities(modelType, capabilities)
 		displayName := a.DisplayName
 		if displayName == "" {
 			displayName = openRouterModelName(cm, reg, hasReg, a.AliasID)
 		}
 		entry := types.OpenRouterModel{
 			ID:                a.AliasID,
-			HuggingFaceID:     huggingFaceIDForModel(primary, reg.Metadata),
+			HuggingFaceID:     metadata.HuggingFaceIDForModel(primary, reg.Metadata),
 			Name:              displayName,
 			InputModalities:   inputModalities,
 			OutputModalities:  outputModalities,
@@ -182,10 +184,10 @@ func (s *Owner) openRouterAliasEntries(
 		}
 		s.openRouterModelFieldsFor(primary, "", reg, hasReg).applyToFeed(&entry)
 		if hasReg {
-			entry.IsReady = openRouterIsReady(reg.Metadata)
-			entry.OpenRouter = &types.OpenRouterSlug{Slug: openRouterSlug(a.AliasID, reg.Metadata)}
+			entry.IsReady = metadata.OpenRouterIsReady(reg.Metadata)
+			entry.OpenRouter = &types.OpenRouterSlug{Slug: metadata.OpenRouterSlug(a.AliasID, reg.Metadata)}
 		} else {
-			entry.OpenRouter = &types.OpenRouterSlug{Slug: openRouterSlug(a.AliasID, nil)}
+			entry.OpenRouter = &types.OpenRouterSlug{Slug: metadata.OpenRouterSlug(a.AliasID, nil)}
 		}
 		entry.Datacenters = s.aliasDatacenters(members)
 		entries = append(entries, entry)
@@ -198,7 +200,7 @@ func (s *Owner) openRouterAliasEntries(
 	for _, a := range openRouterAliases {
 		var source types.OpenRouterModel
 		var ok bool
-		if openRouterAliasUsesConcreteSource(a) {
+		if aliaspolicy.OpenRouterAliasUsesConcreteSource(a) {
 			source, ok = s.openRouterEntryForConcrete(a.SourceModel, catalogByID, registryByID, aggTypeByID)
 		} else {
 			source, ok = standardEntries[a.SourceModel]

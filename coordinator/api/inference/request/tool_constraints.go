@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"regexp"
 
 	httpx "github.com/eigeninference/d-inference/coordinator/api/httpx"
+	toolpolicy "github.com/eigeninference/d-inference/coordinator/internal/inference/toolpolicy"
 )
 
 type ToolChoiceMode string
@@ -19,16 +19,6 @@ const (
 	ToolChoiceNamed    ToolChoiceMode = "named"
 )
 
-type toolConstraintRequestError struct {
-	status  int
-	message string
-	param   string
-}
-
-func (e *toolConstraintRequestError) Error() string { return e.message }
-
-var toolFunctionNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
-
 const (
 	maxConstrainedStopSequences = 4
 	maxConstrainedStopBytes     = 256
@@ -38,11 +28,6 @@ type ValidatedToolConstraintPolicy struct {
 	Mode     ToolChoiceMode
 	Name     string
 	Parallel bool
-}
-
-func validateToolConstraintRequest(body []byte) (ToolChoiceMode, error) {
-	policy, err := ValidateToolConstraintPolicy(body)
-	return policy.Mode, err
 }
 
 // validateToolConstraintPolicy validates the tool policy of a JSON request
@@ -57,7 +42,7 @@ func ValidateToolConstraintPolicy(body []byte) (ValidatedToolConstraintPolicy, e
 	var root map[string]any
 	if err := decoder.Decode(&root); err != nil {
 		return ValidatedToolConstraintPolicy{},
-			invalidToolConstraint("invalid request body", "")
+			toolpolicy.InvalidToolConstraint("invalid request body", "")
 	}
 	return ValidateParsedToolConstraintPolicy(root)
 }
@@ -80,7 +65,7 @@ func ValidateParsedToolConstraintPolicy(root map[string]any) (ValidatedToolConst
 		value, ok := parallel.(bool)
 		if !ok {
 			return policy,
-				invalidToolConstraint("parallel_tool_calls must be boolean", "parallel_tool_calls")
+				toolpolicy.InvalidToolConstraint("parallel_tool_calls must be boolean", "parallel_tool_calls")
 		}
 		policy.Parallel = value
 	}
@@ -90,7 +75,7 @@ func ValidateParsedToolConstraintPolicy(root map[string]any) (ValidatedToolConst
 		if parser, exists := root["tool_call_parser"]; exists && parser != nil {
 			name, ok := parser.(string)
 			if !ok || !supportsInferenceEnforcedToolChoice(name) {
-				return policy, invalidToolConstraint(
+				return policy, toolpolicy.InvalidToolConstraint(
 					"inference-enforced tool_choice requires a supported Gemma or Qwen tool_call_parser",
 					"tool_call_parser")
 			}
@@ -111,12 +96,12 @@ func ValidateParsedToolConstraintPolicy(root map[string]any) (ValidatedToolConst
 		return policy, err
 	}
 	if mode == ToolChoiceRequired && len(tools) == 0 {
-		return policy, invalidToolConstraint(
+		return policy, toolpolicy.InvalidToolConstraint(
 			"tool_choice 'required' needs at least one declared tool", "tool_choice")
 	}
 	if mode == ToolChoiceNamed {
 		if _, ok := tools[selected]; !ok {
-			return policy, invalidToolConstraint(
+			return policy, toolpolicy.InvalidToolConstraint(
 				"tool_choice names an undeclared function", "tool_choice")
 		}
 	}
@@ -137,7 +122,7 @@ func validateConstrainedStops(raw any) error {
 		var ok bool
 		stops, ok = raw.([]any)
 		if !ok {
-			return invalidToolConstraint(
+			return toolpolicy.InvalidToolConstraint(
 				"stop must be a string or an array of strings", "stop")
 		}
 	}
@@ -145,7 +130,7 @@ func validateConstrainedStops(raw any) error {
 	for _, rawStop := range stops {
 		stop, ok := rawStop.(string)
 		if !ok {
-			return invalidToolConstraint(
+			return toolpolicy.InvalidToolConstraint(
 				"stop entries must be strings", "stop")
 		}
 		if stop == "" {
@@ -153,7 +138,7 @@ func validateConstrainedStops(raw any) error {
 		}
 		nonempty++
 		if len([]byte(stop)) > maxConstrainedStopBytes {
-			return invalidToolConstraint(
+			return toolpolicy.InvalidToolConstraint(
 				fmt.Sprintf(
 					"inference-enforced tool_choice stop sequences are limited to %d UTF-8 bytes",
 					maxConstrainedStopBytes),
@@ -161,7 +146,7 @@ func validateConstrainedStops(raw any) error {
 		}
 	}
 	if nonempty > maxConstrainedStopSequences {
-		return invalidToolConstraint(
+		return toolpolicy.InvalidToolConstraint(
 			fmt.Sprintf(
 				"inference-enforced tool_choice supports at most %d non-empty stop sequences",
 				maxConstrainedStopSequences),
@@ -193,13 +178,13 @@ func parseToolChoice(raw any) (ToolChoiceMode, string, error) {
 		case "required":
 			return ToolChoiceRequired, "", nil
 		default:
-			return "", "", invalidToolConstraint(
+			return "", "", toolpolicy.InvalidToolConstraint(
 				"tool_choice must be auto, none, required, or a named function", "tool_choice")
 		}
 	}
 	object, ok := raw.(map[string]any)
 	if !ok {
-		return "", "", invalidToolConstraint(
+		return "", "", toolpolicy.InvalidToolConstraint(
 			"tool_choice must be auto, none, required, or a named function", "tool_choice")
 	}
 	switch object["type"] {
@@ -211,7 +196,7 @@ func parseToolChoice(raw any) (ToolChoiceMode, string, error) {
 		return ToolChoiceRequired, "", nil
 	case "function":
 	default:
-		return "", "", invalidToolConstraint(
+		return "", "", toolpolicy.InvalidToolConstraint(
 			"tool_choice must be auto, none, required, or a named function", "tool_choice")
 	}
 	topLevelName, _ := object["name"].(string)
@@ -222,15 +207,15 @@ func parseToolChoice(raw any) (ToolChoiceMode, string, error) {
 		}
 	}
 	if topLevelName != "" && nestedName != "" && topLevelName != nestedName {
-		return "", "", invalidToolConstraint(
+		return "", "", toolpolicy.InvalidToolConstraint(
 			"tool_choice contains conflicting function names", "tool_choice")
 	}
 	name := topLevelName
 	if name == "" {
 		name = nestedName
 	}
-	if !toolFunctionNamePattern.MatchString(name) {
-		return "", "", invalidToolConstraint(
+	if !toolpolicy.ValidToolFunctionName(name) {
+		return "", "", toolpolicy.InvalidToolConstraint(
 			"tool_choice function name must match ^[a-zA-Z0-9_-]{1,64}$", "tool_choice")
 	}
 	return ToolChoiceNamed, name, nil
@@ -247,10 +232,10 @@ func validateDeclaredTools(
 	}
 	values, ok := raw.([]any)
 	if !ok {
-		return nil, invalidToolConstraint("tools must be an array", "tools")
+		return nil, toolpolicy.InvalidToolConstraint("tools must be an array", "tools")
 	}
 	if len(values) > 64 {
-		return nil, invalidToolConstraint("at most 64 tools are allowed", "tools")
+		return nil, toolpolicy.InvalidToolConstraint("at most 64 tools are allowed", "tools")
 	}
 	tools := make(map[string]map[string]any, len(values))
 	grammarComplexity := 0
@@ -272,13 +257,13 @@ func validateDeclaredTools(
 				if !representable {
 					continue
 				}
-				if !toolFunctionNamePattern.MatchString(name) {
-					return nil, invalidToolConstraint(
+				if !toolpolicy.ValidToolFunctionName(name) {
+					return nil, toolpolicy.InvalidToolConstraint(
 						"tool function names must match ^[a-zA-Z0-9_-]{1,64}$",
 						fmt.Sprintf("tools[%d].name", index))
 				}
 				if _, duplicate := tools[name]; duplicate {
-					return nil, invalidToolConstraint("tool function names must be unique", "tools")
+					return nil, toolpolicy.InvalidToolConstraint("tool function names must be unique", "tools")
 				}
 				if checkReservedMetadata && parameters != nil {
 					if err := rejectReservedSchemaMetadata(parameters, 0); err != nil {
@@ -288,20 +273,20 @@ func validateDeclaredTools(
 				tools[name] = map[string]any{"name": name, "parameters": parameters}
 				continue
 			}
-			return nil, invalidToolConstraint("only function tools are supported", fmt.Sprintf("tools[%d]", index))
+			return nil, toolpolicy.InvalidToolConstraint("only function tools are supported", fmt.Sprintf("tools[%d]", index))
 		}
 		function, ok := tool["function"].(map[string]any)
 		if !ok {
-			return nil, invalidToolConstraint("tools[].function is required", fmt.Sprintf("tools[%d].function", index))
+			return nil, toolpolicy.InvalidToolConstraint("tools[].function is required", fmt.Sprintf("tools[%d].function", index))
 		}
 		name, _ := function["name"].(string)
-		if !toolFunctionNamePattern.MatchString(name) {
-			return nil, invalidToolConstraint(
+		if !toolpolicy.ValidToolFunctionName(name) {
+			return nil, toolpolicy.InvalidToolConstraint(
 				"tool function names must match ^[a-zA-Z0-9_-]{1,64}$",
 				fmt.Sprintf("tools[%d].function.name", index))
 		}
 		if _, duplicate := tools[name]; duplicate {
-			return nil, invalidToolConstraint("tool function names must be unique", "tools")
+			return nil, toolpolicy.InvalidToolConstraint("tool function names must be unique", "tools")
 		}
 		parameters := function["parameters"]
 		if parameters == nil {
@@ -313,17 +298,17 @@ func validateDeclaredTools(
 			}
 		}
 		if enforceSchema && (selected == "" || name == selected) {
-			if err := validateConstrainedSchema(parameters, true, 0, name+".parameters"); err != nil {
+			if err := toolpolicy.ValidateConstrainedSchema(parameters, true, 0, name+".parameters"); err != nil {
 				return nil, err
 			}
-			grammarComplexity = constrainedGrammarAdd(
+			grammarComplexity = toolpolicy.ConstrainedGrammarAdd(
 				grammarComplexity,
-				len([]byte(name))+constrainedSchemaGrammarCost(parameters))
-			if grammarComplexity > constrainedMaxGrammarComplexity {
-				return nil, unsupportedToolConstraint(
+				len([]byte(name))+toolpolicy.ConstrainedSchemaGrammarCost(parameters))
+			if grammarComplexity > toolpolicy.ConstrainedMaxGrammarComplexity {
+				return nil, toolpolicy.UnsupportedToolConstraint(
 					fmt.Sprintf(
 						"combined tool grammar exceeds the %d-unit safety limit",
-						constrainedMaxGrammarComplexity))
+						toolpolicy.ConstrainedMaxGrammarComplexity))
 			}
 		}
 		tools[name] = function
@@ -382,7 +367,7 @@ func representableToolSpelling(tool map[string]any) (name string, parameters any
 // ever hit it).
 func rejectReservedSchemaMetadata(schema any, depth int) error {
 	if depth > maxToolSchemaDepth {
-		return invalidToolConstraint(
+		return toolpolicy.InvalidToolConstraint(
 			"tool schema exceeds the reserved-metadata scan depth", "tools")
 	}
 	switch value := schema.(type) {
@@ -393,8 +378,8 @@ func rejectReservedSchemaMetadata(schema any, depth int) error {
 			}
 		}
 	case map[string]any:
-		if _, forged := value[originalBooleanSchemaKey]; forged {
-			return invalidToolConstraint(
+		if _, forged := value[toolpolicy.OriginalBooleanSchemaKey]; forged {
+			return toolpolicy.InvalidToolConstraint(
 				"tool schema contains reserved internal metadata", "tools")
 		}
 		for _, key := range []string{
@@ -453,31 +438,17 @@ func rejectReservedSchemaMetadata(schema any, depth int) error {
 	return nil
 }
 
-func invalidToolConstraint(message, param string) error {
-	return &toolConstraintRequestError{
-		status: http.StatusBadRequest, message: message, param: param,
-	}
-}
-
-func unsupportedToolConstraint(message string) error {
-	return &toolConstraintRequestError{
-		status:  http.StatusUnprocessableEntity,
-		message: message,
-		param:   "tools",
-	}
-}
-
 func WriteToolConstraintValidationError(
 	w http.ResponseWriter,
 	err error,
 ) {
-	if typed, ok := err.(*toolConstraintRequestError); ok {
+	if typed, ok := err.(*toolpolicy.ValidationError); ok {
 		options := []httpx.ErrorDetailOpt{}
-		if typed.param != "" {
-			options = append(options, httpx.WithParam(typed.param))
+		if typed.Param != "" {
+			options = append(options, httpx.WithParam(typed.Param))
 		}
-		httpx.WriteJSON(w, typed.status, httpx.ErrorResponse(
-			"invalid_request_error", typed.message, options...))
+		httpx.WriteJSON(w, typed.Status, httpx.ErrorResponse(
+			"invalid_request_error", typed.Message, options...))
 		return
 	}
 	httpx.WriteJSON(w, http.StatusBadRequest, httpx.ErrorResponse(

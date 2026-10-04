@@ -8,6 +8,7 @@ import (
 	"time"
 
 	httpx "github.com/eigeninference/d-inference/coordinator/api/httpx"
+	windows "github.com/eigeninference/d-inference/coordinator/internal/api/reporting/windows"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -29,8 +30,8 @@ func (s *Owner) HandleModelDemand(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, 400, httpx.ErrorResponse("invalid_request_error", "window must be one of: 24h, 7d, 30d"))
 		return
 	}
-	spec, _ := parseNetworkSeriesWindow(window)
-	body, ok := s.getCachedEntry(&s.modelDemandRefresh[index], "model_demand:"+window, func() ([]byte, error) {
+	spec, _ := windows.ParseNetworkSeriesWindow(window)
+	body, ok := s.GetCachedEntry(&s.modelDemandRefresh[index], "model_demand:"+window, func() ([]byte, error) {
 		backend, ok := store.As[store.ModelDemandStore](s.store)
 		if !ok {
 			return nil, errors.New("model demand store unavailable")
@@ -38,7 +39,7 @@ func (s *Owner) HandleModelDemand(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		end := time.Now().UTC().Truncate(time.Hour).Add(-time.Hour)
-		start := end.Add(-spec.duration)
+		start := end.Add(-spec.Duration)
 		snapshot, err := backend.ModelDemand(ctx, start, end)
 		if err != nil {
 			return nil, err

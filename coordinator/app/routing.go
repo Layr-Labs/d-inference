@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/eigeninference/d-inference/coordinator/api"
+	startup "github.com/eigeninference/d-inference/coordinator/internal/startup"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
@@ -72,21 +73,21 @@ func configureRouting(srv *api.Server, logger *slog.Logger) {
 	//     reserved for a future step that would actually shed; it currently
 	//     behaves like shadow.
 	if v := os.Getenv("EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA"); v != "" {
-		if alpha, ok := validateTTFTOccupancyAlpha(v); ok {
+		if alpha, ok := startup.ValidateTTFTOccupancyAlpha(v); ok {
 			registry.SetTTFTOccupancyAlpha(alpha)
 			logger.Info("TTFT occupancy term configured via EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA", "alpha", alpha, "behavior_neutral", alpha == 0)
 		} else {
 			logger.Warn("invalid or out-of-range EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA; keeping default 0 (term off)",
-				"value", v, "max", maxTTFTOccupancyAlpha)
+				"value", v, "max", startup.MaxTTFTOccupancyAlpha)
 		}
 	}
 	if v := os.Getenv("EIGENINFERENCE_TTFT_DEADLINE_BASE_MS"); v != "" {
-		if base, ok := validateTTFTDeadlineBaseMs(v); ok {
+		if base, ok := startup.ValidateTTFTDeadlineBaseMs(v); ok {
 			registry.SetTTFTDeadlineBaseMs(base)
 			logger.Info("TTFT shadow deadline base configured via EIGENINFERENCE_TTFT_DEADLINE_BASE_MS", "base_ms", base)
 		} else {
 			logger.Warn("invalid or out-of-range EIGENINFERENCE_TTFT_DEADLINE_BASE_MS; keeping default ~10s",
-				"value", v, "min_ms", minTTFTDeadlineBaseMs, "max_ms", maxTTFTDeadlineBaseMs)
+				"value", v, "min_ms", startup.MinTTFTDeadlineBaseMs, "max_ms", startup.MaxTTFTDeadlineBaseMs)
 		}
 	}
 	if v := os.Getenv("EIGENINFERENCE_TTFT_ADMISSION_MODE"); v != "" {

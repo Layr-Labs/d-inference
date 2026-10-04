@@ -4,6 +4,7 @@ import (
 	"maps"
 	"reflect"
 
+	compiledpolicy "github.com/eigeninference/d-inference/coordinator/internal/api/releases/compiledpolicy"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -14,7 +15,7 @@ import (
 type PolicyView struct {
 	Generation uint64
 	Required   bool
-	snapshot   *releaseTrustPolicySnapshot
+	snapshot   *compiledpolicy.Snapshot
 }
 
 func (s *Owner) Policy() *PolicyView {
@@ -29,20 +30,24 @@ func (v *PolicyView) AllowsEvidence(e registry.ApplicationEvidence) bool {
 	return v != nil && releaseEvidenceStillApproved(v.snapshot, e)
 }
 
-func (v *PolicyView) Known() bool { return v != nil && len(v.snapshot.ByBinaryHash) > 0 }
+func (v *PolicyView) Known() bool { return v != nil && len(v.snapshot.Inventory()) > 0 }
 
 func (v *PolicyView) ContainsQualifiedRelease(release store.Release) bool {
 	if v == nil {
 		return false
 	}
-	expected := &releaseTrustPolicySnapshot{ByBinaryHash: make(map[string][]approvedReleasePolicy)}
-	expected.addRelease(&release, release.BinaryHash)
-	for _, policy := range v.snapshot.ByBinaryHash[release.BinaryHash] {
-		if reflect.DeepEqual(policy, expected.ByBinaryHash[release.BinaryHash][0]) {
+	expected := compiledpolicy.New(0, false).WithRelease(&release, release.BinaryHash)
+	for _, policy := range v.snapshot.Inventory()[release.BinaryHash] {
+		if reflect.DeepEqual(policy, expected.Inventory()[release.BinaryHash][0]) {
 			return true
 		}
 	}
 	return false
+}
+
+// Inventory returns detached release entries for runtime-policy publication.
+func (v *PolicyView) Inventory() map[string][]compiledpolicy.Entry {
+	return v.snapshot.Inventory()
 }
 
 func (v *PolicyView) ApprovedTransitionPredecessor(hash, platform, backend, version string) bool {

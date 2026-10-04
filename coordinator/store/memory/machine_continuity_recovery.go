@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/store/internal/shared"
+	"github.com/eigeninference/d-inference/coordinator/internal/store/shared"
 )
 
 func (s *MemoryStore) RecoverLiveAppAttestMachineSession(ctx context.Context, sessionID, account, key string, now time.Time) (bool, error) {
@@ -20,7 +20,7 @@ func (s *MemoryStore) RecoverLiveAppAttestMachineSession(ctx context.Context, se
 	if m == nil {
 		return false, nil
 	}
-	o, exists := m.sessions[sessionID]
+	o, exists := m.Sessions[sessionID]
 	if !exists || o.AccountID != account || !o.Disconnected || o.Source != "historical_registration" || o.DisconnectReason != "observed_disconnect" {
 		return false, nil
 	}
@@ -28,17 +28,17 @@ func (s *MemoryStore) RecoverLiveAppAttestMachineSession(ctx context.Context, se
 	if !exists || k.AccountID != account || s.appAttestRevocations[key] {
 		return false, nil
 	}
-	if existing := m.aliases[shared.AppAttestMachineAlias(account, key)]; existing != "" && existing != m.sessionMachines[sessionID] {
+	if existing := m.Aliases[shared.AppAttestMachineAlias(account, key)]; existing != "" && existing != m.SessionMachines[sessionID] {
 		return false, nil
 	}
-	for _, p := range s.providerSessions {
+	for _, p := range s.history.ProviderSessions {
 		if p.SessionID != sessionID || p.AccountID != account || p.DisconnectedAt != nil ||
 			!p.LastSeen.After(o.At) || p.LastSeen.Before(now.Add(-2*time.Minute)) {
 			continue
 		}
 		o.Disconnected, o.DisconnectReason = false, ""
 		o.Source, o.At = "live_assertion_recovery", now
-		m.sessions[sessionID] = o
+		m.Sessions[sessionID] = o
 		return true, nil
 	}
 	return false, nil

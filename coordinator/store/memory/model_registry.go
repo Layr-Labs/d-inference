@@ -1,13 +1,13 @@
 package memory
 
 import (
-	"encoding/json"
 	"fmt"
 	"sort"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/store/shared"
+
 	"github.com/eigeninference/d-inference/coordinator/store"
-	"github.com/eigeninference/d-inference/coordinator/store/internal/shared"
 )
 
 func (s *MemoryStore) UpsertModelRegistryEntry(entry *store.ModelRegistryEntry) error {
@@ -15,7 +15,7 @@ func (s *MemoryStore) UpsertModelRegistryEntry(entry *store.ModelRegistryEntry) 
 	defer s.mu.Unlock()
 
 	now := time.Now()
-	cp := cloneModelRegistryEntry(entry)
+	cp := shared.CloneModelRegistryEntry(entry)
 	if existing, ok := s.modelRegistry[entry.ID]; ok && !existing.CreatedAt.IsZero() {
 		cp.CreatedAt = existing.CreatedAt
 		cp.Status = existing.Status
@@ -54,7 +54,7 @@ func (s *MemoryStore) setModelVersionLocked(entry *store.ModelRegistryEntry, ver
 		return store.ErrModelVersionImmutable
 	}
 	now := time.Now()
-	entryCopy := cloneModelRegistryEntry(entry)
+	entryCopy := shared.CloneModelRegistryEntry(entry)
 	if existing, ok := s.modelRegistry[entry.ID]; ok && !existing.CreatedAt.IsZero() {
 		entryCopy.CreatedAt = existing.CreatedAt
 		entryCopy.Status = existing.Status
@@ -279,7 +279,7 @@ func (s *MemoryStore) modelRegistryRecordLocked(modelID string) *store.ModelRegi
 	if !ok || version.Status != "ready" {
 		return nil
 	}
-	entryCopy := cloneModelRegistryEntry(entry)
+	entryCopy := shared.CloneModelRegistryEntry(entry)
 	versionCopy := cloneModelVersion(version)
 	files := append([]store.ModelVersionFile(nil), s.modelVersionFiles[versionID]...)
 	rec := &store.ModelRegistryRecord{ModelRegistryEntry: entryCopy, ActiveVersion: &versionCopy, Files: files}
@@ -296,19 +296,6 @@ func modelVersionKey(modelID, version string) string {
 	return modelID + "\x00" + version
 }
 
-func cloneModelRegistryEntry(entry *store.ModelRegistryEntry) store.ModelRegistryEntry {
-	if entry == nil {
-		return store.ModelRegistryEntry{}
-	}
-	cp := *entry
-	cp.Capabilities = append([]string(nil), entry.Capabilities...)
-	cp.RequiredProviderCapabilities = append(
-		[]string(nil), entry.RequiredProviderCapabilities...)
-	cp.RuntimeParameters = cloneMetadata(entry.RuntimeParameters)
-	cp.Metadata = cloneMetadata(entry.Metadata)
-	return cp
-}
-
 func cloneModelVersion(version *store.ModelVersion) store.ModelVersion {
 	if version == nil {
 		return store.ModelVersion{}
@@ -316,21 +303,6 @@ func cloneModelVersion(version *store.ModelVersion) store.ModelVersion {
 	cp := *version
 	cp.PromotedAt = store.CloneTimePtr(version.PromotedAt)
 	cp.HuggingFaceArtifact = store.CloneHuggingFaceArtifact(version.HuggingFaceArtifact)
-	cp.Metadata = cloneMetadata(version.Metadata)
+	cp.Metadata = shared.CloneMetadata(version.Metadata)
 	return cp
-}
-
-func cloneMetadata(metadata map[string]any) map[string]any {
-	if metadata == nil {
-		return map[string]any{}
-	}
-	data, err := json.Marshal(metadata)
-	if err != nil {
-		return map[string]any{}
-	}
-	out := map[string]any{}
-	if err := json.Unmarshal(data, &out); err != nil {
-		return map[string]any{}
-	}
-	return out
 }

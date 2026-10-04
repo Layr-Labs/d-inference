@@ -128,7 +128,7 @@ func (r *Registry) appendProviderSample(rows []store.FleetSnapshotRow, p *Provid
 		CancelAbortNSSum:             p.Stats.CancelAbortNSSum,
 	}
 	stableID := ""
-	if healthEjectionEnabled() {
+	if r.gates.EjectionEnabled() {
 		stableID = stableProviderIdentityLocked(p)
 	}
 	heartbeatAt := p.LastHeartbeat
@@ -259,7 +259,7 @@ func (r *Registry) appendProviderSample(rows []store.FleetSnapshotRow, p *Provid
 		row.CooldownActive = gate.dispatchLoadCooled(raw, now) ||
 			gate.inferenceErrorCooled(raw, shape, now) ||
 			gate.capacityCooled(raw, now)
-		row.ClampActive = gate.budgetClampActive(r.budgetClampCfg, raw, heartbeatAt, scratch[i].rawRemaining, scratch[i].budgetReported, now)
+		row.ClampActive = gate.budgetClampActive(raw, heartbeatAt, scratch[i].rawRemaining, scratch[i].budgetReported, now)
 	}
 	p.mu.Unlock()
 	// Eligibility via the real routing gates (the snapshot helper takes p.mu
@@ -318,7 +318,7 @@ func (r *Registry) providerLevelGateReasonLocked(p *Provider, now time.Time) (bo
 	if g.breakerOpenAt(nowNS) {
 		return false, GateBreaker
 	}
-	if healthEjectionEnabled() {
+	if r.gates.EjectionEnabled() {
 		if r.ejectionOpenFor(g, stableProviderIdentityLocked(p), nowNS) {
 			return false, GateEjection
 		}

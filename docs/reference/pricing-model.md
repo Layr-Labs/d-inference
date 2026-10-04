@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-03
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -79,12 +79,12 @@ cache_read_price NULL, updated_at)`, primary key `(account_id, model)`
 | Cache-read discount | `settle(usage with cachedTokens = 0) − settle(usage)`, where `settle` is the settlement function (`Rates.CostWithMinimum` for direct consumers, `Rates.Cost` for service accounts); emitted as `billing.cache_read_discount_micro_usd` | `CacheReadDiscount` |
 | Cost, direct consumers | `max(rawCost, minimumChargeMicroUSD)` | `Rates.CostWithMinimum` |
 | Cost, service accounts | `rawCost`; `1` when the tokens are non-zero but the products round to `0` (no per-request minimum) | `Rates.Cost` |
-| Cached tokens | `cachedTokens` is the provider's terminal `usage.cached_tokens` after `validCacheUsage` (`0` for a malformed report), the same count the consumer receives as `prompt_tokens_details.cached_tokens`; see [billing.md, invariant 5](../architecture/billing.md#invariants) | `coordinator/api/inference/cache_usage.go` (`billableUsage`, `validCacheUsage`) |
-| Model-token promotion | every prompt token at `inPrice` — a request settled against a grant gets no cache-read discount | `coordinator/api/inference/model_token_pricing.go` (`priceModelTokens`) |
+| Cached tokens | `cachedTokens` is the provider's terminal `usage.cached_tokens` after `validCacheUsage` (`0` for a malformed report), the same count the consumer receives as `prompt_tokens_details.cached_tokens`; see [billing.md, invariant 5](../architecture/billing.md#invariants) | `coordinator/internal/inference/cacheusage/cache_usage.go` (`billableUsage`, `validCacheUsage`) |
+| Model-token promotion | every prompt token at `inPrice` — a request settled against a grant gets no cache-read discount | `coordinator/internal/inference/promotions/model_token_pricing.go` (`PriceTokens`) |
 | Output bound | explicit `max_tokens` \| `max_completion_tokens` \| `max_output_tokens`, else registry `max_output_length`, else `defaultMaxOutputTokens` | `coordinator/api/inference/consumer.go` (`explicitMaxTokens`, `ensureMaxTokensBound`) |
-| Reservation | `RatesFor(platform price).CostWithMinimum(Usage{PromptTokens: max(BillingPromptTokens, estimatedPromptTokens), CompletionTokens: outputBound})` — no cache hit assumed, so the reservation prices every prompt token at the input rate and settlement refunds the cache-read discount | `coordinator/api/inference/inference_admission.go` (`reserveInferenceBalance`); `coordinator/api/inference/consumer.go` (`reservationCost`, `reservationUsage`) |
+| Reservation | `RatesFor(platform price).CostWithMinimum(Usage{PromptTokens: max(BillingPromptTokens, estimatedPromptTokens), CompletionTokens: outputBound})` — no cache hit assumed, so the reservation prices every prompt token at the input rate and settlement refunds the cache-read discount | `coordinator/api/inference/inference_balance.go` (`reserveInferenceBalance`); `coordinator/api/inference/consumer.go` (`reservationCost`, `reservationUsage`) |
 | Provider top-up | `providerReservationCost − reserved` when the dispatched provider's custom price makes it positive; skipped for service consumers | `coordinator/api/inference/consumer.go` (`reserveAdditionalForProvider`) |
-| Media top-up | `reservationCost(inlined body) − reserved` when positive | `coordinator/api/inference/inference_admission.go` (`topUpReservationForInlinedMedia`) |
+| Media top-up | `reservationCost(inlined body) − reserved` when positive | `coordinator/api/inference/inference_balance.go` (`topUpReservationForInlinedMedia`) |
 | Overage | `min(totalCost − reserved, reserved)`; debited as `charge` with reference `overage:<request_id>`; on failure `totalCost = reserved` | `coordinator/api/inference/provider_inference.go` (`HandleCompleteAt`) |
 | Settlement refund | `reserved − totalCost` when positive; `refund` entry referenced by `<request_id>` | `HandleCompleteAt` |
 | Whole-reservation refund | `reserved`; `refund` entry `reservation_refund:<request_id>` | `coordinator/api/inference/consumer.go` (`refundReservedBalance`) |
@@ -140,7 +140,7 @@ rather than "work" earnings on the leaderboard and in `GET /v1/me/summary`
 |---|---|---|---|
 | `limit_usd` | `POST /v1/keys`, `PATCH /v1/keys/{id}` body | `>= 0`; stored as `APIKey.LimitMicroUSD` | `coordinator/api/access/keys/handlers.go`, `coordinator/api/access/keys/handlers.go`, `coordinator/api/access/keys/request.go` (`validateKeyLimitInputs`, `HandleCreateAPIKey`) |
 | `limit_reset` | same | `none`, `daily`, `weekly`, `monthly` (`KeyResetNone` …); unknown values normalise to `none` | `coordinator/store/apikey.go` (`NormalizeResetWindow`, `KeySpendWindowStart`) |
-| enforcement points | `reserveInferenceBalance`, `topUpReservationForInlinedMedia`, `reserveAdditionalForProvider` | soft cap on settled usage | `coordinator/api/inference/inference_admission.go`; `coordinator/api/inference/consumer.go` |
+| enforcement points | `reserveInferenceBalance`, `topUpReservationForInlinedMedia`, `reserveAdditionalForProvider` | soft cap on settled usage | `coordinator/api/inference/inference_balance.go`; `coordinator/api/inference/consumer.go` |
 
 ## Service accounts
 
@@ -338,14 +338,14 @@ Published recipient bounds are stored in `coordinator/billing/globalpayouts/reci
 | Rule | Contract | Code |
 |---|---|---|
 | Allocation | Explicit claim, one grant per account/model; campaign claim cap and persisted signup cutoff; start-inclusive/end-exclusive claim window; issued tokens never expire | `coordinator/store/model_token_promotions.go` (`ModelTokenPromotion`) |
-| Token unit | Prompt plus completion tokens, including cached input and generated reasoning as reported in usage | `coordinator/api/inference/model_token_settlement.go` (`settleModelTokenPromotion`) |
-| Coverage | Input first, then output; fully covered usage costs the consumer zero | `coordinator/api/inference/model_token_admission.go` (`modelTokenQuote`) |
-| Paid fallback | Uncovered tokens use paid balance; the normal request minimum applies when any tokens are paid | `coordinator/api/inference/model_token_admission.go` (`modelTokenQuote`) |
+| Token unit | Prompt plus completion tokens, including cached input and generated reasoning as reported in usage | `coordinator/internal/inference/promotions/model_token_settlement.go` (`Engine.Settle`) |
+| Coverage | Input first, then output; fully covered usage costs the consumer zero | `coordinator/internal/inference/promotions/model_token_admission.go` (`quote`) |
+| Paid fallback | Uncovered tokens use paid balance; the normal request minimum applies when any tokens are paid | `coordinator/internal/inference/promotions/model_token_admission.go` (`quote`) |
 | Provider earnings | Sponsored portion uses exact platform token price and fee share, with no request or one-micro-dollar payout floor; fractional earnings carry across requests per provider account. Paid portion retains its funded minimum. Same-account sponsored serving produces no payout | `coordinator/api/inference/provider_inference.go` (`handleComplete`) |
 | Fractional payout storage | Remainders use 1/100000000 of a micro-dollar; whole units become withdrawable atomically with grant settlement; replay never adds the fraction twice | `coordinator/store/model_token_earnings.go` (`ModelTokenPayoutScale`, `carryModelTokenEarning`) |
 | Zero-token completion | Reject any nonzero charge or payout; release token/cash holds | `coordinator/store/model_token_promotions.go` (`promotionSettlement`) |
-| Settlement reconciliation | Resume usage, key spend and fee accounting once using the stored consumer cost; insufficient cash closes and refunds holds | `coordinator/api/inference/completion_accounting.go` (`completionAccounting`); `coordinator/api/inference/model_token_settlement.go` (`abandonModelTokenSettlement`) |
-| Reservation recovery | Renew every 30 seconds; reclaim after ten minutes without renewal | `coordinator/api/inference/model_token_maintenance.go` (`RunModelTokenMaintenance`, `modelTokenLeaseTimeout`) |
+| Settlement reconciliation | Resume usage, key spend and fee accounting once using the stored consumer cost; insufficient cash closes and refunds holds | `coordinator/api/inference/completion_accounting.go` (`completionAccounting`); `coordinator/internal/inference/promotions/model_token_settlement.go` (`abandon`) |
+| Reservation recovery | Renew every 30 seconds; reclaim after ten minutes without renewal | `coordinator/api/inference/model_token_engine.go` (`RunModelTokenMaintenance`) delegates to `coordinator/internal/inference/promotions/model_token_maintenance.go` (`Engine.Run`, `Engine.Maintain`, `modelTokenLeaseTimeout`) |
 
 Configure using the [model token promotion runbook](../operations/model-token-promotions.md).
 

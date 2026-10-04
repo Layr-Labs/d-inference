@@ -2,6 +2,8 @@ package registry
 
 import (
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/rollout"
 )
 
 // providerSupportsPrivateTextLocked is the SINGLE routing chokepoint for
@@ -41,50 +43,7 @@ func (r *Registry) providerSupportsPrivateTextModeAtLocked(p *Provider, enforceE
 // allowAppAttest=false evaluates the independent legacy path for status and
 // migration diagnostics without mutating live evidence to manufacture a view.
 func (r *Registry) providerSupportsPrivateTextAuthorizationAtLocked(p *Provider, enforceEvidence, allowAppAttest bool, now time.Time) bool {
-	if p.appAttestSecurityDenied {
-		return false
-	}
-	appAttest := allowAppAttest && r.providerHasAppAttestAuthorizationLocked(p, now)
-	if p.PublicKey == "" || !privateTextBackendSupported(p.Backend) || !p.EncryptedResponseChunks {
-		return false
-	}
-	if !p.RuntimeManifestChecked {
-		return false
-	}
-	// Require coordinator-verified SIP (from attestation challenge) rather
-	// than trusting the provider's self-reported SIPEnabled field.
-	// A qualified App Attest lease includes Apple's SIP/Full Security access
-	// policy and a fresh endpoint assertion. Do not fabricate legacy SIP or
-	// APNs evidence to represent that independent authorization path.
-	if !appAttest && !p.ChallengeVerifiedSIP {
-		return false
-	}
-	// A configured release policy makes current active-release application
-	// evidence mandatory independently of the APNs rollout deadline — but only
-	// once enforcement is switched on AND past any enforce-after delay. In
-	// shadow (the default) the predicate is still evaluated and counted
-	// (ApplicationEvidenceModelCoverage, CountProvidersWithCurrentApplicationEvidence)
-	// so operators prove coverage BEFORE anything can be derouted.
-	if r.releasePolicyRequired &&
-		enforceEvidence &&
-		!appAttest &&
-		!r.providerHoldsCurrentApplicationEvidenceLocked(p) {
-		return false
-	}
-	// APNs code-identity gate — the SINGLE chokepoint, no self-route exemption.
-	if !appAttest && r.codeAttestationEnforcedAtLocked(now) && !p.CodeAttested {
-		return false
-	}
-	caps := p.PrivacyCapabilities
-	if caps == nil {
-		return false
-	}
-	// Only mlx-swift is routable (enforced by privateTextBackendSupported above).
-	return caps.TextBackendInprocess &&
-		caps.TextProxyDisabled &&
-		caps.AntiDebugEnabled &&
-		caps.CoreDumpsDisabled &&
-		caps.EnvScrubbed
+	return (&ProviderEligibility{registry: r}).privateTextLocked(p, enforceEvidence, allowAppAttest, now)
 }
 
 func privateTextBackendSupported(backend string) bool {
@@ -247,8 +206,7 @@ func (r *Registry) releasePolicyEnforcedLocked() bool {
 // releasePolicyEnforcedAtLocked is releasePolicyEnforcedLocked at an explicit
 // instant (the fleet walks pass their captured clock). Caller holds r.mu.
 func (r *Registry) releasePolicyEnforcedAtLocked(now time.Time) bool {
-	return r.releasePolicyEnforced &&
-		!now.Before(r.releasePolicyEnforceAfter)
+	return rollout.ReleaseEvidenceRequired(r.releasePolicyEnforced, r.releasePolicyEnforceAfter, now)
 }
 
 // ReleasePolicyEnforced reports whether missing application evidence currently
@@ -287,10 +245,7 @@ func (r *Registry) codeAttestationEnforcedLocked() bool {
 // codeAttestationEnforcedAtLocked is codeAttestationEnforcedLocked at an
 // explicit instant (the fleet walks pass their captured clock). Caller holds r.mu.
 func (r *Registry) codeAttestationEnforcedAtLocked(now time.Time) bool {
-	if !r.codeAttestationConfigured || r.codeAttestationDeadline.IsZero() {
-		return false
-	}
-	return !now.Before(r.codeAttestationDeadline)
+	return rollout.CodeAttestationRequired(r.codeAttestationConfigured, r.codeAttestationDeadline, now)
 }
 
 // SetHardUntrustHook registers an optional callback fired whenever a provider is
@@ -327,7 +282,7 @@ func (r *Registry) notifyRuntimeCapabilitiesPromoted(providerID string) {
 // non-recoverable: the provider stays untrusted until it reconnects and
 // re-registers. This is the default for every direct deroute call site.
 func (r *Registry) MarkUntrusted(providerID string) {
-	r.markUntrusted(providerID, false)
+	r.connectionLifecycle.MarkUntrusted(providerID, false)
 }
 
 // MarkUntrustedTransient sets a provider's status to untrusted for a *transient*
@@ -341,100 +296,7 @@ func (r *Registry) MarkUntrusted(providerID string) {
 // model hash and runtime before RecordChallengeSuccess is reached, so using it
 // as the recovery trigger is safe.
 func (r *Registry) MarkUntrustedTransient(providerID string) {
-	r.markUntrusted(providerID, true)
-}
-
-// markUntrusted is the shared implementation. recoverable=true marks the untrust
-// as transiently recoverable; recoverable=false is a hard deroute.
-//
-// Transition rules:
-//   - not untrusted -> untrusted: decrement online/model counts, set status and
-//     the recoverable flag.
-//   - already untrusted + hard (recoverable=false): clear the flag. A hard
-//     reason always overrides/downgrades a previously-recoverable untrust.
-//   - already untrusted + transient (recoverable=true): leave the flag as-is, so
-//     a transient timeout can never *upgrade* a hard deroute to recoverable
-//     (matters for an in-flight challenge timeout that races a hard deroute).
-func (r *Registry) markUntrusted(providerID string, recoverable bool) {
-	r.mu.Lock()
-	p, ok := r.providers[providerID]
-	if !ok {
-		r.mu.Unlock()
-		return
-	}
-	hook := r.onHardUntrust // capture under r.mu (race-safe)
-
-	p.mu.Lock()
-	// A missing legacy challenge is not negative security evidence. A live
-	// independently valid App Attest lease can continue until its own deadline.
-	if recoverable && r.providerHasAppAttestAuthorizationLocked(p, time.Now()) {
-		p.mu.Unlock()
-		r.mu.Unlock()
-		return
-	}
-	if p.Status != StatusUntrusted {
-		r.onlineCount.Add(-1)
-		for _, m := range p.Models {
-			r.modelProviderDec(m.ID)
-		}
-		p.Status = StatusUntrusted
-		p.untrustedRecoverable = recoverable
-	} else if !recoverable {
-		p.untrustedRecoverable = false
-	}
-	// Never replay work across a transient distrust/recovery interval.
-	p.warmWorkCounters = nil
-	// Effective claims are connection security state, not durable inventory.
-	// A passing fully-signed challenge may restore them only through reconcile.
-	capabilitiesChanged := len(p.RuntimeCapabilities) > 0
-	p.RuntimeCapabilities = nil
-	failed := p.FailedChallenges // read under p.mu (the old code read this unlocked)
-	// Capture the SE key for the hard-untrust hook while we hold p.mu.
-	var seKey string
-	if !recoverable && p.AttestationResult != nil {
-		seKey = p.AttestationResult.PublicKey
-	}
-	if !recoverable {
-		p.clearAppAttestServingAuthorizationLocked()
-		if p.requireVerifiedMachineIdentity || p.appAttestCredentialID != "" {
-			p.appAttestSecurityDenied = true
-		}
-		p.DeviceEvidence = DeviceEvidence{}
-		p.ApplicationEvidence = ApplicationEvidence{}
-		p.CodeAttested = false
-		p.FreshCodeAttested = false
-	}
-	p.mu.Unlock()
-	r.mu.Unlock()
-	if !recoverable {
-		p.SignalApplicationProofSettled()
-	}
-	if capabilitiesChanged {
-		_ = r.ReconcileAttestedRuntimeCapabilities(providerID)
-	}
-
-	r.logger.Warn("provider marked as untrusted",
-		"provider_id", providerID,
-		"failed_challenges", failed,
-		"recoverable", recoverable,
-	)
-
-	// A HARD untrust invalidates the device's trust-reuse record (in-memory +
-	// persisted) so a later reconnect cannot fast-skip the live MDM re-verification
-	// on a stale, pre-untrust record (DAR-326). Fired after releasing the locks; a
-	// transient (recoverable) untrust does NOT invalidate — it can self-recover via
-	// a passing challenge.
-	if !recoverable {
-		// FIX A: bump the hard-untrust epoch BEFORE firing the delete hook. A
-		// concurrent recordTrustReuse that captured the old epoch at grant time then
-		// sees the change on its pre-upsert recheck and refuses to persist a stale
-		// `hardware` row — closing the write-after-delete race (a write landing after
-		// the synchronous delete that a restart would otherwise reseed).
-		p.untrustEpoch.Add(1)
-		if hook != nil && seKey != "" {
-			hook(seKey)
-		}
-	}
+	r.connectionLifecycle.MarkUntrusted(providerID, true)
 }
 
 // SetTrustLevel updates a provider's trust level (thread-safe).
@@ -447,7 +309,7 @@ func (r *Registry) SetTrustLevel(providerID string, level TrustLevel) {
 	}
 	p.mu.Lock()
 	if p.TrustLevel != level {
-		p.warmWorkCounters = nil
+		p.warmWork.Reset()
 	}
 	p.TrustLevel = level
 	if level != TrustHardware {
@@ -477,13 +339,13 @@ func (r *Registry) RecordChallengeSuccess(providerID string) bool {
 		return false
 	}
 
-	recovered := r.recoverIfTransientlyUntrusted(providerID, p)
+	recovered := r.connectionLifecycle.RecoverTransientlyUntrusted(providerID, p)
 
 	r.mu.RLock()
 	p.mu.Lock()
 	now := time.Now()
 	if !r.providerChallengeFreshAtLocked(p, now) {
-		p.warmWorkCounters = nil
+		p.warmWork.Reset()
 	}
 	p.LastChallengeVerified = now
 	p.FailedChallenges = 0
@@ -509,51 +371,6 @@ func (r *Registry) RecordChallengeSuccess(providerID string) bool {
 	r.drainQueuedRequestsForModelsWithReason(providerModelIDs(p), DrainTriggerChallenge)
 
 	return recovered
-}
-
-// recoverIfTransientlyUntrusted promotes a transiently-untrusted provider back
-// to online, mirroring markUntrusted's bookkeeping in reverse. Returns true iff
-// a transition occurred. It acquires r.mu (write) then p.mu — the same order as
-// markUntrusted/Register/Disconnect — so online/model counts stay consistent and
-// the path is deadlock-free.
-func (r *Registry) recoverIfTransientlyUntrusted(providerID string, p *Provider) bool {
-	// Cheap pre-check under p.mu only, so the common (non-recovery) success path
-	// never contends on the registry write lock.
-	p.mu.Lock()
-	eligible := p.Status == StatusUntrusted && p.untrustedRecoverable
-	p.mu.Unlock()
-	if !eligible {
-		return false
-	}
-
-	r.mu.Lock()
-	// Re-verify membership: RecordChallengeSuccess looked p up under RLock and
-	// released it, so Disconnect may have removed (or replaced) it since. A
-	// transiently-untrusted provider was already decremented out of the counts,
-	// and Disconnect does not decrement an untrusted provider, so incrementing a
-	// stale/removed pointer here would permanently corrupt onlineCount and
-	// modelProviders. Only recover the provider still registered under this ID.
-	if cur, ok := r.providers[providerID]; !ok || cur != p {
-		r.mu.Unlock()
-		return false
-	}
-	p.mu.Lock()
-	// Re-check under the write lock: a hard deroute may have intervened and
-	// cleared the recoverable flag between the pre-check and here.
-	if p.Status != StatusUntrusted || !p.untrustedRecoverable {
-		p.mu.Unlock()
-		r.mu.Unlock()
-		return false
-	}
-	r.onlineCount.Add(1)
-	for _, m := range p.Models {
-		r.modelProviderInc(m.ID)
-	}
-	p.Status = StatusOnline
-	p.untrustedRecoverable = false
-	p.mu.Unlock()
-	r.mu.Unlock()
-	return true
 }
 
 // RecordChallengeFailure records a failed challenge-response. Returns the
@@ -582,7 +399,7 @@ func (r *Registry) RecordChallengeFailure(providerID string, transientOnly bool)
 
 	if !transientOnly {
 		// Security failure — clear routing eligibility immediately.
-		p.warmWorkCounters = nil
+		p.warmWork.Reset()
 		p.clearAppAttestServingAuthorizationLocked()
 		if p.requireVerifiedMachineIdentity || p.appAttestCredentialID != "" {
 			p.appAttestSecurityDenied = true
@@ -591,7 +408,7 @@ func (r *Registry) RecordChallengeFailure(providerID string, transientOnly bool)
 		p.ChallengeVerifiedSIP = false
 	} else if count >= MaxFailedChallenges {
 		// Transient failures only clear after hitting the threshold.
-		p.warmWorkCounters = nil
+		p.warmWork.Reset()
 		p.LastChallengeVerified = time.Time{}
 		p.ChallengeVerifiedSIP = false
 	}

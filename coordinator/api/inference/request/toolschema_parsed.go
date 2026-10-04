@@ -2,6 +2,8 @@ package request
 
 import (
 	"bytes"
+
+	jsonvalue "github.com/eigeninference/d-inference/coordinator/internal/inference/jsonvalue"
 )
 
 // normalizeParsedToolSchemas repairs the tool JSON-Schemas of an already
@@ -21,7 +23,7 @@ func NormalizeParsedToolSchemas(parsed map[string]any, rawBody []byte) (original
 	if !ok {
 		return nil, false
 	}
-	repaired, _ := cloneJSONValue(tools).([]any)
+	repaired, _ := jsonvalue.Clone(tools).([]any)
 	for i, tool := range repaired {
 		repaired[i] = normalizeToolEntry(tool, &changed)
 	}
@@ -47,26 +49,4 @@ func ConstraintView(parsed map[string]any, originalTools []any) map[string]any {
 	}
 	view["tools"] = originalTools
 	return view
-}
-
-// cloneJSONValue deep-copies a decoder-shaped value (objects, arrays, and
-// immutable scalars). Non-JSON leaf types are shared, which is safe because
-// the repair walk only ever rewrites map entries and array slots.
-func cloneJSONValue(v any) any {
-	switch x := v.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(x))
-		for key, value := range x {
-			out[key] = cloneJSONValue(value)
-		}
-		return out
-	case []any:
-		out := make([]any, len(x))
-		for i, value := range x {
-			out[i] = cloneJSONValue(value)
-		}
-		return out
-	default:
-		return v
-	}
 }

@@ -9,6 +9,10 @@ import (
 	inresp "github.com/eigeninference/d-inference/coordinator/api/inference/response"
 	"github.com/eigeninference/d-inference/coordinator/api/observation"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
+	cacheusage "github.com/eigeninference/d-inference/coordinator/internal/inference/cacheusage"
+	cancellation "github.com/eigeninference/d-inference/coordinator/internal/inference/cancellation"
+	failure "github.com/eigeninference/d-inference/coordinator/internal/inference/failure"
+	routeoutcome "github.com/eigeninference/d-inference/coordinator/internal/inference/outcome"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -87,13 +91,13 @@ func (s *Owner) HandleChunk(providerID string, provider *registry.Provider, msg 
 		// either late first content or an on-time chunk that finished
 		// classification as boilerplate only after the deadline.
 		s.observation.Incr("inference.first_content_after_deadline", []string{})
-		s.sendAbandonCancel(provider, pr.RequestID, pr.Model, cancelCauseLateContent)
+		s.sendAbandonCancel(provider, pr.RequestID, pr.Model, cancellation.CauseLateContent)
 		s.HandleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
 			Type:        protocol.TypeInferenceError,
 			RequestID:   pr.RequestID,
 			Error:       "first content was unavailable at the request deadline",
 			StatusCode:  http.StatusServiceUnavailable,
-			ErrorReason: errorReasonDeadlineUnreachable,
+			ErrorReason: failure.ErrorReasonDeadlineUnreachable,
 			FailureCode: protocol.FailureCodeCapacity,
 		})
 		return
@@ -118,7 +122,7 @@ func (s *Owner) HandleChunk(providerID string, provider *registry.Provider, msg 
 			"request_id", msg.RequestID,
 		)
 		s.observation.Incr("inference.chunk_overflow_abort", []string{})
-		s.sendAbandonCancel(provider, pr.RequestID, pr.Model, cancelCauseOverflow)
+		s.sendAbandonCancel(provider, pr.RequestID, pr.Model, cancellation.CauseOverflow)
 		// 499 + "request cancelled" classifies as a consumer-side terminal in
 		// handleInferenceError: no provider reputation hit for our backpressure.
 		s.HandleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
@@ -186,7 +190,7 @@ func (s *Owner) decryptTextResponseChunk(provider *registry.Provider, pr *regist
 	// The X25519 shared key is derived once per request and memoized; the
 	// per-chunk cost is a single symmetric open. The sender-key check above
 	// guarantees the cached key matches this chunk's ephemeral key.
-	shared, err := s.chunkKeys.sharedKey(pr.SessionPrivKey, provider.PublicKey)
+	shared, err := s.chunkKeys.SharedKey(pr.SessionPrivKey, provider.PublicKey)
 	if err != nil {
 		return "", err
 	}
@@ -232,10 +236,6 @@ func (s *Owner) HandleInferenceAccepted(provider *registry.Provider, msg *protoc
 // or buggy provider's unbounded CompletionTokens from writing an absurd TPS that
 // could skew routing calibration. The value is advisory, never a security gate.
 const maxPlausibleDecodeTPS = 10000.0
-
-func (s *Owner) handleComplete(providerID string, provider *registry.Provider, msg *protocol.InferenceCompleteMessage) {
-	s.HandleCompleteAt(providerID, provider, msg, time.Now())
-}
 
 func (s *Owner) HandleCompleteAt(
 	providerID string,
@@ -310,7 +310,7 @@ func (s *Owner) HandleCompleteAt(
 				RequestID:   pending.RequestID,
 				Error:       "provider completed after the first-content deadline",
 				StatusCode:  http.StatusServiceUnavailable,
-				ErrorReason: errorReasonDeadlineUnreachable,
+				ErrorReason: failure.ErrorReasonDeadlineUnreachable,
 				FailureCode: protocol.FailureCodeCapacity,
 			}, true)
 			// handleInferenceError completes the terminal only when it still
@@ -359,25 +359,25 @@ func (s *Owner) HandleCompleteAt(
 	// pre-commit attempt was refunded when it was abandoned. Only a terminal
 	// that finds no live record is matched, so the coordinator's own
 	// synthesized errors (raised while the record is live) never resolve one.
-	var cancelled zombieEntry
+	var cancelled cancellation.Entry
 	wasCancelled := false
 	if pr == nil {
 		cancelled, wasCancelled = s.resolveCancelledTerminal(
-			msg.RequestID, cancelTerminalComplete, cancelledOutcomeCompletePartial, receivedAt)
+			msg.RequestID, cancellation.TerminalComplete, cancellation.OutcomeCompletePartial, receivedAt)
 		pr = parked
 	}
 	if pr == nil {
-		if wasCancelled && cancelled.cause != cancelCauseStrayChunk {
+		if wasCancelled && cancelled.Cause != cancellation.CauseStrayChunk {
 			// The id matched a cancel the coordinator recorded, so it is
 			// coordinator-minted and safe to log: the provider honored the
 			// cancel with a partial completion.
 			s.logger.Debug("complete for cancelled request",
-				"request_id", msg.RequestID, "provider_id", providerID, "cause", cancelled.cause)
+				"request_id", msg.RequestID, "provider_id", providerID, "cause", cancelled.Cause)
 		} else {
 			// Until it matches pending state, request_id is provider-controlled and
 			// therefore an arbitrary log-exfiltration channel.
 			s.logger.Warn("complete for unknown request", "provider_id", providerID)
-			s.emitUnknownFrame(unknownFrameKindComplete, provider)
+			s.emitUnknownFrame(cancellation.UnknownFrameKindComplete, provider)
 		}
 		s.observation.Incr("inference.unknown_request_frames", []string{"kind:complete"})
 		s.observation.AddUnknownRequestFrames(1)
@@ -431,7 +431,7 @@ func (s *Owner) HandleCompleteAt(
 	// stamp is written.
 	defer pr.Profile.CompleteTerminal()
 	// The request is terminal — drop its memoized chunk-decryption key.
-	s.chunkKeys.forget(pr.SessionPrivKey)
+	s.chunkKeys.Forget(pr.SessionPrivKey)
 	// A parked record means the consumer handler already returned: there is no
 	// channel reader, and registry.Disconnect may have already CLOSED the
 	// channels (park-before-remove leaves a window where the record is in both
@@ -443,7 +443,7 @@ func (s *Owner) HandleCompleteAt(
 	// client_gone_after_commit). Metric-emit only — billing/settlement below is
 	// unchanged.
 	if consumerGone {
-		s.emitClientGone(pr.Model, pr.EstimatedPromptTokens, observation.ProviderChipFamily(provider), phaseAfterCommit)
+		s.NewMetrics().ClientGone(pr.Model, pr.EstimatedPromptTokens, observation.ProviderChipFamily(provider), phaseAfterCommit)
 		// A parked (after-commit client-gone) completion is still a SERVED
 		// provider dispatch, so it owes its one capacity-503 rate-window outcome
 		// (capacity_rate.go denominator). On the clean-completion path
@@ -483,19 +483,19 @@ func (s *Owner) HandleCompleteAt(
 			"prompt_tokens", msg.Usage.PromptTokens,
 		)
 	}
-	cacheUsagePresent := hasCacheUsage(msg.Usage)
-	cacheUsageValid := validCacheUsage(msg.Usage)
+	cacheUsagePresent := cacheusage.Has(msg.Usage)
+	cacheUsageValid := cacheusage.Valid(msg.Usage)
 	if cacheUsagePresent && !cacheUsageValid {
 		s.observation.Incr("routing.cache_usage_rejected", nil)
-		clearCacheUsage(&msg.Usage)
+		cacheusage.Clear(&msg.Usage)
 	}
 	if cacheUsageValid {
-		tags := []string{"outcome:" + msg.Usage.CacheOutcome, "tier:" + lowCardinalityCacheTier(msg.Usage.CacheTier)}
+		tags := []string{"outcome:" + msg.Usage.CacheOutcome, "tier:" + cacheusage.LowCardinalityTier(msg.Usage.CacheTier)}
 		s.observation.Incr("routing.cache_usage", tags)
 		s.observation.Count("routing.cache_tokens", int64(msg.Usage.CachedTokens), tags)
 		s.observation.Count("routing.cache_prefill_tokens_saved", int64(msg.Usage.PrefillTokensSaved), tags)
 		s.observation.Histogram("routing.cache_stage_ms", msg.Usage.CacheStageMs, tags)
-		s.observation.EmitExactCacheUsage(msg.Usage.CacheOutcome, lowCardinalityCacheTier(msg.Usage.CacheTier),
+		s.observation.EmitExactCacheUsage(msg.Usage.CacheOutcome, cacheusage.LowCardinalityTier(msg.Usage.CacheTier),
 			msg.Usage.CachedTokens, msg.Usage.PrefillTokensSaved, msg.Usage.CacheStageMs)
 	}
 	s.observation.EmitModelCacheUsage(pr, msg.Usage, cacheUsageValid, cacheUsagePresent)
@@ -552,7 +552,7 @@ func (s *Owner) HandleCompleteAt(
 		price, priced = s.store.GetModelPrice("platform", pr.Model)
 	}
 	rates := payments.RatesFor(price, priced)
-	billable := billableUsage(msg.Usage)
+	billable := cacheusage.Billable(msg.Usage)
 	settle := rates.CostWithMinimum
 	if isServiceConsumer {
 		settle = rates.Cost
@@ -794,7 +794,7 @@ func (s *Owner) HandleCompleteAt(
 		// when the consumer already disconnected this is a partial success because
 		// the provider completed and billing settled, but the client did not receive
 		// the full response.
-		outcome := completeRouteOutcome(pr, msg.Usage, totalCost, consumerGone)
+		outcome := routeoutcome.CompleteRouteOutcome(pr, msg.Usage, totalCost, consumerGone)
 		// Join only after both inputs are authoritative: cacheUsageValid was
 		// established from the terminal usage above, and completeRouteOutcome read
 		// the committed attempt's mutex-guarded first-content timestamp after the
@@ -833,7 +833,7 @@ func (s *Owner) HandleCompleteAt(
 		s.updateInferenceRouteOutcomeWithModel(msg.RequestID, pr.Attempt, pr.Model, outcome)
 		// Outcome only: the terminal half completes on return (deferred at the
 		// claim site), after the settlement stamps below.
-		pr.Profile.SetOutcome(outcome.FinalStatus, profileErrorReason(outcome), "", "completed", "")
+		pr.Profile.SetOutcome(outcome.FinalStatus, routeoutcome.ProfileErrorReason(outcome), "", "completed", "")
 
 		s.observation.Incr("inference.completions", []string{"model:" + pr.Model})
 		// Split the partial case out of the (intentionally unchanged) completions
@@ -842,7 +842,7 @@ func (s *Owner) HandleCompleteAt(
 		// it is NOT a provider failure — but operationally distinct, and invisible on
 		// dashboards without its own counter.
 		if consumerGone {
-			s.recordPartialSuccessCompletion(pr.Model, errorClassClientGoneAfterCommitCompleted)
+			s.NewMetrics().PartialSuccess(pr.Model, routeoutcome.ErrorClassClientGoneAfterCommitCompleted)
 		}
 		s.observation.Count("inference.prompt_tokens_total", int64(msg.Usage.PromptTokens), []string{"model:" + pr.Model})
 		s.observation.Histogram("inference.prompt_tokens", float64(msg.Usage.PromptTokens), []string{"model:" + pr.Model})
@@ -968,7 +968,7 @@ func (s *Owner) handleInferenceErrorOwned(providerID string, provider *registry.
 		s.logger.Warn("error from unregistered provider", "provider_id", providerID)
 		return
 	}
-	safeMsg, invalidFailureCode, invalidTerminalCause := sanitizeProviderInferenceError(msg)
+	safeMsg, invalidFailureCode, invalidTerminalCause := failure.SanitizeProviderError(msg)
 	msg = &safeMsg
 	if invalidFailureCode {
 		s.observation.Incr("inference.invalid_failure_code", nil)
@@ -1010,7 +1010,7 @@ func (s *Owner) handleInferenceErrorOwned(providerID string, provider *registry.
 		s.observation.RetainProviderProfile(pending.Profile, msg.Profile)
 		msg.Profile = nil
 	}
-	if pending != nil && isDrainingErrorReason(msg.ErrorReason) {
+	if pending != nil && failure.IsDrainingErrorReason(msg.ErrorReason) {
 		s.noteProviderDraining(providerID, pending.Model)
 	}
 	pr := provider.RemovePending(msg.RequestID)
@@ -1019,26 +1019,26 @@ func (s *Owner) handleInferenceErrorOwned(providerID string, provider *registry.
 	parked := s.claimSettlement(msg.RequestID)
 	// See handleCompleteAt: a terminal with no live pending record is matched
 	// against the cancel the coordinator sent for it (metric-only).
-	var cancelled zombieEntry
+	var cancelled cancellation.Entry
 	wasCancelled := false
 	if pr == nil {
 		cancelled, wasCancelled = s.resolveCancelledTerminal(
-			msg.RequestID, cancelTerminalError, cancelledErrorOutcome(msg), time.Now())
+			msg.RequestID, cancellation.TerminalError, cancellation.ErrorOutcome(msg), time.Now())
 		pr = parked
 	}
 	if pr == nil {
-		if wasCancelled && cancelled.cause != cancelCauseStrayChunk {
+		if wasCancelled && cancelled.Cause != cancellation.CauseStrayChunk {
 			// Coordinator-minted id (it matched a recorded cancel): the
 			// provider honored the cancel before producing output.
 			s.logger.Debug("error for cancelled request",
 				"request_id", msg.RequestID, "provider_id", providerID,
-				"cause", cancelled.cause, "status_code", msg.StatusCode)
+				"cause", cancelled.Cause, "status_code", msg.StatusCode)
 		} else {
 			// request_id is provider-controlled until it matches coordinator-owned
 			// pending state. Do not log it: an attacker could use unknown IDs as an
 			// arbitrary log exfiltration channel.
 			s.logger.Warn("error for unknown request", "provider_id", providerID)
-			s.emitUnknownFrame(unknownFrameKindError, provider)
+			s.emitUnknownFrame(cancellation.UnknownFrameKindError, provider)
 		}
 		s.observation.Incr("inference.unknown_request_frames", []string{"kind:error"})
 		s.observation.AddUnknownRequestFrames(1)
@@ -1053,7 +1053,7 @@ func (s *Owner) handleInferenceErrorOwned(providerID string, provider *registry.
 	}
 	// From this point onward use only the coordinator-owned identifier.
 	msg.RequestID = pr.RequestID
-	if pending == nil && isDrainingErrorReason(msg.ErrorReason) {
+	if pending == nil && failure.IsDrainingErrorReason(msg.ErrorReason) {
 		// A consumer-gone request may already be parked outside the pending
 		// map. Fence its provider before SetProviderIdle drains queued work.
 		s.noteProviderDraining(providerID, pr.Model)
@@ -1087,7 +1087,7 @@ func (s *Owner) handleInferenceErrorOwned(providerID string, provider *registry.
 		defer ap.CompleteTerminal()
 	}
 	// The request is terminal — drop its memoized chunk-decryption key.
-	s.chunkKeys.forget(pr.SessionPrivKey)
+	s.chunkKeys.Forget(pr.SessionPrivKey)
 	consumerGone := parked != nil
 	// Provider errors carry no validated cache usage, but still close the
 	// selection/outcome correlation denominator as an unreported result.
@@ -1121,14 +1121,14 @@ func (s *Owner) handleInferenceErrorOwned(providerID string, provider *registry.
 	// recorder below regardless of status/string shape. Absent, engine_error,
 	// or unknown causes keep the legacy heuristics bit-for-bit.
 	causeClass := s.noteTypedTerminalCause(msg.TerminalCause)
-	causeNeutralForHealth := causeClass == causeClassNeutral || causeClass == causeClassCapacity
+	causeNeutralForHealth := causeClass == failure.CauseClassNeutral || causeClass == failure.CauseClassCapacity
 
 	capacityRejection := msg.FailureCode == protocol.FailureCodeCapacity ||
 		msg.FailureCode == protocol.FailureCodeModelUnavailable ||
-		causeClass == causeClassCapacity
+		causeClass == failure.CauseClassCapacity
 	cancelTerminal := msg.FailureCode == protocol.FailureCodeCancelled ||
-		msg.TerminalCause == terminalCauseCancelled
-	providerHealthNeutral := isProviderHealthNeutralErrorReason(msg.ErrorReason)
+		msg.TerminalCause == failure.TerminalCauseCancelled
+	providerHealthNeutral := failure.IsProviderHealthNeutralErrorReason(msg.ErrorReason)
 	if !capacityRejection && !cancelTerminal && !providerHealthNeutral && !causeNeutralForHealth {
 		s.registry.RecordJobFailure(providerID)
 	}
@@ -1149,8 +1149,8 @@ func (s *Owner) handleInferenceErrorOwned(providerID string, provider *registry.
 	// text never carries the load-failure vocabulary anyway; the explicit
 	// allowlist (legacy or fault only) makes both guarantees unconditional
 	// rather than dependent on provider error-string phrasing.
-	if (causeClass == causeClassLegacy || causeClass == causeClassFault) &&
-		msg.ErrorReason == errorReasonModelLoad {
+	if (causeClass == failure.CauseClassLegacy || causeClass == failure.CauseClassFault) &&
+		msg.ErrorReason == failure.ErrorReasonModelLoad {
 		if s.registry.RecordDispatchLoadFailure(providerID, pr.Model) {
 			s.logger.Warn("load-failure cool-down started",
 				"provider_id", providerID,
@@ -1173,12 +1173,12 @@ func (s *Owner) handleInferenceErrorOwned(providerID string, provider *registry.
 		// routing.client_gone so the after_commit phase reflects ALL post-commit
 		// disconnects, not just provider-completed ones (handleComplete). A
 		// no-terminal disconnect is counted by the settlement grace path.
-		s.emitClientGone(pr.Model, pr.EstimatedPromptTokens, observation.ProviderChipFamily(provider), phaseAfterCommit)
-		outcome := pendingRouteOutcomeWithReason(pr, status, errorClass, msg.StatusCode, msg.ErrorReason, msg.Error)
+		s.NewMetrics().ClientGone(pr.Model, pr.EstimatedPromptTokens, observation.ProviderChipFamily(provider), phaseAfterCommit)
+		outcome := routeoutcome.PendingRouteOutcomeWithReason(pr, status, errorClass, msg.StatusCode, msg.ErrorReason, msg.Error)
 		if !cancelTerminal {
 			outcome.AdmittedButFailed = true
 		}
-		applyAttemptUsage(outcome, msg.AttemptUsage)
+		routeoutcome.ApplyAttemptUsage(outcome, msg.AttemptUsage)
 		s.updateInferenceRouteOutcomeForPending(pr, outcome)
 		// Consumer disconnected — no reader for the channels; settle by
 		// refunding, OFF the read loop (a store Credit can block for seconds

@@ -7,8 +7,8 @@ import (
 	"slices"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/store/shared"
 	"github.com/eigeninference/d-inference/coordinator/store"
-	"github.com/eigeninference/d-inference/coordinator/store/internal/shared"
 )
 
 func (s *MemoryStore) GetMachineRewardBindings(ctx context.Context, sessions []string) (map[string]store.MachineRewardBinding, error) {
@@ -27,20 +27,20 @@ func (s *MemoryStore) GetMachineRewardBindings(ctx context.Context, sessions []s
 		return out, nil
 	}
 	for _, session := range sessions {
-		id := m.sessionMachines[session]
-		observation, known := m.sessions[session]
-		if !known || id == "" || observation.AccountID == "" || m.machines[id].Assurance == "provisional" {
+		id := m.SessionMachines[session]
+		observation, known := m.Sessions[session]
+		if !known || id == "" || observation.AccountID == "" || m.Machines[id].Assurance == "provisional" {
 			continue
 		}
 		aliases := []string{id}
-		for source := range m.merged {
+		for source := range m.Merged {
 			next := source
 			for i := 0; i < 100 && next != ""; i++ {
 				if next == id {
 					aliases = append(aliases, source)
 					break
 				}
-				next = m.merged[next]
+				next = m.Merged[next]
 			}
 		}
 		slices.Sort(aliases)
@@ -63,7 +63,7 @@ func (s *MemoryStore) SumProviderEarningsByKeysForAccount(ctx context.Context, a
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var total int64
-	for _, e := range s.providerEarnings {
+	for _, e := range s.history.ProviderEarnings {
 		if e.AccountID != account || !slices.Contains(keys, e.ProviderKey) || !isOrganicEarning(&e) || e.CreatedAt.Before(start) || !e.CreatedAt.Before(end) {
 			continue
 		}

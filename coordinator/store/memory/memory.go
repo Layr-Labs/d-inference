@@ -1,10 +1,16 @@
 package memory
 
 import (
+	inventory "github.com/eigeninference/d-inference/coordinator/internal/store/inventory"
+
 	"sync"
 	"time"
 
+	epochlocks "github.com/eigeninference/d-inference/coordinator/internal/store/epochlocks"
+
+	memoryhistory "github.com/eigeninference/d-inference/coordinator/internal/store/memoryhistory"
 	"github.com/eigeninference/d-inference/coordinator/store"
+
 	crs "github.com/eigeninference/d-inference/coordinator/store/cacheroutingstate"
 )
 
@@ -13,28 +19,27 @@ var _ store.Store = (*MemoryStore)(nil)
 
 // MemoryStore manages API keys, usage records, payments, and balances in memory.
 type MemoryStore struct {
+	now                       func() time.Time
+	history                   *memoryhistory.State
 	autopilotRecords          map[string]store.AutopilotRecord
 	modelTokenProviderCarries map[string]int64
 	modelTokenPromotions      map[string]store.ModelTokenPromotion
 	modelTokenGrants          map[string]map[string]store.ModelTokenGrant
 	modelTokenReservations    map[string]store.ModelTokenReservation
 
-	mu            sync.RWMutex
-	floorEpochMu  sync.Mutex // separate from store state; settlement callbacks read the store
-	floorEpochs   map[string]*memoryFloorEpochLock
-	keyRecords    map[string]*store.APIKey // raw key → record (metadata + limits)
-	keysByID      map[string]string        // public key ID → raw key
-	keySpend      map[string]*keySpend
-	usage         []store.UsageRecord
-	balances      map[string]int64 // accountID → micro-USD
-	withdrawable  map[string]int64 // accountID → withdrawable micro-USD (subset of balance)
-	ledgerEntries []store.LedgerEntry
-	ledgerSeq     int64 // auto-increment ID
+	mu           sync.RWMutex
+	epochLocks   epochlocks.Owner
+	keyRecords   map[string]*store.APIKey // raw key → record (metadata + limits)
+	keysByID     map[string]string        // public key ID → raw key
+	keySpend     map[string]*keySpend
+	balances     map[string]int64 // accountID → micro-USD
+	withdrawable map[string]int64 // accountID → withdrawable micro-USD (subset of balance)
+	ledgerSeq    int64            // auto-increment ID
 
 	// Observation-only keys; independent from provider/rewards identity.
 	appAttestShadowKeys     map[string]store.AppAttestShadowKey
 	appAttestRevocations    map[string]bool
-	machineInventory        *memoryMachineInventory
+	machineInventory        *inventory.State
 	appAttestEvidence       map[string]memoryAppAttestEvidence
 	appAttestEnrollments    map[string]store.AppAttestEnrollment
 	appAttestBuilds         map[string]store.AppAttestBuildQualification
@@ -81,8 +86,6 @@ type MemoryStore struct {
 	stripeWithdrawalsByAccount    map[string][]string // accountID → []withdrawalID, newest last
 
 	// Device authorization
-	deviceCodesByCode     map[string]*store.DeviceCode // deviceCode → DeviceCode
-	deviceCodesByUserCode map[string]*store.DeviceCode // userCode → DeviceCode
 
 	// Provider tokens
 	providerTokens map[string]*store.ProviderToken // tokenHash → ProviderToken
@@ -93,7 +96,6 @@ type MemoryStore struct {
 	accountRedemptions map[string]map[string]bool          // accountID → set of redeemed codes
 
 	// Provider earnings (per-node tracking)
-	providerEarnings    []store.ProviderEarning
 	providerEarningsSeq int64 // auto-increment ID
 
 	// Releases (provider binary versioning)
@@ -120,12 +122,9 @@ type MemoryStore struct {
 	verificationJobs map[string]store.VerificationJob
 
 	// Provider log reports
-	logReports   []store.LogReport
 	logReportSeq int64
 
 	// Provider sessions (connect→disconnect uptime history)
-	providerSessions   []store.ProviderSession
-	providerSessionSeq int64
 
 	// Inference routing telemetry
 	inferenceRoutes        []store.InferenceRouteRecord
@@ -138,32 +137,31 @@ type MemoryStore struct {
 	// System profiler: per-attempt request profiles (write-once per
 	// request_id/attempt, mirroring the Postgres UNIQUE + DO NOTHING) and
 	// per-tick fleet snapshots. Both are append-only and capped by Prune.
-	requestOutcomes      map[string]store.RequestOutcomeRecord
 	modelDemand          map[string]modelDemandObservation
 	modelDemandStartedAt time.Time
-	requestProfiles      []store.RequestProfileRecord
-	requestProfileKeys   map[string]struct{} // request_id/attempt -> present
-	fleetSnapshots       []store.FleetSnapshotRow
 
 	// Base rewards — per-epoch floor draws (idempotent on provider_key|epoch_id).
-	providerFloorDraws []store.ProviderFloorDraw
-	floorDrawSeq       int64
-	floorDrawKeys      map[string]struct{} // "providerKey|epochID" → settled marker
+	floorDrawSeq  int64
+	floorDrawKeys map[string]struct{} // "providerKey|epochID" → settled marker
 
 }
 
 // NewMemory creates a new MemoryStore. If adminKey is non-empty it is
 // pre-seeded as a valid API key for bootstrapping.
 func NewMemory(scfg store.Config) *MemoryStore {
+	now := scfg.Now
+	if now == nil {
+		now = time.Now
+	}
 	s := &MemoryStore{
+		now:                           now,
+		history:                       memoryhistory.New(),
 		modelDemandStartedAt:          time.Now().UTC(),
 		keyRecords:                    make(map[string]*store.APIKey),
 		keysByID:                      make(map[string]string),
 		keySpend:                      make(map[string]*keySpend),
-		usage:                         make([]store.UsageRecord, 0),
 		balances:                      make(map[string]int64),
 		withdrawable:                  make(map[string]int64),
-		ledgerEntries:                 make([]store.LedgerEntry, 0),
 		referrersByCode:               make(map[string]*store.Referrer),
 		referrersByAccount:            make(map[string]*store.Referrer),
 		referrals:                     make(map[string]string),
@@ -184,13 +182,10 @@ func NewMemory(scfg store.Config) *MemoryStore {
 		stripeWithdrawalsByTransferID: make(map[string]string),
 		stripeWithdrawalsByPayoutID:   make(map[string]string),
 		stripeWithdrawalsByAccount:    make(map[string][]string),
-		deviceCodesByCode:             make(map[string]*store.DeviceCode),
-		deviceCodesByUserCode:         make(map[string]*store.DeviceCode),
 		providerTokens:                make(map[string]*store.ProviderToken),
 		inviteCodes:                   make(map[string]*store.InviteCode),
 		inviteRedemptions:             make(map[string][]store.InviteRedemption),
 		accountRedemptions:            make(map[string]map[string]bool),
-		providerEarnings:              make([]store.ProviderEarning, 0),
 		releases:                      make(map[string]*store.Release),
 		providerRecords:               make(map[string]*store.ProviderRecord),
 		reputationRecords:             make(map[string]*store.ReputationRecord),
@@ -202,10 +197,6 @@ func NewMemory(scfg store.Config) *MemoryStore {
 		inferenceRouteIndex:           make(map[string]int),
 		inferenceRouteOutcomes:        make(map[string]store.InferenceRouteOutcome),
 		inferenceRejections:           make([]store.RejectionRecord, 0),
-		requestProfiles:               make([]store.RequestProfileRecord, 0),
-		requestProfileKeys:            make(map[string]struct{}),
-		fleetSnapshots:                make([]store.FleetSnapshotRow, 0),
-		providerFloorDraws:            make([]store.ProviderFloorDraw, 0),
 		floorDrawKeys:                 make(map[string]struct{}),
 	}
 	if scfg.AdminKey != "" {

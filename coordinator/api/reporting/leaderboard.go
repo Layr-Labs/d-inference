@@ -4,28 +4,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
-	"time"
 
 	httpx "github.com/eigeninference/d-inference/coordinator/api/httpx"
+	pseudonym "github.com/eigeninference/d-inference/coordinator/internal/api/reporting/pseudonym"
+	"github.com/eigeninference/d-inference/coordinator/internal/api/reporting/ranking"
+	windows "github.com/eigeninference/d-inference/coordinator/internal/api/reporting/windows"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
-
-// parseLeaderboardWindow returns the cutoff time for the requested
-// window. Empty string and "all" return zero time (all-time).
-func parseLeaderboardWindow(s string) (time.Time, bool) {
-	now := time.Now()
-	switch s {
-	case "", "all", "lifetime":
-		return time.Time{}, true
-	case "24h", "1d":
-		return now.Add(-24 * time.Hour), true
-	case "7d":
-		return now.Add(-7 * 24 * time.Hour), true
-	case "30d":
-		return now.Add(-30 * 24 * time.Hour), true
-	}
-	return time.Time{}, false
-}
 
 // handleLeaderboard returns the top N accounts ranked by earnings,
 // tokens, or jobs. Pseudonymized — never exposes raw account IDs.
@@ -52,7 +37,7 @@ func (s *Owner) HandleLeaderboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	windowParam := q.Get("window")
-	_, ok := parseLeaderboardWindow(windowParam)
+	_, ok := windows.ParseLeaderboardWindow(windowParam)
 	if !ok {
 		httpx.WriteJSON(w, http.StatusBadRequest, httpx.ErrorResponse("invalid_request_error",
 			"window must be one of: 24h, 7d, 30d, all"))
@@ -64,12 +49,12 @@ func (s *Owner) HandleLeaderboard(w http.ResponseWriter, r *http.Request) {
 		limit = l
 	}
 
-	ranking, err := s.cachedLeaderboard(r.Context(), metric, windowParam)
+	result, err := s.CachedLeaderboard(r.Context(), metric, windowParam)
 	if err != nil {
 		if r.Context().Err() != nil {
 			return
 		}
-		w.Header().Set("Retry-After", strconv.Itoa(leaderboardRetryAfter(err)))
+		w.Header().Set("Retry-After", strconv.Itoa(ranking.LeaderboardRetryAfter(err)))
 		httpx.WriteJSON(w, http.StatusServiceUnavailable, httpx.ErrorResponse("service_unavailable",
 			"leaderboard is temporarily unavailable"))
 		return
@@ -84,7 +69,7 @@ func (s *Owner) HandleLeaderboard(w http.ResponseWriter, r *http.Request) {
 		Tokens                 int64  `json:"tokens"`
 		Jobs                   int64  `json:"jobs"`
 	}
-	rows := ranking.rows
+	rows := result.Rows
 	if len(rows) > limit {
 		rows = rows[:limit]
 	}
@@ -92,7 +77,7 @@ func (s *Owner) HandleLeaderboard(w http.ResponseWriter, r *http.Request) {
 	for i, r := range rows {
 		entries = append(entries, entry{
 			Rank:                   i + 1,
-			Pseudonym:              pseudonym(r.AccountID),
+			Pseudonym:              pseudonym.Generate(r.AccountID),
 			EarningsMicroUSD:       r.EarningsMicroUSD,
 			WorkEarningsMicroUSD:   r.WorkEarningsMicroUSD,
 			RewardEarningsMicroUSD: r.RewardEarningsMicroUSD,
@@ -103,9 +88,9 @@ func (s *Owner) HandleLeaderboard(w http.ResponseWriter, r *http.Request) {
 
 	resp := map[string]any{
 		"metric":     metricParam,
-		"window":     windowParamOrDefault(windowParam),
+		"window":     windows.WindowParamOrDefault(windowParam),
 		"entries":    entries,
-		"updated_at": ranking.updatedAt,
+		"updated_at": result.UpdatedAt,
 	}
 	body, err := json.Marshal(resp)
 	if err != nil {
@@ -113,11 +98,4 @@ func (s *Owner) HandleLeaderboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteCachedJSON(w, body)
-}
-
-func windowParamOrDefault(s string) string {
-	if s == "" {
-		return "all"
-	}
-	return s
 }

@@ -3,7 +3,6 @@ package provider
 
 import (
 	"log/slog"
-	"sync"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/api/catalog"
@@ -11,10 +10,12 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/api/observation"
 	"github.com/eigeninference/d-inference/coordinator/api/provider/trust"
 	"github.com/eigeninference/d-inference/coordinator/api/releases"
+	"github.com/eigeninference/d-inference/coordinator/internal/provider/heartbeat"
+	"github.com/eigeninference/d-inference/coordinator/internal/provider/inventory"
+	"github.com/eigeninference/d-inference/coordinator/internal/provider/session"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
-	"nhooyr.io/websocket"
 )
 
 // InferenceEvents hands off already-decoded frames. CompleteAt preserves the
@@ -36,27 +37,37 @@ type Dependencies struct {
 	Observation *observation.Owner
 	Logger      *slog.Logger
 	Inference   InferenceEvents
+	Sessions    *session.Gate
 }
 
 type Owner struct {
-	registry         *registry.Registry
-	store            store.Store
-	trust            *trust.Owner
-	releases         *releases.Owner
-	catalog          *catalog.Owner
-	geoResolver      geo.Resolver
-	observation      *observation.Owner
-	logger           *slog.Logger
-	inference        InferenceEvents
-	providerHandlers sync.WaitGroup
-	providerAdmit    sync.Mutex
-	providersClosing bool
-	providerConns    map[*websocket.Conn]struct{}
+	registry    *registry.Registry
+	store       store.Store
+	trust       *trust.Owner
+	releases    *releases.Owner
+	catalog     *catalog.Owner
+	geoResolver geo.Resolver
+	observation *observation.Owner
+	logger      *slog.Logger
+	inference   InferenceEvents
+	sessions    *session.Gate
+	heartbeat   *heartbeat.Ingestor
+	inventory   *inventory.Controller
 }
 
 func New(d Dependencies) *Owner {
+	if d.Sessions == nil {
+		d.Sessions = &session.Gate{}
+	}
+	// Catalog is optional for owners that only restore persisted state.
+	var supportsDesiredModels func(string) bool
+	if d.Catalog != nil {
+		supportsDesiredModels = d.Catalog.ProviderSupportsDesiredModels
+	}
 	return &Owner{registry: d.Registry, store: d.Store, trust: d.Trust, releases: d.Releases,
-		catalog: d.Catalog, geoResolver: d.Geo, observation: d.Observation, logger: d.Logger, inference: d.Inference}
+		catalog: d.Catalog, geoResolver: d.Geo, observation: d.Observation, logger: d.Logger, inference: d.Inference,
+		sessions: d.Sessions, heartbeat: heartbeat.New(d.Registry, d.Observation),
+		inventory: inventory.New(d.Registry, supportsDesiredModels, d.Logger)}
 }
 
 // SetInferenceEvents is setup-only; sessions must not be running yet.

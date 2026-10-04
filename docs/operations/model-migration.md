@@ -43,7 +43,7 @@ Not for: registering a brand-new model (that is just steps 1–2 plus
   as `active_model_hash` at the next challenge; the coordinator accepts any
   catalog-validated hash from `model_hashes` (regression test
   `TestChallengeRetiredResidentBuildHashDoesNotUntrust`,
-   `coordinator/api/tests/provider/model_hash_race_test.go`). Do **not** deprecate the old
+   `coordinator/tests/api/provider/contracts/model_hash_race_test.go`). Do **not** deprecate the old
   registry record while any provider may still hold it resident (see "Retire").
 - **Canary the new build on one production-version provider** via its raw build
   id before flipping: prefetch, hash-verify, GPU-load, and serve chat, tool

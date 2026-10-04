@@ -1,6 +1,16 @@
 package provider
 
-import "github.com/eigeninference/d-inference/coordinator/api/observation"
+import (
+	"context"
+	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/api/observation"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/google/uuid"
+	"nhooyr.io/websocket"
+)
 
 // Provider WebSocket management for the Darkbloom coordinator.
 //
@@ -22,30 +32,15 @@ import "github.com/eigeninference/d-inference/coordinator/api/observation"
 //   - self_signed: Attestation signed by provider's own Secure Enclave key
 //   - hardware: MDA certificate chain verified against Apple Root CA (future)
 
-import (
-	"context"
-	"net/http"
-	"strconv"
-	"strings"
-	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/google/uuid"
-	"nhooyr.io/websocket"
-)
-
 // HandleProviderWS upgrades the connection to WebSocket and manages the
 // provider's lifecycle: registration, heartbeats, and inference responses.
 func (s *Owner) HandleProviderWS(w http.ResponseWriter, r *http.Request) {
-	s.providerAdmit.Lock()
-	if s.providersClosing {
-		s.providerAdmit.Unlock()
+	done, admitted := s.sessions.Admit()
+	if !admitted {
 		http.Error(w, "coordinator shutting down", http.StatusServiceUnavailable)
 		return
 	}
-	s.providerHandlers.Add(1)
-	s.providerAdmit.Unlock()
-	defer s.providerHandlers.Done()
+	defer done()
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		// Allow any origin for provider connections.
 		InsecureSkipVerify: true,
@@ -55,8 +50,8 @@ func (s *Owner) HandleProviderWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.trackProviderConn(conn, true)
-	defer s.trackProviderConn(conn, false)
+	s.sessions.Track(conn, true)
+	defer s.sessions.Track(conn, false)
 
 	// Raise the read limit to 10 MB. The default 32 KB is too small for
 	// large inference responses.
@@ -78,13 +73,7 @@ func (s *Owner) HandleProviderWS(w http.ResponseWriter, r *http.Request) {
 // closes nor waits on them. Returns false when the handlers did not all
 // finish before ctx expired.
 func (s *Owner) CloseProviderConnections(ctx context.Context) bool {
-	s.providerAdmit.Lock()
-	s.providersClosing = true
-	conns := make([]*websocket.Conn, 0, len(s.providerConns))
-	for c := range s.providerConns {
-		conns = append(conns, c)
-	}
-	s.providerAdmit.Unlock()
+	conns := s.sessions.Quiesce()
 	// Every hijacked socket, whether or not its provider registered; the
 	// read loops return and tear their providers down through the ordinary
 	// disconnect path, which parks their holders. In parallel: CloseNow
@@ -101,28 +90,6 @@ func (s *Owner) CloseProviderConnections(ctx context.Context) bool {
 	return false
 }
 
-// trackProviderConn records a hijacked provider socket for the shutdown
-// close (add) or forgets it when its handler exits (remove). A socket
-// accepted after the close began is closed here at once.
-func (s *Owner) trackProviderConn(conn *websocket.Conn, add bool) {
-	s.providerAdmit.Lock()
-	if s.providerConns == nil {
-		s.providerConns = make(map[*websocket.Conn]struct{})
-	}
-	if !add {
-		delete(s.providerConns, conn)
-		s.providerAdmit.Unlock()
-		return
-	}
-	s.providerConns[conn] = struct{}{}
-	closing := s.providersClosing
-	s.providerAdmit.Unlock()
-	if closing {
-		// Outside the mutex: CloseNow waits for the socket's goroutines.
-		_ = conn.CloseNow()
-	}
-}
-
 // WaitProviderHandlers waits until every admitted provider socket handler
 // has returned or ctx expires. It may be called again after
 // CloseProviderConnections reported a timeout: a handler can spend seconds
@@ -135,29 +102,7 @@ func (s *Owner) WaitProviderHandlers(ctx context.Context) bool {
 		s.logger.Error("WaitProviderHandlers called before CloseProviderConnections")
 		return false
 	}
-	done := make(chan struct{})
-	go func() {
-		s.providerHandlers.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		return true
-	case <-ctx.Done():
-		return false
-	}
-}
-
-// shutdownCloseStatus maps the read error of a socket the coordinator closed
-// for shutdown (CloseNow sends no close frame, so the peer status is -1) to
-// going-away, so the teardown flushes pending requests with the
-// restart-neutral cause and the disconnect metrics count a shutdown close
-// rather than a drop that strikes the provider's health.
-func shutdownCloseStatus(closeStatus websocket.StatusCode, closing bool) websocket.StatusCode {
-	if closeStatus == -1 && closing {
-		return websocket.StatusGoingAway
-	}
-	return closeStatus
+	return s.sessions.Wait(ctx)
 }
 
 // providerSocketsClosing reports whether shutdown has begun closing provider
@@ -166,9 +111,7 @@ func shutdownCloseStatus(closeStatus websocket.StatusCode, closing bool) websock
 // receipt behind the final flush. WaitProviderHandlers refuses to run before
 // it is set.
 func (s *Owner) providerSocketsClosing() bool {
-	s.providerAdmit.Lock()
-	defer s.providerAdmit.Unlock()
-	return s.providersClosing
+	return s.sessions.Closing()
 }
 
 // maxProviderVersionLength bounds the provider-reported binary version accepted
@@ -181,70 +124,6 @@ func (s *Owner) providerSocketsClosing() bool {
 // paired with the registry's memo bound (maxMemoizedVersionLen), which stops
 // caching above 64 bytes.
 const maxProviderVersionLength = 128
-
-// sessionDisconnectReasonCoordinatorShutdown stamps a session whose socket
-// the coordinator itself closed for shutdown, or whose registration was
-// processed after that close began: distinct from ws_close_<code>, which
-// means the peer sent that close frame.
-const sessionDisconnectReasonCoordinatorShutdown = "coordinator_shutdown"
-
-// sessionDisconnectReason maps a provider read-loop exit to the disconnect
-// reason recorded on its provider_sessions row. Kept to a small, fixed
-// vocabulary so the column stays aggregatable:
-//   - "oom_suspected"   — abrupt drop under memory pressure with in-flight work
-//     (same classification as the provider.oom_suspected metric);
-//   - "ws_close_<code>" — the peer sent a WebSocket close frame (1000 = normal
-//     shutdown, 1001 = going away, 1006/close codes from intermediaries, ...);
-//   - "read_error"      — the socket died without a close frame (TCP reset,
-//     NAT/LB teardown, machine went to sleep mid-write);
-//   - "read_error_control_frame" — nhooyr failed while handling a peer
-//     control frame (see readErrorDisconnectReason).
-//
-// readReason is the frame-less classification from readErrorDisconnectReason
-// and is used only when neither stronger signal applies.
-//
-// The registry's own generic "disconnect" remains the reason for closes the
-// read loop did NOT observe first — in practice the stale-eviction sweep —
-// so post-fix, lingering "disconnect" rows ≈ silent drops reaped by eviction.
-// closing marks a socket the coordinator closed for shutdown, stamped
-// coordinator_shutdown whatever status the read reported.
-func sessionDisconnectReason(closeStatus websocket.StatusCode, oomSuspected bool, readReason string, closing bool) string {
-	switch {
-	case oomSuspected:
-		return string(registry.DisconnectReasonOOMSuspected)
-	case closing:
-		return sessionDisconnectReasonCoordinatorShutdown
-	case closeStatus != -1:
-		return "ws_close_" + strconv.Itoa(int(closeStatus))
-	default:
-		return readReason
-	}
-}
-
-const (
-	readErrorReasonGeneric      = "read_error"
-	readErrorReasonControlFrame = "read_error_control_frame"
-)
-
-// readErrorDisconnectReason classifies a frame-less provider Read failure
-// into a fixed two-value vocabulary shared by the ws_disconnects metric, the
-// telemetry event, and the provider_sessions disconnect_reason column.
-//
-// nhooyr answers peer pings on its READ goroutine, with a 5s budget to take
-// the connection's per-frame write lock and put the pong on the wire. When
-// that fails, the library fails the Read with "failed to handle control frame
-// opPing: failed to write control frame opPong: failed to acquire lock: ..."
-// — the peer was alive (it just pinged us), so this is a
-// coordinator-side write stall, not a network drop, and must not be counted
-// with real drops. The same prefix covers any other control-frame handling
-// failure (e.g. a malformed control frame); close frames are never wrapped
-// this way (they surface as a CloseError on the peer_close branch).
-func readErrorDisconnectReason(err error) string {
-	if err != nil && strings.Contains(err.Error(), "failed to handle control frame") {
-		return readErrorReasonControlFrame
-	}
-	return readErrorReasonGeneric
-}
 
 // closeSessionWithReason closes this connection's provider_sessions row with a
 // specific disconnect reason. Synchronous with a short timeout: it must land

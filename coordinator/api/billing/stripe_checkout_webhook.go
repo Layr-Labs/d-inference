@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/eigeninference/d-inference/coordinator/api/billing/internal/amount"
 	"github.com/eigeninference/d-inference/coordinator/billing"
+	"github.com/eigeninference/d-inference/coordinator/internal/billing/amount"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 

@@ -1,6 +1,6 @@
 # Cache-aware routing: activation, ramp and rollback
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-03
 
 How to turn provider-confirmed prefix-cache routing on for the production
 coordinator, widen its activation bounds one at a time, and turn it off again.
@@ -39,7 +39,7 @@ that local provider setting.
 
 The mode remains global, and `PERCENT` samples a deterministic cohort keyed on
 account + resolved model + provider-bound body (`cacheActivationCohort`,
-`coordinator/registry/cache_activation.go`). Within the admitted artifact subset,
+`coordinator/internal/registry/cacheactivation/gate.go`). Within the admitted artifact subset,
 the same request from the same account remains in or out of the cohort.
 
 ## Prerequisites
@@ -138,7 +138,7 @@ the same request from the same account remains in or out of the cohort.
    percentage is a deterministic per-request cohort over account, resolved
    model and provider-bound body, the QPS cap bounds sidecar planning; neither
    rejects or delays ordinary inference (`cacheActivationGate`,
-   `coordinator/registry/cache_activation.go`). Take a root-only backup, then
+   `coordinator/internal/registry/cacheactivation/gate.go`). Take a root-only backup, then
    edit the three lines in place:
 
    ```bash
@@ -368,7 +368,7 @@ curl -fsS localhost:8080/v1/cache/status | jq -e \
 
 Adjust the two numbers to the bounds you set. Then, over the observation
 window (fields from `CacheRoutingActivationStatus`,
-`coordinator/registry/cache_activation.go`, and `CacheRoutingLifecycleStatus`,
+`coordinator/internal/registry/cacheactivation/gate.go`, and `CacheRoutingLifecycleStatus`,
 `coordinator/registry/cache_routing.go`):
 
 - `.activation.evaluated` climbs; `.activation.sampled_in` tracks the

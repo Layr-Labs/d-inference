@@ -3,6 +3,8 @@ package response
 import (
 	"encoding/json"
 	"strings"
+
+	sse "github.com/eigeninference/d-inference/coordinator/internal/inference/sse"
 )
 
 // chatStreamIdentity belongs to one consumer relay goroutine. Observe the
@@ -19,7 +21,7 @@ func (identity *ChatStreamIdentity) observe(chunk string) {
 	}
 	// Reuse the security filters' SSE event grouping, including decorated,
 	// multiline and coalesced events. Returning changed=false preserves bytes.
-	_ = sanitizeStreamJSONEvents(chunk, func(raw string) (string, bool) {
+	_ = sse.SanitizeStreamJSONEvents(chunk, func(raw string) (string, bool) {
 		if identity.id != "" {
 			return raw, false
 		}

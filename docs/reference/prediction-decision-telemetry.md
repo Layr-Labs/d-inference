@@ -1,6 +1,6 @@
 # Prediction decision telemetry
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-03
 
 Optional attempt records compare what the coordinator selected with what the
 provider decided. They explain decisions; they do not establish whether a
@@ -10,7 +10,7 @@ refused request would have completed on time.
 
 `coordinator/api/inference/profiler_prediction.go` (`recordPredictivePolicy`) records
 request policy. `coordinator/registry/attempt_profile_prediction.go` keeps
-observations under the attempt lock; `coordinator/api/observation/profiler_record.go`
+observations under the attempt lock; `coordinator/internal/observation/profile/profiler_record.go`
 (`buildProfileRecord`) persists them with existing request and attempt IDs.
 
 | Field in `request_profiles` | Meaning |
@@ -21,7 +21,7 @@ observations under the attempt lock; `coordinator/api/observation/profiler_recor
 | `dispatch_budget_ms` | Exact positive budget encoded when the writer constructs this attempt's envelope. NULL when no positive budget was encoded, including expiry before construction. A constructed envelope does not prove a successful socket write or provider receipt; use existing write/acceptance stamps. |
 | Existing `predicted_ttft_ms`, `raw_ttft_ms`, `snapshot_age_ms` | Selected coordinator prediction and source-state age; no formulas or calibration are changed by recording the new fields. |
 
-`coordinator/api/inference/provider_wire.go` (`providerInferenceFrameBuilder`) captures
+`coordinator/internal/inference/providerwire/provider_wire.go` (`providerInferenceFrameBuilder`) captures
 the attempt pointer before enqueue and records the envelope budget after
 serialization. Retries, backups and queue dispatch retain their own attempt
 identity. First-write-wins observations and detached snapshots prevent late
@@ -67,7 +67,7 @@ absolute deadline is still enforced; this is not an unbounded request timeout.
 that a refused request could have completed, nor identify the ultimate cause
 of an inconsistent scheduler state. The SDK creates these values in
 `firstTokenWorkProjection` and the engine's duration/capacity conversion; Swift and Go share the
-[closed vocabulary fixture](../../coordinator/protocol/testdata/deadline_unbounded_reasons.json).
+[closed vocabulary fixture](../../coordinator/tests/protocol/testdata/deadline_unbounded_reasons.json).
 
 | Cause | Guard that failed |
 |---|---|
@@ -133,8 +133,8 @@ count of proven false rejections. Missing historical reasons remain
 - Older providers omit the object or its new cause field. Older coordinators
   ignore the optional `unbounded_reason` field; schema remains 1. Unknown enums fold to `other`; numeric fields are
   bounded and free-form provider text is not persisted. The full profile cap
-  remains 4,096 bytes. Sources: `coordinator/api/observation/profiler_provider_deadline.go`
-  (`storeDeadlineDecision`) and `coordinator/protocol/profile.go`.
+  remains 4,096 bytes. Sources: `coordinator/internal/observation/profile/profiler_provider_deadline.go`
+  (`StoreDeadlineDecision`) and `coordinator/protocol/profile.go`.
 - Existing profiler enablement, retention, sampling, asynchronous persistence
   and loss limits remain in effect. Refusals/retries are retained by existing
   rules when profiling is enabled; this is not an unsampled traffic ledger.

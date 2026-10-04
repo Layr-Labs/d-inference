@@ -14,6 +14,7 @@ import (
 	httpx "github.com/eigeninference/d-inference/coordinator/api/httpx"
 	"github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/auth"
+	compiledpolicy "github.com/eigeninference/d-inference/coordinator/internal/api/releases/compiledpolicy"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -163,18 +164,18 @@ func (s *Owner) RefreshAppAttestReleaseCatalog() error {
 	if err != nil {
 		return err
 	}
-	next := &releaseTrustPolicySnapshot{ByBinaryHash: make(map[string][]approvedReleasePolicy)}
+	next := compiledpolicy.New(0, false)
 	for _, r := range releases {
 		if !r.Active {
 			continue
 		}
 		hash, err := NormalizeSHA256Hex(r.BinaryHash, "binary_hash")
 		if err == nil {
-			next.addRelease(&r, hash)
+			next = next.WithRelease(&r, hash)
 		}
 	}
 	old := s.releaseTrustPolicy.Load()
-	if old == nil || !reflect.DeepEqual(old.ByBinaryHash, next.ByBinaryHash) {
+	if old == nil || !reflect.DeepEqual(old.Inventory(), next.Inventory()) {
 		s.appAttestRuntimeRefreshPending.Store(true)
 		if err := s.SyncBinaryHashes(); err != nil {
 			return err

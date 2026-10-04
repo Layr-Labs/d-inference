@@ -96,24 +96,3 @@ func filterSnapshotRows(in []store.FleetSnapshotRow, provider, model string) []s
 	}
 	return out
 }
-
-// csvCell neutralises spreadsheet formula injection: any cell that starts with
-// a formula trigger is prefixed with a single quote so it renders as text.
-func csvCell(v string) string {
-	if v == "" {
-		return v
-	}
-	switch v[0] {
-	case '=', '+', '-', '@', '\t', '\r':
-		return "'" + v
-	}
-	return v
-}
-
-// guardCSVRow applies csvCell to every cell in place and returns the row.
-func guardCSVRow(row []string) []string {
-	for i := range row {
-		row[i] = csvCell(row[i])
-	}
-	return row
-}

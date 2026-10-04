@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-03
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -87,7 +87,7 @@ causes a reported conflict instead of being overwritten (`stageReplacement`,
 | `EIGENINFERENCE_PORT` | TCP port | `8080` | `coordinator/api/server_config.go` (`ReadServerConfig`) | Listen port for the HTTP API and the provider WebSocket. |
 | `EIGENINFERENCE_BASE_URL` | URL | unset — derived per request from `Host` and `X-Forwarded-Proto` | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/server.go` (`resolveBaseURL`) | Public origin templated into the served `/install.sh` and other self-referencing URLs. |
 | `EIGENINFERENCE_CONSOLE_URL` | URL | unset — `<scheme>://<Host>/link` is derived per request | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/access/device/handlers.go` | Console origin used to build the device-code `verification_uri` (`<console>/link`). |
-| `CORS_ORIGIN` | origin | `https://console.darkbloom.dev` (applied in `corsMiddleware`) | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/middleware.go` (`corsMiddleware`) | The single origin allowed for credentialed CORS; public read-only GETs stay wildcard. |
+| `CORS_ORIGIN` | origin | `https://console.darkbloom.dev` (applied in `corsMiddleware`) | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/internal/api/middleware/middleware.go` (`corsMiddleware`) | The single origin allowed for credentialed CORS; public read-only GETs stay wildcard. |
 | `EIGENINFERENCE_DRAIN_GRACE` | Go duration | `10m` (`DefaultDrainGrace`) | `coordinator/api/operations/drain.go` (`DrainGraceFromEnv`) | How long shutdown waits for in-flight requests after SIGTERM before `http.Server.Shutdown`; `0` skips the wait. |
 | `EIGENINFERENCE_ROUTING_CONCURRENCY` | integer ≥ 2 | `runtime.NumCPU()` (min 2) | `coordinator/app/routing.go`; `coordinator/api/inference/configuration.go` (`DefaultRoutingConcurrency`) | Cap on concurrent routing scans. |
 | `EIGENINFERENCE_PPROF_ADDR` | `host:port` | unset (off) | `coordinator/app/runtime_policy.go` (`startPprofListener`) | Serves `net/http/pprof` on a separate listener; bind loopback or firewall it. A successful listener enables mutex sampling at fraction `100` and block sampling at rate `1_000_000` ns (`enableContentionProfiling`). |
@@ -98,8 +98,8 @@ causes a reported conflict instead of being overwritten (`stageReplacement`,
 |---|---|---|---|---|
 | `EIGENINFERENCE_DATABASE_URL` | Postgres DSN (secret) | unset | `coordinator/store/config.go` (`ReadConfig`); `coordinator/app/store.go` | Selects the Postgres store and runs migrations at boot; see [`../architecture/storage.md`](../architecture/storage.md). Required unless the memory store is allowed. |
 | `EIGENINFERENCE_ALLOW_MEMORY_STORE` | `true` | `false` | `coordinator/store/config.go` (`ReadConfig`, `Check`) | Permits the non-durable in-memory store when no DSN is set (tests and local dev only); startup refuses otherwise. |
-| `USER_PERSISTENT_DATA_PATH` | directory | `/mnt/disks/userdata` | `coordinator/deploy/start.sh`; `coordinator/api/provider/trust/trust_reuse_journal.go` (`ResolveTrustReuseRevocationJournalPath`); `coordinator/api/operations/state_export.go` (`resolveStateExportRoot`) | Persistent disk root, symlinked to `/data`; parent of the MicroMDM state, the trust-reuse journal and the state-export root. |
-| `EIGENINFERENCE_TRUST_REUSE_REVOCATION_JOURNAL_PATH` | file path | `<persist>/coordinator/trust-reuse-hard-untrust.v1.jsonl` | `coordinator/api/provider/trust/trust_reuse_journal.go` (`ResolveTrustReuseRevocationJournalPath`) | Location of the hard-untrust revocation journal; startup refuses when the journal is unusable. |
+| `USER_PERSISTENT_DATA_PATH` | directory | `/mnt/disks/userdata` | `coordinator/deploy/start.sh`; `coordinator/internal/provider/journal/trust_reuse_journal.go` (`ResolveTrustReuseRevocationJournalPath`); `coordinator/api/operations/state_export.go` (`resolveStateExportRoot`) | Persistent disk root, symlinked to `/data`; parent of the MicroMDM state, the trust-reuse journal and the state-export root. |
+| `EIGENINFERENCE_TRUST_REUSE_REVOCATION_JOURNAL_PATH` | file path | `<persist>/coordinator/trust-reuse-hard-untrust.v1.jsonl` | `coordinator/internal/provider/journal/trust_reuse_journal.go` (`ResolveTrustReuseRevocationJournalPath`) | Location of the hard-untrust revocation journal; startup refuses when the journal is unusable. |
 | `EIGENINFERENCE_STATE_EXPORT_ENABLED` | `true` | unset (route 404s) | `coordinator/api/operations/state_export.go` (`HandleAdminStateExport`) | Master switch for `GET /v1/admin/state-export`; see [`../operations/state-export.md`](../operations/state-export.md). |
 | `EIGENINFERENCE_STATE_EXPORT_RECIPIENT` | `age1…` public recipient | unset | `coordinator/api/operations/state_export.go` (`HandleAdminStateExport`) | Encrypts the export to this recipient; without it the route answers 412 unless plaintext is allowed. |
 | `EIGENINFERENCE_STATE_EXPORT_ALLOW_PLAINTEXT` | `true` | `false` | `coordinator/api/operations/state_export.go` (`HandleAdminStateExport`) | Allows an unencrypted zip when no recipient is configured. |
@@ -137,9 +137,9 @@ causes a reported conflict instead of being overwritten (`stageReplacement`,
 | `APNS_AUTH_KEY_P8_B64`, `APNS_AUTH_KEY_P8_PATH` | base64 or path to the `.p8` (secret) | unset (attestor disabled) | `coordinator/app/apns.go` (`loadAPNsAttestor`) | The APNs auth key; the base64 form wins. |
 | `APNS_TOPIC` | bundle id | `io.darkbloom.provider` | `coordinator/app/apns.go` (`loadAPNsAttestor`) | APNs topic for code-identity pushes. |
 | `APNS_MODE` | `background`, `alert` | `background` | `coordinator/app/apns.go` (`loadAPNsAttestor`) | Push type used for the challenge. |
-| `APNS_ENFORCE_AFTER` | RFC 3339 timestamp | unset (grace: measured, never blocks) | `coordinator/app/startup_config.go` (`parseAPNsEnforceAfter`) | After this instant un-attested providers are not routed; a malformed value refuses startup. |
-| `EIGENINFERENCE_TRUST_REUSE_WINDOW` | Go duration > 0 | `5m` | `coordinator/api/provider/trust/trust_reuse.go` (`trustReuseWindowFromEnv`) | How long a reconnecting provider may reuse its previous trust decision. |
-| `EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP` | Go duration 0–120s | `90s` (values above 120s clamp down) | `coordinator/api/provider/trust/trust_reuse.go` (`trustReuseReconnectGapFromEnv`) | Maximum contiguous offline gap that still counts as continuity; `0` disables reuse. |
+| `APNS_ENFORCE_AFTER` | RFC 3339 timestamp | unset (grace: measured, never blocks) | `coordinator/internal/startup/startup_config.go` (`ParseAPNsEnforceAfter`) | After this instant un-attested providers are not routed; a malformed value refuses startup. |
+| `EIGENINFERENCE_TRUST_REUSE_WINDOW` | Go duration > 0 | `5m` | `coordinator/internal/provider/reuse/trust_reuse.go` (`trustReuseWindowFromEnv`) | How long a reconnecting provider may reuse its previous trust decision. |
+| `EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP` | Go duration 0–120s | `90s` (values above 120s clamp down) | `coordinator/internal/provider/reuse/trust_reuse.go` (`TrustReuseReconnectGapFromEnv`) | Maximum contiguous offline gap that still counts as continuity; `0` disables reuse. |
 | `EIGENINFERENCE_TRUST_GEO_HEADERS` | `1` | unset | `coordinator/api/geo/resolver.go` (`newProviderGeoResolverFromEnv`) | Trust proxy-supplied client-IP headers when geolocating providers. |
 | `EIGENINFERENCE_IPAPI_KEY` | secret | unset (free ip-api.com tier) | `coordinator/api/geo/resolver.go` (`newProviderGeoResolverFromEnv`) | Uses the keyed `pro.ip-api.com` endpoint for provider geolocation. |
 
@@ -187,11 +187,11 @@ TTFT admission and dispatch termination:
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
 | `EIGENINFERENCE_TTFT_HARD_REJECT` | `true` | `false` (soft preference) | `coordinator/app/routing.go` (`SetTTFTHardReject`) | Enables 429 when all eligible candidates have credible conservative first-content forecasts beyond the original remaining deadline; Unknown evidence is not hard rejected. |
-| `EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS` | 1000–120000 | `5000` (production pins `9000`) | `coordinator/app/app.go` (`validateTTFTDeadlineBaseMs`) | Live first-content deadline base for selected accounts (`FirstContentDeadlineBase`, plus 1 ms per prompt token); legacy base-only policy may tighten it; an explicit model SLA overrides both terms. |
+| `EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS` | 1000–120000 | `5000` (production pins `9000`) | `coordinator/app/app.go` (`ValidateTTFTDeadlineBaseMs`) | Live first-content deadline base for selected accounts (`FirstContentDeadlineBase`, plus 1 ms per prompt token); legacy base-only policy may tighten it; an explicit model SLA overrides both terms. |
 | `EIGENINFERENCE_TTFT_DEADLINE_BASE_MS` | 1000–120000 | `10000` | `coordinator/app/routing.go`; `coordinator/registry/ttft_shadow.go` | Deadline base for shadow TTFT evaluation. |
-| `EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA` | float 0–1e6 | `0` (term off) | `coordinator/app/routing.go` (`validateTTFTOccupancyAlpha`) | Weight of the occupancy term in the TTFT estimate. |
+| `EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA` | float 0–1e6 | `0` (term off) | `coordinator/app/routing.go` (`ValidateTTFTOccupancyAlpha`) | Weight of the occupancy term in the TTFT estimate. |
 | `EIGENINFERENCE_TTFT_ADMISSION_MODE` | `off`, `shadow`, `enforce` | `off` | `coordinator/app/routing.go`; `coordinator/registry/ttft_shadow.go` (`ParseTTFTAdmissionMode`) | Shadow evaluation of TTFT admission that emits `routing.ttft_admission` metrics without changing decisions; `enforce` currently behaves like `shadow`. |
-| `EIGENINFERENCE_TTFT_CALIBRATION` | `off`/`false`/`0` disables | `on` (*live*) | `coordinator/registry/ttft_calibration.go` (`ttftCalibrationEnabled`) | Historical TTFT diagnostic calibration; off returns ratio 1.0. It does not certify first-content feasibility. |
+| `EIGENINFERENCE_TTFT_CALIBRATION` | `off`/`false`/`0` disables | `on` (*live*) | `coordinator/internal/registry/ttftcalibration/calibrator.go` (`Calibrator.AppliedRatio`) | Historical TTFT diagnostic calibration; off returns ratio 1.0. It does not certify first-content feasibility. |
 | `EIGENINFERENCE_TTFT_TERMINAL_REJECT` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/api/inference/dispatch.go` (`ttftTerminalRejectEnabled`) | Legacy text TTFT refusal handling; typed predictive refusals use the bounded fresh-evidence ladder in `coordinator/api/inference/first_content_retry.go`. |
 | `EIGENINFERENCE_JINJA_TERMINAL_REJECT` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/api/inference/dispatch.go` (`jinjaTerminalRejectEnabled`) | A chat-template render failure ends the ladder with one 422 instead of failing over. |
 
@@ -426,7 +426,7 @@ Prices, the platform fee and the referral share live in [`../architecture/billin
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
 | `MODEL_REGISTRY_PUBLISHING_KEY` | secret | unset | `coordinator/api/access/publishing.go` (`RequirePublishingAPIKey`) | Bootstrap bearer token accepted (constant-time) for model-registry publishing in addition to admin keys; see [`../architecture/model-registry.md`](../architecture/model-registry.md). |
-| `MODEL_REGISTRY_CDN_BASE_URL` | URL | unset (registry entries carry no CDN base) | `coordinator/api/catalog/registry_address.go` (`registryCDNBaseURL`) | Base URL providers download published model weights from. |
+| `MODEL_REGISTRY_CDN_BASE_URL` | URL | unset (registry entries carry no CDN base) | `coordinator/internal/api/catalog/registration/registry_address.go` (`RegistryCDNBaseURL`) | Base URL providers download published model weights from. |
 | `EIGENINFERENCE_R2_CDN_URL` | URL | unset | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/releases/artifact_metadata.go` (`trustedReleaseArtifactURL`) | Public R2 bucket URL release binaries are pulled from; release registration is refused (503) until it is set, and every registered artifact URL must live under it. See [`../operations/release-policy-rollout.md`](../operations/release-policy-rollout.md). |
 
 ### Prompt sidecar and media fetch

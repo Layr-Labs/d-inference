@@ -129,8 +129,8 @@ func (s *Owner) convergeRuntimeManifestWithCommittedRelease(release *store.Relea
 func (s *Owner) convergeRuntimeManifestWithCommittedDeactivation(version, platform string, cause error) {
 	merged := NewRuntimeManifest()
 	hasAny := false
-	if snapshot := s.releaseTrustPolicy.Load(); snapshot != nil {
-		for _, policies := range snapshot.ByBinaryHash {
+	if snapshot := s.Policy(); snapshot != nil {
+		for _, policies := range snapshot.Inventory() {
 			for _, policy := range policies {
 				for name, hash := range policy.TemplateHashes {
 					if merged.AddTemplateHash(name, hash) {

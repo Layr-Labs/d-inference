@@ -5,6 +5,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/api/access"
 	"github.com/eigeninference/d-inference/coordinator/api/httpx"
+	fleetview "github.com/eigeninference/d-inference/coordinator/internal/api/accounts/fleetview"
 )
 
 func (s *Owner) HandleMySummary(w http.ResponseWriter, r *http.Request) {
@@ -28,19 +29,19 @@ func (s *Owner) HandleMySummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fleet, err := s.mergeFleet(r.Context(), accountID)
+	fleet, err := fleetview.Merge(s.store, s.registry, r.Context(), accountID)
 	if err != nil {
 		s.logger.Error("merge fleet failed", "account_id", accountID, "error", err)
 		httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorResponse("internal_error", "failed to list providers"))
 		return
 	}
 
-	counts := myFleetCounts{}
+	counts := fleetview.MyFleetCounts{}
 	for i := range fleet {
-		tallyCounts(&counts, &fleet[i], s.minProviderVersion)
+		fleetview.TallyCounts(&counts, &fleet[i], s.minProviderVersion)
 	}
 
-	resp := mySummaryResponse{
+	resp := fleetview.SummaryResponse{
 		AccountID:                   accountID,
 		AvailableBalanceMicroUSD:    s.store.GetBalance(accountID),
 		WithdrawableBalanceMicroUSD: s.store.GetWithdrawableBalance(accountID),

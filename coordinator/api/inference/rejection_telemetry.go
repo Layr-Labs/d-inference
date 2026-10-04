@@ -3,11 +3,9 @@ package inference
 import (
 	"encoding/json"
 	"net/http"
-	"strings"
-	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/api/observation"
-	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/internal/inference/rejection"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -66,135 +64,60 @@ type rejectionInfo struct {
 // request path when the caller did not already do so. Best-effort: it never
 // blocks or fails the request.
 func (s *Owner) recordRejection(info rejectionInfo) {
-	observation.AnnotateOutcomeRejection(info.r, info.stage, info.reasonCode, info.resolvedModel)
-	annotateAutopilotDemandRejection(info)
-	if s == nil || s.store == nil {
-		return
-	}
-
-	rec := &store.RejectionRecord{
-		Stage:                 info.stage,
-		ReasonCode:            info.reasonCode,
-		HTTPStatus:            info.httpStatus,
-		KeyID:                 info.keyID,
-		ConsumerKeyHash:       info.consumerKeyHash,
-		RequestedModel:        info.requestedModel,
-		ResolvedModel:         info.resolvedModel,
-		Stream:                info.stream,
-		N:                     info.n,
-		EstimatedPromptTokens: info.estimatedPromptTokens,
-		RequestedMaxTokens:    info.requestedMaxTokens,
-		RequiresVision:        info.requiresVision,
-		HasImage:              info.hasImage,
-		HasAudio:              info.hasAudio,
-		HasTools:              info.hasTools,
-		ToolCount:             info.toolCount,
-		ResponseFormat:        info.responseFormat,
-		SelfRouteOnly:         info.selfRouteOnly,
-		PreferOwner:           info.preferOwner,
-		Params:                info.params,
-		RequestBodyBytes:      info.requestBodyBytes,
-		RetryAfterMs:          info.retryAfterMs,
-		ShortfallMicroUSD:     info.shortfallMicroUSD,
-		LimitKind:             info.limitKind,
-		OverBy:                info.overBy,
-		CreatedAt:             time.Now(),
-	}
-	if info.r != nil {
-		rec.RequestID = observation.CoordRequestIDFromContext(info.r.Context())
-		rec.Endpoint = info.r.URL.Path
-		rec.ClientClass = clientClassFromUserAgent(info.r.UserAgent())
-		if rec.RequestBodyBytes == 0 && info.r.ContentLength > 0 {
-			rec.RequestBodyBytes = int(info.r.ContentLength)
-		}
-	}
-
-	// OR-uptime outcome for PRE-dispatch rejections. The dispatch-stage
-	// exhausted rejection is skipped here because dispatch.go run()'s tail already
-	// counts that request exactly once; every other (pre-dispatch) stage has no
-	// route-outcome terminal, so it contributes its single outcome here.
-	//
-	// No KV backend: a pre-dispatch rejection never reached a slot, so there is
-	// nothing to attribute it to. The zero attribution normalizes to
-	// kv_backend:unknown / kv_backend_fallback:unknown — booking it to a real
-	// backend, or to "did not degrade", would invent a data point.
-	if info.stage != "dispatch" {
-		model := info.resolvedModel
-		if model == "" {
-			model = info.requestedModel
-		}
-		s.recordRequestOutcome(model, newUnknownKVBackendAttribution(), orUptimeClassForRejection(info.httpStatus))
-		// OR-view mirror of the pre-dispatch arm (the dispatch-stage exhausted
-		// rejection is counted by run()'s tail). Resolved model only: the raw
-		// requested name is client-controlled and must not mint tag values.
-		s.recordRequestOutcomeORView(info.resolvedModel, orUptimeClassForRejection(info.httpStatus))
-	}
-
-	// Seed the counterfactual from whatever the caller already computed.
-	rec.CandidateCount = info.candidateCount
-	rec.CapacityRejections = info.capacityRejections
-	rec.ModelTooLargeRejections = info.modelTooLargeRejections
-	rec.VisionRejections = info.visionRejections
-	rec.BestTTFTMs = info.bestTTFTMs
-
-	// Decide whether we still need to compute servability inside the goroutine.
-	computeServability := !info.skipServability && !info.servabilityComputed && info.resolvedModel != "" && s.registry != nil
-	reg := s.registry
-	resolvedModel := info.resolvedModel
-	estPrompt := info.estimatedPromptTokens
-	reqMax := info.requestedMaxTokens
-	requiresVision := info.requiresVision
-	hasTools := info.hasTools
-
-	s.observation.SubmitTelemetry("recordRejection", func() {
-		if computeServability {
-			traits := registry.RequestTraits{HasTools: hasTools}
-			cc, capRej, tooLarge, bestTTFT, hasTTFT := reg.QuickCapacityCheckWithTTFTForRequest(
-				resolvedModel, estPrompt, reqMax, traits, requiresVision,
-			)
-			rec.CandidateCount = cc
-			rec.CapacityRejections = capRej
-			rec.ModelTooLargeRejections = tooLarge
-			if hasTTFT {
-				rec.BestTTFTMs = float64(bestTTFT.Milliseconds())
-			}
-		}
-		// A request could have produced output iff at least one provider could
-		// serve it right now. This is the headline "was the 'no' necessary?" flag.
-		if info.servabilityComputed || computeServability {
-			couldHaveServed := rec.CandidateCount > 0
-			rec.CouldHaveServed = &couldHaveServed
-		}
-		_ = s.store.RecordRejection(rec)
-	})
+	s.NewRejectionRecorder().Record(info.r, info.record(), rejection.Servability{Computed: info.servabilityComputed, Skip: info.skipServability})
 }
 
-// clientClassFromUserAgent buckets the caller into a coarse, non-private class so
-// we can compare rejection patterns across integrations (e.g. OpenRouter vs
-// direct API users) without storing the raw user agent.
-func clientClassFromUserAgent(ua string) string {
-	if ua == "" {
-		return "unknown"
+// NewRejectionRecorder binds the live ledger and telemetry collaborators while
+// retaining request annotation and outcome authority on this inference owner.
+func (s *Owner) NewRejectionRecorder() *rejection.Recorder {
+	d := rejection.Dependencies{
+		AnnotateOutcome: func(r *http.Request, rec *store.RejectionRecord) {
+			observation.AnnotateOutcomeRejection(r, rec.Stage, rec.ReasonCode, rec.ResolvedModel)
+		},
+		AnnotateDemand: func(r *http.Request, rec *store.RejectionRecord) {
+			annotateAutopilotDemandRejection(rejectionInfo{r: r, resolvedModel: rec.ResolvedModel, reasonCode: rec.ReasonCode, httpStatus: rec.HTTPStatus})
+		},
 	}
-	// Bound work on this untrusted header: only the prefix is needed to classify
-	// the client, so cap the length before lowercasing to avoid spending effort
-	// on a maliciously long User-Agent.
-	if len(ua) > 256 {
-		ua = ua[:256]
+	if s != nil {
+		d.Store, d.Registry, d.Observation, d.Metrics = s.store, s.registry, s.observation, s.NewMetrics()
+		d.RecordOutcome = func(model, class string) {
+			s.recordRequestOutcome(model, newUnknownKVBackendAttribution(), class)
+		}
 	}
-	lc := strings.ToLower(ua)
-	switch {
-	case strings.Contains(lc, "openrouter"):
-		return "openrouter"
-	case strings.Contains(lc, "darkbloom"):
-		return "darkbloom"
-	case strings.Contains(lc, "python"), strings.Contains(lc, "openai"):
-		return "openai-sdk"
-	case strings.Contains(lc, "node"), strings.Contains(lc, "axios"), strings.Contains(lc, "fetch"):
-		return "js-sdk"
-	case strings.Contains(lc, "curl"):
-		return "curl"
-	default:
-		return "direct"
+	return rejection.New(d)
+}
+
+func (info rejectionInfo) record() *store.RejectionRecord {
+	return &store.RejectionRecord{
+		Stage:                   info.stage,
+		ReasonCode:              info.reasonCode,
+		HTTPStatus:              info.httpStatus,
+		KeyID:                   info.keyID,
+		ConsumerKeyHash:         info.consumerKeyHash,
+		RequestedModel:          info.requestedModel,
+		ResolvedModel:           info.resolvedModel,
+		Stream:                  info.stream,
+		N:                       info.n,
+		EstimatedPromptTokens:   info.estimatedPromptTokens,
+		RequestedMaxTokens:      info.requestedMaxTokens,
+		RequiresVision:          info.requiresVision,
+		HasImage:                info.hasImage,
+		HasAudio:                info.hasAudio,
+		HasTools:                info.hasTools,
+		ToolCount:               info.toolCount,
+		ResponseFormat:          info.responseFormat,
+		SelfRouteOnly:           info.selfRouteOnly,
+		PreferOwner:             info.preferOwner,
+		Params:                  info.params,
+		RequestBodyBytes:        info.requestBodyBytes,
+		RetryAfterMs:            info.retryAfterMs,
+		ShortfallMicroUSD:       info.shortfallMicroUSD,
+		LimitKind:               info.limitKind,
+		OverBy:                  info.overBy,
+		CandidateCount:          info.candidateCount,
+		CapacityRejections:      info.capacityRejections,
+		ModelTooLargeRejections: info.modelTooLargeRejections,
+		VisionRejections:        info.visionRejections,
+		BestTTFTMs:              info.bestTTFTMs,
 	}
 }

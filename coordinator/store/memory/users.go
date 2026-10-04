@@ -3,7 +3,6 @@ package memory
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -21,7 +20,7 @@ func (s *MemoryStore) CreateUser(user *store.User) error {
 	}
 
 	copy := *user
-	copy.CreatedAt = time.Now()
+	copy.CreatedAt = s.now()
 	s.usersByPrivyID[user.PrivyUserID] = &copy
 	s.usersByAccountID[user.AccountID] = &copy
 	return nil

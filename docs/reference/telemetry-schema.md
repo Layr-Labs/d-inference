@@ -46,14 +46,14 @@ They add no event fields. The native queue captures
 computes age for the heartbeat without traversing allocator ownership. Optional
 `allocator_padding_bytes` and `last_allocation_allowance_bytes` distinguish
 retained nonusable bytes from released preparation allowance. The canonical
-`coordinator/protocol/testdata/paged_footprint_wire.json` fixture pins their
+`coordinator/tests/protocol/testdata/paged_footprint_wire.json` fixture pins their
 wire representation and omission behavior across Swift, Go and TypeScript.
 
 Process ownership uses optional
 [`backend_capacity.telemetry.process_memory`](protocol-messages.md#backend_capacitytelemetryprocess_memory)
 (`coordinator/protocol/process_memory_telemetry.go`, `ProcessMemoryTelemetry`).
 The Swift producer, Go consumer and TypeScript mirror share the canonical
-`coordinator/protocol/testdata/process_memory_wire.json` fixture. These scalar
+`coordinator/tests/protocol/testdata/process_memory_wire.json` fixture. These scalar
 observations add no event fields.
 
 ## Local provider drain events
@@ -150,9 +150,9 @@ and their fields are enumerated in
 
 | Test | File | Pins |
 |---|---|---|
-| `TestTelemetryJSONSymmetry`, `TestTelemetryKindsMatch` | `coordinator/protocol/telemetry_symmetry_test.go` | canonical event encodes to the exact JSON string; the kind set |
+| `TestTelemetryJSONSymmetry`, `TestTelemetryKindsMatch` | `coordinator/tests/protocol/telemetry_symmetry_test.go` | canonical event encodes to the exact JSON string; the kind set |
 | `telemetryEventJSONSymmetry`, `telemetryKindsMatch`, `sourceAndSeverityRawValues` | `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetrySymmetryTests.swift` | the Swift mirror of the two Go tests plus the source/severity raw values |
-| `TestTelemetryE2E_NoClientIngestionRoute` | `coordinator/api/tests/operations/telemetry_e2e_test.go` | the retired ingest route is gone: 404, body not reflected, nothing counted |
+| `TestTelemetryE2E_NoClientIngestionRoute` | `coordinator/tests/api/operations/contracts/telemetry_e2e_test.go` | the retired ingest route is gone: 404, body not reflected, nothing counted |
 | `TelemetryClientTests.swift`, `TelemetryOverflowQueueTests.swift` | `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetryClientTests.swift`, `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetryOverflowQueueTests.swift` | the client facade stays inert and the legacy queue purge removes only regular files |
 
 ## Related

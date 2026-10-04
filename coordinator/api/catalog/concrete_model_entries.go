@@ -2,6 +2,8 @@ package catalog
 
 import (
 	"github.com/eigeninference/d-inference/coordinator/api/types"
+	aliaspolicy "github.com/eigeninference/d-inference/coordinator/internal/api/catalog/aliaspolicy"
+	modelmeta "github.com/eigeninference/d-inference/coordinator/internal/api/catalog/metadata"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -45,7 +47,7 @@ func (s *Owner) modelEntryForConcrete(
 		Object:        "model",
 		OwnedBy:       "eigeninference",
 		Name:          metadata.DisplayName,
-		HuggingFaceID: huggingFaceIDForModel(model.ID, registryEntry.Metadata),
+		HuggingFaceID: modelmeta.HuggingFaceIDForModel(model.ID, registryEntry.Metadata),
 		Metadata:      metadata,
 	}
 	s.openRouterModelFieldsFor(model.ID, model.Quantization, registryEntry, hasRegistryEntry).applyToModelEntry(&entry)
@@ -54,7 +56,7 @@ func (s *Owner) modelEntryForConcrete(
 	if hasRegistryEntry {
 		capabilities = registryEntry.Capabilities
 	}
-	entry.InputModalities, entry.OutputModalities = deriveModalities(model.ModelType, capabilities)
+	entry.InputModalities, entry.OutputModalities = modelmeta.DeriveModalities(model.ModelType, capabilities)
 	return entry
 }
 
@@ -96,22 +98,6 @@ func (s *Owner) openRouterAggregateTypeByID() map[string]string {
 	return typesByID
 }
 
-func concreteModelEligibleForOpenRouterFeed(
-	modelID string,
-	catalogByID map[string]store.SupportedModel,
-	aggregateTypeByID map[string]string,
-) bool {
-	catalogModel, ok := catalogByID[modelID]
-	if !ok {
-		return false
-	}
-	modelType := catalogModel.ModelType
-	if aggregateType, found := aggregateTypeByID[modelID]; found {
-		modelType = aggregateType
-	}
-	return !isNonTextModelType(modelType)
-}
-
 // openRouterEntryForConcrete builds the dedicated provider-feed representation
 // of one active concrete catalog model. It remains independently listed when an
 // OpenRouter-only alias clones it.
@@ -122,7 +108,7 @@ func (s *Owner) openRouterEntryForConcrete(
 	aggregateTypeByID map[string]string,
 ) (types.OpenRouterModel, bool) {
 	catalogModel, ok := catalogByID[modelID]
-	if !ok || !concreteModelEligibleForOpenRouterFeed(modelID, catalogByID, aggregateTypeByID) {
+	if !ok || !aliaspolicy.ConcreteModelEligibleForOpenRouterFeed(modelID, catalogByID, aggregateTypeByID) {
 		return types.OpenRouterModel{}, false
 	}
 
@@ -135,10 +121,10 @@ func (s *Owner) openRouterEntryForConcrete(
 	if hasRegistryEntry {
 		capabilities = registryEntry.Capabilities
 	}
-	inputModalities, outputModalities := deriveModalities(modelType, capabilities)
+	inputModalities, outputModalities := modelmeta.DeriveModalities(modelType, capabilities)
 	entry := types.OpenRouterModel{
 		ID:                modelID,
-		HuggingFaceID:     huggingFaceIDForModel(modelID, registryEntry.Metadata),
+		HuggingFaceID:     modelmeta.HuggingFaceIDForModel(modelID, registryEntry.Metadata),
 		Name:              openRouterModelName(catalogModel, registryEntry, hasRegistryEntry, modelID),
 		InputModalities:   inputModalities,
 		OutputModalities:  outputModalities,
@@ -147,10 +133,10 @@ func (s *Owner) openRouterEntryForConcrete(
 	}
 	s.openRouterModelFieldsFor(modelID, registryEntry.Quantization, registryEntry, hasRegistryEntry).applyToFeed(&entry)
 	if hasRegistryEntry {
-		entry.IsReady = openRouterIsReady(registryEntry.Metadata)
-		entry.OpenRouter = &types.OpenRouterSlug{Slug: openRouterSlug(modelID, registryEntry.Metadata)}
+		entry.IsReady = modelmeta.OpenRouterIsReady(registryEntry.Metadata)
+		entry.OpenRouter = &types.OpenRouterSlug{Slug: modelmeta.OpenRouterSlug(modelID, registryEntry.Metadata)}
 	} else {
-		entry.OpenRouter = &types.OpenRouterSlug{Slug: openRouterSlug(modelID, nil)}
+		entry.OpenRouter = &types.OpenRouterSlug{Slug: modelmeta.OpenRouterSlug(modelID, nil)}
 	}
 	entry.Datacenters = s.modelDatacenters(modelID)
 	return entry, true

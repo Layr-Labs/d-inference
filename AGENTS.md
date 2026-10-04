@@ -10,7 +10,7 @@ coordinator/          Go control plane with domain-owned packages
 ├── app/              service assembly, backend selection, startup and shutdown
 ├── api/              HTTP + WebSocket composition
 │   ├── server.go          constructs and connects domain owners
-│   ├── routes.go          route bindings; global middleware in middleware.go
+│   ├── routes.go          route bindings; server_handler.go binds internal/api/middleware
 │   ├── access/            authentication, principal context, limits; keys/ and device/ handlers
 │   ├── accounts/          account/provider projections, invites and admin users
 │   ├── billing/           billing HTTP; payouts/ owns provider payout workflows
@@ -35,7 +35,7 @@ coordinator/          Go control plane with domain-owned packages
 ├── mdm/              MicroMDM client + webhook handling
 ├── payments/         ledger + pricing (+ baserewards/)
 ├── profilesign/      CMS-signing of .mobileconfig enrollment profiles
-├── protocol/         WebSocket message types shared with provider (type_scan.go: single-parse frame decode)
+├── protocol/         WebSocket message types; internal/wire owns single-parse frame decode
 ├── ratelimit/        rate limiting
 ├── registry/         provider registry, queueing, routing, reputation, token-budget admission,
 │                     warm-pool controller, two-lane provider WS writer (provider_writer.go),
@@ -45,12 +45,24 @@ coordinator/          Go control plane with domain-owned packages
 ├── stateexport/      consistent encrypted archive of MicroMDM and other /data state (migration)
 ├── store/            persistence contracts, records, cache decorator and capability unwrapping
 │   ├── memory/       in-memory backend
-│   ├── postgres/     PostgreSQL backend and migrations
-│   └── tests/        cross-backend contract tests
+│   └── postgres/     PostgreSQL backend and migrations
+├── tests/            all coordinator Go tests, mirrored by production owner
+│   ├── api/          domain tests; <domain>/contracts/ exercises the composed HTTP/WS router
+│   ├── store/        memory/, postgres/, and cross-backend contracts/
+│   └── internal/     shared testkit and isolated PostgreSQL fixtures
 ├── telemetry/        telemetry event emitter (process logs + Datadog forwarding)
 ├── datadog/          Datadog APM / DogStatsD / Logs API client
 ├── deploy/           container entrypoint (start.sh)
-└── internal/e2e/     X25519 request-encryption helpers (+ tamper tests)
+└── internal/         focused production-consumed components, never test infrastructure
+    ├── api/          middleware, projection, catalog and reporting components
+    ├── inference/    media, provider body, relay, cancellation, promotions/reservations, settlement/outcomes
+    ├── provider/     session, challenge, identity, MDM, trust authority/reuse/journal
+    ├── observation/  independent route, profile and compact-outcome pipelines
+    ├── registry/     writer lanes/watchdog, queue-drain coalescing, demand, residency/capacity and cache
+    ├── store/        cache generations, memory history, shared records and SQL helpers
+    ├── promptcontract/, mediafetch/  sidecar components and hardened fetch policy/budgets
+    ├── wire/         provider frame scanning and decoding
+    └── e2e/          X25519 request-encryption helpers; tamper tests live in tests/internal/e2e/
 
 e2e/                  System-level E2E testing framework
 ├── integration_test.go  14 E2E tests (streaming, billing, encryption, attestation, etc.)
@@ -121,7 +133,7 @@ docs/                 how-tos, runbooks, reference, architecture, design records
 - Billing HTTP lives in `coordinator/api/billing` and its `payouts` child; `coordinator/payments` owns ledger/pricing and `coordinator/billing` owns Stripe/referral services. Inference reservations and settlement share the lifecycle in `coordinator/api/inference`.
 - Providers serve text inference through the Swift `darkbloom` CLI with continuous batching via MLX-Swift.
 - Model registry data is DB-backed in the coordinator and points to R2 manifests under `https://models.darkbloom.ai`; model bytes are not hardcoded in the provider or UI.
-- Streaming hot path: provider frames are decoded in a single parse (`coordinator/protocol/type_scan.go` scans the `type` key; malformed input falls back to a full envelope decode); per-request X25519 shared keys are memoized for chunk decryption and forgotten on request terminal (`coordinator/api/inference/chunk_key_cache.go`); all writes to a provider WebSocket go through a two-lane writer (`coordinator/registry/provider_writer.go`) with a per-connection write watchdog — control frames (challenges, cancels, trust status) take strict (non-preemptive) priority over data frames, FIFO holds only within a lane, and `WriteText` blocks until the frame is on the wire.
+- Streaming hot path: provider frames are decoded in a single parse (`coordinator/internal/wire/type_scan.go` scans the `type` key; malformed input falls back to a full envelope decode); per-request X25519 shared keys are memoized for chunk decryption and forgotten on request terminal (`coordinator/internal/inference/chunkkeys/chunk_key_cache.go`); all writes to a provider WebSocket go through a two-lane writer (`coordinator/registry/provider_writer.go`) with a per-connection write watchdog — control frames (challenges, cancels, trust status) take strict (non-preemptive) priority over data frames, FIFO holds only within a lane, and `WriteText` blocks until the frame is on the wire.
 - Observability: Datadog metrics (DogStatsD) for attestation, routing, billing, fleet version, and provider capacity. X-Timing header decomposes per-request latency.
 
 ## Building And Testing
@@ -195,6 +207,13 @@ ships with a regression test that fails without the fix.
   tenants or real credentials).
 - When a `store.Store` method has memory and Postgres implementations, cover
   both.
+- Keep every coordinator `_test.go` under the mirrored `coordinator/tests/`
+  tree. Production must not import `testing` or coordinator test infrastructure.
+  Use real injected dependencies or cohesive production-consumed components in
+  `coordinator/internal/`; never expose arbitrary state or add test-only facades,
+  copied implementations, overlays, reflection or `go:linkname` to move tests.
+  `go test ./coordinator/...` discovers all suites; focused API tests use
+  `./coordinator/tests/api/...`. The isolation guard lives in `tests/layout_test.go`.
 - Frontend pages and forms get at least a vitest for validation and state.
 
 ## Releases
@@ -285,13 +304,13 @@ Dev coordinator deploy (Google Cloud): see `docs/operations/dev-environment.md`.
 Provider state lives in several fields that are read by different code paths with different precedence rules. When mutating any of these, trace every reader:
 
 - `BackendCapacity.Slots` is **authoritative** for the scheduler when present (Swift providers). The scheduler derives `slotState`, `modelLoaded`, token budgets, and observed TPS from it. `WarmModels` is only a fallback for legacy providers without `BackendCapacity`.
-- `WarmModels` is updated by heartbeats. It is NOT consulted by `snapshotProviderLocked` or `buildCandidateWithReason` when `BackendCapacity` is non-nil. `TriggerModelSwaps` / `hasWarmProviderLocked` checks it as a fallback, and `/v1/me/providers` copies it into API responses.
+- `WarmModels` is updated by heartbeats. It is NOT consulted by `snapshotProviderIntoLockedEx` or `buildCandidateWithReason` when `BackendCapacity` is non-nil. `TriggerModelSwaps` / `hasWarmProviderLocked` checks it as a fallback, and `/v1/me/providers` copies it into API responses.
 - `CurrentModel` is set from heartbeat `active_model`. A nil/omitted `active_model` means no model is loaded. Stale `CurrentModel` can cause attestation hash mismatches.
-- `pendingModelLoads` is checked by `TriggerModelSwaps` planning, cold-spill eligibility (`registry/cold_dispatch.go`), and the warm-pool controller's target math. It is NOT checked by `QuickCapacityCheck`, `ReserveProviderEx`, or `freeMemoryAdmits` — do not assume pending-load state affects routing admission.
+- `pendingLoads` (`pendingload.Ledger`, `coordinator/internal/registry/pendingload/ledger.go`) is checked by `TriggerModelSwaps` planning, cold-spill eligibility (`registry/cold_dispatch.go`), and the warm-pool controller's target math. It is NOT checked by `QuickCapacityCheck`, `ReserveProviderEx`, or `memorypolicy.Admits` (`coordinator/internal/registry/memorypolicy/admission.go`) — do not assume pending-load state affects routing admission.
 - Provider-reported slot states include `"running"` (active requests), `"idle"` (loaded, no requests), `"crashed"`, `"reloading"`, and `"idle_shutdown"`. The `"idle"` state means the model IS loaded — treat it the same as `"running"` for warm detection, not as `"unknown"`.
 - Providers can hold up to `maxModelSlots` models simultaneously (default 3). Do not assume a model swap evicts all other models.
 - The provider's memory model is `UnifiedMemoryCap` (`provider-swift/Sources/ProviderCore/Inference/Memory/UnifiedMemoryCap.swift`): hard cap = 0.90 × physical RAM (always leaving ≥ 2 GiB for the OS; `DARKBLOOM_MEM_CAP_FRACTION` override). The model-load gate requires resident weights + incoming weights + headroom (the resolved activation reserve plus 1 GiB minimum KV) ≤ the cap, and a post-load guard unloads a freshly-loaded model whose measured live KV headroom is below the minimum serveable KV. Every admit-time consumer (load gate, pending-load reservation, startup preload, doctor and coordinator) must use the scanner's complete LOAD estimate, not bare steady residency. Ordinary/unknown layouts retain disk × 1.2; eligible native Qwen4 SSD-offload layouts use `Qwen4ExpLoadFootprint`'s validated header-derived copy allowance, mirrored by `native_load_transient_bytes` in Swift/Go and revalidated before allocation. All compute, MTP and vision payloads remain counted. Never reduce OS/activation/KV safeguards to make a test pass. A recent owned Qwen4 retirement permits only a bounded real-headroom recheck, not speculative reclaim credit. Measured post-load residency lives separately in `servabilityMeasuredResidentGiB` and informs post-load token budgets; it is not a substitute load allowance. The `DARKBLOOM_ACTIVATION_RESERVE_GB` env override is **raise-only against the resolved floor**; only programmatic `activationReserveBytes` values (tests) are honored as given.
-- The activation reserve inside that cap resolves **per serving set** (≥ the per-model release): `resolvedActivationReserveBytes(modelIDs:)` takes the max over advertised ∪ resident ∪ loading models of each member's **measured floor** (`measuredActivationFloorsBytes`, exact catalog-id match) with the flat 5.5 GiB default for any unmeasured member — so one unmeasured model pins the default, and vision-capable models deliberately have NO measured floor until a vision-inclusive peak is measured (the tower transient rides this reserve; text-decode evidence alone must not lower it). The resolved reserve threads through the load gate, `KVHeadroomProbe`, `GlobalKVCacheBudget` (epoch-stamped pushes — cross-actor delivery is not FIFO), engine KV grants, the heartbeat clamp, `free_for_load_gb`, and doctor **in lockstep**; a consumer left on the flat figure re-creates the admit-then-fail class this design removed. `coordinator/registry/servability.go` mirrors both tables (`servabilityActivationFloorGB` default + `servabilityModelActivationFloorsGB`, selected per model by `servabilityActivationFloor`: the model's measured floor, else 5.5 GiB; `servabilityMeasuredResidentGiB` likewise supplies measured weights, else the padded catalog figure — no provider-version regimes, because routed providers are past the routing floor). **The provider table and the coordinator mirror must move in the same commit**, floors and measured weights alike; retuning either side alone silently desyncs admission (the historical score-tensor surcharge incident). A per-SHAPE/formula reserve remains banned on both sides — floors are measured constants, never modelled; the measurement convention must include a ≥ 4k-token B=8 cell (short-prompt cells under-measure the saturated envelope — see `docs/reports/2026-08-30-activation-floor-measurements.md`).
+- The activation reserve inside that cap resolves **per serving set** (≥ the per-model release): `resolvedActivationReserveBytes(modelIDs:)` takes the max over advertised ∪ resident ∪ loading models of each member's **measured floor** (`measuredActivationFloorsBytes`, exact catalog-id match) with the flat 5.5 GiB default for any unmeasured member — so one unmeasured model pins the default, and vision-capable models deliberately have NO measured floor until a vision-inclusive peak is measured (the tower transient rides this reserve; text-decode evidence alone must not lower it). The resolved reserve threads through the load gate, `KVHeadroomProbe`, `GlobalKVCacheBudget` (epoch-stamped pushes — cross-actor delivery is not FIFO), engine KV grants, the heartbeat clamp, `free_for_load_gb`, and doctor **in lockstep**; a consumer left on the flat figure re-creates the admit-then-fail class this design removed. `coordinator/internal/registry/memorypolicy/structural.go` mirrors both tables (`servabilityActivationFloorGB` default + `servabilityModelActivationFloorsGB`, selected per model by `ActivationFloor`: the model's measured floor, else 5.5 GiB; `servabilityMeasuredResidentGiB` likewise supplies measured weights, else the padded catalog figure — no provider-version regimes, because routed providers are past the routing floor). **The provider table and the coordinator mirror must move in the same commit**, floors and measured weights alike; retuning either side alone silently desyncs admission (the historical score-tensor surcharge incident). A per-SHAPE/formula reserve remains banned on both sides — floors are measured constants, never modelled; the measurement convention must include a ≥ 4k-token B=8 cell (short-prompt cells under-measure the saturated envelope — see `docs/reports/2026-08-30-activation-floor-measurements.md`).
 
 ### Native MiMo load quotations
 
@@ -310,7 +329,7 @@ skip the actual load claims and post-load serviceability gates.
 
 When adding code that mutates provider state or sends commands (`load_model`, etc.):
 
-1. Enumerate every reader of the fields you're mutating (`BackendCapacity.Slots`, `WarmModels`, `CurrentModel`, `pendingModelLoads`).
+1. Enumerate every reader of the fields you're mutating (`BackendCapacity.Slots`, `WarmModels`, `CurrentModel`, `pendingLoads`).
 2. Check what happens on the failure path — does state get cleaned up on disconnect, timeout, and load failure?
 3. Check concurrent access — heartbeats arrive per-provider on separate goroutines; `TriggerModelSwaps` can race with `drainQueuedRequestsForModelsWithReason`.
 4. Check the cleanup path — `Disconnect()` must clear any per-provider state you add.
@@ -324,7 +343,7 @@ Keep the codebase modular, never monolithic.
 - Prefer small, single-responsibility files over large catch-all ones. Split by concern: types, pure helpers, data/IO hooks, UI pieces, and a thin orchestrator that wires them together.
 - Group a feature's files into a dedicated module/folder with a thin entry point. Examples: the coordinator's top-level Go packages (`registry/`, `billing/`, `store/`), and `console-ui/src/components/api-keys/` (`constants`, `format`, `limits`, `Modal`, `KeyForm`, `KeyCard`, a `useApiKeys` data hook, and a thin `ApiKeysManager` orchestrator).
 - One file/component should do one thing. If a file mixes several concerns or grows past a few hundred lines, that's a signal to split it.
-- Name files for their responsibility or the behavior they verify. Avoid work-wave, ticket, priority, and follow-up labels such as `w5fix2` or `p1`; keep meaningful model, engine, and protocol version identifiers. Name shared test helpers for their domain. Keep Go tests in their owning package; group Swift and UI files by subsystem without changing their target or imports unnecessarily. See [the repository navigation guide](docs/developer/navigation.md).
+- Name files for their responsibility or the behavior they verify. Avoid work-wave, ticket, priority, and follow-up labels such as `w5fix2` or `p1`; keep meaningful model, engine, and protocol version identifiers. Name shared test helpers for their domain. Mirror coordinator Go owners under `coordinator/tests/`; group Swift and UI files by subsystem without changing their target or imports unnecessarily. See [the repository navigation guide](docs/developer/navigation.md).
 - **At the end of every large piece of work, do a refactor pass to make it modular before calling it done.** Extract helpers/types/hooks into focused files, delete dead code, and keep the public entry point thin. The refactor must be behavior-preserving — build, lint, and tests stay green.
 
 ## Pull Requests

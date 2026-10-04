@@ -1,5 +1,7 @@
 package releases
 
+import compiledpolicy "github.com/eigeninference/d-inference/coordinator/internal/api/releases/compiledpolicy"
+
 type ApprovedTransitionFact struct {
 	Approved                 bool
 	BinaryHash               string
@@ -19,13 +21,13 @@ type ApprovedTransitionFact struct {
 // version is not below the predecessor's). A hash absent from the ACTIVE
 // inventory — e.g. a deactivated release — is never an approved predecessor.
 func approvedTransitionPredecessor(
-	snapshot *releaseTrustPolicySnapshot,
+	snapshot *compiledpolicy.Snapshot,
 	fromHash, platform, backend, version string,
 ) bool {
 	if snapshot == nil || fromHash == "" || platform == "" {
 		return false
 	}
-	for _, candidate := range snapshot.ByBinaryHash[fromHash] {
+	for _, candidate := range snapshot.Inventory()[fromHash] {
 		if candidate.Platform == platform &&
 			(candidate.Backend == backend || candidate.Backend == "") &&
 			!SemverLess(version, candidate.Version) {

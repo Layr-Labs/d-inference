@@ -3,7 +3,7 @@ package inference
 import (
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/api/promptwork"
+	"github.com/eigeninference/d-inference/coordinator/internal/inference/firstcontent"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
@@ -11,39 +11,20 @@ import (
 // and exact cache plan that dispatch will use. The read-only registry preflight
 // does not reserve capacity or tighten the request's physical memory budget.
 // Call without a routing-scan permit: cache planning may contact a sidecar.
-func (p inferenceAdmissionParams) firstContentRequest(model string, traits registry.RequestTraits) *registry.PendingRequest {
-	pr := &registry.PendingRequest{
-		Model: model, EstimatedPromptTokens: p.estimatedPromptTokens,
-		FirstContentPromptTokens: calibratedContextPromptTokens(model, p.estimatedPromptTokens),
-		RequestedMaxTokens:       p.requestedMaxTokens, RequiresVision: p.requiresVision,
-		Traits: traits, AllowedProviderSerials: p.allowedProviderSerials,
-		SelfRouteOnly: p.policy.enabled, PreferOwner: p.policy.prefer,
-		OwnerAccountID: p.policy.ownerAccountID,
-	}
-	if p.deadline > 0 {
-		received := p.receivedAt
-		// Isolated callers may have no HTTP timing.
-		if received.IsZero() {
-			received = time.Now()
-		}
-		pr.FirstContentDeadline = received.Add(p.deadline)
-	}
-	if p.cachePlanForModel != nil {
-		pr.CachePlan = p.cachePlanForModel(model)
-	}
-	if p.promptWorkForModel != nil {
-		pr.PromptWork = p.promptWorkForModel(model)
-	}
-	if pr.PromptWork == nil {
-		pr.PromptWork = promptwork.Heuristic(pr.FirstContentPromptTokens)
-	}
-	return pr
+func (p AdmissionRequest) firstContentRequest(model string, traits registry.RequestTraits) *registry.PendingRequest {
+	return p.preflightRequest().Request(model, traits)
 }
 
-func (p inferenceAdmissionParams) remainingFirstContentBudget() time.Duration {
-	if p.deadline <= 0 || p.receivedAt.IsZero() {
-		return p.deadline
+func (p AdmissionRequest) remainingFirstContentBudget() time.Duration {
+	return p.preflightRequest().RemainingBudget()
+}
+
+func (p AdmissionRequest) preflightRequest() firstcontent.Preflight {
+	return firstcontent.Preflight{
+		EstimatedPromptTokens: p.EstimatedPromptTokens, RequestedMaxTokens: p.RequestedMaxTokens,
+		RequiresVision: p.RequiresVision, AllowedProviderSerials: p.AllowedProviderSerials,
+		SelfRouteOnly: p.Policy.Enabled, PreferOwner: p.Policy.Prefer, OwnerAccountID: p.Policy.OwnerAccountID,
+		Deadline: p.Deadline, ReceivedAt: p.ReceivedAt, CachePlanForModel: p.CachePlanForModel,
+		PromptWorkForModel: p.PromptWorkForModel, Calibration: contextCalibration,
 	}
-	// A positive nanosecond preserves an already-expired clock's enabled gate.
-	return max(time.Nanosecond, time.Until(p.receivedAt.Add(p.deadline)))
 }

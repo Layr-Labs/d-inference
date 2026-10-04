@@ -7,6 +7,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/api"
 	"github.com/eigeninference/d-inference/coordinator/api/releases"
+	startup "github.com/eigeninference/d-inference/coordinator/internal/startup"
 	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
 )
 
@@ -56,10 +57,10 @@ func configureRuntimePolicy(srv *api.Server, logger *slog.Logger) {
 	// binary shipped without pprof (GET /debug/pprof/ = 404). Unset = nothing
 	// listens.
 	if addr := os.Getenv("EIGENINFERENCE_PPROF_ADDR"); addr != "" {
-		if ln, err := startPprofListener(addr); err != nil {
+		if ln, err := startup.StartPprofListener(addr); err != nil {
 			logger.Error("pprof listener failed to start", "addr", addr, "error", err)
 		} else {
-			enableContentionProfiling()
+			startup.EnableContentionProfiling()
 			logger.Warn("pprof debug listener ENABLED via EIGENINFERENCE_PPROF_ADDR — profiling data is sensitive; keep this address private (bind loopback / firewall it)",
 				"addr", ln.Addr().String())
 		}

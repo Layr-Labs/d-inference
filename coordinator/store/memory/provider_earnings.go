@@ -15,8 +15,8 @@ func (s *MemoryStore) RecordProviderEarning(earning *store.ProviderEarning) erro
 	// Idempotency guard mirroring the postgres ON CONFLICT (job_id) DO NOTHING:
 	// a retried settlement with the same non-empty job_id is a no-op.
 	if earning.JobID != "" {
-		for i := range s.providerEarnings {
-			if s.providerEarnings[i].JobID == earning.JobID {
+		for i := range s.history.ProviderEarnings {
+			if s.history.ProviderEarnings[i].JobID == earning.JobID {
 				return nil
 			}
 		}
@@ -28,7 +28,7 @@ func (s *MemoryStore) RecordProviderEarning(earning *store.ProviderEarning) erro
 	if cp.CreatedAt.IsZero() {
 		cp.CreatedAt = time.Now()
 	}
-	s.providerEarnings = append(s.providerEarnings, cp)
+	s.history.ProviderEarnings = append(s.history.ProviderEarnings, cp)
 	return nil
 }
 
@@ -38,9 +38,9 @@ func (s *MemoryStore) GetAccountEarnings(accountID string, limit int) ([]store.P
 	defer s.mu.RUnlock()
 
 	var results []store.ProviderEarning
-	for i := len(s.providerEarnings) - 1; i >= 0; i-- {
-		if s.providerEarnings[i].AccountID == accountID {
-			results = append(results, s.providerEarnings[i])
+	for i := len(s.history.ProviderEarnings) - 1; i >= 0; i-- {
+		if s.history.ProviderEarnings[i].AccountID == accountID {
+			results = append(results, s.history.ProviderEarnings[i])
 			if limit > 0 && len(results) >= limit {
 				break
 			}
@@ -58,7 +58,7 @@ func (s *MemoryStore) GetAccountEarningsSummary(accountID string) (store.Provide
 	defer s.mu.RUnlock()
 
 	var summary store.ProviderEarningsSummary
-	for _, earning := range s.providerEarnings {
+	for _, earning := range s.history.ProviderEarnings {
 		if earning.AccountID != accountID {
 			continue
 		}
@@ -96,8 +96,8 @@ func (s *MemoryStore) creditProviderAccountLocked(earning *store.ProviderEarning
 	// a retried settlement with the same non-empty job_id must not double-credit
 	// the balance, the withdrawable subset, the ledger, or the earnings summary.
 	if earning.JobID != "" {
-		for i := range s.providerEarnings {
-			if s.providerEarnings[i].JobID == earning.JobID {
+		for i := range s.history.ProviderEarnings {
+			if s.history.ProviderEarnings[i].JobID == earning.JobID {
 				return nil
 			}
 		}
@@ -112,6 +112,6 @@ func (s *MemoryStore) creditProviderAccountLocked(earning *store.ProviderEarning
 	s.withdrawable[cp.AccountID] += cp.AmountMicroUSD
 	s.providerEarningsSeq++
 	cp.ID = s.providerEarningsSeq
-	s.providerEarnings = append(s.providerEarnings, cp)
+	s.history.ProviderEarnings = append(s.history.ProviderEarnings, cp)
 	return nil
 }

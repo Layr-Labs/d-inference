@@ -10,6 +10,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/api/access"
 	"github.com/eigeninference/d-inference/coordinator/api/readcache"
 	attestservice "github.com/eigeninference/d-inference/coordinator/appattest/service"
+	compiledpolicy "github.com/eigeninference/d-inference/coordinator/internal/api/releases/compiledpolicy"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -39,7 +40,7 @@ type Owner struct {
 	manualBinaryHashPolicyConfigured  bool
 	releaseBinaryHashPolicyConfigured bool
 	binaryHashPolicyConfigured        bool
-	releaseTrustPolicy                atomic.Pointer[releaseTrustPolicySnapshot]
+	releaseTrustPolicy                atomic.Pointer[compiledpolicy.Snapshot]
 	releaseTrustPolicyGeneration      atomic.Uint64
 	releaseInventoryEverConfigured    atomic.Bool
 	runtimeManifest                   atomic.Pointer[RuntimeManifest]

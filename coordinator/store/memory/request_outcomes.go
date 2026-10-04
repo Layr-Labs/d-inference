@@ -7,8 +7,8 @@ import (
 	"sort"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/store/shared"
 	"github.com/eigeninference/d-inference/coordinator/store"
-	"github.com/eigeninference/d-inference/coordinator/store/internal/shared"
 )
 
 func (s *MemoryStore) RecordRequestOutcomes(ctx context.Context, records []store.RequestOutcomeRecord) error {
@@ -22,11 +22,11 @@ func (s *MemoryStore) RecordRequestOutcomes(ctx context.Context, records []store
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.requestOutcomes == nil {
-		s.requestOutcomes = make(map[string]store.RequestOutcomeRecord)
+	if s.history.RequestOutcomes == nil {
+		s.history.RequestOutcomes = make(map[string]store.RequestOutcomeRecord)
 	}
 	for _, r := range records {
-		old, exists := s.requestOutcomes[r.CoordRequestID]
+		old, exists := s.history.RequestOutcomes[r.CoordRequestID]
 		left, right := old, r
 		left.EvidenceConflict = false
 		right.EvidenceConflict = false
@@ -35,7 +35,7 @@ func (s *MemoryStore) RecordRequestOutcomes(ctx context.Context, records []store
 		conflict := exists && (!old.ReceivedAt.Equal(r.ReceivedAt) || old.Endpoint != r.Endpoint || (old.Revision == r.Revision && !bytes.Equal(oldJSON, newJSON)))
 		if exists && r.Revision <= old.Revision {
 			old.EvidenceConflict = old.EvidenceConflict || conflict || r.EvidenceConflict
-			s.requestOutcomes[r.CoordRequestID] = old
+			s.history.RequestOutcomes[r.CoordRequestID] = old
 			s.projectModelDemandLocked(old)
 			continue
 		}
@@ -44,7 +44,7 @@ func (s *MemoryStore) RecordRequestOutcomes(ctx context.Context, records []store
 			r.Endpoint = old.Endpoint
 		}
 		r.EvidenceConflict = r.EvidenceConflict || old.EvidenceConflict || conflict
-		s.requestOutcomes[r.CoordRequestID] = cloneRequestOutcome(r)
+		s.history.RequestOutcomes[r.CoordRequestID] = cloneRequestOutcome(r)
 		s.projectModelDemandLocked(r)
 	}
 	return nil
@@ -60,7 +60,7 @@ func (s *MemoryStore) RequestOutcomes(ctx context.Context, since, until time.Tim
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]store.RequestOutcomeRecord, 0)
-	for _, r := range s.requestOutcomes {
+	for _, r := range s.history.RequestOutcomes {
 		if !r.ReceivedAt.Before(since) && r.ReceivedAt.Before(until) {
 			out = append(out, cloneRequestOutcome(r))
 		}

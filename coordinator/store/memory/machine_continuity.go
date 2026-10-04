@@ -5,8 +5,8 @@ import (
 	"context"
 	"slices"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/store/shared"
 	"github.com/eigeninference/d-inference/coordinator/store"
-	"github.com/eigeninference/d-inference/coordinator/store/internal/shared"
 )
 
 func cloneMachineHistory(p *store.ProviderRecord) *store.ProviderRecord {
@@ -50,17 +50,17 @@ func (s *MemoryStore) ResolveMachineContinuity(ctx context.Context, sessionID, a
 	if m == nil || !exists || credential.AccountID != account || s.appAttestRevocations[key] {
 		return result, store.ErrMachineContinuityUnverified
 	}
-	session, ok := m.sessions[sessionID]
-	id := m.sessionMachines[sessionID]
-	if !ok || session.AccountID != account || session.Disconnected || id == "" || m.aliases[shared.AppAttestMachineAlias(account, key)] != id {
+	session, ok := m.Sessions[sessionID]
+	id := m.SessionMachines[sessionID]
+	if !ok || session.AccountID != account || session.Disconnected || id == "" || m.Aliases[shared.AppAttestMachineAlias(account, key)] != id {
 		return result, store.ErrMachineContinuityUnverified
 	}
-	result.Machine, ok = m.machines[id]
+	result.Machine, ok = m.Machines[id]
 	if !ok || result.Machine.Assurance == "provisional" {
 		return store.MachineContinuity{}, store.ErrMachineContinuityUnverified
 	}
-	for priorID, priorMachine := range m.sessionMachines {
-		if priorMachine != id || priorID == sessionID || slices.Contains(excluded, priorID) || m.sessions[priorID].AccountID != account {
+	for priorID, priorMachine := range m.SessionMachines {
+		if priorMachine != id || priorID == sessionID || slices.Contains(excluded, priorID) || m.Sessions[priorID].AccountID != account {
 			continue
 		}
 		p := s.providerRecords[priorID]

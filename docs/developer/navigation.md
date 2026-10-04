@@ -32,6 +32,7 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | Autopilot admin HTTP contract | `coordinator/api/autopilot/`; parent API adapter supplies authorization and dependencies |
 | Autopilot demand, placement and donor coverage | `coordinator/registry/autopilot/`; the registry adapter owns live sessions, reservations and transport |
 | Accounting and durable state | `coordinator/billing/`, `coordinator/payments/`; contracts/decorator in `coordinator/store/`, implementations in `store/memory/` and `store/postgres/` |
+| Coordinator tests and fixtures | `coordinator/tests/` mirrors production owners; public API contracts use `tests/api/<domain>/contracts/`, shared helpers use `tests/internal/` |
 | Provider inference, downloads, security, local serving | `provider-swift/Sources/ProviderCore/`; entrypoints in `provider-swift/Sources/darkbloom/` |
 | Autopilot runtime and operator controls | `ProviderCore/Autopilot/`, `ProviderCore/Protocol/Autopilot/`, and `darkbloom/Autopilot/` under `provider-swift/Sources/`; startup is in `darkbloom/Start/` |
 | Portable model manifests and hashing | `provider-swift/Sources/ProviderCoreFoundation/`; target defined in `provider-swift/Package.swift` (`package`) |
@@ -43,12 +44,39 @@ The dependency repositories are Git submodules under `libs/`, declared in
 `.gitmodules`. The [docs index](../README.md) separates current instructions
 from historical designs and reports.
 
+Production-consumed internal boundaries are not a second application or a test
+facade. Start from the API/service owner for orchestration, then follow these
+components for the specific invariant:
+
+| Concern | Internal owner |
+|---|---|
+| Middleware, projections and reporting calculations | `coordinator/internal/api/` |
+| Media, provider-body memo/sealing, relay, cancellation, promotions/reservations and outcomes | `coordinator/internal/inference/` |
+| Session/inventory/heartbeat, challenge, identity, MDM and trust authority | `coordinator/internal/provider/` |
+| Apple transcript, exchange/evidence/storage, recovery, qualification and authorization | `coordinator/internal/appattest/`; `coordinator/appattest/service/` binds the live session lifecycle and collaborators |
+| Independent route/profile/outcome pipelines | `coordinator/internal/observation/` |
+| Writer lanes/watchdog, drain authority, identity gates, queue-drain coalescing, bounded demand and detached residency/capacity/forecast/deadline policy | `coordinator/internal/registry/` |
+| Connection age/order and eviction grace | `coordinator/internal/registry/connectiontime/origin.go` (`Origin`), `coordinator/internal/registry/eviction/grace.go` (`Grace`); `coordinator/registry/connection_lifecycle.go` binds maintenance to the live registry |
+| Live connection membership and advertisement counts | `coordinator/registry/provider_directory.go` (`ProviderDirectory`) shares `Registry.mu`; `coordinator/internal/registry/modelindex/counts.go` (`Counts`) owns live-advertisement counts |
+| Restore publication and pending service charges | `coordinator/registry/provider_persistence.go` (`ProviderPersistence`), `coordinator/registry/service_reservations.go` (`ServiceReservations`); both retain the provider's existing lock boundaries |
+| Cache restore, maintenance and capability publication | `coordinator/registry/cache_restoration.go`, `coordinator/registry/cache_maintenance.go`, `coordinator/registry/cache_snapshot.go`; factories in `coordinator/registry/cache_dependencies.go` retain the actual tracker/registry |
+| Autopilot session authority, bounded control and pending durable phases | `coordinator/internal/registry/autopilotstate/`, `autopilotcontrol/`, `autopilotledger/`; pure placement and demand contracts remain under `coordinator/registry/autopilot/` |
+| Cache generations, memory history, shared records and SQL helpers | `coordinator/internal/store/` |
+| Sidecar identity, protocol, artifacts, catalog/preload and endpoint lowering | `coordinator/internal/promptcontract/` |
+| Remote media policy, read budgets and reference grouping | `coordinator/internal/mediafetch/` |
+| Frame scanning and decoding | `coordinator/internal/wire/` |
+
+Application assembly supplies the same registry/store/ledger/read-cache instances
+through `api.RuntimeDependencies` (`coordinator/api/server.go`, `NewRuntime`).
+See [coordinator assembly](../architecture/components/coordinator.md#startup-sequence)
+for startup ordering and cross-owner callback binding.
+
 ### 2. Search filenames, then symbols
 
 Find likely files before searching their contents:
 
 ```bash
-rg --files coordinator/api -g '*attest*'
+rg --files coordinator/api coordinator/internal coordinator/tests -g '*attest*'
 rg --files provider-swift/Sources provider-swift/Tests -g '*PrefixCache*'
 rg --files console-ui/src -g '*Auth*' -g '*auth*'
 ```
@@ -56,7 +84,7 @@ rg --files console-ui/src -g '*Auth*' -g '*auth*'
 Then find the implementation and its callers or tests:
 
 ```bash
-rg -n 'recordRequestOutcome|classifyOutcomeByCode' coordinator/api
+rg -n 'RecordRequestOutcome|ClassifyOutcomeByCode' coordinator/api coordinator/internal coordinator/tests
 rg -n 'StatusCanonical' provider-swift/Sources provider-swift/Tests coordinator/attestation
 ```
 
@@ -65,9 +93,10 @@ separately when you need measurements or the state at a historical commit.
 
 ### 3. Name and place files by responsibility
 
-Group a feature's independent logic and tests in its own directory. For example,
-`coordinator/api/autopilot/` owns its HTTP validation and response tests.
-`coordinator/registry/autopilot/` owns pure policy and demand tests; it imports no registry
+Group a feature's independent logic in its own directory and mirror that owner
+under `coordinator/tests/`. For example, `coordinator/api/autopilot/` owns HTTP
+validation, with tests in `coordinator/tests/api/autopilot/`.
+`coordinator/registry/autopilot/` owns pure policy and demand logic; it imports no registry
 or live-provider types. The registry captures detached values and retains session
 identity beside them before revalidating a plan. Go methods that need registry,
 HTTP-server or store receivers stay in their owning package as integration files.
@@ -78,7 +107,7 @@ configuration files.
 Use the feature followed by the behavior: `code_attest_reuse_policy_test.go`
 groups the attestation reuse policy cases, and `stripe_transfer_reversal_test.go`
 groups transfer reversal cases. A shared fixture belongs in a domain-specific
-helper file, such as `coordinator/api/tests/provider/helpers_test.go`
+helper file, such as `coordinator/tests/api/provider/contracts/helpers_test.go`
 (`setupTestServer`).
 
 Split unrelated test collections by the contracts they verify. Work-wave,
@@ -86,17 +115,21 @@ priority, and ticket labels belong in commit history. Meaningful protocol,
 engine, model, and fixture-version identifiers belong in names when they
 distinguish supported behavior.
 
-Keep private Go invariant tests beside their owner. Pure request normalization
-and response emitter tests belong in `coordinator/api/inference/request/` and
-`coordinator/api/inference/response/`. Public HTTP/WebSocket contracts belong
-under `coordinator/api/tests/<domain>/` and use the real composed router fixture
-in `coordinator/api/tests/internal/testkit/server.go` (`NewServer`); authenticated
-fixtures use locally signed JWTs via `auth.go` (`NewSessions`). Root API tests
-retain composition and private global-middleware coverage, not moved domain
-tests. Backend conformance lives under `coordinator/store/tests/`. See
+Keep every coordinator `_test.go` under `coordinator/tests/`. Pure request
+normalization and response emitter tests belong in
+`coordinator/tests/api/inference/request/` and `coordinator/tests/api/inference/response/`.
+Public HTTP/WebSocket contracts belong under `coordinator/tests/api/<domain>/contracts/`
+and use the real composed router fixture in
+`coordinator/tests/internal/testkit/server.go` (`NewServer`); authenticated
+fixtures use locally signed JWTs via `auth.go` (`NewSessions`). `coordinator/tests/api/`
+retains composition and global-middleware coverage, not moved domain tests.
+Backend conformance lives under `coordinator/tests/store/contracts/`. See
 [the test-boundary map](test.md#2-coordinator-go) for fixture and execution rules.
 Do not export implementation state merely to move a test. A new directory
-creates a new Go package and may change access to unexported code.
+creates a new Go package. Retain injected dependencies in test fixtures and
+extract cohesive production-consumed components under `coordinator/internal/`
+where an invariant crosses a real package boundary. Do not use test-only
+production facades, copied implementations, overlays, reflection or `go:linkname`.
 Within a SwiftPM target or UI
 feature, use folders for cohesive subsystems. Keep small, already focused
 targets flat. Put a fixture beside its users; use a shared helper location when
@@ -123,10 +156,12 @@ tests, build or typecheck where imports or source membership changed, and run
 the same fixture bytes and preserve the same test selection.
 
 Remove obsolete source and test shells rather than leaving package-only files.
-`coordinator/api/source_layout_test.go` (`TestAPISourceFilesHaveDeclarations`)
-checks Go AST declarations throughout the API tree, excluding `testdata` and
-allowing `doc.go`. Run recursive API package selectors after a move; a root-only
-`go test ./coordinator/api` no longer selects the domain or contract suites.
+`coordinator/tests/api/source_layout_test.go` (`TestAPISourceFilesHaveDeclarations`)
+checks Go AST declarations in the API, extracted components and API tests,
+excluding `testdata` and allowing `doc.go`. `coordinator/tests/layout_test.go`
+enforces the separate test tree and rejects production test imports. Run
+`go test ./coordinator/tests/api/...` for API suites; `go test ./coordinator/api`
+does not select the tests. The complete `./coordinator/...` selector still does.
 
 The coordinator runner instruments the selected production packages and the
 owners of external contract suites before merging atomic coverage profiles.

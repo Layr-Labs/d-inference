@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-03
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -167,7 +167,7 @@ Production publication requires independent [durable App Attest build qualificat
    provider publication are separate operations.
 
 The drain implementation lives in `provider-swift/Sources/darkbloom/ServiceDrain.swift`
-(`ServiceDrain`) and `coordinator/api/provider/provider_completion_barrier.go`
+(`ServiceDrain`) and `coordinator/internal/provider/session/provider_completion_barrier.go`
 (`providerCompletionBarrier`). See [CLI lifecycle behavior](../provider/cli-reference.md)
 for normal timeout and explicit-force semantics.
 

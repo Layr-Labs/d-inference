@@ -1,6 +1,6 @@
 package store
 
-import "time"
+import "github.com/eigeninference/d-inference/coordinator/internal/store/storecache"
 
 // CachedStore is a read-through cache decorator over Store. It overrides only
 // the lookups that sit on the inference hot path and are otherwise a Postgres
@@ -30,72 +30,23 @@ import "time"
 // Returned values are deep copies; the cached value is never handed out.
 type CachedStore struct {
 	Store
-	users  *domainCache[User]
-	models *domainCache[ModelRegistryRecord]
+	users  *storecache.Domain[User]
+	models *storecache.Domain[ModelRegistryRecord]
 }
 
-// CacheConfig tunes CachedStore. Zero fields take DefaultCacheConfig values.
-type CacheConfig struct {
-	// UserTTL bounds staleness of a user's Role / PlatformFeePercent / Stripe
-	// fields after an out-of-band write. In-process writes invalidate at once.
-	UserTTL time.Duration
-	// ModelTTL bounds staleness of a model's active version and files. Kept
-	// tighter than UserTTL because a promoted version changes what providers
-	// are told to download.
-	ModelTTL time.Duration
-	// NegativeTTL bounds how long an ErrNotFound result is remembered. Short,
-	// so an entity created out of band appears quickly; in-process creation
-	// invalidates at once.
-	NegativeTTL time.Duration
-	// MaxUsers / MaxModels cap each domain's entry count (random eviction).
-	MaxUsers  int
-	MaxModels int
-	// Now is the clock; nil means time.Now. Tests inject a fake clock.
-	Now func() time.Time
-}
+// CacheConfig tunes the read-through cache. Zero fields use production defaults.
+type CacheConfig = storecache.Config
 
-// DefaultCacheConfig is the production tuning: users 30s, model records 10s,
-// negative entries 5s, 10k users and 1k models resident.
-func DefaultCacheConfig() CacheConfig {
-	return CacheConfig{
-		UserTTL:     30 * time.Second,
-		ModelTTL:    10 * time.Second,
-		NegativeTTL: 5 * time.Second,
-		MaxUsers:    10_000,
-		MaxModels:   1_000,
-	}
-}
-
-func (c CacheConfig) withDefaults() CacheConfig {
-	d := DefaultCacheConfig()
-	if c.UserTTL <= 0 {
-		c.UserTTL = d.UserTTL
-	}
-	if c.ModelTTL <= 0 {
-		c.ModelTTL = d.ModelTTL
-	}
-	if c.NegativeTTL <= 0 {
-		c.NegativeTTL = d.NegativeTTL
-	}
-	if c.MaxUsers <= 0 {
-		c.MaxUsers = d.MaxUsers
-	}
-	if c.MaxModels <= 0 {
-		c.MaxModels = d.MaxModels
-	}
-	if c.Now == nil {
-		c.Now = time.Now
-	}
-	return c
-}
+// DefaultCacheConfig returns the production cache limits and lifetimes.
+func DefaultCacheConfig() CacheConfig { return storecache.DefaultConfig() }
 
 // NewCached wraps inner (memory or Postgres) with the read-through cache.
 func NewCached(inner Store, cfg CacheConfig) *CachedStore {
-	cfg = cfg.withDefaults()
+	cfg = storecache.Resolve(cfg)
 	return &CachedStore{
 		Store:  inner,
-		users:  newDomainCache[User](cfg.UserTTL, cfg.NegativeTTL, cfg.MaxUsers, cfg.Now),
-		models: newDomainCache[ModelRegistryRecord](cfg.ModelTTL, cfg.NegativeTTL, cfg.MaxModels, cfg.Now),
+		users:  storecache.New[User](cfg.UserTTL, cfg.NegativeTTL, cfg.MaxUsers, cfg.Now, ErrNotFound),
+		models: storecache.New[ModelRegistryRecord](cfg.ModelTTL, cfg.NegativeTTL, cfg.MaxModels, cfg.Now, ErrNotFound),
 	}
 }
 
@@ -111,15 +62,8 @@ var (
 	_ Unwrapper = (*CachedStore)(nil)
 )
 
-// CacheCounters is one domain's counters since process start.
-type CacheCounters struct {
-	Hits          uint64 `json:"hits"`
-	Misses        uint64 `json:"misses"`
-	NegativeHits  uint64 `json:"negative_hits"`
-	Evictions     uint64 `json:"evictions"`
-	Invalidations uint64 `json:"invalidations"`
-	Entries       int    `json:"entries"`
-}
+// CacheCounters reports one domain's cache activity since process start.
+type CacheCounters = storecache.Counters
 
 // CacheStats is a point-in-time snapshot of both domains.
 type CacheStats struct {
@@ -129,17 +73,17 @@ type CacheStats struct {
 
 // Stats returns hit/miss/eviction counters for both domains.
 func (c *CachedStore) Stats() CacheStats {
-	return CacheStats{Users: c.users.counters(), Models: c.models.counters()}
+	return CacheStats{Users: c.users.Counters(), Models: c.models.Counters()}
 }
 
 func (c *CachedStore) GetUserByAccountID(accountID string) (*User, error) {
-	return c.users.get("account\x00"+accountID, func() (*User, error) {
+	return c.users.Get("account\x00"+accountID, func() (*User, error) {
 		return c.Store.GetUserByAccountID(accountID)
 	}, cloneUser)
 }
 
 func (c *CachedStore) GetUserByPrivyID(privyUserID string) (*User, error) {
-	return c.users.get("privy\x00"+privyUserID, func() (*User, error) {
+	return c.users.Get("privy\x00"+privyUserID, func() (*User, error) {
 		return c.Store.GetUserByPrivyID(privyUserID)
 	}, cloneUser)
 }
@@ -148,30 +92,30 @@ func (c *CachedStore) GetUserByPrivyID(privyUserID string) (*User, error) {
 // duplicate-key recovery must not receive a cached negative lookup.
 func (c *CachedStore) CreateUser(user *User) error {
 	err := c.Store.CreateUser(user)
-	c.users.invalidate()
+	c.users.Invalidate()
 	return err
 }
 
 func (c *CachedStore) SetUserStripeAccount(accountID, stripeAccountID, status, stripeAccountCountry, destinationType, destinationLast4 string, instantEligible bool) error {
 	err := c.Store.SetUserStripeAccount(accountID, stripeAccountID, status, stripeAccountCountry, destinationType, destinationLast4, instantEligible)
-	c.users.invalidate()
+	c.users.Invalidate()
 	return err
 }
 
 func (c *CachedStore) SetUserRole(accountID, role string) error {
 	err := c.Store.SetUserRole(accountID, role)
-	c.users.invalidate()
+	c.users.Invalidate()
 	return err
 }
 
 func (c *CachedStore) SetUserPlatformFeePercent(accountID string, feePercent *int64) error {
 	err := c.Store.SetUserPlatformFeePercent(accountID, feePercent)
-	c.users.invalidate()
+	c.users.Invalidate()
 	return err
 }
 
 func (c *CachedStore) GetModelRegistryRecord(modelID string) (*ModelRegistryRecord, error) {
-	return c.models.get(modelID, func() (*ModelRegistryRecord, error) {
+	return c.models.Get(modelID, func() (*ModelRegistryRecord, error) {
 		return c.Store.GetModelRegistryRecord(modelID)
 	}, cloneModelRegistryRecord)
 }
@@ -180,7 +124,7 @@ func (c *CachedStore) GetModelRegistryRecord(modelID string) (*ModelRegistryReco
 // implementations derive it (manifestFromRecord builds a fresh value that
 // aliases nothing), so it needs no second cache and no defensive clone.
 func (c *CachedStore) GetModelManifest(modelID string) (*ModelManifest, error) {
-	rec, err := c.models.get(modelID, func() (*ModelRegistryRecord, error) {
+	rec, err := c.models.Get(modelID, func() (*ModelRegistryRecord, error) {
 		return c.Store.GetModelRegistryRecord(modelID)
 	}, func(r *ModelRegistryRecord) *ModelRegistryRecord { return r })
 	if err != nil {
@@ -193,36 +137,36 @@ func (c *CachedStore) GetModelManifest(modelID string) (*ModelManifest, error) {
 // Alias and publishing-key writes do not affect the record query.
 func (c *CachedStore) UpsertModelRegistryEntry(entry *ModelRegistryEntry) error {
 	err := c.Store.UpsertModelRegistryEntry(entry)
-	c.models.invalidate()
+	c.models.Invalidate()
 	return err
 }
 
 func (c *CachedStore) SetModelVersion(entry *ModelRegistryEntry, version *ModelVersion, files []ModelVersionFile) error {
 	err := c.Store.SetModelVersion(entry, version, files)
-	c.models.invalidate()
+	c.models.Invalidate()
 	return err
 }
 
 func (c *CachedStore) SetExistingModelVersion(version *ModelVersion, files []ModelVersionFile) error {
 	err := c.Store.SetExistingModelVersion(version, files)
-	c.models.invalidate()
+	c.models.Invalidate()
 	return err
 }
 
 func (c *CachedStore) PromoteModelVersion(modelID, version string) error {
 	err := c.Store.PromoteModelVersion(modelID, version)
-	c.models.invalidate()
+	c.models.Invalidate()
 	return err
 }
 
 func (c *CachedStore) RetireModelVersion(modelID, version string) error {
 	err := c.Store.RetireModelVersion(modelID, version)
-	c.models.invalidate()
+	c.models.Invalidate()
 	return err
 }
 
 func (c *CachedStore) SetModelStatus(modelID, status string) error {
 	err := c.Store.SetModelStatus(modelID, status)
-	c.models.invalidate()
+	c.models.Invalidate()
 	return err
 }

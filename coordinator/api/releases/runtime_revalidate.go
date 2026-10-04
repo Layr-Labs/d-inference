@@ -1,6 +1,7 @@
 package releases
 
 import (
+	runtimepolicy "github.com/eigeninference/d-inference/coordinator/internal/api/releases/runtimepolicy"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
@@ -68,5 +69,5 @@ func RuntimeManifestApprovesMetallib(
 	if manifest == nil {
 		return false
 	}
-	return templateHashAccepted(manifest.TemplateHashes["mlx_metallib"], reported["mlx_metallib"])
+	return runtimepolicy.TemplateHashAccepted(manifest.TemplateHashes["mlx_metallib"], reported["mlx_metallib"])
 }

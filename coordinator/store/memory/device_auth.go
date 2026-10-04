@@ -12,12 +12,12 @@ func (s *MemoryStore) CreateDeviceCode(dc *store.DeviceCode) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.deviceCodesByUserCode[dc.UserCode]; exists {
+	if _, exists := s.history.DeviceCodesByUserCode[dc.UserCode]; exists {
 		return fmt.Errorf("user code %q already exists", dc.UserCode)
 	}
 	copy := *dc
-	s.deviceCodesByCode[dc.DeviceCode] = &copy
-	s.deviceCodesByUserCode[dc.UserCode] = &copy
+	s.history.DeviceCodesByCode[dc.DeviceCode] = &copy
+	s.history.DeviceCodesByUserCode[dc.UserCode] = &copy
 	return nil
 }
 
@@ -25,7 +25,7 @@ func (s *MemoryStore) GetDeviceCode(deviceCode string) (*store.DeviceCode, error
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	dc, ok := s.deviceCodesByCode[deviceCode]
+	dc, ok := s.history.DeviceCodesByCode[deviceCode]
 	if !ok {
 		return nil, errors.New("device code not found")
 	}
@@ -37,7 +37,7 @@ func (s *MemoryStore) GetDeviceCodeByUserCode(userCode string) (*store.DeviceCod
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	dc, ok := s.deviceCodesByUserCode[userCode]
+	dc, ok := s.history.DeviceCodesByUserCode[userCode]
 	if !ok {
 		return nil, fmt.Errorf("user code %q not found", userCode)
 	}
@@ -49,7 +49,7 @@ func (s *MemoryStore) ApproveDeviceCode(deviceCode, accountID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	dc, ok := s.deviceCodesByCode[deviceCode]
+	dc, ok := s.history.DeviceCodesByCode[deviceCode]
 	if !ok {
 		return errors.New("device code not found")
 	}
@@ -70,10 +70,10 @@ func (s *MemoryStore) DeleteExpiredDeviceCodes() error {
 	defer s.mu.Unlock()
 
 	now := time.Now()
-	for code, dc := range s.deviceCodesByCode {
+	for code, dc := range s.history.DeviceCodesByCode {
 		if now.After(dc.ExpiresAt) {
-			delete(s.deviceCodesByCode, code)
-			delete(s.deviceCodesByUserCode, dc.UserCode)
+			delete(s.history.DeviceCodesByCode, code)
+			delete(s.history.DeviceCodesByUserCode, dc.UserCode)
 		}
 	}
 	return nil

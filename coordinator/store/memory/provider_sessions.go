@@ -3,108 +3,25 @@ package memory
 import (
 	"context"
 	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-// OpenProviderSession records the start of a provider connection. Idempotent
-// (mirrors the postgres ON CONFLICT DO NOTHING): if a row for sessionID already
-// exists — duplicate register, or open racing behind a close — it does nothing.
-func (s *MemoryStore) OpenProviderSession(_ context.Context, sessionID, serial, accountID string) error {
+func (s *MemoryStore) OpenProviderSession(ctx context.Context, sessionID, serial, accountID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for i := range s.providerSessions {
-		if s.providerSessions[i].SessionID == sessionID {
-			return nil
-		}
-	}
-	now := time.Now()
-	s.providerSessionSeq++
-	s.providerSessions = append(s.providerSessions, store.ProviderSession{
-		ID:           s.providerSessionSeq,
-		SessionID:    sessionID,
-		SerialNumber: serial,
-		AccountID:    accountID,
-		ConnectedAt:  now,
-		LastSeen:     now,
-	})
-	return nil
+	return s.history.OpenProviderSession(ctx, sessionID, serial, accountID)
 }
-
-// TouchProviderSession updates the open session's last_seen and backfills
-// serial/account/provider_key if they were unknown at open time.
-func (s *MemoryStore) TouchProviderSession(_ context.Context, sessionID, serial, accountID, providerKey string, lastSeen time.Time) error {
+func (s *MemoryStore) TouchProviderSession(ctx context.Context, sessionID, serial, accountID, providerKey string, lastSeen time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for i := range s.providerSessions {
-		ps := &s.providerSessions[i]
-		if ps.SessionID == sessionID && ps.DisconnectedAt == nil {
-			ps.LastSeen = lastSeen
-			if ps.SerialNumber == "" {
-				ps.SerialNumber = serial
-			}
-			if ps.AccountID == "" {
-				ps.AccountID = accountID
-			}
-			if ps.ProviderKey == "" {
-				ps.ProviderKey = providerKey
-			}
-			// At most one open row per sessionID (OpenProviderSession
-			// guarantees it), so stop scanning once matched.
-			return nil
-		}
-	}
-	return nil
+	return s.history.TouchProviderSession(ctx, sessionID, serial, accountID, providerKey, lastSeen)
 }
-
-// CloseProviderSession marks the session for sessionID as ended. Upsert
-// semantics (mirrors postgres): closes an open row; leaves an already-closed row
-// untouched; and if the row is missing (close raced ahead of open) inserts an
-// already-closed row so no permanently-open session can be orphaned.
-func (s *MemoryStore) CloseProviderSession(_ context.Context, sessionID, reason string, when time.Time) error {
+func (s *MemoryStore) CloseProviderSession(ctx context.Context, sessionID, reason string, when time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for i := range s.providerSessions {
-		ps := &s.providerSessions[i]
-		if ps.SessionID == sessionID {
-			if ps.DisconnectedAt == nil {
-				t := when
-				ps.DisconnectedAt = &t
-				ps.DisconnectReason = reason
-			}
-			return nil
-		}
-	}
-	t := when
-	s.providerSessionSeq++
-	s.providerSessions = append(s.providerSessions, store.ProviderSession{
-		ID:               s.providerSessionSeq,
-		SessionID:        sessionID,
-		ConnectedAt:      when,
-		LastSeen:         when,
-		DisconnectedAt:   &t,
-		DisconnectReason: reason,
-	})
-	return nil
+	return s.history.CloseProviderSession(ctx, sessionID, reason, when)
 }
-
-// CloseOpenProviderSessions closes any sessions still open, setting
-// disconnected_at to the last heartbeat (startup reconcile).
-func (s *MemoryStore) CloseOpenProviderSessions(_ context.Context, staleBefore time.Time) (int, error) {
+func (s *MemoryStore) CloseOpenProviderSessions(ctx context.Context, staleBefore time.Time) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	n := 0
-	for i := range s.providerSessions {
-		ps := &s.providerSessions[i]
-		// Only close genuinely-orphaned sessions (last heartbeat older than the
-		// staleness fence); a session still touched by another live instance
-		// during a blue-green deploy stays fresh and is left open.
-		if ps.DisconnectedAt == nil && ps.LastSeen.Before(staleBefore) {
-			t := ps.LastSeen
-			ps.DisconnectedAt = &t
-			ps.DisconnectReason = "coordinator_restart"
-			n++
-		}
-	}
-	return n, nil
+	return s.history.CloseOpenProviderSessions(ctx, staleBefore)
 }

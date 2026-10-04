@@ -4,44 +4,13 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	cachemigrations "github.com/eigeninference/d-inference/coordinator/internal/store/cachemigrations"
+
+	privacysql "github.com/eigeninference/d-inference/coordinator/internal/store/privacysql"
+
+	profilesql "github.com/eigeninference/d-inference/coordinator/internal/store/profilesql"
 )
-
-const legacyCacheAffinityGuardFunction = `CREATE OR REPLACE FUNCTION clear_legacy_cache_affinity_key()
-RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
-	NEW.cache_affinity_key := '';
-	RETURN NEW;
-END $$`
-
-const legacyCacheAffinityGuardTrigger = `DO $$ BEGIN
-	IF NOT EXISTS (
-		SELECT 1
-		FROM pg_trigger tg
-		JOIN pg_class target ON target.oid = tg.tgrelid
-		JOIN pg_namespace ns ON ns.oid = target.relnamespace
-		WHERE tg.tgname = 'clear_legacy_cache_affinity_key'
-		  AND NOT tg.tgisinternal
-		  AND target.relname = 'inference_routes'
-		  AND ns.nspname = current_schema()
-	) THEN
-		CREATE TRIGGER clear_legacy_cache_affinity_key
-		BEFORE INSERT OR UPDATE OF cache_affinity_key ON inference_routes
-		FOR EACH ROW EXECUTE FUNCTION clear_legacy_cache_affinity_key();
-	END IF;
-END $$`
-
-const legacyCacheAffinityScrubMigration = `DO $$ BEGIN
-	IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE id = 'scrub_inference_route_cache_affinity_v1') THEN
-		IF EXISTS (
-			SELECT 1 FROM information_schema.columns
-			WHERE table_schema = current_schema()
-			  AND table_name = 'inference_routes'
-			  AND column_name = 'cache_affinity_key'
-		) THEN
-			UPDATE inference_routes SET cache_affinity_key = '' WHERE cache_affinity_key <> '';
-		END IF;
-		INSERT INTO schema_migrations (id) VALUES ('scrub_inference_route_cache_affinity_v1');
-	END IF;
-END $$`
 
 // migrate runs the schema creation statements.
 func (s *PostgresStore) migrate(ctx context.Context) error {
@@ -637,9 +606,9 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
 		`ALTER TABLE provider_log_reports ALTER COLUMN serial_number SET DEFAULT ''`,
-		providerLogReportSerialGuardFunction,
-		providerLogReportSerialGuardTrigger,
-		providerLogReportSerialScrubMigration,
+		privacysql.LogSerialGuardFunction,
+		privacysql.LogSerialGuardTrigger,
+		privacysql.LogSerialScrubMigration,
 		`DROP INDEX IF EXISTS idx_log_reports_serial`,
 
 		// Provider sessions — durable connect→disconnect history for uptime/downtime.
@@ -795,9 +764,9 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		// prompt-cache identifiers once. The trigger also clears writes from an
 		// older coordinator during blue-green overlap or emergency rollback while
 		// retaining that binary's expected SQL shape.
-		legacyCacheAffinityGuardFunction,
-		legacyCacheAffinityGuardTrigger,
-		legacyCacheAffinityScrubMigration,
+		privacysql.CacheAffinityGuardFunction,
+		privacysql.CacheAffinityGuardTrigger,
+		privacysql.CacheAffinityScrubMigration,
 
 		// Rejected inbound inference requests (4xx/5xx) at any pipeline stage,
 		// with the request shape and a counterfactual servability snapshot
@@ -1029,12 +998,12 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`INSERT INTO model_demand_collection (singleton,started_at) VALUES (TRUE,NOW()) ON CONFLICT DO NOTHING`,
 		requestOutcomesTableDDL,
 		`CREATE INDEX IF NOT EXISTS idx_request_outcomes_received ON request_outcomes (received_at, coord_request_id)`,
-		requestProfilesTableDDL,
-		requestProfilesCreatedIndexDDL,
-		requestProfilesCoordIndexDDL,
-		requestProfilesProviderIndexDDL,
-		fleetSnapshotsTableDDL,
-		fleetSnapshotsSampledIndexDDL,
+		profilesql.RequestTableDDL,
+		profilesql.RequestProfilesCreatedIndexDDL,
+		profilesql.RequestProfilesCoordIndexDDL,
+		profilesql.RequestProfilesProviderIndexDDL,
+		profilesql.FleetTableDDL,
+		profilesql.FleetSnapshotsSampledIndexDDL,
 		// request_profiles / fleet_snapshots are profiler-only and cold (never
 		// hot-path locked), so idempotent ADD COLUMN IF NOT EXISTS is safe here;
 		// it upgrades a database that first booted at 02832be21 (before the
@@ -1053,13 +1022,13 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`ALTER TABLE fleet_snapshots ALTER COLUMN free_for_load_gb DROP NOT NULL`,
 		`DO $$ BEGIN ALTER TABLE fleet_snapshots ADD COLUMN IF NOT EXISTS model_vision BOOL NOT NULL DEFAULT FALSE; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE fleet_snapshots ADD COLUMN IF NOT EXISTS template_render_ok BOOL; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
-		fleetSnapshotsProviderIndexDDL,
+		profilesql.FleetSnapshotsProviderIndexDDL,
 	}
 
 	migrations = append(migrations, autopilotDDL)
 	migrations = append(migrations, appAttestShadowDDL, machineInventoryDDL, appAttestArchiveDDL, appAttestEnrollmentDDL, appAttestReceiptDDL)
 	migrations = append(migrations, appAttestRevocationDDL, appAttestBuildDDL, appAttestKeyRotationDDL, modelTokenPromotionDDL)
-	migrations = append(migrations, cacheRoutingHoldersDDL, cacheRoutingHoldersBackfillColumnsDDL, cacheRoutingHoldersDropChainHashDDL, cacheRoutingHoldersExpiryIndexDDL, cacheRoutingHoldersUpdatedIndexDDL, cacheRoutingDemandDDL, cacheRoutingDemandSeenIndexDDL, cacheRoutingMetaDDL)
+	migrations = append(migrations, cacheRoutingHoldersDDL, cachemigrations.BackfillColumnsDDL, cachemigrations.DropChainHashDDL, cacheRoutingHoldersExpiryIndexDDL, cacheRoutingHoldersUpdatedIndexDDL, cacheRoutingDemandDDL, cacheRoutingDemandSeenIndexDDL, cacheRoutingMetaDDL)
 	for i, m := range migrations {
 		started := time.Now()
 		_, err := s.pool.Exec(ctx, m)

@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"time"
 
+	retention "github.com/eigeninference/d-inference/coordinator/internal/store/retention"
+	"github.com/eigeninference/d-inference/coordinator/internal/store/shared"
 	"github.com/eigeninference/d-inference/coordinator/store"
-	"github.com/eigeninference/d-inference/coordinator/store/internal/shared"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -73,12 +74,12 @@ func (s *PostgresStore) ModelDemand(ctx context.Context, since, until time.Time)
 }
 
 func (s *PostgresStore) PruneModelDemand(ctx context.Context, before time.Time, batch int) (int, error) {
-	n, _, err := s.pruneTelemetryTable(ctx, telemetryTable{name: "model_demand_requests", timeCol: "received_at"}, before, batch)
+	n, _, err := retention.Prune(ctx, s.pool, retention.Table{Name: "model_demand_requests", TimeColumn: "received_at"}, before, batch)
 	if err != nil || before.IsZero() {
 		return n, err
 	}
 	if batch <= 0 {
-		batch = defaultTelemetryPruneBatch
+		batch = retention.DefaultBatch
 	}
 	cutoff := before.UTC().Truncate(time.Hour)
 	for {

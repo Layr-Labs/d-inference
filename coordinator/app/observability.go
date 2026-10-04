@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/eigeninference/d-inference/coordinator/api"
+	"github.com/eigeninference/d-inference/coordinator/api/observation"
 	"github.com/eigeninference/d-inference/coordinator/config"
 	"github.com/eigeninference/d-inference/coordinator/datadog"
 	"github.com/eigeninference/d-inference/coordinator/telemetry"
@@ -12,11 +12,11 @@ import (
 	ddtracer "gopkg.in/DataDog/dd-trace-go.v1/ddtrace/tracer"
 )
 
-func configureObservability(cfg config.AppConfig, srv *api.Server, logger *slog.Logger) func() {
+func configureObservability(cfg config.AppConfig, observer *observation.Owner, logger *slog.Logger) func() {
 	stopTracer, closeClient := func() {}, func() {}
 	// Coordinator self-telemetry emitter.
-	telemetryEmitter := telemetry.NewEmitter(logger, srv.Metrics(), telemetry.CoordinatorVersion)
-	srv.SetEmitter(telemetryEmitter)
+	telemetryEmitter := telemetry.NewEmitter(logger, observer.Metrics(), telemetry.CoordinatorVersion)
+	observer.SetEmitter(telemetryEmitter)
 
 	// --- Datadog APM + DogStatsD + Logs API ---
 	ddCfg := cfg.DatadogConfig
@@ -32,7 +32,7 @@ func configureObservability(cfg config.AppConfig, srv *api.Server, logger *slog.
 		if err != nil {
 			logger.Warn("datadog client init failed (continuing without DD)", "error", err)
 		} else {
-			srv.SetDatadog(ddClient)
+			observer.SetDatadog(ddClient)
 			telemetryEmitter.SetDatadog(ddClient)
 			closeClient = func() { ddClient.Close() }
 			logger.Info("datadog integration enabled",

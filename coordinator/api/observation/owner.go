@@ -10,6 +10,10 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/datadog"
+	fleet "github.com/eigeninference/d-inference/coordinator/internal/observation/fleet"
+	outcomes "github.com/eigeninference/d-inference/coordinator/internal/observation/outcomes"
+	profile "github.com/eigeninference/d-inference/coordinator/internal/observation/profile"
+	routes "github.com/eigeninference/d-inference/coordinator/internal/observation/routes"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -31,6 +35,10 @@ type Dependencies struct {
 	Logger               *slog.Logger
 	Hooks                Hooks
 	ProfileFallbackGrace time.Duration
+	Profiles             *profile.Profiler
+	QueueGauges          *fleet.QueueGauges
+	ThroughputDetector   *fleet.ThroughputDetector
+	RouteSinkFactory     func(*slog.Logger) *routes.Sink
 }
 
 type Owner struct {
@@ -41,25 +49,45 @@ type Owner struct {
 	metrics              *Metrics
 	dd                   *datadog.Client
 	emitter              *telemetry.Emitter
-	profiler             *profiler
-	routeTelemetry       *telemetrySink
-	requestOutcomes      *requestOutcomeSink
+	profiler             *profile.Profiler
+	routeTelemetry       *routes.Sink
+	requestOutcomes      *outcomes.Sink
 	unknownRequestFrames atomic.Int64
 	profileFallbackGrace time.Duration
-	queueGauges          queueGaugeState
+	queueGauges          *fleet.QueueGauges
+	throughputDetector   *fleet.ThroughputDetector
 }
 
 func New(deps Dependencies) *Owner {
 	s := &Owner{store: deps.Store, registry: deps.Registry, logger: deps.Logger, hooks: deps.Hooks, metrics: NewMetrics(), profileFallbackGrace: deps.ProfileFallbackGrace}
+	s.queueGauges = deps.QueueGauges
+	if s.queueGauges == nil {
+		s.queueGauges = &fleet.QueueGauges{}
+	}
+	s.throughputDetector = deps.ThroughputDetector
+	if s.throughputDetector == nil {
+		s.throughputDetector = fleet.NewThroughputDetector(fleet.DetectorDependencies{Registry: s.registry, Logger: s.logger, Incr: s.Incr, Counter: func(model, chip string) {
+			if s.metrics != nil {
+				s.metrics.IncCounter("routing.throughput_anomaly", MetricLabel{Name: "model", Value: model}, MetricLabel{Name: "chip_family", Value: chip})
+			}
+		}})
+	}
 	if s.profileFallbackGrace == 0 {
 		s.profileFallbackGrace = 31 * time.Second
 	}
 	if s.store != nil {
-		s.routeTelemetry = newTelemetrySink(s.logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers)
+		if deps.RouteSinkFactory != nil {
+			s.routeTelemetry = deps.RouteSinkFactory(s.logger)
+		} else {
+			s.routeTelemetry = routes.New(s.logger, routes.DefaultCapacity, routes.DefaultWorkers)
+		}
 	}
-	s.profiler = newProfilerFromEnv(s)
+	s.profiler = deps.Profiles
+	if s.profiler == nil {
+		s.profiler = profile.NewFromEnv(profile.Dependencies{Store: s.store, Logger: s.logger, Incr: s.ddIncr, Count: s.ddCount})
+	}
 	if s.store != nil {
-		s.requestOutcomes = newRequestOutcomeSink(s, defaultTelemetrySinkCapacity)
+		s.requestOutcomes = outcomes.New(outcomes.Dependencies{Store: s.store, Logger: s.logger, Incr: s.ddIncr, Count: s.ddCount}, routes.DefaultCapacity)
 	}
 	return s
 }
@@ -102,8 +130,8 @@ func (s *Owner) FlushRoutes() {
 	if s == nil || s.routeTelemetry == nil {
 		return
 	}
-	if !s.routeTelemetry.closeAndWait(telemetrySinkShutdownFlush) && s.logger != nil {
-		s.logger.Warn("routing telemetry sink did not finish flushing before the shutdown deadline", "deadline", telemetrySinkShutdownFlush, "dropped_total", s.routeTelemetry.dropped.Load())
+	if !s.routeTelemetry.CloseAndWait(routes.ShutdownFlush) && s.logger != nil {
+		s.logger.Warn("routing telemetry sink did not finish flushing before the shutdown deadline", "deadline", routes.ShutdownFlush, "dropped_total", s.routeTelemetry.Stats().Dropped)
 	}
 }
 
@@ -112,10 +140,10 @@ func (s *Owner) CloseProfilesAndOutcomes() {
 		return
 	}
 	if s.requestOutcomes != nil {
-		s.requestOutcomes.close()
+		s.requestOutcomes.Close()
 	}
 	if s.profiler != nil {
-		s.profiler.close()
+		s.profiler.Close()
 	}
 }
 
@@ -126,7 +154,7 @@ func (s *Owner) SubmitTelemetry(name string, fn func()) {
 		return
 	}
 	if s.routeTelemetry != nil {
-		s.routeTelemetry.submit(fn)
+		s.routeTelemetry.Submit(fn)
 		return
 	}
 	saferun.Go(s.logger, name, fn)

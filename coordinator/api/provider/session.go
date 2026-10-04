@@ -10,6 +10,8 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/api/observation"
 	"github.com/eigeninference/d-inference/coordinator/api/provider/trust"
 	attestservice "github.com/eigeninference/d-inference/coordinator/appattest/service"
+	inventory "github.com/eigeninference/d-inference/coordinator/internal/provider/inventory"
+	session "github.com/eigeninference/d-inference/coordinator/internal/provider/session"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
@@ -18,8 +20,8 @@ import (
 
 func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, r *http.Request) {
 	var provider *registry.Provider
-	var terminalWork providerCompletionBarrier
-	var drainAcks providerDrainAcker
+	var terminalWork session.CompletionBarrier
+	var drainAcks session.DrainAcker
 	var appAttestShadow *attestservice.Session
 	tracker := trust.NewChallengeTracker()
 	var schedulerSEKey string
@@ -50,16 +52,16 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 		_, data, err := conn.Read(loopCtx)
 		if err != nil {
 			closing := s.providerSocketsClosing()
-			closeStatus := shutdownCloseStatus(websocket.CloseStatus(err), closing)
+			closeStatus := session.ShutdownCloseStatus(websocket.CloseStatus(err), closing)
 			oomSuspected := false
-			readReason := readErrorReasonGeneric
+			readReason := session.ReadErrorReasonGeneric
 			if closeStatus != -1 {
 				peerCloseStatus = closeStatus
 				s.logger.Info("provider websocket closed",
 					"provider_id", providerID, "close_code", int(closeStatus))
 				s.countCloseDisconnect(closeStatus)
 			} else {
-				readReason = readErrorDisconnectReason(err)
+				readReason = session.ReadErrorDisconnectReason(err)
 				s.logger.Error("provider websocket read error",
 					"provider_id", providerID, "error", err, "reason", readReason)
 				s.observation.Emit(context.Background(), protocol.SeverityWarn, protocol.KindConnectivity,
@@ -122,7 +124,7 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 			//     already ran (stale eviction, duplicate-serial kick) and owns
 			//     the reason for that path.
 			if provider != nil && ctx.Err() == nil && s.registry.GetProvider(providerID) != nil {
-				s.closeSessionOffline(providerID, provider, sessionDisconnectReason(closeStatus, oomSuspected, readReason, closing))
+				s.closeSessionOffline(providerID, provider, session.DisconnectReason(closeStatus, oomSuspected, readReason, closing))
 			}
 			return
 		}
@@ -205,7 +207,7 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 				s.logger.Info("provider registered during shutdown; closing", "provider_id", providerID)
 				s.countCloseDisconnect(peerCloseStatus)
 				if ctx.Err() == nil && s.registry.GetProvider(providerID) != nil {
-					s.closeSessionOffline(providerID, provider, sessionDisconnectReasonCoordinatorShutdown)
+					s.closeSessionOffline(providerID, provider, session.DisconnectReasonCoordinatorShutdown)
 				}
 				return
 			}
@@ -403,7 +405,7 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 				_ = conn.Close(websocket.StatusPolicyViolation, "invalid drain barrier")
 				return
 			}
-			if !drainAcks.offer(loopCtx, s, provider, &terminalWork, barrier.RequestID) {
+			if !drainAcks.Offer(loopCtx, s.registry, s.logger, provider, &terminalWork, barrier.RequestID) {
 				return
 			}
 
@@ -412,14 +414,14 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 				_ = conn.Close(websocket.StatusPolicyViolation, "register before models_replace")
 				return
 			}
-			s.handleModelsReplace(loopCtx, provider, msg.Payload.(*protocol.ModelsReplaceMessage))
+			s.inventory.Replace(loopCtx, provider, msg.Payload.(*protocol.ModelsReplaceMessage))
 
 		case protocol.TypeModelsReplaceReady:
 			if provider == nil {
 				_ = conn.Close(websocket.StatusPolicyViolation, "register before models_replace_ready")
 				return
 			}
-			s.handleModelsReplaceReady(loopCtx, provider, msg.Payload.(*protocol.ModelsReplaceReadyMessage))
+			s.inventory.Ready(loopCtx, provider, msg.Payload.(*protocol.ModelsReplaceReadyMessage))
 
 		case protocol.TypeHeartbeat:
 			if provider == nil {
@@ -470,8 +472,8 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 					s.observation.Incr("routing.cache_telemetry_rejected", []string{"source:heartbeat"})
 				}
 			}
-			if s.applyProviderHeartbeat(providerID, provider, hbMsg) {
-				s.handleModelsReplaceHeartbeat(loopCtx, provider)
+			if s.heartbeat.Apply(providerID, provider, hbMsg) {
+				s.inventory.Heartbeat(loopCtx, provider)
 			}
 			// W5 Fix 2 (2a): a late/changed APNs token carried in the heartbeat
 			// re-arms a code-identity challenge WITHOUT a reconnect.
@@ -516,7 +518,7 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 			// that can block for seconds under DB pressure. If the read loop is
 			// blocked, attestation challenge responses can't be read from the
 			// WebSocket, causing challenge timeouts and provider derouting.
-			terminalDone := terminalWork.begin()
+			terminalDone := terminalWork.Begin()
 			saferun.Go(s.logger, "handleComplete", func() {
 				defer terminalDone()
 				s.inference.CompleteAt(providerID, provider, completeMsg, receivedAt)
@@ -525,8 +527,8 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 		case protocol.TypeInferenceError:
 			errMsg := msg.Payload.(*protocol.InferenceErrorMessage)
 			var terminalDone func()
-			if drainAcks.latest != nil && s.registry.ProviderDraining(providerID) {
-				terminalDone = terminalWork.begin()
+			if drainAcks.Started() && s.registry.ProviderDraining(providerID) {
+				terminalDone = terminalWork.Begin()
 			}
 			s.inference.Error(providerID, provider, errMsg)
 			if terminalDone != nil {
@@ -613,7 +615,7 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 
 		case protocol.TypeLoadModelStatus:
 			statusMsg := msg.Payload.(*protocol.LoadModelStatusMessage)
-			if !validLoadModelStatus(statusMsg.Status) {
+			if !inventory.ValidLoadModelStatus(statusMsg.Status) {
 				// Both fields are provider-controlled until they pass the closed
 				// status vocabulary and pending-command match below.
 				s.logger.Warn("rejecting invalid load_model_status", "provider_id", providerID)
@@ -651,7 +653,7 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 				// Foundation bridge ("other"), but dashboards still get the
 				// draining vs descriptive classes, and the short backoff below
 				// does NOT depend on this classification.
-				reason := classifyLoadFailure(statusMsg.Error)
+				reason := inventory.ClassifyLoadFailure(statusMsg.Error)
 				s.observation.Incr("routing.load_model_rejects", []string{
 					"model:" + statusMsg.ModelID,
 					"reason:" + reason,
@@ -668,7 +670,7 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 					s.observation.Incr("routing.pending_load_backoff", []string{
 						"model:" + statusMsg.ModelID, "kind:drain",
 					})
-				case loadFailureIsPermanent(reason):
+				case inventory.LoadFailureIsPermanent(reason):
 					// Permanent: the provider does not have this model, so a
 					// fast retry just re-fails. Keep the full TTL cooldown set
 					// when the load was planned (do NOT apply the short memory

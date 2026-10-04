@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/api/httpx"
+	runtimepolicy "github.com/eigeninference/d-inference/coordinator/internal/api/releases/runtimepolicy"
 )
 
 // HandleRuntimeManifest returns the current runtime manifest as JSON.
@@ -25,7 +26,7 @@ func (s *Owner) HandleRuntimeManifest(w http.ResponseWriter, r *http.Request) {
 		// single expected value per template.
 		templates := make(map[string][]string, len(manifest.TemplateHashes))
 		for name, accepted := range manifest.TemplateHashes {
-			templates[name] = sortedTemplateHashes(accepted)
+			templates[name] = runtimepolicy.SortedTemplateHashes(accepted)
 		}
 		resp = map[string]any{
 			"configured":      true,

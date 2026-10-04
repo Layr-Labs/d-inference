@@ -18,7 +18,7 @@ func (s *MemoryStore) StoreLogReport(accountID string, logData []byte) (int64, e
 	s.logReportSeq++
 	cp := make([]byte, len(logData))
 	copy(cp, logData)
-	s.logReports = append(s.logReports, store.LogReport{
+	s.history.LogReports = append(s.history.LogReports, store.LogReport{
 		ID:           s.logReportSeq,
 		AccountID:    accountID,
 		LogSizeBytes: int64(len(cp)),
@@ -32,9 +32,9 @@ func (s *MemoryStore) GetLogReport(id int64) (*store.LogReport, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	for i := range s.logReports {
-		if s.logReports[i].ID == id {
-			r := s.logReports[i]
+	for i := range s.history.LogReports {
+		if s.history.LogReports[i].ID == id {
+			r := s.history.LogReports[i]
 			cp := store.LogReport{
 				ID:           r.ID,
 				AccountID:    r.AccountID,

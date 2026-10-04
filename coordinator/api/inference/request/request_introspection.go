@@ -3,6 +3,8 @@ package request
 import (
 	"encoding/json"
 	"strings"
+
+	estimate "github.com/eigeninference/d-inference/coordinator/internal/inference/estimate"
 )
 
 // Legacy fallback costs for media whose processor/geometry is unavailable.
@@ -32,82 +34,6 @@ func IntFromRequestValue(v any) (int, bool) {
 		return int(n), true
 	default:
 		return 0, false
-	}
-}
-
-// jsonValueLen returns len(json.Marshal(v)), counting decoder-shaped values
-// without allocating the encoding and marshaling anything else. A value the
-// encoder rejects reports 0, exactly as the marshal-and-measure path did.
-func JsonValueLen(v any) int {
-	if n, ok := jsonEncodedLen(v); ok {
-		return n
-	}
-	b, err := json.Marshal(v)
-	if err != nil {
-		return 0
-	}
-	return len(b)
-}
-
-// approximateTokenCount returns a rough token estimate for routing and queue
-// admission. The len/4 heuristic is a reasonable average for English text
-// with GPT-style BPE tokenizers. This value feeds into the scheduler's
-// capacity checks (pendingTokenBudget, freeMemoryAdmits) where a tighter
-// estimate produces better routing decisions.
-//
-// For billing reservation (where underestimation causes provider shortfall),
-// use approximateTokenCountUpperBound instead.
-func approximateTokenCount(v any) int {
-	if v == nil {
-		return 0
-	}
-	switch x := v.(type) {
-	case string:
-		return textPromptTokens(x)
-	default:
-		n := JsonValueLen(v)
-		if n == 0 {
-			return 0
-		}
-		tokens := n / 4
-		if tokens < 1 {
-			tokens = 1
-		}
-		return tokens
-	}
-}
-
-// textPromptTokens is the len/4 routing heuristic for one text string: empty
-// text costs nothing, any other text at least one token.
-func textPromptTokens(s string) int {
-	if s == "" {
-		return 0
-	}
-	if t := len(s) / 4; t > 0 {
-		return t
-	}
-	return 1
-}
-
-// approximateTokenCountUpperBound returns a guaranteed upper bound on the
-// number of tokens a BPE tokenizer would produce for v. Every BPE vocabulary
-// starts with one token per byte and can only merge, so len(text) >= tokens
-// for any model family, any language, forever. This is used only for billing
-// reservation to ensure the pre-flight debit always covers the actual cost.
-//
-// Using len(text) over-reserves by ~3-4x on average for English prose, but
-// the difference is refunded immediately after inference completes, so
-// consumers are never overcharged — they only need sufficient balance to
-// cover the reservation hold.
-func approximateTokenCountUpperBound(v any) int {
-	if v == nil {
-		return 0
-	}
-	switch x := v.(type) {
-	case string:
-		return len(x)
-	default:
-		return JsonValueLen(v)
 	}
 }
 
@@ -157,10 +83,10 @@ func routingShape(parsed map[string]any) (routingTokens, mediaParts int) {
 		mediaParts += media
 	}
 	if v, ok := parsed["prompt"]; ok {
-		routingTokens += approximateTokenCount(v)
+		routingTokens += estimate.ApproximateTokenCount(v)
 	}
 	if instructions := responsesInstructions(parsed); instructions != "" {
-		routingTokens += 4 + approximateTokenCount(instructions)
+		routingTokens += 4 + estimate.ApproximateTokenCount(instructions)
 	}
 	return routingTokens, mediaParts
 }
@@ -187,11 +113,11 @@ func billingBytes(parsed map[string]any) int {
 	total := 0
 	for _, field := range []string{"messages", "input", "prompt"} {
 		if v, ok := parsed[field]; ok {
-			total += approximateTokenCountUpperBound(v)
+			total += estimate.ApproximateTokenCountUpperBound(v)
 		}
 	}
 	if instructions := responsesInstructions(parsed); instructions != "" {
-		total += approximateTokenCountUpperBound([]any{
+		total += estimate.ApproximateTokenCountUpperBound([]any{
 			map[string]any{"role": "system", "content": instructions},
 		})
 	}
@@ -202,7 +128,7 @@ func billingBytes(parsed map[string]any) int {
 // body when no prompt-bearing field contributed.
 func (s RequestShape) RoutingPromptTokens(parsed map[string]any) int {
 	if s.routingTokens == 0 {
-		return approximateTokenCount(parsed)
+		return estimate.ApproximateTokenCount(parsed)
 	}
 	return s.routingTokens
 }
@@ -211,7 +137,7 @@ func (s RequestShape) RoutingPromptTokens(parsed map[string]any) int {
 // whole body when no prompt-bearing field contributed.
 func (s RequestShape) BillingPromptTokens(parsed map[string]any) int {
 	if s.billingTokens == 0 {
-		return approximateTokenCountUpperBound(parsed)
+		return estimate.ApproximateTokenCountUpperBound(parsed)
 	}
 	return s.billingTokens
 }
@@ -232,18 +158,6 @@ func EstimateBillingPromptTokens(parsed map[string]any) int {
 	return RequestShape{billingTokens: billingBytes(parsed)}.BillingPromptTokens(parsed)
 }
 
-// isMediaPartType reports whether an OpenAI/OpenRouter content-part type denotes
-// image or video input.
-func isMediaPartType(t string) bool {
-	switch t {
-	// OpenAI chat (image_url/video_url), OpenAI Responses (input_image/input_video),
-	// and Anthropic /v1/messages content blocks ({"type":"image"|"video","source":…}).
-	case "image_url", "input_image", "image", "video_url", "input_video", "video":
-		return true
-	}
-	return false
-}
-
 // contentShape estimates ROUTING prompt tokens for one message's `content`
 // and counts its image/video parts in the same pass. Text parts count as text
 // (len/4); each image/video part costs a flat media price (never the base64
@@ -255,7 +169,7 @@ func isMediaPartType(t string) bool {
 func contentShape(content any) (tokens, mediaParts int) {
 	switch c := content.(type) {
 	case string:
-		return textPromptTokens(c), 0
+		return estimate.TextPromptTokens(c), 0
 	case []any:
 		for _, part := range c {
 			pm, ok := part.(map[string]any)
@@ -266,7 +180,7 @@ func contentShape(content any) (tokens, mediaParts int) {
 			switch {
 			case typ == "text" || typ == "input_text":
 				if s, ok := pm["text"].(string); ok {
-					tokens += textPromptTokens(s)
+					tokens += estimate.TextPromptTokens(s)
 				}
 			case typ == "image_url" || typ == "input_image" || typ == "image":
 				tokens += ImagePromptTokenCost
@@ -280,7 +194,7 @@ func contentShape(content any) (tokens, mediaParts int) {
 		}
 		return tokens, mediaParts
 	default:
-		return approximateTokenCount(content), 0
+		return estimate.ApproximateTokenCount(content), 0
 	}
 }
 
@@ -290,12 +204,12 @@ func contentShape(content any) (tokens, mediaParts int) {
 func messagesShape(messages any) (tokens, mediaParts int) {
 	arr, ok := messages.([]any)
 	if !ok {
-		return approximateTokenCount(messages), 0
+		return estimate.ApproximateTokenCount(messages), 0
 	}
 	for _, m := range arr {
 		mm, ok := m.(map[string]any)
 		if !ok {
-			tokens += approximateTokenCount(m)
+			tokens += estimate.ApproximateTokenCount(m)
 			continue
 		}
 		t, media := contentShape(mm["content"])
@@ -312,12 +226,12 @@ func messagesShape(messages any) (tokens, mediaParts int) {
 func inputShape(input any) (tokens, mediaParts int) {
 	switch x := input.(type) {
 	case string:
-		return approximateTokenCount(x), 0
+		return estimate.ApproximateTokenCount(x), 0
 	case []any:
 		for _, item := range x {
 			switch m := item.(type) {
 			case string:
-				tokens += approximateTokenCount(m)
+				tokens += estimate.ApproximateTokenCount(m)
 			case map[string]any:
 				content, ok := m["content"]
 				if !ok {
@@ -331,19 +245,19 @@ func inputShape(input any) (tokens, mediaParts int) {
 							continue
 						}
 					}
-					tokens += approximateTokenCount(m)
+					tokens += estimate.ApproximateTokenCount(m)
 					continue
 				}
 				t, media := contentShape(content)
 				tokens += 4 + t // role/type framing, matching messagesShape.
 				mediaParts += media
 			default:
-				tokens += approximateTokenCount(item)
+				tokens += estimate.ApproximateTokenCount(item)
 			}
 		}
 		return tokens, mediaParts
 	default:
-		return approximateTokenCount(input), 0
+		return estimate.ApproximateTokenCount(input), 0
 	}
 }
 
@@ -382,7 +296,7 @@ func IsInlineDataURI(s string) bool {
 // part whose reference can't be read returns ("", true) so the caller fails OPEN.
 func MediaPartURLString(pm map[string]any) (ref string, isMedia bool) {
 	typ, _ := pm["type"].(string)
-	if !isMediaPartType(typ) {
+	if !estimate.IsMediaPartType(typ) {
 		return "", false
 	}
 	switch typ {

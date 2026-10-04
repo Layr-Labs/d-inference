@@ -3,6 +3,7 @@ package releases
 import (
 	"fmt"
 
+	compiledpolicy "github.com/eigeninference/d-inference/coordinator/internal/api/releases/compiledpolicy"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -31,11 +32,7 @@ func (s *Owner) SyncBinaryHashes() error {
 		// Cold start: no last-known-good policy exists. Publish deny-all so a
 		// half-started coordinator cannot route on an unknown inventory.
 		generation := s.releaseTrustPolicyGeneration.Add(1)
-		trustSnapshot := &releaseTrustPolicySnapshot{
-			Generation:   generation,
-			Required:     true,
-			ByBinaryHash: make(map[string][]approvedReleasePolicy),
-		}
+		trustSnapshot := compiledpolicy.New(generation, true)
 		s.releaseTrustPolicy.Store(trustSnapshot)
 		if s.registry != nil {
 			s.registry.SetReleasePolicyGeneration(trustSnapshot.Generation, true, nil)
@@ -60,11 +57,7 @@ func (s *Owner) SyncBinaryHashes() error {
 		s.releaseInventoryEverConfigured.Store(true)
 		everConfigured = true
 	}
-	trustSnapshot := &releaseTrustPolicySnapshot{
-		Generation:   generation,
-		Required:     everConfigured,
-		ByBinaryHash: make(map[string][]approvedReleasePolicy),
-	}
+	trustSnapshot := compiledpolicy.New(generation, everConfigured)
 
 	policyConfigured := false
 	for _, r := range releases {
@@ -82,7 +75,7 @@ func (s *Owner) SyncBinaryHashes() error {
 			continue
 		}
 		hashes[normalized] = true
-		trustSnapshot.addRelease(&r, normalized)
+		trustSnapshot = trustSnapshot.WithRelease(&r, normalized)
 	}
 	if n := s.publishReleaseTrustPolicy(trustSnapshot); n > 0 {
 		s.logger.Info("release policy refresh left providers without current evidence; re-challenging immediately",
@@ -128,12 +121,12 @@ func (s *Owner) convergeReleasePolicyWithCommittedRelease(release *store.Release
 
 	generation := s.releaseTrustPolicyGeneration.Add(1)
 	s.releaseInventoryEverConfigured.Store(true)
-	trustSnapshot := retainedReleaseTrustPolicy(s.releaseTrustPolicy.Load(), generation, true, release.Version, release.Platform)
-	trustSnapshot.addRelease(release, normalized)
+	trustSnapshot := compiledpolicy.Retain(s.releaseTrustPolicy.Load(), generation, true, release.Version, release.Platform)
+	trustSnapshot = trustSnapshot.WithRelease(release, normalized)
 	s.publishReleaseTrustPolicy(trustSnapshot)
 
-	hashes := make(map[string]bool, len(trustSnapshot.ByBinaryHash))
-	for hash := range trustSnapshot.ByBinaryHash {
+	hashes := make(map[string]bool, len(trustSnapshot.Inventory()))
+	for hash := range trustSnapshot.Inventory() {
 		hashes[hash] = true
 	}
 	s.binaryHashPolicyMu.Lock()
@@ -177,11 +170,11 @@ func (s *Owner) convergeReleasePolicyWithCommittedDeactivation(version, platform
 	if last != nil && last.Required {
 		required = true
 	}
-	trustSnapshot := retainedReleaseTrustPolicy(last, generation, required, version, platform)
+	trustSnapshot := compiledpolicy.Retain(last, generation, required, version, platform)
 	s.publishReleaseTrustPolicy(trustSnapshot)
 
-	hashes := make(map[string]bool, len(trustSnapshot.ByBinaryHash))
-	for hash := range trustSnapshot.ByBinaryHash {
+	hashes := make(map[string]bool, len(trustSnapshot.Inventory()))
+	for hash := range trustSnapshot.Inventory() {
 		hashes[hash] = true
 	}
 	s.binaryHashPolicyMu.Lock()

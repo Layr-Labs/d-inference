@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	outcomes "github.com/eigeninference/d-inference/coordinator/internal/observation/outcomes"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/google/uuid"
@@ -15,7 +16,7 @@ import (
 type requestOutcomeKey struct{}
 type requestOutcome struct {
 	mu      sync.Mutex
-	sink    *requestOutcomeSink
+	sink    *outcomes.Sink
 	record  store.RequestOutcomeRecord
 	profile *registry.RequestProfile
 	// Finalization only needs membership; refreshLocked reads current evidence
@@ -67,7 +68,7 @@ func (s *Owner) ObserveRequestOutcome(next http.HandlerFunc) http.HandlerFunc {
 		o := &requestOutcome{sink: s.requestOutcomes, finalized: make(map[string]struct{}), record: store.RequestOutcomeRecord{CoordRequestID: meta.coordID, SchemaVersion: store.RequestOutcomeSchemaVersion, ReceivedAt: meta.start, Endpoint: r.URL.Path, RawStage: "drain", Termination: "in_progress", ResponseProgress: "unknown", ProviderOutcome: "no_terminal", ResponseTerminal: "unknown", Attempts: []store.RequestAttemptOutcome{}}}
 		r = r.WithContext(context.WithValue(r.Context(), requestOutcomeKey{}, o))
 		ow := &outcomeWriter{ResponseWriter: w, outcome: o}
-		s.requestOutcomes.received.Add(1)
+		s.requestOutcomes.Received()
 		s.ddIncr("request_outcomes.received", []string{"endpoint:" + r.URL.Path})
 		o.mu.Lock()
 		o.publishLocked()
@@ -96,14 +97,14 @@ func (s *Owner) ObserveRequestOutcome(next http.HandlerFunc) http.HandlerFunc {
 func (o *requestOutcome) publishLocked() {
 	if o.record.PublicDemand != nil {
 		d := *o.record.PublicDemand
-		d.Outcome = publicDemandOutcome(o.record)
+		d.Outcome = outcomes.PublicDemandOutcome(o.record)
 		o.record.PublicDemand = &d
 	}
 	o.record.Revision++
 	o.record.UpdatedAt = time.Now()
 	r := o.record
 	r.Attempts = append([]store.RequestAttemptOutcome{}, r.Attempts...)
-	o.sink.submit(r)
+	o.sink.Submit(r)
 }
 
 func (o *requestOutcome) attemptFinalized(rp *registry.RequestProfile, ap *registry.AttemptProfile) {
@@ -134,7 +135,7 @@ func compactAttemptOutcome(ap *registry.AttemptProfile) store.RequestAttemptOutc
 		// cannot establish the terminal accepted by legacy arbitration.
 		provider = "unknown"
 	}
-	return store.RequestAttemptOutcome{RequestID: ap.RequestID, Attempt: ap.Attempt, BackupOf: ap.BackupOf, Winning: ap.Winning.Load(), WriteSubmitted: ap.WriteSubmittedUS.Load() > 0, WriteCompleted: ap.WriteDoneUS.Load() > 0, ProviderAccepted: ap.AcceptedUS.Load() > 0, ProviderCompleteObserved: completeObserved, ProviderContentObserved: ap.GeneratedContentObserved.Load(), ProviderOutcome: provider, FinalStatus: status, RawReason: reason, TerminalCause: cause, NormalizedCode: normalizedAttemptOutcome(reason), Finalized: ap.Finalized()}
+	return store.RequestAttemptOutcome{RequestID: ap.RequestID, Attempt: ap.Attempt, BackupOf: ap.BackupOf, Winning: ap.Winning.Load(), WriteSubmitted: ap.WriteSubmittedUS.Load() > 0, WriteCompleted: ap.WriteDoneUS.Load() > 0, ProviderAccepted: ap.AcceptedUS.Load() > 0, ProviderCompleteObserved: completeObserved, ProviderContentObserved: ap.GeneratedContentObserved.Load(), ProviderOutcome: provider, FinalStatus: status, RawReason: reason, TerminalCause: cause, NormalizedCode: outcomes.NormalizedAttempt(reason), Finalized: ap.Finalized()}
 }
 func (o *requestOutcome) refreshLocked() {
 	r := &o.record
@@ -174,7 +175,7 @@ func (o *requestOutcome) refreshLocked() {
 		now := time.Now()
 		r.FinalizedAt = &now
 	}
-	classifyRequestOutcome(r)
+	outcomes.Classify(r)
 }
 
 // AnnotateOutcomeRejection only consumes coordinator-owned enum values. The
@@ -198,71 +199,6 @@ func AnnotateOutcomeRejection(r *http.Request, stage, reasonCode, resolvedModel 
 	if resolvedModel != "" && len(resolvedModel) <= 256 {
 		o.record.Model = resolvedModel
 	}
-}
-
-// classifyRequestOutcome is analytics-only. It never feeds routing, status,
-// retry, provider health, billing, or the existing uptime metrics.
-func classifyRequestOutcome(r *store.RequestOutcomeRecord) {
-	r.ResponseProgress = "no_content_observed"
-	if r.ProviderContentObserved {
-		r.ResponseProgress = "content_observed"
-	}
-	if r.ProviderOutcome == "completed" {
-		r.ResponseProgress = "provider_completed"
-	}
-	r.Termination = "unknown"
-	if r.HandlerFinishedAt == nil {
-		r.Termination = "in_progress"
-		return
-	}
-	switch {
-	case r.EvidenceConflict:
-		r.Termination = "unknown"
-	case r.ClientDeparted:
-		r.Termination = "client_departure"
-	case r.ClientWriteError || r.EgressError:
-		r.Termination = "interrupted_response"
-	case r.ProviderOutcome == "completed" && r.ResponseTerminal == "completed" && r.EgressCompleted && r.HTTPStatus >= 200 && r.HTTPStatus < 300:
-		r.Termination = "completed"
-	case r.HTTPStatus >= 400:
-		r.Termination = "rejected"
-	case r.RawReason == "handler_panic":
-		r.Termination = "interrupted_response"
-	case r.ProviderContentObserved || r.ContentWriteCompleted || r.ProviderOutcome == "error" || r.ResponseTerminal == "incomplete" || r.ResponseTerminal == "error":
-		r.Termination = "interrupted_response"
-	}
-	r.NormalizedCode = normalizedRequestOutcome(r.RawStage, r.RawReason, r.HTTPStatus, r.Termination)
-	if r.Termination == "rejected" && r.CoordinatorExhausted && r.RawReason == "dispatch_exhausted" {
-		r.NormalizedCode = "ext_coordinator_exhausted"
-	}
-}
-func normalizedAttemptOutcome(reason string) string {
-	if reason == "deadline_unreachable" {
-		return "int_provider_deadline_rejected"
-	}
-	if reason == "" {
-		return ""
-	}
-	return "int_legacy:" + reason
-}
-func normalizedRequestOutcome(stage, reason string, status int, termination string) string {
-	if termination != "rejected" {
-		return ""
-	}
-	if stage == "dispatch" && status == http.StatusTooManyRequests {
-		switch reason {
-		case "first_chunk_timeout":
-			return "ext_first_content_timeout"
-		case "deadline_unreachable":
-			return "ext_coordinator_exhausted"
-		}
-	}
-	// dispatch_exhausted alone is ambiguous (e.g. a retained real provider 504).
-	// Preserve it as scoped raw diagnostics instead of hiding its precedence.
-	if reason != "" {
-		return "ext_legacy:" + reason
-	}
-	return "ext_unknown"
 }
 
 func SetOutcomeStage(r *http.Request, stage string) {

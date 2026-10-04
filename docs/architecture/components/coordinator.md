@@ -38,7 +38,7 @@ in Postgres ([`../storage.md`](../storage.md)).
 
 ## Code map
 
-Every directory under `coordinator/` and what it owns.
+The application, transport and service owners under `coordinator/`:
 
 | Package | Owns |
 |---|---|
@@ -54,10 +54,17 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/api/accounts`, `coordinator/api/billing` | Account projections and billing HTTP; the payouts child owns provider payout workflows, not a second ledger. |
 | `coordinator/api/reporting`, `coordinator/api/operations` | Public projections and operational liveness/readiness/drain handlers. |
 | `coordinator/api/observation` | Metrics, request profiles, route records and compact outcomes; their queues and flush/loss policies remain distinct. |
+| `coordinator/internal/api` | Production-consumed middleware, account projections, catalog validation and reporting calculations; HTTP binding stays with API owners. |
+| `coordinator/internal/inference` | Cohesive request components: media preparation, provider-body sealing/memoization, first-content and scan/backoff policy, relay, cancellation, promotions, monetary reservations, settlement and outcome recording. Each retains its own dependencies and private state; the inference owner coordinates them. |
+| `coordinator/internal/provider` | Challenge verification, session/inventory/heartbeat components, identity budget/push/coverage, MDM scheduling, trust authority, reuse cache and revocation journal. Trust adapters bind these to live provider sessions. |
+| `coordinator/internal/observation` | Independent route, profile and compact-outcome pipelines; queues, backpressure, flush cadence and shutdown remain pipeline-specific. |
 | `coordinator/registry` | Live fleet state, atomic admission/reservation transitions, queues and controllers. Pure detached calculations live in `registry/admission` and `registry/selection`. |
+| `coordinator/internal/registry` | Provider-write transport/lanes/watchdog, connection drain authority, immutable connection age/order, eviction grace, identity-gate directory and retained fault evidence, bounded demand windows, detached residency/capacity/forecast policies, reviewed deadline catalog/posture, Autopilot state/control/ledger, cache activation and persistence. Registry/provider critical sections remain authoritative; owned directory and identity-state locks are private to `identitygate`. |
 | `coordinator/store` | Contracts, domain records, errors, configuration, read-through decorator and capability unwrapping. |
 | `coordinator/store/memory`, `coordinator/store/postgres` | Backend owners with domain-focused operations; PostgreSQL owns its migrations. |
+| `coordinator/internal/store` | Shared record normalization, read-cache domain generations, bounded memory history and focused PostgreSQL query/schema helpers; backends retain storage ownership. |
 | `coordinator/protocol` | Wire types for the provider WebSocket: register, heartbeat, capacity, inference frames, telemetry, profiles. |
+| `coordinator/internal/wire` | Production frame scanning/decoding used by protocol entrypoints; wire types stay in `coordinator/protocol`. |
 | `coordinator/internal/e2e` | NaCl Box (X25519 + XSalsa20-Poly1305) for coordinator↔provider and sender↔coordinator sealing. |
 | `coordinator/attestation` | Secure Enclave attestation verification and Apple MDA certificate chains. |
 | `coordinator/apns` | APNs push attestor for code identity. |
@@ -70,6 +77,10 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/modelpolicy` | Exact-model first-content deadline policy. |
 | `coordinator/mediafetch` | SSRF-guarded remote media resolution. |
 | `coordinator/promptcontract` | Supervisor, client and artifact provisioner for the prompt-contract sidecar. |
+| `coordinator/internal/promptcontract` | Contract identity, sidecar protocol, secure artifacts, catalog/preload, endpoint lowering and process utilities behind the public prompt-contract API. |
+| `coordinator/internal/mediafetch` | Fetch policy, aggregate read-budget accounting and URL-reference grouping; the public resolver owns network fetches. |
+| `coordinator/appattest`, `coordinator/appattest/service` | Apple proof verification and the App Attest session/service lifecycle, composed with focused `coordinator/internal/appattest` components. |
+| `coordinator/internal/appattest` | Proof parsing and eligibility; immutable transcript binding; bounded input, exchange/evidence/storage pipelines; inventory and receipt work; recovery generations; qualification and authorization/identity controllers with a bounded notification outbox. `appattest/service` binds real stores, registry, release-policy callbacks and its constructor lifetime through `Dependencies` (`coordinator/appattest/service/service.go`, `New`, `Start`, `StartSession`), without exposing mutable session state. |
 | `coordinator/promptsidecar` | The Rust sidecar itself. |
 | `coordinator/stateexport` | Snapshot, zip and age encryption for the admin state export. |
 | `coordinator/datadog` | Metrics (HTTP API and DogStatsD), Logs API forwarding, trace handler. |
@@ -77,13 +88,19 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/saferun` | Panic-safe goroutine launcher used by every background loop. |
 | `coordinator/deploy` | `start.sh` container entrypoint (persistent disk, MicroMDM). |
 
-Tests follow these ownership boundaries: private invariants stay with each
-owner, pure codecs live in the inference `request`/`response` packages, and
-public HTTP/WebSocket contracts use the composed router under
-`coordinator/api/tests/<domain>/`. Root API tests retain composition and private
-global-middleware coverage. Backend conformance lives in
-`coordinator/store/tests/`. The [test-boundary map](../../developer/test.md#2-coordinator-go)
-defines local authentication fixtures, recursive selectors and database isolation.
+All coordinator Go tests belong under `coordinator/tests/`, mirrored by production
+owner. Public HTTP/WebSocket contracts use the composed router under
+`coordinator/tests/api/<domain>/contracts/`; composition and global middleware
+tests live under `coordinator/tests/api/`. Backend conformance lives under
+`coordinator/tests/store/contracts/`, with backend-specific suites under
+`coordinator/tests/store/memory/` and `coordinator/tests/store/postgres/`.
+Shared testkit and disposable PostgreSQL fixtures live under
+`coordinator/tests/internal/`; production packages never import them.
+Moving an invariant test across a Go package boundary is not a reason to export
+mutable implementation state: tests retain real collaborators or exercise a
+cohesive production-consumed internal component. The
+[test-boundary map](../../developer/test.md#2-coordinator-go) defines recursive
+selectors, production coverage and database isolation.
 
 ## Startup sequence
 
@@ -105,7 +122,7 @@ failure in any step marked *fatal* exits the process before it listens.
 4. **Registry.** `registry.New`, trust floor, dedicated models, quality
    concurrency cap, cache routing (*fatal* on an invalid mode or key), then the
    warm-pool controller starts.
-5. **Server.** `api.NewServer` with the live TTFT deadline base, media fetch
+5. **Server.** `api.NewRuntime` with the live TTFT deadline base, media fetch
    config and durable trust reuse; the prompt-sidecar provisioner if enabled;
    rate limiters (each with its own pruner); telemetry emitter; Datadog tracer
    and client.
@@ -132,22 +149,103 @@ failure in any step marked *fatal* exits the process before it listens.
     then `Shutdown` with a 15 s backstop; deferred closes stop Datadog and the
     Postgres pool.
 
-The dependency direction is `cmd -> app -> api composition -> domain owners`.
+The dependency direction is `cmd -> app -> api composition -> domain owners ->
+focused internal components`.
 HTTP owners depend on registry, store and accounting services; those services
 never import HTTP owners. Store implementations import root store contracts,
 not the reverse. Registry policies take detached values and return decisions;
 the live registry retains locks and commit-time revalidation.
 
-Provider and consumer paths converge on one inference lifecycle. Moving code
-does not create another terminal claim or settlement owner. Shared dependencies
-are passed as the same pointers, and callbacks are bound only after their owner
-exists; startup setters must update the owner actually used by the routes.
+Application assembly creates the registry, store, ledger and read cache and passes
+them in `api.RuntimeDependencies` (`coordinator/app/app.go`, `app.Run`;
+`coordinator/api/server.go`, `NewRuntime`). `Runtime` retains the composed server
+and its observation owner for startup configuration. `NewServer` is the convenience
+constructor that creates the ledger/read cache before calling the same composition
+path. `RuntimeDependencies` also accepts retained cancellation, late-settlement,
+promotion and monetary-reservation components (`InferenceCancellation`,
+`InferenceSettlement`, `InferencePromotions`, `InferenceReservations`), a scan gate
+(`InferenceScanGate`), retry-backoff policy (`InferenceBackoff`) and shared-key
+memo (`InferenceChunkKeys`). Omission creates owner-managed defaults, not a
+second request lifecycle. `inference.New` (`coordinator/api/inference/owner.go`)
+binds supplied promotion/reservation components to the owner's actual store,
+ledger, observation and callbacks before serving; `Owner.SetBilling` forwards
+later startup configuration to the retained reservation controller. The inference
+owner retains terminal selection and usage-accounting authority.
+
+`registry.NewWithDependencies` (`coordinator/registry/dependencies.go`) retains
+the same registry-owned production components for identity gates, provider drains,
+Autopilot state/control/demand/events and planning. Factories bind adapters to the
+actual component on that registry rather than a copied state implementation.
+For example, `identitygate.Directory` owns binding/index/state mutation while the
+registry retains live-provider projection; `ModelLoadPreparation` holds the fleet
+read lease and evaluates providers under their existing locks
+(`coordinator/registry/model_load_preparation.go`). Autopilot ports bind real
+snapshot/reservation/transport/store operations
+(`coordinator/registry/autopilot_control.go`, `newAutopilotControl`). These boundaries
+do not create independent admission, drain or command authority on the same session.
+
+Reservation preparation retains the scan's registry read lease in
+`PreparedReservation` (`coordinator/registry/reservation_preparation.go`). `Finish`
+releases that lease and returns a `ReservationSelection`; its `Commit` enters the
+existing lock-scoped revalidation and debit algorithm in
+`coordinator/registry/scheduler.go` (`ReservationSelection.commit`). An abandoned
+preparation must `Close`. Quote evidence stays separate from admission in the
+embedded `QuotePlan` (`coordinator/registry/quote_plan.go`); its immutable
+`CandidateBinding` never bypasses commit-time session checks.
+
+Live membership has one `ProviderDirectory`
+(`coordinator/registry/provider_directory.go`, `Load`, `Store`, `Delete`), bound
+to `Registry.mu` at construction. Existing locked registry readers alias that
+same map; membership operations alone do not perform teardown or publish model
+state. Registration and disconnect retain their surrounding transactions.
+`modelindex.Counts` (`coordinator/internal/registry/modelindex/counts.go`, `Add`,
+`Remove`, `Count`) retains the separate live-advertisement counts under its leaf
+lock, not a second catalog-filtered fleet projection.
+
+Connection maintenance uses `ConnectionLifecycle`
+(`coordinator/registry/connection_lifecycle.go`): teardown in
+`connection_disconnect.go`, reversible trust transitions in `connection_trust.go`,
+and stale scans in `provider_lifecycle.go`, all under the existing registry/provider
+locks. The retained `eviction.Grace` component stages strikes during the read scan
+and installs them under the registry write lock
+(`coordinator/internal/registry/eviction/grace.go`, `Begin`, `ObserveStale`, `Commit`).
+`Dependencies.ConnectionOrigin` supplies an immutable `connectiontime.Origin`
+(`coordinator/internal/registry/connectiontime/origin.go`, `Age`, `NewerThan`), not a
+second mutable connection timestamp. `ProviderPersistence`
+(`coordinator/registry/provider_persistence.go`, `CanPublishLocked`) keeps incomplete
+restoration unpublished and serializes durable snapshots. `ServiceReservations`
+(`coordinator/registry/service_reservations.go`, `Add`, `ReleasePending`;
+`coordinator/registry/whole_mac_service.go`, `HasHeadroom`) mutates the same provider's
+pending service charges under its lock, separate from monetary reservations.
+
+Cache component factories in `coordinator/registry/cache_dependencies.go`
+(`CacheDependencies`) bind the actual tracker and registry. `CacheRestoration.Run`
+(`coordinator/registry/cache_restoration.go`) restores persisted routing evidence;
+`CacheMaintenance` (`coordinator/registry/cache_maintenance.go`) owns bounded binding
+and invalidation; `CacheSnapshotUpdater.Apply`
+(`coordinator/registry/cache_snapshot.go`) publishes capabilities while retaining
+connection ownership. Deferred persistence work revalidates that connection through
+`CacheSnapshotResult` (`coordinator/registry/cache_snapshot_result.go`). The detailed
+evidence and generation fences are in [cache-aware routing](../cache-aware-routing.md).
+
+Provider and consumer paths converge on that lifecycle. Component extraction
+does not add another terminal claim or settlement owner. Shared resources are
+passed as the same instances, and cross-owner callbacks are invoked after their
+targets exist; startup setters update the owners used by the routes. Global
+middleware remains ordered by `Server.Handler` (`coordinator/api/server_handler.go`)
+and delegates to `coordinator/internal/api/middleware/middleware.go`.
+
+Before first content, `Owner.NewFirstWaitFailure` constructs the request-bound
+`FirstWaitFailure` (`coordinator/api/inference/first_wait_failure.go`, `Run`). It
+releases a failed attempt through the same owner's effects, retains terminal
+evidence and request identity for deferred accounting, and returns the retry
+decision to `first_wait.go`; it does not create a second settlement owner.
 
 ```mermaid
 flowchart TD
   A[ReadAppConfig + Check] --> B[Store: Postgres or memory]
   B --> C[Registry + warm pool]
-  C --> D[api.NewServer + limiters + Datadog]
+  C --> D[api.NewRuntime + shared ledger/read cache + domain owners]
   D --> E[Catalog, hashes, routing knobs]
   E --> F[Billing, auth, MDM, APNs, trust reuse]
   F --> G[Background loops]
@@ -161,7 +259,7 @@ flowchart TD
    decrypted inside the CVM, re-sealed per request to the provider's attested
    key, and never written to the store or logs; provider error strings are
    reduced to a closed vocabulary before logging
-   (`coordinator/api/inference/consumer.go`, `coordinator/api/inference/inference_error_sanitize.go`,
+   (`coordinator/api/inference/consumer.go`, `coordinator/internal/inference/failure/inference_error_sanitize.go`,
    `coordinator/internal/e2e/e2e.go`).
 2. **A misconfigured coordinator does not serve.** `AppConfig.Check` and the
    fatal startup steps above exit 1 before the listener opens

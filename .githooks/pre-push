@@ -48,9 +48,8 @@ if [ "$HAS_GO" = "1" ]; then
     fi
 
     echo ">> [pre-push] Go tests..."
-    # Skip internal/api — its WebSocket integration tests are slow (~5 min) and
-    # timing-sensitive. They run in CI instead.
-    if ! (cd coordinator && go test $(go list ./... | grep -v /internal/api) 2>&1 | tail -15); then
+    # Standard Go discovery includes the complete mirrored test tree.
+    if ! go test ./coordinator/...; then
         echo "ERROR: Go tests failed."
         FAILED=1
     fi

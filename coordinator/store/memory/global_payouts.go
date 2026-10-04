@@ -5,8 +5,8 @@ import (
 	"sort"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/store/shared"
 	"github.com/eigeninference/d-inference/coordinator/store"
-	"github.com/eigeninference/d-inference/coordinator/store/internal/shared"
 	"github.com/google/uuid"
 )
 
@@ -140,7 +140,7 @@ func (s *MemoryStore) globalPayoutLedgerLocked(p store.GlobalPayout, amount int6
 	s.balances[p.AccountID] += amount
 	s.withdrawable[p.AccountID] += amount
 	s.ledgerSeq++
-	s.ledgerEntries = append(s.ledgerEntries, store.LedgerEntry{ID: s.ledgerSeq, AccountID: p.AccountID, Type: kind, AmountMicroUSD: amount, BalanceAfter: s.balances[p.AccountID], Reference: ref, CreatedAt: now})
+	s.history.LedgerEntries = append(s.history.LedgerEntries, store.LedgerEntry{ID: s.ledgerSeq, AccountID: p.AccountID, Type: kind, AmountMicroUSD: amount, BalanceAfter: s.balances[p.AccountID], Reference: ref, CreatedAt: now})
 }
 
 func (s *MemoryStore) ClaimGlobalPayout(id string, now time.Time) (bool, error) {

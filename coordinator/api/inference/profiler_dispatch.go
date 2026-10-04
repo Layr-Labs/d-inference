@@ -7,6 +7,7 @@ import (
 	inresp "github.com/eigeninference/d-inference/coordinator/api/inference/response"
 	"github.com/eigeninference/d-inference/coordinator/api/observation"
 	"github.com/eigeninference/d-inference/coordinator/api/types"
+	"github.com/eigeninference/d-inference/coordinator/internal/inference/profile"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
@@ -30,65 +31,21 @@ func (d *dispatchState) applyProfileTiming(tj *types.RequestTimingDetails, pr *r
 	observation.ApplyProfileTiming(d.profile, tj, pr)
 }
 
-// stampFirstContent records the first-content stamps on the committed attempt.
-func (d *dispatchState) stampFirstContent(pr *registry.PendingRequest) {
-	ap := pr.Profile
-	if ap == nil {
-		return
-	}
-	ap.Mark(registry.StampFirstChunkDequeued)
-	ap.Mark(registry.StampFirstContent)
-	if t := pr.FirstContentIngressAtSafe(); !t.IsZero() {
-		ap.MarkAt(registry.StampFirstContentIngress, t)
-	}
-	d.profile.SetHeldPreambleChunks(len(d.heldChunks))
-}
-
 // stampCommitted marks the winning attempt and, for streams, the
 // headers-written offset (the SSE headers go out right after commit). A
 // non-streaming response writes its headers with the body later, in
 // writeNonStreamBody, so its offset is stamped there instead.
 func (d *dispatchState) stampCommitted(pr *registry.PendingRequest) {
-	if rp := d.profile; rp != nil && d.stream {
-		rp.Stamp(&rp.HeadersWrittenUS)
-	}
-	if ap := pr.Profile; ap != nil {
-		ap.Winning.Store(true)
-	}
+	profile.StampCommitted(d.profile, pr, d.stream)
 }
 
 func closeUndispatchedAttempt(ap *registry.AttemptProfile, dispatchErr string, code int) {
-	observation.CloseUndispatchedAttempt(ap, dispatchErrorClass(dispatchErr), code)
+	profile.CloseUndispatched(ap, dispatchErr, code)
 }
 
 // finalizeProfile runs when the dispatch loop returns. It marks the handler
 // half of every attempt; the terminal half (provider terminal, synthetic
 // terminal, or grace expiry) completes each record independently.
 func (d *dispatchState) finalizeProfile() {
-	rp := d.profile
-	if rp == nil {
-		return
-	}
-	clientOutcome := "completed"
-	switch {
-	case d.r != nil && d.r.Context().Err() != nil:
-		rp.Stamp(&rp.ClientGoneUS)
-		clientOutcome = "client_gone"
-	case !d.committed:
-		clientOutcome = "error_response"
-	}
-	for _, ap := range rp.Attempts() {
-		ap.SetOutcome("", "", "", "", clientOutcome)
-		ap.CompleteHandler()
-	}
-}
-
-// stampClientGone records a client disconnect with its phase.
-func (d *dispatchState) stampClientGone(phase string) {
-	rp := d.profile
-	if rp == nil {
-		return
-	}
-	rp.Stamp(&rp.ClientGoneUS)
-	rp.SetClientGonePhase(phase)
+	profile.Finalize(d.profile, d.r, d.committed)
 }

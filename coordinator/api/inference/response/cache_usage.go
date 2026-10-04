@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	inreq "github.com/eigeninference/d-inference/coordinator/api/inference/request"
+	sse "github.com/eigeninference/d-inference/coordinator/internal/inference/sse"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
@@ -109,5 +110,5 @@ func SanitizeStreamCacheDetails(chunk string) string {
 	if !strings.Contains(chunk, `"cached_tokens"`) && !strings.Contains(chunk, `\u`) {
 		return chunk
 	}
-	return sanitizeStreamJSONEvents(chunk, sanitizeStreamCacheDetailsJSON)
+	return sse.SanitizeStreamJSONEvents(chunk, sanitizeStreamCacheDetailsJSON)
 }

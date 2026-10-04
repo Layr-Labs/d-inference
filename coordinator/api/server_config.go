@@ -4,6 +4,7 @@ import (
 	trustapi "github.com/eigeninference/d-inference/coordinator/api/provider/trust"
 	attestservice "github.com/eigeninference/d-inference/coordinator/appattest/service"
 	"github.com/eigeninference/d-inference/coordinator/env"
+	"github.com/eigeninference/d-inference/coordinator/internal/provider/journal"
 	"github.com/eigeninference/d-inference/coordinator/mediafetch"
 	"os"
 	"strings"
@@ -71,7 +72,7 @@ func ReadServerConfig() ServerConfig {
 		ReleaseKey:              os.Getenv(env.EnvPrefix + "_RELEASE_KEY"),
 		ServiceReservations:     env.EnvBool(env.EnvPrefix+"_SERVICE_RESERVATIONS_ENABLED", false),
 		FirstContentSLAAccounts: ParseCommaList(os.Getenv(env.EnvPrefix + "_FIRST_CONTENT_SLA_ACCOUNTS")),
-		TrustReuseJournalPath:   trustapi.ResolveTrustReuseRevocationJournalPath(),
+		TrustReuseJournalPath:   journal.ResolveTrustReuseRevocationJournalPath(),
 		MDMScheduler:            trustapi.ReadMDMSchedulerConfig(),
 		BaseRewards: BaseRewardsConfig{
 			Enabled:        env.EnvBool(env.EnvPrefix+"_BASE_REWARDS", false),

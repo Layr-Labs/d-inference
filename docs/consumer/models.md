@@ -1,6 +1,6 @@
 # Models reference
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-03
 
 Reference for `GET /v1/models` and `GET /v1/models/{id}`: every field of a `ModelEntry`, how the `model` you send is resolved, and the capability flags the API exposes and enforces. For SDK users and integrators. The catalog itself is database-driven — builds, capabilities and prices live in the coordinator's registry and price tables, and public names are aliases maintained by operators (`coordinator/api/catalog/model_alias_handlers.go`, [`../architecture/model-registry.md`](../architecture/model-registry.md)) — so there is no static list to reproduce here; `GET /v1/models` is the list.
 
@@ -123,7 +123,7 @@ A key created with `allowed_models` can only use those ids. Any other `model` fa
 | Tools | `"tools"` in `supported_features` | Tool definitions are normalised and validated for every model (`NormalizeToolSchemas`, `coordinator/api/inference/request/toolschema.go`; `ValidateToolConstraintPolicy`, `coordinator/api/inference/request/tool_constraints.go`); uncompilable schemas → 422; a provider whose build reports `template_render_ok=false` is not eligible (`providerEligibleForTraitsLocked`, `coordinator/registry/request_traits.go`). Forced media tools and media-bearing tool results require an explicit per-model capability; see the [API contract](../reference/api-contracts.md) |
 | JSON / structured output | `"json_mode"`, `"structured_outputs"` in `supported_features` | `response_format` is forwarded to the provider without coordinator validation; whether it is honoured depends on the build's capabilities |
 | Reasoning | `"reasoning"` in `supported_features` | `reasoning` / `reasoning_effort` are applied per model policy (`ApplyResolvedModelReasoningPolicy`, `coordinator/api/inference/request/reasoning_request_policy.go`); reasoning tokens are reported in `usage.completion_tokens_details.reasoning_tokens` |
-| Context | `context_length`, `max_output_length` | `max_tokens` clamped to `max_output_length`; prompts no provider can accept → 413 `payload_too_large` (`runInferenceAdmission`, `coordinator/api/inference/inference_admission.go`) |
+| Context | `context_length`, `max_output_length` | `max_tokens` clamped to `max_output_length`; prompts no provider can accept → 413 `payload_too_large` (`Admission.Run`, `coordinator/api/inference/inference_admission.go`) |
 | Availability | `metadata.can_accept`, `routable_providers`, `warm_providers` | Zero routable providers at dispatch → 503 `model_unavailable` |
 
 Prefix reuse is a runtime provider capability scoped to the exact model artifact,

@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/apns"
+	verification "github.com/eigeninference/d-inference/coordinator/internal/provider/verification"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/profilesign"
 )
@@ -16,11 +16,13 @@ func (s *Owner) SetProfileSigner(signer *profilesign.Signer) {
 }
 
 func (s *Owner) SetChallengeInterval(d time.Duration) {
-	s.challengeInterval = d
+	s.challengeSettings.
+		Interval = d
 }
 
 func (s *Owner) SetSkipChallenge(skip bool) {
-	s.skipChallenge = skip
+	s.challengeSettings.
+		Skip = skip
 }
 
 func (s *Owner) SetAllowDuplicateProviderSerialsForTesting(allow bool) {
@@ -28,21 +30,24 @@ func (s *Owner) SetAllowDuplicateProviderSerialsForTesting(allow bool) {
 }
 
 func (s *Owner) SetMDMClient(client *mdm.Client) {
-	s.mdmClient = client
-	if client != nil && s.mdmScheduler == nil {
-		s.mdmScheduler = newMDMVerificationScheduler(s, s.mdmSchedulerConfig, mdmSchedulerDeps{})
+	s.verificationBackend.
+		Client = client
+	if client != nil && s.verificationBackend.
+		Scheduler ==
+		nil {
+		s.verificationBackend.
+			Scheduler = s.NewVerificationScheduler(s.mdmSchedulerConfig, verification.Dependencies{})
 	}
 }
 
 func (s *Owner) StartMDMScheduler() {
-	if s.mdmScheduler != nil {
-		s.mdmScheduler.Start()
+	if s.verificationBackend.
+		Scheduler !=
+		nil {
+		s.verificationBackend.
+			Scheduler.
+			Start()
 	}
-}
-
-func (s *Owner) SetCodeAttestor(a apns.CodeIdentityAttestor) {
-	s.codeAttestor = a
-	s.registry.SetCodeAttestationConfigured(a != nil)
 }
 
 func (s *Owner) SetCodeAttestationDeadline(t time.Time) {
@@ -66,8 +71,12 @@ func (s *Owner) HandleMDMWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logger.Debug("mdm webhook received", "body_size", len(body), "body_preview", string(body[:min(len(body), 500)]))
-	if s.mdmClient != nil {
-		s.mdmClient.HandleWebhook(body)
+	if s.verificationBackend.
+		Client !=
+		nil {
+		s.verificationBackend.
+			Client.
+			HandleWebhook(body)
 	}
 	w.WriteHeader(http.StatusOK)
 }

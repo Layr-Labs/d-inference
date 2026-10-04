@@ -4,10 +4,10 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/auth"
+	"github.com/eigeninference/d-inference/coordinator/internal/api/access/authcache"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -46,19 +46,11 @@ type Owner struct {
 	releaseKey            string
 	controlPlaneBodyBytes int64
 	hooks                 Hooks
-	// apiKeyCache memoizes AuthenticateKey results so repeated requests
-	// with the same API key skip the DB round trip. Entries expire after
-	// apiKeyCacheTTL. Bounded at apiKeyCacheMaxSize entries.
-	apiKeyCacheMu sync.RWMutex
-	apiKeyCache   map[string]apiKeyCacheEntry
-	// apiKeyCacheGen is bumped on every key mutation. A cached entry is only
-	// honored when its gen matches, so a single bump atomically invalidates the
-	// whole cache and closes the read-stale-after-mutation race.
-	apiKeyCacheGen uint64
+	apiKeyCache           *authcache.Cache
 }
 
 func New(st Store, logger *slog.Logger, controlPlaneBodyBytes int64, hooks Hooks) *Owner {
-	return &Owner{store: st, logger: logger, controlPlaneBodyBytes: controlPlaneBodyBytes, hooks: hooks, apiKeyCache: make(map[string]apiKeyCacheEntry)}
+	return &Owner{store: st, logger: logger, controlPlaneBodyBytes: controlPlaneBodyBytes, hooks: hooks, apiKeyCache: authcache.New(time.Now)}
 }
 
 func (s *Owner) SetPrivyAuth(pa *auth.PrivyAuth)        { s.privyAuth = pa }

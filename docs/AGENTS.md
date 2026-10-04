@@ -1,6 +1,6 @@
 # Darkbloom docs — how this documentation is organised and maintained
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-03
 
 Rules for anyone — human or agent — who reads, writes, or checks a file under
 `docs/`. The code is the source of truth; a doc that disagrees with the code is
@@ -171,6 +171,7 @@ and tests both historical-link handling and date-preserving, idempotent stamping
 | Coordinator env var or config default | `reference/configuration.md`; `operations/coordinator-deploy.md` if prod sets it |
 | Provider CLI command, flag, env var | `provider/cli-reference.md`; `reference/configuration.md` |
 | Routing / admission / scheduling constant or gate | `architecture/routing.md` or `architecture/scheduling.md` |
+| Cache-routing evidence, generation fences, restoration or persistence | `architecture/cache-aware-routing.md`; retain the routing, protocol and ownership rows for those surfaces too |
 | Experimental model Autopilot policy, rollout or enrollment (`coordinator/registry/autopilot*`, `coordinator/api/autopilot*`, provider runtime/CLI `Autopilot/`) | `architecture/model-autopilot.md`, `operations/model-autopilot.md`; apply the configuration, CLI, protocol and API rows for those surfaces too |
 | Trust level, attestation, enrollment, encryption | `architecture/security/*.md`; `provider/attestation.md`; `consumer/verification.md`; `threat-model.yaml` |
 | Pricing, ledger, payouts, referral | `architecture/billing.md`, `reference/pricing-model.md`, `consumer/billing.md` |
@@ -186,6 +187,15 @@ CI encodes the high-confidence part of this matrix in
 against each pull-request diff before the ordinary documentation lint. Keep the
 matrix and machine-readable rules aligned when adding a documentation-sensitive
 surface.
+
+Coordinator source-to-doc mappings apply to the production-consumed components
+under `coordinator/internal/` as well as their API/service adapters. A component
+move must preserve the original behavior-specific mapping; ownership documentation
+does not substitute for API, protocol, configuration, telemetry, trust or billing
+documentation. Go tests are isolated under `coordinator/tests/`; moving test
+files or shared fixtures also requires checking selectors, source-relative fixture
+consumers and the build/test guides. Keep local migration handoff checklists out
+of the published documentation; they are not architectural completion evidence.
 
 ## 8. Adding, moving, retiring pages
 

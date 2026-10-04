@@ -1,14 +1,13 @@
 package response
 
 import (
-	"encoding/json"
-	"math"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/api/types"
+	responsepolicy "github.com/eigeninference/d-inference/coordinator/internal/inference/responsepolicy"
+	sse "github.com/eigeninference/d-inference/coordinator/internal/inference/sse"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
@@ -18,7 +17,7 @@ var thinkBlockPattern = regexp.MustCompile(`(?is)<think>(.*?)</think>\s*`)
 // "length" on a raw chat.completion object when the authoritative token counts
 // show generation consumed the entire max-tokens budget.
 func RewriteRawFinishReason(obj map[string]any, usage protocol.UsageInfo, requestedMax int) {
-	if !truncatedByMaxTokens(usage, requestedMax) {
+	if !responsepolicy.TruncatedByMaxTokens(usage, requestedMax) {
 		return
 	}
 	choices, ok := obj["choices"].([]any)
@@ -52,7 +51,7 @@ func NormalizeCompleteChatResponse(obj map[string]any, requestedModel string) {
 		if !ok {
 			continue
 		}
-		choiceIndex := normalizedChoiceIndex(choice["index"], choicePosition)
+		choiceIndex := sse.NormalizedChoiceIndex(choice["index"], choicePosition)
 		if message, ok := choice["message"].(map[string]any); ok {
 			normalizeCompleteMessage(message, choiceIndex)
 		}
@@ -60,41 +59,6 @@ func NormalizeCompleteChatResponse(obj map[string]any, requestedModel string) {
 			normalizeCompleteMessage(delta, choiceIndex)
 		}
 	}
-}
-
-func canonicalReasoningDetails(reasoning string, choiceIndex int) []types.ReasoningDetail {
-	return []types.ReasoningDetail{{
-		Type:   "reasoning.text",
-		Text:   reasoning,
-		ID:     "reasoning-text-" + strconv.Itoa(choiceIndex),
-		Format: "unknown",
-		Index:  0,
-	}}
-}
-
-func normalizedChoiceIndex(raw any, fallback int) int {
-	switch index := raw.(type) {
-	case int:
-		if index >= 0 {
-			return index
-		}
-	case int64:
-		converted := int(index)
-		if index >= 0 && int64(converted) == index {
-			return converted
-		}
-	case float64:
-		intLimit := math.Ldexp(1, strconv.IntSize-1)
-		if math.IsNaN(index) || math.IsInf(index, 0) || index < 0 || index >= intLimit || math.Trunc(index) != index {
-			break
-		}
-		return int(index)
-	case json.Number:
-		if parsed, err := strconv.ParseInt(index.String(), 10, strconv.IntSize); err == nil && parsed >= 0 {
-			return int(parsed)
-		}
-	}
-	return fallback
 }
 
 func normalizeCompleteMessage(message map[string]any, choiceIndex int) {
@@ -122,7 +86,7 @@ func normalizeCompleteMessage(message map[string]any, choiceIndex int) {
 	if reasoning, ok := message["reasoning"].(string); ok && reasoning != "" {
 		message["reasoning_content"] = reasoning
 		if _, hasDetails := message["reasoning_details"]; !hasDetails {
-			message["reasoning_details"] = canonicalReasoningDetails(reasoning, choiceIndex)
+			message["reasoning_details"] = sse.CanonicalReasoningDetails(reasoning, choiceIndex)
 		}
 	}
 	for _, key := range []string{"tool_calls", "refusal"} {
@@ -199,47 +163,6 @@ func InjectReasoningDetailIntoRawUsage(obj map[string]any, usage protocol.UsageI
 	obj["usage"] = usageObj
 }
 
-// truncatedByMaxTokens reports whether generation consumed the entire
-// max-tokens budget. requestedMax is the effective bound — the consumer's
-// explicit max_tokens or the coordinator-injected default — so hitting it
-// means the engine cut generation short.
-func truncatedByMaxTokens(usage protocol.UsageInfo, requestedMax int) bool {
-	return requestedMax > 0 && usage.CompletionTokens >= requestedMax
-}
-
-// effectiveFinishReason resolves the finish_reason for a reconstructed
-// response. The provider engine reports "stop" unconditionally, so a
-// truncation-aware reason is re-derived from the authoritative token counts.
-func effectiveFinishReason(extracted string, hasToolCalls bool, usage protocol.UsageInfo, requestedMax int) string {
-	if extracted != "" && extracted != "stop" {
-		return extracted
-	}
-	if truncatedByMaxTokens(usage, requestedMax) {
-		return "length"
-	}
-	if hasToolCalls {
-		return "tool_calls"
-	}
-	return "stop"
-}
-
-// resolveReasoningTokens returns the reasoning-token count to report.
-// It prefers the provider's tokenizer-accurate count
-// (UsageInfo.ReasoningTokens) and falls back to the coarse "all
-// completion tokens" estimate only for older providers that emit
-// reasoning content without a count — so a reasoning response never
-// reports zero reasoning tokens, while up-to-date providers report the
-// real split.
-func resolveReasoningTokens(usage protocol.UsageInfo, reasoning string) uint64 {
-	if usage.ReasoningTokens > 0 {
-		return uint64(usage.ReasoningTokens)
-	}
-	if reasoning != "" {
-		return uint64(usage.CompletionTokens)
-	}
-	return 0
-}
-
 func BuildNonStreamingResponse(requestID, model string, msg ExtractedMessage, usage protocol.UsageInfo, requestedMax int, seSignature, responseHash string) types.ChatCompletionResponse {
 	message := types.ChatCompletionMessage{
 		Role:    "assistant",
@@ -252,13 +175,13 @@ func BuildNonStreamingResponse(requestID, model string, msg ExtractedMessage, us
 	if msg.ReasoningDetailsPresent {
 		message.ReasoningDetails = msg.ReasoningDetails
 	} else if msg.Reasoning != "" {
-		message.ReasoningDetails = canonicalReasoningDetails(msg.Reasoning, 0)
+		message.ReasoningDetails = sse.CanonicalReasoningDetails(msg.Reasoning, 0)
 	}
 
 	if len(msg.ToolCalls) > 0 {
 		message.ToolCalls = msg.ToolCalls
 	}
-	finishReason := effectiveFinishReason(msg.FinishReason, len(msg.ToolCalls) > 0, usage, requestedMax)
+	finishReason := responsepolicy.EffectiveFinishReason(msg.FinishReason, len(msg.ToolCalls) > 0, usage, requestedMax)
 
 	resp := types.ChatCompletionResponse{
 		ID:      "chatcmpl-" + requestID,
@@ -280,7 +203,7 @@ func BuildNonStreamingResponse(requestID, model string, msg ExtractedMessage, us
 	// Surface the OpenAI-standard reasoning-token breakdown when present
 	// so non-streaming chat-completions consumers can read it (the
 	// streaming path carries it on the provider's verbatim usage chunk).
-	if rt := resolveReasoningTokens(usage, msg.Reasoning); rt > 0 {
+	if rt := responsepolicy.ResolveReasoningTokens(usage, msg.Reasoning); rt > 0 {
 		resp.Usage.CompletionTokensDetails = &types.CompletionTokensDetails{
 			ReasoningTokens: int(rt),
 		}

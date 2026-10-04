@@ -5,8 +5,8 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/store/shared"
 	"github.com/eigeninference/d-inference/coordinator/store"
-	"github.com/eigeninference/d-inference/coordinator/store/internal/shared"
 )
 
 var _ store.FloorDrawBatchStore = (*MemoryStore)(nil)

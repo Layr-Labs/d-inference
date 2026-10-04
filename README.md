@@ -317,6 +317,8 @@ Running a node also makes your **own** inference free.
 | Path | Language | Role |
 |------|----------|------|
 | `coordinator/` | Go | Control plane: OpenAI/Anthropic API, routing, attestation, billing, model registry |
+| `coordinator/internal/` | Go | Focused production components behind application and domain-owner contracts |
+| `coordinator/tests/` | Go | Separate mirrored test tree, HTTP/WS contract suites and isolated backend fixtures |
 | `provider-swift/` | Swift | `darkbloom` provider CLI for Apple Silicon (in-process MLX inference) |
 | `console-ui/` | Next.js 16 / React 19 | Web dashboard: chat, billing, models, provider verification |
 | `admin-ui/` | Next.js | Internal read-only operator dashboard over the Postgres read replica |
@@ -327,6 +329,10 @@ Running a node also makes your **own** inference free.
 | `docs/` | Markdown | How-tos, runbooks, reference, architecture, design records, dated reports — map in [`docs/README.md`](docs/README.md), rules in [`docs/AGENTS.md`](docs/AGENTS.md) |
 
 The coordinator and provider share WebSocket message types that must stay in sync (`coordinator/protocol/` ↔ `provider-swift/Sources/ProviderCore/Protocol/`).
+Coordinator assembly and package boundaries are mapped in
+[`docs/architecture/components/coordinator.md`](docs/architecture/components/coordinator.md);
+test selectors, fixture ownership and production coverage are in
+[`docs/developer/test.md`](docs/developer/test.md).
 
 ## Development
 

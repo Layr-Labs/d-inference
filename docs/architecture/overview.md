@@ -1,6 +1,6 @@
 # System overview — how a Darkbloom request works
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-03
 
 Darkbloom sells inference on other people's Apple Silicon Macs. A Go
 **coordinator** accepts OpenAI- and Anthropic-shaped HTTP requests, picks an
@@ -162,14 +162,14 @@ consumer routing to a provider it owns (self-route) pays nothing.
    chunk, so a failed dispatch can always fail over or return a JSON error
    (`HandleChatCompletions`, `coordinator/api/inference/consumer.go`).
 5. Balance is reserved before dispatch (`reserveInferenceBalance`,
-   `coordinator/api/inference/inference_admission.go`) and settled from
+   `coordinator/api/inference/inference_balance.go`) and settled from
    `inference_complete` (`handleComplete`, `coordinator/api/inference/provider_inference.go`): the
    difference is refunded, an overage is charged. A request that fails before
    any provider usage is reported is refunded in full (`refundReservedBalance`,
    `coordinator/api/inference/consumer.go`).
 6. The provider version the coordinator advertises (`LatestProviderVersion`,
    `coordinator/api/server.go`) equals `ProviderCore.version`; the test
-   `coordinator/api/provider_version_sync_test.go` enforces it.
+   `coordinator/tests/api/provider_version_sync_test.go` enforces it.
 7. Telemetry wire types are mirrored in Go, Swift, and TypeScript and pinned by
    symmetry tests; the coordinator ingests no client telemetry, so no telemetry
    path carries prompt or completion text ([`telemetry.md`](telemetry.md)).

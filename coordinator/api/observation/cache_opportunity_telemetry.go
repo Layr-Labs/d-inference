@@ -1,12 +1,15 @@
 package observation
 
-import "github.com/eigeninference/d-inference/coordinator/registry"
+import (
+	metriclabels "github.com/eigeninference/d-inference/coordinator/internal/observation/labels"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+)
 
 func (s *Owner) EmitCacheOpportunity(pr *registry.PendingRequest) {
 	if pr == nil || !pr.CacheOpportunity.Evaluated {
 		return
 	}
-	labels := []MetricLabel{{"model", s.cacheModelLabel(pr.Model)}, {"reason", pr.CacheOpportunityReason()}}
+	labels := []metriclabels.MetricLabel{{Name: "model", Value: s.cacheModelLabel(pr.Model)}, {Name: "reason", Value: pr.CacheOpportunityReason()}}
 	s.cacheModelCount("opportunity", 1, labels...)
 	if pr.CacheOpportunity.AffinityApplied {
 		s.cacheModelCount("opportunity_affinity", 1, labels...)

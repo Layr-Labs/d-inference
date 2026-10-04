@@ -38,16 +38,6 @@ const cacheRoutingHoldersDDL = `CREATE TABLE IF NOT EXISTS cache_routing_holders
  PRIMARY KEY (key, cache_epoch)
 )`
 
-// The chain hash column of earlier builds is dropped, and its values with it.
-const cacheRoutingHoldersDropChainHashDDL = `ALTER TABLE cache_routing_holders DROP COLUMN IF EXISTS anchor_chain_hash`
-
-// Tables created by earlier builds of this branch pick up the columns added
-// since; each ADD is a no-op once present.
-const cacheRoutingHoldersBackfillColumnsDDL = `ALTER TABLE cache_routing_holders
- ADD COLUMN IF NOT EXISTS measured_stage_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
- ADD COLUMN IF NOT EXISTS measured_expires_at TIMESTAMPTZ,
- ADD COLUMN IF NOT EXISTS ready_boundary_mode TEXT NOT NULL DEFAULT ''`
-
 // The prune deletes rows whose effective expiry under the active TTL has
 // passed, written as `expires_at <= now OR updated_at <= now - ttl` so both
 // halves are index-served (a bitmap OR over the two indexes) instead of a
@@ -284,9 +274,6 @@ func (s *PostgresStore) ResetCacheRoutingState(ctx context.Context, fingerprint 
 	// batched deletes below must not read as complete at the next boot.
 	if err := s.recordCacheRoutingKeyFingerprint(ctx, crs.ResetInProgress); err != nil {
 		return err
-	}
-	if s.afterCacheRoutingResetMarker != nil {
-		s.afterCacheRoutingResetMarker()
 	}
 	for _, table := range []string{"cache_routing_holders", "cache_routing_demand"} {
 		stmt := fmt.Sprintf(`DELETE FROM %s WHERE ctid IN (SELECT ctid FROM %s LIMIT $1)`, table, table)

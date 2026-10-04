@@ -6,8 +6,8 @@ import (
 	"sort"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/store/shared"
 	"github.com/eigeninference/d-inference/coordinator/store"
-	"github.com/eigeninference/d-inference/coordinator/store/internal/shared"
 )
 
 func (s *MemoryStore) RecordAutopilot(_ context.Context, records []store.AutopilotRecord) error {

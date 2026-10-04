@@ -18,28 +18,18 @@ package observation
 
 import (
 	"context"
-	"hash/fnv"
-	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/env"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
 const (
-	envProfiler           = env.EnvPrefix + "_PROFILER"
-	envProfileSampleRate  = env.EnvPrefix + "_PROFILE_SAMPLE_RATE"
-	defaultProfileSample  = 0.1
 	profileRetainProfiles = 14 * 24 * time.Hour
 	profileRetainFleet    = 30 * 24 * time.Hour
 	fleetSampleInterval   = 60 * time.Second
 	profilePruneInterval  = time.Hour
 	profilePruneBatch     = 5000
-	// Always-record predicates (code constants, not knobs).
-	profileSlowFirstContent = 5 * time.Second
-	profileSlowTotal        = 30 * time.Second
 )
 
 // requestMeta is the single context value the logging middleware attaches to
@@ -89,42 +79,9 @@ func CoordRequestIDFromContext(ctx context.Context) string {
 	return ""
 }
 
-// profiler holds the profiler configuration and sinks.
-type profiler struct {
-	enabled    bool
-	sampleRate float64
-	logger     *slog.Logger
-	sink       *profileSink
-}
-
-func newProfilerFromEnv(s *Owner) *profiler {
-	p := &profiler{
-		enabled:    !strings.EqualFold(strings.TrimSpace(env.EnvOr(envProfiler, "on")), "off"),
-		sampleRate: env.EnvFloat(envProfileSampleRate, defaultProfileSample),
-		logger:     s.logger,
-	}
-	if p.sampleRate < 0 {
-		p.sampleRate = 0
-	}
-	if p.sampleRate > 1 {
-		p.sampleRate = 1
-	}
-	if p.enabled && s.store != nil {
-		p.sink = newProfileSink(s, defaultTelemetrySinkCapacity)
-	}
-	return p
-}
-
-func (p *profiler) close() {
-	if p == nil || p.sink == nil {
-		return
-	}
-	p.sink.close()
-}
-
 // ProfilerEnabled reports whether profile records should be created.
 func (s *Owner) ProfilerEnabled() bool {
-	return s != nil && s.profiler != nil && s.profiler.enabled
+	return s != nil && s.profiler.Enabled()
 }
 
 // NewRequestProfile creates the request-level profile at inference-handler
@@ -172,27 +129,6 @@ func (s *Owner) NewRequestProfile(r *http.Request, model, publicModel string, st
 	}
 	rp.Stamp(&rp.HandlerEntryUS)
 	return rp
-}
-
-// sampled decides, per logical request, whether a success record is kept.
-// Deterministic on the coordinator-minted id so every attempt of a request
-// lands together; a missing id (no middleware) is always kept.
-func (p *profiler) sampled(coordID string) bool {
-	if p == nil {
-		return false
-	}
-	if p.sampleRate >= 1 || coordID == "" {
-		return true
-	}
-	if p.sampleRate <= 0 {
-		return false
-	}
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(coordID))
-	// Map the hash to [0,1) and compare; FNV spreads short ids well enough for
-	// a fixed-rate sample and costs no allocation.
-	frac := float64(h.Sum32()) / float64(1<<32)
-	return frac < p.sampleRate
 }
 
 // ProfileDBCall measures a synchronous store call made on the request

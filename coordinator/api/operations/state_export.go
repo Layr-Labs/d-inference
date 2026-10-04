@@ -11,6 +11,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/api/access"
 	httpx "github.com/eigeninference/d-inference/coordinator/api/httpx"
 	"github.com/eigeninference/d-inference/coordinator/env"
+	"github.com/eigeninference/d-inference/coordinator/internal/api/operations/exportconfig"
 	"github.com/eigeninference/d-inference/coordinator/stateexport"
 )
 
@@ -24,19 +25,7 @@ const (
 	// envStateExportAllowPlaintext permits a raw (unencrypted) zip ONLY when no
 	// recipient is configured. Must be explicitly "true".
 	envStateExportAllowPlaintext = env.EnvPrefix + "_STATE_EXPORT_ALLOW_PLAINTEXT"
-	// envStateExportRoot overrides the export root (primarily for tests).
-	envStateExportRoot = env.EnvPrefix + "_STATE_EXPORT_ROOT"
 )
-
-// resolveStateExportRoot picks the directory to archive:
-// EIGENINFERENCE_STATE_EXPORT_ROOT -> USER_PERSISTENT_DATA_PATH -> /mnt/disks/userdata.
-func resolveStateExportRoot() string {
-	return env.FirstNonEmpty(
-		os.Getenv(envStateExportRoot),
-		os.Getenv("USER_PERSISTENT_DATA_PATH"),
-		"/mnt/disks/userdata",
-	)
-}
 
 // envTrue reports whether the named env var is set to "true" (case-insensitive,
 // trimmed). Used for the boolean state-export gates.
@@ -98,7 +87,7 @@ func (s *Handler) HandleAdminStateExport(w http.ResponseWriter, r *http.Request)
 
 	// Stage (below) resolves (EvalSymlinks) + stats the root and returns a clean
 	// error mapped to a pre-stream 500, so no separate os.Stat pre-check here.
-	root := resolveStateExportRoot()
+	root := exportconfig.Root()
 
 	// Compute the download filename / content-type BEFORE writing headers.
 	epoch := strconv.FormatInt(time.Now().Unix(), 10)

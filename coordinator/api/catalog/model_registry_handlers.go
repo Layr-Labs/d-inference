@@ -8,32 +8,9 @@ import (
 	httpx "github.com/eigeninference/d-inference/coordinator/api/httpx"
 	"github.com/eigeninference/d-inference/coordinator/api/modelprice"
 	"github.com/eigeninference/d-inference/coordinator/api/types"
+	registration "github.com/eigeninference/d-inference/coordinator/internal/api/catalog/registration"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
-
-const defaultModelRegistryCDNBaseURL = "https://models.darkbloom.ai"
-
-type registerModelRequest struct {
-	HuggingFaceArtifact          *store.HuggingFaceArtifact `json:"hugging_face_artifact,omitempty"`
-	ModelID                      string                     `json:"model_id"`
-	Version                      string                     `json:"version"`
-	DisplayName                  string                     `json:"display_name"`
-	Family                       string                     `json:"family"`
-	Architecture                 string                     `json:"architecture"`
-	Quantization                 string                     `json:"quantization"`
-	MaxContextLength             int                        `json:"max_context_length"`
-	MaxOutputLength              int                        `json:"max_output_length"`
-	MinRAMGB                     int                        `json:"min_ram_gb"`
-	Capabilities                 []string                   `json:"capabilities"`
-	RequiredProviderCapabilities []string                   `json:"required_provider_capabilities"`
-	Description                  string                     `json:"description"`
-	RuntimeParameters            map[string]any             `json:"runtime_parameters"`
-	Metadata                     map[string]any             `json:"metadata"`
-	Promote                      bool                       `json:"promote"`
-	// Platform price written at registration: input_price and output_price are
-	// required; cache_read_price is optional (see modelprice.Input).
-	modelprice.Input
-}
 
 // registerModelResponse is the POST /v1/admin/models/register response: the
 // stored registry entry and version plus the platform price as it will settle.
@@ -46,7 +23,7 @@ type registerModelResponse struct {
 }
 
 func (s *Owner) HandleModelCatalogItem(w http.ResponseWriter, r *http.Request) {
-	modelID, ok := parseModelCatalogPath(r.URL.Path)
+	modelID, ok := registration.ParseModelCatalogPath(r.URL.Path)
 	if !ok || modelID == "" {
 		httpx.WriteJSON(w, http.StatusNotFound, httpx.ErrorResponse("not_found", "model not found"))
 		return
@@ -56,11 +33,11 @@ func (s *Owner) HandleModelCatalogItem(w http.ResponseWriter, r *http.Request) {
 		s.writeModelRegistryStoreError(w, "get model", err)
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, catalogModelFromRegistryRecord(rec))
+	httpx.WriteJSON(w, http.StatusOK, registration.CatalogModelFromRegistryRecord(rec))
 }
 
 func (s *Owner) HandleModelCatalogManifest(w http.ResponseWriter, r *http.Request) {
-	modelID, ok := parseModelCatalogManifestPath(r.URL.Path)
+	modelID, ok := registration.ParseModelCatalogManifestPath(r.URL.Path)
 	if !ok || modelID == "" {
 		httpx.WriteJSON(w, http.StatusNotFound, httpx.ErrorResponse("not_found", "model manifest not found"))
 		return
@@ -79,14 +56,14 @@ func (s *Owner) HandleRegisterModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req registerModelRequest
+	var req registration.RegisterModelRequest
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
 		httpx.WriteJSON(w, http.StatusBadRequest, httpx.ErrorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
 		return
 	}
-	if err := validateRegisterModelRequest(req); err != nil {
+	if err := registration.ValidateRegisterModelRequest(req); err != nil {
 		httpx.WriteJSON(w, http.StatusBadRequest, httpx.ErrorResponse("invalid_request_error", err.Error()))
 		return
 	}
@@ -100,17 +77,17 @@ func (s *Owner) HandleRegisterModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r2Prefix := modelR2Prefix(req.ModelID, req.Version)
-	manifest, err := fetchModelManifest(r.Context(), registryCDNBaseURL(), r2Prefix)
+	r2Prefix := registration.ModelR2Prefix(req.ModelID, req.Version)
+	manifest, err := fetchModelManifest(r.Context(), registration.RegistryCDNBaseURL(), r2Prefix)
 	if err != nil {
 		httpx.WriteJSON(w, http.StatusBadRequest, httpx.ErrorResponse("invalid_request_error", "failed to fetch manifest: "+err.Error()))
 		return
 	}
-	if err := validateModelManifest(manifest, req.ModelID, req.Version, r2Prefix); err != nil {
+	if err := registration.ValidateModelManifest(manifest, req.ModelID, req.Version, r2Prefix); err != nil {
 		httpx.WriteJSON(w, http.StatusBadRequest, httpx.ErrorResponse("invalid_request_error", err.Error()))
 		return
 	}
-	if err := verifyManifestFiles(r.Context(), registryCDNBaseURL(), manifest, s.logger); err != nil {
+	if err := verifyManifestFiles(r.Context(), registration.RegistryCDNBaseURL(), manifest, s.logger); err != nil {
 		httpx.WriteJSON(w, http.StatusBadRequest, httpx.ErrorResponse("invalid_request_error", "manifest file verification failed: "+err.Error()))
 		return
 	}

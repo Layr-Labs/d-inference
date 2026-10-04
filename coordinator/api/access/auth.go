@@ -57,8 +57,8 @@ func (s *Owner) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 		// Check cache first to skip DB on repeat requests with the same key.
 		var keyRec *store.APIKey
 		authKind := "apikey_cache"
-		if cached, ok := s.lookupAPIKeyCache(token); ok {
-			keyRec = cached.key
+		if cached, generation, ok := s.apiKeyCache.Lookup(token); ok {
+			keyRec = cached
 		} else {
 			authKind = "apikey_db"
 			// Cache miss — resolve the key (with its per-key limits) in one
@@ -87,7 +87,7 @@ func (s *Owner) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 				}
 				// Cache the API-key result (positive or negative). Provider-token
 				// fallbacks are deliberately NOT cached below.
-				s.storeAPIKeyCache(token, apiKeyCacheEntry{key: keyRec, cachedAt: time.Now()})
+				s.apiKeyCache.Publish(token, keyRec, generation)
 			} else if pt, err := s.store.GetProviderToken(token); err == nil && pt != nil && pt.Active {
 				// Provider device-login tokens authenticate as an account-scoped
 				// identity with no per-key limits (ID left empty). These are NOT
@@ -98,7 +98,7 @@ func (s *Owner) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 				keyRec = &store.APIKey{OwnerAccountID: pt.AccountID}
 			} else {
 				// Unknown token — negative-cache to avoid hammering the DB.
-				s.storeAPIKeyCache(token, apiKeyCacheEntry{key: nil, cachedAt: time.Now()})
+				s.apiKeyCache.Publish(token, nil, generation)
 			}
 		}
 

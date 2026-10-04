@@ -12,6 +12,25 @@ type Candidate struct {
 	AffinityEligible                                bool
 }
 
+// Select projects eligible inputs without retaining their owners. Ordinary
+// fleets use stack storage; large fleets spill once, never once per candidate.
+// The draw remains caller-owned so ranking owns no random-generator state.
+func Select[T any](pool []T, project func(T) Candidate, draw func(int) int, affinity string) Decision {
+	if len(pool) == 0 {
+		return Decision{Winner: -1, RunnerUp: -1, Path: None}
+	}
+	var inline [512]Candidate
+	values := inline[:0]
+	if len(pool) > len(inline) {
+		values = make([]Candidate, 0, len(pool))
+	}
+	for _, candidate := range pool {
+		values = append(values, project(candidate))
+	}
+	ranking := Rank(values)
+	return ranking.Choose(values, draw(ranking.Choices), affinity)
+}
+
 // RankMs retains health/capacity derating separately from elapsed-time forecasts.
 func (c Candidate) RankMs() float64 {
 	return c.ExpectedMs + c.HealthMs + c.CapacityRateMs

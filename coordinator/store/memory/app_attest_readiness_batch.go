@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/store/shared"
 	"github.com/eigeninference/d-inference/coordinator/store"
-	"github.com/eigeninference/d-inference/coordinator/store/internal/shared"
 )
 
 func (s *MemoryStore) GetAppAttestReadinessBatch(ctx context.Context, keys []string) (map[string]store.AppAttestReadiness, error) {

@@ -108,7 +108,7 @@ instance. `CachedStore` invalidation and `store.As` capability unwrapping remain
 at the contract layer. Moving a method must not bypass either mechanism.
 
 Private backend tests live beside the implementation. Public parity cases live
-under `coordinator/store/tests`; each test process uses
+under `coordinator/tests/store/contracts/`; each test process uses
 `coordinator/store/internal/testdb` to allocate its own disposable database before
 running fixtures. The local test role needs `CREATEDB`. Packages can execute
 concurrently without truncating one another's tables; these fixtures never use
@@ -194,8 +194,11 @@ no serial record exists. Ordered partial indexes on each identity plus
 `last_seen DESC, id DESC` select the newest prior session. Every currently registered session is excluded, and a returned row is checked
 again for sessions arriving during lookup. Until history lookup/restoration
 finishes, persisted rows omit the indexed serial and SE key, including late writes
-from a registration that already disconnected. Provider-record and reputation persistence share a mutex, and pending reputation
-writes are skipped. Completed records publish together with their reputation in
+from a registration that already disconnected. `ProviderPersistence`
+(`coordinator/registry/provider_persistence.go`, `CanPublishLocked`) owns the
+restore-publication gate and serializes provider-record and reputation snapshots;
+pending reputation writes are skipped (`coordinator/registry/persistence.go`,
+`PersistProvider`, `PersistReputation`). Completed records publish together with their reputation in
 one Postgres transaction or MemoryStore lock (`UpsertProviderWithReputation`,
 `coordinator/store/`), so an older zero snapshot cannot
 overwrite the completed state and no completed identity appears without its
@@ -306,7 +309,7 @@ KV blocks under a per-model key, not tokens.
 3. **Committed migration progress is not applied twice.** One-shot data
    migrations commit their `schema_migrations` marker in the same statement or
    transaction as their update (`coordinator/store/postgres/`,
-   `coordinator/store/postgres/log_report_privacy.go`).
+   `coordinator/internal/store/privacysql/logs.go`).
 4. **Boot never holds a long lock on a hot table.** The
    `provider_earnings(job_id)` unique index is built `CONCURRENTLY`, only after
    a duplicate check, and skipped when already valid; the dedupe that violated
@@ -324,7 +327,7 @@ KV blocks under a per-model key, not tokens.
 6. **Nothing prompt-derived is persisted.** `TelemetryStore` rows carry token
    counts, timings and outcomes only; the `serial_number` column of
    `provider_log_reports` and the legacy `cache_affinity_key` column are kept
-   empty by triggers (`coordinator/store/postgres/log_report_privacy.go`,
+   empty by triggers (`coordinator/internal/store/privacysql/logs.go`,
    `legacyCacheAffinityGuardTrigger` in `coordinator/store/postgres/`).
 7. **Provider secrets never leave the Keychain in the clear.** The KV KEK is
    wrapped by a Secure Enclave key and the SSD cache is unreadable without it
@@ -351,12 +354,12 @@ KV blocks under a per-model key, not tokens.
 | Interface and record types | `coordinator/store/interface.go`, `coordinator/store/interface_domains.go` |
 | Earnings rankings and startup time index | `coordinator/store/postgres/leaderboard.go` (`Leaderboard`), `coordinator/store/postgres/earnings_window_index.go` (`ensureProviderEarningsWindowIndex`), `coordinator/store/postgres/startup.go` (`ensureConcurrentIndex`) |
 | Backend selection and validation | `coordinator/store/config.go`, `coordinator/app/store.go` |
-| Postgres pool, schema, one-shot migrations | `coordinator/store/postgres/`, `coordinator/store/postgres/log_report_privacy.go`, `coordinator/store/postgres/retired_backfills.go` |
+| Postgres pool, schema, one-shot migrations | `coordinator/store/postgres/`, `coordinator/internal/store/privacysql/logs.go`, `coordinator/store/postgres/retired_backfills.go` |
 | Provider identity and usage reads | `coordinator/store/postgres/provider_read.go` (`providerRecordColumns`, `scanProviderRecord`, `GetProviderRecord`); `coordinator/store/` (`GetProviderForRestore`, using the same projection); `coordinator/store/postgres/usage_read.go` (`readUsageRecords`, `UsageRecords`); `coordinator/store/postgres/row.go` (`rowScanner`) |
 | Domain files | `coordinator/store/postgres/model_registry.go`, `coordinator/store/postgres/base_rewards.go`, `coordinator/store/postgres/profiles.go`, `coordinator/store/`, `coordinator/store/`, `coordinator/store/apikey.go` |
 | Memory backend | `coordinator/store/memory/`, `coordinator/store/memory/base_rewards.go` |
 | Manual SQL | `coordinator/store/postgres/migrations/` |
-| Persistent-disk state outside Postgres (MicroMDM, journals) | `coordinator/deploy/start.sh`, `coordinator/api/provider/trust/trust_reuse_journal.go`, [`../operations/state-export.md`](../operations/state-export.md) |
+| Persistent-disk state outside Postgres (MicroMDM, journals) | `coordinator/deploy/start.sh`, `coordinator/internal/provider/journal/trust_reuse_journal.go`, [`../operations/state-export.md`](../operations/state-export.md) |
 | Provider files and Keychain | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `provider-swift/Sources/ProviderCore/Service/`, `provider-swift/Sources/ProviderCore/KVCacheSSD/`, `provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift` |
 
 ## Related

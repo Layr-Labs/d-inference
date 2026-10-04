@@ -8,6 +8,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/api/access"
 	httpx "github.com/eigeninference/d-inference/coordinator/api/httpx"
+	registration "github.com/eigeninference/d-inference/coordinator/internal/api/catalog/registration"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -21,7 +22,7 @@ func (s *Owner) handlePublishModelRevision(w http.ResponseWriter, r *http.Reques
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil || req.Version == "" || strings.Contains(req.Version, "/") || containsTraversal(req.Version) {
+	if err := dec.Decode(&req); err != nil || req.Version == "" || strings.Contains(req.Version, "/") || registration.ContainsTraversal(req.Version) {
 		httpx.WriteJSON(w, http.StatusBadRequest, httpx.ErrorResponse("invalid_request_error", "valid version is required"))
 		return
 	}
@@ -34,13 +35,13 @@ func (s *Owner) handlePublishModelRevision(w http.ResponseWriter, r *http.Reques
 		s.writeModelRegistryStoreError(w, "get model for revision", err)
 		return
 	}
-	prefix := modelR2Prefix(modelID, req.Version)
-	manifest, err := fetchModelManifest(r.Context(), registryCDNBaseURL(), prefix)
+	prefix := registration.ModelR2Prefix(modelID, req.Version)
+	manifest, err := fetchModelManifest(r.Context(), registration.RegistryCDNBaseURL(), prefix)
 	if err == nil {
-		err = validateModelManifest(manifest, modelID, req.Version, prefix)
+		err = registration.ValidateModelManifest(manifest, modelID, req.Version, prefix)
 	}
 	if err == nil {
-		err = verifyManifestFiles(r.Context(), registryCDNBaseURL(), manifest, s.logger)
+		err = verifyManifestFiles(r.Context(), registration.RegistryCDNBaseURL(), manifest, s.logger)
 	}
 	if err != nil {
 		httpx.WriteJSON(w, http.StatusBadRequest, httpx.ErrorResponse("invalid_request_error", "revision verification failed: "+err.Error()))

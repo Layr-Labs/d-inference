@@ -5,9 +5,8 @@ import (
 	"net/http"
 	"strings"
 
-	inreq "github.com/eigeninference/d-inference/coordinator/api/inference/request"
 	"github.com/eigeninference/d-inference/coordinator/api/observation"
-	"github.com/eigeninference/d-inference/coordinator/api/types"
+	responsepolicy "github.com/eigeninference/d-inference/coordinator/internal/inference/responsepolicy"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
@@ -49,73 +48,6 @@ func parseStreamChunkChoices(chunk string) []streamChunkChoice {
 		return nil
 	}
 	return parsed.Choices
-}
-
-// responsesSnapshot builds the full Response object embedded in lifecycle
-// events (response.created / response.in_progress / response.completed /
-// response.incomplete). All spec-required fields are present so strict SDK
-// parsers accept the snapshot.
-func responsesSnapshot(responseID string, createdAt int64, model, status string, output []any, usage *types.ResponsesUsage, incomplete *types.ResponsesIncompleteDetail, policies ...registry.RequestTraits) map[string]any {
-	if output == nil {
-		output = []any{}
-	}
-	var traits registry.RequestTraits
-	if len(policies) > 0 {
-		traits = policies[0]
-	}
-	toolChoice, parallel := responsesToolPolicy(traits)
-	snap := map[string]any{
-		"id":                   responseID,
-		"object":               "response",
-		"created_at":           createdAt,
-		"status":               status,
-		"background":           false,
-		"error":                nil,
-		"incomplete_details":   nil,
-		"instructions":         nil,
-		"max_output_tokens":    nil,
-		"model":                model,
-		"output":               output,
-		"parallel_tool_calls":  parallel,
-		"previous_response_id": nil,
-		"store":                false,
-		"temperature":          nil,
-		"text":                 map[string]any{"format": map[string]any{"type": "text"}},
-		"tool_choice":          toolChoice,
-		"tools":                []any{},
-		"top_p":                nil,
-		"truncation":           "disabled",
-		"usage":                nil,
-		"user":                 nil,
-		"metadata":             map[string]any{},
-		"service_tier":         nil,
-	}
-	if usage != nil {
-		snap["usage"] = usage
-	}
-	if incomplete != nil {
-		snap["incomplete_details"] = incomplete
-	}
-	return snap
-}
-
-func responsesToolPolicy(traits registry.RequestTraits) (any, bool) {
-	if traits.ToolChoiceMode == "" {
-		return "auto", true
-	}
-	switch traits.ToolChoiceMode {
-	case string(inreq.ToolChoiceNone):
-		return "none", traits.ParallelToolCalls
-	case string(inreq.ToolChoiceRequired):
-		return "required", traits.ParallelToolCalls
-	case string(inreq.ToolChoiceNamed):
-		return map[string]any{
-			"type": "function",
-			"name": traits.ToolChoiceName,
-		}, traits.ParallelToolCalls
-	default:
-		return "auto", traits.ParallelToolCalls
-	}
 }
 
 // responsesStreamEmitter translates provider chat.completion.chunk deltas into
@@ -178,10 +110,10 @@ func NewResponsesStreamEmitter(w http.ResponseWriter, flusher http.Flusher, pr *
 // start emits response.created and response.in_progress.
 func (e *ResponsesStreamEmitter) Start() {
 	e.emit("response.created", map[string]any{
-		"response": responsesSnapshot(e.responseID, e.createdAt, e.model, "in_progress", nil, nil, nil, e.pr.Traits),
+		"response": responsepolicy.ResponsesSnapshot(e.responseID, e.createdAt, e.model, "in_progress", nil, nil, nil, e.pr.Traits),
 	})
 	e.emit("response.in_progress", map[string]any{
-		"response": responsesSnapshot(e.responseID, e.createdAt, e.model, "in_progress", nil, nil, nil, e.pr.Traits),
+		"response": responsepolicy.ResponsesSnapshot(e.responseID, e.createdAt, e.model, "in_progress", nil, nil, nil, e.pr.Traits),
 	})
 }
 
@@ -456,14 +388,14 @@ func (e *ResponsesStreamEmitter) hasToolCalls() bool {
 // finish closes all open items and emits the terminal lifecycle event
 // (response.completed, or response.incomplete when generation was truncated).
 func (e *ResponsesStreamEmitter) Finish(usage protocol.UsageInfo) {
-	finishReason := effectiveFinishReason(e.finishReason, e.hasToolCalls(), usage, e.pr.RequestedMaxTokens)
+	finishReason := responsepolicy.EffectiveFinishReason(e.finishReason, e.hasToolCalls(), usage, e.pr.RequestedMaxTokens)
 	if len(e.output) == 0 && !e.messageOpen && !e.reasoningOpen && len(e.fnOrder) == 0 {
 		e.ensureMessageOpen()
 	}
 	e.closeOpenItems()
 
-	reasoningTokens := resolveReasoningTokens(usage, e.reasoningBuf.String())
-	u := buildResponsesUsage(uint64(usage.PromptTokens), uint64(usage.CompletionTokens), reasoningTokens, uint64(usage.CachedTokens))
+	reasoningTokens := responsepolicy.ResolveReasoningTokens(usage, e.reasoningBuf.String())
+	u := responsepolicy.BuildResponsesUsage(uint64(usage.PromptTokens), uint64(usage.CompletionTokens), reasoningTokens, uint64(usage.CachedTokens))
 
 	status := "completed"
 	eventType := "response.completed"
@@ -472,7 +404,7 @@ func (e *ResponsesStreamEmitter) Finish(usage protocol.UsageInfo) {
 		status = "incomplete"
 		eventType = "response.incomplete"
 	}
-	snap := responsesSnapshot(
+	snap := responsepolicy.ResponsesSnapshot(
 		e.responseID, e.createdAt, e.model, status, e.output, &u, incomplete,
 		e.pr.Traits)
 	if e.pr.SESignature != "" {

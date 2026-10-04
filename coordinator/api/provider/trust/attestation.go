@@ -217,7 +217,7 @@ func (s *Owner) VerifyProviderAttestation(ctx context.Context, providerID string
 	// Apple's pinned root, its FreshnessCode equals SHA-256 of THIS
 	// connection's SE key, and any Apple serial matches the attested one. A
 	// chain earned by another machine's SE key can never bind here.
-	s.stageDurableMDAChain(provider, result.SerialNumber)
+	s.StageDurableMDAChain(provider, result.SerialNumber)
 
 	// Deduplicate: if another provider connection exists from the same physical
 	// device (same serial number), disconnect it. This prevents multiple
@@ -234,7 +234,9 @@ func (s *Owner) VerifyProviderAttestation(ctx context.Context, providerID string
 	// MDM verification is not spawned here. Registration binds stable device work
 	// to the Server-owned bounded scheduler after attestation has established the
 	// Secure Enclave identity and serial.
-	if s.mdmClient != nil && result.SerialNumber == "" {
+	if s.verificationBackend.
+		Client !=
+		nil && result.SerialNumber == "" {
 		s.logger.Warn("provider attestation has no serial number — cannot verify via MDM",
 			"provider_id", providerID,
 		)

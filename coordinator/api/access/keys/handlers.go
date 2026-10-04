@@ -5,6 +5,7 @@ package keys
 import (
 	"encoding/json"
 	"errors"
+	"github.com/eigeninference/d-inference/coordinator/internal/api/access/keypolicy"
 	"io"
 	"net/http"
 	"strings"
@@ -39,7 +40,7 @@ func (s *Handler) HandleCreateKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	raw, _, err := s.store.CreateAPIKey(user.AccountID, store.APIKeyCreate{
-		SelfRouteOnly: consoleKeyInheritsSelfRouteOnly(keys, time.Now()),
+		SelfRouteOnly: keypolicy.ConsoleKeyInheritsSelfRouteOnly(keys, time.Now()),
 	})
 	if err != nil {
 		httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorResponse("server_error", "failed to create key"))

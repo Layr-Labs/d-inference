@@ -26,8 +26,8 @@ func (s *MemoryStore) SumProviderEarningsByKey(_ context.Context, providerKey st
 	defer s.mu.RUnlock()
 
 	var total int64
-	for i := range s.providerEarnings {
-		e := &s.providerEarnings[i]
+	for i := range s.history.ProviderEarnings {
+		e := &s.history.ProviderEarnings[i]
 		if e.ProviderKey != providerKey || !isOrganicEarning(e) {
 			continue
 		}
@@ -58,7 +58,7 @@ func (s *MemoryStore) settleProviderFloorDrawLocked(draw *store.ProviderFloorDra
 	}
 	s.floorDrawSeq++
 	cp.ID = s.floorDrawSeq
-	s.providerFloorDraws = append(s.providerFloorDraws, cp)
+	s.history.ProviderFloorDraws = append(s.history.ProviderFloorDraws, cp)
 
 	if cp.AmountMicroUSD > 0 {
 		s.creditLocked(cp.AccountID, cp.AmountMicroUSD, store.LedgerFloorDraw, cp.EpochID, cp.CreatedAt)
@@ -68,7 +68,7 @@ func (s *MemoryStore) settleProviderFloorDrawLocked(draw *store.ProviderFloorDra
 		// GetAccountEarnings* (which sum all rows) show
 		// it, so the payout isn't an unexplained balance jump in the UI.
 		s.providerEarningsSeq++
-		s.providerEarnings = append(s.providerEarnings, store.ProviderEarning{
+		s.history.ProviderEarnings = append(s.history.ProviderEarnings, store.ProviderEarning{
 			ID:             s.providerEarningsSeq,
 			AccountID:      cp.AccountID,
 			ProviderKey:    cp.ProviderKey,
@@ -87,9 +87,9 @@ func (s *MemoryStore) SumFloorDrawsForEpoch(_ context.Context, epochID string) (
 	defer s.mu.RUnlock()
 
 	var total int64
-	for i := range s.providerFloorDraws {
-		if s.providerFloorDraws[i].EpochID == epochID {
-			total += s.providerFloorDraws[i].AmountMicroUSD
+	for i := range s.history.ProviderFloorDraws {
+		if s.history.ProviderFloorDraws[i].EpochID == epochID {
+			total += s.history.ProviderFloorDraws[i].AmountMicroUSD
 		}
 	}
 	return total, nil
@@ -101,9 +101,9 @@ func (s *MemoryStore) ListFloorDrawsForEpoch(_ context.Context, epochID string) 
 	defer s.mu.RUnlock()
 
 	out := []store.ProviderFloorDraw{}
-	for i := range s.providerFloorDraws {
-		if s.providerFloorDraws[i].EpochID == epochID {
-			out = append(out, s.providerFloorDraws[i])
+	for i := range s.history.ProviderFloorDraws {
+		if s.history.ProviderFloorDraws[i].EpochID == epochID {
+			out = append(out, s.history.ProviderFloorDraws[i])
 		}
 	}
 	// Largest amount first (mirrors postgres ORDER BY amount_micro_usd DESC).
@@ -119,8 +119,8 @@ func (s *MemoryStore) ListProviderSessionsOverlapping(_ context.Context, start, 
 	defer s.mu.RUnlock()
 
 	out := []store.ProviderSession{}
-	for i := range s.providerSessions {
-		ps := s.providerSessions[i]
+	for i := range s.history.ProviderSessions {
+		ps := s.history.ProviderSessions[i]
 		var sessEnd time.Time
 		if ps.DisconnectedAt != nil {
 			sessEnd = *ps.DisconnectedAt

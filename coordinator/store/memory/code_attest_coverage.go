@@ -3,8 +3,8 @@ package memory
 import (
 	"context"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/store/shared"
 	"github.com/eigeninference/d-inference/coordinator/store"
-	"github.com/eigeninference/d-inference/coordinator/store/internal/shared"
 )
 
 func cloneCodeAttestation(r store.CodeAttestation) store.CodeAttestation {

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/store/shared"
 	"github.com/eigeninference/d-inference/coordinator/store"
-	"github.com/eigeninference/d-inference/coordinator/store/internal/shared"
 )
 
 func stripeRejectionAllowed(w *store.StripeWithdrawal, reason string) bool {
@@ -40,7 +40,7 @@ func (s *MemoryStore) RefundRejectedStripeWithdrawal(id string) (bool, error) {
 	ref := "stripe_withdraw:" + id
 	applied := true
 	var debited int64
-	for _, e := range s.ledgerEntries {
+	for _, e := range s.history.LedgerEntries {
 		if e.AccountID == w.AccountID && e.Type == store.LedgerStripePayout && e.Reference == ref {
 			debited += e.AmountMicroUSD
 		}
@@ -76,7 +76,7 @@ func (s *MemoryStore) CompleteStripeCheckout(id, externalID, accountID string, a
 		return false, nil
 	}
 	applied := true
-	for _, e := range s.ledgerEntries {
+	for _, e := range s.history.LedgerEntries {
 		if e.AccountID == accountID && e.Type == store.LedgerStripeDeposit && e.Reference == "stripe:"+externalID {
 			if e.AmountMicroUSD != amount {
 				return false, store.ErrPayoutConflict

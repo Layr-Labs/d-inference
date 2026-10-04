@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/eigeninference/d-inference/coordinator/api/observation"
+	sse "github.com/eigeninference/d-inference/coordinator/internal/inference/sse"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
@@ -53,7 +54,7 @@ func NewChatStreamRelay(pr *registry.PendingRequest, w http.ResponseWriter, flus
 // usage and finish holds, null-field normalization, and the public-model
 // rewrite — appending the forwarded frame (if any) to the current batch.
 func (rl *ChatStreamRelay) HandleChunk(chunk string) {
-	if !rl.SawResponsesAPI && isResponsesAPIEventChunk(chunk) {
+	if !rl.SawResponsesAPI && sse.IsResponsesAPIEventChunk(chunk) {
 		rl.SawResponsesAPI = true
 	}
 	// Swallow provider-owned [DONE] events, including SSE groups decorated
@@ -65,31 +66,31 @@ func (rl *ChatStreamRelay) HandleChunk(chunk string) {
 	// first [DONE] as final (MacPaw/OpenAI then chokes parsing the signature
 	// event).
 	if !rl.SawResponsesAPI {
-		chunk, _ = stripSSEDoneEvents(chunk)
+		chunk, _ = sse.StripSSEDoneEvents(chunk)
 		if strings.TrimSpace(chunk) == "" {
 			return
 		}
 	}
-	chunk = stripProviderChatMetadata(SanitizeStreamCacheDetails(chunk))
+	chunk = sse.StripProviderChatMetadata(SanitizeStreamCacheDetails(chunk))
 	if !rl.SawResponsesAPI {
 		rl.Identity.observe(chunk)
 		// Hold the terminal usage chunk (chat completions only) so the
 		// reasoning breakdown can be spliced in at stream end; forwarding it
 		// inline would emit it without reasoning_tokens.
-		if obj, isUsage := parseUsageOnlyStreamChunk(chunk); isUsage {
+		if obj, isUsage := sse.ParseUsageOnlyStreamChunk(chunk); isUsage {
 			rl.PendingUsage = obj
 			return
 		}
-		chunk = normalizeSSEChunk(chunk)
+		chunk = sse.NormalizeSSEChunk(chunk)
 		// Hold the chunk carrying the terminal finish_reason so it can be
 		// corrected to "length" against the authoritative token counts at
 		// stream end (the provider engine always reports "stop").
-		if obj, isFinish := parseFinishStreamChunk(chunk); isFinish {
+		if obj, isFinish := sse.ParseFinishStreamChunk(chunk); isFinish {
 			rl.PendingFinish = obj
 			return
 		}
 	}
-	rl.WriteFrame(rewriteChunkModel(chunk, rl.pr))
+	rl.WriteFrame(sse.RewriteChunkModel(chunk, rl.pr))
 }
 
 // writeFrame appends one SSE frame (a "data: ..." payload without its

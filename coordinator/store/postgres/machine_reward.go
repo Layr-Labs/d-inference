@@ -5,8 +5,8 @@ import (
 	"errors"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/store/shared"
 	"github.com/eigeninference/d-inference/coordinator/store"
-	"github.com/eigeninference/d-inference/coordinator/store/internal/shared"
 )
 
 func (s *PostgresStore) GetMachineRewardBindings(ctx context.Context, sessions []string) (map[string]store.MachineRewardBinding, error) {

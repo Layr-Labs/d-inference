@@ -6,35 +6,16 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/api/access"
-	amountformat "github.com/eigeninference/d-inference/coordinator/api/billing/internal/amount"
 	"github.com/eigeninference/d-inference/coordinator/api/httpx"
 	"github.com/eigeninference/d-inference/coordinator/billing/globalpayouts"
+	amountformat "github.com/eigeninference/d-inference/coordinator/internal/billing/amount"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/google/uuid"
 )
-
-func payoutUSDCents(amount string) (int64, error) {
-	amount = strings.TrimSpace(amount)
-	if !amountformat.USDPattern.MatchString(amount) {
-		return 0, errors.New("use a USD amount with at most two decimal places")
-	}
-	parts := strings.SplitN(amount, ".", 2)
-	dollars, _ := strconv.ParseInt(parts[0], 10, 64)
-	cents := int64(0)
-	if len(parts) == 2 {
-		cents, _ = strconv.ParseInt((parts[1] + "0")[:2], 10, 64)
-	}
-	total := dollars*100 + cents
-	if total < 100 || total > 100_000_000 {
-		return 0, errors.New("withdrawal must be between $1 and $1,000,000")
-	}
-	return total, nil
-}
 
 func payoutCurrencyExponent(currency string) int { return globalpayouts.CurrencyExponent(currency) }
 
@@ -55,7 +36,7 @@ func (s *Owner) HandleGlobalPayoutQuote(w http.ResponseWriter, r *http.Request) 
 		httpx.WriteJSON(w, 400, httpx.ErrorResponse("invalid_request_error", "Enter a valid withdrawal amount."))
 		return
 	}
-	cents, err := payoutUSDCents(req.Amount)
+	cents, err := amountformat.PayoutUSDCents(req.Amount)
 	if err != nil {
 		httpx.WriteJSON(w, 400, httpx.ErrorResponse("invalid_request_error", err.Error()))
 		return
@@ -179,7 +160,7 @@ func (s *Owner) maybeGlobalWithdraw(w http.ResponseWriter, r *http.Request, user
 		httpx.WriteJSON(w, 400, httpx.ErrorResponse("invalid_request_error", "Invalid withdrawal request."))
 		return true
 	}
-	cents, err := payoutUSDCents(req.Amount)
+	cents, err := amountformat.PayoutUSDCents(req.Amount)
 	if err != nil || req.QuoteID == "" || (req.Method != "" && req.Method != "standard") {
 		httpx.WriteJSON(w, 400, httpx.ErrorResponse("quote_required", "Review your bank withdrawal before confirming."))
 		return true

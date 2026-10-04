@@ -3,16 +3,14 @@ package response
 import (
 	"encoding/json"
 	"net/http"
-	"strings"
 
 	"github.com/eigeninference/d-inference/coordinator/api/geo"
 	inreq "github.com/eigeninference/d-inference/coordinator/api/inference/request"
 	"github.com/eigeninference/d-inference/coordinator/api/types"
+	sse "github.com/eigeninference/d-inference/coordinator/internal/inference/sse"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
-
-const chatCompletionMetadataField = "metadata"
 
 // committedProviderInfo is the consumer-safe provider snapshot taken at
 // dispatch commit — the same values written to X-Provider-* headers.
@@ -166,25 +164,17 @@ func HasChatCompletionMetadata(pr *registry.PendingRequest) bool {
 	return pr != nil && pr.MetadataDetails && len(pr.ResponseMetadata) > 0
 }
 
-func deleteChatCompletionMetadata(obj map[string]any) {
-	for key := range obj {
-		if strings.EqualFold(key, chatCompletionMetadataField) {
-			delete(obj, key)
-		}
-	}
-}
-
 func AttachChatCompletionMetadata(obj map[string]any, pr *registry.PendingRequest) {
 	if obj == nil {
 		return
 	}
 	// Provider output is untrusted. Reserve this top-level key even when the
 	// caller opted out, then add only the coordinator-authored snapshot.
-	deleteChatCompletionMetadata(obj)
+	sse.DeleteChatCompletionMetadata(obj)
 	if !HasChatCompletionMetadata(pr) {
 		return
 	}
-	obj[chatCompletionMetadataField] = json.RawMessage(pr.ResponseMetadata)
+	obj[sse.ChatCompletionMetadataField] = json.RawMessage(pr.ResponseMetadata)
 }
 
 func chatCompletionMetadata(pr *registry.PendingRequest) *types.ChatCompletionMetadata {

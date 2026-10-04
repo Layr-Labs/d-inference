@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-03
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -14,7 +14,7 @@ the operator procedure is [`../operations/model-migration.md`](../operations/mod
 Produced by `darkbloom-publish hash` (`provider-swift/Sources/darkbloom-publish/HashCommand.swift`
 → `ManifestBuilder.build` in `provider-swift/Sources/ProviderCoreFoundation/ManifestBuilder.swift`);
 decoded on the coordinator as `store.ModelManifest` (`coordinator/store/interface.go`)
-and validated by `validateModelManifest` (`coordinator/api/catalog/registry_validation.go`).
+and validated by `ValidateModelManifest` (`coordinator/internal/api/catalog/registration/registry_validation.go`).
 
 | Field | Type | Constraint (coordinator) | Notes |
 |---|---|---|---|
@@ -22,7 +22,7 @@ and validated by `validateModelManifest` (`coordinator/api/catalog/registry_vali
 | `model_id` | string | equals the registration `model_id` | `A-Z a-z 0-9 . _ - /`; no leading `/`; no `..` (`validRegistryIdentifier(_, true)`) |
 | `version` | string | equals the registration `version` | same charset without `/` (`validRegistryIdentifier(_, false)`); e.g. `2026-05-23-r1` |
 | `r2_prefix` | string | equals `modelR2Prefix(model_id, version)` | see [R2 layout](#r2-layout) |
-| `aggregate_sha256` | string | 64 lowercase hex; equals the recomputed aggregate | `isLowerSHA256Hex`, `aggregateManifestFileHashes` |
+| `aggregate_sha256` | string | 64 lowercase hex; equals the recomputed aggregate | `isLowerSHA256Hex`, `AggregateManifestFileHashes` |
 | `total_size_bytes` | integer | ≥ 0; equals the sum of `files[].size_bytes` | |
 | `file_count` | integer | equals `len(files)`; `files` non-empty | |
 | `files` | array of `ManifestFile` | paths unique (case-insensitive) | |
@@ -61,7 +61,7 @@ selection does not validate receipt contents or qualify the model for serving.
 
 `aggregate_sha256` = hex(SHA-256(concat(raw 32-byte digest of each file, files
 sorted by `path` ascending))). Implemented identically in
-`aggregateManifestFileHashes` (`coordinator/api/catalog/registry_validation.go`),
+`AggregateManifestFileHashes` (`coordinator/internal/api/catalog/registration/registry_validation.go`),
 `ManifestBuilder.build`, and `WeightHasher.hashFilesWithRelativeKey`
 (`provider-swift/Sources/ProviderCoreFoundation/WeightHasher.swift`), which the
 provider runs after download. The same value is the catalog `weight_hash`.
@@ -88,7 +88,7 @@ Example: `mlx-community/gemma-4-26B-A4B-it-qat-4bit` at version `2026-05-23-r1`
 ([below](#authentication)). Unknown JSON fields are rejected
 (`DisallowUnknownFields`).
 
-| Field | Type | Required | Validation (`validateRegisterModelRequest`) |
+| Field | Type | Required | Validation (`ValidateRegisterModelRequest`) |
 |---|---|---|---|
 | `model_id` | string | yes | registry identifier charset, `/` allowed; must not equal an existing alias (409) |
 | `version` | string | yes | registry identifier charset, no `/` |
@@ -100,7 +100,7 @@ Example: `mlx-community/gemma-4-26B-A4B-it-qat-4bit` at version `2026-05-23-r1`
 | `max_output_length` | integer | yes | > 0 |
 | `min_ram_gb` | integer | yes | > 0 |
 | `capabilities` | array of string | no | free-form OpenRouter-style feature names (`tools`, `reasoning`, …) |
-| `required_provider_capabilities` | array of string | no | each must be `apple_m5` or `mlx_nax`, trimmed, unique (`validateRequiredProviderCapabilities`); `EigenLabs/Qwen3.8-27B-4bit` must list both |
+| `required_provider_capabilities` | array of string | no | each must be `apple_m5` or `mlx_nax`, trimmed, unique (`ValidateRequiredProviderCapabilities`); `EigenLabs/Qwen3.8-27B-4bit` must list both |
 | `description` | string | no | |
 | `runtime_parameters` | object | no | merged into provider requests at dispatch |
 | `metadata` | object | no | opaque; see [metadata keys](#metadata-keys) |
@@ -114,7 +114,7 @@ Server-side sequence, in order; any failure before step 5 persists nothing:
 1. Alias-collision guard: `GetModelAlias(model_id)` found → `409`.
 2. `GET <cdn>/<r2_prefix>/manifest.json` (30 s timeout, 10 MiB limit) →
    `400 failed to fetch manifest` on any non-2xx.
-3. `validateModelManifest` (table above) → `400`.
+3. `ValidateModelManifest` (table above) → `400`.
 4. `HEAD` every file with 8 workers, comparing `Content-Length` to `size_bytes`
    (`verifyManifestFiles`) → `400 manifest file verification failed`.
 5. `SetModelVersion` writes the entry (`status = "beta"`), version
@@ -421,7 +421,7 @@ Responses echo the alias; billing and stats store the concrete build.
 
 Marketplace clones of an existing alias or concrete model with their own API
 id. Handlers in `coordinator/api/catalog/openrouter_alias_handlers.go`; invariants in
-`coordinator/api/catalog/openrouter_alias_invariants.go`.
+`coordinator/internal/api/catalog/aliaspolicy/openrouter_alias_invariants.go`.
 
 | Endpoint | Handler |
 |---|---|

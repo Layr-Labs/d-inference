@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-03
 
 The public HTTP surface of the coordinator, derived from its composed route bindings under `coordinator/api/`, including the `/v1/` catch-all. Every route is listed below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -83,7 +83,7 @@ only protocol 3 can show a pending current authorization path. Public attestatio
 compatibility authorization flags, and catalog models in one registry/provider
 locked walk (`ForEachProviderVerification` in `coordinator/registry/verification.go`).
 Stats rows and geography aggregates use one locked visitor and detached location
-values (`aggregateProviderLocations` in `coordinator/api/reporting/stats_provider_locations.go`),
+values (`aggregateProviderLocations` in `coordinator/internal/api/reporting/statsview/stats_provider_locations.go`),
 so a new or replacement connection cannot change the geography between the row
 and count observations. Missing
 or stale verification metadata is counted as unknown in the UI, with a separate
@@ -100,7 +100,7 @@ are deduplicated privately from verified account/machine inventory; this is not
 proof of physical uniqueness. OS counts are app reports, not successful App
 Attest counts. Private-only providers are excluded. These aggregates describe
 the source snapshot, not a reusable routing grant. Code:
-`coordinator/api/reporting/stats_verification.go` (`addProvider`).
+`coordinator/internal/api/reporting/statsview/stats_verification.go` (`AddProvider`).
 
 Live console views honor each method's expiry and stop showing cached verified
 verdicts after 60 seconds from `observed_at`, even if polling fails. Revocation
@@ -121,14 +121,14 @@ telemetry wire enums or authorization gates change.
 connection's complete registry authorization; stored/offline records never
 restore that grant. These fields add no private App Attest IDs or proof bytes
 and never change legacy `trust_level` or `mda_verified`. Code:
-`coordinator/api/accounts/me_authorization.go` (`attachMyProviderAuthorization`).
+`coordinator/internal/api/accounts/fleetview/me_authorization.go` (`attachMyProviderAuthorization`).
 
 Each owner-visible provider may also include `os_version`, the current or last
 app-reported macOS version retained from its signed registration blob in
 `attestation.VerificationResult.OSVersion`. This is upgrade guidance, not
 Apple-certified inventory or serving authorization. A live connection without
 an OS report clears any older stored version; absent values mean unknown.
-Code: `coordinator/api/accounts/projection.go` (`buildMyProvider`).
+Code: `coordinator/internal/api/accounts/fleetview/projection.go` (`buildMyProvider`).
 
 ## Conventions used in the route tables
 
@@ -176,9 +176,9 @@ as inference budgets.
 | Method | Path | Handler | Auth | Limiter | Notes |
 |---|---|---|---|---|---|
 | POST | `/v1/chat/completions` | `HandleChatCompletions` (`coordinator/api/inference/consumer.go`) | `key` | `drain`, `rpm`, token limits | OpenAI Chat Completions, streaming and non-streaming |
-| POST | `/v1/responses` | `HandleChatCompletions` — the same handler; it detects `input` (Responses) versus `messages` (Chat) | `key` | same | OpenAI Responses; lowered by `coordinator/promptcontract/endpoint_lower_responses.go`, streamed by `NewResponsesStreamEmitter` (`coordinator/api/inference/response/responses_stream.go`) |
+| POST | `/v1/responses` | `HandleChatCompletions` — the same handler; it detects `input` (Responses) versus `messages` (Chat) | `key` | same | OpenAI Responses; lowered by `coordinator/internal/promptcontract/endpoint/endpoint_lower_responses.go`, streamed by `NewResponsesStreamEmitter` (`coordinator/api/inference/response/responses_stream.go`) |
 | POST | `/v1/completions` | `HandleCompletions` (`coordinator/api/inference/consumer.go`) | `key` | same | Legacy text completions; response built by `coordinator/api/inference/response/generic_endpoint_response.go`, streamed by `NewGenericEndpointStreamEmitter` (`coordinator/api/inference/response/generic_endpoint_stream.go`) |
-| POST | `/v1/messages` | `HandleAnthropicMessages` (`coordinator/api/inference/consumer.go`) | `key` | same | Anthropic Messages; lowered by `coordinator/promptcontract/endpoint_lower_messages.go`, streamed by `newMessagesStreamEmitter` |
+| POST | `/v1/messages` | `HandleAnthropicMessages` (`coordinator/api/inference/consumer.go`) | `key` | same | Anthropic Messages; lowered by `coordinator/internal/promptcontract/endpoint/endpoint_lower_messages.go`, streamed by `newMessagesStreamEmitter` |
 
 ### Models and catalog (9)
 
@@ -280,9 +280,9 @@ Ledger semantics, reservations and payouts: [`../architecture/billing.md`](../ar
 
 | Method | Path | Handler | Auth | Notes |
 |---|---|---|---|---|
-| GET | `/v1/stats` | `HandleStats` (`coordinator/api/reporting/stats.go`) | `—` | Refresh every 30 s; preserve the UTC source observation time in `snapshot_at` (`time.RFC3339Nano`). Geography refreshes independently and reports availability per section. Retain a successful core body up to 5 min on core refresh failure; 503 `service_unavailable` without an unexpired success |
+| GET | `/v1/stats` | `HandleStats` (`coordinator/api/reporting/stats_handler.go`) | `—` | Refresh every 30 s; preserve the UTC source observation time in `snapshot_at` (`time.RFC3339Nano`). Geography refreshes independently and reports availability per section. Retain a successful core body up to 5 min on core refresh failure; 503 `service_unavailable` without an unexpired success |
 | GET | `/v1/leaderboard` | `HandleLeaderboard` (`coordinator/api/reporting/leaderboard.go`) | `—` | Successful top-200 rankings, including genuinely empty windows, cached 5 min per metric/canonical window; caller limits and aliases share one fill. Query, scan, or iteration failures return 503 `service_unavailable` with `Retry-After`; only a 10 s failure cooldown is retained, never empty/partial data |
-| GET | `/v1/network/totals` | `HandleNetworkTotals` (`coordinator/api/reporting/network_totals.go`) | `—` | Totals refreshed every minute with the same 5 min safety TTL; 503 `service_unavailable` without an unexpired success; canonical windows `24h`, `7d`, `30d`, `all` (`1d` → `24h`, empty/`lifetime` → `all`) |
+| GET | `/v1/network/totals` | `HandleNetworkTotals` (`coordinator/api/reporting/totals_handler.go`) | `—` | Totals refreshed every minute with the same 5 min safety TTL; 503 `service_unavailable` without an unexpired success; canonical windows `24h`, `7d`, `30d`, `all` (`1d` → `24h`, empty/`lifetime` → `all`) |
 | GET | `/v1/network/model-demand` | `HandleModelDemand` (`coordinator/api/`) | `—` | Recorded public model demand; `window=24h` (default), `7d`, `30d`; cached up to 5 min; 400 for other windows; 503 on unavailable aggregation |
 | GET | `/v1/network/series` | `HandleNetworkSeries` (`coordinator/api/reporting/network_series.go`) | `—` | Time series, cached 1 min; 503 `service_unavailable` on a store error after a miss, with no failed result cached |
 | GET | `/health` | `HandleHealth` (`coordinator/api/operations/health.go`) | `—` | `HealthResponse` `{status: "ok", draining, providers, version, build_commit, build_date}` |
@@ -293,10 +293,11 @@ geography never blocks core stats. Geography refreshes on its own
 `statsRefreshInterval` loop, using `statsGeographyCacheKey`. Core snapshots
 include the latest completed geography attempt, so availability changes appear
 on a subsequent core refresh. Missing or expired geography is unavailable.
-Cache behavior is implemented by `coordinator/api/reporting/cache_refresher.go`
-(`computeCachedEntry`, `StartCacheRefreshers`) and
-`coordinator/api/reporting/stats_geography.go` (`cachedStatsGeography`, `computeStatsGeography`).
-Leaderboard fills use `coordinator/api/reporting/leaderboard_cache.go` (`cachedLeaderboard`):
+Cache behavior is implemented by `coordinator/internal/api/reporting/refresher/cache_refresher.go`
+(`computeCachedEntry`) and `coordinator/api/reporting/refresh_start.go`
+(`StartCacheRefreshers`), with geography in
+`coordinator/internal/api/reporting/statsview/stats_geography.go` (`cachedStatsGeography`, `computeStatsGeography`).
+Leaderboard fills use `coordinator/internal/api/reporting/ranking/leaderboard_cache.go` (`CachedLeaderboard`):
 one in-flight query per metric/canonical window, `leaderboardCacheLimit = 200`,
 `leaderboardCacheTTL = 5 * time.Minute`, and
 `leaderboardFailureBackoff = 10 * time.Second`. The response retains the caller's
@@ -306,11 +307,11 @@ the next query is allowed.
 
 | Stats geography field | Contract | Code |
 |---|---|---|
-| `request_locations_status`, `request_flows_status` | `available` or `unavailable`, independently; unavailable includes startup before the first geography refresh finishes. Core stats still return 200 | `coordinator/api/reporting/stats_geography.go` (`statsGeographyStatus`, `computeStatsGeography`) |
-| `geography_snapshot_at` | RFC 3339 UTC observation start for the geography attempt, separate from core `snapshot_at`; empty before an attempt or after expiry | `coordinator/api/reporting/stats_geography.go` (`statsGeography`) |
-| `request_locations`, `request_regions`, `unknown_request_location_requests`, `suppressed_request_city_requests` | `null` when locations are unavailable; successful empty windows retain arrays and numeric counts. A failed attempt replaces previous geography rather than presenting stale figures as current | `coordinator/api/reporting/stats_geography.go` (`computeStatsGeography`, `addTo`) |
-| `request_flows` | `null` when flows are unavailable, an array (possibly empty) on success; independent of location status | `coordinator/api/reporting/stats_geography.go` (`computeStatsGeography`) |
-| `provider_locations`, `provider_regions` | Computed from the same live-fleet walk as core provider rows and verification counts; request-geography failures do not hide provider geography | `coordinator/api/reporting/stats.go` (`computeStats`); `coordinator/api/reporting/stats_provider_locations.go` (`aggregateProviderLocations`) |
+| `request_locations_status`, `request_flows_status` | `available` or `unavailable`, independently; unavailable includes startup before the first geography refresh finishes. Core stats still return 200 | `coordinator/internal/api/reporting/statsview/stats_geography.go` (`statsGeographyStatus`, `computeStatsGeography`) |
+| `geography_snapshot_at` | RFC 3339 UTC observation start for the geography attempt, separate from core `snapshot_at`; empty before an attempt or after expiry | `coordinator/internal/api/reporting/statsview/stats_geography.go` (`statsGeography`) |
+| `request_locations`, `request_regions`, `unknown_request_location_requests`, `suppressed_request_city_requests` | `null` when locations are unavailable; successful empty windows retain arrays and numeric counts. A failed attempt replaces previous geography rather than presenting stale figures as current | `coordinator/internal/api/reporting/statsview/stats_geography.go` (`computeStatsGeography`, `addTo`) |
+| `request_flows` | `null` when flows are unavailable, an array (possibly empty) on success; independent of location status | `coordinator/internal/api/reporting/statsview/stats_geography.go` (`computeStatsGeography`) |
+| `provider_locations`, `provider_regions` | Computed from the same live-fleet walk as core provider rows and verification counts; request-geography failures do not hide provider geography | `coordinator/internal/api/reporting/statsview/stats.go` (`computeStats`); `coordinator/internal/api/reporting/statsview/stats_provider_locations.go` (`aggregateProviderLocations`) |
 
 The stats, totals, leaderboard, and series handlers emit the 503 `service_unavailable` error
 envelope when their required data is unavailable.
@@ -465,15 +466,15 @@ are advertised provider/model pairs, not unique models or guaranteed cache hits.
 | `providers.memory_ready_models` | Ready resident capabilities, counted separately from SSD readiness | `coordinator/registry/cache_status.go` (`PrefixCacheProtocolStatus`) |
 | `lifecycle.fences_applied` | Proof-fence windows opened or escalated | `coordinator/registry/cache_routing.go` (`CacheRoutingLifecycleStatus`); `coordinator/registry/cache_proof_fence.go` (`rejectCapability`) |
 | `lifecycle.fences_expired` | Windows that lifted by time, each counted once | Same; `coordinator/registry/cache_proof_fence.go` (`countLapseLocked`) |
-| `lifecycle.persistence.enabled` / `.ready` | Persistence is started / restore has established the key generation. Holder and demand writes wait for `ready`; failed restores retry each flush tick | `coordinator/registry/cachepersist/status.go` (`Status`); `coordinator/registry/cache_persistence_registry.go` (`runCacheRoutingPersistence`) |
-| `lifecycle.persistence.restored_holders` / `.restored_demand` | Holder rows accepted into the parked set during boot or retry, and restored demand entries accepted by the index. Loads enforce TTL, caps and clock-skew bounds | `coordinator/registry/cachepersist/restore.go` (`Restore`, `SeedDemandPersisted`) |
-| `lifecycle.persistence.pending_holders` / `.bound_holders` / `.dropped_pending` | Currently parked holders (not pending writes), cumulative bindings, and parked/restored rows dropped for expiry, capacity, identity mismatch, abandoned epoch or invalidation fences | `coordinator/registry/cachepersist/pending.go` (`Park`, `AddBound`, `prunePendingChunked`); `coordinator/registry/cache_persistence.go` (`bindRowsLocked`, `settleParkedChunk`); `coordinator/registry/cachepersist/restore.go` (`Restore`) |
-| `lifecycle.persistence.key_rotated` | This boot reset a different recorded cache-key generation, covering the master key and all derivation versions. Excludes first initialization and completion of an in-progress reset | `coordinator/registry/cachepersist/restore.go` (`Restore`) |
-| `lifecycle.persistence.flushes` / `.flush_errors` | Nonempty or reset-only flush attempts, and their failures. Unwritten mutations stay pending; successful chunks clear only matching revisions | `coordinator/registry/cachepersist/flush.go` (`Flush`, `recordFlush`); `coordinator/registry/cachepersist/mutations.go` (`acknowledgeHolders`, `acknowledgeDemand`) |
-| `lifecycle.persistence.rows_written` / `.rows_deleted` | Holder/demand rows successfully submitted in upsert chunks / holder keys successfully submitted in delete chunks. Deletes can name missing rows; neither is a current row count or a count of rows actually changed. Reset/prune deletions are excluded | `coordinator/registry/cachepersist/mutations.go` (`acknowledgeHolders`, `acknowledgeDemand`) |
-| `lifecycle.persistence.dropped_dirty` | Upsert/demand marks dropped at their pending cap, plus pending holder upserts discarded by delete-backlog overflow | `coordinator/registry/cachepersist/marks.go` (`MarkHolderUpsert`, `MarkDemand`); `coordinator/registry/cachepersist/reset.go` (`requireResetLocked`) |
-| `lifecycle.persistence.overflow_resets` / `.stale_upserts` | Delete-backlog overflows requesting a durable reset (not completed resets) / holder upserts rejected because evidence is at or before a per-key invalidation or the process-lifetime overflow cutoff | `coordinator/registry/cachepersist/reset.go` (`requireResetLocked`); `coordinator/registry/cachepersist/marks.go` (`MarkHolderUpsert`); `coordinator/registry/cachepersist/delete_fences.go` (`tombstonedLocked`) |
-| `lifecycle.persistence.last_flush_ms` / `.last_flush_at` | Duration and completion time of the last counted flush, successful or failed, including a mid-flush reset. Time is UTC RFC 3339 and omitted before any counted flush | `coordinator/registry/cachepersist/flush.go` (`recordFlush`); `coordinator/registry/cachepersist/status.go` (`Status`) |
+| `lifecycle.persistence.enabled` / `.ready` | Persistence is started / restore has established the key generation. Holder and demand writes wait for `ready`; failed restores retry each flush tick | `coordinator/internal/registry/cachepersist/status.go` (`Status`); `coordinator/registry/cache_persistence_registry.go` (`runCacheRoutingPersistence`) |
+| `lifecycle.persistence.restored_holders` / `.restored_demand` | Holder rows accepted into the parked set during boot or retry, and restored demand entries accepted by the index. Loads enforce TTL, caps and clock-skew bounds | `coordinator/internal/registry/cachepersist/restore.go` (`Restore`, `SeedDemandPersisted`) |
+| `lifecycle.persistence.pending_holders` / `.bound_holders` / `.dropped_pending` | Currently parked holders (not pending writes), cumulative bindings, and parked/restored rows dropped for expiry, capacity, identity mismatch, abandoned epoch or invalidation fences | `coordinator/internal/registry/cachepersist/pending.go` (`Park`, `AddBound`, `prunePendingChunked`); `coordinator/registry/cache_persistence.go` (`bindRowsLocked`, `settleParkedChunk`); `coordinator/internal/registry/cachepersist/restore.go` (`Restore`) |
+| `lifecycle.persistence.key_rotated` | This boot reset a different recorded cache-key generation, covering the master key and all derivation versions. Excludes first initialization and completion of an in-progress reset | `coordinator/internal/registry/cachepersist/restore.go` (`Restore`) |
+| `lifecycle.persistence.flushes` / `.flush_errors` | Nonempty or reset-only flush attempts, and their failures. Unwritten mutations stay pending; successful chunks clear only matching revisions | `coordinator/internal/registry/cachepersist/flush.go` (`Flush`, `recordFlush`); `coordinator/internal/registry/cachepersist/mutations.go` (`acknowledgeHolders`, `acknowledgeDemand`) |
+| `lifecycle.persistence.rows_written` / `.rows_deleted` | Holder/demand rows successfully submitted in upsert chunks / holder keys successfully submitted in delete chunks. Deletes can name missing rows; neither is a current row count or a count of rows actually changed. Reset/prune deletions are excluded | `coordinator/internal/registry/cachepersist/mutations.go` (`acknowledgeHolders`, `acknowledgeDemand`) |
+| `lifecycle.persistence.dropped_dirty` | Upsert/demand marks dropped at their pending cap, plus pending holder upserts discarded by delete-backlog overflow | `coordinator/internal/registry/cachepersist/marks.go` (`MarkHolderUpsert`, `MarkDemand`); `coordinator/internal/registry/cachepersist/reset.go` (`requireResetLocked`) |
+| `lifecycle.persistence.overflow_resets` / `.stale_upserts` | Delete-backlog overflows requesting a durable reset (not completed resets) / holder upserts rejected because evidence is at or before a per-key invalidation or the process-lifetime overflow cutoff | `coordinator/internal/registry/cachepersist/reset.go` (`requireResetLocked`); `coordinator/internal/registry/cachepersist/marks.go` (`MarkHolderUpsert`); `coordinator/internal/registry/cachepersist/delete_fences.go` (`tombstonedLocked`) |
+| `lifecycle.persistence.last_flush_ms` / `.last_flush_at` | Duration and completion time of the last counted flush, successful or failed, including a mid-flush reset. Time is UTC RFC 3339 and omitted before any counted flush | `coordinator/internal/registry/cachepersist/flush.go` (`recordFlush`); `coordinator/internal/registry/cachepersist/status.go` (`Status`) |
 | `lifecycle.fenced_capabilities` | Currently fenced provider/model/tier capabilities | `coordinator/registry/cache_proof_fence.go` (`sweepFencesLocked`) |
 | `lifecycle.demand_entries` | Entries currently in the observed-demand index | `coordinator/registry/cache_demand.go` (`stats`) |
 | `lifecycle.demand_cap_evictions` | Demand entries evicted by the cap inside their TTL; a growing count means repeated prefixes are being reported as novel | Same |
@@ -521,7 +522,7 @@ for `cache_model_*` labels and populations (`coordinator/api/observation/cache_m
 `GET /v1/me/providers` returns a `reputation` object on each machine with
 `total_jobs`, `successful_jobs`, `failed_jobs`, `total_uptime_seconds`,
 `avg_response_time_ms`, `challenges_passed`, and `challenges_failed`
-(`coordinator/api/accounts/provider_types.go`, `myReputation`). The legacy object name is
+(`coordinator/internal/api/accounts/fleetview/provider_types.go`, `myReputation`). The legacy object name is
 retained for the raw metrics; its former `score` field has been removed.
 Live and stored/offline snapshots have the same shape. The console displays
 job counts, tokens, uptime, and response timing without a reputation rating.
@@ -622,7 +623,7 @@ contract behavior are defined in [prompt-contract sidecar](../architecture/promp
 | Header | Where | When |
 |---|---|---|
 | `X-Request-ID` | `loggingMiddleware` | Every response |
-| `Retry-After` | `rateLimitWithTier`, `applyKeyRPMLimit`, `WriteTokenRateLimited`, `DrainGate`, `shedIfModelRejected`, `writeTTFTTooSlow`, `writeServiceUnavailable`, `HandleLeaderboard` (`coordinator/api/reporting/leaderboard.go`), `runInferenceAdmission`, `selfRouteUnavailable`, `preContentTerminal`, the exhausted branch of `dispatchState.run` (`coordinator/api/inference/dispatch.go`) | Every 429 (including the drain 429, [`coordinatorDrainRetryAfter`](#timeouts-and-constants)); 503 `service_unavailable`, `machine_offline` (30 s), `model_not_loaded` (15 s), and 503 `provider_error` from dispatch exhaustion. **Not** set on 503 `model_unavailable`, 502, or 504. Leaderboard failures use the remaining `leaderboardFailureBackoff` rounded up to whole seconds (`coordinator/api/reporting/leaderboard_cache.go`, `leaderboardRetryAfter`). Admission values come from `estimateRetryAfter` (`coordinator/api/inference/consumer.go`), capped at [`maxDistressRetryAfter`](#timeouts-and-constants); a provider-forecast `feasible_after_ms` overrides it, clamped to 2–30 s |
+| `Retry-After` | `rateLimitWithTier`, `applyKeyRPMLimit`, `WriteTokenRateLimited`, `DrainGate`, `shedIfModelRejected`, `writeTTFTTooSlow`, `writeServiceUnavailable`, `HandleLeaderboard` (`coordinator/api/reporting/leaderboard.go`), `Admission.Run`, `selfRouteUnavailable`, `preContentTerminal`, the exhausted branch of `dispatchState.run` (`coordinator/api/inference/dispatch.go`) | Every 429 (including the drain 429, [`coordinatorDrainRetryAfter`](#timeouts-and-constants)); 503 `service_unavailable`, `machine_offline` (30 s), `model_not_loaded` (15 s), and 503 `provider_error` from dispatch exhaustion. **Not** set on 503 `model_unavailable`, 502, or 504. Leaderboard failures use the remaining `leaderboardFailureBackoff` rounded up to whole seconds (`coordinator/internal/api/reporting/ranking/leaderboard_cache.go`, `LeaderboardRetryAfter`). Admission values come from `estimateRetryAfter` (`coordinator/api/inference/consumer.go`), capped at [`maxDistressRetryAfter`](#timeouts-and-constants); a provider-forecast `feasible_after_ms` overrides it, clamped to 2–30 s |
 | `X-RateLimit-Reset`, `x-ratelimit-limit-requests`, `x-ratelimit-remaining-requests`, `x-ratelimit-reset-requests` | `rateLimitWithTier`, `setRequestRateLimitHeaders` | Request-rate limited routes (`rpm`, `fin`); the first only on rejection |
 | `x-ratelimit-limit-input-tokens`, `x-ratelimit-remaining-input-tokens`, `x-ratelimit-reset-input-tokens`, and the `-output-tokens` triple | `setTokenRateLimitHeaders` | Inference responses when token limits are configured |
 | `X-Timing` | `writeTimingHeaderWithProfile` (`coordinator/api/inference/profiler_dispatch.go`) | Committed inference responses. A JSON object with the `RequestTimingDetails` fields (`coordinator/api/types/types.go`): `parse_us`, `reserve_us`, `media_fetch_us`, `route_us`, `queue_us`, `encrypt_us`, `dispatch_us`, `provider_us`, plus profiler-only additive keys (`pre_handler_us`, `preflight_us`, `route_reserve_us`, `queue_pure_us`, `writer_us`, `socket_us`, `provider_ack_us`, `timing_anomaly`) |
@@ -649,22 +650,22 @@ Every error body has one shape (`errorResponse`, `writeJSON`, `WithCode` in `coo
 }
 ```
 
-`code` mirrors `type` unless a handler overrides it (`WithCode`, e.g. `payload_too_large`, `model_capability_unsupported`); `param` is present only when a handler names the offending field (`WithParam`, e.g. `"model"` on `model_not_found`). Chat errors raised *after* a stream has committed cannot change the status line; they surface as a terminal SSE `error` event, without a normal-completion `[DONE]` (`WriteChatStreamTerminalError`, `coordinator/api/inference/response/chat_metadata_stream.go`; `writeChatStreamProviderError`, `coordinator/api/inference/consumer_stream.go`).
+`code` mirrors `type` unless a handler overrides it (`WithCode`, e.g. `payload_too_large`, `model_capability_unsupported`); `param` is present only when a handler names the offending field (`WithParam`, e.g. `"model"` on `model_not_found`). Chat errors raised *after* a stream has committed cannot change the status line; they surface as a terminal SSE `error` event, without a normal-completion `[DONE]` (`WriteChatStreamTerminalError`, `coordinator/api/inference/response/chat_metadata_stream.go`; `writeChatStreamProviderError`, `coordinator/internal/inference/relay/consumer_stream.go`).
 
 | Status | `type` values | Raised by |
 |---|---|---|
 | 400 | `invalid_request_error`, `invalid_sealed_envelope`, `kid_mismatch`, `decryption_failed`, `invalid_request`, `bad_request`, `referral_error` | Body/JSON validation, `n > 1`, tool-choice and vision rules, native media tools unsupported by a model's serving fleet (`param: model`), sealed-envelope faults, device-code and key-management input, unknown catalog `?type=` |
 | 401 | `authentication_error`, `auth_error`, `unauthorized` | Missing/invalid bearer (`RequireAuth`, `RequirePrivyAuth`), no account user (`RequirePrivyUser`), release key |
-| 402 | `insufficient_funds` (balance below the reservation), `insufficient_quota` (per-key spend cap); `code` is `insufficient_quota` for both | `reserveInferenceBalance` (`coordinator/api/inference/inference_admission.go`); the per-cause table, including the provider-price 402, is [Payment-required responses](../architecture/billing.md#payment-required-responses) |
+| 402 | `insufficient_funds` (balance below the reservation), `insufficient_quota` (per-key spend cap); `code` is `insufficient_quota` for both | `reserveInferenceBalance` (`coordinator/api/inference/inference_balance.go`); the per-cause table, including the provider-price 402, is [Payment-required responses](../architecture/billing.md#payment-required-responses) |
 | 403 | `forbidden`, `model_not_allowed` | API key on a `privy` route; non-admin on an `admin` route; model outside the key's `allowed_models` (`keyModelAllowed`, `coordinator/api/inference/key_policy.go`) |
 | 404 | `model_not_found`, `not_found`, `invalid_grant`, `invalid_code`, `referral_error`, `invalid_request_error` | Model or alias not in the catalog; unknown key id; device codes; `/v1/` catch-all; state export when disabled |
 | 409 | `no_linked_machine`, `already_used`, `conflict`, `stripe_account_gone`, `stripe_account_recreate_required` | Self-route without a linked machine; device-approve replay; invite-code collision; Stripe Connect state |
 | 410 | `expired_token`, `expired_code` | expired [device codes](#device-code-flow-3) |
 | 412 | `precondition_failed` | State export without an encryption recipient |
-| 413 | `invalid_request_error` (plain, or with `code: payload_too_large`) | Inference body over `maxInferenceBodyBytes` ([Limits and validation](#limits-and-validation); `parseInferencePrelude`); admission rejects a prompt no provider can accept (`runInferenceAdmission`) |
+| 413 | `invalid_request_error` (plain, or with `code: payload_too_large`) | Inference body over `maxInferenceBodyBytes` ([Limits and validation](#limits-and-validation); `parseInferencePrelude`); admission rejects a prompt no provider can accept (`Admission.Run`) |
 | 422 | `invalid_request_error` | Tool-constraint schema the parser cannot compile (`ValidateResolvedToolConstraintParser`, `coordinator/api/inference/request/tool_parser.go`) |
 | 426 | `upgrade_required` | Log report from a provider below the minimum version |
-| 429 | `rate_limit_exceeded`, `machine_busy` | `machine_busy`: self-route (`X-Darkbloom-Route: self`) when the owned machine is at capacity, with `Retry-After` (`preContentTerminal`, `coordinator/api/inference/dispatch_terminal_write.go`). `rate_limit_exceeded`: key RPM, account RPM, input/output tokens per minute, coordinator drain (`Retry-After` = [`coordinatorDrainRetryAfter`](#timeouts-and-constants)), admission shedding, model-rejection shedding, fleet TTFT too slow, and dispatch exhausted on capacity: every attempt refused for capacity, no provider produced first content within the deadline (the coordinator's own pre-content timeout is reclassified from 504 by `classifyExhaustedStatus`, `coordinator/api/inference/dispatch.go`), or the request fits no provider; always with `Retry-After` |
+| 429 | `rate_limit_exceeded`, `machine_busy` | `machine_busy`: self-route (`X-Darkbloom-Route: self`) when the owned machine is at capacity, with `Retry-After` (`Recorder.PreContentTerminal`, `coordinator/internal/inference/rejection/terminal.go`). `rate_limit_exceeded`: key RPM, account RPM, input/output tokens per minute, coordinator drain (`Retry-After` = [`coordinatorDrainRetryAfter`](#timeouts-and-constants)), admission shedding, model-rejection shedding, fleet TTFT too slow, and dispatch exhausted on capacity: every attempt refused for capacity, no provider produced first content within the deadline (the coordinator's own pre-content timeout is reclassified from 504 by `retry.ClassifyExhaustedStatus`, `coordinator/internal/inference/retry/terminal_classification.go`), or the request fits no provider; always with `Retry-After` |
 | 500 | `internal_error`, `server_error`, `auth_error`, `otp_error` | Store failures, token generation, account lookup, admin OTP delivery |
 | 502 | `provider_error`, `stripe_error` | Provider returned an error or no usable output; Stripe API failures |
 | 503 | `model_unavailable` (no `Retry-After`; may carry `code: model_capability_unsupported`), `service_unavailable`, `encryption_unavailable`, `machine_offline`, `model_not_loaded`, `billing_error`, `not_configured`, `provider_error` | No routable provider for the resolved model; no serving capacity (`writeServiceUnavailable`); sealing not configured; self-route machine states; ledger or Stripe not configured; Privy not configured for admin OTP; `/readyz` while draining; dispatch exhausted on a genuine provider 503; public stats/totals/series store failure with no usable cached body (see [public stats](#public-stats-and-health-5)) |
@@ -692,7 +693,7 @@ Requests are decoded into a generic JSON object with `json.Number` preserved (`p
 | `response_format` | Passed through to the provider without coordinator validation |
 | `reasoning`, `reasoning_effort` | Applied per model policy by `ApplyResolvedModelReasoningPolicy` (`coordinator/api/inference/request/reasoning_request_policy.go`) |
 | `provider` and other routing hints | Removed by `StripProviderRoutingFields` (`coordinator/api/inference/request/request_introspection.go`) |
-| `image_url` parts with `http(s)` URLs | Fetched by the coordinator before dispatch (`resolveRemoteMedia`, `coordinator/api/inference/media_resolve.go`) |
+| `image_url` parts with `http(s)` URLs | Fetched by the coordinator before dispatch (`Bridge.Resolve`, `coordinator/internal/inference/media/media_resolve.go`) |
 
 ### Chat Completions response (`ChatCompletionResponse`, `coordinator/api/types/types.go`)
 
@@ -725,7 +726,7 @@ usage-only event. Validated cache and reasoning details are added to the
 combined event only when no separate usage event follows; otherwise the
 dedicated event owns those details. No usage object is invented when the
 provider sends none (`handleStreamingResponseWithFirstChunkAndError`,
-`coordinator/api/inference/consumer_stream.go`; `FinalizeUsageChunk`,
+`coordinator/internal/inference/relay/consumer_stream.go`; `FinalizeUsageChunk`,
 `coordinator/api/inference/response/chat_stream_terminal.go`).
 
 `model` echoes the requested string, alias included (`BuildNonStreamingResponse`, `coordinator/api/inference/response/chat_response.go`). `se_signature` and `response_hash` are present when the provider signed the response; verification is described in [`../consumer/verification.md`](../consumer/verification.md). `metadata` is `ChatCompletionMetadata`:
@@ -748,13 +749,13 @@ Non-empty string `instructions` becomes a leading system message before `input`,
 preserving whitespace, existing system/developer messages and tool history.
 Missing, null or empty instructions add no message; other types return400.
 Both serving and text-cache preparation use `lowerResponsesWithContent`
-(`coordinator/promptcontract/endpoint_lower_responses.go`); Rust mirrors the
+(`coordinator/internal/promptcontract/endpoint/endpoint_lower_responses.go`); Rust mirrors the
 text-cache contract in `lower_responses` (`coordinator/promptsidecar/src/endpoint.rs`).
 Routing and billing reservation estimates include the new system message before
 lowering (`routingShape`, `billingBytes`, `coordinator/api/inference/request/request_introspection.go`).
 
 Serving uses `LowerResponsesInferenceBody`
-(`coordinator/promptcontract/endpoint_responses_inference.go`) to preserve
+(`coordinator/internal/promptcontract/endpoint/endpoint_responses_inference.go`) to preserve
 ordered inline media alongside text and function history. `input_image` accepts
 a string `image_url`; canonical `image_url` and `video_url` parts accept their
 `{"url": ...}` objects. These references must be inline `data:` URIs. Uploaded
@@ -769,7 +770,7 @@ outputs; accepting a Responses image for inference does not establish exact
 coordinator cache-routing eligibility. Native model codec, media-size, context
 and tool-capability checks still apply.
 
-Bodies are lowered into the chat pipeline (`coordinator/promptcontract/endpoint_lower_responses.go`) and the provider's chat output is raised back into `ResponsesResponse` (`coordinator/api/types/types.go`): `id` (`resp_…`), `object`, `created_at`, `status`, `error`, `incomplete_details.reason`, `instructions`, `max_output_tokens`, `model`, `output[]`, `parallel_tool_calls`, `temperature`, `tool_choice`, `tools`, `top_p`, `metadata`, `usage` (`input_tokens`, `input_tokens_details.cached_tokens`, `output_tokens`, `output_tokens_details.reasoning_tokens`), `se_signature`, `response_hash`. Streams use `event:`-typed frames from `response.created` / `response.in_progress` through the item deltas to `response.completed` (or `response.incomplete` when truncated) and carry **no** `data: [DONE]` (`NewResponsesStreamEmitter`, `coordinator/api/inference/response/responses_stream.go`).
+Bodies are lowered into the chat pipeline (`coordinator/internal/promptcontract/endpoint/endpoint_lower_responses.go`) and the provider's chat output is raised back into `ResponsesResponse` (`coordinator/api/types/types.go`): `id` (`resp_…`), `object`, `created_at`, `status`, `error`, `incomplete_details.reason`, `instructions`, `max_output_tokens`, `model`, `output[]`, `parallel_tool_calls`, `temperature`, `tool_choice`, `tools`, `top_p`, `metadata`, `usage` (`input_tokens`, `input_tokens_details.cached_tokens`, `output_tokens`, `output_tokens_details.reasoning_tokens`), `se_signature`, `response_hash`. Streams use `event:`-typed frames from `response.created` / `response.in_progress` through the item deltas to `response.completed` (or `response.incomplete` when truncated) and carry **no** `data: [DONE]` (`NewResponsesStreamEmitter`, `coordinator/api/inference/response/responses_stream.go`).
 
 `usage.total_tokens` is always emitted as `input_tokens + output_tokens`, including
 zero. Cached and reasoning token details are subsets, not additional tokens;
@@ -785,15 +786,15 @@ root response marked `incomplete` because generation reached its output limit.
 
 ### Completions and Messages
 
-`/v1/completions` and `/v1/messages` are lowered to the chat contract (`coordinator/promptcontract/endpoint_lower.go`, `coordinator/promptcontract/endpoint_lower_messages.go`); responses are re-shaped by `coordinator/api/inference/response/generic_endpoint_response.go` and streams by `coordinator/api/inference/generic_endpoint_stream.go`, which terminates with `data: [DONE]`. Usage reports a validated cache hit in each endpoint's own schema (`completionsUsage`, `messagesUsage`): `/v1/completions` adds `usage.prompt_tokens_details.cached_tokens` (a subset of `prompt_tokens`); `/v1/messages` reports `cache_read_input_tokens` and excludes those tokens from `input_tokens`, as Anthropic does. Streams carry the same object on their terminal event: the final `text_completion` chunk's `usage` for completions, and the `message_delta` `usage` for messages (its `message_start` still reports `input_tokens: 0`, because usage is known only at the end).
+`/v1/completions` and `/v1/messages` are lowered to the chat contract (`coordinator/promptcontract/endpoint_lower.go`, `coordinator/internal/promptcontract/endpoint/endpoint_lower_messages.go`); responses are re-shaped by `coordinator/api/inference/response/generic_endpoint_response.go` and streams by `coordinator/internal/inference/relay/generic_endpoint_stream.go`, which terminates with `data: [DONE]`. Usage reports a validated cache hit in each endpoint's own schema (`completionsUsage`, `messagesUsage`): `/v1/completions` adds `usage.prompt_tokens_details.cached_tokens` (a subset of `prompt_tokens`); `/v1/messages` reports `cache_read_input_tokens` and excludes those tokens from `input_tokens`, as Anthropic does. Streams carry the same object on their terminal event: the final `text_completion` chunk's `usage` for completions, and the `message_delta` `usage` for messages (its `message_start` still reports `input_tokens: 0`, because usage is known only at the end).
 
 ## SSE framing
 
-Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/inference/consumer_stream.go`), `coordinator/api/inference/response/sse_response.go`, and `coordinator/api/inference/response/chat_metadata_stream.go`; ordering guarantees come from the dispatch state machine in `coordinator/api/inference/dispatch.go`.
+Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/internal/inference/relay/consumer_stream.go`), `coordinator/api/inference/response/sse_response.go`, and `coordinator/api/inference/response/chat_metadata_stream.go`; ordering guarantees come from the dispatch state machine in `coordinator/api/inference/dispatch.go`.
 
-1. **Deferred commit.** No status line, headers, or bytes are written until the first *content* chunk arrives from a provider (`commitFirstContent`). Until then the coordinator can still fail over to another provider or return a JSON error with a real status code (`preContentTerminal`, `coordinator/api/inference/dispatch_terminal_write.go`). Clients see a delayed 200, never a 200 that turns into an error mid-preamble.
+1. **Deferred commit.** No status line, headers, or bytes are written until the first *content* chunk arrives from a provider (`commitFirstContent`). Until then the coordinator can still fail over to another provider or return a JSON error with a real status code (`Recorder.PreContentTerminal`, `coordinator/internal/inference/rejection/terminal.go`). Clients see a delayed 200, never a 200 that turns into an error mid-preamble.
 2. **Headers at commit**: `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`, `X-Inference-Job-ID` (`WriteSSEResponseHeader`), plus `X-Timing` and the `X-Provider-*` headers.
-3. **Each provider chunk** is forwarded as one `data: <json>\n\n` event after `normalizeSSEChunk` (`coordinator/api/inference/response/sse_normalize.go`); the coordinator does not re-tokenise or coalesce content. Chunks that arrive before commit are buffered (`chunkBufferSize` = 256).
+3. **Each provider chunk** is forwarded as one `data: <json>\n\n` event after `NormalizeSSEChunk` (`coordinator/internal/inference/sse/sse_normalize.go`); the coordinator does not re-tokenise or coalesce content. Chunks that arrive before commit are buffered (`chunkBufferSize` = 256).
 4. **Usage and finish chunks are held.** A chunk that only carries `usage` (`parseUsageOnlyStreamChunk`) is held so the reasoning-token breakdown can be spliced in; the chunk carrying the terminal `finish_reason` (`parseFinishStreamChunk`) is held so it can be corrected to `length` against the authoritative token counts. Both are written after every content delta. `se_signature`, `response_hash` and opt-in `metadata` ride on the held usage chunk; when there is none they are emitted as one additional fully-shaped `chat.completion.chunk` (`NewChatCompletionExtrasEvent`) immediately before termination. Every chunk's `model` is rewritten to the alias you sent (`rewriteChunkModel`).
 
    Coordinator-authored extras, including metadata before an in-band error,
@@ -812,23 +813,23 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/infer
 
 | Rule | Value / behaviour | Symbol |
 |---|---|---|
-| Global request body | 64 MiB ceiling on every request (`maxRequestBodyBytes`, `bodyLimitMiddleware`) | `coordinator/api/server.go`, `coordinator/api/middleware.go` |
+| Global request body | 64 MiB ceiling on every request (`maxRequestBodyBytes`, `bodyLimitMiddleware`) | `coordinator/api/server.go`, `coordinator/internal/api/middleware/middleware.go` |
 | Inference body | 16 MiB (`maxInferenceBodyBytes`) → 413 `invalid_request_error`; sealed bodies are read with the same cap (400 `invalid_request_error` when exceeded) | `parseInferencePrelude` (`coordinator/api/inference/inference_preprocess.go`), `SealedTransport` (`coordinator/api/inference/sender_encryption.go`) |
 | Control-plane bodies | 64 KiB (`maxControlPlaneBodyBytes`) for enroll, device token, admin auth | `coordinator/api/server.go` |
 | MDM webhook body | 1 MiB (`maxMDMWebhookBodyBytes`) | `HandleMDMWebhook` (`coordinator/api/provider/trust/settings.go`) |
 | `n` | Must be 1 | `HandleChatCompletions` |
 | `max_tokens` | `max_completion_tokens` → `max_tokens`; an explicit value is not clamped, a missing one is filled from the [output bound](pricing-model.md#formulas) | `ensureMaxTokensBound` |
-| Prompt size at admission | 413 `payload_too_large` when the estimated prompt exceeds what the model's providers can accept | `runInferenceAdmission` (`coordinator/api/inference/inference_admission.go`) |
+| Prompt size at admission | 413 `payload_too_large` when the estimated prompt exceeds what the model's providers can accept | `Admission.Run` (`coordinator/api/inference/inference_admission.go`) |
 | Catalog membership | Model resolved but absent from the routable catalog → 404 `model_not_found`, after the balance reservation is released | `HandleChatCompletions` |
 | Key allow-list | `model` not in the key's `allowed_models` → 403 `model_not_allowed` | `keyModelAllowed` |
 | `tool_choice` | `"none"`, `"auto"`, `"required"`, or `{"type": "function", "function": {"name": …}}`; a named function must exist in `tools`; `required` or a named choice with no tools → 400 | `ValidateToolConstraintPolicy` |
 | Tool schemas | Normalised to strict JSON Schema before dispatch; schemas the constraint parser cannot compile → 422 | `NormalizeToolSchemas`, `ValidateResolvedToolConstraintParser` |
 | Vision | Image parts require a vision-capable model, otherwise 400; a vision model with no vision-capable provider online → 503 `model_unavailable` | `DetectMediaRequirement` (`coordinator/api/inference/request/request_introspection.go`), `visionToolsFailFast` (`coordinator/api/inference/inference_preprocess.go`) |
-| Remote images | `http(s)` `image_url` parts are gated before dispatch and fetched by the coordinator; the fetch is billed as media | `gateRemoteMediaPreDispatch`, `resolveRemoteMedia` (`coordinator/api/inference/media_resolve.go`) |
+| Remote images | `http(s)` `image_url` parts are gated before dispatch and fetched by the coordinator; the fetch is billed as media | `Bridge.Gate`, `Bridge.Resolve` (`coordinator/internal/inference/media/media_resolve.go`); callbacks bound in `coordinator/api/inference/media_bridge.go` |
 | Forced media tools / media tool results | Requires explicit per-model native media-tool capability. A public model served only by providers lacking it → 400, `param: model`; no currently eligible capable provider → 503. Applies to `required`/named tools with media and media-bearing tool results even with `tool_choice: none`. Other vision/tool checks remain; `response_format` is not validated by the coordinator | `nativeMediaToolsFailFast`, `coordinator/api/inference/native_media_tools.go` |
 | Token rate limits | Per-account input and output tokens per minute → 429 with `Retry-After` | `applyTokenRateLimitWithAdmission`, `WriteTokenRateLimited` |
 | Model shedding | A model currently rejecting → 429 with `Retry-After` from `estimateRetryAfter` | `shedIfModelRejected` |
-| Media preparation memory | Provider reason `media_memory_unavailable` permits bounded failover and eventual 429 when no candidate serves it. It does not invalidate a provider's text capacity or mark its engine unhealthy | `isProviderHealthNeutralErrorReason`, `classifyRejection`; `coordinator/api/inference/route_outcome.go`, `coordinator/api/inference/inference_failure_class.go` |
+| Media preparation memory | Provider reason `media_memory_unavailable` permits bounded failover and eventual 429 when no candidate serves it. It does not invalidate a provider's text capacity or mark its engine unhealthy | `IsProviderHealthNeutralErrorReason`, `Classify`; `coordinator/internal/inference/failure/failure_reasons.go`, `coordinator/internal/inference/rejection/inference_failure_class.go` |
 
 ## Timeouts and constants
 
@@ -901,16 +902,16 @@ An unknown payout outcome held for manual reconciliation remains `status=pending
 
 | Concern | Files |
 |---|---|
-| Route registration, middleware, request-id, CORS, admin/version constants | `coordinator/api/routes.go`, `coordinator/api/middleware.go`, `coordinator/api/server.go`, `coordinator/api/server_config.go`; credential policy in `coordinator/api/access/` |
-| Inference pipeline | `coordinator/api/inference/consumer.go`, `coordinator/api/inference/inference_preprocess.go`, `coordinator/api/inference/inference_admission.go`, `coordinator/api/inference/request_introspection.go`, `coordinator/api/inference/request/reasoning_request_policy.go`, `coordinator/api/inference/dispatch.go`, `coordinator/api/inference/dispatch_terminal_write.go`, `coordinator/api/inference/inference_failure_class.go` |
-| Endpoint lowering (Responses, Completions, Messages) | `coordinator/promptcontract/endpoint_lower.go`, `coordinator/promptcontract/endpoint_lower_responses.go`, `coordinator/promptcontract/endpoint_lower_messages.go`, `coordinator/api/inference/response/generic_endpoint_response.go`, `coordinator/api/inference/generic_endpoint_stream.go`, `coordinator/api/inference/response/responses_stream.go` |
+| Route registration, middleware, request-id, CORS, admin/version constants | `coordinator/api/routes.go`, `coordinator/internal/api/middleware/middleware.go`, `coordinator/api/server.go`, `coordinator/api/server_config.go`; credential policy in `coordinator/api/access/` |
+| Inference pipeline | `coordinator/api/inference/consumer.go`, `coordinator/api/inference/inference_preprocess.go`, `coordinator/api/inference/inference_admission.go`, `coordinator/api/inference/request_introspection.go`, `coordinator/api/inference/request/reasoning_request_policy.go`, `coordinator/api/inference/dispatch.go`; `coordinator/internal/inference/rejection/terminal.go` (`Recorder.PreContentTerminal`) wired by `Owner.NewRejectionRecorder` in `coordinator/api/inference/rejection_telemetry.go`; `coordinator/internal/inference/rejection/inference_failure_class.go` |
+| Endpoint lowering (Responses, Completions, Messages) | `coordinator/promptcontract/endpoint_lower.go`, `coordinator/internal/promptcontract/endpoint/endpoint_lower_responses.go`, `coordinator/internal/promptcontract/endpoint/endpoint_lower_messages.go`, `coordinator/api/inference/response/generic_endpoint_response.go`, `coordinator/internal/inference/relay/generic_endpoint_stream.go`, `coordinator/api/inference/response/responses_stream.go` |
 | SSE, timing and provider metadata | `coordinator/api/inference/response/sse_response.go`, `coordinator/api/inference/response/chat_metadata_stream.go`, `coordinator/api/inference/response/response_metadata.go`, `coordinator/api/inference/profiler_dispatch.go` |
-| Tools, media, constraints | `coordinator/api/inference/request/toolschema.go`, `coordinator/api/inference/tool_constraints.go`, `coordinator/api/inference/media_resolve.go` |
+| Tools, media, constraints | `coordinator/api/inference/request/toolschema.go`, `coordinator/api/inference/tool_constraints.go`, `coordinator/internal/inference/media/media_resolve.go` |
 | Sealed transport | `coordinator/api/inference/sender_encryption.go` |
 | Models and catalog | `coordinator/api/catalog/models_endpoints.go`, `coordinator/api/catalog/concrete_model_entries.go`, `coordinator/api/catalog/openrouter_endpoint.go`, `coordinator/api/catalog/`, `coordinator/api/catalog/model_alias_handlers.go`, `coordinator/api/catalog/openrouter_alias_handlers.go`, `coordinator/api/catalog/capacity.go`, `coordinator/api/inference/exact_cache_status.go` |
 | Keys, device code, accounts | `coordinator/api/access/keys/handlers.go`, `coordinator/store/apikey.go`, `coordinator/api/access/device/handlers.go`, `coordinator/api/accounts/` |
 | Billing, Stripe, referral, invites | `coordinator/api/billing/`, `coordinator/api/billing/payouts/`, `coordinator/api/billing/payouts/stripe_withdraw.go`, `coordinator/api/billing/payouts/stripe_payouts_webhooks.go`, `coordinator/api/accounts/invite_handlers.go`, `coordinator/api/billing/base_rewards_handlers.go` |
-| Stats | `coordinator/api/reporting/stats.go`, `coordinator/api/reporting/cache_refresher.go`, `coordinator/api/reporting/network_totals.go`, `coordinator/api/reporting/leaderboard.go`, `coordinator/api/reporting/network_series.go` |
+| Stats | `coordinator/api/reporting/stats_handler.go`, `coordinator/api/reporting/refresh_start.go`, `coordinator/api/reporting/totals_handler.go`, `coordinator/api/reporting/leaderboard.go`, `coordinator/api/reporting/network_series.go` |
 | Release, enrollment, provider WS, log reports | `coordinator/api/releases/release_handlers.go`, `coordinator/api/provider/trust/enroll.go`, `coordinator/api/provider/`, `coordinator/api/operations/log_reports.go` |
 | Drain, admin telemetry, profiler, state export | `coordinator/api/operations/drain.go`, `coordinator/api/observation/admin_telemetry.go`, `coordinator/api/reporting/admin_utilization.go`, `coordinator/api/observation/profiler_admin.go`, `coordinator/api/operations/state_export.go` |
 | Rate-limit bucket consumption | `coordinator/ratelimit/ratelimit.go` (`allowBucket`, `debitBucket`): fixed and per-key rate paths share token consumption and retry calculation while keeping their own admission and clamp rules |

@@ -38,7 +38,7 @@ The request sink has 4,096 queued snapshots, one worker, batches of up to 128, a
 
 | Contract | Definition and code |
 |---|---|
-| Covered requests | Matched `POST /v1/chat/completions`, `/v1/responses`, `/v1/completions`, `/v1/messages`, streaming and non-streaming. The root observer filters the four exact POST paths in `coordinator/api/server.go` (`Handler`). |
+| Covered requests | Matched `POST /v1/chat/completions`, `/v1/responses`, `/v1/completions`, `/v1/messages`, streaming and non-streaming. `coordinator/api/server_handler.go` (`Handler`) binds the root observer; `coordinator/api/observation/request_outcome.go` (`InferenceOutcomeEndpoint`, `ObserveRequestOutcome`) filters exact POST paths and matched route patterns. |
 | Early exits | Drain, auth, account/key rate limits, sealed-envelope/decryption, validation, model resolution, balance, preflight, queue and dispatch exits are included. Streaming mode remains unknown before valid JSON parsing. `parseInferencePrelude` records the handler's parsed true/false mode before model lookup, including catalog rejections. Existing explicit rejection stages/reasons are copied; uncovered reason details remain `ext_unknown` with the last known pipeline stage. |
 | Exclusions | OPTIONS, other methods, unmatched paths, and connections that never enter these HTTP routes. A recovered panic records `handler_panic` and the actual final HTTP status after recovery writes. A panic after headers preserves the committed status and response format. Raw recovery JSON written into an already committed SSE stream is not counted as a valid streaming terminal. An unrecovered abort records `handler_aborted`; no replacement status is invented. |
 | Request identity | `coord_request_id`, a coordinator-minted UUID. Repeated client `X-Request-ID` values do not merge requests. Empty identities are rejected by both stores. Count HTTP requests, never `n` or attempt rows. |
@@ -72,7 +72,7 @@ Finalization tracking retains only attempt identities; each published revision r
 
 ## Versioned normalization
 
-`normalizedAttemptOutcome` and `normalizedRequestOutcome` in `coordinator/api/observation/request_outcome.go` are analytics-only mappings. Raw existing codes remain unchanged in routes, profiles and rejection records.
+`NormalizedAttempt` and `NormalizedRequest` in `coordinator/internal/observation/outcomes/request_outcome_policy.go` are analytics-only mappings. Raw existing codes remain unchanged in routes, profiles and rejection records.
 
 | Observation | Version 1 normalized code |
 |---|---|
@@ -99,14 +99,14 @@ A raw historical `dispatch_exhausted` can represent a retained real provider err
 ## Public model demand
 
 `coordinator/api/inference/model_demand_observation.go` (`markPublicModelDemand`) marks new
-requests at `runInferenceAdmission`, after account gates and body preparation.
+requests at `Admission.Run`, after account gates and body preparation.
 The marker stores the requested public model and a hashed consumer identity;
 it excludes exclusive self-route, owner-preferred and machine-restricted
 traffic. Historical records have no marker and are never backfilled by
 inference. Early model-shedding rejections and other exits before admission
 are outside this cohort. Admin-key traffic is excluded. Unlabelled authenticated load tests are included.
 
-`publicDemandOutcome` assigns one closed outcome per observation. Completed
+`PublicDemandOutcome` (`coordinator/internal/observation/outcomes/public_demand.go`) assigns one closed outcome per observation. Completed
 requests use the ledger's completion contract; explicit capacity reasons,
 including `queue_full`, provider-budget refusal at preflight (`prompt_too_long`),
 dispatch-time `unservable_token_budget`, and a model that cannot fit any
@@ -191,11 +191,11 @@ reconciled. See [the API contract](../reference/api-contracts.md#model-demand-re
 |---|---|
 | Observation, lifecycle and mapping | `coordinator/api/observation/request_outcome.go` |
 | Content and write evidence | `coordinator/api/observation/request_outcome_egress.go`, `coordinator/api/inference/sender_encryption.go` |
-| Bounded persistence and health | `coordinator/api/observation/request_outcome_sink.go`, `coordinator/api/observation/request_outcome_admin.go` |
+| Bounded persistence and health | `coordinator/internal/observation/outcomes/request_outcome_sink.go`, `coordinator/api/observation/request_outcome_admin.go` |
 | Schema, revision merge and reads | `coordinator/store/request_outcomes.go`, `coordinator/store/postgres/request_outcomes.go`, `coordinator/store/memory/request_outcomes.go` |
-| Live isolated endpoint regressions | `coordinator/api/tests/inference/request_outcome_integration_test.go` (`TestRequestOutcomesAllEndpointsWithoutProfiler`), `coordinator/api/tests/inference/deadline_unreachable_integration_test.go` (`TestProductionConfigStreamingDeadlineExhaustionRetainsHTTP429`) |
-| Private inference outcome regressions | `coordinator/api/inference/request_outcome_test.go` (`TestRequestOutcomeQueueAndMissingTerminal`), `coordinator/api/inference/request_outcome_integration_test.go` (`TestRequestOutcomesProviderErrorAfterContentAllEndpoints`), `coordinator/api/inference/deadline_unreachable_integration_test.go` (`TestGenericDeadlineExhaustionReturnsSingle429`) |
-| Memory/Postgres parity and retention | `coordinator/store/tests/request_outcomes_test.go` (`TestRequestOutcomeTerminalStoreContract`, `TestRequestOutcomeRetention`) |
+| Live isolated endpoint regressions | `coordinator/tests/api/inference/contracts/request_outcome_integration_test.go` (`TestRequestOutcomesAllEndpointsWithoutProfiler`), `coordinator/tests/api/inference/contracts/deadline_unreachable_integration_test.go` (`TestProductionConfigStreamingDeadlineExhaustionRetainsHTTP429`) |
+| Private inference outcome regressions | `coordinator/tests/api/observation/request_outcome_test.go` (`TestRequestOutcomeQueueAndMissingTerminal`), `coordinator/tests/api/inference/request_outcome_integration_test.go` (`TestRequestOutcomesProviderErrorAfterContentAllEndpoints`), `coordinator/tests/api/inference/deadline_unreachable_integration_test.go` (`TestGenericDeadlineExhaustionReturnsSingle429`) |
+| Memory/Postgres parity and retention | `coordinator/tests/store/contracts/request_outcomes_test.go` (`TestRequestOutcomeTerminalStoreContract`, `TestRequestOutcomeRetention`) |
 
 ## Related
 

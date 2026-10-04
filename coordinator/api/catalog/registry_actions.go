@@ -8,6 +8,8 @@ import (
 	"time"
 
 	httpx "github.com/eigeninference/d-inference/coordinator/api/httpx"
+	metadata "github.com/eigeninference/d-inference/coordinator/internal/api/catalog/metadata"
+	registration "github.com/eigeninference/d-inference/coordinator/internal/api/catalog/registration"
 )
 
 func (s *Owner) HandleAdminModelRegistryAction(w http.ResponseWriter, r *http.Request) {
@@ -15,7 +17,7 @@ func (s *Owner) HandleAdminModelRegistryAction(w http.ResponseWriter, r *http.Re
 	if !ok {
 		return
 	}
-	modelID, action, ok := parseAdminModelActionPath(r.URL.Path)
+	modelID, action, ok := registration.ParseAdminModelActionPath(r.URL.Path)
 	if !ok || modelID == "" {
 		httpx.WriteJSON(w, http.StatusNotFound, httpx.ErrorResponse("not_found", "model action not found"))
 		return
@@ -33,7 +35,7 @@ func (s *Owner) HandleAdminModelRegistryAction(w http.ResponseWriter, r *http.Re
 			httpx.WriteJSON(w, http.StatusBadRequest, httpx.ErrorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
 			return
 		}
-		if req.Version == "" || strings.Contains(req.Version, "/") || containsTraversal(req.Version) {
+		if req.Version == "" || strings.Contains(req.Version, "/") || registration.ContainsTraversal(req.Version) {
 			httpx.WriteJSON(w, http.StatusBadRequest, httpx.ErrorResponse("invalid_request_error", "valid version is required"))
 			return
 		}
@@ -55,7 +57,7 @@ func (s *Owner) HandleAdminModelRegistryAction(w http.ResponseWriter, r *http.Re
 			httpx.WriteJSON(w, http.StatusBadRequest, httpx.ErrorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
 			return
 		}
-		if !validModelStatus(req.Status) {
+		if !registration.ValidModelStatus(req.Status) {
 			httpx.WriteJSON(w, http.StatusBadRequest, httpx.ErrorResponse("invalid_request_error", "status must be beta, active, deprecated, or retired"))
 			return
 		}
@@ -244,9 +246,9 @@ func (s *Owner) HandleAdminModelRegistryAction(w http.ResponseWriter, r *http.Re
 			meta[k] = v
 		}
 		if huggingFaceID == "" {
-			delete(meta, huggingFaceIDMetadataKey)
+			delete(meta, metadata.HuggingFaceIDMetadataKey)
 		} else {
-			meta[huggingFaceIDMetadataKey] = huggingFaceID
+			meta[metadata.HuggingFaceIDMetadataKey] = huggingFaceID
 		}
 		entry.Metadata = meta
 		if err := s.store.UpsertModelRegistryEntry(entry); err != nil {

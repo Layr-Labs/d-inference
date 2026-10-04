@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	toolpolicy "github.com/eigeninference/d-inference/coordinator/internal/inference/toolpolicy"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
@@ -67,18 +68,18 @@ func ValidateResolvedToolConstraintParser(
 	}
 	parser, ok := raw.(string)
 	if !ok {
-		return invalidToolConstraint(
+		return toolpolicy.InvalidToolConstraint(
 			"tool_call_parser must be a string", "tool_call_parser")
 	}
 	actual := inferenceToolParserFamilyFor(parser)
 	if actual == "" {
-		return invalidToolConstraint(
+		return toolpolicy.InvalidToolConstraint(
 			"inference-enforced tool_choice requires a supported Gemma or Qwen tool_call_parser",
 			"tool_call_parser")
 	}
 	expected := resolvedModelToolParserFamily(modelID, modelType, runtimeParameters)
 	if expected != "" && actual != expected {
-		return invalidToolConstraint(
+		return toolpolicy.InvalidToolConstraint(
 			fmt.Sprintf(
 				"tool_call_parser %q is incompatible with resolved model %q",
 				parser, modelID),

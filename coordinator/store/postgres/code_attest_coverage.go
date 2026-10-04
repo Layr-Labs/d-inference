@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/store/shared"
 	"github.com/eigeninference/d-inference/coordinator/store"
-	"github.com/eigeninference/d-inference/coordinator/store/internal/shared"
 )
 
 func (s *PostgresStore) AdvanceCodeAttestationCoverage(ctx context.Context, rows []store.CodeAttestation) error {

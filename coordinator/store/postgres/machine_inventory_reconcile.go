@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/store/internal/shared"
+	"github.com/eigeninference/d-inference/coordinator/internal/store/shared"
 )
 
 func (s *PostgresStore) ReconcileMachineInventory(ctx context.Context, staleBefore time.Time, limit int) (int, error) {

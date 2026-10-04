@@ -104,7 +104,8 @@ failure in any step marked *fatal* exits the process before it listens.
 8. **Background loops.** Provider eviction sweep (`StartEvictionLoop`, cadence and timeout in [scheduling.md](../scheduling.md#heartbeat-cadence-and-eviction)); DogStatsD gauge loop;
    profiler fleet sampler and retention sweep; read-cache janitor; throughput
    anomaly detector; base-rewards settlement (when enabled); Stripe payout
-   reconciler; the account erasure scrub loop (`StartAccountErasureLoop`,
+   reconciler; the account erasure scrub loop (`StartAccountErasureLoop`) and
+   outbox worker (`StartErasureOutboxLoop`,
    [account erasure](../account-erasure.md)); the prompt sidecar supervisor
    and preloader.
 9. **Listen.** `http.Server` on `:EIGENINFERENCE_PORT` with a 5 s header

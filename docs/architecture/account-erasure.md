@@ -58,7 +58,9 @@ flowchart LR
     T["trust-reuse cache, MDM scheduler"]:::mem
     G["ledger usage, API key cache"]:::mem
   end
-  S["Stripe dashboard<br/>(operator, by hand)"]:::ext
+  W["StartErasureOutboxLoop<br/>(every minute)"]:::loop
+  S["Stripe<br/>Connect, Global Payouts,<br/>Redaction Jobs"]:::ext
+  D["Datadog Logs<br/>(erasure_log:true)"]:::ext
 
   A --> H
   H --> C
@@ -70,7 +72,9 @@ flowchart LR
   X -- "after commit" --> R
   X -- "after commit" --> T
   X -- "after commit" --> G
-  DB -. "outbox rows" .-> S
+  W -- "lease due rows" --> C
+  W --> S
+  W --> D
 ```
 
 Blue: HTTP handlers. Green: background work. Purple: the store and its
@@ -86,10 +90,7 @@ Orange: people and services outside the coordinator.
 | `CachedStore` | Drops the cached users after each erasure write | `coordinator/store/cached.go` (`RequestAccountErasure`, `CancelAccountErasure`, `ScrubAccount`) |
 | Post-commit clears | Registry, trust-reuse cache, MDM scheduler, ledger usage, API key cache | `coordinator/api/erasure_loop.go` (`scrubErasure`) |
 | Outbox | One row per Stripe object and one `erasure_log` row, written by the scrub | `coordinator/store/erasure_keys.go` (`outboxRows`) |
-
-No worker delivers the outbox rows in this version. Each row stays `pending`,
-and an operator deletes the Stripe objects by hand
-([runbook](../operations/account-erasure.md#steps)).
+| Outbox worker | Delivers each outbox row to Stripe or Datadog, with retries and `manual_action` | `coordinator/api/erasure_outbox.go` (`StartErasureOutboxLoop`, `deliverErasureOutbox`, `outboxResult`) |
 
 ### Request states
 
@@ -258,6 +259,95 @@ sequenceDiagram
 `MemoryStore.ScrubAccount` applies the same rules to its maps through
 `memoryErasureRules`, under one store lock.
 
+### Outbox delivery
+
+The scrub cannot call Stripe inside its transaction, so it writes the
+external deletions to `erasure_outbox`, and a worker delivers them later.
+`StartErasureOutboxLoop` runs once at start and then every
+`erasureOutboxInterval`. Each pass leases up to `erasureOutboxBatch` due
+`pending` rows for `erasureOutboxLease` (`LeaseDueErasureOutbox`,
+`FOR UPDATE SKIP LOCKED`), delivers each one (`deliverErasureOutbox`), and
+stores the outcome (`SaveErasureOutboxResult`), which also ends the lease.
+
+```mermaid
+stateDiagram-v2
+  classDef wait fill:#fef3c7,stroke:#a16207,color:#422006
+  classDef done fill:#dcfce7,stroke:#15803d,color:#14532d
+  classDef stop fill:#fee2e2,stroke:#b91c1c,color:#450a0a
+
+  [*] --> pending: scrub writes the row
+  pending --> pending: retry with backoff, job still running, or too recent (wait 7 days)
+  pending --> done: delivered, or Stripe says not found
+  pending --> manual_action: definitive refusal, 8 failed attempts, stuck job, or deadline
+  manual_action --> pending: operator re-queues
+  manual_action --> done: operator resolves by hand
+  done --> [*]
+
+  class pending wait
+  class done done
+  class manual_action stop
+```
+
+| Outcome (`outboxKind`) | Row after `outboxResult` | Counts an attempt |
+|---|---|---|
+| `outboxDone` | `done`; `done_at` set; `external_id`, `stripe_job_id` and `last_error` cleared | no |
+| `outboxRetry` | `pending`; `next_at` = now + `erasureOutboxBaseBackoff << (attempts - 1)`, capped at `erasureOutboxMaxBackoff`; the eighth failure (`erasureOutboxMaxAttempts`) moves the row to `manual_action` with `retries exhausted after 8 attempts: <error>` | yes |
+| `outboxManual` | `manual_action`, error in `last_error` | yes |
+| `outboxProgress` | `pending`; `next_at` = the next poll | no |
+| `outboxReschedule` | `pending`; `next_at` = now + `erasureRedactionWait`; the job ID is cleared and the next job gets a new idempotency key | no |
+
+With 8 attempts the retry delays are 1, 2, 4, 8, 16, 32 and 64 minutes, so
+the 6-hour cap is not reached. A Stripe 4xx is definitive except 409, 429 and
+`idempotency_key_in_use` (`stripeDefinitive`, `billing.IsDefinitiveAPIErr`);
+a Global Payouts error is definitive for 400, 401, 403, 404 and 422 unless it
+is an idempotency error (`globalpayouts.Error.Definitive`). Network errors and
+5xx answers are retried. In billing mock mode every Stripe row ends `done`
+without a call.
+
+| `target` | Stripe or Datadog call | `done` when | `manual_action` when |
+|---|---|---|---|
+| `stripe_account` | `DELETE /v1/accounts/{id}` with the Connect key (`StripeConnect.DeleteAccount`) | Deleted; or the account is gone (`IsAccountGoneErr`, 404, `resource_missing`) | A definitive refusal, for example a live account whose balances are not zero |
+| `global_recipient` | `POST /v2/core/accounts/{id}/close` with `{"applied_configurations": ["recipient"]}` and the Global Payouts key (`globalpayouts.Client.CloseRecipient`) | Closed; or 404 or `not_found` | A definitive refusal, for example `cannot_delete_account_with_balance` |
+| `checkout_sessions` | A Stripe Redaction Job with the Checkout key (`coordinator/billing/stripe_redaction.go`) | The job reaches `succeeded` | Feature not enabled, other validation errors, a canceled job, a failed job without validation errors, a stuck job, the 105-day deadline, or sessions Stripe cannot find |
+| `erasure_log` | One Datadog Logs API event (`datadog.Client.SendLog`); without `DD_API_KEY` a `slog` line | Datadog accepted it, or no Datadog is configured | Never directly; 8 failed sends exhaust the retries |
+
+A redaction job moves through these steps, one per worker pass
+(`redactCheckoutSessions`):
+
+1. **Create.** `POST /v1/privacy/redaction_jobs` with
+   `validation_behavior=fix`, the row's session IDs, and the idempotency key
+   `erasure-redaction-<row id>-<generation>`. The job ID and status are kept
+   on the row (`stripe_job_id`, `stripe_job_status`,
+   `stripe_job_status_since`).
+2. **Poll.** Every `erasureRedactionPoll`, `GET` the job. In `ready`, run it
+   (`POST …/run`). In `succeeded`, the row is done.
+3. **Too recent.** Stripe redacts most transactions only 90 days after they
+   were created. When a `failed` job's validation errors are all
+   `invalid_state` with a "too recent" message (`redactionTooRecent`), the row
+   waits `erasureRedactionWait` and a new job is made, without counting an
+   attempt. After `erasureRedactionDeadline` from the row's creation the row
+   moves to `manual_action`.
+4. **Stuck.** A job that keeps one non-terminal status for more than
+   `erasureRedactionStuck` moves to `manual_action`. The status clock
+   restarts when the job or its status changes.
+5. **Gone.** When the job is not found, the generation goes up, so the next
+   create does not get the dead job back from Stripe's idempotency cache.
+
+A create that Stripe refuses as not found cannot say which session is
+missing. The worker then reads each session (`CheckoutSessionExists`): found
+sessions stay on the row for a new job (new generation), and missing ones
+move to a new `manual_action` row in the same transaction
+(`ErasureOutboxResult.Split`). They may belong to the earlier Stripe account,
+which the current key cannot reach. A one-session batch, or one where no
+session is found, goes to `manual_action` as a whole.
+
+The `erasure_log` record is the durable list of completed erasures: message
+`account erased`, kind `erasure_log`, tags
+`kind:erasure_log,severity:info,erasure_log:true`, and the attributes
+`request_id`, `account_id` and `erased_at` only
+([telemetry inventory](../reference/telemetry-inventory.md#account-erasure-log)).
+It survives a database restore when a Datadog log archive keeps it.
+
 ### Refused credits after the scrub
 
 A payout can bounce, a Global Payout can come back, or a settlement or
@@ -332,7 +422,12 @@ Outside the live database:
   Datadog retention ends. The coordinator does not delete log events. The
   rule that log lines hold no personal data is
   [PR #1327](https://github.com/Layr-Labs/d-inference/pull/1327) (pending).
-- **Stripe** keeps its own copy until an operator deletes or redacts it.
+- **Datadog** keeps the `erasure_log` record; it is the list to
+  [replay after a restore](../operations/account-erasure.md#after-a-database-restore).
+- **Stripe** keeps its own copy until the outbox worker deletes or redacts
+  it. A redacted Checkout transaction can no longer be refunded or disputed.
+  Checkout Sessions made on the earlier Stripe account are not reachable with
+  the current key and end in `manual_action`.
 
 ## Invariants
 
@@ -363,6 +458,15 @@ Outside the live database:
    fails when a rule has no memory form.
 10. **Two coordinators never scrub one request at once.**
     `LeaseDueErasureRequests` uses `FOR UPDATE SKIP LOCKED` and a lease.
+11. **A `done` outbox row holds no Stripe ID.** `SaveErasureOutboxResult`
+    clears `external_id` and `stripe_job_id` when the state is `done`, and
+    changes only a `pending` row (`TestErasureOutboxLeaseAndResult`).
+12. **One outbox row is delivered by one worker at a time.**
+    `LeaseDueErasureOutbox` uses `FOR UPDATE SKIP LOCKED` and
+    `erasureOutboxLease`.
+13. **A missing Checkout Session never blocks the rest of its batch.** The
+    split row and the shortened batch commit together
+    (`TestErasureOutboxRedactionSplitsMissingSessions`).
 
 ## Failure modes
 
@@ -375,7 +479,9 @@ Outside the live database:
 | `force: true` answers 409 or 500 with `scrub_error` | The scrub failed after the soft delete committed | The request is `pending`; the loop retries |
 | `refused_credits` grows after the scrub | Money arrived for an erased account | [Runbook](../operations/account-erasure.md#refused-credits) |
 | The webhook log says `stripe Checkout completed for an erased account; refund it in Stripe` | A Checkout Session paid after the scrub | Refund it in the Stripe dashboard |
-| Outbox rows stay `pending` | No worker in this version | Delete the Stripe objects by hand ([runbook](../operations/account-erasure.md#steps)) |
+| An outbox row is `manual_action` | A definitive Stripe refusal, 8 failed attempts, a stuck or failed redaction job, the 105-day deadline, or a session Stripe cannot find | `last_error` in `GET …/erasure`; [manual_action decisions](../operations/account-erasure.md#resolve-manual_action-rows) |
+| A `checkout_sessions` row stays `pending` for weeks | The sessions are under 90 days old; the row waits 7 days between jobs | Expected; `last_error` holds the validation message |
+| The worker logs `erasure outbox: manual action required` | The same as `manual_action` | The log names `outbox_id`, `request_id`, `target` and the error |
 
 ## Code map
 
@@ -387,14 +493,16 @@ Outside the live database:
 | Postgres steps | `coordinator/store/erasure_postgres.go` (`PlanAccountErasure`, `RequestAccountErasure`, `ScrubAccount`, `applyRules`, `forfeitBalance`) |
 | SQL | `coordinator/store/queries/erasure.sql` (sqlc input), `coordinator/store/storedb/erasure.sql.go` (generated) |
 | Memory steps | `coordinator/store/erasure_memory.go` (`memoryErasureRules`, `refuseErasedCreditLocked`) |
-| Schema | `coordinator/store/schema/migrations/00018_erasure_tables.sql`, `coordinator/store/schema/migrations/00021_erasure_refuse_credits.sql`, `coordinator/store/postgres_migration_indexes.go` (versions 19, 20) |
+| Schema | `coordinator/store/schema/migrations/00018_erasure_tables.sql`, `coordinator/store/schema/migrations/00021_erasure_refuse_credits.sql`, `coordinator/store/schema/migrations/00022_erasure_outbox_stripe_job.sql`, `coordinator/store/postgres_migration_indexes.go` (versions 19, 20) |
 | Cache invalidation | `coordinator/store/cached.go` |
 | HTTP | `coordinator/api/erasure_handlers.go` |
 | Loop, post-commit clears | `coordinator/api/erasure_loop.go` (`StartAccountErasureLoop`, `scrubErasure`) |
+| Outbox worker | `coordinator/api/erasure_outbox.go` (`StartErasureOutboxLoop`, `runErasureOutbox`, `outboxResult`, `redactCheckoutSessions`, `splitMissingSessions`, `writeErasureLog`); store `LeaseDueErasureOutbox`, `SaveErasureOutboxResult` |
+| Stripe and Datadog clients | `coordinator/billing/stripe_connect.go` (`DeleteAccount`), `coordinator/billing/globalpayouts/client.go` (`CloseRecipient`), `coordinator/billing/stripe_redaction.go`, `coordinator/datadog/logs_send.go` (`SendLog`) |
 | In-memory forgets | `coordinator/registry/provider_lifecycle.go` (`DisconnectAccount`), `coordinator/api/trust_reuse.go` (`forget`), `coordinator/api/mdm_scheduler_queue.go` (`Forget`), `coordinator/payments/payments.go` (`ForgetConsumer`) |
 | Login block | `coordinator/auth/privy.go` (`GetOrCreateUser`), `coordinator/api/server.go` (`writePrivyUserError`) |
 | Late Checkout | `coordinator/store/stripe_settlement.go` (`ErrCheckoutErased`), `coordinator/api/stripe_checkout_webhook.go` |
-| Tests | `coordinator/store/erasure_test.go`, `coordinator/store/erasure_marker_test.go`, `coordinator/store/erasure_marker_memory_test.go`, `coordinator/store/erasure_credits_test.go`, `coordinator/store/erasure_lock_order_test.go`, `coordinator/api/erasure_handlers_test.go`, `coordinator/api/erasure_loop_test.go` |
+| Tests | `coordinator/store/erasure_test.go`, `coordinator/store/erasure_marker_test.go`, `coordinator/store/erasure_marker_memory_test.go`, `coordinator/store/erasure_credits_test.go`, `coordinator/store/erasure_lock_order_test.go`, `coordinator/api/erasure_handlers_test.go`, `coordinator/api/erasure_loop_test.go`, `coordinator/api/erasure_outbox_test.go`, `coordinator/store/erasure_outbox_test.go`, `coordinator/datadog/logs_send_test.go` |
 
 ## Related
 

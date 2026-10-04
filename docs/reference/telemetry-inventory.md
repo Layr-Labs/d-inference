@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -226,13 +226,15 @@ Datadog's; nothing is stored locally.
 One record per erased account, written by the erasure outbox worker
 (`writeErasureLog`, `coordinator/api/erasure_outbox.go`) through
 `datadog.Client.SendLog` (`coordinator/datadog/logs_send.go`): one
-unbatched Logs API post whose failure is retried, not dropped. Message
+unbatched Logs API post whose failure is retried (up to 8 attempts, then the
+outbox row is `manual_action`), not dropped. `ddsource` `coordinator`, service
+`d-inference-coordinator`, the three attributes under `attributes`. Message
 `account erased`, kind `erasure_log`, severity `info`, ddtags
 `kind:erasure_log,severity:info,erasure_log:true`, attributes `request_id`,
 `account_id`, `erased_at` only; no personal data. Without `DD_API_KEY` the
 record is the `slog` line `erasure_log`. It is the list of completed erasures
 to replay after a database restore, so it must reach a Datadog log archive
-that outlives the database backups ([runbook](../operations/account-erasure.md#backups-and-logs)).
+that outlives the database backups ([runbook](../operations/account-erasure.md#after-a-database-restore)).
 
 ## Coordinator per-request records (Postgres)
 

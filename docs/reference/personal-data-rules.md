@@ -99,7 +99,8 @@ The scrub keeps these on purpose. The marker tests allow only
 | App Attest receipts, receipt blobs and receipt jobs of a key another account's session used | They belong to the other account too | `retainedSharedAppAttestKey` |
 | `erasure_requests`: state, actor, reason, row counts, times | The record that the erasure happened; no email, token or wallet address after the scrub | `MarkErasureErased` |
 | `erasure_refused_credits` | Credits refused after the erasure, kept for review; IDs, amounts and cleaned references only | `00021_erasure_refuse_credits.sql` |
-| `erasure_outbox.external_id` | The Stripe ID an operator needs to delete or redact the Stripe object | `erasureMarkerAllowList` |
+| `erasure_outbox.external_id` | The Stripe ID waits here until the worker confirms the deletion; a `manual_action` row keeps it until an operator clears it | `erasureMarkerAllowList`; `SaveErasureOutboxResult` |
+| The Datadog `erasure_log` record | Request ID, account ID and `erased_at`: the list to replay after a restore | `writeErasureLog` |
 
 The plan and the applied summary list the three shared kinds in `retained`
 (`ErasureRetained`: `table`, `rows`, `reason`), with the reason strings
@@ -110,16 +111,19 @@ The plan and the applied summary list the three shared kinds in `retained`
 
 `ErasureTarget` (`coordinator/store/erasure.go`). The scrub writes the rows
 (`erasureKeys.outboxRows`, `coordinator/store/erasure_keys.go`) with `state`
-`pending` and `next_at` = the scrub time. No worker delivers them in this
-version; the [runbook](../operations/account-erasure.md#steps) gives the
-Stripe steps.
+`pending` and `next_at` = the scrub time; the worker in
+`coordinator/api/erasure_outbox.go` delivers them
+([outbox delivery](../architecture/account-erasure.md#outbox-delivery)).
 
-| `target` | One row per | `external_id` holds |
-|---|---|---|
-| `stripe_account` | Express account in `users.stripe_account_id` or any `stripe_withdrawals.stripe_account_id` of the account | `acct_…` |
-| `global_recipient` | Global Payouts recipient in `global_payout_recipients.data` or any `global_payout_withdrawals.data.recipient_id` | the recipient account ID |
-| `checkout_sessions` | Batch of up to `ErasureCheckoutBatch` (10) Checkout Session IDs from `billing_sessions.external_id` (`payment_method = 'stripe'`) | comma-separated `cs_…` IDs |
-| `erasure_log` | Erasure (always one) | `''` |
+| `target` | One row per | `external_id` holds | Calls (key) |
+|---|---|---|---|
+| `stripe_account` | Express account in `users.stripe_account_id` or any `stripe_withdrawals.stripe_account_id` of the account | `acct_…` | `DELETE /v1/accounts/{id}` (Connect key; `StripeConnect.DeleteAccount`) |
+| `global_recipient` | Global Payouts recipient in `global_payout_recipients.data` or any `global_payout_withdrawals.data.recipient_id` | the recipient account ID | `POST /v2/core/accounts/{id}/close`, body `{"applied_configurations": ["recipient"]}`, `Stripe-Version: 2026-08-26.preview` (Global Payouts key; `globalpayouts.Client.CloseRecipient`) |
+| `checkout_sessions` | Batch of up to `ErasureCheckoutBatch` (10) Checkout Session IDs from `billing_sessions.external_id` (`payment_method = 'stripe'`) | comma-separated `cs_…` IDs | `POST /v1/privacy/redaction_jobs` (`validation_behavior=fix`, `objects[checkout_sessions][]`, `Idempotency-Key: erasure-redaction-<row id>-<generation>`); `GET /v1/privacy/redaction_jobs/{id}`; `POST /v1/privacy/redaction_jobs/{id}/run`; `GET /v1/privacy/redaction_jobs/{id}/validation_errors?limit=100`; `GET /v1/checkout/sessions/{id}` when a batch must be split (Checkout key; `coordinator/billing/stripe_redaction.go`) |
+| `erasure_log` | Erasure (always one) | `''` | Datadog Logs API, one unbatched event (`DD_API_KEY`; `datadog.Client.SendLog`) |
+
+A split adds a `checkout_sessions` row in `manual_action` with the sessions
+Stripe cannot find (`InsertManualErasureOutbox`, `attempts` 1).
 
 `ErasureOutboxState` is closed: `pending`, `done`, `manual_action`.
 
@@ -167,7 +171,14 @@ triggers).
 | `lease_until` | `TIMESTAMPTZ` | Delivery lease |
 | `last_error` | `TEXT` | Last delivery error |
 | `done_at` | `TIMESTAMPTZ` | When it ended `done` |
-| `created_at` | `TIMESTAMPTZ` | Insert time |
+| `created_at` | `TIMESTAMPTZ` | Insert time; the 105-day redaction deadline counts from it |
+| `stripe_job_id` | `TEXT` | Redaction job of a `checkout_sessions` row (`prj_…`); cleared when done |
+| `stripe_job_status` | `TEXT` | Last job status the worker read |
+| `stripe_job_status_since` | `TIMESTAMPTZ` | Since when the job has had that status (the stuck-job clock) |
+| `stripe_job_generation` | `INTEGER` | Part of the job's idempotency key; goes up when a new job must be made |
+
+The last four columns come from
+`coordinator/store/schema/migrations/00022_erasure_outbox_stripe_job.sql`.
 
 Indexes: `erasure_outbox_request` (`request_id`), `erasure_outbox_due`
 (`next_at` where `pending`).
@@ -218,7 +229,18 @@ first.
 | `erasureScrubLease` | `time.Hour` | `coordinator/api/erasure_loop.go` | Lease on a due request; a failed scrub runs again after it |
 | `erasureScrubBatch` | `20` | `coordinator/api/erasure_loop.go` | Requests per loop pass |
 | `erasureTimeout` | `2 * time.Minute` | `coordinator/store/erasure_postgres.go` | Bound on one erasure transaction |
-| `ErasureCheckoutBatch` | `10` | `coordinator/store/erasure.go` | Checkout Session IDs per `checkout_sessions` row |
+| `ErasureCheckoutBatch` | `10` | `coordinator/store/erasure.go` | Checkout Session IDs per `checkout_sessions` row (`MaxRedactionObjects` is also 10) |
+| `erasureOutboxInterval` | `time.Minute` | `coordinator/api/erasure_outbox.go` | Outbox worker period; it also runs once at start |
+| `erasureOutboxLease` | `10 * time.Minute` | `coordinator/api/erasure_outbox.go` | Lease on a due outbox row |
+| `erasureOutboxBatch` | `20` | `coordinator/api/erasure_outbox.go` | Outbox rows per pass |
+| `erasureOutboxMaxAttempts` | `8` | `coordinator/api/erasure_outbox.go` | The eighth failed delivery moves the row to `manual_action` |
+| `erasureOutboxBaseBackoff` | `time.Minute` | `coordinator/api/erasure_outbox.go` | First retry delay; doubles each attempt (1, 2, 4 … 64 minutes) |
+| `erasureOutboxMaxBackoff` | `6 * time.Hour` | `coordinator/api/erasure_outbox.go` | Retry delay cap; not reached with 8 attempts |
+| `erasureRedactionPoll` | `5 * time.Minute` | `coordinator/api/erasure_outbox.go` | How often a running redaction job is read |
+| `erasureRedactionWait` | `7 * 24 * time.Hour` | `coordinator/api/erasure_outbox.go` | Wait after a job failed because its transactions are under 90 days old (the 90-day rule) |
+| `erasureRedactionDeadline` | `105 * 24 * time.Hour` | `coordinator/api/erasure_outbox.go` | End of those waits, counted from the row's `created_at` |
+| `erasureRedactionStuck` | `31 * 24 * time.Hour` | `coordinator/api/erasure_outbox.go` | A job in one non-terminal status longer than this goes to `manual_action` (the 31-day rule; Stripe says a job can take up to 30 days) |
+| `erasureLogTag` | `"erasure_log:true"` | `coordinator/api/erasure_outbox.go` | Datadog tag of the erasure record |
 
 Open withdrawals (`CountOpenStripeWithdrawals`, `CountOpenGlobalPayouts`):
 a Stripe withdrawal in `pending` or `transferred`, `paid` within the bounce

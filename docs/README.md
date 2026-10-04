@@ -123,7 +123,7 @@
 - [`operations/release-policy-rollout.md`](operations/release-policy-rollout.md): shadow-then-enforce rollout of the release-policy routing gate.
 - [`operations/routing-v2-rollout.md`](operations/routing-v2-rollout.md): kill switches for the shipped routing-v2 behaviours.
 - [`operations/state-export.md`](operations/state-export.md): extract and rehydrate sealed coordinator state.
-- [`operations/account-erasure.md`](operations/account-erasure.md): erase an account's personal data — plan, confirm, grace period, Stripe deletions, refused credits, restore replay, cancel.
+- [`operations/account-erasure.md`](operations/account-erasure.md): erase an account's personal data — plan, confirm, grace period, Stripe deletions and `manual_action` decisions, refused credits, restore replay, cancel.
 
 ## Records (frozen)
 

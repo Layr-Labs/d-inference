@@ -3,8 +3,9 @@
 > Last updated: 2026-10-04
 
 How-to for a coordinator change that stores personal data or writes to an
-account: add an erasure rule for a new column or table, and respect the hooks
-that keep an erased account erased. When you finish, the scrub removes the new
+account: add an erasure rule for a new column or table, add an outbox target
+for a new external object, and respect the hooks that keep an erased account
+erased. When you finish, the scrub removes the new
 data and the marker tests prove it. Why the scrub works this way is in
 [account erasure](../architecture/account-erasure.md).
 
@@ -111,6 +112,61 @@ and amounts are not personal data alone
    and, when you add a file, to `affected_files` of threat `T-059` in
    [`../threat-model.yaml`](../threat-model.yaml).
 
+### Add an outbox target
+
+Use this when the account has an object outside the coordinator (a new Stripe
+object or another service) that must be deleted after the scrub.
+
+1. Add the target to `ErasureTarget` (`coordinator/store/erasure.go`) and to
+   the `CHECK` on `erasure_outbox.target` with a new migration
+   ([database migrations](database-migrations.md)).
+
+2. Collect the object's ID in `collectErasureKeys`
+   (`coordinator/store/erasure_keys.go`) and in `collectErasureKeysLocked`
+   (`coordinator/store/erasure_memory.go`). Collect every ID the account ever
+   used, not only the current one, as `ListAccountStripeAccountIDs` does.
+   List it in `erasureKeys.stripeObjects` (the plan shows it) and write its
+   rows in `erasureKeys.outboxRows`.
+
+3. Add a client method that sends the delete. Validate the ID before you
+   build the URL, and return a typed error with the HTTP status and the
+   provider's error code, as `StripeConnect.DeleteAccount` returns
+   `*billing.APIError` and `globalpayouts.Client.CloseRecipient` returns
+   `*globalpayouts.Error`. Send an idempotency key when the call creates
+   something.
+
+4. Add a case to `deliverErasureOutbox` (`coordinator/api/erasure_outbox.go`)
+   that maps the result to an `outboxOutcome`:
+
+   | Result | Outcome |
+   |---|---|
+   | Success, or "not found" (the object is already gone) | `outboxDone` |
+   | A definitive 4xx that a retry cannot fix (`stripeDefinitive`) | `outboxManual` with the error |
+   | Network error, 5xx, 409, 429, or the client is not configured | `outboxRetry` (8 attempts, then `manual_action`) |
+   | A long job still running | `outboxProgress` with `jobID`, `jobStatus` and `next` |
+   | Too early to act | `outboxReschedule` with `next`; set a deadline so it cannot wait forever |
+
+   Keep job state on the row through `outboxOutcome.jobID` and `jobStatus`;
+   set `newGeneration` when a new job must get a new idempotency key. Truncate
+   long errors with `truncateErasureError`. Never put personal data in
+   `last_error`.
+
+5. Test it against an `httptest` fake, never the real service. The API tests
+   have one for Stripe: `outboxTestServer` wires the real clients to
+   `newFakeStripe`, and `fakeStripe.on(method, path, status, body)` sets each
+   answer (`coordinator/api/erasure_outbox_test.go`). Cover success, not
+   found, a definitive refusal, a 5xx and a 429, as
+   `TestErasureOutboxStripeAccount` does, and assert the credential header and
+   body the fake received. Extend `TestErasureOutboxLoopDeliversScrubRows` so a
+   scrub queues the new row and the loop delivers it. Test the client in its
+   own package with the base URL pointed at a fake
+   (`billing.SetStripeAPIBaseForTest`).
+
+6. Add the target and its calls to
+   [outbox targets](../reference/personal-data-rules.md#outbox-targets) and
+   each new `manual_action` reason to the
+   [runbook](../operations/account-erasure.md#resolve-manual_action-rows).
+
 ### Respect the erasure hooks in a new writer
 
 1. **A new `Store` method that writes `users`**: override it in `CachedStore`
@@ -153,9 +209,7 @@ and amounts are not personal data alone
    account during the grace period.
 
 7. **A new external object linked to the account** (a Stripe object or
-   another provider's account): collect its ID in `collectErasureKeys` and
-   write an outbox row for it (`erasureKeys.outboxRows`); add the target to
-   `ErasureTarget` and to the `erasure_outbox.target` `CHECK`.
+   another provider's account): [add an outbox target](#add-an-outbox-target).
 
 8. **A new log line**: name the account or provider by `account_id` or
    `provider_id` only; never log an email, IP address, serial number or
@@ -172,6 +226,7 @@ export DATABASE_URL='postgres://postgres:pg@127.0.0.1:5432/postgres?sslmode=disa
 go test ./store -count=1 -run 'Erasure|Erased|ScrubLocks|LocksUserFirst|SoftDeleted'
 go test ./api -count=1 -run 'Erasure|Erased|PrivyLoginRefused|MDMSchedulerForget|TrustReuseCacheForget'
 go test ./auth -count=1 -run PendingErasure
+go test ./billing ./datadog -count=1
 cd .. && make sqlc-check && make docs-check
 ```
 
@@ -185,6 +240,9 @@ These must pass:
 | `TestAccountErasureLifecycle` | Plan, confirm, cancel and scrub on both backends |
 | `TestErasedAccountRefusesCredits` | Credits after the scrub are refused and recorded |
 | `TestCachedStoreInvalidatesUsersOnErasure` | The erasure writers drop cached users |
+| `TestErasureOutboxStripeAccount`, `TestErasureOutboxGlobalRecipient`, `TestErasureOutboxRedaction*`, `TestErasureOutboxErasureLog` | Each target's outcome for each Stripe or Datadog answer |
+| `TestErasureOutboxRetryBackoffAndExhaustion` | Backoff and the move to `manual_action` |
+| `TestErasureOutboxLeaseAndResult` | Lease, result storage, Stripe ID cleared on `done`, split rows, on both backends |
 
 ## Troubleshooting
 

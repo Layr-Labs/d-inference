@@ -1081,7 +1081,7 @@ Handler `handleAdminErasureStatus`. No side effects.
 | Field | Type | Meaning |
 |---|---|---|
 | `request` | [`ErasureRequest`](#erasure-shapes) | The newest request (`GetLatestErasureRequest`, by `created_at`) |
-| `outbox` | array of [`ErasureOutboxItem`](#erasure-shapes) | Outbox rows of that request; empty until the scrub |
+| `outbox` | array of [`ErasureOutboxItem`](#erasure-shapes) | Outbox rows of that request; empty until the scrub, then moved by the outbox worker |
 | `refused_credits` | array of [`ErasureRefusedCredit`](#erasure-shapes) | Credits refused after the erasure, oldest first, at most 500 |
 
 | Status | `type` | When |
@@ -1118,7 +1118,25 @@ Example after a forced scrub and one late 9 µUSD refund
 ```
 
 `summary.applied.balance_micro_usd` is the balance the scrub forfeited, not
-the balance after it.
+the balance after it. In this example the account had no Stripe objects and
+the outbox worker had not run yet.
+
+After the [outbox worker](../architecture/account-erasure.md#outbox-delivery)
+runs, rows move to `done` or `manual_action`. Outbox rows of an account with
+an Express account and one Checkout Session, after one worker pass with the
+Stripe fake answering the delete and the job create
+(`TestErasureOutboxLoopDeliversScrubRows`, `coordinator/api/erasure_outbox_test.go`):
+
+```json
+[
+  {"id": "07c25b2b-041a-4498-bcd2-a99d918d8680", "request_id": "5ce002e2-1f7e-4cb8-b7d7-ee81386e5e70", "target": "stripe_account", "state": "done", "attempts": 0, "next_at": "2026-10-04T17:50:49.453053Z", "done_at": "2026-10-04T17:50:49.453053Z", "has_external_id": false, "has_stripe_job": false, "created_at": "2026-10-04T17:50:49.452161Z"},
+  {"id": "102b9fb9-4aaa-4550-9c6b-55c5c700d249", "request_id": "5ce002e2-1f7e-4cb8-b7d7-ee81386e5e70", "target": "checkout_sessions", "state": "pending", "attempts": 0, "next_at": "2026-10-04T17:55:49.453053Z", "has_external_id": true, "has_stripe_job": true, "created_at": "2026-10-04T17:50:49.452161Z"},
+  {"id": "28f5c1ab-ee86-4434-98bb-91600ec7da0d", "request_id": "5ce002e2-1f7e-4cb8-b7d7-ee81386e5e70", "target": "erasure_log", "state": "done", "attempts": 0, "next_at": "2026-10-04T17:50:49.453373Z", "done_at": "2026-10-04T17:50:49.453373Z", "has_external_id": false, "has_stripe_job": false, "created_at": "2026-10-04T17:50:49.452161Z"}
+]
+```
+
+The `checkout_sessions` row waits for its redaction job; its `next_at` is
+the next poll, `erasureRedactionPoll` later.
 
 ### Erasure cancel
 
@@ -1171,7 +1189,8 @@ All in `coordinator/store/erasure.go`. Times are RFC 3339. Fields marked
 | | `target` | string | `stripe_account`, `global_recipient`, `checkout_sessions`, `erasure_log` |
 | | `state` | string | `pending`, `done`, `manual_action` |
 | | `attempts`, `next_at`, `last_error`, `done_at`, `created_at` | | Delivery bookkeeping; `last_error` and `done_at` omitted when empty |
-| | `has_external_id` | bool | The row still holds a Stripe ID; the ID itself is never returned |
+| | `has_external_id` | bool | The row still holds a Stripe ID (false once `done`); the ID itself is never returned |
+| | `has_stripe_job` | bool | A Stripe redaction job is in progress for a `checkout_sessions` row; the job ID is never returned |
 | `ErasureRefusedCredit` | `id`, `account_id`, `entry_type`, `amount_micro_usd`, `reference`, `created_at` | | A credit kept out of an erased account ([schema](personal-data-rules.md#erasure_refused_credits)) |
 
 ### Erasure effects on other routes

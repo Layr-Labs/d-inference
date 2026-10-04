@@ -303,7 +303,8 @@ revokes keys and tokens), and, after the grace period, one scrub transaction
 that applies every rule in `erasureRules` (`coordinator/store/erasure_rules.go`)
 with each statement's affected rows checked against a count. It uses three
 tables: `erasure_requests` (state and counts, no personal data after the
-scrub), `erasure_outbox` (Stripe deletions) and `erasure_refused_credits`
+scrub), `erasure_outbox` (Stripe deletions and the Datadog `erasure_log`
+record, delivered by a worker) and `erasure_refused_credits`
 (credits that triggers keep out of an erased account). `CachedStore`
 overrides the three erasure writers (`RequestAccountErasure`,
 `CancelAccountErasure`, `ScrubAccount`) to drop cached users.
@@ -350,6 +351,7 @@ The store keeps most business rows forever; the loops that exist are narrow.
 | Memory-store pruner, every 15 minutes | `coordinator/cmd/coordinator/main.go` (`memory_store_pruner`, `MemoryStore.Prune`) | Append-only history slices to `DefaultPruneMaxEntries` (100 000); memory store only. |
 | Session reconciliation, once at boot | `coordinator/cmd/coordinator/main.go` (`CloseOpenProviderSessions`) | Closes `provider_sessions` rows whose last heartbeat is more than 3 minutes old, so a blue-green cutover does not truncate live sessions. |
 | Read-cache janitor, every minute | `coordinator/api/server.go` (`StartReadCacheJanitor`) | In-process response cache, not a table. |
+| Account erasure outbox, every minute | `coordinator/api/erasure_outbox.go` (`StartErasureOutboxLoop`) | Delivers `erasure_outbox` rows; a `done` row loses its Stripe ID ([outbox delivery](account-erasure.md#outbox-delivery)). |
 | Account erasure scrub, every hour | `coordinator/api/erasure_loop.go` (`StartAccountErasureLoop`) | Scrubs the personal data of each `pending` erasure request whose `scrub_after` has passed ([account erasure](account-erasure.md#grace-loop)). The user row, IDs and financial records stay ([retained data](../reference/personal-data-rules.md#retained-data)). |
 
 The existing nullable `request_rejections.could_have_served` column stores NULL

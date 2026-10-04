@@ -3,8 +3,9 @@
 > Last updated: 2026-10-04
 
 Runbook for erasing the personal data of one consumer or provider account:
-plan, confirm, grace period, scrub, the Stripe deletions, review of refused
-credits, replay after a database restore, and cancel. How erasure works is in
+plan, confirm, grace period, scrub, the Stripe deletions and their
+`manual_action` cases, review of refused credits, replay after a database
+restore, and cancel. How erasure works is in
 [account erasure](../architecture/account-erasure.md); the route shapes are
 in [API contracts](../reference/api-contracts.md#account-erasure); what the
 scrub changes and keeps is in [personal-data rules](../reference/personal-data-rules.md).
@@ -36,12 +37,15 @@ flowchart TD
   F -- "yes" --> L
   L --> T["Step 5: status<br/>GET .../erasure"]:::step
   T -- "pending with last_error" --> L
-  T -- "erased" --> X["Step 6: Stripe objects<br/>(by hand)"]:::ext
-  X --> V["Verification: SQL checks"]:::done
+  T -- "erased" --> X["Step 6: outbox worker<br/>deletes Stripe objects"]:::ext
+  X -- "manual_action" --> M["Resolve manual_action<br/>(decision tree)"]:::stop
+  M -- "re-queue" --> X
+  X -- "all done" --> V["Verification: SQL checks"]:::done
 ```
 
-Blue: an API call or wait. Yellow: a check you make. Red: stop or roll back.
-Orange: work in Stripe. Green: done.
+Blue: an API call or wait. Yellow: a check you make. Red: stop, roll back,
+or operator work. Orange: the worker's calls to Stripe and Datadog. Green:
+done.
 
 ## Prerequisites
 
@@ -60,8 +64,17 @@ Orange: work in Stripe. Green: done.
   [configuration and constants](../reference/personal-data-rules.md#configuration-and-constants)
   (for example a Stripe payout `paid` within the last 30 days).
 - Read access to the production database for the SQL checks, and write
-  access with approval for the outbox updates in step 6.
-- Stripe dashboard access to the platform account (step 6).
+  access with approval for the outbox updates in
+  [resolve manual_action rows](#resolve-manual_action-rows).
+- Stripe dashboard access to the platform account, for `manual_action` rows
+  only.
+- Stripe Redaction Jobs enabled for the platform account. The feature is in
+  public preview and Stripe grants access; without it every
+  `checkout_sessions` row ends in `manual_action`.
+- A Datadog log archive with the query `erasure_log:true` whose retention is
+  longer than the database backups. It holds the list of completed erasures
+  that you replay after a restore. Without `DD_API_KEY` the record is only a
+  process log line.
 
 ## Steps
 
@@ -91,7 +104,7 @@ Orange: work in Stripe. Green: done.
    | `open_withdrawals` | 0; otherwise wait for the withdrawal to end |
    | `balance_micro_usd`, `withdrawable_micro_usd` | The balance the scrub forfeits; tell the requester |
    | `rows[]` | Rows each rule will change |
-   | `stripe_objects[]` | The Express accounts, Global Payouts recipients and Checkout Sessions to delete in step 6 |
+   | `stripe_objects[]` | The Express accounts, Global Payouts recipients and Checkout Sessions the outbox will delete (step 6) |
    | `retained[]` | Rows kept because another account shares a machine or key |
 
    Keep `confirm_token`. It expires after 15 minutes (`erasureConfirmTTL`)
@@ -144,30 +157,93 @@ Orange: work in Stripe. Green: done.
    when the withdrawal ends. Other errors are in
    [failure modes](../architecture/account-erasure.md#failure-modes).
 
-6. Delete the Stripe objects by hand. No worker delivers the outbox in this
-   version, so every row stays `pending`. The API does not return the Stripe
-   IDs; read them with SQL:
+6. Follow the outbox. The worker (`StartErasureOutboxLoop`, every minute)
+   deletes each Stripe object and writes the `erasure_log` record to Datadog.
+   Read `outbox[]` in the status of step 5:
+
+   | `target` | What the worker does |
+   |---|---|
+   | `stripe_account` | Deletes the Express account (`DELETE /v1/accounts/{id}`) |
+   | `global_recipient` | Closes the Global Payouts recipient (`POST /v2/core/accounts/{id}/close`) |
+   | `checkout_sessions` | Redacts up to 10 sessions with a Stripe Redaction Job; `has_stripe_job` is true while the job runs |
+   | `erasure_log` | Sends one Datadog event with tag `erasure_log:true` (request ID, account ID, `erased_at`) |
+
+   | `outbox[].state` | Meaning |
+   |---|---|
+   | `pending` | Waiting or in progress. `attempts` counts failures, `next_at` is the next try, `last_error` the last error |
+   | `done` | Delivered, or the object was already gone. `has_external_id` is false |
+   | `manual_action` | The worker stopped. Go to [resolve manual_action rows](#resolve-manual_action-rows) |
+
+   A transient error is retried after 1, 2, 4, 8, 16, 32 and 64 minutes; the
+   eighth failure moves the row to `manual_action`. A `checkout_sessions` row
+   of sessions under 90 days old stays `pending` and tries again every 7
+   days, up to 105 days after the scrub. The worker also logs
+   `erasure outbox: manual action required` with `outbox_id`, `request_id`,
+   `target` and the error. The exact rules are in
+   [outbox delivery](../architecture/account-erasure.md#outbox-delivery).
+
+### Resolve manual_action rows
+
+1. Read the rows and their Stripe IDs (the API does not return the IDs):
 
    ```sql
-   SELECT o.id, o.target, o.external_id
+   SELECT o.id, r.account_id, o.target, o.external_id, o.attempts, o.stripe_job_id, o.last_error
    FROM erasure_outbox o JOIN erasure_requests r ON r.id = o.request_id
-   WHERE r.account_id = '<account_id>' AND o.state = 'pending'
+   WHERE o.state = 'manual_action'
    ORDER BY o.created_at, o.id;
    ```
 
-   | `target` | In Stripe |
-   |---|---|
-   | `stripe_account` | Delete the Express account `acct_…` (Connect key). Stripe deletes it only when all its balances are zero |
-   | `global_recipient` | Close the Global Payouts recipient account (Global Payouts key) |
-   | `checkout_sessions` | Redact the listed `cs_…` sessions with Stripe Redaction Jobs (needs access from Stripe). Most can be redacted only 90 days after they were created |
-   | `erasure_log` | Write the request ID, account ID and `erased_at` in the ticket; this is the record you replay after a restore |
+2. Find the reason from `last_error`:
 
-   After each one, mark the row done (with approval):
+   ```mermaid
+   flowchart TD
+     classDef q fill:#fef3c7,stroke:#a16207,color:#422006
+     classDef act fill:#dbeafe,stroke:#1d4ed8,color:#172554
+     classDef hand fill:#ffedd5,stroke:#c2410c,color:#431407
+
+     A{"What does last_error say?"}:::q
+     A -- "non-zero balance, or<br/>cannot_delete_account_with_balance" --> B["A. Balance not zero"]:::hand
+     A -- "redaction jobs are<br/>not enabled" --> C["B. Redaction Jobs not enabled"]:::hand
+     A -- "may belong to the<br/>earlier Stripe account" --> D["C. Sessions of the old account"]:::hand
+     A -- "has been (status) since,<br/>or still too recent" --> E["D. Job stuck or past 105 days"]:::hand
+     A -- "retries exhausted<br/>after 8 attempts" --> F["E. Retries exhausted"]:::act
+     A -- "anything else" --> G["F. Other refusal"]:::hand
+     B --> R["Re-queue (step 3)<br/>or close by hand (step 4)"]:::act
+     C --> R
+     D --> R
+     E --> R
+     F --> R
+     G --> R
+   ```
+
+   | Reason | `last_error` | What to do |
+   |---|---|---|
+   | A. Balance not zero | `stripe connect: delete account: stripe 400: …non-zero balance…` (`stripe_account`) or `Stripe Global Payouts: HTTP 400 (cannot_delete_account_with_balance)` (`global_recipient`) | Stripe deletes a live account only when its balances are zero. In the Stripe dashboard open the connected account (`external_id`) and read its balance. Pay it out to the person's bank, or reverse the transfers to the platform as the policy says, and record the decision in the ticket. Then re-queue the row |
+   | B. Redaction Jobs not enabled | `stripe 400: …not enabled…` (`checkout_sessions`) | Ask Stripe to enable Redaction Jobs for the platform account. When it is on, re-queue every such row |
+   | C. Sessions of the old account | `Checkout Session not found with the current Stripe key; it may belong to the earlier Stripe account. Redact it by hand` | The `cs_…` IDs in `external_id` were made on the Stripe account used before the [Stripe migration](stripe-migration.md). Redact them with that account (its dashboard or a Redaction Job made with its key), then close the row by hand. If that account is no longer reachable, record that in the ticket and close the row |
+   | D. Job stuck or past the deadline | `redaction job prj_… has been <status> since <time>` (31 days in one status), or `still too recent to redact 2520h0m0s after the scrub: …` | Look up `stripe_job_id` in Stripe. A job that ended `succeeded`: close the row by hand. A job still running: cancel it in Stripe or ask Stripe support, then re-queue (a new job is made). Sessions still too recent: wait until they pass 90 days, then re-queue |
+   | E. Retries exhausted | `retries exhausted after 8 attempts: <cause>` | Read the cause. `Stripe Connect is not configured`, `Stripe Global Payouts is not configured` or `Stripe Checkout is not configured`: the coordinator lacks that key; set it through the [deploy runbook](coordinator-deploy.md) (approval required), then re-queue. A network error, 5xx or Datadog error: check the Stripe or Datadog status page, then re-queue |
+   | F. Other refusal | Any other Stripe 4xx, `redaction job prj_… was canceled`, `redaction job prj_… failed without validation errors`, or a validation code such as `locked_by_other_job` | Fix the cause in Stripe (for example wait for or cancel the other job), then re-queue; or finish the deletion in the Stripe dashboard and close the row by hand |
+
+3. Re-queue a row so the worker tries again (with approval). This also starts
+   a new redaction job with a new idempotency key:
 
    ```sql
    UPDATE erasure_outbox
-   SET state = 'done', done_at = NOW(), external_id = '', last_error = 'done by hand: ticket <number>'
-   WHERE id = '<outbox_id>' AND state = 'pending';
+   SET state = 'pending', attempts = 0, next_at = NOW(), last_error = '',
+       stripe_job_id = '', stripe_job_status = '', stripe_job_status_since = NULL,
+       stripe_job_generation = stripe_job_generation + 1
+   WHERE id = '<outbox_id>' AND state = 'manual_action';
+   ```
+
+4. Or close a row that you finished by hand (with approval). This removes
+   the Stripe ID:
+
+   ```sql
+   UPDATE erasure_outbox
+   SET state = 'done', done_at = NOW(), external_id = '', stripe_job_id = '',
+       last_error = 'resolved by hand: ticket <number>'
+   WHERE id = '<outbox_id>' AND state = 'manual_action';
    ```
 
 ### Refused credits
@@ -213,10 +289,15 @@ the webhook answers 200, credits nothing, and logs
 ### After a database restore
 
 A restore to a point in time before an erasure brings the erased data back.
+The Datadog `erasure_log` records are the list of erasures to replay.
 
-1. List every erasure completed after the restore point. In this version the
-   list is the support tickets (step 6, `erasure_log`).
-2. For each account, read its state:
+1. In Datadog Logs (or the log archive), search `erasure_log:true` from the
+   restore point to now. Each event has message `account erased` and the
+   attributes `request_id`, `account_id` and `erased_at`
+   ([telemetry inventory](../reference/telemetry-inventory.md#account-erasure-log)).
+   Keep the events whose `erased_at` is after the restore point. A request
+   can appear twice; use each `account_id` once.
+2. For each account, read its restored state:
 
    ```bash
    curl -sS "$COORD/v1/admin/accounts/<account_id>/erasure" -H "Authorization: Bearer $ADMIN_KEY"
@@ -226,17 +307,19 @@ A restore to a point in time before an erasure brings the erased data back.
 
    | Restored state | Action |
    |---|---|
-   | 404, `planned` or `canceled` | Run steps 2 and 3 again with `"force": true` and the wallet list from the ticket |
+   | 404, `planned` or `canceled` | Run steps 2 and 3 again with `"force": true` and the wallet list from the ticket (the record holds no wallet addresses) |
    | `pending`, `scrub_after` passed | Nothing: the grace loop scrubs it within an hour |
    | `pending`, `scrub_after` in the future | Read the stored list (`SELECT wallet_addresses FROM erasure_requests WHERE id = '<request_id>'`), [cancel](#rollback), then run steps 2 and 3 with `"force": true` and that list |
    | `erased` | Nothing |
 
-4. Do step 6 again for the new outbox rows. Deleting a Stripe object that is
-   already gone is harmless.
+4. Follow the new outbox rows (step 6). Restored `pending` rows of earlier
+   erasures run again; a Stripe object that is already gone counts as done,
+   and a second `erasure_log` event for the same request is harmless.
 
 ## Verification
 
-1. `GET …/erasure` shows `request.state` `erased`.
+1. `GET …/erasure` shows `request.state` `erased` and every `outbox[]` row
+   `done` with `has_external_id` false.
 2. Run the checks below in `psql`. Every `n` must be 0:
 
    ```sql
@@ -315,6 +398,8 @@ A restore to a point in time before an erasure brings the erased data back.
    ```
 
 4. A Privy login with the old identity creates a new, empty account.
+5. When `DD_API_KEY` is set, Datadog has an `erasure_log:true` event with the
+   request ID.
 
 ## Rollback
 

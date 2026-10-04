@@ -79,10 +79,12 @@
       "source_patterns": [
         "coordinator/store/postgres.go",
         "coordinator/store/*migration*.go",
-        "coordinator/store/migrations/**"
+        "coordinator/store/migrations/**",
+        "coordinator/store/schema/**"
       ],
       "docs_any_of": [
-        "docs/architecture/storage.md"
+        "docs/architecture/storage.md",
+        "docs/architecture/schema-lifecycle.md"
       ]
     },
     {

@@ -1,6 +1,6 @@
 # Deploy the coordinator (production)
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
 Runbook for swapping the production coordinator container on the GCE VM
 `darkbloom-coordinator` to a Cloud-Build image of a reviewed `master` commit,
@@ -115,11 +115,11 @@ by hand; shell variables do not cross SSH.
 ### 2. Pre-swap checks (VM and DB)
 
 Startup applies pending goose migrations
-([storage](../architecture/storage.md#migrations-are-numbered-goose-versions)).
-A migration statement waits at most 3 s for a lock (`lock_timeout`); after
-three failed attempts the coordinator exits 1. Before goose, an `ALTER TABLE`
-queued behind a long query's relation lock hung the deploy (2026-07-03
-outage). No rows means safe to proceed:
+([schema lifecycle](../architecture/schema-lifecycle.md)). A migration
+statement waits at most 3 s for a lock (`lock_timeout`); after three failed
+attempts the coordinator exits 1. Before goose, an `ALTER TABLE` queued behind
+a long query's relation lock hung the deploy (2026-07-03 outage). No rows
+means safe to proceed:
 
 ```bash
 psql "$PROD_DB_URL" -c "select pid, now()-query_start as runtime, state, left(query,80)
@@ -131,7 +131,7 @@ psql "$PROD_DB_URL" -c "select count(*) as blocked from pg_locks where granted =
 A coordinator built after v0.9.10 refuses to start on a database that holds
 billing, usage or earnings rows but never ran the retired one-shot backfills
 (`checkRetiredBackfills`, see
-[storage](../architecture/storage.md#migrations-are-numbered-goose-versions)).
+[schema lifecycle](../architecture/schema-lifecycle.md#version-2-the-retired-backfill-guard)).
 Production ran them; confirm all three markers before the swap (three rows):
 
 ```bash
@@ -165,53 +165,14 @@ sudo sh -c 'umask 077; awk -F= '\''$1 ~ /^EIGENINFERENCE_CACHE_ROUTING_/ || $1 =
   /etc/d-inference/env | LC_ALL=C sort | sha256sum | cut -d" " -f1 > /tmp/darkbloom-cache-env.before.sha256'
 ```
 
-### Optional: prepare compatible migrations before draining
+### Schema migrations
 
-After reviewing the exact candidate's schema changes, a human-approved operator
-can run its database-only command while the current coordinator serves. This is
-a production database mutation and needs approval for that operation. Only
-backward-compatible migrations belong before cutover; `--migrate-only` executes
-all normal migrations and does not establish compatibility automatically.
-
-```bash
-sudo docker run --rm --network host --env-file /etc/d-inference/env \
-  --entrypoint /usr/local/bin/coordinator \
-  "${CANDIDATE_IMAGE%:*}@${CANDIDATE_DIGEST}" --migrate-only
-```
-
-The executable override is mandatory: the image's default `start.sh` starts
-MicroMDM and touches persistent MDM state. The database-only container needs no
-userdata mount, publishes no port, seeds no admin key, starts no workers and
-exits after migration success (with a 15-minute upper bound). Do not start a
-second ordinary coordinator container. Rerun the blocked-query/lock checks and
-verify current serving health after preparation; success is not approval to
-swap.
-
-#### First deploy of a goose build
-
-The first coordinator built with goose (`coordinator/store/postgres_migrations.go`)
-applies versions 1 to 5 to production once. On a schema that the previous
-coordinator built they change nothing. A lock timeout inside one of the
-baseline's `DO ... EXCEPTION WHEN others` blocks is swallowed, and goose still
-records version 1. After that deploy, confirm the versions and compare the
-production schema with the checked-in file of the deployed commit (read-only;
-use a `pg_dump` 17 client):
-
-```bash
-psql "$PROD_DB_URL" -c "select version_id from goose_db_version order by id;"   # 0 through 5
-pg_dump "$PROD_DB_URL" --schema-only --no-owner --no-privileges --exclude-table=goose_db_version \
-  | grep -v '^\\restrict \|^\\unrestrict \|^-- Dumped from database version\|^-- Dumped by pg_dump version' \
-  | diff - coordinator/store/schema/schema.sql
-```
-
-Only objects applied by hand, such as the `request_waterfall` view, may
-differ. A missing column or index means a swallowed statement; apply it under
-a separate approved operation.
-
-New provider-recovery indexes are built concurrently and checked for validity. An
-interrupted build that leaves an invalid index fails closed with its index name;
-repair it under a separate approved operation. Ordinary startup still applies
-schema checks, and this preparation does not prove a five-second handoff.
+If the candidate adds goose versions, follow steps 1 to 4 of
+[Apply schema migrations in production](schema-migration.md#steps) now: scope
+the versions, take and record a Cloud SQL backup, check for long queries, and
+optionally apply additive versions with `--migrate-only` while the current
+coordinator serves. The first deploy of a goose build also follows its
+[first cut-over checklist](schema-migration.md#first-production-cut-over-to-goose).
 
 ### 3. Refresh the env file and capture rollback inputs
 
@@ -325,14 +286,9 @@ sudo docker run -d --name coordinator \
 
 Startup takes ~15–40 s (MicroMDM init, migrations, listeners). If `/health`
 does not answer after ~60 s, or the container exits with `store: run
-migrations`, suspect a migration behind a DB lock: re-run the
-`pg_stat_activity` query and `pg_terminate_backend(<pid>)` the blocker. Goose
-holds an advisory lock while it migrates, so a second container waits for the
-first instead of running the same DDL; after 5 min of waiting it exits 1.
-Long read queries can make all three `lock_timeout` attempts fail, most likely
-on the first goose deploy, which replays the baseline. That failure is safe:
-the coordinator exits before serving and no failed version is recorded. End
-the blocker or wait for a quieter moment, then start the container again.
+migrations`, follow [schema migration troubleshooting](schema-migration.md#troubleshooting).
+A failed migration exits before the coordinator serves and records no failed
+version. **Do not loop restarts of the container.**
 
 ## Verification
 
@@ -434,13 +390,9 @@ Registry for diagnosis.
 Providers reconnect on their own; the live registry is in-process and rebuilt
 from reconnects, durable state is in Cloud SQL and on the persistent disk.
 
-A previous image built before goose boots on a goose-migrated database: it runs
-its own boot DDL and ignores `goose_db_version`. That DDL also reapplies its own
-schema: `ADD COLUMN IF NOT EXISTS` brings a dropped column back, and its
-`DROP NOT NULL` on `fleet_snapshots.free_for_load_gb` undoes a later
-`SET NOT NULL`. So a destructive migration (drop or rename a column, tighten a
-constraint on a baseline table) must wait until no pre-goose image can be
-started as a fallback.
+Rollback never reverts the schema. Which previous images are safe on a
+migrated database is in the
+[schema migration rollback rules](schema-migration.md#rollback).
 
 That old boot DDL also fails once the soft-delete migrations (versions 13 to
 16) have run: from then on, a soft-deleted user and a live user can share a
@@ -506,7 +458,7 @@ reference copy; editing it changes nothing on the host.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| No `/health` after 60 s, or exit with `store: run migrations` | migration behind a relation lock (three `lock_timeout` attempts failed) | `pg_stat_activity` → `pg_terminate_backend(<pid>)`; do not restart the container |
+| No `/health` after 60 s, or exit with `store: run migrations` | a migration failed: a relation lock through three `lock_timeout` attempts, the 5 min advisory-lock wait, or an invalid index | [schema migration troubleshooting](schema-migration.md#troubleshooting); do not loop restarts |
 | Exit at boot with `database holds data that retired backfills never processed` or `balances.withdrawable_micro_usd is missing` | the database never ran a one-shot backfill retired after v0.9.10 (not production, which has all three markers) | roll back to the captured image, which runs the backfills at start, then redeploy the candidate |
 | Fleet drops to `self_signed`; "device not found in MDM" storm | container started without `-v /mnt/disks/userdata:/mnt/disks/userdata` (blank MicroMDM) | Rollback, then redo the swap with the mount |
 | `/v1/models` empty; providers `self_signed` | MicroMDM not running or `MICROMDM_API_KEY` ≠ `EIGENINFERENCE_MDM_API_KEY` | fix the env file, recreate the container |
@@ -521,6 +473,7 @@ reference copy; editing it changes nothing on the host.
 
 - [dev-environment.md](dev-environment.md) — the dev coordinator (`darkbloom-dev`).
 - [`provider-release.md`](provider-release.md) — provider CLI release runbook.
+- [`schema-migration.md`](schema-migration.md) — backup, checks and rollback rules for schema migrations.
 - [`../developer/build.md`](../developer/build.md) — what the Dockerfile builds.
 - [`../reference/configuration.md`](../reference/configuration.md) — every environment variable.
 - [`../architecture/cache-aware-routing.md`](../architecture/cache-aware-routing.md) — what the cache-routing controls do.

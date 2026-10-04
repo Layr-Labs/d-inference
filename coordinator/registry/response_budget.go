@@ -16,6 +16,10 @@ func NewResponseBudget(maxBytes, maxChunks int) *ResponseBudget {
 	return &ResponseBudget{maxBytes: maxBytes, maxChunks: maxChunks}
 }
 
+// Accept accounts one chunk of size bytes and reports whether the caller may
+// retain it. A chunk that exactly reaches a limit is accepted; an empty chunk
+// still uses a chunk slot. A nil budget accepts everything: streaming attempts
+// carry none.
 func (b *ResponseBudget) Accept(size int) bool {
 	if b == nil {
 		return true

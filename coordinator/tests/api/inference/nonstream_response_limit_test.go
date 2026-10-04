@@ -168,6 +168,38 @@ func TestNonStreamingResponseLimitDispatchWiring(t *testing.T) {
 	}
 }
 
+// The request's stream flag reaches a dispatched attempt only through the
+// owner's dispatch input, so the observation is a real request: the pending
+// attempt its provider is serving carries a budget unless the request streams.
+func TestNonStreamingResponseLimitBudgetFollowsRequestStream(t *testing.T) {
+	reg, _, ts := setupFailoverServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	const model = "response-limit-stream-model"
+	budgeted := make(chan bool, 2)
+	startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
+		Name: "response-limit-provider", Version: "0.8.10", DecodeTPS: 200,
+		Models: []failoverModelSpec{{ID: model}},
+		Script: func(ctx context.Context, fp *failoverProvider, req protocol.InferenceRequestMessage, _ []byte) {
+			pr := reg.GetProvider(fp.registryID).GetPending(req.RequestID)
+			if pr == nil {
+				t.Errorf("dispatched request %q has no pending attempt", req.RequestID)
+			}
+			budgeted <- pr != nil && pr.NonStreamingResponseBudget != nil
+			fp.serveFull(ctx, req, model, "served")
+		},
+	})
+	for _, stream := range []bool{false, true} {
+		status, body, err := postChat(ctx, ts.URL, "test-key", buildChatBody(t, model, stream, nil))
+		if err != nil || status != http.StatusOK {
+			t.Fatalf("stream=%v: status=%d err=%v body=%s", stream, status, err, body)
+		}
+		if got := <-budgeted; got == stream {
+			t.Fatalf("stream=%v: dispatched attempt budgeted=%v", stream, got)
+		}
+	}
+}
+
 func TestNonStreamingResponseLimitCompleteObjectsAndEndpoints(t *testing.T) {
 	raw := `{"object":"chat.completion","choices":[{"message":{"role":"assistant","content":"answer","reasoning_content":"reason","tool_calls":[{"id":"call1","type":"function","function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`
 	for _, endpoint := range []string{"/v1/chat/completions", inreq.CompletionsEndpoint, inreq.MessagesEndpoint, "/v1/responses"} {

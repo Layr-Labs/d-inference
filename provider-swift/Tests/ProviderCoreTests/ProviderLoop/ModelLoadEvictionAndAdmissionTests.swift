@@ -7,7 +7,7 @@ import Testing
 /// pre-accept reject, the activation reserve push, and the load-error status
 /// mapping. Memory samples are pinned through the slot hooks; no weights load.
 @Suite("Model load memory admission")
-struct ModelLoadAdmissionTests {
+struct ModelLoadEvictionAndAdmissionTests {
 
     // MARK: - evictUntilAvailable
 

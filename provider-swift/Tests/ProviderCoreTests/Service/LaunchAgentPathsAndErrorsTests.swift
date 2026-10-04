@@ -46,11 +46,7 @@ struct LaunchAgentPathsAndErrorsTests {
         do {
             try LaunchAgent.refreshTerminationAllowance(at: path)
             Issue.record("expected a bootstrapFailed error")
-        } catch let error as LaunchAgentError {
-            guard case .bootstrapFailed(let detail) = error else {
-                Issue.record("expected bootstrapFailed, got \(error)")
-                return
-            }
+        } catch LaunchAgentError.bootstrapFailed(let detail) {
             #expect(detail == "invalid provider plist")
         }
         #expect(try Data(contentsOf: path) == original)

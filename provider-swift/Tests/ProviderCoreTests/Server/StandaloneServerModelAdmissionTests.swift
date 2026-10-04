@@ -75,7 +75,7 @@ private func admissionHooks() -> StandaloneServer.V2TestHooks {
         makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) })
 }
 
-private final class AdmissionCallRecorder: @unchecked Sendable {
+private final class WeightHashCallRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var calls: [(path: URL, modelId: String)] = []
     func record(path: URL, modelId: String) { lock.withLock { calls.append((path, modelId)) } }
@@ -582,7 +582,7 @@ struct StandaloneServerModelAdmissionTests {
 
     @Test func weightHashIsSkippedWhenNotRequired() async {
         let server = StandaloneServer()
-        let recorder = AdmissionCallRecorder()
+        let recorder = WeightHashCallRecorder()
         await server.setV2TestHooksForTesting(StandaloneServer.V2TestHooks(
             computeWeightHash: { path, modelId in
                 recorder.record(path: path, modelId: modelId)
@@ -601,7 +601,7 @@ struct StandaloneServerModelAdmissionTests {
 
     @Test func weightHashTrimsTheComputedValueAndRejectsBlankValues() async {
         let server = StandaloneServer()
-        let recorder = AdmissionCallRecorder()
+        let recorder = WeightHashCallRecorder()
         let path = FileManager.default.temporaryDirectory
             .appendingPathComponent("weight-hash-\(UUID().uuidString)", isDirectory: true)
         await server.setV2TestHooksForTesting(StandaloneServer.V2TestHooks(

@@ -162,6 +162,11 @@ were installed and no production credentials were used. The host default Go
 1.27.1 exhibits four existing JSON parity failures on both the original head and
 base, so all acceptance checks use the repository-pinned Go 1.25.0.
 
+After publication, CI identified four unused legacy `routingSnapshot` decode
+and shadow-TTFT helpers. They were removed and their stale comments updated;
+active callers already use `candidateSnapshot` methods. This cleanup changes
+no runtime path. The timing samples above were collected before that deletion.
+
 ## Reproduction and remaining costs
 
 From each isolated repository root, compile before timing:

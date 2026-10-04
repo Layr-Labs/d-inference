@@ -396,8 +396,8 @@ type RoutingDecision struct {
 	// SnapshotAgeMs is the winner's heartbeat age (now − LastHeartbeat) at the
 	// moment its routing snapshot was taken.
 	SnapshotAgeMs int
-	// PredictedDecodeTPS is candidateSnapshot.projectedDecodeTPS: the
-	// per-request decode rate this request is predicted to receive once admitted.
+	// PredictedDecodeTPS is the per-request decode rate the winning candidate
+	// predicts this request will receive once admitted.
 	PredictedDecodeTPS float64
 	// PendingForModel / TotalPending are the winner's coordinator-side pending
 	// counts (this model / all models) at snapshot time, before this reservation.
@@ -1843,17 +1843,12 @@ func PrefillToDecodeRatio() float64 {
 	return prefillToDecodeRatio
 }
 
-// ttftOccupancyAlpha scales the Phase-0 occupancy term (ttftforecast.OccupancyDelay),
-// which is added ONLY inside candidateSnapshot.shadowTTFT — the shadow
-// evaluator's estimate — NEVER inside the live ttftMsFromSnapshot. It is the
-// decode-token-times of head-of-line wait charged per occupying peer, divided by
-// the per-request decode rate the new request would see. Because the term never
-// reaches ttftMsFromSnapshot, the routing cost's TTFTMs, the candidate-loop
-// MaxTTFTMs ceiling, and the preflight bestTTFT are occupancy-free at ANY alpha:
-// raising alpha changes only the shadow signal, not the live routing decision
-// (the HARD_REJECT safety invariant). 0 (the default) disables the term. Configured once at
-// startup via SetTTFTOccupancyAlpha (EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA),
-// read-only on routing paths thereafter, mirroring prefillToDecodeRatio.
+// ttftOccupancyAlpha scales the Phase-0 head-of-line occupancy term in
+// candidateSnapshot.shadowTTFT. The term never reaches the live
+// ttftMsFromSnapshot, routing cost, MaxTTFTMs ceiling or preflight bestTTFT;
+// raising alpha changes only the shadow signal. Zero disables the term.
+// Configured once at startup via SetTTFTOccupancyAlpha
+// (EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA), read-only on routing paths thereafter.
 var ttftOccupancyAlpha = 0.0
 
 // SetTTFTOccupancyAlpha overrides the occupancy-term coefficient. Negative

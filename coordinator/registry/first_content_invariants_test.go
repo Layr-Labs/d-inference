@@ -18,9 +18,10 @@ var firstContentInvariantSeeds = []int64{1, 1238, 1243, 1254, 20260929}
 
 var firstContentStatuses = []string{FirstContentFeasible, FirstContentUnknown, FirstContentPredictedLate}
 
-// randomFirstContentSnapshot returns a snapshot across the ranges that
-// estimateFirstContent reads, including missing, stale and busy evidence.
-func randomFirstContentSnapshot(rng *rand.Rand, now time.Time) *routingCandidate {
+// randomFirstContentCandidate returns a candidate whose snapshot spans the
+// ranges that estimateFirstContent reads, including missing, stale and busy
+// evidence.
+func randomFirstContentCandidate(rng *rand.Rand, now time.Time) *routingCandidate {
 	c := measuredFirstContentCandidate(now)
 	s := &c.snapshot
 	pick := func(values ...int32) int32 { return values[rng.Intn(len(values))] }
@@ -77,7 +78,7 @@ func TestFirstContentForecastInvariants(t *testing.T) {
 		rng := rand.New(rand.NewSource(seed))
 		for i := range 2000 {
 			now := time.Now()
-			c := randomFirstContentSnapshot(rng, now)
+			c := randomFirstContentCandidate(rng, now)
 			pr := randomFirstContentRequest(rng, now)
 			r.estimateFirstContent(c, pr, now)
 			e, s := c.firstContent, &c.snapshot
@@ -124,7 +125,7 @@ func TestFirstContentForecastRateMonotonicity(t *testing.T) {
 		rng := rand.New(rand.NewSource(seed))
 		for i := range 2000 {
 			now := time.Now()
-			base := randomFirstContentSnapshot(rng, now)
+			base := randomFirstContentCandidate(rng, now)
 			pr := randomFirstContentRequest(rng, now)
 			factor := 1 + 3*rng.Float64()
 			for _, faster := range []struct {
@@ -167,12 +168,12 @@ func TestFirstContentPreferenceNeverEmptiesPool(t *testing.T) {
 			got := preferFirstContentCandidates(slices.Clone(pool))
 			fail := func(msg string) {
 				t.Helper()
-				t.Fatalf("seed %d case %d: %s (input statuses %v)", seed, i, msg, statusesOf(original))
+				t.Fatalf("seed %d case %d: %s (input statuses %v)", seed, i, msg, firstContentStatusesOf(original))
 			}
 			if len(original) > 0 && len(got) == 0 {
 				fail("preference emptied a nonempty pool")
 			}
-			if !isOrderedSubset(got, original) {
+			if !isOrderedCandidateSubset(got, original) {
 				fail("preference invented, repeated or reordered candidates")
 			}
 			kept := map[string]int{}
@@ -197,7 +198,7 @@ func TestFirstContentPreferenceNeverEmptiesPool(t *testing.T) {
 	}
 }
 
-func statusesOf(pool []*routingCandidate) []string {
+func firstContentStatusesOf(pool []*routingCandidate) []string {
 	out := make([]string, len(pool))
 	for i, c := range pool {
 		out[i] = c.firstContent.Status
@@ -205,7 +206,7 @@ func statusesOf(pool []*routingCandidate) []string {
 	return out
 }
 
-func isOrderedSubset(sub, full []*routingCandidate) bool {
+func isOrderedCandidateSubset(sub, full []*routingCandidate) bool {
 	j := 0
 	for _, c := range sub {
 		for j < len(full) && full[j] != c {
@@ -298,21 +299,20 @@ func checkHeartbeatMeasurementDating(t *testing.T, seed int64, explicit bool) {
 			continue
 		}
 		for _, phase := range []struct {
-			name              string
-			old, new          time.Time
-			renewed           bool
-			changedByNewValue bool
+			name      string
+			old, new  time.Time
+			newSample bool
 		}{
-			{"prefill", before.observedAfter, after.observedAfter, newPrefill, newPrefill},
-			{"decode", before.decodeObservedAfter, after.decodeObservedAfter, newDecode, newDecode},
+			{"prefill", before.observedAfter, after.observedAfter, newPrefill},
+			{"decode", before.decodeObservedAfter, after.decodeObservedAfter, newDecode},
 		} {
 			if phase.new.After(now) {
 				fail(phase.name + " measurement is dated after the report that carries it")
 			}
-			if !phase.renewed && !phase.old.IsZero() && phase.new.After(phase.old) {
+			if !phase.newSample && !phase.old.IsZero() && phase.new.After(phase.old) {
 				fail(phase.name + " measurement became younger without a new sample")
 			}
-			if !explicit && phase.changedByNewValue && !phase.new.IsZero() && !phase.old.IsZero() && !phase.new.Equal(previousAccepted) {
+			if !explicit && phase.newSample && !phase.new.IsZero() && !phase.old.IsZero() && !phase.new.Equal(previousAccepted) {
 				fail(phase.name + " changed legacy value is not dated at the previous accepted report")
 			}
 		}

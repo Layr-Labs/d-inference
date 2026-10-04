@@ -28,7 +28,7 @@ func TestMigrationsBuildCheckedInSchema(t *testing.T) {
 	dumpPool := openTestPool(t, newThrowawayTestDatabase(t))
 	loadSchemaFile(t, dumpPool)
 
-	assertSameSchema(t, "schema/schema.sql", schemaSnapshot(t, dumpPool), "goose", schemaSnapshot(t, s.pool))
+	assertSameLines(t, "schema/schema.sql", schemaSnapshot(t, dumpPool), "goose", schemaSnapshot(t, s.pool))
 }
 
 // A database that a pre-goose binary migrated meets goose for the first
@@ -58,23 +58,7 @@ func TestMigrationsLeaveLegacyDatabaseUnchanged(t *testing.T) {
 		UNION ALL SELECT 'usage_totals ' || id || ' ' || total_requests FROM usage_totals
 		UNION ALL SELECT 'collection ' || started_at FROM model_demand_collection
 		ORDER BY 1`
-	readRows := func() []string {
-		rows, err := pool.Query(ctx, rowsSQL)
-		if err != nil {
-			t.Fatalf("read rows: %v", err)
-		}
-		defer rows.Close()
-		var out []string
-		for rows.Next() {
-			var line string
-			if err := rows.Scan(&line); err != nil {
-				t.Fatalf("scan row: %v", err)
-			}
-			out = append(out, line)
-		}
-		return out
-	}
-	schemaBefore, rowsBefore := schemaSnapshot(t, pool), readRows()
+	schemaBefore, rowsBefore := schemaSnapshot(t, pool), queryLines(t, pool, rowsSQL)
 
 	s, err := NewPostgres(ctx, Config{DatabaseURL: databaseURL})
 	if err != nil {
@@ -82,23 +66,11 @@ func TestMigrationsLeaveLegacyDatabaseUnchanged(t *testing.T) {
 	}
 	t.Cleanup(s.Close)
 
-	assertSameSchema(t, "legacy", schemaBefore, "after goose", schemaSnapshot(t, pool))
-	assertSameSchema(t, "legacy rows", rowsBefore, "rows after goose", readRows())
-	var versions []int64
-	rows, err := pool.Query(ctx, `SELECT version_id FROM `+migrationVersionTable+` ORDER BY id`)
-	if err != nil {
-		t.Fatalf("read goose versions: %v", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var v int64
-		if err := rows.Scan(&v); err != nil {
-			t.Fatal(err)
-		}
-		versions = append(versions, v)
-	}
-	if len(versions) != 6 || versions[0] != 0 || versions[5] != 5 {
-		t.Fatalf("goose versions = %v, want 0 through 5", versions)
+	assertSameLines(t, "legacy", schemaBefore, "after goose", schemaSnapshot(t, pool))
+	assertSameLines(t, "legacy rows", rowsBefore, "rows after goose", queryLines(t, pool, rowsSQL))
+	versions := queryLines(t, pool, `SELECT version_id::text FROM `+migrationVersionTable+` ORDER BY id`)
+	if got := strings.Join(versions, " "); got != "0 1 2 3 4 5" {
+		t.Fatalf("goose versions = %q, want 0 through 5", got)
 	}
 }
 

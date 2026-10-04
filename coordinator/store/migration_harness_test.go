@@ -150,27 +150,33 @@ ORDER BY line`
 
 func schemaSnapshot(t testing.TB, pool *pgxpool.Pool) []string {
 	t.Helper()
-	rows, err := pool.Query(context.Background(), schemaSnapshotSQL)
+	return queryLines(t, pool, schemaSnapshotSQL)
+}
+
+// queryLines returns the single text column of every row that query returns.
+func queryLines(t testing.TB, pool *pgxpool.Pool, query string) []string {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), query)
 	if err != nil {
-		t.Fatalf("snapshot schema: %v", err)
+		t.Fatalf("query lines: %v", err)
 	}
 	defer rows.Close()
 	var lines []string
 	for rows.Next() {
 		var line string
 		if err := rows.Scan(&line); err != nil {
-			t.Fatalf("scan schema snapshot: %v", err)
+			t.Fatalf("scan line: %v", err)
 		}
 		lines = append(lines, line)
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("read schema snapshot: %v", err)
+		t.Fatalf("read lines: %v", err)
 	}
 	return lines
 }
 
-// assertSameSchema fails with the lines only one snapshot has.
-func assertSameSchema(t testing.TB, wantName string, want []string, gotName string, got []string) {
+// assertSameLines fails with the lines only one snapshot has.
+func assertSameLines(t testing.TB, wantName string, want []string, gotName string, got []string) {
 	t.Helper()
 	count := map[string]int{}
 	for _, line := range want {
@@ -189,10 +195,10 @@ func assertSameSchema(t testing.TB, wantName string, want []string, gotName stri
 		}
 	}
 	if len(diff) > 0 {
-		t.Fatalf("schemas differ (%d lines):\n%s", len(diff), strings.Join(diff, "\n"))
+		t.Fatalf("%s and %s differ (%d lines):\n%s", wantName, gotName, len(diff), strings.Join(diff, "\n"))
 	}
 	if len(want) == 0 {
-		t.Fatal("empty schema snapshot")
+		t.Fatalf("%s snapshot is empty", wantName)
 	}
 }
 

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-01
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -470,15 +470,15 @@ disabled for this hybrid model.
 
 ### Sampling parameters
 
-`EngineV2Translation.samplingParams(from:)`
+`EngineV2Translation.samplingParams(from:defaults:)`
 (`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Translation.swift`):
 
 | OpenAI field | Honoured as | Default |
 |---|---|---|
-| `temperature` | `temperature` | `0.0` (greedy) |
-| `top_p` | `topP` | `1.0` |
-| `top_k` | `topK` | `0` |
-| `repetition_penalty` | `repetitionPenalty` | `1.0` |
+| `temperature` | `temperature` | artifact default, else `0.0` (greedy) |
+| `top_p` | `topP` | artifact default, else `1.0` |
+| `top_k` | `topK` | artifact default, else `0` |
+| `repetition_penalty` | `repetitionPenalty` | artifact default, else `1.0` |
 | `frequency_penalty` / `presence_penalty` | `frequencyPenalty` / `presencePenalty` | `0` |
 | `seed` | `seed`; also keys a stable engine request id | nil |
 | `logit_bias` | `logitBias` — string keys parsed to non-negative `Int`; invalid keys dropped and counted | `[:]` |
@@ -488,12 +488,36 @@ disabled for this hybrid model.
 | `min_p`, `priority` | **Ignored**: always `0` | — |
 | `n`, `best_of` | **Not represented**: one alternative | — |
 
+"Artifact default" means the value declared in the checkpoint's
+`generation_config.json`, resolved once at slot construction by
+`EngineV2SamplingDefaults.resolve(modelId:modelType:modelDirectory:)`
+(`provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2SamplingDefaults.swift`)
+and stored on the `EngineV2Bridge` next to the stop-token set. It fills only
+the knobs a request omits; an explicit request value always wins, so
+`temperature: 0` is still greedy. Admission is per family, like
+`ToolChoiceEnforcementPolicy.nativeStructuredTarget`: today only
+`model_type == nemotron_h` with a qualified Nemotron 3.5 Lightning listing id
+(`EngineV2SupportedModels.isNemotron35ListingModelID`) honours its artifact
+(`temperature 1.0`, `top_p 0.95`, `do_sample true`, the values the model card
+recommends). Every other family keeps the legacy defaults in the table
+byte-for-byte. `do_sample: false` or an absent/unreadable file is legacy. The
+sampler is not part of prompt or cache identity, so prefix-cache and SSD
+checkpoint identity do not change.
+
 ### Streaming reasoning state
 
 `NativeChannelSplitter` treats tool payloads as opaque while routing reasoning
 markers. It emits unclosed-frame payload incrementally and retains only a
 possible closing-marker suffix; it does not buffer an entire unfinished tool
 call (`provider-swift/Sources/ProviderCore/Inference/Streaming/NativeChannelSplitter.swift`).
+
+Only qualified Nemotron Lightning listings absorb a stray `</think>` already
+in content state, leaving preceding text as content and tool arguments opaque.
+`ToolChoiceEnforcementPolicy.absorbsStrayThinkClose` gates the behavior by exact
+listing and `nemotron_h` type; `MultiModelBatchSchedulerEngine.makeEventStream`
+passes it through `NativeToolStreamRouter` to the splitter. Other native-channel
+families retain their previous literal-close behavior
+(`provider-swift/Sources/ProviderCore/Inference/Tools/ToolChoiceEnforcementPolicy.swift`).
 
 `ReasoningPromptProbe.streamingPrefix` in
 `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningPromptProbe.swift`

@@ -37,6 +37,7 @@ jobs:
           python3 .github/scripts/test-threat-model-review.py
           python3 .github/scripts/test-threat-full-scan.py
           python3 .github/scripts/test-threat-ensemble.py
+          python3 .github/scripts/test-threat-budget.py
       - name: Test native GPU CI routing without a GPU
         run: python3 scripts/test-native-gpu-ci.py
       - name: Test bounded MiMo provider fixture provisioning offline
@@ -62,7 +63,7 @@ jobs:
 
   test-coordinator:
     name: Coordinator Tests
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-16vcpu-ubuntu-2404
     services:
       postgres:
         image: postgres:16
@@ -83,7 +84,9 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Check adversarial numeric parsing without instrumentation
-        run: go test -race=false -cover=false ./coordinator/api -run '^TestConstrainedExactNonnegativeIntBoundsAdversarialLiterals$' -count=1
+        run: go test -race=false -cover=false ./coordinator/tests/api/inference/request -run '^TestConstrainedExactNonnegativeIntBoundsAdversarialLiterals$' -count=1
+      - name: Test coordinator runner guards
+        run: python3 scripts/test-coordinator-tests.py
       - name: Run tests
         env:
           DATABASE_URL: postgres://testbed:testbed@127.0.0.1:5432/testbed?sslmode=disable
@@ -93,8 +96,26 @@ jobs:
           # integration package is excluded (it needs a real Swift provider,
           # see integration.yml); coordinator/internal/e2e and e2e/testbed/...
           # are ordinary unit tests and run here.
-          # shellcheck disable=SC2046
-          go test -race -coverprofile="$RUNNER_TEMP/coverage.out" -covermode=atomic $(go list ./... | grep -vx 'github.com/eigeninference/d-inference/e2e')
+          packages=$(go list ./...)
+          packages=$(printf '%s\n' "$packages" | grep -vx 'github.com/eigeninference/d-inference/e2e')
+          test -n "$packages"
+          # shellcheck disable=SC2086
+          python3 scripts/run-coordinator-tests.py --race \
+            --jobs 8 \
+            --coverprofile "$RUNNER_TEMP/coverage.out" \
+            --output-dir "$RUNNER_TEMP/coordinator-tests" \
+            $packages
+      - name: Upload coordinator test timings
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coordinator-test-timings
+          path: |
+            ${{ runner.temp }}/coordinator-tests/**/*.json
+            ${{ runner.temp }}/coordinator-tests/**/*.jsonl
+            ${{ runner.temp }}/coordinator-tests/**/*.stderr
+          if-no-files-found: warn
+          retention-days: 14
       - name: Check formatting
         run: |
           set -o pipefail
@@ -463,6 +484,9 @@ jobs:
         id: prompt-parity
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
         run: ./scripts/verify-prompt-parity.sh
+      - name: Verify pinned Nemotron prompts and numeric cache plans
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
+        run: ./scripts/verify-nemotron-prompt-parity.sh
       - name: Save verified prompt parity Cargo dependencies
         if: ${{ !cancelled() && steps.prompt-parity.outcome == 'success' && steps.provider-ci-build.outputs.rust-cache-hit != 'true' }}
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0

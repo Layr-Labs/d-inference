@@ -83,6 +83,7 @@ extension EngineV2Bridge {
             throw MiMoV26NativeBridgeShutdownError.pendingConsumers
         }
         if !nativeShutdownClosed {
+            if let task = cancelMimoCalibration() { nativeShutdownTasks.append(task) }
             nativeShutdownActivity = serviceBudget?.beginUnboundedActivity()
             nativeShutdownIdentity = identity
             nativeShutdownClosed = true

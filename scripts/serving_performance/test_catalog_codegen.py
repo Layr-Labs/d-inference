@@ -17,7 +17,7 @@ class DeadlineCatalogCodegenTests(unittest.TestCase):
                  "rate": 1234.56789, "count": 9007199254740993,
                  "optional": None, "nested": [True, 0.95]}]
         sources = catalog.rendered_sources(json.dumps(rows).encode())
-        go_literal = sources[catalog.GO].split("const reviewedDeadlineProfilesJSON = ", 1)[1].strip()
+        go_literal = sources[catalog.GO].split("const CompiledProfilesJSON = ", 1)[1].strip()
         go_json = json.loads(go_literal)
         swift_literal = sources[catalog.SWIFT].split("static let json = ", 1)[1].splitlines()[0]
         hashes = swift_literal[:swift_literal.index('"')]

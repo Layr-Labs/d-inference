@@ -741,6 +741,12 @@ func (c *StripeConnect) do(method, path string, form url.Values, idempotencyKey 
 		return nil, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.secretKey)
+	// The transport otherwise automatically retries replayable POSTs carrying
+	// Idempotency-Key. Surface every ambiguous attempt to retryAmbiguousStripe:
+	// a later rejection must not erase evidence that the first send may exist.
+	if method != http.MethodGet {
+		req.GetBody = nil
+	}
 	if form != nil {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}

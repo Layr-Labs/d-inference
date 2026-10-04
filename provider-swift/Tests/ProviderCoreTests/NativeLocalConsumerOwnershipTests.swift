@@ -93,6 +93,7 @@ final class NativeLocalConsumerOwnershipTests: XCTestCase {
 
     func testParentCancellationCannotSkipRegisteredPreparationCleanup() async throws {
         let lease = NativeLocalConsumerLease(), gate = ConsumerBarrier(), events = ConsumerEvents()
+        let parentEntered = ConsumerBarrier()
         let token = OneShotRelease(release: { _ in events.record("release") }, modelId: "native",
                                    nativeConsumerLease: lease)
         let task: Task<Void, Error> = try lease.startPreparation {
@@ -103,13 +104,21 @@ final class NativeLocalConsumerOwnershipTests: XCTestCase {
             throw CancellationError()
         }
         let parent = Task {
-            try await withTaskCancellationHandler { try await task.value }
+            try await withTaskCancellationHandler {
+                await parentEntered.wait()
+                try await task.value
+            }
                 onCancel: { lease.closeAndCancel() }
         }
         await gate.waitUntilEntered()
+        // The child can enter preparation before its parent task has started.
+        // Wait until the parent's cancellation handler is installed before
+        // asserting the synchronous close caused by parent.cancel().
+        await parentEntered.waitUntilEntered()
         parent.cancel()
         XCTAssertTrue(events.values.isEmpty)
         XCTAssertEqual(lease.snapshot().phase, .closing)
+        await parentEntered.open()
         await gate.open()
         do { try await parent.value; XCTFail("expected cancellation") } catch is CancellationError {}
         await lease.joinFromOutside()

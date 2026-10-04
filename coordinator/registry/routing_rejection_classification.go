@@ -12,17 +12,10 @@ func (r *Registry) classifyRejectedProvider(view gateView, model string, traits 
 	p := view.p
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for {
-		g := view.g
-		breaker = !ignoreProviderBreaker && (g.breakerOpenAt(now.UnixNano()) ||
-			(healthEjectionEnabled() && r.ejectionOpenFor(g, stableProviderIdentityLocked(p), now.UnixNano())))
-		// Only a pair that otherwise passes routing is transient capacity.
-		// A simultaneous structural failure must remain no-provider, and drain
-		// marks use the same capacity path as a provider's reject cooldown.
-		capacity = (providerDrainingLocked(p, now) || g.capacityCooled(model, now)) &&
-			r.providerPassesRoutingGatesLockedEx(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker, true)
-		if !view.moved() {
-			return breaker, capacity
-		}
-	}
+	return view.g.view.ClassifyRejection(model, now, ignoreProviderBreaker,
+		func() string { return stableProviderIdentityLocked(p) },
+		func() bool { return providerDrainingLocked(p, now) },
+		func() bool {
+			return r.providerPassesRoutingGatesLockedEx(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker, true)
+		})
 }

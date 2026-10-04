@@ -98,6 +98,10 @@ public actor EngineV2Bridge {
     /// tokens) — `buildStopTokenIds` semantics, computed ONCE at bridge
     /// construction so B=1 and batched behavior stay identical.
     let stopTokenIds: Set<Int>
+    /// Artifact sampling defaults resolved once at construction
+    /// (`EngineV2SamplingDefaults.resolve`); `.legacy` for every family
+    /// that has not been admitted.
+    let samplingDefaults: EngineV2SamplingDefaults
     let defaultMaxTokens: Int
     let maxConcurrentRequests: Int
     nonisolated let performanceProfile: ServingPerformanceProfile?
@@ -288,6 +292,7 @@ public actor EngineV2Bridge {
     var performanceUpdates: EnginePerformanceUpdates?
     var performanceMeasurements = EnginePerformanceMeasurements()
     var prefillEvidenceRecovery = PrefillEvidenceRecovery()
+    var mimoCalibration = MimoCalibrationState()
     var prefillRequestsTotal: Int64 = 0
     var generatedTokensTotal: Int64 = 0
     var generationRequestsTotal: Int64 = 0
@@ -339,6 +344,7 @@ public actor EngineV2Bridge {
         tokenizer: TokenizerHandle,
         eosTokenIds: Set<Int>,
         extraEOSTokens: [String] = [],
+        samplingDefaults: EngineV2SamplingDefaults = .legacy,
         defaultMaxTokens: Int = 4096,
         maxConcurrentRequests: Int = 4,
         performanceProfile: ServingPerformanceProfile? = nil,
@@ -385,6 +391,7 @@ public actor EngineV2Bridge {
             extraEOSTokens: extraEOSTokens,
             convertTokenToId: { [inner = tokenizer.inner] in inner.convertTokenToId($0) }
         )
+        self.samplingDefaults = samplingDefaults
         self.defaultMaxTokens = defaultMaxTokens
         self.maxConcurrentRequests = maxConcurrentRequests
         self.performanceProfile = performanceProfile

@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-29
+> Last updated: 2026-10-03
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -71,8 +71,9 @@ The coordinator calls the local prompt-contract sidecar
 (`coordinator/promptcontract/`, see
 [`prompt-contract-sidecar.md`](prompt-contract-sidecar.md)) only after alias
 resolution, tool normalization, endpoint lowering, output-bound injection, and
-construction of the final provider-bound body (`planCacheRoute`,
-`coordinator/api/prompt_artifacts.go`). The sidecar returns the prompt contract
+construction of the final provider-bound body (`planPromptRoute`,
+`coordinator/api/inference/prompt_work.go`, called through the request's
+`routeplan.Memo` in `coordinator/api/inference/consumer.go`). The sidecar returns the prompt contract
 identity, exact token count, and complete block-chain boundaries. It never
 returns or logs the normalized prompt, tokens, or hashes outside the local
 response contract.
@@ -87,7 +88,7 @@ ID, verified aggregate and prompt-contract ID together; changing weights or the
 template does not inherit an older tuple's rollout permission. Unconfigured
 preserves existing eligibility, while `[]` declines every request. Excluded
 requests return `ineligible` with no participating plan or reusable remote scope
-(`coordinator/registry/cache_artifact_allowlist.go`, `cacheArtifactAllowlist.allows`;
+(`coordinator/internal/registry/cachepolicy/artifacts.go`, `ArtifactAllowlist.Allows`;
 `coordinator/registry/cache_route_keys.go`, `PlanCacheRouteWithResult`).
 
 Without authenticated scope, `RemotePrefixCacheContext.cacheEnabled` is false
@@ -99,7 +100,7 @@ provider's intrinsic backend/codec/identity gates
 `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Translation.swift`).
 
 Two operational controls sit between mode `on` and planning
-(`cacheActivationGate`, `coordinator/registry/cache_activation.go`): a
+(`cacheactivation.Gate`, `coordinator/internal/registry/cacheactivation/gate.go`): a
 deterministic HMAC-sampled cohort over account, resolved model and
 provider-bound body (`EIGENINFERENCE_CACHE_ROUTING_PERCENT`), and a
 process-local token bucket bounding sidecar plan QPS
@@ -123,7 +124,7 @@ concrete model build, aggregate hash, prompt contract, and block-hash contract
 remote scope from `prompt_cache_key`, `user`, or any other caller-controlled
 body field. The only `prompt_cache_key` the coordinator ever writes is a
 coordinator-authored cache-bust key inserted into the sealed body for
-protocol-0 providers (`bodyForCacheAttempt`, `coordinator/api/consumer.go`;
+protocol-0 providers (`BodyForCacheAttempt`, `coordinator/internal/inference/providerwire/body.go`;
 `LegacyCacheBustKeyLength`, `coordinator/registry/cache_receipts.go`).
 
 Coordinator boundary keys are domain-separated HMACs under the route key over
@@ -149,7 +150,9 @@ unchanged-key update, revokes the old generation and clears its tracker maps
 (`PlanCacheRouteWithResult`, `PreparePrefixCacheV2Attempt`, `ConfigureCacheRouting`).
 
 A queued frame retains one immutable attempt owner. At writer dequeue,
-`CacheAttemptSnapshot.ApplyTo` checks revocation without registry or tracker
+`CacheAttemptSnapshot.ApplyTo` (the `cacheattempt.Snapshot` alias in
+`coordinator/registry/cache_attempt_ownership.go`, implemented in
+`coordinator/internal/registry/cacheattempt/owner.go`) checks revocation without registry or tracker
 locks. A revoked attempt sends the ordinary encrypted request with its remaining
 deadline budget and no scope, nonce or cache negotiation. That check is the
 cutoff: an accepted write may finish after reconfiguration. Cancellation,
@@ -162,7 +165,7 @@ first accepted dequeue restores ordinary calibration eligibility; an already
 accepted cache write remains excluded. Terminal requests retain the existing
 bounded grace period for authenticated durable-ready receipts while revoking
 queued dispatch (`coordinator/registry/cache_attempt_ownership.go`,
-`coordinator/api/provider_wire.go`).
+`coordinator/internal/inference/providerwire/provider_wire.go`).
 
 ### Protocol v2 proof
 
@@ -200,7 +203,7 @@ demand as an integer count, which the provider uses to gate complete-checkpoint
 donations ([observed demand](#observed-demand-and-soft-prefix-affinity)). None
 of these fields changes the signed
 attestation or status canonical payload (`coordinator/protocol/messages.go`,
-`coordinator/api/provider_wire.go`; `coordinator/attestation/attestation.go`,
+`coordinator/internal/inference/providerwire/provider_wire.go`; `coordinator/attestation/attestation.go`,
 `StatusCanonicalInput`).
 
 Resident-ready evidence also carries at most 16 actually published input
@@ -227,12 +230,13 @@ original 4,096 checkpoint and machine B later publishes only a longer checkpoint
 only A receives the original-prefix bonus. If B publishes both checkpoints, B
 can receive that bonus after A disconnects. Normal capacity and load selection
 still applies (`TestMemoryRoutingOriginalAcrossProvidersUsesPublishedCheckpoint`,
-`coordinator/registry/cache_memory_test.go`).
+`coordinator/tests/registry/cache_memory_test.go`).
 
 A proof mismatch fences that exact capability for a bounded window: 60 s,
 doubled for each consecutive mismatch on the same provider/model/tier
-capability, capped at 10 min (`cacheProofFenceBase = 60 * time.Second`,
-`cacheProofFenceMax = 10 * time.Minute`, `cacheProofFenceDuration`,
+capability, capped at 10 min (`ProofFenceBase = 60 * time.Second`,
+`ProofFenceMax = 10 * time.Minute`, `ProofFenceDuration`,
+`coordinator/internal/registry/cachetracker/proofs.go`; registry adapters in
 `coordinator/registry/cache_proof_fence.go`). Receipts inside the window are
 rejected as `capability_fenced` and never extend it (`capabilityRejected`;
 `CacheReceiptCapabilityFenced`, `coordinator/registry/cache_receipt_result.go`).
@@ -270,7 +274,7 @@ Evidence is removed or made unreachable on:
   `coordinator/registry/cache_proof_fence.go`); an identity mismatch drops
   that provider's whole model (`invalidateProviderModel`,
   `coordinator/registry/cache_receipts.go`; both are chosen by
-  `disablePrefixCacheV2Model`, `coordinator/registry/cache_receipts_v2.go`);
+  `CacheQuarantineCommit.Apply`, `coordinator/registry/cache_quarantine.go`);
 - verified miss or corruption for the attempted boundaries;
 - a valid hit at a shorter boundary than one recorded for that provider: its
   deeper holders for that prompt, in that tier;
@@ -278,7 +282,17 @@ Evidence is removed or made unreachable on:
 - routing transition to `off`.
 
 A capability mode change invalidates that model's existing holders and attempts even if its epoch string
-is unchanged. Unchanged models retain their evidence and proof fences. Publication and invalidation hold the same registry/provider ownership, so an old heartbeat cannot erase a replacement connection's evidence (`UpdatePrefixCacheSnapshot`, `coordinator/registry/cache_snapshot.go`).
+is unchanged. Unchanged models retain their evidence and proof fences. The heartbeat
+caller in `coordinator/api/provider/session.go` uses `UpdatePrefixCacheSnapshot`;
+`CacheSnapshotUpdater.Apply` publishes capabilities and invalidates evidence while
+holding registry/provider ownership (`coordinator/registry/cache_snapshot.go`).
+It binds one chunk of parked rows before releasing those locks. Its
+`CacheSnapshotResult` then carries abandoned epoch/model buckets and any remaining
+binding work to `SettleDrop` and `BindRemaining`
+(`coordinator/registry/cache_snapshot_result.go`). Each deferred chunk rechecks
+the original connection's ownership and current capability, so an old publication
+cannot erase a replacement connection's evidence or settle an epoch that a later
+heartbeat restored.
 The checkpoint routing milestone is covered by local Go protocol, registry,
 simulated multi-provider, and API wire tests; it is not a live two-machine
 measurement ([source and test evidence](../reports/evidence/2026-09-05-ssd-checkpoint-cache/coordinator-evidence-manifest.json)).
@@ -299,8 +313,8 @@ still rotate on eviction.
 Because a provider that removes one file keeps its epoch, the coordinator
 learns of the removal from the next lookup: a miss at the attempted boundaries
 (`miss_invalidation`), or a valid hit below a boundary recorded for that
-provider (`shorter_hit`, `supersedeDeeperHoldersLocked`,
-`coordinator/registry/cache_receipts_v2_lookup.go`), which drops that
+provider (`shorter_hit`, `SupersedeDeeperHoldersLocked`,
+`coordinator/internal/registry/cachetracker/cache_receipts_v2_lookup_kernel.go`), which drops that
 provider's deeper holders for that prompt in the receipt's tier. Without the
 second rule a provider that evicted its deeper checkpoint would keep attracting
 the prefix and answer with a partial hit each time. The provider may still
@@ -325,13 +339,21 @@ attempts are each kept in a min-heap ordered by expiry. The sweep runs at most
 every 30 seconds under the tracker lock, pops expired heads, and removes at most
 `cacheRoutingMaxSweepRemovals = 1_024` holders and 1,024 attempts per pass; a
 pass that leaves expired entries behind continues on the next tracker operation
-(`coordinator/registry/cache_sweep.go`). An expired holder that has not been
+(`coordinator/registry/cache_sweep.go`, `sweepIfDueLocked`, delegates to
+`cachetracker.Tracker.SweepIfDueLocked` in
+`coordinator/internal/registry/cachetracker/cache_sweep_kernel.go`). An expired holder that has not been
 swept is never returned (`activeHolderLocked`). At the global cap the holder
 that expires first is evicted; at the per-bucket limit the oldest update is.
 Either eviction counts as `ttl` when its victim had already expired, so
 `capacity_eviction` counts only live evidence. Disconnects and capability or
 model changes visit only that provider's holders and attempts
-(`coordinator/registry/cache_provider_index.go`). A configured TTL above 30
+(`coordinator/internal/registry/cachetracker/lifecycle.go`,
+`InvalidateProviderEvidence`, `InvalidateProviderModels`).
+`CacheMaintenance` (`coordinator/registry/cache_maintenance.go`) serializes those
+operations with receipts under the same generation's tracker mutex. Its
+`StateCounts` performs bounded expiry passes, releasing that mutex between
+passes; `CacheRoutingStateCounts` reaches it through `stateCounts` in
+`coordinator/registry/cache_sweep.go`. A configured TTL above 30
 minutes is accepted and logged as a warning at startup, because providers keep
 their files for at most 30 minutes and the indexes are sized for that window. V1 receipt
 frames remain decodable for mixed-version safety but cannot mutate routing
@@ -343,12 +365,20 @@ Routing reads stay in memory. With `EIGENINFERENCE_CACHE_ROUTING_PERSIST`
 enabled and a supporting store, the coordinator keeps a write-behind copy of
 SSD holders and observed demand. Attempts and memory-tier holders are never
 persisted (`coordinator/registry/cache_persistence_registry.go`,
-`StartCacheRoutingPersistence`; `coordinator/registry/cache_persistence.go`,
-`persistable`). The refactor changes no store schema, wire fields or controls.
+`StartCacheRoutingPersistence`; `coordinator/internal/registry/cachetracker/holder.go`,
+`Holder.Persistable`). `coordinator/registry/cachepersist/persister.go` provides
+the registry-facing constructor and aliases; the persister implementation lives
+in `coordinator/internal/registry/cachepersist/`, with its pending state and
+bounded write snapshots in `coordinator/internal/registry/cachequeue/`.
 
 #### Restore and binding
 
-Boot establishes the cache-key generation before writing mutations. A failed
+Boot and flush-tick retries both call `restoreCacheRoutingState`, which runs
+`CacheRestoration.Run` (`coordinator/registry/cache_restoration.go`) with the
+selected persister and tracker. It bounds the durable load, merges restored
+demand into the live demand index, seeds only accepted demand as persisted, and
+then binds parked holders for connected providers. Boot establishes the
+cache-key generation before writing mutations. A failed
 restore leaves mutations pending and retries every flush tick. The generation
 fingerprint covers the master key, derivation versions and block contract;
 a mismatch resets the durable copy instead of restoring unreachable keys.
@@ -356,7 +386,8 @@ Loads apply the current TTL before the index caps. Timestamps up to one minute
 ahead of the clock are clamped; later rows are excluded and pruned. A retry
 merges with already parked holders and live demand by evidence time; only
 accepted demand entries seed write deduplication
-(`coordinator/registry/cachepersist/restore.go`, `Restore`, `SeedDemandPersisted`).
+(`coordinator/internal/registry/cachepersist/restore.go`, `Restore`, `SeedDemandPersisted`;
+`coordinator/internal/registry/cachedemand/tracker.go`, `Tracker.Restore`).
 
 Restored and disconnected holders park by cache epoch and model. They bind only
 to a live provider with matching epoch, model, artifact, contract, block-hash
@@ -364,19 +395,28 @@ version and ready-boundary mode. Binding rechecks session ownership and
 capabilities in chunks of 1,000 rows; changed identities or abandoned epochs
 settle their durable rows rather than reload forever. A surviving lookup-stage
 measurement keeps its own deadline. TTL expiry leaves durable rows to pruning
-(`bindPendingLocked`, `bindRowsLocked`, `settleParkedChunk` in
-`coordinator/registry/cache_persistence.go`; `bindChunksWhileOwned`,
-`dropParkedWhileStale` in `coordinator/registry/cache_persistence_registry.go`).
+(`CacheMaintenance.BindChunk`, `coordinator/registry/cache_maintenance.go`;
+`BindPendingLocked`, `BindRowsLocked` in
+`coordinator/internal/registry/cachetracker/cache_persistence_kernel.go`;
+`SettleParkedChunk` in `coordinator/internal/registry/cachetracker/lifecycle.go`).
+The registry adapters in `coordinator/registry/cache_persistence.go` retain the
+provider identity; `bindChunksWhileOwned` and `dropParkedWhileStale` in
+`coordinator/registry/cache_persistence_registry.go` revalidate ownership and
+capabilities around each chunk.
 
 A validated miss or shorter hit uses the attempt's epoch and boundary keys to
 invalidate durable evidence even before any live holder is restored
-(`invalidateBoundaryLocked`, `coordinator/registry/cache_receipts_v2_lookup.go`).
+(`InvalidateBoundaryLocked`,
+`coordinator/internal/registry/cachetracker/cache_receipts_v2_lookup_kernel.go`,
+called by `Tracker.ApplyLookupV2` in
+`coordinator/internal/registry/cachetracker/receipt_lookup.go`).
 Overlapping sessions can share one durable row. After losing evidence, only a
 strictly newer live survivor can retain that row. If only older or equal
 evidence survives, the coordinator deletes the durable copy rather than trying
 to replace newer stored evidence with a monotonic upsert of an older record.
 Those older live holders remain usable until expiry or ordinary invalidation
-(`persistRowAfterLossLocked`, `coordinator/registry/cache_persistence.go`).
+(`PersistRowAfterLossLocked`,
+`coordinator/internal/registry/cachetracker/cache_persistence_kernel.go`).
 
 #### Pending mutations and overflow
 
@@ -385,11 +425,12 @@ deletes and demand marks carry revisions and remain pending until database
 acknowledgement. A bounded snapshot copies work without draining it; each
 successful store chunk clears only matching revisions, so an acknowledgement
 cannot erase a newer mutation. Failure simply leaves unwritten changes pending
-(`coordinator/registry/cachepersist/mutations.go`, `snapshot`,
-`acknowledgeHolders`, `acknowledgeDemand`; `coordinator/registry/cachepersist/flush.go`,
+(`coordinator/internal/registry/cachequeue/mutations.go`, `Queue.Snapshot`;
+`coordinator/internal/registry/cachepersist/mutations.go`,
+`acknowledgeHolders`, `acknowledgeDemand`; `coordinator/internal/registry/cachepersist/flush.go`,
 `Flush`). Pending deletes fence older or equal evidence; acknowledged or
 superseded decisions remain fenced for one TTL, subject to the retention cap
-(`coordinator/registry/cachepersist/delete_fences.go`, `Tombstoned`).
+(`coordinator/internal/registry/cachepersist/delete_fences.go`, `Tombstoned`).
 
 Each pending-write kind is capped at four times the holder budget. At the cap,
 new upsert or demand marks may be dropped. Delete overflow instead replaces the
@@ -398,16 +439,16 @@ the latest invalidation timestamp at overflow as a conservative cutoff for the
 rest of the process, including after reset and pruning. Delayed receipt upserts,
 restored rows and parked rows at or before that cutoff cannot repopulate the
 durable copy or bind. A later overflow can only advance the cutoff
-(`coordinator/registry/cachepersist/reset.go`, `requireResetLocked`;
-`coordinator/registry/cachepersist/delete_fences.go`, `tombstonedLocked`).
+(`coordinator/internal/registry/cachepersist/reset.go`, `requireResetLocked`;
+`coordinator/internal/registry/cachepersist/delete_fences.go`, `tombstonedLocked`).
 
 A pending reset blocks snapshots and interrupts the current batch before its
 next store call; an in-flight call may finish, then the reset removes its rows.
 The store writes an in-progress marker, clears both tables, and records the
 complete generation last. The reset clears demand-write deduplication, not
 new pending observations. The next boot completes an interrupted marked reset
-(`resetDurableCopy`, `coordinator/registry/cachepersist/reset.go`;
-`ResetCacheRoutingState`, `coordinator/store/cacheroutingstate_postgres.go`).
+(`resetDurableCopy`, `coordinator/internal/registry/cachepersist/reset.go`;
+`ResetCacheRoutingState`, `coordinator/store/postgres/cacheroutingstate.go`).
 A crash before the marker lands can still leave invalidated rows restorable.
 Serialization is process-local: concurrent coordinator writers can repopulate
 rows during a reset; no cross-process fencing is provided.
@@ -415,7 +456,8 @@ rows during a reset; no cross-process fencing is provided.
 Shutdown closes and joins provider sockets and the periodic persistence loop
 before the final bounded flush. If the socket join times out, a further bounded
 wait and flush retry run; remaining loss is logged. See
-`CloseProviderConnections` in `coordinator/api/provider.go` and
+`drainAndStop` in `coordinator/app/lifecycle.go`,
+`CloseProviderConnections` in `coordinator/api/provider/provider.go` and
 `FlushCacheRoutingState` in `coordinator/registry/cache_persistence_registry.go`.
 The [status reference](../reference/api-contracts.md#exact-cache-status) defines
 the persistence counters; the [rollout runbook](../operations/cache-routing-rollout.md#persistence-during-restarts)
@@ -459,8 +501,11 @@ and time-to-first-token gates remain mandatory
 ([`routing.md`](routing.md#eligibility-gates-and-the-gatereason-vocabulary)).
 `applyCacheRoutingCost` (`coordinator/registry/scheduler.go`) passes the longest verified
 executable endpoint to `applyCacheHintLocked`
-(`coordinator/registry/cache_service_cost.go`). The hint is priced with the
-candidate's own `resolvePrefillTPS` rate, exactly as its baseline prefill cost is.
+(`coordinator/registry/cache_service_cost.go`). `PriceForProviderLocked` rechecks
+the hint's currency and expiry under the provider lock, then
+`cachepolicy.ApplyServiceCost` (`coordinator/internal/registry/cachepolicy/service_cost.go`)
+prices detached values using the same `performance.Rates.Prefill` policy as
+`resolvePrefillTPS` and the candidate's baseline prefill cost.
 The provider chooses its longest locally usable endpoint at lookup; no request
 field steers a shorter checkpoint, even if its recorded stage cost is lower.
 `cache_repeated_prefix_tokens` instead steers which endpoints a historical
@@ -484,8 +529,11 @@ holder availability but never extends the original lookup measurement's expiry.
 The routing query resolves the cost at its captured timestamp, so scan and
 reservation share one observation. Once the measurement expires, a live holder
 uses the latest Ready estimate; a newer hit supplies a new measurement.
-`coordinator/registry/cache_stage_measurement.go` (`cacheStageMeasurement`,
-`preserveStageMeasurementLocked`, `stageCostAt`) owns this provenance. Existing
+`cachetracker.Measurement` and `Holder.StageCostAt`
+(`coordinator/internal/registry/cachetracker/holder.go`) retain this provenance;
+`PreserveStageMeasurementLocked` in
+`coordinator/internal/registry/cachetracker/cache_stage_measurement_kernel.go`
+preserves it on refresh. Existing
 configuration, connection, epoch and holder invalidation also discard it.
 
 Ready still has one stage-cost field for all its anchors. Complete SSD publishes
@@ -507,9 +555,9 @@ restore_penalty = max(0, delta)
 adjusted_cost = baseline_cost + restore_penalty - credit
 ```
 
-`cacheEvidenceWeight` captures the age weight once at query time. This linear
+`cachepolicy.EvidenceWeight` captures the age weight once at query time. This linear
 policy is conservative, not a measured hit probability; expired evidence makes
-no adjustment. `cacheServiceCost` bounds the benefit by the prefill work actually
+no adjustment. `cachepolicy.ApplyServiceCost` bounds the benefit by the prefill work actually
 charged for this request. When restore costs exceed that benefit, the excess
 increases `ThisReqMs`; the provider still attempts its longest eligible SSD
 checkpoint and has no prefill-time comparison that bypasses an expensive hit
@@ -536,13 +584,15 @@ stage cost, before optional clipping and long-prompt weighting. A negative
 saving and its `CacheTier` appear on `RoutingDecision` and in the debug
 `routing_decision` fields `cache_estimated_ttft_saved_ms` and `cache_tier`; the same
 record carries `selection_path`, so a `cache_credit` win is readable from the
-debug log as well as from the profiler.
+debug log as well as from the profiler. `selection.LogDecision` consumes the
+detached `ServiceBreakdown` and projects log fields only after checking that
+debug logging is enabled.
 No-hint requests have an empty tier and zero estimated saving. The existing
 `exact_cache_estimated_ttft_saved_ms` histogram remains **positive benefit
 only**: `PendingRequest.CacheSelectionSelected` and its savings fields are set
 only when the chosen candidate has a positive `CacheDiscountMs`
-(`coordinator/registry/scheduler.go`; `emitExactCacheEstimatedTTFTSaved`,
-`coordinator/api/exact_cache_telemetry.go`). It is not a histogram of signed net
+(`coordinator/registry/scheduler.go`; `EmitExactCacheEstimatedTTFTSaved`,
+`coordinator/api/observation/exact_cache_telemetry.go`). It is not a histogram of signed net
 performance. Neither observation is measured request latency.
 
 SSD requires a positive external stage cost; memory can report zero external
@@ -563,13 +613,16 @@ proof, capacity and the original remaining deadline. Cache isolation and
 receipt-confirmed billing remain unchanged.
 
 Cache-participating attempts (`PendingRequest.CacheRoutingParticipates`) are
-excluded from TTFT calibration (`observeTTFTCalibration`,
-`coordinator/api/settlement.go`) and from the first-content reputation sample
-(`coordinator/api/dispatch.go`). Terminal cache metrics use bounded categorical
+excluded from TTFT calibration (`Reporter.ObserveTTFTCalibration`,
+`coordinator/internal/inference/metrics/calibration.go`, called by
+`observeTTFTCalibration` in `coordinator/api/inference/settlement.go`) and from
+the first-content reputation sample (`ShouldRecordReputationLatency`,
+`coordinator/internal/inference/profile/reputation_latency.go`, called from
+`coordinator/api/inference/dispatch.go`). Terminal cache metrics use bounded categorical
 tags only.
 
-`GET /v1/cache/status` (`handleExactCacheStatus`,
-`coordinator/api/exact_cache_status.go`) exposes only aggregate rollout state:
+`GET /v1/cache/status` (`HandleExactCacheStatus`,
+`coordinator/api/inference/exact_cache_status.go`) exposes only aggregate rollout state:
 activation and lifecycle counters (including `fences_applied`,
 `fences_expired` and `fenced_capabilities`); sidecar enabled/running/ready, child
 generation, categorical restart reason, failure streak, timeouts/overloads/RSS,
@@ -606,10 +659,11 @@ owner-local/off-catalog models are valid. Unknown future enum values, invalid
 state/reason tuples, unadvertised status models, unknown donation outcomes, and
 invalid counts drop only the affected entry while known entries still
 aggregate. To keep processing bounded and ambiguity-free, an array beyond its
-fixed cap (`maxPrefixCacheStatuses = 16` statuses or
-`maxPrefixCacheDonationOutcomeEntries = 32` raw outcome entries), duplicate
+fixed cap (`MaxStatuses = 16` statuses or
+`MaxDonationOutcomeEntries = 32` raw outcome entries in
+`coordinator/internal/registry/cachepolicy/eligibility.go`), duplicate
 model/outcome keys, or a blank/non-canonical status model ID drops that whole
-optional snapshot (`sanitizePrefixCacheStatuses`). Donation aggregation has
+optional snapshot (`SanitizeStatuses`, `SanitizeDonationOutcomes`). Donation aggregation has
 exactly 23 known buckets (`PrefixCacheDonationOutcomes`, including
 `skipped_novel`); the raw cap reserves
 9 entries for future outcomes, which are filtered individually.
@@ -633,8 +687,8 @@ The response never includes model IDs, provider IDs, accounts, scopes, paths,
 hashes, epochs, prompts, token IDs, request IDs, or cache keys.
 
 The response and gauge projection are implemented in
-`coordinator/api/exact_cache_status.go` and
-`coordinator/api/exact_cache_metrics.go`; bounded artifact aggregation lives in
+`coordinator/api/inference/exact_cache_status.go` and
+`coordinator/api/inference/exact_cache_metrics.go`; bounded artifact aggregation lives in
 `coordinator/promptcontract/provisioner.go` (`Counts`), protocol/eligibility
 aggregation in `coordinator/registry/cache_status.go`
 (`PrefixCacheProtocolStatus`), and holder/attempt lifecycle counts in
@@ -645,12 +699,14 @@ For each selected hint, terminal correlation stays on the in-memory
 `selected`, `lookup_outcome`, `cache_read`, `tier`, and `result`. This measures
 selected-holder precision and actual cached-read success without using an
 identifier as a metric tag (`PendingRequest` in
-`coordinator/registry/pending_request.go`; `cacheSelectionTerminalTags` in
-`coordinator/api/provider.go`).
+`coordinator/registry/pending_request.go`; `cachemetrics.TerminalTags` in
+`coordinator/internal/observation/cachemetrics/cache_terminal_policy.go`, called by
+`EmitCacheSelectionTerminal` in `coordinator/api/observation/cache_terminal.go`).
 
 ### Observed demand and soft prefix affinity
 
-After a successful exact plan, `cache_demand.go` remembers keyed,
+After a successful exact plan, `coordinator/registry/cache_demand.go` connects
+the plan to `cachedemand.Tracker`, which remembers keyed,
 tenant/build/contract-scoped demand at the boundaries a plan observes
 (`cacheDemandAnchors`): its deepest 64 boundaries on the 1,024-token stride
 (`cacheDemandStrideTokens`, `cacheDemandMaxStrideBoundaries`), its final
@@ -688,8 +744,8 @@ per entry. It is separate from the 250,000-entry holder cap
 `exact_cache.demand_entries`, `exact_cache.demand_cap_evictions`); cap evictions
 count entries removed inside their TTL, and a growing count means repeated
 prefixes are being reported as novel. TTL expiry is
-bounded to `cacheDemandMaxExpiryPerObserve = 1_024` head entries per `observe`
-(`coordinator/registry/cache_demand.go`), so a stale index cannot stall
+bounded to `MaxExpiryPerObserve = 1_024` head entries per observation
+(`cachedemand.Tracker.Observe`, `coordinator/internal/registry/cachedemand/tracker.go`), so a stale index cannot stall
 planning; a still-present stale entry is validated against its own timestamp
 and cannot match. It stores
 no prompt text or token IDs and grants no cache credit. `RepeatedPrefixTokens`
@@ -751,7 +807,7 @@ terminals whose latest reservation scan used the soft affinity tie breaker.
 Combine these with existing receipt rejection, donation outcome, hit/miss,
 saved-token, and measured TTFT data. No scope, prefix digest, request identifier,
 or provider identifier is exported by these new metrics
-(`coordinator/api/cache_opportunity_telemetry.go`).
+(`coordinator/api/observation/cache_opportunity_telemetry.go`).
 
 ### Configuration and rollback
 
@@ -827,10 +883,10 @@ back are operator procedures, kept in the runbook
    `coordinator/registry/cache_persistence_registry.go`).
 2. **Cache routing never rejects, delays or otherwise changes ordinary
    inference.** The activation cohort and the plan-QPS bucket only decline
-   participation (`cacheActivationGate`,
-   `coordinator/registry/cache_activation.go`); a sidecar failure or a media
+   participation (`cacheactivation.Gate`,
+   `coordinator/internal/registry/cacheactivation/gate.go`); a sidecar failure or a media
    request yields a non-participating plan and the request still dispatches
-   (`planCacheRoute`, `coordinator/api/prompt_artifacts.go`).
+   (`planPromptRoute`, `coordinator/api/inference/prompt_work.go`).
 3. **Only exact text-token prefix proofs from protocol-v2 providers affect
    selection**; V1 receipt frames stay decodable but cannot mutate routing
    evidence (`coordinator/registry/cache_receipts.go`).
@@ -843,7 +899,7 @@ back are operator procedures, kept in the runbook
    optional numeric limits may reduce that credit, but no credit removes load,
    queue, decode or other work. Excess restore cost increases `ThisReqMs`,
    regardless of benefit caps, and endpoints never stack
-   (`cacheServiceCost`, `coordinator/registry/cache_service_cost.go`).
+   (`cachepolicy.ApplyServiceCost`, `coordinator/internal/registry/cachepolicy/service_cost.go`).
 6. **A proof mismatch fences that exact capability for a bounded, escalating
    window** (60 s, doubling per consecutive mismatch, capped at 10 min);
    participation resumes when the window lifts or the capability changes, and
@@ -857,14 +913,15 @@ back are operator procedures, kept in the runbook
    demand identifiers, the HMAC outputs under those keys, which name a
    boundary only to a coordinator holding the same master key: a holder row
    carries that identifier and the token count, never the provider-confirmed
-   chain hash (`holderRecordFor`), and a restored holder matches its plan
+   chain hash (`cachetracker.HolderRecordFor`, `coordinator/internal/registry/cachetracker/cache_persistence_kernel.go`), and a restored holder matches its plan
    boundary through the identifier (`anchorMatches`); `GET /v1/cache/status` and the
    terminal tags carry bounded categorical values only
-   (`handleExactCacheStatus`, `coordinator/api/exact_cache_status.go`;
-   `cacheSelectionTerminalTags`, `coordinator/api/provider.go`).
+   (`HandleExactCacheStatus`, `coordinator/api/inference/exact_cache_status.go`;
+   `cachemetrics.TerminalTags`, `coordinator/internal/observation/cachemetrics/cache_terminal_policy.go`).
 8. **Cache-participating attempts never train TTFT calibration or
-   first-content reputation** (`observeTTFTCalibration`,
-   `coordinator/api/settlement.go`; `coordinator/api/dispatch.go`).
+   first-content reputation** (`Reporter.ObserveTTFTCalibration`,
+   `coordinator/internal/inference/metrics/calibration.go`;
+   `ShouldRecordReputationLatency`, `coordinator/internal/inference/profile/reputation_latency.go`).
 9. **Mode `on` without a valid master key does not start**
    (`CacheRoutingConfig.Check`, `coordinator/registry/config.go`).
 
@@ -878,7 +935,7 @@ back are operator procedures, kept in the runbook
 | A capability stops participating after a hit | Prompt-proof mismatch fenced that exact capability for a bounded, escalating window (60 s, doubling per consecutive mismatch, capped at 10 min) | Request continues without preference; participation resumes when the window lifts or the capability changes (`coordinator/registry/cache_proof_fence.go`) |
 | One provider loses all holders for a model | The model root was rebuilt at load (binding drift) and its cache epoch changed, the model was unloaded (`capability_change`), or the provider predates the per-file eviction change and still rotates on eviction | Invalidates that provider/model evidence; other machines holding the same prefix remain eligible |
 | Holders vanish for one provider | Disconnect or live-connection replacement, capability/contract/aggregate-hash change, verified miss or corruption, a hit below a recorded boundary, TTL, cap eviction | Removal counted under one of the eight `CacheRoutingLifecycleStatus` reasons (`coordinator/registry/cache_routing.go`) |
-| `/v1/cache/status` shows a provider's models as `unreported` | Status array beyond `maxPrefixCacheStatuses`, duplicate keys, a blank model ID, or a status contradicting the v2 capability | `sanitizePrefixCacheStatuses` drops the optional snapshot; routing capability is never weakened (`coordinator/registry/cache_snapshot.go`) |
+| `/v1/cache/status` shows a provider's models as `unreported` | Status array beyond `MaxStatuses`, duplicate keys, a blank model ID, or a status contradicting the v2 capability | `cachepolicy.SanitizeStatuses` and `ReconcileStatuses` sanitize optional status (`coordinator/internal/registry/cachepolicy/eligibility.go`); `CacheSnapshotUpdater.Apply` publishes it without weakening routing capability (`coordinator/registry/cache_snapshot.go`) |
 | A cached provider loses to a cold one | Residual prefill, full staging, age, queue or hardware costs outweigh its benefit; or an explicit limit clips it | First-content band and whole-Mac service work decide; there is no hard affinity |
 
 Receipt rejection telemetry distinguishes invalid shape, missing/expired attempt,
@@ -895,32 +952,37 @@ terminals separate. `selected=true` is an expected routing benefit, not proof
 of reuse; the terminal must also report `result=hit`. Missing/invalid usage is
 not a miss, and cache usage is not a consumer-success verdict. See the
 [metric inventory](../reference/telemetry-inventory.md#cache-results-by-model-internal)
-and `coordinator/api/cache_model_telemetry.go`.
+and `coordinator/api/observation/cache_model_telemetry.go`.
 
 ## Code map
 
 | Concern | File / symbol |
 |---|---|
-| Mode, TTL, holder cap, discount bounds, removal reasons | `coordinator/registry/cache_routing.go` — `CacheRoutingOff`, `CacheRoutingOn`, `newCacheRoutingTracker`, `CacheRoutingLifecycleStatus`; `coordinator/registry/cache_sweep.go` — bounded expiry; `coordinator/registry/cache_provider_index.go` — per-provider holder and attempt index; `coordinator/registry/cache_routing_sizing.go` — `warnCacheRoutingTTL` |
-| Persistence integration | `coordinator/registry/cache_persistence.go` (`persistRowAfterLossLocked`, `bindRowsLocked`); `coordinator/registry/cache_persistence_registry.go` (`StartCacheRoutingPersistence`, `FlushCacheRoutingState`); `coordinator/registry/cache_receipts_v2_lookup.go` (`invalidateBoundaryLocked`) |
-| Persister state and mutation intake | `coordinator/registry/cachepersist/persister.go` (`Persister`, `New`); `coordinator/registry/cachepersist/marks.go` (`MarkHolderUpsert`, `MarkHolderDelete`, `MarkDemand`) |
-| Snapshot, acknowledgement and serialized writes | `coordinator/registry/cachepersist/mutations.go` (`snapshot`, `acknowledgeHolders`, `acknowledgeDemand`); `coordinator/registry/cachepersist/flush.go` (`Flush`, `FlushAll`) |
-| Overflow reset and restore | `coordinator/registry/cachepersist/reset.go` (`requireResetLocked`, `resetDurableCopy`); `coordinator/registry/cachepersist/restore.go` (`Restore`) |
-| Parked rows, fences and bounded maintenance | `coordinator/registry/cachepersist/pending.go` (`Park`, `Take`); `coordinator/registry/cachepersist/delete_fences.go` (`Tombstoned`); `coordinator/registry/cachepersist/time_heap.go` (`keyedTimeHeap`); `coordinator/registry/cachepersist/maintenance.go` (`Prune`) |
-| Persistence counters | `coordinator/registry/cachepersist/status.go` (`Status`) |
+| Mode, TTL, holder cap, discount bounds, removal reasons | `coordinator/registry/cache_routing.go` — `CacheRoutingOff`, `CacheRoutingOn`, `CacheRoutingLifecycleStatus`; `coordinator/registry/cache_routing_sizing.go` — `warnCacheRoutingTTL` |
+| Evidence ownership and maintenance | `coordinator/registry/cache_tracker_controller.go` (`newCacheRoutingTracker`, `cacheRoutingTracker`); `coordinator/registry/cache_maintenance.go` (`CacheMaintenance`, `BindChunk`, `StateCounts`); `coordinator/internal/registry/cachetracker/tracker.go` (`Tracker`, `ContinueSweep`); `coordinator/internal/registry/cachetracker/lifecycle.go` (`InvalidateProviderEvidence`, `InvalidateProviderModels`) |
+| Holder/attempt indexes and expiry | `coordinator/internal/registry/cacheindex/records.go` (`Holders`, `Records`), `coordinator/internal/registry/cacheindex/order.go` (`Order`), `coordinator/internal/registry/cacheindex/provider.go` (`ProviderIndex`); `coordinator/internal/registry/cachetracker/cache_sweep_kernel.go` (`SweepIfDueLocked`, `SweepLocked`); registry adapter in `coordinator/registry/cache_sweep.go` |
+| Persistence lifecycle and restoration | `coordinator/registry/cache_persistence_registry.go` (`StartCacheRoutingPersistence`, `restoreCacheRoutingState`, `runCacheRoutingPersistence`, `FlushCacheRoutingState`); `coordinator/registry/cache_restoration.go` (`CacheRestoration.Run`) |
+| Live binding and durable evidence loss | `coordinator/registry/cache_persistence_registry.go` (`bindChunksWhileOwned`, `dropParkedWhileStale`); adapters in `coordinator/registry/cache_persistence.go`; `coordinator/internal/registry/cachetracker/cache_persistence_kernel.go` (`BindPendingLocked`, `BindRowsLocked`, `PersistRowAfterLossLocked`); `coordinator/internal/registry/cachetracker/lifecycle.go` (`SettleParkedChunk`); `coordinator/internal/registry/cachetracker/cache_receipts_v2_lookup_kernel.go` (`InvalidateBoundaryLocked`) |
+| Persister construction and mutation intake | `coordinator/registry/cachepersist/persister.go` (`New`, `Persister` alias); `coordinator/internal/registry/cachepersist/persister.go` (`Persister`); `coordinator/internal/registry/cachepersist/marks.go` (`MarkHolderUpsert`, `MarkHolderDelete`, `MarkDemand`); `coordinator/internal/registry/cachequeue/queue.go` (`Queue`) |
+| Snapshot, acknowledgement and serialized writes | `coordinator/internal/registry/cachequeue/mutations.go` (`Snapshot`); `coordinator/internal/registry/cachepersist/mutations.go` (`acknowledgeHolders`, `acknowledgeDemand`); `coordinator/internal/registry/cachepersist/flush.go` (`Flush`, `FlushAll`) |
+| Overflow reset and restore | `coordinator/internal/registry/cachepersist/reset.go` (`requireResetLocked`, `resetDurableCopy`); `coordinator/internal/registry/cachepersist/restore.go` (`Restore`) |
+| Parked rows, fences and durable pruning | `coordinator/internal/registry/cachepersist/pending.go` (`Park`, `Take`); `coordinator/internal/registry/cachepersist/delete_fences.go` (`Tombstoned`); `coordinator/internal/registry/cachequeue/time_order.go` (`TimeOrder`); `coordinator/internal/registry/cachepersist/maintenance.go` (`Prune`) |
+| Persistence counters | `coordinator/internal/registry/cachepersist/status.go` (`Status`) |
 | Configuration and validation | `coordinator/registry/config.go` — `CacheRoutingConfig`, `Check`; `coordinator/registry/cache_routing.go` — `ConfigureCacheRouting` |
-| Optional artifact membership | `coordinator/registry/cache_artifact_allowlist.go` — exact tuple parsing, validation and immutable membership; unset unrestricted, `[]` denied |
-| Activation cohort and plan QPS | `coordinator/registry/cache_activation.go` — `cacheActivationGate`, `CacheRoutingActivationStatus` |
+| Optional artifact membership | `coordinator/internal/registry/cachepolicy/artifacts.go` (`ArtifactAllowlist.Allows`, exact tuple parsing, validation and immutable membership); aliases and construction in `coordinator/registry/cache_artifact_allowlist.go`; unset unrestricted, `[]` denied |
+| Activation cohort and plan QPS | `coordinator/internal/registry/cacheactivation/gate.go` (`Gate`, `Allow`); `coordinator/registry/cache_activation_view.go` (`CacheRoutingActivationStatus`) |
 | Resident proof/publication and unique receipt correlation | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/ResidentPrefixCacheEvidence.swift` — `ResidentPrefixCacheEvidence`, `ResidentPrefixCachePromptProof`; `PrefixCacheEvidenceSequencer.swift` |
-| Per-tier holders and bounded lifetime | `coordinator/registry/cache_tiers.go` — `cacheTierBoundaryKey`, `receiptTTL`; `cache_routing_hints.go` — `hints` |
+| Per-tier holders, lifetime and lookup | `coordinator/registry/cache_tiers.go` (`cacheTierBoundaryKey`, `receiptTTL`); `coordinator/registry/cache_routing_hints.go` (`CacheHintQuery.Query`, `MatchBoundaries`, `CacheHintsForMatches`); `coordinator/internal/registry/cachetracker/matching.go` (`Tracker.MatchBoundaries`) |
+| Observed demand | `coordinator/registry/cache_demand.go` (`observeCacheDemand`); `coordinator/internal/registry/cachedemand/tracker.go` (`Tracker.Observe`, `Tracker.Restore`); `coordinator/internal/registry/cachedemand/anchors.go` (`Anchors`, `AffinityRung`); `coordinator/internal/registry/cachehistory/index.go` (`Index`) |
 | Route keys and scopes | `coordinator/registry/cache_route_keys.go` |
-| Receipts, v2 proof acceptance, legacy cache-bust key | `coordinator/registry/cache_receipts.go`, `coordinator/registry/cache_receipts_v2.go` — `ApplyPrefixCacheLookupV2`, `ApplyPrefixCacheReadyV2`, `disablePrefixCacheV2Model` |
-| Bounded proof fence and plan-scoped invalidation | `coordinator/registry/cache_proof_fence.go` — `capabilityRejected`, `rejectCapability`, `invalidateProviderPlan`; `coordinator/registry/cache_model_changes.go` — `reconcileFences` |
-| Status vocabularies and sanitization | `coordinator/registry/cache_eligibility.go`, `coordinator/registry/cache_status.go`, `coordinator/registry/cache_snapshot.go` |
-| Discount in the cost model and near-tie credit preference | `coordinator/registry/scheduler.go` — `applyCacheRoutingCost`; `coordinator/registry/candidate_selection.go` — `selectRoutingCandidate`, `selectFirstContentCandidate`; `coordinator/registry/gate_reason.go` — `SelectionCacheCredit` |
-| Plan construction and sealed body | `coordinator/api/prompt_artifacts.go` — `planCacheRoute`; `coordinator/api/consumer.go` — `bodyForCacheAttempt` |
-| Status endpoint and gauges | `coordinator/api/exact_cache_status.go`, `coordinator/api/exact_cache_metrics.go` |
-| Terminal tags, calibration/reputation exclusion | `coordinator/api/provider.go` — `cacheSelectionTerminalTags`; `coordinator/api/settlement.go` — `observeTTFTCalibration`; `coordinator/api/dispatch.go` |
+| Receipts, v2 proof acceptance, legacy cache-bust key | `coordinator/registry/cache_receipts.go` (`PrepareCacheAttempt`); `coordinator/registry/cache_receipts_v2.go` (`ApplyPrefixCacheLookupV2`, `ApplyPrefixCacheReadyV2`); `coordinator/registry/cache_quarantine.go` (`CacheQuarantine.Apply`, `CacheQuarantineCommit.Apply`); `coordinator/internal/registry/cachetracker/receipt_lookup.go` (`ApplyLookupV2`), `coordinator/internal/registry/cachetracker/receipt_ready.go` (`ApplyReadyV2`) |
+| Bounded proof fence and plan-scoped invalidation | `coordinator/registry/cache_proof_fence.go` (`capabilityRejected`, `rejectCapability`, `invalidateProviderPlan`); `coordinator/registry/cache_model_changes.go` (`reconcileFences`); `coordinator/internal/registry/cachetracker/proofs.go` (`Proofs`); `coordinator/internal/registry/cachetracker/lifecycle.go` (`InvalidateProviderPlan`) |
+| Status vocabularies and sanitization | `coordinator/internal/registry/cachepolicy/eligibility.go` (`SanitizeStatuses`, `ReconcileStatuses`, `SanitizeDonationOutcomes`); adapters in `coordinator/registry/cache_eligibility.go`; `coordinator/registry/cache_status.go` (`PrefixCacheProtocolStatus`) |
+| Capability publication and deferred binding | `coordinator/registry/cache_snapshot.go` (`UpdatePrefixCacheSnapshot`, `CacheSnapshotUpdater.Apply`); `coordinator/registry/cache_snapshot_result.go` (`CacheSnapshotResult`, `SettleDrop`, `BindRemaining`); heartbeat caller in `coordinator/api/provider/session.go` |
+| Discount in the cost model and near-tie credit preference | `coordinator/registry/scheduler.go` (`applyCacheRoutingCost`); `coordinator/registry/cache_service_cost.go` (`PriceForProviderLocked`); `coordinator/internal/registry/cachepolicy/service_cost.go` (`ApplyServiceCost`); `coordinator/registry/candidate_selection.go` (`selectRoutingCandidate`); `coordinator/registry/first_content_selection.go` (`selectFirstContentCandidate`); `coordinator/registry/gate_reason.go` (`SelectionCacheCredit`) |
+| Plan construction and sealed body | `coordinator/api/inference/prompt_work.go` (`planPromptRoute`); `coordinator/internal/inference/routeplan/cache_plan_memo.go` (`Memo.ForBody`, `Memo.ForModel`); `coordinator/internal/inference/providerwire/body.go` (`BodyForCacheAttempt`) |
+| Status endpoint and gauges | `coordinator/api/inference/exact_cache_status.go`, `coordinator/api/inference/exact_cache_metrics.go` |
+| Terminal tags, calibration/reputation exclusion | `coordinator/internal/observation/cachemetrics/cache_terminal_policy.go` (`TerminalTags`), emitted by `coordinator/api/observation/cache_terminal.go` (`EmitCacheSelectionTerminal`); `coordinator/internal/inference/metrics/calibration.go` (`Reporter.ObserveTTFTCalibration`); `coordinator/internal/inference/profile/reputation_latency.go` (`ShouldRecordReputationLatency`) |
 | Sidecar | `coordinator/promptcontract/` — `provisioner.go` (`Counts`) |
 | Provider-side cache | `provider-swift/Sources/ProviderCore/KVCacheSSD/`, `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` |
 

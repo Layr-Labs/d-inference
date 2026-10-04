@@ -118,12 +118,13 @@ fn shared_tokenizer_never_bypasses_each_contract_artifact_integrity() {
 }
 
 #[test]
-fn normalization_v7_refuses_v6_and_mixed_metadata_even_with_a_warm_tokenizer() {
+fn normalization_v8_refuses_v6_v7_and_mixed_metadata_even_with_a_warm_tokenizer() {
     use crate::contract::{ContractVersions, PromptArtifact};
     // Independently pinned by Node SHA-256 with exact UTF-8 byte ordering.
     // The same complete tiny payload contract is used by Go's causal test.
     const OLD_ID: &str = "35f35167c8444a2155269a8873c23e69980b334590762b31fb9bfe97250fa109";
-    const NEW_ID: &str = "1916ae8b83dd77d3c6da1e0860672d79a9c146e2e661ae8e12b3182fb0b57132";
+    const V7_ID: &str = "1916ae8b83dd77d3c6da1e0860672d79a9c146e2e661ae8e12b3182fb0b57132";
+    const NEW_ID: &str = "6de1b2c93027ed37e6cfbc4112250fbadca0bd90b8d027dc200a710a462b07c7";
     let files: [(&str, &str, &[u8], &str); 4] = [
         (
             "config.json",
@@ -168,6 +169,7 @@ fn normalization_v7_refuses_v6_and_mixed_metadata_even_with_a_warm_tokenizer() {
     );
     let old_version = ContractVersions {
         normalization: "darkbloom-request-normalization-v6".into(),
+        renderer: "swift-jinja-request-date-compatible-v3".into(),
         ..ContractVersions::default()
     };
     assert!(matches!(
@@ -175,12 +177,23 @@ fn normalization_v7_refuses_v6_and_mixed_metadata_even_with_a_warm_tokenizer() {
         Err(crate::contract::ContractError::UnsupportedVersions)
     ));
 
+    let v7_version = ContractVersions {
+        normalization: "darkbloom-request-normalization-v7".into(),
+        ..old_version.clone()
+    };
     for (name, id, versions) in [
         ("coherent-v6", OLD_ID, old_version.clone()),
-        ("v7-directory-v6-semantics", NEW_ID, old_version),
+        ("v8-directory-v6-semantics", NEW_ID, old_version),
         (
-            "v6-directory-relabeled-v7",
+            "v6-directory-relabeled-v8",
             OLD_ID,
+            ContractVersions::default(),
+        ),
+        ("coherent-v7", V7_ID, v7_version.clone()),
+        ("v8-directory-v7-semantics", NEW_ID, v7_version),
+        (
+            "v7-directory-relabeled-v8",
+            V7_ID,
             ContractVersions::default(),
         ),
     ] {
@@ -213,7 +226,7 @@ fn normalization_v7_refuses_v6_and_mixed_metadata_even_with_a_warm_tokenizer() {
         );
         assert_eq!(
             current.metadata.versions.normalization,
-            "darkbloom-request-normalization-v7"
+            "darkbloom-request-normalization-v8"
         );
 
         // Mutate only semantic-version / identity dimensions in a test-owned

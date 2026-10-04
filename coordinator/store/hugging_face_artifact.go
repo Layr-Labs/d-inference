@@ -15,6 +15,7 @@ type HuggingFaceArtifact struct {
 }
 
 var hfRepositoryComponent = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*$`)
+
 var hfCommitRevision = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 func (a *HuggingFaceArtifact) Validate() error {
@@ -46,7 +47,7 @@ func (a *HuggingFaceArtifact) Validate() error {
 	return nil
 }
 
-func cloneHuggingFaceArtifact(a *HuggingFaceArtifact) *HuggingFaceArtifact {
+func CloneHuggingFaceArtifact(a *HuggingFaceArtifact) *HuggingFaceArtifact {
 	if a == nil {
 		return nil
 	}

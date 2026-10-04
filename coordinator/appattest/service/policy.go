@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/appattest"
+	eligibility "github.com/eigeninference/d-inference/coordinator/internal/appattest/eligibility"
+	recovery "github.com/eigeninference/d-inference/coordinator/internal/appattest/recovery"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -15,7 +17,7 @@ func (x *Session) observeBuildPolicy(status *protocol.AppAttestStatus, metadata 
 	binding := appattest.AuthorizationBinding{Account: x.account, Machine: x.machineID(), Credential: x.key.KeyID, Connection: x.id, Endpoint: x.publicKey, AppID: x.key.AppID, Environment: x.key.Environment}
 	evidence := appattest.AuthorizationEvidence{Binding: binding, Expected: binding, ProtocolVersion: x.protocolVersion,
 		CredentialVerified: true, EndpointBound: true, AssertionAt: x.assertionAt,
-		ArchiveComplete:   x.proofArchiveComplete(),
+		ArchiveComplete:   x.integrity.Complete(),
 		RenewalConfigured: x.s.config.ReceiptKeyPath != "" && x.s.config.ReceiptKeyID != ""}
 	evidence.Expected.AppID, evidence.Expected.Environment = x.s.config.AppID, x.s.config.Environment
 	if metadata != nil {
@@ -25,7 +27,7 @@ func (x *Session) observeBuildPolicy(status *protocol.AppAttestStatus, metadata 
 	snapshot := x.s.currentReleasePolicySnapshot()
 	evidence.CatalogKnown = snapshot != nil && snapshot.Known
 	if status != nil {
-		evidence.HardwareKnown, evidence.HardwareMatched = appAttestHardwareComparison(status, x.hardware)
+		evidence.HardwareKnown, evidence.HardwareMatched = eligibility.HardwareComparison(status, x.hardware)
 		evidence.VerificationKeyKnown = x.attestationKey != "" && status.AttestationPublicKey != ""
 		evidence.VerificationKeyMatched = evidence.VerificationKeyKnown && status.AttestationPublicKey == x.attestationKey
 		evidence.ReportedVersion = status.AppVersion
@@ -35,19 +37,26 @@ func (x *Session) observeBuildPolicy(status *protocol.AppAttestStatus, metadata 
 		x.s.applyBuildQualification(&evidence, status, snapshot)
 		evidence.BuildMatched = appAttestReleaseApproved(snapshot, x.provider, status)
 	}
-	if st, ok := store.As[store.AppAttestReadinessStore](x.s.store); ok {
+	st, _ := store.As[store.AppAttestReadinessStore](x.s.store)
+	var state store.AppAttestReadiness
+	known := false
+	if x.inventory != nil {
+		state, known = x.inventory.ObserveAssertion(context.Background(), st, x.key.KeyID, status)
+	} else if st != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		state, err := st.GetAppAttestReadiness(ctx, x.key.KeyID)
+		var err error
+		state, err = st.GetAppAttestReadiness(ctx, x.key.KeyID)
 		cancel()
-		if err == nil {
-			evidence.RevocationKnown, evidence.Revoked = true, state.Revoked
-			if r := state.Receipt; r != nil {
-				var receipt appattest.Receipt
-				if json.Unmarshal(r.Details, &receipt) == nil {
-					evidence.ReceiptVerified = r.Outcome == "verified"
-					evidence.RiskMetric = receipt.RiskMetric
-					evidence.ReceiptExpiresAt, evidence.ReceiptRenewAt = r.ExpiresAt, r.NextAt
-				}
+		known = err == nil
+	}
+	if known {
+		evidence.RevocationKnown, evidence.Revoked = true, state.Revoked
+		if r := state.Receipt; r != nil {
+			var receipt appattest.Receipt
+			if json.Unmarshal(r.Details, &receipt) == nil {
+				evidence.ReceiptVerified = r.Outcome == "verified"
+				evidence.RiskMetric = receipt.RiskMetric
+				evidence.ReceiptExpiresAt, evidence.ReceiptRenewAt = r.ExpiresAt, r.NextAt
 			}
 		}
 	}
@@ -55,13 +64,6 @@ func (x *Session) observeBuildPolicy(status *protocol.AppAttestStatus, metadata 
 	// lookup failure or revocation cannot erase that observation, but only a
 	// known non-revoked credential may attach an identity alias.
 	if x.inventory != nil && status != nil {
-		x.inventory.mu.Lock()
-		x.inventory.observation.VerifiedAppAttestKey = ""
-		if evidence.RevocationKnown && !evidence.Revoked {
-			x.inventory.observation.VerifiedAppAttestKey = x.key.KeyID
-		}
-		x.inventory.mu.Unlock()
-		x.inventory.recordStatus(status)
 		evidence.Binding.Machine = x.machineID()
 		evidence.Expected.Machine = x.machineID()
 	}
@@ -83,15 +85,8 @@ func (x *Session) observeBuildPolicy(status *protocol.AppAttestStatus, metadata 
 // A failed exchange supersedes the prior prospective verdict immediately.
 // The provider's legacy trust and connection are never changed here.
 func (x *Session) observeFailedPolicy(reason string) {
-	if a := x.s.authorizer; a != nil && confirmedAppAttestViolation(reason) {
-		a.forget(x.provider)
-		x.s.registry.MarkUntrusted(x.provider.ID)
-		x.s.sendAppAttestAuthorizationStatus(x.provider)
-	}
-	outcome := "ineligible"
-	if retryableAppAttestOutcome(reason) || reason == "unsupported" || reason == "not_configured" || reason == "" {
-		outcome = "unknown"
-	}
+	x.s.authorizer.RejectProof(x.provider, reason)
+	outcome := recovery.FailurePolicyOutcome(reason)
 	keyID := ""
 	if x.key != nil {
 		keyID = x.key.KeyID
@@ -100,15 +95,4 @@ func (x *Session) observeFailedPolicy(reason string) {
 		"reasons": []string{"exchange_" + reason}, "valid_until": time.Time{}, "credential_id": keyID, "assertion_at": x.assertionAt}
 	x.observe("prospective_policy", outcome, nil)
 	x.policyFields = nil
-}
-
-// Infrastructure/key-recovery/format-compatibility failures are not a reason to
-// ban an independently verified legacy path. Cryptographic substitution and
-// observed unsafe Mac policy are hard evidence and fence both paths.
-func confirmedAppAttestViolation(reason string) bool {
-	switch reason {
-	case "signature", "nonce", "mac_acl", "app_identity", "credential_key":
-		return true
-	}
-	return false
 }

@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-03
 
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the
@@ -41,6 +41,21 @@ Coordinator CI builds the adversarial-number test once without instrumentation
 for its enforced performance budget, then builds the full suite with race
 detection and atomic coverage. See [numeric parsing tests](test.md#adversarial-numeric-parsing)
 for the separate commands and their timing limits.
+
+The coordinator executable still builds from `coordinator/cmd/coordinator`.
+Its command entrypoint validates configuration and delegates service assembly
+to `coordinator/app`. Memory and PostgreSQL constructors now live in
+`coordinator/store/memory` and `coordinator/store/postgres`; root `store` keeps
+contracts and the read-through decorator. The application selects and wraps the
+backend before binding the registry and HTTP domain owners. See the
+[owner map](navigation.md) before changing an import or moving a fixture.
+
+Coordinator Go tests live in `coordinator/tests/`, mirroring the production
+owners. `go build ./coordinator/...` builds production code and ordinary
+`go test ./coordinator/...` discovers the mirrored suites. `make coordinator-test`
+adds checked shard discovery; coverage explicitly instruments the imported
+production packages, excluding all test helpers. See the
+[test-boundary map](test.md#2-coordinator-go) for focused commands.
 
 Registry-ID support changes Swift provider policy and Rust prompt normalization
 together. Build the paired coordinator/sidecar/provider candidate; the v6
@@ -438,7 +453,7 @@ make coordinator-build-linux      # GOOS=linux GOARCH=amd64 CGO_ENABLED=0 → co
 The host build writes `./coordinator/coordinator`. Version identity is injected
 only by the container build (`-ldflags -X …api.BuildVersion/BuildCommit/BuildDate`
 in `coordinator/Dockerfile`); a local `go build` reports `dev`/`unknown` on
-`GET /health` (`coordinator/api/consumer.go`, `handleHealth`).
+`GET /health` (`coordinator/api/inference/consumer.go`, `HandleHealth`).
 
 ### 4. Prompt-contract sidecar (Rust)
 
@@ -825,7 +840,7 @@ components that changed.
 | [`.githooks/pre-commit`](../../.githooks/pre-commit) | staged `coordinator/**.go` | `gofmt -l` on the staged files (fix: `gofmt -w <file>`) |
 | | staged `console-ui/**.ts{,x}` | `cd console-ui && npx eslint src/` (fix: `npx eslint --fix src/`) |
 | | Swift | skipped — no enforced formatter |
-| [`.githooks/pre-push`](../../.githooks/pre-push) | any `coordinator/` change in the pushed range | `gofmt -l .` over `coordinator/`, then `go test $(go list ./... \| grep -v /internal/api)` from `coordinator/` (the slow WebSocket integration tests run in CI only) |
+| [`.githooks/pre-push`](../../.githooks/pre-push) | any `coordinator/` change in the pushed range | `gofmt -l .` over `coordinator/`, then `go test ./coordinator/...` from the repository root: ordinary discovery includes every mirrored package and production package, with no package exclusion. Use `make coordinator-test` for runner guards, isolated shards and production coverage |
 | | any `console-ui/` change | `npx eslint --quiet src/` and `npm run build` |
 
 CI runs the fuller set (`gofmt`, `golangci-lint`, `-race` tests, Swift, Rust,
@@ -856,7 +871,7 @@ ls console-ui/.next
 
 Use the macOS 27 SDK for a candidate that needs Apple code-measurement extensions. The release workflow explicitly selects Command Line Tools 27.0 / Swift 6.4, then runs provider tests under that same SDK; ordinary development retains the Swift 6.3 minimum. Set `SDKROOT` to that SDK for both compilation and linking: a CLT 27 beta 6 Swift probe compiled with `--sdk` alone embedded the deployment target as its SDK; setting `SDKROOT` produced the correct linked SDK. Verify `LC_BUILD_VERSION` with `xcrun vtool -show-build` on the final executable. Confirm the final signed executable produces the current launch category and full CodeDirectory digest on physical macOS 27; SDK 26 builds can collect ordinary shadow proofs but cannot qualify replacement readiness. See the [observed SDK and measurement contract](../reference/app-attest-shadow.md#macos-sdk-and-signed-code-measurements).
 
-Run `go test ./appattest ./api ./store -run 'TestAppAttest|TestAuthorization|TestApple|TestMacCodeMeasurement'`
+Run `go test ./tests/appattest/... ./tests/api/... ./tests/store/... -run 'TestAppAttest|TestAuthorization|TestApple|TestMacCodeMeasurement'`
 from `coordinator/`, using a disposable local `DATABASE_URL` for the store
 contracts (the test harness truncates tables). Add `-race` for concurrency checks.
 Run `swift test --filter ProviderAppAttestTests` from `provider-swift/`.
@@ -917,8 +932,13 @@ HTTP/JSON modules and requires no package installation. CI runs its regression
 tests against local HTTP fixtures; the live workflow uses a repository Actions
 secret and the trusted base checkout. Full PR scans read immutable Git blobs as
 data and batch complete changed-file text; they never build or execute PR code.
-Opus 5.5 and GPT-6 Astra use the same OpenRouter key for independent full scans;
-their attributed findings are combined into one advisory comment.
+Set the activation variable before merge after verifying the state writer with
+the manual, zero-spend `preflight` option. Repositories that restrict branch
+updates can configure a dedicated App writer with short-lived tokens.
+Sonnet 5.5 handles the first pass; selected Opus 5.5 and GPT-6.1 Sol reviews use
+the same OpenRouter key. Atomic budget reservations, cached analysis and durable
+reports live on a dedicated state branch. Paid scanning defaults to disabled;
+follow the linked setup instructions to verify writer permissions and pilot caps.
 
 ## Stripe migration maintenance
 
@@ -928,7 +948,7 @@ bounded output. Applying a refund requires an exact withdrawal ID, expected amou
 and an operator-verified Stripe request. See [the cutover runbook](../operations/stripe-migration.md).
 
 Exercise the API, funding and settlement contracts with
-`go test ./coordinator/api ./coordinator/billing/... ./coordinator/store ./coordinator/cmd/payout-audit`.
+`go test ./coordinator/tests/api/... ./coordinator/tests/billing/... ./coordinator/tests/store/... ./coordinator/tests/cmd/payout-audit`.
 Set `DATABASE_URL` to a disposable local PostgreSQL database to run transaction,
 concurrency and rollback coverage. Never point tests at production. Console
 migration coverage runs with `npm test` in `console-ui`.

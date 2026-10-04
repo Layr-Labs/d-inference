@@ -140,7 +140,7 @@ extension TinyModelLoadTests {
     }
 }
 
-struct TinyModelSlotFacts: Sendable {
+private struct TinyModelSlotFacts: Sendable {
     let modelType: String?
     let isVLM: Bool
     let tokenizer: TokenizerHandle
@@ -148,7 +148,7 @@ struct TinyModelSlotFacts: Sendable {
     let cacheEligibleWeightHash: String?
 }
 
-extension ProviderLoop {
+private extension ProviderLoop {
     func tinyModelSlotFacts(_ modelId: String) -> TinyModelSlotFacts? {
         guard let slot = modelSlots[modelId] else { return nil }
         return TinyModelSlotFacts(

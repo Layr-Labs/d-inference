@@ -29,8 +29,8 @@ enum TinyModelLoadTests {}
 /// tokenizer: token id N is byte N, and id 256 is the end token.
 struct TinyModelCheckpoint {
     static let modelType = "gpt_oss"
-    static let endTokenID = 256
-    static let endToken = "<|endoftext|>"
+    private static let endTokenID = 256
+    private static let endToken = "<|endoftext|>"
     static let maxContextLength = 2048
 
     let modelID: String
@@ -90,7 +90,7 @@ struct TinyModelCheckpoint {
 
     // MARK: - Files
 
-    static var config: [String: Any] {
+    private static var config: [String: Any] {
         [
             "model_type": modelType,
             "architectures": ["GptOssForCausalLM"],
@@ -111,7 +111,7 @@ struct TinyModelCheckpoint {
         ]
     }
 
-    static var tokenizerConfig: [String: Any] {
+    private static var tokenizerConfig: [String: Any] {
         [
             "tokenizer_class": "GPT2TokenizerFast",
             "eos_token": endToken,
@@ -121,7 +121,7 @@ struct TinyModelCheckpoint {
     }
 
     /// GPT-2 byte-level BPE with one token per byte and no merges.
-    static var tokenizerData: [String: Any] {
+    private static var tokenizerData: [String: Any] {
         var vocab: [String: Int] = [:]
         for (byte, character) in byteCharacters.enumerated() {
             vocab[String(character)] = byte
@@ -145,7 +145,7 @@ struct TinyModelCheckpoint {
     }
 
     /// The GPT-2 map from each byte to a printable character.
-    static var byteCharacters: [Character] {
+    private static var byteCharacters: [Character] {
         let printable = Array(33...126) + Array(161...172) + Array(174...255)
         var extra = 0
         return (0..<256).map { byte in
@@ -186,80 +186,5 @@ struct TinyModelCheckpoint {
         // Keep the metadata a string map: the writer emits null for an empty one.
         try MLX.save(arrays: arrays, metadata: ["format": "mlx"], url: url)
         return arrays.values.reduce(0) { $0 + $1.nbytes }
-    }
-}
-
-/// The result of one short generation.
-struct TinyGeneration {
-    var chunks = 0
-    var promptTokens: Int?
-    var completionTokens: Int?
-    var finishReason: String?
-    var errors: [String] = []
-
-    static let prompt = "Hello"
-    /// Byte-level ids of `prompt`: the tokenizer maps each byte to its own id.
-    static let promptTokenIDs = Array(prompt.utf8).map(Int.init)
-    static let maxTokens = 4
-
-    static func request(modelID: String) -> ChatCompletionRequest {
-        ChatCompletionRequest(
-            model: modelID, messages: [.init(role: "user", content: prompt)],
-            temperature: 0, max_tokens: maxTokens)
-    }
-
-    /// Submit the prompt to `bridge` and read the stream to its end, for at
-    /// most `timeout`.
-    static func run(
-        bridge: EngineV2Bridge, modelID: String, timeout: Duration = .seconds(60)
-    ) async -> TinyGeneration {
-        let stream = await bridge.submitTokenized(
-            promptTokens: promptTokenIDs, request: request(modelID: modelID),
-            requestId: "tiny-\(UUID().uuidString)")
-        let reader = Task { () -> TinyGeneration in
-            var result = TinyGeneration()
-            for await event in stream {
-                switch event {
-                case .chunk:
-                    result.chunks += 1
-                case .info(let prompt, let completion, _, let finish):
-                    result.promptTokens = prompt
-                    result.completionTokens = completion
-                    result.finishReason = finish
-                case .error(let message):
-                    result.errors.append(message)
-                case .terminal(let cause, let message, _, _):
-                    result.errors.append("\(cause): \(message)")
-                }
-            }
-            return result
-        }
-        let watchdog = Task {
-            try? await Task.sleep(for: timeout)
-            reader.cancel()
-        }
-        let result = await reader.value
-        watchdog.cancel()
-        return result
-    }
-
-    /// The checks every generation must pass: the whole prompt was read, at
-    /// least one token came out, and the finish reason fits the token count.
-    /// The exact tokens are not checked: the weights are random.
-    func check(sourceLocation: SourceLocation = #_sourceLocation) {
-        #expect(errors.isEmpty, "generation errors: \(errors)", sourceLocation: sourceLocation)
-        #expect(promptTokens == Self.promptTokenIDs.count, sourceLocation: sourceLocation)
-        let completion = completionTokens ?? 0
-        #expect((1...Self.maxTokens).contains(completion),
-                "completion tokens: \(completion)", sourceLocation: sourceLocation)
-        switch finishReason {
-        case "length":
-            #expect(completion == Self.maxTokens, sourceLocation: sourceLocation)
-        case "stop":
-            break  // The model chose the end token before the limit.
-        default:
-            Issue.record("unexpected finish reason: \(String(describing: finishReason))",
-                         sourceLocation: sourceLocation)
-        }
     }
 }

@@ -2131,7 +2131,8 @@ denominator is the statements in the `coordinator/...` packages that the e2e
 test binary links; packages it does not link, such as `cmd/...`, are not
 counted. A lane that fails or is skipped is left out and named in the summary;
 the expected-red exact-cache lane is kept when it writes data. A low number
-never fails the job. The step fails only when a lane passed but wrote no data.
+never fails the job. The step fails when a lane passed but wrote no data, or
+when the merged data has no coordinator total.
 The raw lane directories and the merged `e2e-coverage.out` are kept for 14 days
 as the `coordinator-e2e-coverage` artifact.
 

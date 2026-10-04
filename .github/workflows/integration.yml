@@ -24,9 +24,10 @@ jobs:
       # Statement coverage of the coordinator code that the e2e tests run.
       # The testbed serves the coordinator in the test process
       # (e2e/testbed/suite.go calls api.NewServer), so `go test -coverpkg`
-      # counts it. `set` mode stores 1 per block; it is the cheapest mode, so
-      # the TestProfile latency checks see the least extra work.
-      E2E_COVER_FLAGS: -cover -covermode=set -coverpkg=github.com/eigeninference/d-inference/coordinator/...
+      # counts it. Each lane runs with `-covermode=set`: it stores 1 per block
+      # and is the cheapest mode, so the TestProfile latency checks see the
+      # least extra work.
+      E2E_COVER_PKG: github.com/eigeninference/d-inference/coordinator/...
       DARKBLOOM_REPO_ROOT: ${{ github.workspace }}
       DARKBLOOM_PROMPT_SIDECAR_BINARY: ${{ github.workspace }}/coordinator/promptsidecar/target/release/promptsidecar
       TESTBED_PROVIDER_CONFIG: debug
@@ -193,8 +194,8 @@ jobs:
                "providers do not report kv_backend=$DARKBLOOM_TESTBED_EXPECT_KV_BACKEND."
           covdir="$RUNNER_TEMP/e2e-coverage/paged"
           mkdir -p "$covdir"
-          # shellcheck disable=SC2086 # E2E_COVER_FLAGS is a list of flags.
-          go test ./e2e/ -count=1 -v -timeout 25m -p=1 $E2E_COVER_FLAGS \
+          go test ./e2e/ -count=1 -v -timeout 25m -p=1 \
+            -cover -covermode=set -coverpkg="$E2E_COVER_PKG" \
             -run 'TestIntegration|TestProfile' \
             -skip '^TestIntegrationExactCacheRouting$' \
             -args -test.gocoverdir="$covdir"
@@ -249,8 +250,8 @@ jobs:
           echo "Expected-red fixture lane: e2b paged adoption is the known inexact arm."
           covdir="$RUNNER_TEMP/e2e-coverage/exact-cache"
           mkdir -p "$covdir"
-          # shellcheck disable=SC2086 # E2E_COVER_FLAGS is a list of flags.
-          go test ./e2e/ -count=1 -v -timeout 15m -p=1 $E2E_COVER_FLAGS \
+          go test ./e2e/ -count=1 -v -timeout 15m -p=1 \
+            -cover -covermode=set -coverpkg="$E2E_COVER_PKG" \
             -run '^TestIntegrationExactCacheRouting$' \
             -args -test.gocoverdir="$covdir"
 
@@ -307,16 +308,17 @@ jobs:
                "fails this gate via DARKBLOOM_TESTBED_EXPECT_KV_BACKEND=contiguous."
           covdir="$RUNNER_TEMP/e2e-coverage/smoke"
           mkdir -p "$covdir"
-          # shellcheck disable=SC2086 # E2E_COVER_FLAGS is a list of flags.
-          go test ./e2e/ -count=1 -v -timeout 10m -p=1 $E2E_COVER_FLAGS \
+          go test ./e2e/ -count=1 -v -timeout 10m -p=1 \
+            -cover -covermode=set -coverpkg="$E2E_COVER_PKG" \
             -run '^TestIntegration_(NonStreaming|Streaming)Inference$' \
             -args -test.gocoverdir="$covdir"
 
-      # Report-only. A low number never fails the job. The step fails only
-      # when a lane passed but wrote no coverage data, because then the flags
-      # above were lost. A lane that failed or was skipped is listed and left
-      # out. The unit-test number comes from a different workflow (ci.yml) on
-      # a Linux runner, so this row is reported on its own and not merged.
+      # Report-only. A low number never fails the job. The step fails when a
+      # lane passed but wrote no coverage data, because then the flags above
+      # were lost, and when the merged data has no coordinator total. A lane
+      # that failed or was skipped is listed and left out. The unit-test
+      # number comes from a different workflow (ci.yml) on a Linux runner, so
+      # this row is reported on its own and not merged.
       - name: Report e2e coverage
         if: ${{ !cancelled() }}
         env:

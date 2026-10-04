@@ -1,0 +1,132 @@
+{
+  "status": "preparation_pass_native_comparison_pending",
+  "observedUTC": "2026-10-04T04:37:22.478715+00:00",
+  "compatibleSDKHead": "3a8257679ce75c8d775ba04db6b0a5259643034d",
+  "historicalPublicationCounterfactual": {
+    "entireOldSDKClaimed": false,
+    "deployedProviderBuildClaimed": false,
+    "onlyChangedFunction": "CBv2CompleteCheckpointCapture.publish",
+    "currentSourceVariantSHA256": "4980f292956775844fba95c89e4fff10c297468fcad79441e988eac4613b6b58",
+    "counterfactualSourceVariantSHA256": "0b266a7e25215dffe89b055446f4d1e1add06ded629b9c74b577e5bc52fc29e6",
+    "scope": "Ordinary historical publication alone: restore the older adjacent-target pruning predicate and original retireCaptured sequencing. Capture, scheduler, model, key identity and physical safeguards remain fixed."
+  },
+  "images": [
+    {
+      "policy": "old_adjacent",
+      "phaseStatus": "pass",
+      "compiledImageSHA256": "409ed7b6001a846dfcd7de9f6a3c5915973c4b49aebee988e34219baf4e5b11d",
+      "compiledSourceScopeSHA256": "d015507deddb62f3a70f96d1bf5d9c447cccb610cbca0a3209273bc357b830ef",
+      "sourceVariantSHA256": "0b266a7e25215dffe89b055446f4d1e1add06ded629b9c74b577e5bc52fc29e6",
+      "imageManifestSHA256": "116f1a967201f46c6dd392fe82cc7c857eac6136b621289158541e0f175b938d",
+      "phaseReceiptSHA256": "9813854480d4536f1a938b72b5b69f7c47fa54035f03457b76ec0b56ccbd088e",
+      "phaseStartedUTC": "2026-10-04T04:29:10.368324+00:00",
+      "phaseEndedUTC": "2026-10-04T04:29:17.578593+00:00",
+      "sourceCurrentlyOnDiskEqualsCompiledSource": false,
+      "actualRuntimeFiles": 23,
+      "distinctFileInodeClones": 23,
+      "allResourcesAndMetalRemainBound": true,
+      "sourceAndProducerBeforeAfterEqual": true,
+      "normalBuildReceiptSHA256": "8f96eca8fb988d0873f5a4e8aaefb755dea6da7ed4e70e0f1b18608992cc20d1",
+      "normalBuildAndStage": [
+        {
+          "step": "normal-build",
+          "exitCode": 0,
+          "elapsedSeconds": 50.348300500016194,
+          "logSHA256": "4ab6541e1e3f32ed587cb14f57e61d8c3b1c450a4848765ed02862e2c5413ba8",
+          "directChildReaped": true,
+          "allTrackedOwnedProcessesQuiescent": true
+        },
+        {
+          "step": "stage-metallib",
+          "exitCode": 0,
+          "elapsedSeconds": 9.925122999993619,
+          "logSHA256": "58575a3dc73c74dc44bbece7068394c93e7e47ee3e23c8c267459f88f16a4af8",
+          "directChildReaped": true,
+          "allTrackedOwnedProcessesQuiescent": true
+        }
+      ],
+      "portableRuntimeClosureClaimed": false
+    },
+    {
+      "policy": "current",
+      "phaseStatus": "pass",
+      "compiledImageSHA256": "ae86dc4fc9df8186ac2b7063a383dd62b61ae62e92373213b2dc25073bce8c00",
+      "compiledSourceScopeSHA256": "dcfddb702a933e08815c5f1de9d7fd04dd40a0037ac12320f5df3271d18a897e",
+      "sourceVariantSHA256": "4980f292956775844fba95c89e4fff10c297468fcad79441e988eac4613b6b58",
+      "imageManifestSHA256": "3b94800f0f443d697a1b360f88855acd71bf9693460a559e9af93c4d4090c965",
+      "phaseReceiptSHA256": "c9cf799c2a0db5d520ff24192b820ddec1053f9aaab3a4ff78d39793cc26c56d",
+      "phaseStartedUTC": "2026-10-04T04:30:55.948475+00:00",
+      "phaseEndedUTC": "2026-10-04T04:31:03.239354+00:00",
+      "sourceCurrentlyOnDiskEqualsCompiledSource": true,
+      "actualRuntimeFiles": 23,
+      "distinctFileInodeClones": 23,
+      "allResourcesAndMetalRemainBound": true,
+      "sourceAndProducerBeforeAfterEqual": true,
+      "normalBuildReceiptSHA256": "3b929dcbee63eb1344146f6da9ae20ff3780c24e0b4151ba9585abdc5f0535c6",
+      "normalBuildAndStage": [
+        {
+          "step": "normal-build",
+          "exitCode": 0,
+          "elapsedSeconds": 23.710810833028518,
+          "logSHA256": "1eddb4311c8b661d0aef9e0964385d4aaba903efebeaff5405416147ed9cf000",
+          "directChildReaped": true,
+          "allTrackedOwnedProcessesQuiescent": true
+        },
+        {
+          "step": "stage-metallib",
+          "exitCode": 0,
+          "elapsedSeconds": 9.304161874984857,
+          "logSHA256": "58575a3dc73c74dc44bbece7068394c93e7e47ee3e23c8c267459f88f16a4af8",
+          "directChildReaped": true,
+          "allTrackedOwnedProcessesQuiescent": true
+        }
+      ],
+      "portableRuntimeClosureClaimed": false
+    }
+  ],
+  "earlierOrdinaryCopyPhase": {
+    "status": "failed",
+    "failure": "active_20.25GiB_build_floor",
+    "receiptSHA256": "ca024c1289cfb709a05d0cd51a296edd9fd4aab0a2a032518cc8eeb972a170b7",
+    "retroactivelyQualified": false
+  },
+  "partialDuplicateRetirement": {
+    "status": "pass",
+    "receiptSHA256": "b3bc50f60162b4e6df178a1ba18f399ecf332d07830cc5ca1286356404f02c57",
+    "removedPartialRegularFiles": 21,
+    "removedPartialRuntimeFiles": 18,
+    "removedPartialSymbolFiles": 3,
+    "activeCompiledRuntimeFilesUnchanged": 23
+  },
+  "postCurrentGeneratedRetirement": {
+    "status": "pass",
+    "receiptSHA256": "fe709b41002f1653dac02a97febbc10df15d40cfe18455cba026941b1a394727",
+    "removedSymbolTrees": 3,
+    "removedIndexTrees": 1,
+    "compiledObjectsAndModuleCacheRetained": true,
+    "activeAndBothPreservedRuntimeFilesUnchanged": true,
+    "observedFreeBytesDelta": 1179308032,
+    "exclusiveFreeDeltaAttributionClaimed": false
+  },
+  "preparedNativeComparison": {
+    "models": [
+      "google/gemma-4-26b-a4b-it",
+      "openai/gpt-oss-20b"
+    ],
+    "freshArms": 12,
+    "counterbalancedPolicyPairsPerModel": 3,
+    "actualExperimentalStripeTokens": 1024,
+    "requestedMTP": false,
+    "originalDonorAndMiddleEconomicOutputTokens": 256,
+    "sameDonorAdjacentCorrectnessRoles": 2,
+    "adjacentRoleOrderCounterbalanced": false,
+    "servingPolicyQualified": false,
+    "pairedSpeedQualified": false,
+    "fleetGainClaimed": false,
+    "nativeDiskFloorsGiB": {
+      "initial": 20,
+      "active": 20.25
+    },
+    "status": "pending_strict_closed_seal_and_separate_economics"
+  }
+}

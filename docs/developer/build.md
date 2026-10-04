@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-03
 
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the
@@ -907,6 +907,22 @@ the matching MLX library and stages it beside each test executable and in the
 nested resource bundle used by native checkpoint identity tests. `make provider-test`
 and the provider/nested CI jobs invoke this helper. A missing test runner or
 failed source verification is an error; an existing library is always replaced.
+Live complete-checkpoint tests must also call `bindRuntimeMetallibForMLX`
+before their first MLX diagnostic or model load. Colocation alone does not
+establish the runtime digest required by the cache identity. The model-prefix
+fixture performs this binding explicitly; see
+[model prefix qualification](test.md#model-prefix-latency-and-throughput-qualification-live).
+Required demanded-checkpoint continuation CI uses the same staged SDK test
+image and `scripts/run-nested-suite.sh` as the existing native-retention and
+short-partition gates. Its seven scheduler/tiny-fixture methods must execute without optional
+model/GPU gates and with the wrapper's nonempty/no-skip checks. The provider's
+four adjacent-fork host methods are built with the ordinary ProviderCoreTests
+suite; eight independent pure collator controls remain distinct qualification
+evidence. A filtered suite's exit code alone does not certify execution. New
+same-donor adjacent native runs require a newly frozen source/binary/spec cut;
+prior four-role benchmark reports cannot qualify the added frontier. See
+[the model-prefix test contract](test.md#model-prefix-latency-and-throughput-qualification-live).
+
 See [the live-test setup](test.md) for the pinned DiffusionGemma artifact and
 opt-in encrypted transport gate.
 

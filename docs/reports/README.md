@@ -11,6 +11,7 @@ what was decided and whether it shipped read [`../design/README.md`](../design/R
 File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
 
+- [All-model prefix-cache qualification](2026-10-03-all-model-prefix-qualification.md) — all-nine planner/live denominators, bounded holder CPU/allocation costs, seven native pilot outcomes, exact artifact repair and retained parity/host exclusions; candidate increments remain separate.
 - [Prefix-cache candidate qualification](2026-10-03-prefix-cache-qualification.md) — native encrypted demanded-fork before/after with MTP, bounded planner allocation/timing comparisons, unchanged proof fingerprints and deadline regressions; local candidate evidence rather than deployed speedups.
 - [OpenRouter cache and throughput investigation](2026-10-03-openrouter-cache-throughput.md) — all nine public models, successful/repeated cache denominators, actual-token TPS/TTFT cohorts, separate production counter windows and source-reproduced lost cache opportunities.
 - [Hybrid provider trust review](2026-09-27-hybrid-provider-trust-review.md) — September 27 snapshot of legacy MDM/APNs and App Attest authorization boundaries, threats, evidence and deployment limits.

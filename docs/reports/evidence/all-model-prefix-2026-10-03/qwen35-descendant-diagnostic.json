@@ -1,0 +1,79 @@
+{
+  "status": "normal_completed_numerical_parity_failure",
+  "scope": "Separate owned-descendant diagnostic, new namespace/window on unchanged B1c4 and Swift source. Not the third original paired arm; no pooled pairs/medians or benchmark timing.",
+  "startedUTC": "2026-10-04T00:03:51.158180+00:00",
+  "endedUTC": "2026-10-04T00:04:27.410673+00:00",
+  "sourceSnapshotSHA256": "9f56066a82996159866a9aba146cb2cf21ee978d7cbbd9554a4022a1c3a57eea",
+  "binarySHA256": "b1c4caccc029c63cf925d8e29f68514be8c7048bfb945a720c7626f2d6700b92",
+  "sourceBundleHelperPlanSpecOrchestrationBeforeAfterIdentical": true,
+  "savedResultDigestMatchesClosedReport": true,
+  "exitCode": 1,
+  "observationFailureCodes": [
+    "output_parity"
+  ],
+  "reportedRequests": 4,
+  "reportedOutputIDs": 512,
+  "actualServingModelType": "Qwen35MoEModel",
+  "actualBackend": "paged",
+  "actualMTPRequestedAndActive": true,
+  "allActualMTPWorkQualified": true,
+  "actualMTPVerificationMode": "rectangular",
+  "acceptedTokensPerRow": [
+    90,
+    82,
+    83,
+    78
+  ],
+  "actualSchedulerConfiguration": {
+    "demandedCheckpointPartitionIncludesLongPrompts": true,
+    "demandedShortCheckpointMinimumTokens": 1024,
+    "maxBatchedTokensPerStep": 2048,
+    "maxConcurrentPartialPrefills": 1,
+    "maxConcurrentRequests": 1,
+    "prefillChunkSize": 512,
+    "soloPrefillStripeTokens": 2048
+  },
+  "withinArmDonorOutputMatches": false,
+  "withinArmForkOutputMatches": false,
+  "crossWindowOutputEqualityToOriginalBlock2Production": {
+    "cold_fork": true,
+    "novel_donor": true,
+    "demanded_donor": false,
+    "warm_fork": false
+  },
+  "crossWindowArtifactRuntimeAssistantAndMTPHeaderUnchanged": true,
+  "checkpointWritesDrainedAllRows": true,
+  "controls": {
+    "coldAndNovelNoCacheIOOrRestore": true
+  },
+  "demandedDonor": {
+    "writtenFiles": 1,
+    "writtenBytes": 89579023,
+    "restoredTokens": 0,
+    "filesRead": 0
+  },
+  "warmFork": {
+    "filesRead": 2,
+    "bytesRead": 89597350,
+    "restoredTokens": 1024,
+    "matchedTokens": 1024,
+    "replayTokens": 0
+  },
+  "ownership": {
+    "maximumTrackedDescendants": 0,
+    "directChildReaped": true,
+    "trackedOwnedProcessesQuiescent": true,
+    "stopReason": null
+  },
+  "originalDescendantAbortReproduced": false,
+  "originalDescendantCauseEstablished": false,
+  "limits": [
+    "No children observed; the original two-child abort remains unknown. No pmset/JIT/codesign attribution is established.",
+    "Donor/fork numerical failure is separate from the original process exclusion.",
+    "Cold and novel outputs match the prior production controls, while demanded donor and warm outputs differ; donor differs before any restore, so no archive-state cause is established.",
+    "This diagnostic is never substituted for the missing original paired arm and enters no policy/economic median.",
+    "Latency/TPS from this diagnostic is not benchmark evidence.",
+    "Only observed owned PID+creation-time descendants are supervised; not an OS sandbox."
+  ],
+  "privacy": "Aggregate model/source/bundle/state/counter outcomes and equality booleans only; no private paths/raw output IDs/fingerprints/logprobs/process IDs or command lines."
+}

@@ -42,6 +42,7 @@ enum EngineV2SlotFactory {
     /// callers use the empty value and execute only concrete production code.
     struct AssemblyOverrides {
         var gemmaMTPVerification: EngineV2BenchmarkMTPVerification? = nil
+        var checkpointPartition: EngineV2BenchmarkCheckpointPartition = .production
         var promptContractID: String? = nil
         var deadlineProfiles: [DeadlinePerformanceProfile]? = nil
         var deadlineHardware: HardwareInfo? = nil
@@ -413,7 +414,9 @@ enum EngineV2SlotFactory {
                     mtpDrafter: assistantHandle?.drafter,
                     mtpConfig: mtpConfig,
                     preparedBackend: preparedBackend,
-                    kvBudget: kvBudget)
+                    kvBudget: kvBudget,
+                    constructionPurpose: constructionPurpose,
+                    checkpointPartition: assemblyOverrides.checkpointPartition)
             }
         }
 

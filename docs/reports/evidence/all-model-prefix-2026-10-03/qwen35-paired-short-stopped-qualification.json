@@ -1,0 +1,195 @@
+{
+  "scope": "Stopped current-cut actual-MTP Qwen3.5MoE short policy cohort; five complete source-bound reports and one distinct process-safety abort. No qualified policy/economic median.",
+  "model": "qwen/qwen3.5-35b-a3b",
+  "startedUTC": "2026-10-03T23:55:52.969747+00:00",
+  "endedUTC": "2026-10-03T23:58:47.202646+00:00",
+  "sourceSnapshotSHA256": "9f56066a82996159866a9aba146cb2cf21ee978d7cbbd9554a4022a1c3a57eea",
+  "binarySHA256": "b1c4caccc029c63cf925d8e29f68514be8c7048bfb945a720c7626f2d6700b92",
+  "sourceBundleHelperPlanSpecTemplateOrchestrationBeforeAfterIdentical": true,
+  "allFiveSavedResultDigestsMatchClosedReports": true,
+  "allTrackedOwnedProcessTreesReapedAndQuiescent": true,
+  "completeReports": 5,
+  "reportedMeasuredRequests": 20,
+  "reportedCompletedOutputIDs": 2560,
+  "requestedArms": 6,
+  "qualifiedBlocks": 0,
+  "qualifiedThreePairPolicyComparison": false,
+  "qualifiedThreePairEconomicComparison": false,
+  "arms": [
+    {
+      "block": 0,
+      "policy": "production",
+      "status": "pass",
+      "exitCode": 0,
+      "failureCodes": [],
+      "contractFailures": [],
+      "reportedRows": 4,
+      "recordedDirectChildReaped": true,
+      "trackedOwnedProcessesQuiescent": true,
+      "maximumTrackedDescendants": 0,
+      "savedResultDigestMatches": true,
+      "withinArmDonorOutputMatches": true,
+      "withinArmForkOutputMatches": true
+    },
+    {
+      "block": 0,
+      "policy": "candidate",
+      "status": "failed",
+      "exitCode": 1,
+      "failureCodes": [
+        "test_process_failed"
+      ],
+      "contractFailures": [
+        "output_parity"
+      ],
+      "reportedRows": 4,
+      "recordedDirectChildReaped": true,
+      "trackedOwnedProcessesQuiescent": true,
+      "maximumTrackedDescendants": 0,
+      "savedResultDigestMatches": true,
+      "withinArmDonorOutputMatches": false,
+      "withinArmForkOutputMatches": false
+    },
+    {
+      "block": 1,
+      "policy": "candidate",
+      "status": "failed",
+      "exitCode": 1,
+      "failureCodes": [
+        "test_process_failed"
+      ],
+      "contractFailures": [
+        "output_parity"
+      ],
+      "reportedRows": 4,
+      "recordedDirectChildReaped": true,
+      "trackedOwnedProcessesQuiescent": true,
+      "maximumTrackedDescendants": 0,
+      "savedResultDigestMatches": true,
+      "withinArmDonorOutputMatches": false,
+      "withinArmForkOutputMatches": false
+    },
+    {
+      "block": 1,
+      "policy": "production",
+      "status": "pass",
+      "exitCode": 0,
+      "failureCodes": [],
+      "contractFailures": [],
+      "reportedRows": 4,
+      "recordedDirectChildReaped": true,
+      "trackedOwnedProcessesQuiescent": true,
+      "maximumTrackedDescendants": 0,
+      "savedResultDigestMatches": true,
+      "withinArmDonorOutputMatches": true,
+      "withinArmForkOutputMatches": true
+    },
+    {
+      "block": 2,
+      "policy": "production",
+      "status": "pass",
+      "exitCode": 0,
+      "failureCodes": [],
+      "contractFailures": [],
+      "reportedRows": 4,
+      "recordedDirectChildReaped": true,
+      "trackedOwnedProcessesQuiescent": true,
+      "maximumTrackedDescendants": 0,
+      "savedResultDigestMatches": true,
+      "withinArmDonorOutputMatches": true,
+      "withinArmForkOutputMatches": true
+    },
+    {
+      "block": 2,
+      "policy": "candidate",
+      "status": "failed",
+      "exitCode": -15,
+      "failureCodes": [
+        "unexpected_direct_runner_descendants",
+        "test_process_failed"
+      ],
+      "contractFailures": [
+        "missing_result"
+      ],
+      "reportedRows": null,
+      "recordedDirectChildReaped": true,
+      "trackedOwnedProcessesQuiescent": true,
+      "maximumTrackedDescendants": 2,
+      "savedResultDigestMatches": null,
+      "withinArmDonorOutputMatches": null,
+      "withinArmForkOutputMatches": null
+    }
+  ],
+  "crossPolicyRoleEquality": [
+    {
+      "block": 0,
+      "crossPolicyColdForkOutputMatches": true,
+      "crossPolicyNovelDonorOutputMatches": true,
+      "crossPolicyDemandedDonorOutputMatches": false,
+      "crossPolicyWarmForkOutputMatches": false
+    },
+    {
+      "block": 1,
+      "crossPolicyColdForkOutputMatches": true,
+      "crossPolicyNovelDonorOutputMatches": true,
+      "crossPolicyDemandedDonorOutputMatches": false,
+      "crossPolicyWarmForkOutputMatches": false
+    },
+    {
+      "block": 2,
+      "crossPolicyColdForkOutputMatches": null,
+      "crossPolicyNovelDonorOutputMatches": null,
+      "crossPolicyDemandedDonorOutputMatches": null,
+      "crossPolicyWarmForkOutputMatches": null
+    }
+  ],
+  "production": {
+    "allThreeDonorAndForkComparisonsMatch": true,
+    "allTwelveRowsNoCacheIOOrRestoration": true,
+    "coldAndNovelOutputsMatchAcrossAllThreeBlocks": true
+  },
+  "candidateCompleteReports": {
+    "count": 2,
+    "donorAndForkComparisonsMatch": false,
+    "demandedDonorWrittenBytesEach": 89579023,
+    "demandedDonorWrittenFilesEach": 1,
+    "warmRestoredTokensEach": 1024,
+    "warmReplayTokensEach": 0,
+    "warmFilesReadEach": 2,
+    "warmBytesReadEach": 89597350
+  },
+  "allTwentyRowsActualMTPQualified": true,
+  "actualMTP": {
+    "active": true,
+    "verificationMode": "rectangular",
+    "positiveDraftVerificationEmissionPerRow": true,
+    "acceptedTokenRangePerRow": [
+      78,
+      90
+    ],
+    "outputEventsPerRowRange": [
+      38,
+      50
+    ],
+    "firstOutputIDsEach": 1
+  },
+  "allTwentyCheckpointWritesDrained": true,
+  "safetyStop": {
+    "block": 2,
+    "policy": "candidate",
+    "exitCode": -15,
+    "reason": "unexpected_direct_runner_descendants",
+    "trackedDescendants": 2,
+    "completeResultAvailable": false,
+    "causeEstablished": false
+  },
+  "limits": [
+    "Production parity passes all three complete blocks; completed candidate parity fails both demanded donor and fork. Cold/novel zero-I/O controls match across both policies in completed blocks.",
+    "Donor output differs before any restore; capture/prefill/MTP interactions are not causally separated, so no archive-state cause is claimed.",
+    "Third candidate aborted by process ownership gate, not a measured numerical failure.",
+    "Unqualified timing/byte/MTP observations remain visible in CSV; no qualified policy/economic gain or medians.",
+    "Observed PID+creation-time ownership is not an operating-system sandbox; raw command lines/IDs/logs are excluded.",
+    "Current source/bundle unchanged; no source guard relaxation or automatic restart."
+  ],
+  "privacy": "Only public source/model/bundle identities, equality/status booleans and aggregate counters; no raw output IDs/hashes/logprobs/private paths/prompts/provider/account identifiers."
+}

@@ -83,7 +83,8 @@ func (r *Registry) cacheRoutingHintsWithObservation(
 // matchingHolders computes one keyed digest per request boundary, regardless
 // of fleet size. Each tier bucket contains at most maxHolders machines, even
 // when every machine has a different epoch. No provider lock or eligibility
-// check runs while holding the tracker lock.
+// check runs while holding the tracker lock. Compatible endpoints retain only
+// their deepest representative, with bounded append-all fallback under churn.
 func (t *cacheRoutingTracker) matchingHolders(
 	plan CachePlan, routeKey []byte, mode string, now time.Time,
 ) []cacheRoutingMatch {
@@ -102,6 +103,7 @@ func (t *cacheRoutingTracker) matchingHolders(
 	}
 	t.sweepIfDueLocked(now)
 	out := make([]cacheRoutingMatch, 0)
+	groups := cacheMatchGroups{}
 	for i := len(plan.Boundaries) - 1; i >= 0; i-- {
 		anchor := plan.Boundaries[i]
 		for _, tier := range [...]string{"ssd", "memory"} {
@@ -113,7 +115,10 @@ func (t *cacheRoutingTracker) matchingHolders(
 					anchor.TokenCount <= holder.RequiredRecomputeTokens {
 					continue
 				}
-				out = append(out, cacheRoutingMatch{Holder: holder, Tier: tier, EvidenceWeight: cacheEvidenceWeight(holder, now), queriedAt: now})
+				match := cacheRoutingMatch{Holder: holder, Tier: tier, EvidenceWeight: cacheEvidenceWeight(holder, now), queriedAt: now}
+				if groups.exhausted || groups.retain(match, out) {
+					out = append(out, match)
+				}
 			}
 		}
 	}

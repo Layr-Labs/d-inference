@@ -1,0 +1,443 @@
+{
+  "status": "pass",
+  "curatedUTC": "2026-10-04T02:52:41.608624+00:00",
+  "scope": "Canonical make provider with required metadata/bounded fixtures; eight framework invocations for frozen local source. No full-model native or performance qualification.",
+  "parentRecordedHead": "e8ca1dcf9a51d5f6cd98fd201fb9e8f6d0eb6c33",
+  "parentSourceIncludesUncommittedCandidateChanges": true,
+  "compatibleSDKHead": "3a8257679ce75c8d775ba04db6b0a5259643034d",
+  "startedUTC": "2026-10-04T02:41:17.151473+00:00",
+  "endedUTC": "2026-10-04T02:50:49.009100+00:00",
+  "compiler": "Apple Swift 6.3.3",
+  "commands": [
+    {
+      "name": "prepare-provider-metadata-fixtures",
+      "exitCode": 0,
+      "startedUTC": "2026-10-04T02:41:18.254930+00:00",
+      "endedUTC": "2026-10-04T02:41:18.533186+00:00",
+      "elapsedSeconds": 0.27683920902200043,
+      "logSHA256": "6003945f193141f25448b77f5e95e7e4d43c4e9e4cbd1536ad667ac2ed50aabc",
+      "logSHA256IndependentlyVerified": true
+    },
+    {
+      "name": "prepare-prompt-contract-fixtures",
+      "exitCode": 0,
+      "startedUTC": "2026-10-04T02:41:18.534937+00:00",
+      "endedUTC": "2026-10-04T02:41:20.177957+00:00",
+      "elapsedSeconds": 1.6419049590476789,
+      "logSHA256": "2bb4678d06a4cb9a9fb9707e58a6615d8f9b6335bc30e162cce54fd72b2431d5",
+      "logSHA256IndependentlyVerified": true
+    },
+    {
+      "name": "prebuild-test-image",
+      "exitCode": 0,
+      "startedUTC": "2026-10-04T02:41:20.187815+00:00",
+      "endedUTC": "2026-10-04T02:42:03.191485+00:00",
+      "elapsedSeconds": 43.002110333996825,
+      "logSHA256": "c771e017000c6b44422288ad374bd565fb96e1802d8312f7a0d22e074603f290",
+      "logSHA256IndependentlyVerified": true
+    },
+    {
+      "name": "prestage-metallib",
+      "exitCode": 0,
+      "startedUTC": "2026-10-04T02:42:03.193101+00:00",
+      "endedUTC": "2026-10-04T02:42:13.483665+00:00",
+      "elapsedSeconds": 10.28948091698112,
+      "logSHA256": "58575a3dc73c74dc44bbece7068394c93e7e47ee3e23c8c267459f88f16a4af8",
+      "logSHA256IndependentlyVerified": true
+    },
+    {
+      "name": "make-provider",
+      "exitCode": 0,
+      "startedUTC": "2026-10-04T02:42:14.159955+00:00",
+      "endedUTC": "2026-10-04T02:50:48.043193+00:00",
+      "elapsedSeconds": 513.8765445830068,
+      "logSHA256": "9f203297f14f97ebf0012ff536ed9416d811f5e459b8d2807132989bfb04e89b",
+      "logSHA256IndependentlyVerified": true
+    }
+  ],
+  "frameworkPopulations": {
+    "SwiftTestingExecutedPassEventsAcrossInvocations": 3662,
+    "SwiftTestingExplicitSkippedTestDeclarationsObserved": 92,
+    "SwiftTestingKnownIssuePassEventsAcrossInvocations": 0,
+    "SwiftTestingOrdinaryPassEventsAcrossInvocations": 3662,
+    "SwiftTestingReportedTestsAcrossInvocations": 3754,
+    "SwiftTestingSkipRecordsObserved": 93,
+    "SwiftTestingSkippedSuiteDeclarationsObserved": 1,
+    "SwiftTestingTerminalKnownIssuesAcrossInvocations": 0,
+    "XCTestEnumeratedAcrossInvocations": 553,
+    "XCTestExecutedPassesAcrossInvocations": 422,
+    "XCTestOptionalSkipsObserved": 131,
+    "countsAcrossInvocationsAreNotDeduplicated": true,
+    "executedPassEventsAcrossInvocations": 4084,
+    "invocations": [
+      {
+        "SwiftTesting": {
+          "explicitSkippedTestDeclarations": 92,
+          "individualExecutedPassEvents": 3649,
+          "individualFailedTestEvents": 0,
+          "issues": 0,
+          "knownIssuePassEvents": 0,
+          "knownIssuesOnIndividualPassEvents": 0,
+          "ordinaryPassEvents": 3649,
+          "outcome": "passed",
+          "reportedSuites": 503,
+          "reportedTests": 3741,
+          "skipRecords": 93,
+          "skippedSuiteDeclarations": 1,
+          "terminalKnownIssueCount": 0,
+          "unexpectedIssueCount": 0
+        },
+        "XCTest": {
+          "enumerated": 553,
+          "executedPasses": 422,
+          "failures": 0,
+          "optionalSkipped": 131,
+          "outcome": "passed",
+          "unexpected": 0
+        },
+        "invocation": "general"
+      },
+      {
+        "SwiftTesting": {
+          "explicitSkippedTestDeclarations": 0,
+          "individualExecutedPassEvents": 1,
+          "individualFailedTestEvents": 0,
+          "issues": 0,
+          "knownIssuePassEvents": 0,
+          "knownIssuesOnIndividualPassEvents": 0,
+          "ordinaryPassEvents": 1,
+          "outcome": "passed",
+          "reportedSuites": 1,
+          "reportedTests": 1,
+          "skipRecords": 0,
+          "skippedSuiteDeclarations": 0,
+          "terminalKnownIssueCount": 0,
+          "unexpectedIssueCount": 0
+        },
+        "XCTest": {
+          "enumerated": 0,
+          "executedPasses": 0,
+          "failures": 0,
+          "optionalSkipped": 0,
+          "outcome": "passed",
+          "unexpected": 0
+        },
+        "invocation": "emptyNativePoolTeardownUsesActualRetiredAdapter"
+      },
+      {
+        "SwiftTesting": {
+          "explicitSkippedTestDeclarations": 0,
+          "individualExecutedPassEvents": 1,
+          "individualFailedTestEvents": 0,
+          "issues": 0,
+          "knownIssuePassEvents": 0,
+          "knownIssuesOnIndividualPassEvents": 0,
+          "ordinaryPassEvents": 1,
+          "outcome": "passed",
+          "reportedSuites": 0,
+          "reportedTests": 1,
+          "skipRecords": 0,
+          "skippedSuiteDeclarations": 0,
+          "terminalKnownIssueCount": 0,
+          "unexpectedIssueCount": 0
+        },
+        "XCTest": {
+          "enumerated": 0,
+          "executedPasses": 0,
+          "failures": 0,
+          "optionalSkipped": 0,
+          "outcome": "passed",
+          "unexpected": 0
+        },
+        "invocation": "processLedgerCannotCombineOldUsageWithNewMaterializationCredit"
+      },
+      {
+        "SwiftTesting": {
+          "explicitSkippedTestDeclarations": 0,
+          "individualExecutedPassEvents": 1,
+          "individualFailedTestEvents": 0,
+          "issues": 0,
+          "knownIssuePassEvents": 0,
+          "knownIssuesOnIndividualPassEvents": 0,
+          "ordinaryPassEvents": 1,
+          "outcome": "passed",
+          "reportedSuites": 1,
+          "reportedTests": 1,
+          "skipRecords": 0,
+          "skippedSuiteDeclarations": 0,
+          "terminalKnownIssueCount": 0,
+          "unexpectedIssueCount": 0
+        },
+        "XCTest": {
+          "enumerated": 0,
+          "executedPasses": 0,
+          "failures": 0,
+          "optionalSkipped": 0,
+          "outcome": "passed",
+          "unexpected": 0
+        },
+        "invocation": "defaultApplyProjectsSettings"
+      },
+      {
+        "SwiftTesting": {
+          "explicitSkippedTestDeclarations": 0,
+          "individualExecutedPassEvents": 1,
+          "individualFailedTestEvents": 0,
+          "issues": 0,
+          "knownIssuePassEvents": 0,
+          "knownIssuesOnIndividualPassEvents": 0,
+          "ordinaryPassEvents": 1,
+          "outcome": "passed",
+          "reportedSuites": 1,
+          "reportedTests": 1,
+          "skipRecords": 0,
+          "skippedSuiteDeclarations": 0,
+          "terminalKnownIssueCount": 0,
+          "unexpectedIssueCount": 0
+        },
+        "XCTest": {
+          "enumerated": 0,
+          "executedPasses": 0,
+          "failures": 0,
+          "optionalSkipped": 0,
+          "outcome": "passed",
+          "unexpected": 0
+        },
+        "invocation": "stageDelta"
+      },
+      {
+        "SwiftTesting": {
+          "explicitSkippedTestDeclarations": 0,
+          "individualExecutedPassEvents": 7,
+          "individualFailedTestEvents": 0,
+          "issues": 0,
+          "knownIssuePassEvents": 0,
+          "knownIssuesOnIndividualPassEvents": 0,
+          "ordinaryPassEvents": 7,
+          "outcome": "passed",
+          "reportedSuites": 1,
+          "reportedTests": 7,
+          "skipRecords": 0,
+          "skippedSuiteDeclarations": 0,
+          "terminalKnownIssueCount": 0,
+          "unexpectedIssueCount": 0
+        },
+        "XCTest": {
+          "enumerated": 0,
+          "executedPasses": 0,
+          "failures": 0,
+          "optionalSkipped": 0,
+          "outcome": "passed",
+          "unexpected": 0
+        },
+        "invocation": "SpecDecHuggingFaceTests"
+      },
+      {
+        "SwiftTesting": {
+          "explicitSkippedTestDeclarations": 0,
+          "individualExecutedPassEvents": 1,
+          "individualFailedTestEvents": 0,
+          "issues": 0,
+          "knownIssuePassEvents": 0,
+          "knownIssuesOnIndividualPassEvents": 0,
+          "ordinaryPassEvents": 1,
+          "outcome": "passed",
+          "reportedSuites": 1,
+          "reportedTests": 1,
+          "skipRecords": 0,
+          "skippedSuiteDeclarations": 0,
+          "terminalKnownIssueCount": 0,
+          "unexpectedIssueCount": 0
+        },
+        "XCTest": {
+          "enumerated": 0,
+          "executedPasses": 0,
+          "failures": 0,
+          "optionalSkipped": 0,
+          "outcome": "passed",
+          "unexpected": 0
+        },
+        "invocation": "acceptedThenExpired"
+      },
+      {
+        "SwiftTesting": {
+          "explicitSkippedTestDeclarations": 0,
+          "individualExecutedPassEvents": 1,
+          "individualFailedTestEvents": 0,
+          "issues": 0,
+          "knownIssuePassEvents": 0,
+          "knownIssuesOnIndividualPassEvents": 0,
+          "ordinaryPassEvents": 1,
+          "outcome": "passed",
+          "reportedSuites": 1,
+          "reportedTests": 1,
+          "skipRecords": 0,
+          "skippedSuiteDeclarations": 0,
+          "terminalKnownIssueCount": 0,
+          "unexpectedIssueCount": 0
+        },
+        "XCTest": {
+          "enumerated": 0,
+          "executedPasses": 0,
+          "failures": 0,
+          "optionalSkipped": 0,
+          "outcome": "passed",
+          "unexpected": 0
+        },
+        "invocation": "evaluatedPagesAvoidDoubleTaxAndRetainedAliasKeepsPressure"
+      }
+    ],
+    "knownIssuesDoNotQualifyNativeCoverage": true,
+    "optionalSkipPopulationDerivedNotGuessed": true,
+    "optionalSkipsDoNotQualifyNativeCoverage": true,
+    "suiteSkipRecordsDoNotSubtractTestEnumerations": true
+  },
+  "independentPopulationReconciliation": {
+    "globalObservedEvents": {
+      "XCTestPass": 422,
+      "XCTestSkip": 131,
+      "XCTestFailed": 0,
+      "SwiftPass": 3662,
+      "SwiftKnownPass": 0,
+      "SwiftTestSkip": 92,
+      "SwiftSuiteSkip": 1,
+      "SwiftFailed": 0,
+      "KnownIssueEvents": 0
+    },
+    "perInvocationSwiftEvents": [
+      {
+        "invocation": "general",
+        "SwiftPassEvents": 3649,
+        "SwiftExplicitSkippedTests": 92,
+        "SwiftSuiteSkipRecords": 1,
+        "SwiftTerminalEnumerated": 3741,
+        "SwiftTerminalSuites": 503,
+        "SwiftTerminalSeconds": 351.548
+      },
+      {
+        "invocation": "emptyNativePoolTeardownUsesActualRetiredAdapter",
+        "SwiftPassEvents": 1,
+        "SwiftExplicitSkippedTests": 0,
+        "SwiftSuiteSkipRecords": 0,
+        "SwiftTerminalEnumerated": 1,
+        "SwiftTerminalSuites": 1,
+        "SwiftTerminalSeconds": 0.546
+      },
+      {
+        "invocation": "processLedgerCannotCombineOldUsageWithNewMaterializationCredit",
+        "SwiftPassEvents": 1,
+        "SwiftExplicitSkippedTests": 0,
+        "SwiftSuiteSkipRecords": 0,
+        "SwiftTerminalEnumerated": 1,
+        "SwiftTerminalSuites": 0,
+        "SwiftTerminalSeconds": 0.055
+      },
+      {
+        "invocation": "defaultApplyProjectsSettings",
+        "SwiftPassEvents": 1,
+        "SwiftExplicitSkippedTests": 0,
+        "SwiftSuiteSkipRecords": 0,
+        "SwiftTerminalEnumerated": 1,
+        "SwiftTerminalSuites": 1,
+        "SwiftTerminalSeconds": 0.191
+      },
+      {
+        "invocation": "stageDelta",
+        "SwiftPassEvents": 1,
+        "SwiftExplicitSkippedTests": 0,
+        "SwiftSuiteSkipRecords": 0,
+        "SwiftTerminalEnumerated": 1,
+        "SwiftTerminalSuites": 1,
+        "SwiftTerminalSeconds": 0.194
+      },
+      {
+        "invocation": "SpecDecHuggingFaceTests",
+        "SwiftPassEvents": 7,
+        "SwiftExplicitSkippedTests": 0,
+        "SwiftSuiteSkipRecords": 0,
+        "SwiftTerminalEnumerated": 7,
+        "SwiftTerminalSuites": 1,
+        "SwiftTerminalSeconds": 3.14
+      },
+      {
+        "invocation": "acceptedThenExpired",
+        "SwiftPassEvents": 1,
+        "SwiftExplicitSkippedTests": 0,
+        "SwiftSuiteSkipRecords": 0,
+        "SwiftTerminalEnumerated": 1,
+        "SwiftTerminalSuites": 1,
+        "SwiftTerminalSeconds": 2.01
+      },
+      {
+        "invocation": "evaluatedPagesAvoidDoubleTaxAndRetainedAliasKeepsPressure",
+        "SwiftPassEvents": 1,
+        "SwiftExplicitSkippedTests": 0,
+        "SwiftSuiteSkipRecords": 0,
+        "SwiftTerminalEnumerated": 1,
+        "SwiftTerminalSuites": 1,
+        "SwiftTerminalSeconds": 0.546
+      }
+    ],
+    "executedPassEventsAcrossEightInvocations": 4084,
+    "explicitSkippedTestEventsAcrossEightInvocations": 223,
+    "separatelySkippedSuiteRecords": 1,
+    "skipRecordsIncludingSuiteSkip": 224,
+    "SuiteSkipAddedAsAnotherSkippedTest": false,
+    "acrossInvocationCountsDeduplicated": false
+  },
+  "fixtureScope": {
+    "environmentPathCount": 3,
+    "pinnedPublicPromptFileCount": 4,
+    "syntheticProviderFileCount": 11,
+    "syntheticProviderLogicalBytes": 271367,
+    "originalCorpusSHA256": "66e6a49a23509fbc99e5389fa4687f2b6175f96d05d7a8be0f323bf4986049bb",
+    "optionalNativeOptInsEnabled": false,
+    "syntheticFixturesAreNotModelQualification": true,
+    "fixtureBeforeAfterFinallyEqual": true,
+    "fixturePreparationSourcesBeforeFinallyEqual": true
+  },
+  "finalBindings": {
+    "sourceUnchanged": true,
+    "wholeMLXSourceUnchanged": true,
+    "helpersUnchanged": true,
+    "testImageAndMetalUnchanged": true,
+    "fixtureInputsUnchanged": true,
+    "finalSourceMatchesBefore": true,
+    "finalFixtureInputsMatchBefore": true,
+    "allOwnedStepsQuiescent": true
+  },
+  "independentMapEquality": {
+    "sourceBeforeAfterFinally": true,
+    "fixtureBeforeAfterFinally": true,
+    "MLXBeforeAfter": true,
+    "imageAndThreeMetalCopiesBeforeAfter": true,
+    "parentRecordedHeadBeforeAfter": true,
+    "SDKHeadBeforeAfter": true
+  },
+  "runtime": {
+    "testImageSHA256": "47826451f8b92bc3ca80a62b0c06c53cfbb0b2d3da8b52c468fd52ae715a061a",
+    "metallibSHA256": "2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2",
+    "allThreeMetalCopiesEqual": true,
+    "builtProviderCLISHA256": "3ea97eae2db67ec8bb83f18d1da58b6c4bfedaba4c17f5fcfa5991f5f2ec1c2e",
+    "actualTestedBundleLeftInPlace": true
+  },
+  "sourceRecordCount": 3054,
+  "orchestrationSourceDigests": {
+    "continuation_owned_steps.py": "1f272d6694009d385136639f8530a3af7dd2328481577ea1368b908dbb044165",
+    "final_provider_component_helpers.py": "55781bbcd5fcb38a15b7b3563f6c88a9d44b0372d243632c220b4084e98bea96",
+    "final_provider_receipt.py": "fd5ae79c678c7ce8305535b3a3ff36c30b18b21c59663ebd5d7aaedc7df28873",
+    "final_sdk_component_helpers.py": "925883852d1c454244095e5b35ad64e9e56aa8cff9685ae9b424c342ed38cc4f",
+    "paired-policy/owned_process.py": "a116417b14d46d6b46ca9cdfa0b9ff68035d8fcced5b69711ca66944f85fa770",
+    "provider_component_fixtures.py": "22024258d7a6f0f10e1abf73b8d8a78aade66a423c46a1d54b5f9109a1987317",
+    "run-provider-fixture-components.py": "4f715ffc220805d768b5527678c7c1703cb007b05c9f1e87bfd33d91cc248a40",
+    "sdk_continuation_validation_helpers.py": "b2193596c51fe02b37b51bc5a0ecc8bd347c669e197e0b797bd238014bc03acb"
+  },
+  "limits": [
+    "The original setup/resource-failed invocation remains sealed and distinct; this corrected run does not erase it.",
+    "General Swift terminal3741 includes3649 executed passes and92 explicitly skipped tests; one separate SuiteSkip is not another skipped test. Seven fresh isolated invocations execute13 additional tests with zero skips.",
+    "Totals are pass events across eight invocations, not a deduplicated unique-method count. No expected-known issues or failures occur.",
+    "Required fixture paths provision metadata/tiny synthetic payloads without enabling optional native/model opt-ins. Full-model Bonsai production verification and long native qualification remain separate.",
+    "Recorded parent HEAD is e8ca with frozen local candidate changes and compatible A5, not a final signed/published parent commit."
+  ],
+  "privacy": "Public source/image/runtime and aggregate test fields only; no private paths, environment values, raw logs, prompt/generated outputs or process/account/provider identifiers."
+}

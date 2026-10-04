@@ -1,0 +1,123 @@
+{
+  "status": "pass",
+  "diagnosticObservationComplete": true,
+  "windowUTC": {
+    "start": "2026-10-04T05:02:14.555104+00:00",
+    "end": "2026-10-04T05:03:49.123689+00:00"
+  },
+  "sourceImageMetalResourcesHelpersSpecUnchanged": true,
+  "allObservedOwnedProcessesReapedQuiescent": true,
+  "observedCanonicalHardwareChildCount": 2,
+  "hardwareAncestryScope": "Observed source-bound finite hardware-probe chain, not kernel parent-birth proof or an OS sandbox.",
+  "owningTestPopulation": {
+    "enumeratedTests": 1,
+    "executedPassed": 1,
+    "executedFailed": 0,
+    "testSkips": 0,
+    "suiteSkips": 0,
+    "knownIssues": 0,
+    "unexpectedIssues": 0
+  },
+  "proofFilesSHA256": {
+    "receipt": "a3927ba6b01b99280af63277c56018ff4e3f684856d9fe75bfb684796a4d771d",
+    "owningLog": "4d9aae20c81ef2cb11413b49a815e524c90f4ffef9cefb0abbfa67cadc393acd",
+    "privateResultFile": "08010d3eba03318e6cb9d75d527eca9c8145e93d60d4796d7af1fc4e1682e400",
+    "actualSpec": "ab6c9b3d1d8a5741e4d0c8bb2768a144cafbfd8dd6654450791378e1c7f6cdae",
+    "installedReceipt": "e5be0e7ea5804bccd1722aa93c88ff7a9284a288edf2cb37c46658f604d94eff",
+    "normalBuildReceipt": "950bec31b0b919683721900a870c8de40b734105f23a7f3aeca9f12dd263e722"
+  },
+  "testImageSHA256": "d66732244f4e0999e1205ba095f4bd643bf78c3c13d486b506299d4763b37f09",
+  "observation": {
+    "status": "complete_diagnostic_observation",
+    "model": "qwen/qwen3.5-9b",
+    "sameFreshProcessRequests": 3,
+    "promptTokens": 16513,
+    "outputTokensPerRequest": 128,
+    "allThreeOutputsEqual": true,
+    "comparisons": [
+      {
+        "repeatIndex": 1,
+        "outputMatchesFirst": true,
+        "firstMismatchIndex": null,
+        "matchingOutputPrefixTokens": 128
+      },
+      {
+        "repeatIndex": 2,
+        "outputMatchesFirst": true,
+        "firstMismatchIndex": null,
+        "matchingOutputPrefixTokens": 128
+      }
+    ],
+    "actualAdaptiveMTPActive": true,
+    "allCheckpointArchiveIOAndRestoreDeltasZero": true,
+    "limits": [
+      "No cache/performance/fleet qualification; no latency or throughput claim.",
+      "Zero I/O refers to checkpoint archive counters, not model loading or store/key metadata.",
+      "Aggregate MTP counts do not expose verification widths or marginal raw-cost inputs.",
+      "Equal repeats do not prove donation causal; divergent repeats show restore/split is unnecessary."
+    ]
+  },
+  "MTPRowDeltas": [
+    {
+      "repeatIndex": 0,
+      "prefillChunks": 5,
+      "checkpointWritesDrained": true,
+      "acceptedTokens": 64,
+      "activeAfter": true,
+      "activeBefore": true,
+      "draftedTokens": 128,
+      "emittedTokens": 125,
+      "qualified": true,
+      "rectangularVerificationRounds": 61,
+      "requested": true,
+      "rounds": 61,
+      "seedSteps": 2,
+      "serialVerificationRounds": 0,
+      "verificationMode": "rectangular"
+    },
+    {
+      "repeatIndex": 1,
+      "prefillChunks": 5,
+      "checkpointWritesDrained": true,
+      "acceptedTokens": 67,
+      "activeAfter": true,
+      "activeBefore": true,
+      "draftedTokens": 123,
+      "emittedTokens": 125,
+      "qualified": true,
+      "rectangularVerificationRounds": 58,
+      "requested": true,
+      "rounds": 58,
+      "seedSteps": 2,
+      "serialVerificationRounds": 0,
+      "verificationMode": "rectangular"
+    },
+    {
+      "repeatIndex": 2,
+      "prefillChunks": 5,
+      "checkpointWritesDrained": true,
+      "acceptedTokens": 67,
+      "activeAfter": true,
+      "activeBefore": true,
+      "draftedTokens": 117,
+      "emittedTokens": 125,
+      "qualified": true,
+      "rectangularVerificationRounds": 58,
+      "requested": true,
+      "rounds": 58,
+      "seedSteps": 2,
+      "serialVerificationRounds": 0,
+      "verificationMode": "rectangular"
+    }
+  ],
+  "interpretation": "Three uncached same-process repeats do not reproduce output divergence. Actual MTP work counters vary while all128 output IDs remain equal. This does not exonerate cache, identify the cause of earlier donor failures or measure performance.",
+  "performanceOrServingPolicyQualified": false,
+  "fleetGainClaimed": false,
+  "timingGainClaimed": false,
+  "portableRuntimeClosureClaimed": false,
+  "temporarySourceRestorationStatus": "pass",
+  "temporarySourceRestorationProofSHA256": "1e8f1a23fee6379d1a1f09d485da75019709ff285d623a980a280d1dace53a18",
+  "finalCanonicalProviderGateStillRequired": false,
+  "finalCanonicalProviderStatus": "pass",
+  "finalCanonicalProviderProofSHA256": "0bcb4bd38c390fa1633752d2e879ae209b678bcd7d788663ca441d6108ad2a11"
+}

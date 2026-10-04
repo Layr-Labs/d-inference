@@ -198,6 +198,13 @@ block alignment on the provider. The coordinator's promptsidecar computes the sa
 can predict which provider holds a prefix — see
 [`prompt-contract-sidecar.md`](prompt-contract-sidecar.md).
 
+Each ordinary COMPLETE donation hashes only through its validated checkpoint
+position, bounded by the same backend lookup maximum. Earlier retained windows
+therefore avoid hashing the donor's unused suffix while preserving the exact
+chain endpoint and HMAC address (`SSDHybridCheckpointStore.donationHashes`).
+Ordinary lookup still excludes an aligned final input token; diffusion text
+keeps its existing endpoint rule, and native-media position hashing is separate.
+
 Paged resident lookup hashes physical pages (`PagedKVPool.pageSize = 16`);
 those hashes are not coordinator routing proofs. Recurrent lookup indexes
 exact token sequences and restores only actual captured checkpoint endpoints:
@@ -487,18 +494,47 @@ hint names one above `M`. The hint reaches the engine as
 `CBv2Request.prefixCheckpointTargetTokens`, set by the provider bridge from
 `RemotePrefixCacheContext.repeatedPrefixTokens`.
 
-For the qualified dense Qwen production paged SSD path, a scoped cold text
+Native MiMo historical checkpoints retain only actual uniform-chunk frontiers
+whose target and optional assistant state completed their native observation
+and promotion fences. Their fork target is the deepest successfully captured
+frontier at or below the hint; the hint creates neither an interior checkpoint
+nor older assistant state. Contiguous and native paged historical donors use
+the same first/target/latest retention and resumed-donor rules. Their captured
+backing remains charged under the existing slot and donor byte limits,
+including during publication; contiguous staging counts its actual reservation
+bytes before constructing a successor. Tracked retirement still joins
+displaced native owners before reclaiming their resources
+(`EngineLoopV2.prepareHistoricalCheckpoints`,
+`CBv2CompleteCheckpointCapture.commitContiguousHistorical`,
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/HistoricalCheckpointStaging.swift`).
+
+For qualified dense Qwen and the current exact Nemotron Lightning and Bonsai
+production paged SSD paths, a scoped cold text
 request that participates in caching and is shorter than its armed solo stripe
 can end one range at the deepest
 256/query-aligned interior boundary covered by positive repeat demand, provided
 that boundary meets the store's existing minimum. The remaining suffix uses
 the ordinary geometry. This creates a capture opportunity without shrinking
 all chunks. Novel prompts, requests with caching disabled or out-of-band media
-or position state, imported prefixes, MoE, native historical and long-prompt
-paths retain their existing partition. The SDK switch defaults off;
+or position state, imported prefixes, other model artifacts, native historical
+and long-prompt paths retain their existing partition. The SDK switch defaults off;
 `EngineV2Factory.demandedShortCheckpointMinimumTokens` enables it only for the
-qualified provider/store combination. Scheduling and the pure first-content
-projection share `demandedShortCheckpointChunk` and observed capture eligibility.
+qualified provider/store combination. Nemotron additionally requires the exact
+canonical `nvidia-nemotron-3.5-lightning` ID, the qualified model aggregate,
+actual `NemotronH35Model` with nonempty recurrent state, and a store minimum of
+at least 1,024 tokens. Aliases, replacement weights and other recurrent families
+remain excluded; the evidence and three-pair limits are recorded in the
+[all-model qualification report](../reports/2026-10-03-all-model-prefix-qualification.md).
+Bonsai additionally requires canonical `ternary-bonsai-2-27b`, aggregate
+`ea1e901e4946c0ba9ad70c78517548808b353db6b3a13e87a8fa20468d81244c`,
+the actual final `PrismHadamardQwen35` wrapper with nonempty recurrent state,
+MTP capability false and the paged COMPLETE store minimum of at least 1,024.
+The existing SSD-cache defaults for other Bonsai IDs do not grant this new
+partition. Fresh production-path output/runtime verification remains a separate
+qualification from host gate checks.
+Scheduling and the pure first-content
+projection share `demandedCheckpointRange` and observed capture eligibility;
+`demandedShortCheckpointChunk` remains the count-only wrapper.
 Preempted donors and donors whose capture geometry has disarmed retain their
 ordinary remaining range. The step plan marks only ranges introduced by this
 clamp; those rows stay outside that step's packed group so the new boundary can
@@ -512,6 +548,39 @@ live in `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/Dem
 (`canScheduleDemandedShortCheckpoint`) and
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift`
 (`executeMixed`). Existing checkpoint count/byte and storage floors remain.
+
+The benchmark SPI can explicitly select
+`EngineV2BenchmarkCheckpointPartition.demandedRecurrentQualification` to measure
+other actual recurrent paged complete-checkpoint models and longer demanded
+prefixes. The longer-prompt scheduler flag defaults to false. Under uninterrupted eligible solo geometry, one proposed range can become
+two: the demanded target and that range's original end. A bounded request-local
+continuation remembers the actual original end and stripe; it never reconstructs
+a global checkpoint grid. Scheduler and pure projection share the result.
+Rollback restores the exact prior optional state, and known in-flight work is
+charged once. A pause without progress preserves continuation; incompatible
+actual progress, striped fallback, import, preemption or capture disarm drops
+it. Only introduced target/residual ranges receive the existing packing
+protection; ordinary packing remains authoritative.
+
+For example, donor 16,513/hint 14,336 can use
+`[4096,4096,4096,2048,2048,129]`, preserving actual 14,336 and 16,384 frontiers
+with six ranges versus five ordinarily. The former experimental sequence
+`[4096,4096,4096,2048,2177]` never captured 16,384. Existing first/target/latest
+selection and maximum three retained states still apply; a target below the
+first ordinary stripe may change the first role, and no promise retains every
+old file or forces a refused checkpoint. This requires benchmark construction,
+nonempty recurrent state, the existing paged layout and a store minimum of at
+least 1,024 tokens. Serving keeps its qualified dense-Qwen and exact-artifact
+Nemotron/Bonsai short gates;
+native historical geometry is excluded. Native publication and same-original-donor adjacent-fork
+proof remain separate from host geometry: the middle and adjacent forks must
+restore real payloads with exact outputs, no intervening writes, actual MTP
+state and completed writer/activity barriers. The failed/interrupted B1 long
+cohort qualifies no policy gain or serving activation. Raw benchmark submissions register
+the same nil/zero/positive donation-demand policy under each fresh receipt and
+retire it with that receipt, preserving legacy admission and explicit novel
+request controls (`EngineV2Factory.benchmarkRecurrentShortCheckpointMinimumTokens`,
+`EngineV2BenchmarkSession.submit`, `EngineV2BenchmarkSession.complete`).
 
 The write-priority classification is separate from the donation admission
 floor. An offered checkpoint at or below the authenticated repeated-token

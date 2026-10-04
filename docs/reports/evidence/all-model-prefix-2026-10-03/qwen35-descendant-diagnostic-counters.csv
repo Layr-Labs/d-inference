@@ -1,0 +1,5 @@
+role,promptTokens,completedOutputTokens,firstOutputTokenCount,outputEventCount,restoredTokens,matchedTokens,replayTokens,filesWrittenDelta,bytesWrittenDelta,filesReadDelta,bytesReadDelta,checkpointWritesDrained,packedPrefillChunks,preemptions,mtp_acceptedTokens,mtp_activeAfter,mtp_activeBefore,mtp_draftedTokens,mtp_emittedTokens,mtp_qualified,mtp_rectangularVerificationRounds,mtp_requested,mtp_rounds,mtp_seedSteps,mtp_serialVerificationRounds,mtp_verificationMode
+cold_fork,2304,128,1,38,0,0,0,0,0,0,0,True,0,0,90,True,True,123,126,True,36,True,36,1,0,rectangular
+novel_donor,1793,128,1,46,0,0,0,0,0,0,0,True,0,0,82,True,True,133,126,True,44,True,44,1,0,rectangular
+demanded_donor,1793,128,1,45,0,0,0,1,89579023,0,0,True,0,0,83,True,True,142,125,True,42,True,42,2,0,rectangular
+warm_fork,2304,128,1,50,1024,1024,0,0,0,2,89597350,True,0,0,78,True,True,140,126,True,48,True,48,1,0,rectangular

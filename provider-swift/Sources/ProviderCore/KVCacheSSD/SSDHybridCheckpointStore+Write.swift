@@ -143,7 +143,9 @@ extension SSDHybridCheckpointStore {
                 let value = values[manifest.position] else { return .refused(.incompleteLayerState) }
             digest = value
         } else {
-            let chain = hashes(tokens: tokens, scope: cacheSalt ?? "")
+            guard let chain = donationHashes(tokens: tokens, scope: cacheSalt ?? "",
+                                              checkpointPosition: manifest.position)
+            else { return .refused(.noCompleteBlock) }
             let offset = manifest.position / PrefixCachePolicy.blockSize - 1
             guard chain.indices.contains(offset) else { return .refused(.noCompleteBlock) }
             digest = chain[offset]

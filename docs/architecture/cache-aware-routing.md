@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-29
+> Last updated: 2026-10-03
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -453,6 +453,28 @@ visits its ordinary candidate pool once. Epoch, connection pointer, capability
 and proof quarantine remain required; capability revisions are rechecked at
 selection and reservation. A miss, a shorter hit or an epoch rotation removes only that
 provider's evidence from the common bucket.
+
+After the ordinary holder proof, expiry and recompute checks,
+`matchingHolders` retains the deepest representative of each query-local
+compatibility group (`coordinator/registry/cache_match_groups.go`,
+`cacheMatchCompatibilityEqual`, `cacheMatchGroups.retain`). Groups distinguish
+the connection pointer, model, epoch, tier, bound measurement capability and
+whether an SSD stage cost is usable at the captured query timestamp. A deeper
+stale or uncreditable record therefore cannot hide a shorter current endpoint.
+Uncreditable representatives still count toward `MatchingHolders`; the current
+capability and quarantine checks determine `ValidHolders` as before.
+
+The optimization tracks at most `cacheMatchMaxTrackedProviders = 256` providers
+and `cacheMatchMaxGroupsPerProvider = 8` groups for any one provider. Exceeding
+either scratch budget disables grouping for the rest of that query and appends
+every remaining validated match in the original order. It neither discards
+tracker evidence nor changes provider admission. Cold queries allocate no group
+map, and dense compatible queries avoid copying the same provider identity at
+every boundary. Complete hint maps and opportunity counters are checked against
+the original materialization path in `coordinator/registry/cache_match_reference_test.go`
+and `coordinator/registry/cache_match_groups_test.go`; dense, sparse, cold and
+compatibility-churn workloads live in `coordinator/registry/cache_match_benchmark_test.go`
+(`BenchmarkCacheMatchMaterialization`).
 
 All ordinary trust, model, trait, memory, token-budget, queue, cooldown, health,
 and time-to-first-token gates remain mandatory

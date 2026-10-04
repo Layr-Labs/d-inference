@@ -1,0 +1,48 @@
+{
+  "base_sha": "e8ca1dcf9a51d5f6cd98fd201fb9e8f6d0eb6c33",
+  "measured_prototype_binary_sha256": "e78762f41c1caee2d3124cdbbe306c61b9d33b5079d1236e376098ade42870b8",
+  "source_transfer_checks": {
+    "compatibility": true,
+    "bounded_retention": true,
+    "collector": true
+  },
+  "normalization": "Function names renamed, comments/whitespace removed, redundant else-after-return removed; no measured control-flow or compatibility-field change.",
+  "source_files": {
+    "coordinator/registry/cache_routing_hints.go": "4cb34512f5e375d8c383246f58c31f9610340715614032432f9514a4edb4a25c",
+    "coordinator/registry/cache_match_groups.go": "67b419d24e4ab57b279dd4649b56bf891e037cec8f9519144039b4737b6b714e",
+    "coordinator/registry/cache_match_fixture_test.go": "432450fd7b1c819ec67640621a7b9f01a144392f9851aa96271c7ffcef7e0a8b",
+    "coordinator/registry/cache_match_reference_test.go": "8fd0e2671d0d848a9ea603484ba6770ceb2d962e5c330e8ccdd49323c590e313",
+    "coordinator/registry/cache_match_groups_test.go": "d2fc9fe5775b275196b32d79ae4dfdb198ae7bec22a5e6973c357054ab07f4cf",
+    "coordinator/registry/cache_match_benchmark_test.go": "184d16a17acb41c8db9883fadee55c18870e4b2223b8316f471406b508be1b51"
+  },
+  "baseline_regression_command": "go1.25.0 test ./registry -run '^TestCacheMatchesRetainDeepestCompatibilityGroups$' -count=1 -v",
+  "baseline_regression_result": "Expected FAIL:6656 retained vs32 required representatives.",
+  "race_command": "go1.25.0 test -race ./registry -run '^Test(Cache|PrefixCache)' -count=1 -json",
+  "race_status": "PASS",
+  "race_results": {
+    "top_level_passed": 152,
+    "all_test_events_passed": 355,
+    "failures": 0,
+    "skips": 3,
+    "package_elapsed_seconds": 24.664,
+    "log_sha256": "572917d9be191e187d19d8c3695ab4a7df41eecfdc84aee3f053dfd23f895a15",
+    "skipped_tests": [
+      "TestCachePersistenceNewestSessionInvalidation/postgres/queued",
+      "TestCachePersistenceNewestSessionInvalidation/postgres/flushed",
+      "TestCacheRoutingPersistenceSurvivesRestart/postgres"
+    ],
+    "skip_reason": "Existing PostgreSQL integration cases require DATABASE_URL; no test database configured in this focused registry-only run."
+  },
+  "review_scope": {
+    "unchanged": [
+      "Boundary HMAC computation and request/account scope",
+      "Tracker generation fencing, holder expiry and recompute validation",
+      "Provider and measurement capability identity checks",
+      "Capability quarantine, negotiated tier policy and commit revision fences",
+      "Deepest endpoint order, shorter invalid-deep fallbacks and complete hint values",
+      "Unique matching-holder and valid-holder opportunity counters",
+      "Tracker size, provider admission, routing scores and resource limits"
+    ],
+    "optimization_only": "Per-query append-only match materialization after existing holder proof validation. Up to eight compatibility comparisons per retained provider, at most256 tracked providers; then direct append-all fallback."
+  }
+}

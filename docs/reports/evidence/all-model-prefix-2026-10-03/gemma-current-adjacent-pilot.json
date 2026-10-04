@@ -1,0 +1,122 @@
+{
+  "scope": "One current A5 Gemma ordinary-historical same-donor middle/latest physical pilot; no old-policy image or paired-policy gain.",
+  "openRouterID": "google/gemma-4-26b-a4b-it",
+  "catalogModelID": "gemma-4-26b-qat-4bit",
+  "modelType": "gemma4",
+  "servingModelType": "Gemma4TextModel",
+  "artifactAggregateSHA256": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+  "startedUTC": "2026-10-04T03:34:10.829114+00:00",
+  "endedUTC": "2026-10-04T03:35:11.371297+00:00",
+  "strictSealEndedUTC": "2026-10-04T03:35:56.929889+00:00",
+  "status": "closed_unqualified",
+  "safetyProofStatus": "pass",
+  "qualificationSealed": false,
+  "pairedSpeedQualified": false,
+  "fleetGainClaimed": false,
+  "requestPopulation": 6,
+  "outputTokensPerRequest": 128,
+  "owningTest": {
+    "executedPassed": 0,
+    "executedFailed": 1,
+    "skippedRecords": 0,
+    "terminalOutcome": "failed",
+    "unexpectedIssues": 0,
+    "actualParityIssueCount": 1,
+    "expectedKnownIssues": 0
+  },
+  "exitCode": 1,
+  "contractFailures": [
+    "adjacent_output_parity",
+    "adjacent_warm_fork_exact_output_parity"
+  ],
+  "geometry": {
+    "donorTokens": 5974,
+    "middleSharedTokens": 4096,
+    "middleForkTokens": 5974,
+    "donorDemandedTokens": 4096,
+    "adjacentSharedTokens": 5120,
+    "adjacentForkTokens": 5974,
+    "ordinaryStripeTokens": 2048,
+    "middlePrefillChunks": 1,
+    "adjacentPrefillChunks": 1,
+    "donorPrefillChunks": 3,
+    "coldPrefillChunks": 3,
+    "requestedMTP": false,
+    "actualMTPActive": false
+  },
+  "exactOutputComparisons": {
+    "demandedDonorVsNovelDonor": true,
+    "middleWarmVsCold": true,
+    "adjacentWarmVsCold": false
+  },
+  "middleRestore": {
+    "restoredTokens": 4096,
+    "matchedTokens": 4096,
+    "replayTokens": 0,
+    "filesReadDelta": 2,
+    "bytesReadDelta": 293664104,
+    "stageDisposition": "staged"
+  },
+  "adjacentRestore": {
+    "restoredTokens": 5120,
+    "matchedTokens": 5120,
+    "replayTokens": 0,
+    "filesReadDelta": 2,
+    "bytesReadDelta": 314645132,
+    "stageDisposition": "staged"
+  },
+  "donorArchive": {
+    "filesWrittenDelta": 3,
+    "bytesWrittenDelta": 838949278,
+    "writeMillisecondsDelta": 274.510833
+  },
+  "sameOriginalDonorSessionAndScope": true,
+  "noInterveningArchiveWrites": true,
+  "allFiveNonDonorWritesZero": true,
+  "allSixCheckpointWritesDrained": true,
+  "physicalMemoryBytes": 137438953472,
+  "productionKVGrantBytes": 102180864048,
+  "activationReserveBytes": 5905580032,
+  "schedulerConfiguration": {
+    "demandedCheckpointPartitionIncludesLongPrompts": false,
+    "maxBatchedTokensPerStep": 2048,
+    "maxConcurrentPartialPrefills": 1,
+    "maxConcurrentRequests": 1,
+    "prefillChunkSize": 512,
+    "soloPrefillStripeTokens": 2048
+  },
+  "strictFsync": false,
+  "provenance": {
+    "compatibleSDKCommit": "3a8257679ce75c8d775ba04db6b0a5259643034d",
+    "testedImageSHA256": "47826451f8b92bc3ca80a62b0c06c53cfbb0b2d3da8b52c468fd52ae715a061a",
+    "MetalSHA256": "2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2",
+    "sourceResourcesImagePlanOrchestrationUnchanged": true,
+    "allSixClosedInputDigestsIndependentlyVerified": true,
+    "logSHA256": "60b95fad5c2dbb0b3113aca47f94f732c8fbd7e8d9bce13ebc3a1f85c9105862",
+    "sealSHA256": "193e41b7ab69219d7a8b94e21d2848f47b92aed00776406bd528aeeae9396d32",
+    "processOwnership": {
+      "directChildReaped": true,
+      "maximumTrackedDescendants": 0,
+      "trackedOwnedProcessesQuiescent": true,
+      "ownershipIdentity": "PID plus process creation time; no command/environment sweep"
+    },
+    "portableRuntimeClosureClaimed": false
+  },
+  "earlierSetupAttempt": {
+    "startedUTC": "2026-10-04T03:30:17.396999+00:00",
+    "endedUTC": "2026-10-04T03:30:21.879142+00:00",
+    "exitCode": 1,
+    "resultPresent": false,
+    "nativeModelExecutionStarted": false,
+    "failure": "Fixture Metal lookup requires immediate configuration directory debug or release; initial preserved directory was runtime. V2 preserves runtime/debug without changing fixtures or gates.",
+    "directChildReaped": true,
+    "maximumTrackedDescendants": 0,
+    "bindingsUnchanged": true
+  },
+  "limitations": [
+    "One current-only pilot; not a counterbalanced old/current comparison.",
+    "Adjacent warm/cold witnesses run in fixed order and failed exact generated-output parity.",
+    "Physical reads and drain prove payload reuse, not state equivalence, fsync durability, RSS bounds or decoder improvement.",
+    "No speedup or production-fleet hit-rate claim is qualified; mismatch cause remains unknown."
+  ]
+}

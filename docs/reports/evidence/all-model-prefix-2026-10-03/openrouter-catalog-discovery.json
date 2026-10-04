@@ -1,0 +1,182 @@
+{
+  "status": "pass",
+  "checkedUTC": "2026-10-04T01:41:07.763996+00:00",
+  "providerIdentity": {
+    "slug": "darkbloom",
+    "name": "Darkbloom"
+  },
+  "scope": "Unauthenticated official public discovery only; no keys, inference requests, prompts or completion content. Inventory page count plus every benchmark model link and per-model endpoint identity. Snapshot does not promise future catalog completeness or inference availability.",
+  "primaryMatrixPublicModelIDs": [
+    "google/gemma-4-26b-a4b-it",
+    "nvidia/nemotron-3.5-lightning",
+    "openai/gpt-oss-20b",
+    "prism-ml/ternary-bonsai-2-27b",
+    "qwen/qwen3.5-35b-a3b",
+    "qwen/qwen3.5-9b",
+    "qwen/qwen3.6-35b-a3b",
+    "qwen/qwen3.8-27b",
+    "xiaomi/mimo-v2.6-flash"
+  ],
+  "providerPage": {
+    "url": "https://openrouter.ai/provider/darkbloom",
+    "startedUTC": "2026-10-04T01:41:07.245569+00:00",
+    "endedUTC": "2026-10-04T01:41:07.512619+00:00",
+    "HTTPStatus": 200,
+    "reportedModelCounts": [
+      9
+    ],
+    "benchmarkedModelLinks": [
+      "google/gemma-4-26b-a4b-it",
+      "nvidia/nemotron-3.5-lightning",
+      "openai/gpt-oss-20b",
+      "prism-ml/ternary-bonsai-2-27b",
+      "qwen/qwen3.5-35b-a3b",
+      "qwen/qwen3.5-9b",
+      "qwen/qwen3.6-35b-a3b",
+      "qwen/qwen3.8-27b",
+      "xiaomi/mimo-v2.6-flash"
+    ]
+  },
+  "providersEndpoint": {
+    "url": "https://openrouter.ai/api/v1/providers",
+    "startedUTC": "2026-10-04T01:41:07.518974+00:00",
+    "endedUTC": "2026-10-04T01:41:07.567082+00:00",
+    "HTTPStatus": 200,
+    "matchingProviderIdentities": [
+      {
+        "slug": "darkbloom",
+        "name": "Darkbloom"
+      }
+    ]
+  },
+  "modelEndpoints": [
+    {
+      "publicModelID": "google/gemma-4-26b-a4b-it",
+      "url": "https://openrouter.ai/api/v1/models/google/gemma-4-26b-a4b-it/endpoints",
+      "startedUTC": "2026-10-04T01:41:07.573402+00:00",
+      "endedUTC": "2026-10-04T01:41:07.636303+00:00",
+      "HTTPStatus": 200,
+      "providerIdentities": [
+        {
+          "provider_name": "Darkbloom",
+          "name": "Darkbloom | google/gemma-4-26b-a4b-it-20260403"
+        }
+      ],
+      "returnedPublicModelID": "google/gemma-4-26b-a4b-it"
+    },
+    {
+      "publicModelID": "nvidia/nemotron-3.5-lightning",
+      "url": "https://openrouter.ai/api/v1/models/nvidia/nemotron-3.5-lightning/endpoints",
+      "startedUTC": "2026-10-04T01:41:07.573539+00:00",
+      "endedUTC": "2026-10-04T01:41:07.633417+00:00",
+      "HTTPStatus": 200,
+      "providerIdentities": [
+        {
+          "provider_name": "Darkbloom",
+          "name": "Darkbloom | nvidia/nemotron-3.5-lightning-20260807"
+        }
+      ],
+      "returnedPublicModelID": "nvidia/nemotron-3.5-lightning"
+    },
+    {
+      "publicModelID": "openai/gpt-oss-20b",
+      "url": "https://openrouter.ai/api/v1/models/openai/gpt-oss-20b/endpoints",
+      "startedUTC": "2026-10-04T01:41:07.573648+00:00",
+      "endedUTC": "2026-10-04T01:41:07.636166+00:00",
+      "HTTPStatus": 200,
+      "providerIdentities": [
+        {
+          "provider_name": "Darkbloom",
+          "name": "Darkbloom | openai/gpt-oss-20b"
+        }
+      ],
+      "returnedPublicModelID": "openai/gpt-oss-20b"
+    },
+    {
+      "publicModelID": "prism-ml/ternary-bonsai-2-27b",
+      "url": "https://openrouter.ai/api/v1/models/prism-ml/ternary-bonsai-2-27b/endpoints",
+      "startedUTC": "2026-10-04T01:41:07.573750+00:00",
+      "endedUTC": "2026-10-04T01:41:07.636014+00:00",
+      "HTTPStatus": 200,
+      "providerIdentities": [
+        {
+          "provider_name": "Darkbloom",
+          "name": "Darkbloom | prism-ml/ternary-bonsai-2-27b-20260918"
+        }
+      ],
+      "returnedPublicModelID": "prism-ml/ternary-bonsai-2-27b"
+    },
+    {
+      "publicModelID": "qwen/qwen3.5-35b-a3b",
+      "url": "https://openrouter.ai/api/v1/models/qwen/qwen3.5-35b-a3b/endpoints",
+      "startedUTC": "2026-10-04T01:41:07.633489+00:00",
+      "endedUTC": "2026-10-04T01:41:07.693398+00:00",
+      "HTTPStatus": 200,
+      "providerIdentities": [
+        {
+          "provider_name": "Darkbloom",
+          "name": "Darkbloom | qwen/qwen3.5-35b-a3b-20260224"
+        }
+      ],
+      "returnedPublicModelID": "qwen/qwen3.5-35b-a3b"
+    },
+    {
+      "publicModelID": "qwen/qwen3.5-9b",
+      "url": "https://openrouter.ai/api/v1/models/qwen/qwen3.5-9b/endpoints",
+      "startedUTC": "2026-10-04T01:41:07.636043+00:00",
+      "endedUTC": "2026-10-04T01:41:07.695620+00:00",
+      "HTTPStatus": 200,
+      "providerIdentities": [
+        {
+          "provider_name": "Darkbloom",
+          "name": "Darkbloom | qwen/qwen3.5-9b-20260310"
+        }
+      ],
+      "returnedPublicModelID": "qwen/qwen3.5-9b"
+    },
+    {
+      "publicModelID": "qwen/qwen3.6-35b-a3b",
+      "url": "https://openrouter.ai/api/v1/models/qwen/qwen3.6-35b-a3b/endpoints",
+      "startedUTC": "2026-10-04T01:41:07.636252+00:00",
+      "endedUTC": "2026-10-04T01:41:07.695684+00:00",
+      "HTTPStatus": 200,
+      "providerIdentities": [
+        {
+          "provider_name": "Darkbloom",
+          "name": "Darkbloom | qwen/qwen3.6-35b-a3b-20260415"
+        }
+      ],
+      "returnedPublicModelID": "qwen/qwen3.6-35b-a3b"
+    },
+    {
+      "publicModelID": "qwen/qwen3.8-27b",
+      "url": "https://openrouter.ai/api/v1/models/qwen/qwen3.8-27b/endpoints",
+      "startedUTC": "2026-10-04T01:41:07.636405+00:00",
+      "endedUTC": "2026-10-04T01:41:07.692076+00:00",
+      "HTTPStatus": 200,
+      "providerIdentities": [
+        {
+          "provider_name": "Darkbloom",
+          "name": "Darkbloom | qwen/qwen3.8-27b-20260814"
+        }
+      ],
+      "returnedPublicModelID": "qwen/qwen3.8-27b"
+    },
+    {
+      "publicModelID": "xiaomi/mimo-v2.6-flash",
+      "url": "https://openrouter.ai/api/v1/models/xiaomi/mimo-v2.6-flash/endpoints",
+      "startedUTC": "2026-10-04T01:41:07.692193+00:00",
+      "endedUTC": "2026-10-04T01:41:07.763797+00:00",
+      "HTTPStatus": 200,
+      "providerIdentities": [
+        {
+          "provider_name": "Darkbloom",
+          "name": "Darkbloom | xiaomi/mimo-v2.6-flash-20260921"
+        }
+      ],
+      "returnedPublicModelID": "xiaomi/mimo-v2.6-flash"
+    }
+  ],
+  "newModelFound": false,
+  "missingBenchmarkedModelLinks": []
+}

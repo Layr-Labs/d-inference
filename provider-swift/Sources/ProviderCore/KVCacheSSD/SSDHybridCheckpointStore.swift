@@ -225,11 +225,14 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
         return result
     }
 
-    func hashes(tokens: [Int], scope: String) -> [Data] {
+    func hashes(tokens: [Int], scope: String, maximumBlocks: Int? = nil) -> [Data] {
         let hasher = CBv2BlockHasher(blockSize: PrefixCachePolicy.blockSize,
                                     promptContractID: identity.promptContractID, scopeID: scope)
         let maximum = config.backendLayout == CBv2CompleteCheckpointManifest.diffusionBlockLayout
             ? tokens.count / PrefixCachePolicy.blockSize : hasher.maxLookupBlocks(tokenCount: tokens.count)
-        return hasher.chainHashes(tokens: tokens, maxBlocks: maximum)
+        // A donation may need only an earlier checkpoint. The original backend
+        // maximum still governs lookup and aligned-final endpoint semantics.
+        let boundedMaximum = maximumBlocks.map { min(maximum, max(0, $0)) } ?? maximum
+        return hasher.chainHashes(tokens: tokens, maxBlocks: boundedMaximum)
     }
 }

@@ -1,0 +1,113 @@
+{
+  "scope": "One current A5 GPTOSS ordinary-historical same-donor natural middle/latest physical pilot; no old-policy image or paired-policy gain.",
+  "openRouterID": "openai/gpt-oss-20b",
+  "catalogModelID": "gpt-oss-20b",
+  "modelType": "gpt_oss",
+  "servingModelType": "GPTOSSModel",
+  "artifactAggregateSHA256": "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512",
+  "startedUTC": "2026-10-04T03:36:18.580455+00:00",
+  "endedUTC": "2026-10-04T03:37:03.596939+00:00",
+  "strictSealEndedUTC": "2026-10-04T03:38:14.152289+00:00",
+  "status": "closed_unqualified",
+  "safetyProofStatus": "pass",
+  "qualificationSealed": false,
+  "pairedSpeedQualified": false,
+  "fleetGainClaimed": false,
+  "requestPopulation": 6,
+  "outputTokensPerRequest": 128,
+  "owningTest": {
+    "executedPassed": 0,
+    "executedFailed": 1,
+    "skippedRecords": 0,
+    "terminalOutcome": "failed",
+    "unexpectedIssues": 0,
+    "actualParityIssueCount": 1,
+    "expectedKnownIssues": 0
+  },
+  "exitCode": 1,
+  "contractFailures": [
+    "adjacent_output_parity",
+    "adjacent_warm_fork_exact_output_parity"
+  ],
+  "geometry": {
+    "donorTokens": 3266,
+    "middleSharedTokens": 2304,
+    "middleForkTokens": 2816,
+    "donorDemandedTokens": 2048,
+    "adjacentSharedTokens": 3200,
+    "adjacentForkTokens": 3584,
+    "adjacentExpectedRestoredTokens": 3072,
+    "ordinaryStripeTokens": 2048,
+    "middlePrefillChunks": 1,
+    "adjacentPrefillChunks": 1,
+    "donorPrefillChunks": 2,
+    "coldMiddlePrefillChunks": 2,
+    "coldAdjacentPrefillChunks": 2,
+    "requestedMTP": false,
+    "actualMTPActive": false
+  },
+  "exactOutputComparisons": {
+    "demandedDonorVsNovelDonor": true,
+    "middleWarmVsCold": true,
+    "adjacentWarmVsCold": false
+  },
+  "middleRestore": {
+    "restoredTokens": 2048,
+    "matchedTokens": 2048,
+    "replayTokens": 0,
+    "filesReadDelta": 2,
+    "bytesReadDelta": 106731794,
+    "stageDisposition": "staged"
+  },
+  "adjacentRestore": {
+    "restoredTokens": 3072,
+    "matchedTokens": 3072,
+    "replayTokens": 0,
+    "filesReadDelta": 2,
+    "bytesReadDelta": 157075198,
+    "stageDisposition": "staged"
+  },
+  "donorArchive": {
+    "filesWrittenDelta": 3,
+    "bytesWrittenDelta": 320140227,
+    "writeMillisecondsDelta": 119.97395800000001
+  },
+  "sameOriginalDonorSessionAndScope": true,
+  "noInterveningArchiveWrites": true,
+  "allFiveNonDonorWritesZero": true,
+  "allSixCheckpointWritesDrained": true,
+  "physicalMemoryBytes": 137438953472,
+  "productionKVGrantBytes": 107860842572,
+  "activationReserveBytes": 3758096384,
+  "schedulerConfiguration": {
+    "demandedCheckpointPartitionIncludesLongPrompts": false,
+    "maxBatchedTokensPerStep": 2048,
+    "maxConcurrentPartialPrefills": 1,
+    "maxConcurrentRequests": 1,
+    "prefillChunkSize": 512,
+    "soloPrefillStripeTokens": 2048
+  },
+  "strictFsync": false,
+  "provenance": {
+    "compatibleSDKCommit": "3a8257679ce75c8d775ba04db6b0a5259643034d",
+    "testedImageSHA256": "47826451f8b92bc3ca80a62b0c06c53cfbb0b2d3da8b52c468fd52ae715a061a",
+    "MetalSHA256": "2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2",
+    "sourceResourcesImagePlanOrchestrationUnchanged": true,
+    "allSixClosedInputDigestsIndependentlyVerified": true,
+    "logSHA256": "d28750b347d7fa56f7568b067ac8a4e759301b74ca84a2714d30a0161a9a1bb4",
+    "sealSHA256": "c0d10d5bdcae9cfbe760480a85fe340f0c577985c7dbcd933cfe60817dcaee74",
+    "processOwnership": {
+      "directChildReaped": true,
+      "maximumTrackedDescendants": 0,
+      "trackedOwnedProcessesQuiescent": true,
+      "ownershipIdentity": "PID plus process creation time; no command/environment sweep"
+    },
+    "portableRuntimeClosureClaimed": false
+  },
+  "limitations": [
+    "One current-only pilot; not a counterbalanced old/current comparison.",
+    "Adjacent warm/cold witnesses run in fixed order and failed exact generated-output parity.",
+    "Physical reads and drain prove payload reuse, not state equivalence, fsync durability, RSS bounds or decoder improvement.",
+    "No speedup or production-fleet hit-rate claim is qualified; mismatch cause remains unknown."
+  ]
+}

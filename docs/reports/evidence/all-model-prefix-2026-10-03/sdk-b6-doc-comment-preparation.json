@@ -1,0 +1,157 @@
+{
+  "status": "source_qualified_test_components_pass_documentation_failed",
+  "baselineSDKHead": "357c76dfd817b6627166ba8ecb1ff888a4d8ada9",
+  "correctedSDKHead": "aec06021913fff97d86c8d71889b9e9c3c4516a9",
+  "scope": "Only eleven committed Swift documentation-comment/format paths differ from B5. Compatible parent A5 pin unchanged. B5 full test result and failed DocC receipt remain historical.",
+  "nonTriviaTokenProof": {
+    "baselineRevision": "357c76dfd817b6627166ba8ecb1ff888a4d8ada9",
+    "candidateRevision": "working-tree-comment-only-documentation-cut",
+    "fileCount": 11,
+    "files": [
+      {
+        "afterSHA256": "7abf2277d25d1d75bf0b1966f362d88a75fe8ed8a862b05f62d06508a3001276",
+        "beforeSHA256": "78441c077979578d367351109992000e9591fd626b23e62059693f2726699ff5",
+        "nonTriviaTokenKindAndTextEqual": true,
+        "path": "Libraries/MLXLLM/Models/Gemma4MTP.swift",
+        "tokenCountAfter": 10400,
+        "tokenCountBefore": 10400
+      },
+      {
+        "afterSHA256": "9234c7e36b66382c967aa5a8ad9410ced28d69777f3e0017ad89b7cf75589fd2",
+        "beforeSHA256": "194273a7802c4c1c560c8114317fa4c3cc6d22f82c385cdbe9b1b9c46b4ec8d9",
+        "nonTriviaTokenKindAndTextEqual": true,
+        "path": "Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedAttentionKernel.swift",
+        "tokenCountAfter": 3049,
+        "tokenCountBefore": 3049
+      },
+      {
+        "afterSHA256": "fb607ca5300f082b31c10f73ef9bfa37541f799a5297e9b58d6cd0d35268d71d",
+        "beforeSHA256": "b070113547df72d85c98ef4f8761ba791a4fd4487682c695ecf890766c132ff6",
+        "nonTriviaTokenKindAndTextEqual": true,
+        "path": "Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedAttentionReference.swift",
+        "tokenCountAfter": 363,
+        "tokenCountBefore": 363
+      },
+      {
+        "afterSHA256": "f65e3fdb3b10f75814671d31ebb85506d714e2de7a3f6909542b8c08214ec858",
+        "beforeSHA256": "0367d6b3770712a45a1b22f92e8fae3afbcde7c0cea77b3b8418b4a07c6b1720",
+        "nonTriviaTokenKindAndTextEqual": true,
+        "path": "Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/FullSequenceKV.swift",
+        "tokenCountAfter": 1275,
+        "tokenCountBefore": 1275
+      },
+      {
+        "afterSHA256": "ce60516f6e9f40df9b9f425db95e3b8fc2f6e0cf33811ce2be27b7cd8427dc9c",
+        "beforeSHA256": "98fc8f584c5da53e187531470af30a832144eba11a9799efbf7e458bc9e0b0c0",
+        "nonTriviaTokenKindAndTextEqual": true,
+        "path": "Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/WindowedSequenceKV.swift",
+        "tokenCountAfter": 2508,
+        "tokenCountBefore": 2508
+      },
+      {
+        "afterSHA256": "9efd67d7cb4cd12641c24f8908968c057dd3f3aef60b86e7a139472519cfc671",
+        "beforeSHA256": "9365d044c762eb5d949ae1e7cacbb12862abd19ce2d17569987502876f85827f",
+        "nonTriviaTokenKindAndTextEqual": true,
+        "path": "Libraries/MLXLMCommon/Evaluate.swift",
+        "tokenCountAfter": 7795,
+        "tokenCountBefore": 7795
+      },
+      {
+        "afterSHA256": "d532c30d1a73219d900a2472b7d4fe28bfd99f82438f8db5556c651925cab6a5",
+        "beforeSHA256": "bf59f121334bc467f965f8b58777861ae3204e157a896ef187b35e8a702c4b52",
+        "nonTriviaTokenKindAndTextEqual": true,
+        "path": "Libraries/MLXLMCommon/LanguageModel.swift",
+        "tokenCountAfter": 943,
+        "tokenCountBefore": 943
+      },
+      {
+        "afterSHA256": "3f49fd3400c3f5e0fb996f1616709264e6378848d7f49b65207cc9d2c964548b",
+        "beforeSHA256": "c21dfcb63ec2e44005296956db1c06dfa16eb75d840069f1417cea3349436bfc",
+        "nonTriviaTokenKindAndTextEqual": true,
+        "path": "Libraries/MLXLMCommon/ModelFactory.swift",
+        "tokenCountAfter": 1752,
+        "tokenCountBefore": 1752
+      },
+      {
+        "afterSHA256": "c9561b7607b981b0f2106ee0ff8b2c93fa360f23685d7d3779bc5b1f2431e164",
+        "beforeSHA256": "ff66f60c0f29c6c7deb0d7730ec7db8f2ff13665034dbd03f60de5a8b1d2b3a2",
+        "nonTriviaTokenKindAndTextEqual": true,
+        "path": "Libraries/MLXLMCommon/Tool/ToolCallProcessor.swift",
+        "tokenCountAfter": 1989,
+        "tokenCountBefore": 1989
+      },
+      {
+        "afterSHA256": "58c4bc392b611f24e9aa0e28e3b0b2307e25baba32e5ac82d12b41df99141f17",
+        "beforeSHA256": "96aaeadfc8c8e9f08e92dca8f13edc76ffc37b6c6acaed9867a5ecd56f66cf16",
+        "nonTriviaTokenKindAndTextEqual": true,
+        "path": "Libraries/MLXLMServer/Runtime/MLXModelContainerEngine.swift",
+        "tokenCountAfter": 933,
+        "tokenCountBefore": 933
+      },
+      {
+        "afterSHA256": "2dfe65a96f4728fb704e71ad18d3b9367cf939ce749a59c24d1941d4db521c85",
+        "beforeSHA256": "b148aa5e773469187879081c063ff65689477f06103e755c9ecc146d17bd2920",
+        "nonTriviaTokenKindAndTextEqual": true,
+        "path": "Libraries/MLXLMServer/Runtime/ToolStreamHandler.swift",
+        "tokenCountAfter": 154,
+        "tokenCountBefore": 154
+      }
+    ],
+    "method": "SwiftParser Parser.parse; sourceAccurate tokens; exact tokenKind description and text; trivia omitted; malformed parses rejected",
+    "sourceOnlyScope": "Lexical non-trivia equality for the explicitly listed Swift sources. No compilation/runtime equivalence or unchanged-byte claim for edited files is inferred.",
+    "status": "pass"
+  },
+  "everyBeforeAndAfterSHA256MatchedCommittedGitBlob": true,
+  "completeChangedSwiftPathSetMatchedProof": true,
+  "tokenProofSHA256": "f5811a923b90b8be9d6b55ccc4a221b290486b3dd05a2306d82efa2bf172f974",
+  "reportedSelfTestControls": {
+    "passed": 8,
+    "scope": "Prepared token-helper controls executed by root; excludes test/inference counts."
+  },
+  "compilerPreparation": {
+    "firstAttempt": "failed_to_find_standard_library_for_default_macOS28_target",
+    "retry": "explicit_macOS15_target_and_XcodeSDK_succeeded_without_helper_source_change",
+    "scope": "Tool preparation only, not an inference or test failure."
+  },
+  "formatAndForkReceipt": {
+    "status": "pass_isolated_source_audit_no_runtime_qualification",
+    "startedUTC": "2026-10-04T01:57:38.034252+00:00",
+    "endedUTC": "2026-10-04T01:57:42.000470+00:00",
+    "SDKHead": "aec06021913fff97d86c8d71889b9e9c3c4516a9",
+    "freshMain": "99b41b855d90f92516a329bd62e2800cec64fbc5",
+    "formatterVersion": "6.3.0",
+    "changedSwiftPaths": 39,
+    "everyCurrentCommittedSourceAlreadyFormatted": true,
+    "everyIsolatedProjectionIdempotent": true,
+    "allSourcesUnchanged": true,
+    "HEADUnchanged": true,
+    "statusCleanBeforeAndAfter": true,
+    "formatterConfigurationSHA256": "c66a5da8152975e0c3a5ed7ff4ed5047cb2868ce2acf7174c5604a627bedf000",
+    "formatterLogSHA256": "b7901284d6ea352fc18704b94f13888ed6ccfa9530cfc5b07de1e2908c7844c0",
+    "actualForkChecks": [
+      {
+        "name": "fork-default",
+        "exitCode": 0,
+        "logSHA256": "5c93c1785273571371f15375a250668764fbcfb7d6334e38603b93068ba7a958",
+        "changedPaths": 1494,
+        "describedPaths": 1494,
+        "globs": 169
+      },
+      {
+        "name": "fork-current-main",
+        "exitCode": 0,
+        "logSHA256": "68446566fbe8b87e57f68c2963c2baf83d0fb93f9a4a1a713d4d017ef955d92f",
+        "changedPaths": 1494,
+        "describedPaths": 1494,
+        "globs": 169
+      }
+    ],
+    "method": "Read-only committed-source projections into fresh owned temporary copies. Distinct repeated audit; root actual mutation/idempotence transcript is separate.",
+    "sourceReceiptSHA256": "b74f32c13aacaaeb0b8c0ca00d44c7e6f67e7d7279468f59870a5ac714d24628",
+    "noSwiftCompilationTestsOrGPU": true
+  },
+  "B6RuntimeTestsQualified": true,
+  "B6DocCQualified": false,
+  "B5OverallGreenClaimed": false,
+  "actualIndependentComponentEvidence": "sdk-b6-component-checks.json"
+}

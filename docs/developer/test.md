@@ -2495,6 +2495,167 @@ and unsupported backends, fresh load hashes and identity rejection. A passing
 construction suite does not replace the real-checkpoint fixture above. Live test
 skips must be reported as unrun qualification.
 
+## Model prefix latency and throughput qualification (live)
+
+`NemotronDemandedShortCheckpointTests` checks the qualified short-serving gate
+with real small model classes and empty SSD stores: exact catalog and aggregate,
+recurrent state, layout and floor; aliases, replacement weights and long-serving
+partitions stay excluded. `BonsaiDemandedShortCheckpointTests` uses real small wrapper/store witnesses
+to check the exact Bonsai ID/aggregate, recurrent state, backend/floor, absent MTP
+capability, aliases/replacement weights and unchanged short-only construction.
+Host policy tests do not replace fresh actual-artifact production verification.
+`SSDCheckpointDonationHashTests` checks real chain
+endpoints and authenticated tags, bounded work, ordinary/diffusion endpoint rules,
+invalid geometry and scope/key isolation. Existing encrypted-store write/read,
+duplicate and demand suites cover their integration.
+
+`SSDCheckpointDonationHashBenchmarkTests` is a separate opt-in CPU measurement.
+Set `DARKBLOOM_DONATION_HASH_BENCHMARK=1`, an absolute new
+`DARKBLOOM_DONATION_HASH_BENCHMARK_OUTPUT`, and an absolute
+`DARKBLOOM_DONATION_HASH_BENCHMARK_IDENTITY` JSON containing the actual compiler
+version, bundle SHA-256, source revision and source-snapshot SHA-256. Retain an
+independent receipt verifying those caller-supplied identities before and after.
+It compares real hash/HMAC work in twelve counterbalanced pairs per synthetic
+cell, verifies exact addresses, and includes a deepest-only control. Run it in
+a quiet CPU lane using the already-built matched runner; its results measure
+hash preparation rather than a complete write job, model TTFT or GPU throughput.
+
+The opt-in `ModelPrefixBenchmarkLiveTests` suite loads one exact catalog
+artifact, hashes its payload before and after load, binds the source-matched
+runtime metallib, and uses the actual production factory and KV grant. Run it
+alone on an idle owned GPU after `make provider-test` has built and staged the
+test runner. Model hardware and load requirements still apply; the concrete
+Qwen3.8 builds require their normal runtime capabilities.
+
+Create a JSON specification for the owned artifact, substituting its exact
+catalog hash and absolute paths:
+
+```json
+{
+  "modelID": "Qwen3.5-9B",
+  "openRouterID": "qwen/qwen3.5-9b",
+  "directory": "/path/to/current/model",
+  "expectedWeightHash": "<exact catalog SHA-256>",
+  "modelType": "qwen3_5",
+  "outputPath": "/path/to/owned/results.json",
+  "pairs": 3,
+  "outputTokens": 128,
+  "cases": [{
+    "name": "short", "donorTokens": 1793, "sharedTokens": 1152,
+    "forkTokens": 2304, "demandedTokens": 1024
+  }]
+}
+```
+
+```bash
+cd provider-swift
+DARKBLOOM_PREFIX_MODEL_BENCHMARK=1 DARKBLOOM_PREFIX_EXCLUSIVE_GPU=1 \
+DARKBLOOM_PREFIX_MODEL_SPEC=/path/to/owned/specification.json \
+swift test --skip-build --no-parallel --filter ModelPrefixBenchmarkLiveTests
+```
+
+Each pair contains an identical cold fork, a novel donor with zero demand,
+a demanded donor and its warm fork, in counterbalanced order and separate
+scopes. Fixed greedy token IDs and exact output hashes establish output parity;
+actual restored-token usage and SSD read counters establish physical reuse.
+Cells with zero restored tokens demonstrate no cache reuse. These probes do
+not qualify chat quality or answer correctness. TTFT begins before
+submission and includes staging. Generation TPS is `(output tokens - tokens
+in the first nonempty event) / (last-event time - first-event time)`. It is
+undefined for a single output event; MTP may emit multiple IDs per event.
+End-to-end TPS ends at the terminal event. Receipt completion ends when
+`session.complete` returns after receipt retirement and stage refunds.
+For the observed COMPLETE layouts, terminal delivery already waits for
+checkpoint publication. A separate quiescence rate explicitly waits for
+engine idle and the owned checkpoint writer/activity barriers; its recorded
+receipt-to-quiescence tail does not change the earlier timestamps. These
+serialized request rates do not measure saturated throughput or fsync durability.
+The JSON retains every completed row, actual restored tokens, file reads and
+writes, donor cost, and exact-output comparisons, including failed comparisons.
+
+`mtpEnabled` defaults to `false`; set it explicitly to qualify the actual
+assistant-bearing serving configuration. The factory must load and activate
+the real assistant. Each row records active snapshots and actual drafting,
+emission and serial/rectangular verification deltas; an enabled setting or a
+configured verification mode alone cannot pass. `pairOffset` defaults to zero
+and preserves counterbalanced request order across separate processes.
+
+An optional `checkpointPartition` value of
+`demanded_recurrent_qualification` exercises the benchmark-only broader and
+longer recurrent partition. Compare it against a separate `production` run
+with identical cells and artifacts. Its cache-on/off comparison alone does
+not measure an improvement over shipping code. Native historical models do
+not use this override. Run every model sequentially and retain unsupported
+hardware, load refusals and parity failures as unqualified results.
+
+For a same-original-donor adjacent-frontier correctness witness, a case may add:
+
+```json
+{
+  "name": "long", "donorTokens": 16513, "sharedTokens": 14464,
+  "forkTokens": 16896, "demandedTokens": 14336,
+  "adjacentFork": {
+    "sharedTokens": 16400, "forkTokens": 16896,
+    "expectedRestoredTokens": 16384
+  }
+}
+```
+
+The optional object preserves old four-role specifications. It appends
+`adjacent_warm_fork` and `adjacent_cold_fork` after the original four rows, using
+that original donor's literal session/store/scope and hint. Actual input lengths,
+shared prefix and first divergence are validated before import. No second donor,
+new target hint, reconstructed checkpoint or memory-cache substitute qualifies.
+After idle/write/activity joins, cumulative archive counters must match the
+original donor's positive row delta and remain unchanged across all five
+non-donor rows. Both requested boundaries need exact cold/warm and cross-policy
+output equality, real file/byte reads, exact expected restoration and replay
+zero. Every MTP-on row still needs actual active work counters.
+
+The two appended rows have fixed warm-before-cold order and are correctness
+witnesses, excluded from the counterbalanced 256-ID donor-plus-middle-warm
+economic denominator. Four `ModelPrefixBenchmarkAdjacentForkTests` host methods
+cover optional/bounded spec decoding, actual divergence, monotonic donor counter
+proof and hidden/intervening writes. Eight independent pure qualification
+controls additionally reject missing/wrong-order rows, fabricated comparison
+booleans, degraded middle/adjacent payloads, changed donor hints, MTP/drain
+failures and uncharged extra ranges. These controls are separate from native
+execution; report executed counts and retain unrun native gates.
+
+`CBv2DemandedCheckpointContinuationTests` is a required seven-method SDK scheduler/tiny-fixture
+suite, independent of full-model/native qualification. It checks exact ordinary
+and split geometry/three retained roles, live versus projected in-flight work,
+rollback/retry, aligned and terminal targets, real striped admission fallback,
+pause versus incompatible progress, and preemption/capture disarm. It must run
+without an opt-in environment gate through the nonempty/no-skip wrapper:
+
+```bash
+cd libs/mlx-swift-lm
+../../scripts/run-nested-suite.sh CBv2DemandedCheckpointContinuationTests --no-parallel
+```
+
+The source-matched test binary and Metal must already be built/staged; some
+regression paths evaluate small synthetic MLX graphs. Preserve
+existing short partition/range/preemption/packed/capacity, first-content
+projection/deadline and native-retention gates. The benchmark-only long flag
+stays off in serving; passing host geometry does not establish an SSD archive,
+full-model output parity or a policy speedup. Use three fresh source-bound
+policy blocks and the same-original-donor adjacent proof before a separate
+long-serving decision.
+
+For a geometry diagnostic, specify `soloPrefillStripeTokens` explicitly in
+the JSON. The isolated factory does not forward arbitrary process overrides.
+Every row records the effective scheduler configuration and observed prefill
+chunk count; verify both before describing a comparison as matched.
+`captureTokenDiagnostics: true` records actual generated IDs, selected
+log-probabilities and top-two margins for those positions. Keep this raw
+diagnostic output private and publish only curated equality/finite-value
+results. Its additional observation work excludes its timings from performance
+comparisons; a matching recorded slice does not certify every state tensor.
+Requesting top logprobs disables active MTP in its normal eligibility gate, so
+this diagnostic must not be presented as the same MTP execution. Equal prefill
+chunk counts alone also do not control adaptive MTP width/cost history.
+
 ## Qwen recurrent checkpoint retention (live)
 
 `provider-swift/Tests/ProviderCoreTests/Inference/Live/Qwen/Qwen35CheckpointRetentionLiveTests.swift`

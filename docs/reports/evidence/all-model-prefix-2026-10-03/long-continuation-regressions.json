@@ -1,0 +1,299 @@
+{
+  "status": "controlled_before_expected_failure_and_eight_file_candidate_focused_checks_pass",
+  "scope": "Seven current compatible-SDK long-partition geometry regressions; source/host scheduling and projection only. No actual SSD adjacent-fork proof, full-model performance or serving-long activation.",
+  "compatibleSDKBase": "58d538c8a9668f72a2702d5bb348e0e53a8cdf61",
+  "parentBaseCut": "e8ca1dcf9a51d5f6cd98fd201fb9e8f6d0eb6c33",
+  "compiler": "Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)\nTarget: arm64-apple-macosx28.0",
+  "before": {
+    "status": "expected_regression_failure",
+    "startedUTC": "2026-10-04T00:56:00.825659+00:00",
+    "endedUTC": "2026-10-04T00:59:53.109983+00:00",
+    "tests": 7,
+    "passed": 2,
+    "failedCases": 5,
+    "expectedAssertionFailures": 24,
+    "unexpectedFailures": 0,
+    "skipped": 0,
+    "testSeconds": 1.08,
+    "buildSeconds": 215.7400905000395,
+    "metalStagingSeconds": 9.366792000015266,
+    "selectedProcessSeconds": 6.3322715000249445,
+    "testImageSHA256": "fee7df9ae502e3e8b6f2834dee38cffd05b14cf3e6792c1bacc70494f99f6a85",
+    "testImageBeforeAfterIdentical": true,
+    "sourceSnapshotAtBuildSHA256": "5a902926bec262dc48c5a390da347458a1a988950cd3c3d322b7c24450b929bf",
+    "sourceAtBuildAfterTestsIdentical": true,
+    "originalSourceFinallyRestoredExactly": true,
+    "productSourceUnchangedWithinRun": true,
+    "temporaryRegressionTestRestoredExactly": true,
+    "allOwnedStepsReapedAndQuiescent": true,
+    "methods": [
+      {
+        "method": "testActualPreemptionAndMonotonicCaptureDisarmSuppressContinuation",
+        "outcome": "passed",
+        "seconds": 0.001
+      },
+      {
+        "method": "testActualUnarmedProgressDiscardsCarryButPauseWithoutWorkDoesNot",
+        "outcome": "failed",
+        "seconds": 1.074
+      },
+      {
+        "method": "testAlignedTargetAndTerminalOriginalEndNeverAddAnotherRange",
+        "outcome": "failed",
+        "seconds": 0.001
+      },
+      {
+        "method": "testLongSplitPreservesActualLatestGeometryAndThreeRetainedRoles",
+        "outcome": "failed",
+        "seconds": 0.002
+      },
+      {
+        "method": "testProjectionChargesInFlightTargetAndResidualExactlyOnceWithoutMutation",
+        "outcome": "failed",
+        "seconds": 0.001
+      },
+      {
+        "method": "testRealKVFallbackDoesNotRememberAnUnassignedRangeEnd",
+        "outcome": "passed",
+        "seconds": 0.0
+      },
+      {
+        "method": "testRollbackRetriesTargetAndResidualWithTheSameRangeAndProjection",
+        "outcome": "failed",
+        "seconds": 0.001
+      }
+    ]
+  },
+  "after": {
+    "status": "pass",
+    "startedUTC": "2026-10-04T01:03:46.619875+00:00",
+    "endedUTC": "2026-10-04T01:06:28.699678+00:00",
+    "reviewedSourceDeltaFiles": [
+      "Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2Contracts.swift",
+      "Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift",
+      "Libraries/MLXLMCommon/ContinuousBatchingV2/FirstTokenDeadlineAdmissionV2.swift",
+      "Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/DemandedCheckpointContinuation.swift",
+      "Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/DemandedShortCheckpointRange.swift",
+      "Libraries/MLXLMCommon/ContinuousBatchingV2/SchedulerV2.swift",
+      "Tests/MLXLMTests/CBv2DemandedCheckpointContinuationTests.swift",
+      "Tests/MLXLMTests/CBv2DemandedCheckpointPartitionTests.swift"
+    ],
+    "changedFileCount": 8,
+    "sourceDeltaMatchesFrozenReviewedManifest": true,
+    "beforeReceiptDigestBound": true,
+    "frozenProposalAndAllControlledHelpersMatchBaseline": true,
+    "tests": 64,
+    "selectors": 11,
+    "passed": 64,
+    "failed": 0,
+    "unexpectedFailures": 0,
+    "skipped": 0,
+    "newContinuationMethods": 7,
+    "checks": [
+      {
+        "suite": "CBv2DemandedCheckpointContinuationTests",
+        "framework": "XCTest",
+        "tests": 7,
+        "passed": 7,
+        "failed": 0,
+        "unexpected": 0,
+        "skipped": 0,
+        "testSeconds": 0.002,
+        "selectedProcessSeconds": 4.52757787500741,
+        "logSHA256": "74f06899d91646a6a029154af06df6499a9b2f3674e9e9f40df0ca1643fe4f66"
+      },
+      {
+        "suite": "CBv2DemandedCheckpointPartitionTests",
+        "framework": "XCTest",
+        "tests": 3,
+        "passed": 3,
+        "failed": 0,
+        "unexpected": 0,
+        "skipped": 0,
+        "testSeconds": 0.001,
+        "selectedProcessSeconds": 3.573108458018396,
+        "logSHA256": "8d0daabc48fd4bfb6b088f3a346ab6f9e6b2e3e781f56eacf9a7bfb56969b1bc"
+      },
+      {
+        "suite": "CBv2DemandedShortCheckpointRangeTests",
+        "framework": "XCTest",
+        "tests": 6,
+        "passed": 6,
+        "failed": 0,
+        "unexpected": 0,
+        "skipped": 0,
+        "testSeconds": 0.04,
+        "selectedProcessSeconds": 1.4195780419977382,
+        "logSHA256": "d9299a4ffe86972451514b55260717b8cebbe8c1cffef6d689ea427bb3b2b7b8"
+      },
+      {
+        "suite": "CBv2DemandedShortCheckpointPreemptionTests",
+        "framework": "XCTest",
+        "tests": 1,
+        "passed": 1,
+        "failed": 0,
+        "unexpected": 0,
+        "skipped": 0,
+        "testSeconds": 0.001,
+        "selectedProcessSeconds": 1.3757905829697847,
+        "logSHA256": "7c2660e5af1fa858bbe4da049583edc3c21c513bea4528b0100ac445c5454937"
+      },
+      {
+        "suite": "CBv2DemandedShortCheckpointCapacityTests",
+        "framework": "XCTest",
+        "tests": 1,
+        "passed": 1,
+        "failed": 0,
+        "unexpected": 0,
+        "skipped": 0,
+        "testSeconds": 0.001,
+        "selectedProcessSeconds": 1.3817496659466997,
+        "logSHA256": "d583035ea90d5ad258384ea075632375426282f69f93295926d80a201903f3ef"
+      },
+      {
+        "suite": "CBv2DemandedShortCheckpointPackedTests",
+        "framework": "XCTest",
+        "tests": 2,
+        "passed": 2,
+        "failed": 0,
+        "unexpected": 0,
+        "skipped": 0,
+        "testSeconds": 0.283,
+        "selectedProcessSeconds": 1.66658679099055,
+        "logSHA256": "699d0551ea31267bf52596867fc2230b4fe55366188e58be578a57f956e301ea"
+      },
+      {
+        "suite": "CBv2DemandedShortCheckpointEngineTests",
+        "framework": "XCTest",
+        "tests": 1,
+        "passed": 1,
+        "failed": 0,
+        "unexpected": 0,
+        "skipped": 0,
+        "testSeconds": 0.117,
+        "selectedProcessSeconds": 1.6557589580188505,
+        "logSHA256": "63755b4831cbd9771934391fd9a21a185db529805616d68b41ea1e53d4f5389f"
+      },
+      {
+        "suite": "CBv2FirstTokenWorkProjectionTests",
+        "framework": "XCTest",
+        "tests": 12,
+        "passed": 12,
+        "failed": 0,
+        "unexpected": 0,
+        "skipped": 0,
+        "testSeconds": 0.002,
+        "selectedProcessSeconds": 1.390387749997899,
+        "logSHA256": "bf621e42369beea1c1b3ab3c6b5cdd03aec14c0cb12004c0434fe633bb796280"
+      },
+      {
+        "suite": "CBv2FirstTokenDeadlineEngineTests",
+        "framework": "XCTest",
+        "tests": 16,
+        "passed": 16,
+        "failed": 0,
+        "unexpected": 0,
+        "skipped": 0,
+        "testSeconds": 4.46,
+        "selectedProcessSeconds": 5.831445707997773,
+        "logSHA256": "d18b13ef699b5cc346c06c6805d6e76030b3e34954a09662a41b43890fb78fa4"
+      },
+      {
+        "suite": "CBv2CalibratedFirstContentTests",
+        "framework": "XCTest",
+        "tests": 9,
+        "passed": 9,
+        "failed": 0,
+        "unexpected": 0,
+        "skipped": 0,
+        "testSeconds": 0.035,
+        "selectedProcessSeconds": 1.37810954102315,
+        "logSHA256": "fd2c05fd21b4aebd5b611b8fff898657fc6605b4b5a75799102cb2f6762d9c4b"
+      },
+      {
+        "suite": "CBv2UnboundedReasonTests",
+        "framework": "XCTest",
+        "tests": 6,
+        "passed": 6,
+        "failed": 0,
+        "unexpected": 0,
+        "skipped": 0,
+        "testSeconds": 0.002,
+        "selectedProcessSeconds": 1.37147754203761,
+        "logSHA256": "7516d7ac6130ce464d1f50b0f402811d1cdb9e66889fdbfc9ed8cb75e8c31fee"
+      }
+    ],
+    "buildSeconds": 126.13829187501688,
+    "metalStagingSeconds": 9.433692458027508,
+    "testImageSHA256": "c0192f2a0529476f80430b07f6b49695ebe86f577952b8601a257df85382115b",
+    "testImageBeforeAfterIdentical": true,
+    "sourceSnapshotAtBuildSHA256": "d03cb98781951a9064ce7e9a97dc0e79abc2129f215e68d34ebeafcfae65b197",
+    "sourceAllRecordedStagesIdentical": true,
+    "allOwnedStepsReapedAndQuiescent": true,
+    "productSourceUnchangedWithinRun": true,
+    "sharedRangePolicy": "demandedCheckpointRange; demandedShortCheckpointChunk is the count-only wrapper",
+    "servingLongEnabled": false,
+    "nativeSameDonorAdjacentProofQualified": false
+  },
+  "sourceSnapshotDigestConvention": "SHA256 of saved sorted-key compact JSON relative-source-path-to-SHA records; no source/model payload rehash during curation.",
+  "metallibSHA256": "2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2",
+  "actualCmlxRevision": "3fa8f25e6451174d7b06be372c3a24272b77d88e",
+  "localDiskPlanningGuards": {
+    "initialGiB": 16,
+    "activeGiB": 12,
+    "scope": "Owned build and tiny-fixture regressions only; paths may evaluate small synthetic MLX graphs. No full-model/native/performance allowance.",
+    "nativePerformanceInitialGiB": 20,
+    "nativePerformanceActiveGiB": 20.25,
+    "OSActivationKVLoadSafeguardsChanged": false
+  },
+  "qualificationLimits": [
+    "Baseline exposes original-end loss: long scheduling has five ranges and lacks the expected16,384 frontier/three-role retained geometry; assertion counts are not independent tests.",
+    "All7new methods and all11focused selectors/64XTests pass on the recorded candidate cut. Complete latest-cut components, signed pins and same-donor native middle/adjacent proof remain separate and pending.",
+    "Serving long remains false; existing actual-MTP long donor parity failures and resource exclusions remain material, and no archive-state cause is attributed."
+  ],
+  "privacy": "Public source/bundle/model identities and aggregate clocks/status/test outcomes only; no raw logs, private paths, prompt/completion text, generated output identifiers/fingerprints or process/provider/account identifiers.",
+  "ownedDerivedPreparation": {
+    "status": "pass",
+    "startedUTC": "2026-10-04T01:03:12.702676+00:00",
+    "endedUTC": "2026-10-04T01:03:25.741945+00:00",
+    "observedReclaimedBytes": 3765895168,
+    "freeBytesAfter": 17818492928,
+    "scope": "Only owned generated symbols/index/module cache removed after each listed tested executable and two staged Metal files was byte-verified in a compressed archive. No model, source, package/pin, user worktree or operating-system contents changed.",
+    "preservedRuntimes": [
+      {
+        "label": "sdk-phase-before",
+        "testImageSHA256": "fee7df9ae502e3e8b6f2834dee38cffd05b14cf3e6792c1bacc70494f99f6a85",
+        "archiveSHA256": "e1cd2e878f595096a958dc41e0a7b878dbde05a3e4b557728fc19fe507745dcd",
+        "excludedGeneratedSymbolsOnly": true,
+        "inventoriedThreeFileBytesVerified": true,
+        "preservedFileCount": 3,
+        "preservedFileKinds": [
+          "test executable",
+          "adjacent staged Metal library",
+          "nested staged Metal library"
+        ],
+        "runtimeResourceClosure": "unproven"
+      },
+      {
+        "label": "provider-bonsai-after",
+        "testImageSHA256": "2f8ef357308945e2720dd90f9fde2069651ec5bf5280ff0222721d1a0d8c117e",
+        "archiveSHA256": "3d5496d7e839390a7a08e2631ba1cffda46182a77e26702fad48577141e76b1c",
+        "excludedGeneratedSymbolsOnly": true,
+        "inventoriedThreeFileBytesVerified": true,
+        "preservedFileCount": 3,
+        "preservedFileKinds": [
+          "test executable",
+          "adjacent staged Metal library",
+          "nested staged Metal library"
+        ],
+        "runtimeResourceClosure": "unproven"
+      }
+    ],
+    "nativePerformanceDiskGuardsUnchanged": true,
+    "performanceImprovementClaimed": false,
+    "inventoriedImageAndMetalBytesUnchanged": true,
+    "runtimeResourceClosure": "unproven",
+    "standaloneArchiveReplayQualified": false,
+    "resourceInventoryLimitation": "UNPROVEN: the archived inventory covers the tested executable plus adjacent and nested staged Metal libraries only. Adjacent SwiftPM Common/Test resource bundles, frameworks and dylibs were not inventoried; no self-contained replay or complete runtime resource closure is claimed."
+  }
+}

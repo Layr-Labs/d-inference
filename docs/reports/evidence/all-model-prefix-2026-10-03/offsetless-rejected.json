@@ -1,0 +1,3289 @@
+{
+  "schema_version": 1,
+  "measurement_window": {
+    "start_utc": "2026-10-03T20:58:26.008616+00:00",
+    "end_utc": "2026-10-03T21:02:22.287199+00:00"
+  },
+  "baseline": "e8ca1dcf9a51d5f6cd98fd201fb9e8f6d0eb6c33",
+  "candidate": "e8ca1dcf9a51d5f6cd98fd201fb9e8f6d0eb6c33 + isolated encode_fast patch",
+  "models": 9,
+  "process_invocations": 54,
+  "scalar_comparisons": 36,
+  "proof_parity_comparisons": 36,
+  "scalar_measured_plan_calls": 43200,
+  "burst_measured_plan_calls": 110592,
+  "aggregation": "Arithmetic mean of two separately measured run quantiles; not a pooled percentile. Raw per-round quantiles retained. Percentage is ratio of these means.",
+  "rss_caveat": "Whole-process /usr/bin/time maximum RSS includes cold metadata/tokenizer load, fixture diagnostics, all scalar and burst cells; cumulative allocation bytes are not RSS.",
+  "contract_caveat": "Four verified current prompt-role source files; local aggregate all-zero. Serving aggregate separately recorded; no weights needed.",
+  "failure_count": 0,
+  "failures": [],
+  "comparisons": [
+    {
+      "model_id": "gemma-4-26b-qat-4bit",
+      "kind": "scalar",
+      "case": "short",
+      "parity": true,
+      "prompt_tokens": 39,
+      "p50_us": {
+        "baseline": 34.5,
+        "candidate": 34.5,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          32,
+          37
+        ],
+        "candidate_rounds": [
+          34,
+          35
+        ]
+      },
+      "p95_us": {
+        "baseline": 51.5,
+        "candidate": 45,
+        "change_percent": -12.621359223300976,
+        "baseline_rounds": [
+          43,
+          60
+        ],
+        "candidate_rounds": [
+          41,
+          49
+        ]
+      },
+      "p99_us": {
+        "baseline": 76.5,
+        "candidate": 65,
+        "change_percent": -15.032679738562093,
+        "baseline_rounds": [
+          65,
+          88
+        ],
+        "candidate_rounds": [
+          43,
+          87
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 534,
+        "candidate": 495,
+        "change_percent": -7.303370786516849,
+        "baseline_rounds": [
+          534,
+          534
+        ],
+        "candidate_rounds": [
+          495,
+          495
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 94047,
+        "candidate": 93776,
+        "change_percent": -0.2881537954427027,
+        "baseline_rounds": [
+          94047,
+          94047
+        ],
+        "candidate_rounds": [
+          93776,
+          93776
+        ]
+      }
+    },
+    {
+      "model_id": "gemma-4-26b-qat-4bit",
+      "kind": "scalar",
+      "case": "tools",
+      "parity": true,
+      "prompt_tokens": 1274,
+      "p50_us": {
+        "baseline": 400,
+        "candidate": 379.5,
+        "change_percent": -5.125000000000002,
+        "baseline_rounds": [
+          393,
+          407
+        ],
+        "candidate_rounds": [
+          374,
+          385
+        ]
+      },
+      "p95_us": {
+        "baseline": 461,
+        "candidate": 427,
+        "change_percent": -7.375271149674623,
+        "baseline_rounds": [
+          419,
+          503
+        ],
+        "candidate_rounds": [
+          410,
+          444
+        ]
+      },
+      "p99_us": {
+        "baseline": 1760,
+        "candidate": 447.5,
+        "change_percent": -74.57386363636364,
+        "baseline_rounds": [
+          499,
+          3021
+        ],
+        "candidate_rounds": [
+          427,
+          468
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 13053,
+        "candidate": 11779,
+        "change_percent": -9.76020838121504,
+        "baseline_rounds": [
+          13053,
+          13053
+        ],
+        "candidate_rounds": [
+          11779,
+          11779
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 2365329,
+        "candidate": 2359985,
+        "change_percent": -0.22593051537439512,
+        "baseline_rounds": [
+          2365329,
+          2365329
+        ],
+        "candidate_rounds": [
+          2359985,
+          2359985
+        ]
+      }
+    },
+    {
+      "model_id": "gemma-4-26b-qat-4bit",
+      "kind": "scalar",
+      "case": "long",
+      "parity": true,
+      "prompt_tokens": 6669,
+      "p50_us": {
+        "baseline": 4751,
+        "candidate": 4761.5,
+        "change_percent": 0.22100610397810527,
+        "baseline_rounds": [
+          4637,
+          4865
+        ],
+        "candidate_rounds": [
+          4870,
+          4653
+        ]
+      },
+      "p95_us": {
+        "baseline": 5088.5,
+        "candidate": 5167,
+        "change_percent": 1.5426943107005986,
+        "baseline_rounds": [
+          4750,
+          5427
+        ],
+        "candidate_rounds": [
+          5283,
+          5051
+        ]
+      },
+      "p99_us": {
+        "baseline": 6705,
+        "candidate": 5375.5,
+        "change_percent": -19.828486204325134,
+        "baseline_rounds": [
+          4851,
+          8559
+        ],
+        "candidate_rounds": [
+          5512,
+          5239
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 25128,
+        "candidate": 18459,
+        "change_percent": -26.54011461318052,
+        "baseline_rounds": [
+          25128,
+          25128
+        ],
+        "candidate_rounds": [
+          18459,
+          18459
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 14937929,
+        "candidate": 14884618,
+        "change_percent": -0.356883474275449,
+        "baseline_rounds": [
+          14937929,
+          14937929
+        ],
+        "candidate_rounds": [
+          14884618,
+          14884618
+        ]
+      }
+    },
+    {
+      "model_id": "gemma-4-26b-qat-4bit",
+      "kind": "scalar",
+      "case": "wide",
+      "parity": true,
+      "prompt_tokens": 53261,
+      "p50_us": {
+        "baseline": 47634.5,
+        "candidate": 48270,
+        "change_percent": 1.3341170790078571,
+        "baseline_rounds": [
+          47170,
+          48099
+        ],
+        "candidate_rounds": [
+          48119,
+          48421
+        ]
+      },
+      "p95_us": {
+        "baseline": 53568.5,
+        "candidate": 52070.5,
+        "change_percent": -2.796419537601391,
+        "baseline_rounds": [
+          49617,
+          57520
+        ],
+        "candidate_rounds": [
+          49652,
+          54489
+        ]
+      },
+      "p99_us": {
+        "baseline": 54999.5,
+        "candidate": 54309,
+        "change_percent": -1.2554659587814432,
+        "baseline_rounds": [
+          50233,
+          59766
+        ],
+        "candidate_rounds": [
+          51517,
+          57101
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 197548,
+        "candidate": 144287,
+        "change_percent": -26.961042379573573,
+        "baseline_rounds": [
+          197548,
+          197548
+        ],
+        "candidate_rounds": [
+          144287,
+          144287
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 119213975,
+        "candidate": 118787928,
+        "change_percent": -0.35738008064910565,
+        "baseline_rounds": [
+          119213975,
+          119213975
+        ],
+        "candidate_rounds": [
+          118787928,
+          118787928
+        ]
+      }
+    },
+    {
+      "model_id": "gemma-4-26b-qat-4bit",
+      "kind": "burst",
+      "case": null,
+      "parity": true,
+      "p50_us": {
+        "baseline": 714.5,
+        "candidate": 833.5,
+        "change_percent": 16.655003498950304,
+        "baseline_rounds": [
+          728,
+          701
+        ],
+        "candidate_rounds": [
+          724,
+          943
+        ]
+      },
+      "p95_us": {
+        "baseline": 5534.5,
+        "candidate": 5853.5,
+        "change_percent": 5.763844972445575,
+        "baseline_rounds": [
+          5636,
+          5433
+        ],
+        "candidate_rounds": [
+          5809,
+          5898
+        ]
+      },
+      "p99_us": {
+        "baseline": 6376.5,
+        "candidate": 6881.5,
+        "change_percent": 7.919705167411584,
+        "baseline_rounds": [
+          5983,
+          6770
+        ],
+        "candidate_rounds": [
+          6224,
+          7539
+        ]
+      },
+      "batch_p50_us": {
+        "baseline": 5487,
+        "candidate": 5818,
+        "change_percent": 6.03244031346819,
+        "baseline_rounds": [
+          5591,
+          5383
+        ],
+        "candidate_rounds": [
+          5765,
+          5871
+        ]
+      },
+      "batch_p95_us": {
+        "baseline": 6590,
+        "candidate": 7433.5,
+        "change_percent": 12.799696509863434,
+        "baseline_rounds": [
+          6146,
+          7034
+        ],
+        "candidate_rounds": [
+          6333,
+          8534
+        ]
+      },
+      "batch_p50_plans_per_second": {
+        "baseline": 2915.9832330964095,
+        "candidate": 2750.085940185631
+      }
+    },
+    {
+      "model_id": "gpt-oss-20b",
+      "kind": "scalar",
+      "case": "short",
+      "parity": true,
+      "prompt_tokens": 94,
+      "p50_us": {
+        "baseline": 65,
+        "candidate": 64.5,
+        "change_percent": -0.7692307692307665,
+        "baseline_rounds": [
+          63,
+          67
+        ],
+        "candidate_rounds": [
+          65,
+          64
+        ]
+      },
+      "p95_us": {
+        "baseline": 86.5,
+        "candidate": 74,
+        "change_percent": -14.45086705202312,
+        "baseline_rounds": [
+          71,
+          102
+        ],
+        "candidate_rounds": [
+          74,
+          74
+        ]
+      },
+      "p99_us": {
+        "baseline": 120,
+        "candidate": 96,
+        "change_percent": -19.999999999999996,
+        "baseline_rounds": [
+          93,
+          147
+        ],
+        "candidate_rounds": [
+          90,
+          102
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 1718,
+        "candidate": 1718,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          1718,
+          1718
+        ],
+        "candidate_rounds": [
+          1718,
+          1718
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 216749,
+        "candidate": 216749,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          216749,
+          216749
+        ],
+        "candidate_rounds": [
+          216749,
+          216749
+        ]
+      }
+    },
+    {
+      "model_id": "gpt-oss-20b",
+      "kind": "scalar",
+      "case": "tools",
+      "parity": true,
+      "prompt_tokens": 779,
+      "p50_us": {
+        "baseline": 499,
+        "candidate": 497,
+        "change_percent": -0.4008016032064132,
+        "baseline_rounds": [
+          494,
+          504
+        ],
+        "candidate_rounds": [
+          497,
+          497
+        ]
+      },
+      "p95_us": {
+        "baseline": 550.5,
+        "candidate": 524.5,
+        "change_percent": -4.722979109900094,
+        "baseline_rounds": [
+          529,
+          572
+        ],
+        "candidate_rounds": [
+          519,
+          530
+        ]
+      },
+      "p99_us": {
+        "baseline": 726.5,
+        "candidate": 552,
+        "change_percent": -24.019270474879562,
+        "baseline_rounds": [
+          580,
+          873
+        ],
+        "candidate_rounds": [
+          547,
+          557
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 16497,
+        "candidate": 16497,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          16497,
+          16497
+        ],
+        "candidate_rounds": [
+          16497,
+          16497
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 2299744,
+        "candidate": 2299744,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          2299744,
+          2299744
+        ],
+        "candidate_rounds": [
+          2299744,
+          2299744
+        ]
+      }
+    },
+    {
+      "model_id": "gpt-oss-20b",
+      "kind": "scalar",
+      "case": "long",
+      "parity": true,
+      "prompt_tokens": 6724,
+      "p50_us": {
+        "baseline": 2840,
+        "candidate": 2806.5,
+        "change_percent": -1.179577464788728,
+        "baseline_rounds": [
+          2830,
+          2850
+        ],
+        "candidate_rounds": [
+          2779,
+          2834
+        ]
+      },
+      "p95_us": {
+        "baseline": 3000,
+        "candidate": 3007,
+        "change_percent": 0.23333333333332984,
+        "baseline_rounds": [
+          2922,
+          3078
+        ],
+        "candidate_rounds": [
+          2878,
+          3136
+        ]
+      },
+      "p99_us": {
+        "baseline": 3310.5,
+        "candidate": 3089,
+        "change_percent": -6.690832200573926,
+        "baseline_rounds": [
+          3048,
+          3573
+        ],
+        "candidate_rounds": [
+          2939,
+          3239
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 114039,
+        "candidate": 114039,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          114039,
+          114039
+        ],
+        "candidate_rounds": [
+          114039,
+          114039
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 18818053,
+        "candidate": 18818053,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          18818053,
+          18818053
+        ],
+        "candidate_rounds": [
+          18818053,
+          18818053
+        ]
+      }
+    },
+    {
+      "model_id": "gpt-oss-20b",
+      "kind": "scalar",
+      "case": "wide",
+      "parity": true,
+      "prompt_tokens": 53316,
+      "p50_us": {
+        "baseline": 24030.5,
+        "candidate": 23670,
+        "change_percent": -1.5001768585755637,
+        "baseline_rounds": [
+          23692,
+          24369
+        ],
+        "candidate_rounds": [
+          23180,
+          24160
+        ]
+      },
+      "p95_us": {
+        "baseline": 24703,
+        "candidate": 24405,
+        "change_percent": -1.2063312148322014,
+        "baseline_rounds": [
+          24568,
+          24838
+        ],
+        "candidate_rounds": [
+          23544,
+          25266
+        ]
+      },
+      "p99_us": {
+        "baseline": 25287,
+        "candidate": 24951,
+        "change_percent": -1.3287459959663073,
+        "baseline_rounds": [
+          25040,
+          25534
+        ],
+        "candidate_rounds": [
+          23623,
+          26279
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 902913,
+        "candidate": 902913,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          902913,
+          902913
+        ],
+        "candidate_rounds": [
+          902913,
+          902913
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 149741139,
+        "candidate": 149741139,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          149741139,
+          149741139
+        ],
+        "candidate_rounds": [
+          149741139,
+          149741139
+        ]
+      }
+    },
+    {
+      "model_id": "gpt-oss-20b",
+      "kind": "burst",
+      "case": null,
+      "parity": true,
+      "p50_us": {
+        "baseline": 928,
+        "candidate": 1023,
+        "change_percent": 10.237068965517238,
+        "baseline_rounds": [
+          908,
+          948
+        ],
+        "candidate_rounds": [
+          864,
+          1182
+        ]
+      },
+      "p95_us": {
+        "baseline": 4588,
+        "candidate": 4862.5,
+        "change_percent": 5.982999128160427,
+        "baseline_rounds": [
+          4557,
+          4619
+        ],
+        "candidate_rounds": [
+          4411,
+          5314
+        ]
+      },
+      "p99_us": {
+        "baseline": 5385.5,
+        "candidate": 7588,
+        "change_percent": 40.89685265992016,
+        "baseline_rounds": [
+          5371,
+          5400
+        ],
+        "candidate_rounds": [
+          5217,
+          9959
+        ]
+      },
+      "batch_p50_us": {
+        "baseline": 4613,
+        "candidate": 4729.5,
+        "change_percent": 2.525471493605025,
+        "baseline_rounds": [
+          4578,
+          4648
+        ],
+        "candidate_rounds": [
+          4407,
+          5052
+        ]
+      },
+      "batch_p95_us": {
+        "baseline": 5838,
+        "candidate": 6694,
+        "change_percent": 14.66255566974992,
+        "baseline_rounds": [
+          5711,
+          5965
+        ],
+        "candidate_rounds": [
+          5328,
+          8060
+        ]
+      },
+      "batch_p50_plans_per_second": {
+        "baseline": 3468.4587036635594,
+        "candidate": 3383.0214610423936
+      }
+    },
+    {
+      "model_id": "mimo-v2.6-flash-mopd",
+      "kind": "scalar",
+      "case": "short",
+      "parity": true,
+      "prompt_tokens": 36,
+      "p50_us": {
+        "baseline": 41,
+        "candidate": 40.5,
+        "change_percent": -1.2195121951219523,
+        "baseline_rounds": [
+          40,
+          42
+        ],
+        "candidate_rounds": [
+          39,
+          42
+        ]
+      },
+      "p95_us": {
+        "baseline": 48,
+        "candidate": 47.5,
+        "change_percent": -1.041666666666663,
+        "baseline_rounds": [
+          48,
+          48
+        ],
+        "candidate_rounds": [
+          46,
+          49
+        ]
+      },
+      "p99_us": {
+        "baseline": 60.5,
+        "candidate": 69,
+        "change_percent": 14.049586776859503,
+        "baseline_rounds": [
+          59,
+          62
+        ],
+        "candidate_rounds": [
+          68,
+          70
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 801,
+        "candidate": 801,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          801,
+          801
+        ],
+        "candidate_rounds": [
+          801,
+          801
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 114147,
+        "candidate": 114147,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          114147,
+          114147
+        ],
+        "candidate_rounds": [
+          114147,
+          114147
+        ]
+      }
+    },
+    {
+      "model_id": "mimo-v2.6-flash-mopd",
+      "kind": "scalar",
+      "case": "tools",
+      "parity": true,
+      "prompt_tokens": 1031,
+      "p50_us": {
+        "baseline": 634.5,
+        "candidate": 646,
+        "change_percent": 1.812450748620953,
+        "baseline_rounds": [
+          626,
+          643
+        ],
+        "candidate_rounds": [
+          623,
+          669
+        ]
+      },
+      "p95_us": {
+        "baseline": 676,
+        "candidate": 707.5,
+        "change_percent": 4.659763313609466,
+        "baseline_rounds": [
+          668,
+          684
+        ],
+        "candidate_rounds": [
+          651,
+          764
+        ]
+      },
+      "p99_us": {
+        "baseline": 721.5,
+        "candidate": 738.5,
+        "change_percent": 2.3562023562023526,
+        "baseline_rounds": [
+          702,
+          741
+        ],
+        "candidate_rounds": [
+          667,
+          810
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 19675,
+        "candidate": 19675,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          19675,
+          19675
+        ],
+        "candidate_rounds": [
+          19675,
+          19675
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 2811719,
+        "candidate": 2811719,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          2811719,
+          2811719
+        ],
+        "candidate_rounds": [
+          2811719,
+          2811719
+        ]
+      }
+    },
+    {
+      "model_id": "mimo-v2.6-flash-mopd",
+      "kind": "scalar",
+      "case": "long",
+      "parity": true,
+      "prompt_tokens": 6666,
+      "p50_us": {
+        "baseline": 3542,
+        "candidate": 3600.5,
+        "change_percent": 1.6516092603049204,
+        "baseline_rounds": [
+          3522,
+          3562
+        ],
+        "candidate_rounds": [
+          3545,
+          3656
+        ]
+      },
+      "p95_us": {
+        "baseline": 3661,
+        "candidate": 3809.5,
+        "change_percent": 4.056268779022121,
+        "baseline_rounds": [
+          3645,
+          3677
+        ],
+        "candidate_rounds": [
+          3663,
+          3956
+        ]
+      },
+      "p99_us": {
+        "baseline": 3746,
+        "candidate": 3930,
+        "change_percent": 4.911906033101965,
+        "baseline_rounds": [
+          3760,
+          3732
+        ],
+        "candidate_rounds": [
+          3816,
+          4044
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 113136,
+        "candidate": 113136,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          113136,
+          113136
+        ],
+        "candidate_rounds": [
+          113136,
+          113136
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 18766279,
+        "candidate": 18766279,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          18766279,
+          18766279
+        ],
+        "candidate_rounds": [
+          18766279,
+          18766279
+        ]
+      }
+    },
+    {
+      "model_id": "mimo-v2.6-flash-mopd",
+      "kind": "scalar",
+      "case": "wide",
+      "parity": true,
+      "prompt_tokens": 53258,
+      "p50_us": {
+        "baseline": 29576.5,
+        "candidate": 29773,
+        "change_percent": 0.6643788142613127,
+        "baseline_rounds": [
+          29457,
+          29696
+        ],
+        "candidate_rounds": [
+          29718,
+          29828
+        ]
+      },
+      "p95_us": {
+        "baseline": 30147.5,
+        "candidate": 30385,
+        "change_percent": 0.7877933493656286,
+        "baseline_rounds": [
+          30039,
+          30256
+        ],
+        "candidate_rounds": [
+          30125,
+          30645
+        ]
+      },
+      "p99_us": {
+        "baseline": 30538,
+        "candidate": 30548,
+        "change_percent": 0.0327460868426277,
+        "baseline_rounds": [
+          30695,
+          30381
+        ],
+        "candidate_rounds": [
+          30287,
+          30809
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 902013,
+        "candidate": 902013,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          902013,
+          902013
+        ],
+        "candidate_rounds": [
+          902013,
+          902013
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 149911573,
+        "candidate": 149911573,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          149911573,
+          149911573
+        ],
+        "candidate_rounds": [
+          149911573,
+          149911573
+        ]
+      }
+    },
+    {
+      "model_id": "mimo-v2.6-flash-mopd",
+      "kind": "burst",
+      "case": null,
+      "parity": true,
+      "p50_us": {
+        "baseline": 950,
+        "candidate": 929.5,
+        "change_percent": -2.157894736842103,
+        "baseline_rounds": [
+          942,
+          958
+        ],
+        "candidate_rounds": [
+          927,
+          932
+        ]
+      },
+      "p95_us": {
+        "baseline": 5756,
+        "candidate": 5589.5,
+        "change_percent": -2.89263377345379,
+        "baseline_rounds": [
+          5762,
+          5750
+        ],
+        "candidate_rounds": [
+          5440,
+          5739
+        ]
+      },
+      "p99_us": {
+        "baseline": 6667.5,
+        "candidate": 6518,
+        "change_percent": -2.2422197225346885,
+        "baseline_rounds": [
+          6683,
+          6652
+        ],
+        "candidate_rounds": [
+          6254,
+          6782
+        ]
+      },
+      "batch_p50_us": {
+        "baseline": 5672,
+        "candidate": 5524,
+        "change_percent": -2.60930888575458,
+        "baseline_rounds": [
+          5703,
+          5641
+        ],
+        "candidate_rounds": [
+          5395,
+          5653
+        ]
+      },
+      "batch_p95_us": {
+        "baseline": 6907.5,
+        "candidate": 6811.5,
+        "change_percent": -1.3897937024972884,
+        "baseline_rounds": [
+          6966,
+          6849
+        ],
+        "candidate_rounds": [
+          6583,
+          7040
+        ]
+      },
+      "batch_p50_plans_per_second": {
+        "baseline": 2820.8744710860365,
+        "candidate": 2896.451846488052
+      }
+    },
+    {
+      "model_id": "nvidia-nemotron-3.5-lightning",
+      "kind": "scalar",
+      "case": "short",
+      "parity": true,
+      "prompt_tokens": 43,
+      "p50_us": {
+        "baseline": 43,
+        "candidate": 46.5,
+        "change_percent": 8.139534883720923,
+        "baseline_rounds": [
+          43,
+          43
+        ],
+        "candidate_rounds": [
+          50,
+          43
+        ]
+      },
+      "p95_us": {
+        "baseline": 52.5,
+        "candidate": 61.5,
+        "change_percent": 17.14285714285715,
+        "baseline_rounds": [
+          52,
+          53
+        ],
+        "candidate_rounds": [
+          74,
+          49
+        ]
+      },
+      "p99_us": {
+        "baseline": 83,
+        "candidate": 99,
+        "change_percent": 19.277108433734934,
+        "baseline_rounds": [
+          85,
+          81
+        ],
+        "candidate_rounds": [
+          115,
+          83
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 913,
+        "candidate": 913,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          913,
+          913
+        ],
+        "candidate_rounds": [
+          913,
+          913
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 122259,
+        "candidate": 122830,
+        "change_percent": 0.4670412812144642,
+        "baseline_rounds": [
+          122259,
+          122259
+        ],
+        "candidate_rounds": [
+          123401,
+          122259
+        ]
+      }
+    },
+    {
+      "model_id": "nvidia-nemotron-3.5-lightning",
+      "kind": "scalar",
+      "case": "tools",
+      "parity": true,
+      "prompt_tokens": 2235,
+      "p50_us": {
+        "baseline": 970.5,
+        "candidate": 1008,
+        "change_percent": 3.863987635239563,
+        "baseline_rounds": [
+          960,
+          981
+        ],
+        "candidate_rounds": [
+          1050,
+          966
+        ]
+      },
+      "p95_us": {
+        "baseline": 1017,
+        "candidate": 1115.5,
+        "change_percent": 9.685349065880033,
+        "baseline_rounds": [
+          1008,
+          1026
+        ],
+        "candidate_rounds": [
+          1209,
+          1022
+        ]
+      },
+      "p99_us": {
+        "baseline": 1056,
+        "candidate": 1175,
+        "change_percent": 11.268939393939403,
+        "baseline_rounds": [
+          1057,
+          1055
+        ],
+        "candidate_rounds": [
+          1288,
+          1062
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 34283,
+        "candidate": 34283,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          34283,
+          34283
+        ],
+        "candidate_rounds": [
+          34283,
+          34283
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 5138169,
+        "candidate": 5138169,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          5138169,
+          5138169
+        ],
+        "candidate_rounds": [
+          5138169,
+          5138169
+        ]
+      }
+    },
+    {
+      "model_id": "nvidia-nemotron-3.5-lightning",
+      "kind": "scalar",
+      "case": "long",
+      "parity": true,
+      "prompt_tokens": 6673,
+      "p50_us": {
+        "baseline": 2834,
+        "candidate": 2798,
+        "change_percent": -1.2702893436838392,
+        "baseline_rounds": [
+          2780,
+          2888
+        ],
+        "candidate_rounds": [
+          2813,
+          2783
+        ]
+      },
+      "p95_us": {
+        "baseline": 2999.5,
+        "candidate": 2978.5,
+        "change_percent": -0.7001166861143493,
+        "baseline_rounds": [
+          2848,
+          3151
+        ],
+        "candidate_rounds": [
+          3076,
+          2881
+        ]
+      },
+      "p99_us": {
+        "baseline": 3081,
+        "candidate": 3074,
+        "change_percent": -0.2271989613761738,
+        "baseline_rounds": [
+          2878,
+          3284
+        ],
+        "candidate_rounds": [
+          3153,
+          2995
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 113240,
+        "candidate": 113240,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          113240,
+          113240
+        ],
+        "candidate_rounds": [
+          113240,
+          113240
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 18614939,
+        "candidate": 18614939,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          18614939,
+          18614939
+        ],
+        "candidate_rounds": [
+          18614939,
+          18614939
+        ]
+      }
+    },
+    {
+      "model_id": "nvidia-nemotron-3.5-lightning",
+      "kind": "scalar",
+      "case": "wide",
+      "parity": true,
+      "prompt_tokens": 53265,
+      "p50_us": {
+        "baseline": 23694,
+        "candidate": 23940.5,
+        "change_percent": 1.0403477673672556,
+        "baseline_rounds": [
+          23337,
+          24051
+        ],
+        "candidate_rounds": [
+          23778,
+          24103
+        ]
+      },
+      "p95_us": {
+        "baseline": 24293,
+        "candidate": 24718.5,
+        "change_percent": 1.7515333635203634,
+        "baseline_rounds": [
+          24034,
+          24552
+        ],
+        "candidate_rounds": [
+          24472,
+          24965
+        ]
+      },
+      "p99_us": {
+        "baseline": 24601.5,
+        "candidate": 24825,
+        "change_percent": 0.9084811901713286,
+        "baseline_rounds": [
+          24091,
+          25112
+        ],
+        "candidate_rounds": [
+          24618,
+          25032
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 902114,
+        "candidate": 902114,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          902114,
+          902114
+        ],
+        "candidate_rounds": [
+          902114,
+          902114
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 148656361,
+        "candidate": 148656361,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          148656361,
+          148656361
+        ],
+        "candidate_rounds": [
+          148656361,
+          148656361
+        ]
+      }
+    },
+    {
+      "model_id": "nvidia-nemotron-3.5-lightning",
+      "kind": "burst",
+      "case": null,
+      "parity": true,
+      "p50_us": {
+        "baseline": 1670,
+        "candidate": 1669.5,
+        "change_percent": -0.029940119760474282,
+        "baseline_rounds": [
+          1633,
+          1707
+        ],
+        "candidate_rounds": [
+          1650,
+          1689
+        ]
+      },
+      "p95_us": {
+        "baseline": 4546.5,
+        "candidate": 4718.5,
+        "change_percent": 3.783129880127567,
+        "baseline_rounds": [
+          4301,
+          4792
+        ],
+        "candidate_rounds": [
+          4617,
+          4820
+        ]
+      },
+      "p99_us": {
+        "baseline": 5446,
+        "candidate": 5761.5,
+        "change_percent": 5.793242746970262,
+        "baseline_rounds": [
+          4928,
+          5964
+        ],
+        "candidate_rounds": [
+          5481,
+          6042
+        ]
+      },
+      "batch_p50_us": {
+        "baseline": 4544,
+        "candidate": 4623,
+        "change_percent": 1.7385563380281743,
+        "baseline_rounds": [
+          4338,
+          4750
+        ],
+        "candidate_rounds": [
+          4615,
+          4631
+        ]
+      },
+      "batch_p95_us": {
+        "baseline": 5567.5,
+        "candidate": 6108.5,
+        "change_percent": 9.717108217332736,
+        "baseline_rounds": [
+          5066,
+          6069
+        ],
+        "candidate_rounds": [
+          5837,
+          6380
+        ]
+      },
+      "batch_p50_plans_per_second": {
+        "baseline": 3521.1267605633802,
+        "candidate": 3460.9560891196193
+      }
+    },
+    {
+      "model_id": "ternary-bonsai-2-27b",
+      "kind": "scalar",
+      "case": "short",
+      "parity": true,
+      "prompt_tokens": 38,
+      "p50_us": {
+        "baseline": 49.5,
+        "candidate": 47.5,
+        "change_percent": -4.040404040404044,
+        "baseline_rounds": [
+          49,
+          50
+        ],
+        "candidate_rounds": [
+          47,
+          48
+        ]
+      },
+      "p95_us": {
+        "baseline": 64,
+        "candidate": 59.5,
+        "change_percent": -7.03125,
+        "baseline_rounds": [
+          66,
+          62
+        ],
+        "candidate_rounds": [
+          61,
+          58
+        ]
+      },
+      "p99_us": {
+        "baseline": 89,
+        "candidate": 159.5,
+        "change_percent": 79.21348314606742,
+        "baseline_rounds": [
+          97,
+          81
+        ],
+        "candidate_rounds": [
+          224,
+          95
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 948,
+        "candidate": 948,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          948,
+          948
+        ],
+        "candidate_rounds": [
+          948,
+          948
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 126701,
+        "candidate": 126701,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          126701,
+          126701
+        ],
+        "candidate_rounds": [
+          126701,
+          126701
+        ]
+      }
+    },
+    {
+      "model_id": "ternary-bonsai-2-27b",
+      "kind": "scalar",
+      "case": "tools",
+      "parity": true,
+      "prompt_tokens": 1217,
+      "p50_us": {
+        "baseline": 731,
+        "candidate": 696.5,
+        "change_percent": -4.719562243502051,
+        "baseline_rounds": [
+          739,
+          723
+        ],
+        "candidate_rounds": [
+          696,
+          697
+        ]
+      },
+      "p95_us": {
+        "baseline": 843,
+        "candidate": 764.5,
+        "change_percent": -9.31198102016607,
+        "baseline_rounds": [
+          858,
+          828
+        ],
+        "candidate_rounds": [
+          763,
+          766
+        ]
+      },
+      "p99_us": {
+        "baseline": 872,
+        "candidate": 832.5,
+        "change_percent": -4.529816513761464,
+        "baseline_rounds": [
+          894,
+          850
+        ],
+        "candidate_rounds": [
+          845,
+          820
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 21211,
+        "candidate": 21211,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          21211,
+          21211
+        ],
+        "candidate_rounds": [
+          21211,
+          21211
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 2935071,
+        "candidate": 2935071,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          2935071,
+          2935071
+        ],
+        "candidate_rounds": [
+          2935071,
+          2935071
+        ]
+      }
+    },
+    {
+      "model_id": "ternary-bonsai-2-27b",
+      "kind": "scalar",
+      "case": "long",
+      "parity": true,
+      "prompt_tokens": 6668,
+      "p50_us": {
+        "baseline": 3646.5,
+        "candidate": 3621.5,
+        "change_percent": -0.6855889208830401,
+        "baseline_rounds": [
+          3640,
+          3653
+        ],
+        "candidate_rounds": [
+          3631,
+          3612
+        ]
+      },
+      "p95_us": {
+        "baseline": 3896,
+        "candidate": 3786,
+        "change_percent": -2.823408624229984,
+        "baseline_rounds": [
+          3938,
+          3854
+        ],
+        "candidate_rounds": [
+          3806,
+          3766
+        ]
+      },
+      "p99_us": {
+        "baseline": 4079,
+        "candidate": 4431.5,
+        "change_percent": 8.641823976464824,
+        "baseline_rounds": [
+          4181,
+          3977
+        ],
+        "candidate_rounds": [
+          4980,
+          3883
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 113284,
+        "candidate": 113284,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          113284,
+          113284
+        ],
+        "candidate_rounds": [
+          113284,
+          113284
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 19839325,
+        "candidate": 19839325,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          19839325,
+          19839325
+        ],
+        "candidate_rounds": [
+          19839325,
+          19839325
+        ]
+      }
+    },
+    {
+      "model_id": "ternary-bonsai-2-27b",
+      "kind": "scalar",
+      "case": "wide",
+      "parity": true,
+      "prompt_tokens": 53260,
+      "p50_us": {
+        "baseline": 30187,
+        "candidate": 30095,
+        "change_percent": -0.30476695266173914,
+        "baseline_rounds": [
+          30277,
+          30097
+        ],
+        "candidate_rounds": [
+          30161,
+          30029
+        ]
+      },
+      "p95_us": {
+        "baseline": 34840.5,
+        "candidate": 30963,
+        "change_percent": -11.129289189305547,
+        "baseline_rounds": [
+          38765,
+          30916
+        ],
+        "candidate_rounds": [
+          30569,
+          31357
+        ]
+      },
+      "p99_us": {
+        "baseline": 42497,
+        "candidate": 31431,
+        "change_percent": -26.03948514012754,
+        "baseline_rounds": [
+          53431,
+          31563
+        ],
+        "candidate_rounds": [
+          30739,
+          32123
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 902161,
+        "candidate": 902161,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          902161,
+          902161
+        ],
+        "candidate_rounds": [
+          902161,
+          902161
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 158396331,
+        "candidate": 158396331,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          158396331,
+          158396331
+        ],
+        "candidate_rounds": [
+          158396331,
+          158396331
+        ]
+      }
+    },
+    {
+      "model_id": "ternary-bonsai-2-27b",
+      "kind": "burst",
+      "case": null,
+      "parity": true,
+      "p50_us": {
+        "baseline": 1032,
+        "candidate": 1016,
+        "change_percent": -1.5503875968992276,
+        "baseline_rounds": [
+          1022,
+          1042
+        ],
+        "candidate_rounds": [
+          993,
+          1039
+        ]
+      },
+      "p95_us": {
+        "baseline": 5698.5,
+        "candidate": 5683.5,
+        "change_percent": -0.2632271650434337,
+        "baseline_rounds": [
+          5678,
+          5719
+        ],
+        "candidate_rounds": [
+          5479,
+          5888
+        ]
+      },
+      "p99_us": {
+        "baseline": 6472,
+        "candidate": 7335.5,
+        "change_percent": 13.342088998763902,
+        "baseline_rounds": [
+          6588,
+          6356
+        ],
+        "candidate_rounds": [
+          6534,
+          8137
+        ]
+      },
+      "batch_p50_us": {
+        "baseline": 5654,
+        "candidate": 5654,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          5618,
+          5690
+        ],
+        "candidate_rounds": [
+          5484,
+          5824
+        ]
+      },
+      "batch_p95_us": {
+        "baseline": 6713.5,
+        "candidate": 7541,
+        "change_percent": 12.325910478885827,
+        "baseline_rounds": [
+          6826,
+          6601
+        ],
+        "candidate_rounds": [
+          6575,
+          8507
+        ]
+      },
+      "batch_p50_plans_per_second": {
+        "baseline": 2829.854969932791,
+        "candidate": 2829.854969932791
+      }
+    },
+    {
+      "model_id": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+      "kind": "scalar",
+      "case": "short",
+      "parity": true,
+      "prompt_tokens": 38,
+      "p50_us": {
+        "baseline": 46.5,
+        "candidate": 46.5,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          45,
+          48
+        ],
+        "candidate_rounds": [
+          45,
+          48
+        ]
+      },
+      "p95_us": {
+        "baseline": 54,
+        "candidate": 53.5,
+        "change_percent": -0.92592592592593,
+        "baseline_rounds": [
+          55,
+          53
+        ],
+        "candidate_rounds": [
+          50,
+          57
+        ]
+      },
+      "p99_us": {
+        "baseline": 71.5,
+        "candidate": 63,
+        "change_percent": -11.888111888111885,
+        "baseline_rounds": [
+          72,
+          71
+        ],
+        "candidate_rounds": [
+          55,
+          71
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 930,
+        "candidate": 930,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          930,
+          930
+        ],
+        "candidate_rounds": [
+          930,
+          930
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 125102,
+        "candidate": 125102,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          125102,
+          125102
+        ],
+        "candidate_rounds": [
+          125102,
+          125102
+        ]
+      }
+    },
+    {
+      "model_id": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+      "kind": "scalar",
+      "case": "tools",
+      "parity": true,
+      "prompt_tokens": 1217,
+      "p50_us": {
+        "baseline": 689,
+        "candidate": 675,
+        "change_percent": -2.0319303338171224,
+        "baseline_rounds": [
+          686,
+          692
+        ],
+        "candidate_rounds": [
+          676,
+          674
+        ]
+      },
+      "p95_us": {
+        "baseline": 728.5,
+        "candidate": 720,
+        "change_percent": -1.1667810569663706,
+        "baseline_rounds": [
+          727,
+          730
+        ],
+        "candidate_rounds": [
+          725,
+          715
+        ]
+      },
+      "p99_us": {
+        "baseline": 756,
+        "candidate": 757.5,
+        "change_percent": 0.1984126984126977,
+        "baseline_rounds": [
+          759,
+          753
+        ],
+        "candidate_rounds": [
+          761,
+          754
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 21193,
+        "candidate": 21193,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          21193,
+          21193
+        ],
+        "candidate_rounds": [
+          21193,
+          21193
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 2933400,
+        "candidate": 2933400,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          2933400,
+          2933400
+        ],
+        "candidate_rounds": [
+          2933400,
+          2933400
+        ]
+      }
+    },
+    {
+      "model_id": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+      "kind": "scalar",
+      "case": "long",
+      "parity": true,
+      "prompt_tokens": 6668,
+      "p50_us": {
+        "baseline": 3627.5,
+        "candidate": 3606,
+        "change_percent": -0.5926946933149546,
+        "baseline_rounds": [
+          3634,
+          3621
+        ],
+        "candidate_rounds": [
+          3593,
+          3619
+        ]
+      },
+      "p95_us": {
+        "baseline": 3736.5,
+        "candidate": 3704.5,
+        "change_percent": -0.8564164324903034,
+        "baseline_rounds": [
+          3730,
+          3743
+        ],
+        "candidate_rounds": [
+          3692,
+          3717
+        ]
+      },
+      "p99_us": {
+        "baseline": 3842,
+        "candidate": 3835.5,
+        "change_percent": -0.169182717334726,
+        "baseline_rounds": [
+          3802,
+          3882
+        ],
+        "candidate_rounds": [
+          3824,
+          3847
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 113266,
+        "candidate": 113266,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          113266,
+          113266
+        ],
+        "candidate_rounds": [
+          113266,
+          113266
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 19837726,
+        "candidate": 19837726,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          19837726,
+          19837726
+        ],
+        "candidate_rounds": [
+          19837726,
+          19837726
+        ]
+      }
+    },
+    {
+      "model_id": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+      "kind": "scalar",
+      "case": "wide",
+      "parity": true,
+      "prompt_tokens": 53260,
+      "p50_us": {
+        "baseline": 29920.5,
+        "candidate": 30415,
+        "change_percent": 1.6527130228438658,
+        "baseline_rounds": [
+          29899,
+          29942
+        ],
+        "candidate_rounds": [
+          30577,
+          30253
+        ]
+      },
+      "p95_us": {
+        "baseline": 32076,
+        "candidate": 31591,
+        "change_percent": -1.5120339194413246,
+        "baseline_rounds": [
+          30515,
+          33637
+        ],
+        "candidate_rounds": [
+          31490,
+          31692
+        ]
+      },
+      "p99_us": {
+        "baseline": 36031.5,
+        "candidate": 32282.5,
+        "change_percent": -10.404784702274394,
+        "baseline_rounds": [
+          31205,
+          40858
+        ],
+        "candidate_rounds": [
+          31803,
+          32762
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 902143,
+        "candidate": 902143,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          902143,
+          902143
+        ],
+        "candidate_rounds": [
+          902143,
+          902143
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 158394732,
+        "candidate": 158394732,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          158394732,
+          158394732
+        ],
+        "candidate_rounds": [
+          158394732,
+          158394732
+        ]
+      }
+    },
+    {
+      "model_id": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+      "kind": "burst",
+      "case": null,
+      "parity": true,
+      "p50_us": {
+        "baseline": 1018.5,
+        "candidate": 1044,
+        "change_percent": 2.503681885125175,
+        "baseline_rounds": [
+          988,
+          1049
+        ],
+        "candidate_rounds": [
+          1032,
+          1056
+        ]
+      },
+      "p95_us": {
+        "baseline": 6021.5,
+        "candidate": 5747.5,
+        "change_percent": -4.550361205679643,
+        "baseline_rounds": [
+          6100,
+          5943
+        ],
+        "candidate_rounds": [
+          5877,
+          5618
+        ]
+      },
+      "p99_us": {
+        "baseline": 7395,
+        "candidate": 7840,
+        "change_percent": 6.0175794455713305,
+        "baseline_rounds": [
+          7973,
+          6817
+        ],
+        "candidate_rounds": [
+          7814,
+          7866
+        ]
+      },
+      "batch_p50_us": {
+        "baseline": 5770,
+        "candidate": 5677.5,
+        "change_percent": -1.6031195840554568,
+        "baseline_rounds": [
+          5700,
+          5840
+        ],
+        "candidate_rounds": [
+          5779,
+          5576
+        ]
+      },
+      "batch_p95_us": {
+        "baseline": 7712,
+        "candidate": 8207,
+        "change_percent": 6.418568464730301,
+        "baseline_rounds": [
+          8413,
+          7011
+        ],
+        "candidate_rounds": [
+          8126,
+          8288
+        ]
+      },
+      "batch_p50_plans_per_second": {
+        "baseline": 2772.9636048526863,
+        "candidate": 2818.1417877586964
+      }
+    },
+    {
+      "model_id": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+      "kind": "scalar",
+      "case": "short",
+      "parity": true,
+      "prompt_tokens": 38,
+      "p50_us": {
+        "baseline": 44.5,
+        "candidate": 47,
+        "change_percent": 5.617977528089879,
+        "baseline_rounds": [
+          43,
+          46
+        ],
+        "candidate_rounds": [
+          48,
+          46
+        ]
+      },
+      "p95_us": {
+        "baseline": 54,
+        "candidate": 56.5,
+        "change_percent": 4.629629629629628,
+        "baseline_rounds": [
+          53,
+          55
+        ],
+        "candidate_rounds": [
+          57,
+          56
+        ]
+      },
+      "p99_us": {
+        "baseline": 87.5,
+        "candidate": 75.5,
+        "change_percent": -13.714285714285712,
+        "baseline_rounds": [
+          87,
+          88
+        ],
+        "candidate_rounds": [
+          83,
+          68
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 929,
+        "candidate": 929,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          929,
+          929
+        ],
+        "candidate_rounds": [
+          929,
+          929
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 125066,
+        "candidate": 125066,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          125066,
+          125066
+        ],
+        "candidate_rounds": [
+          125066,
+          125066
+        ]
+      }
+    },
+    {
+      "model_id": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+      "kind": "scalar",
+      "case": "tools",
+      "parity": true,
+      "prompt_tokens": 1217,
+      "p50_us": {
+        "baseline": 696.5,
+        "candidate": 694,
+        "change_percent": -0.3589375448671883,
+        "baseline_rounds": [
+          712,
+          681
+        ],
+        "candidate_rounds": [
+          691,
+          697
+        ]
+      },
+      "p95_us": {
+        "baseline": 763.5,
+        "candidate": 732,
+        "change_percent": -4.1257367387033455,
+        "baseline_rounds": [
+          808,
+          719
+        ],
+        "candidate_rounds": [
+          728,
+          736
+        ]
+      },
+      "p99_us": {
+        "baseline": 1105,
+        "candidate": 754,
+        "change_percent": -31.76470588235294,
+        "baseline_rounds": [
+          1419,
+          791
+        ],
+        "candidate_rounds": [
+          740,
+          768
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 21192,
+        "candidate": 21192,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          21192,
+          21192
+        ],
+        "candidate_rounds": [
+          21192,
+          21192
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 2933364,
+        "candidate": 2933364,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          2933364,
+          2933364
+        ],
+        "candidate_rounds": [
+          2933364,
+          2933364
+        ]
+      }
+    },
+    {
+      "model_id": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+      "kind": "scalar",
+      "case": "long",
+      "parity": true,
+      "prompt_tokens": 6668,
+      "p50_us": {
+        "baseline": 3665,
+        "candidate": 3601.5,
+        "change_percent": -1.7326057298772124,
+        "baseline_rounds": [
+          3667,
+          3663
+        ],
+        "candidate_rounds": [
+          3605,
+          3598
+        ]
+      },
+      "p95_us": {
+        "baseline": 3809,
+        "candidate": 3759.5,
+        "change_percent": -1.2995536886321823,
+        "baseline_rounds": [
+          3862,
+          3756
+        ],
+        "candidate_rounds": [
+          3735,
+          3784
+        ]
+      },
+      "p99_us": {
+        "baseline": 3869.5,
+        "candidate": 3823.5,
+        "change_percent": -1.1887840806305672,
+        "baseline_rounds": [
+          3916,
+          3823
+        ],
+        "candidate_rounds": [
+          3794,
+          3853
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 113265,
+        "candidate": 113265,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          113265,
+          113265
+        ],
+        "candidate_rounds": [
+          113265,
+          113265
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 19837690,
+        "candidate": 19837690,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          19837690,
+          19837690
+        ],
+        "candidate_rounds": [
+          19837690,
+          19837690
+        ]
+      }
+    },
+    {
+      "model_id": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+      "kind": "scalar",
+      "case": "wide",
+      "parity": true,
+      "prompt_tokens": 53260,
+      "p50_us": {
+        "baseline": 30035.5,
+        "candidate": 30523.5,
+        "change_percent": 1.6247440528707635,
+        "baseline_rounds": [
+          30034,
+          30037
+        ],
+        "candidate_rounds": [
+          30730,
+          30317
+        ]
+      },
+      "p95_us": {
+        "baseline": 31176.5,
+        "candidate": 31868.5,
+        "change_percent": 2.2196205475277786,
+        "baseline_rounds": [
+          31941,
+          30412
+        ],
+        "candidate_rounds": [
+          32027,
+          31710
+        ]
+      },
+      "p99_us": {
+        "baseline": 31682,
+        "candidate": 32786,
+        "change_percent": 3.484628495675768,
+        "baseline_rounds": [
+          32063,
+          31301
+        ],
+        "candidate_rounds": [
+          33575,
+          31997
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 902142,
+        "candidate": 902142,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          902142,
+          902142
+        ],
+        "candidate_rounds": [
+          902142,
+          902142
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 158394696,
+        "candidate": 158394696,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          158394696,
+          158394696
+        ],
+        "candidate_rounds": [
+          158394696,
+          158394696
+        ]
+      }
+    },
+    {
+      "model_id": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+      "kind": "burst",
+      "case": null,
+      "parity": true,
+      "p50_us": {
+        "baseline": 1011,
+        "candidate": 1046.5,
+        "change_percent": 3.5113748763600405,
+        "baseline_rounds": [
+          1012,
+          1010
+        ],
+        "candidate_rounds": [
+          1054,
+          1039
+        ]
+      },
+      "p95_us": {
+        "baseline": 5614,
+        "candidate": 6083,
+        "change_percent": 8.354114713216966,
+        "baseline_rounds": [
+          5644,
+          5584
+        ],
+        "candidate_rounds": [
+          5954,
+          6212
+        ]
+      },
+      "p99_us": {
+        "baseline": 6340,
+        "candidate": 7101.5,
+        "change_percent": 12.01104100946373,
+        "baseline_rounds": [
+          6394,
+          6286
+        ],
+        "candidate_rounds": [
+          6671,
+          7532
+        ]
+      },
+      "batch_p50_us": {
+        "baseline": 5504,
+        "candidate": 5959.5,
+        "change_percent": 8.275799418604656,
+        "baseline_rounds": [
+          5496,
+          5512
+        ],
+        "candidate_rounds": [
+          5886,
+          6033
+        ]
+      },
+      "batch_p95_us": {
+        "baseline": 6461,
+        "candidate": 7367,
+        "change_percent": 14.022597121188674,
+        "baseline_rounds": [
+          6499,
+          6423
+        ],
+        "candidate_rounds": [
+          6952,
+          7782
+        ]
+      },
+      "batch_p50_plans_per_second": {
+        "baseline": 2906.9767441860463,
+        "candidate": 2684.7889923651314
+      }
+    },
+    {
+      "model_id": "qwen3.5-35b-a3b",
+      "kind": "scalar",
+      "case": "short",
+      "parity": true,
+      "prompt_tokens": 38,
+      "p50_us": {
+        "baseline": 47,
+        "candidate": 47.5,
+        "change_percent": 1.0638297872340496,
+        "baseline_rounds": [
+          47,
+          47
+        ],
+        "candidate_rounds": [
+          48,
+          47
+        ]
+      },
+      "p95_us": {
+        "baseline": 68,
+        "candidate": 57,
+        "change_percent": -16.176470588235293,
+        "baseline_rounds": [
+          56,
+          80
+        ],
+        "candidate_rounds": [
+          59,
+          55
+        ]
+      },
+      "p99_us": {
+        "baseline": 88.5,
+        "candidate": 87,
+        "change_percent": -1.6949152542372836,
+        "baseline_rounds": [
+          65,
+          112
+        ],
+        "candidate_rounds": [
+          93,
+          81
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 929,
+        "candidate": 929,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          929,
+          929
+        ],
+        "candidate_rounds": [
+          929,
+          929
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 125014,
+        "candidate": 125014,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          125014,
+          125014
+        ],
+        "candidate_rounds": [
+          125014,
+          125014
+        ]
+      }
+    },
+    {
+      "model_id": "qwen3.5-35b-a3b",
+      "kind": "scalar",
+      "case": "tools",
+      "parity": true,
+      "prompt_tokens": 1217,
+      "p50_us": {
+        "baseline": 688,
+        "candidate": 677.5,
+        "change_percent": -1.5261627906976716,
+        "baseline_rounds": [
+          684,
+          692
+        ],
+        "candidate_rounds": [
+          668,
+          687
+        ]
+      },
+      "p95_us": {
+        "baseline": 727.5,
+        "candidate": 716,
+        "change_percent": -1.58075601374571,
+        "baseline_rounds": [
+          725,
+          730
+        ],
+        "candidate_rounds": [
+          714,
+          718
+        ]
+      },
+      "p99_us": {
+        "baseline": 757,
+        "candidate": 760,
+        "change_percent": 0.39630118890356947,
+        "baseline_rounds": [
+          761,
+          753
+        ],
+        "candidate_rounds": [
+          780,
+          740
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 21192,
+        "candidate": 21192,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          21192,
+          21192
+        ],
+        "candidate_rounds": [
+          21192,
+          21192
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 2933312,
+        "candidate": 2933312,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          2933312,
+          2933312
+        ],
+        "candidate_rounds": [
+          2933312,
+          2933312
+        ]
+      }
+    },
+    {
+      "model_id": "qwen3.5-35b-a3b",
+      "kind": "scalar",
+      "case": "long",
+      "parity": true,
+      "prompt_tokens": 6668,
+      "p50_us": {
+        "baseline": 3665,
+        "candidate": 3586.5,
+        "change_percent": -2.1418826739426966,
+        "baseline_rounds": [
+          3667,
+          3663
+        ],
+        "candidate_rounds": [
+          3582,
+          3591
+        ]
+      },
+      "p95_us": {
+        "baseline": 3909,
+        "candidate": 3710.5,
+        "change_percent": -5.078025070350478,
+        "baseline_rounds": [
+          4051,
+          3767
+        ],
+        "candidate_rounds": [
+          3693,
+          3728
+        ]
+      },
+      "p99_us": {
+        "baseline": 4054,
+        "candidate": 3835.5,
+        "change_percent": -5.389738529847065,
+        "baseline_rounds": [
+          4278,
+          3830
+        ],
+        "candidate_rounds": [
+          3771,
+          3900
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 113265,
+        "candidate": 113265,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          113265,
+          113265
+        ],
+        "candidate_rounds": [
+          113265,
+          113265
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 19837638,
+        "candidate": 19837638,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          19837638,
+          19837638
+        ],
+        "candidate_rounds": [
+          19837638,
+          19837638
+        ]
+      }
+    },
+    {
+      "model_id": "qwen3.5-35b-a3b",
+      "kind": "scalar",
+      "case": "wide",
+      "parity": true,
+      "prompt_tokens": 53260,
+      "p50_us": {
+        "baseline": 30011.5,
+        "candidate": 30198,
+        "change_percent": 0.6214284524265645,
+        "baseline_rounds": [
+          30124,
+          29899
+        ],
+        "candidate_rounds": [
+          30528,
+          29868
+        ]
+      },
+      "p95_us": {
+        "baseline": 30814.5,
+        "candidate": 31662.5,
+        "change_percent": 2.7519511918090434,
+        "baseline_rounds": [
+          30775,
+          30854
+        ],
+        "candidate_rounds": [
+          32362,
+          30963
+        ]
+      },
+      "p99_us": {
+        "baseline": 31207,
+        "candidate": 33044,
+        "change_percent": 5.886499823757485,
+        "baseline_rounds": [
+          30991,
+          31423
+        ],
+        "candidate_rounds": [
+          34918,
+          31170
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 902142,
+        "candidate": 902142,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          902142,
+          902142
+        ],
+        "candidate_rounds": [
+          902142,
+          902142
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 158394644,
+        "candidate": 158394644,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          158394644,
+          158394644
+        ],
+        "candidate_rounds": [
+          158394644,
+          158394644
+        ]
+      }
+    },
+    {
+      "model_id": "qwen3.5-35b-a3b",
+      "kind": "burst",
+      "case": null,
+      "parity": true,
+      "p50_us": {
+        "baseline": 999,
+        "candidate": 1032,
+        "change_percent": 3.3033033033033066,
+        "baseline_rounds": [
+          1007,
+          991
+        ],
+        "candidate_rounds": [
+          1063,
+          1001
+        ]
+      },
+      "p95_us": {
+        "baseline": 5622,
+        "candidate": 5712.5,
+        "change_percent": 1.6097474208466744,
+        "baseline_rounds": [
+          5687,
+          5557
+        ],
+        "candidate_rounds": [
+          5748,
+          5677
+        ]
+      },
+      "p99_us": {
+        "baseline": 7021.5,
+        "candidate": 7694.5,
+        "change_percent": 9.584846542761527,
+        "baseline_rounds": [
+          6848,
+          7195
+        ],
+        "candidate_rounds": [
+          6632,
+          8757
+        ]
+      },
+      "batch_p50_us": {
+        "baseline": 5597,
+        "candidate": 5682.5,
+        "change_percent": 1.5276040736108554,
+        "baseline_rounds": [
+          5687,
+          5507
+        ],
+        "candidate_rounds": [
+          5738,
+          5627
+        ]
+      },
+      "batch_p95_us": {
+        "baseline": 7317.5,
+        "candidate": 7972,
+        "change_percent": 8.944311581824405,
+        "baseline_rounds": [
+          7011,
+          7624
+        ],
+        "candidate_rounds": [
+          6903,
+          9041
+        ]
+      },
+      "batch_p50_plans_per_second": {
+        "baseline": 2858.674289798106,
+        "candidate": 2815.6621205455344
+      }
+    },
+    {
+      "model_id": "Qwen3.5-9B",
+      "kind": "scalar",
+      "case": "short",
+      "parity": true,
+      "prompt_tokens": 38,
+      "p50_us": {
+        "baseline": 50,
+        "candidate": 48,
+        "change_percent": -4.0000000000000036,
+        "baseline_rounds": [
+          47,
+          53
+        ],
+        "candidate_rounds": [
+          46,
+          50
+        ]
+      },
+      "p95_us": {
+        "baseline": 66,
+        "candidate": 62,
+        "change_percent": -6.060606060606055,
+        "baseline_rounds": [
+          55,
+          77
+        ],
+        "candidate_rounds": [
+          56,
+          68
+        ]
+      },
+      "p99_us": {
+        "baseline": 91.5,
+        "candidate": 113,
+        "change_percent": 23.497267759562845,
+        "baseline_rounds": [
+          80,
+          103
+        ],
+        "candidate_rounds": [
+          89,
+          137
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 929.5,
+        "candidate": 929,
+        "change_percent": -0.05379236148467248,
+        "baseline_rounds": [
+          929,
+          930
+        ],
+        "candidate_rounds": [
+          929,
+          929
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 125260.5,
+        "candidate": 124982,
+        "change_percent": -0.2223366504205182,
+        "baseline_rounds": [
+          124982,
+          125539
+        ],
+        "candidate_rounds": [
+          124982,
+          124982
+        ]
+      }
+    },
+    {
+      "model_id": "Qwen3.5-9B",
+      "kind": "scalar",
+      "case": "tools",
+      "parity": true,
+      "prompt_tokens": 1217,
+      "p50_us": {
+        "baseline": 724.5,
+        "candidate": 692,
+        "change_percent": -4.485852311939265,
+        "baseline_rounds": [
+          687,
+          762
+        ],
+        "candidate_rounds": [
+          684,
+          700
+        ]
+      },
+      "p95_us": {
+        "baseline": 802.5,
+        "candidate": 740.5,
+        "change_percent": -7.725856697819311,
+        "baseline_rounds": [
+          737,
+          868
+        ],
+        "candidate_rounds": [
+          722,
+          759
+        ]
+      },
+      "p99_us": {
+        "baseline": 828.5,
+        "candidate": 790.5,
+        "change_percent": -4.586602293301145,
+        "baseline_rounds": [
+          763,
+          894
+        ],
+        "candidate_rounds": [
+          762,
+          819
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 21192,
+        "candidate": 21192,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          21192,
+          21192
+        ],
+        "candidate_rounds": [
+          21192,
+          21192
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 2933280,
+        "candidate": 2933280,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          2933280,
+          2933280
+        ],
+        "candidate_rounds": [
+          2933280,
+          2933280
+        ]
+      }
+    },
+    {
+      "model_id": "Qwen3.5-9B",
+      "kind": "scalar",
+      "case": "long",
+      "parity": true,
+      "prompt_tokens": 6668,
+      "p50_us": {
+        "baseline": 3657.5,
+        "candidate": 3604,
+        "change_percent": -1.4627477785372545,
+        "baseline_rounds": [
+          3564,
+          3751
+        ],
+        "candidate_rounds": [
+          3599,
+          3609
+        ]
+      },
+      "p95_us": {
+        "baseline": 3900,
+        "candidate": 3725,
+        "change_percent": -4.487179487179482,
+        "baseline_rounds": [
+          3766,
+          4034
+        ],
+        "candidate_rounds": [
+          3731,
+          3719
+        ]
+      },
+      "p99_us": {
+        "baseline": 3986.5,
+        "candidate": 3874,
+        "change_percent": -2.8220243321209093,
+        "baseline_rounds": [
+          3874,
+          4099
+        ],
+        "candidate_rounds": [
+          3942,
+          3806
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 113265,
+        "candidate": 113265,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          113265,
+          113265
+        ],
+        "candidate_rounds": [
+          113265,
+          113265
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 19837606,
+        "candidate": 19837606,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          19837606,
+          19837606
+        ],
+        "candidate_rounds": [
+          19837606,
+          19837606
+        ]
+      }
+    },
+    {
+      "model_id": "Qwen3.5-9B",
+      "kind": "scalar",
+      "case": "wide",
+      "parity": true,
+      "prompt_tokens": 53260,
+      "p50_us": {
+        "baseline": 30425.5,
+        "candidate": 30292,
+        "change_percent": -0.4387766840314833,
+        "baseline_rounds": [
+          29905,
+          30946
+        ],
+        "candidate_rounds": [
+          30000,
+          30584
+        ]
+      },
+      "p95_us": {
+        "baseline": 31791.5,
+        "candidate": 31204.5,
+        "change_percent": -1.8464054857430412,
+        "baseline_rounds": [
+          30682,
+          32901
+        ],
+        "candidate_rounds": [
+          30507,
+          31902
+        ]
+      },
+      "p99_us": {
+        "baseline": 32945,
+        "candidate": 32794,
+        "change_percent": -0.4583396570041032,
+        "baseline_rounds": [
+          32273,
+          33617
+        ],
+        "candidate_rounds": [
+          30740,
+          34848
+        ]
+      },
+      "allocations_per_plan": {
+        "baseline": 902142,
+        "candidate": 902142,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          902142,
+          902142
+        ],
+        "candidate_rounds": [
+          902142,
+          902142
+        ]
+      },
+      "allocated_bytes_per_plan": {
+        "baseline": 158394612,
+        "candidate": 158394612,
+        "change_percent": 0.0,
+        "baseline_rounds": [
+          158394612,
+          158394612
+        ],
+        "candidate_rounds": [
+          158394612,
+          158394612
+        ]
+      }
+    },
+    {
+      "model_id": "Qwen3.5-9B",
+      "kind": "burst",
+      "case": null,
+      "parity": true,
+      "p50_us": {
+        "baseline": 999.5,
+        "candidate": 1044.5,
+        "change_percent": 4.502251125562773,
+        "baseline_rounds": [
+          993,
+          1006
+        ],
+        "candidate_rounds": [
+          1005,
+          1084
+        ]
+      },
+      "p95_us": {
+        "baseline": 5683.5,
+        "candidate": 5807.5,
+        "change_percent": 2.1817542007565693,
+        "baseline_rounds": [
+          5758,
+          5609
+        ],
+        "candidate_rounds": [
+          5796,
+          5819
+        ]
+      },
+      "p99_us": {
+        "baseline": 7344,
+        "candidate": 7270.5,
+        "change_percent": -1.0008169934640487,
+        "baseline_rounds": [
+          6561,
+          8127
+        ],
+        "candidate_rounds": [
+          7713,
+          6828
+        ]
+      },
+      "batch_p50_us": {
+        "baseline": 5568,
+        "candidate": 5707.5,
+        "change_percent": 2.505387931034475,
+        "baseline_rounds": [
+          5594,
+          5542
+        ],
+        "candidate_rounds": [
+          5694,
+          5721
+        ]
+      },
+      "batch_p95_us": {
+        "baseline": 7826,
+        "candidate": 7589.5,
+        "change_percent": -3.0219780219780223,
+        "baseline_rounds": [
+          7100,
+          8552
+        ],
+        "candidate_rounds": [
+          8022,
+          7157
+        ]
+      },
+      "batch_p50_plans_per_second": {
+        "baseline": 2873.5632183908046,
+        "candidate": 2803.328953131844
+      }
+    }
+  ]
+}

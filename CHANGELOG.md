@@ -3,9 +3,16 @@
 ## Unreleased — demanded prefix reuse
 
 - Retain a distinct demanded shared-prefix checkpoint even beside the deepest checkpoint, within the existing three-boundary and memory limits. Give authenticated repeated checkpoints access to the reserved SSD write share on their first local appearance; unique extensions continue to use the novel share.
-- Capture one aligned demanded boundary in eligible dense Qwen text prompts below the normal solo stripe, so repeated short prefixes can become durable. Keep novel requests and other serving layouts on their existing geometry, and price the extra range in the first-content projection.
+- Preserve the demanded native-contiguous frontier between the first and latest checkpoints, account for its actual backing allocation before capture, and retire displaced native owners through the tracked fence. A small MiMo fixture verifies reopened fork parity with real MTP off and on; full-model hardware qualification remains separate.
+- Capture one aligned demanded boundary in eligible dense Qwen and the verified current Nemotron Lightning and Bonsai text prompts below the normal solo stripe, so repeated short prefixes can be published for reuse. Nemotron and Bonsai require their exact catalog IDs, weight aggregates and actual recurrent classes; Bonsai remains MTP-ineligible. Keep novel requests and other serving layouts on their existing geometry, and price the extra range in the first-content projection.
+- Preserve the original proposed long-prefill endpoint when the benchmark-only demanded partition splits a range. Share bounded request-local continuation with first-content projection and restore it on rollback; abandon it on incompatible actual progress. Serving long stays disabled pending same-donor adjacent-frontier, output and cost qualification.
+- Bound COMPLETE donation hashing by the checkpoint being written, preserving its authenticated address and backend endpoint rules while avoiding unused suffix work. Native-media addresses and ordinary lookup remain unchanged.
 - Reuse immutable compiled prompt templates within the bounded contract cache and avoid fixture-only body/token copies during production planning. Keep request dates, prompt data, proof identity and render limits isolated.
 - Reconcile first-content input-token budgets from current verified exact counts matching each serving renderer before preflight and dispatch, preserving the original arrival time, account/alias policy and earlier caller deadlines. Missing or conflicting renderer identity keeps the fallback clock; calibrated uncertainty and provider recount cannot extend the budget.
+
+## Unreleased — bounded cache holder matching
+
+- Reduce dense cache-routing query copies by retaining the deepest compatible endpoint for each provider and tier. Preserve shorter valid fallbacks, complete hint values and matching/valid-holder counts; bounded scratch overflow restores the original path. Legal synthetic dense workloads reduce CPU query time by 43–46% and cumulative allocated bytes by 97–98%; these measurements do not establish production cache-hit or model TPS gains.
 
 ## Unreleased — leaderboard availability
 

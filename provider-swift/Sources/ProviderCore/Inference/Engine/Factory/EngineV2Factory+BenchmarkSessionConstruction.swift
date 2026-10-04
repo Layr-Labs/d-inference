@@ -16,6 +16,7 @@ extension EngineV2Factory {
         maxConcurrentRequests: Int = 1, mtpEnabled: Bool,
         assistantDirectory: URL? = nil,
         gemmaMTPVerification: EngineV2BenchmarkMTPVerification? = nil,
+        checkpointPartition: EngineV2BenchmarkCheckpointPartition = .production,
         useProductionKVGrant: Bool = false,
         kvBudget: GlobalKVCacheBudget? = nil,
         kvBackendConfig: String = "auto",
@@ -28,7 +29,8 @@ extension EngineV2Factory {
             container: container, tokenizer: tokenizer, verifiedWeightHash: verifiedWeightHash,
             kvBytesCapacity: kvBytesCapacity, maxConcurrentRequests: maxConcurrentRequests,
             mtpEnabled: mtpEnabled, assistantDirectory: assistantDirectory,
-            gemmaMTPVerification: gemmaMTPVerification, useProductionKVGrant: useProductionKVGrant,
+            gemmaMTPVerification: gemmaMTPVerification, checkpointPartition: checkpointPartition,
+            useProductionKVGrant: useProductionKVGrant,
             kvBudget: kvBudget, kvBackendConfig: kvBackendConfig, requirePersistentKey: requirePersistentKey,
             persistentTestNamespace: persistentTestNamespace, environment: environment,
             memorySnapshotForTesting: {
@@ -46,6 +48,7 @@ extension EngineV2Factory {
         maxConcurrentRequests: Int = 1, mtpEnabled: Bool,
         assistantDirectory: URL? = nil,
         gemmaMTPVerification: EngineV2BenchmarkMTPVerification? = nil,
+        checkpointPartition: EngineV2BenchmarkCheckpointPartition = .production,
         useProductionKVGrant: Bool = false,
         kvBudget: GlobalKVCacheBudget? = nil,
         kvBackendConfig: String = "auto",
@@ -64,7 +67,8 @@ extension EngineV2Factory {
                 container: container, tokenizer: tokenizer, verifiedWeightHash: verifiedWeightHash,
                 kvBytesCapacity: kvBytesCapacity, maxConcurrentRequests: maxConcurrentRequests,
                 mtpEnabled: mtpEnabled, assistantDirectory: assistantDirectory,
-                gemmaMTPVerification: gemmaMTPVerification, useProductionKVGrant: useProductionKVGrant,
+                gemmaMTPVerification: gemmaMTPVerification, checkpointPartition: checkpointPartition,
+                useProductionKVGrant: useProductionKVGrant,
                 kvBudget: kvBudget, kvBackendConfig: kvBackendConfig, requirePersistentKey: requirePersistentKey,
                 persistentTestNamespace: persistentTestNamespace, environment: environment,
                 nativeMiMoLoad: nativeMiMoLoad, nativeMiMoBudget: nativeMiMoBudget,
@@ -100,6 +104,7 @@ extension EngineV2Factory {
         verifiedWeightHash: String, kvBytesCapacity: Int,
         maxConcurrentRequests: Int, mtpEnabled: Bool,
         assistantDirectory: URL?, gemmaMTPVerification: EngineV2BenchmarkMTPVerification?,
+        checkpointPartition: EngineV2BenchmarkCheckpointPartition,
         useProductionKVGrant: Bool, kvBudget: GlobalKVCacheBudget?,
         kvBackendConfig: String, requirePersistentKey: Bool,
         persistentTestNamespace: SSDPersistentTestKeyNamespace?, environment: [String: String],
@@ -142,6 +147,7 @@ extension EngineV2Factory {
                 nativeMiMoOperatorReserveBytes != nil,
                 useProductionKVGrant, kvBudget == nil, assistantDirectory == nil,
                 gemmaMTPVerification == nil, persistentTestNamespace == nil,
+                checkpointPartition == .production,
                 !PrefixCachePolicy.isEnabled(modelId: modelId, environment: effectiveEnvironment),
                 !PrefixCachePolicy.isMemoryEnabled(environment: effectiveEnvironment) else {
                 throw MiMoV26ServingLoadError.nativeOwnerMismatch
@@ -213,7 +219,8 @@ extension EngineV2Factory {
                 activationReserveBytes: reserve, kvBackendConfig: kvBackendConfig,
                 weightHash: verifiedWeightHash, specDecPreparation: preparation,
                 preparedModel: prepared,
-                assemblyOverrides: .init(gemmaMTPVerification: gemmaMTPVerification),
+                assemblyOverrides: .init(gemmaMTPVerification: gemmaMTPVerification,
+                    checkpointPartition: checkpointPartition),
                 environment: effectiveEnvironment,
                 persistentTestNamespace: persistentTestNamespace)
         } catch {

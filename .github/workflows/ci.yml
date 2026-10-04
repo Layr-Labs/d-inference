@@ -380,6 +380,33 @@ jobs:
         working-directory: libs/mlx-swift-lm
         timeout-minutes: 5
         run: ../../scripts/run-nested-suite.sh 'MiMoV26(OpenRouterMedia|VisionWorkingSet|AudioWorkingSet|VisualDecodeMemory|EncodedVisualDecoder|EncodedAudioDecoder|EncodedAACAudio|EncodedAudiovisualDecoder)Tests|MiMoV26PixelsTests.test(RGB|Temporal|Invalid|Explicit)' --no-parallel
+      - name: Verify native historical retention policy
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        timeout-minutes: 5
+        run: ../../scripts/run-nested-suite.sh CBv2NativeHistoricalRetentionTests --no-parallel
+      - name: Verify demanded checkpoint scheduling and projection
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        timeout-minutes: 5
+        run: ../../scripts/run-nested-suite.sh CBv2DemandedCheckpointPartitionTests --no-parallel
+      - name: Verify demanded long range continuation and projection
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        timeout-minutes: 5
+        run: ../../scripts/run-nested-suite.sh CBv2DemandedCheckpointContinuationTests --no-parallel
+      - name: Prepare asymmetric tiny MiMo fixture for native retention
+        id: sdk-mimo-retention-fixture
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
+        run: python3 scripts/prepare-mimo-provider-fixtures.py --output "$RUNNER_TEMP/mimo-native-retention" --asymmetric
+      - name: Verify native retained frontier after donor retirement
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.sdk-mimo-retention-fixture.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        timeout-minutes: 5
+        env:
+          MIMO_V26_SERIAL_NATIVE_TESTS: '1'
+          MIMO_V26_SERIAL_LOAD_FIXTURES: ${{ runner.temp }}/mimo-native-retention
+        run: ../../scripts/run-nested-suite.sh MiMoV26NativeHistoricalRetentionTests.testDemandedMiddleFrontierSurvivesNativePublicationAndReopenedFork --no-parallel
       - name: Prepare tiny MiMo fixture for media-to-text isolation
         id: sdk-mimo-isolation-fixture
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}

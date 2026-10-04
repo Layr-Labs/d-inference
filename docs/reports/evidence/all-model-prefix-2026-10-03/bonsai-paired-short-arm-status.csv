@@ -1,0 +1,7 @@
+model,cell,block,policy,order,status,startedUTC,endedUTC,exitCode,sourceUnchanged,binaryUnchanged,specUnchanged,failureCodes,mtpRequested,mtpEffectiveActive,mtpQualified,assistantIdentityPresent,servingModelType,backend,cacheMode,strictFsync,parityQualified
+prism-ml/ternary-bonsai-2-27b,short,0,production,0,pass,2026-10-03T23:45:40.831963+00:00,2026-10-03T23:47:31.932659+00:00,0,True,True,True,,False,False,True,True,PrismHadamardQwen35,paged,ssd_complete,False,True
+prism-ml/ternary-bonsai-2-27b,short,0,candidate,1,pass,2026-10-03T23:47:32.155556+00:00,2026-10-03T23:49:17.961881+00:00,0,True,True,True,,False,False,True,True,PrismHadamardQwen35,paged,ssd_complete,False,True
+prism-ml/ternary-bonsai-2-27b,short,1,candidate,2,pass,2026-10-03T23:49:18.177736+00:00,2026-10-03T23:50:54.851843+00:00,0,True,True,True,,False,False,True,True,PrismHadamardQwen35,paged,ssd_complete,False,True
+prism-ml/ternary-bonsai-2-27b,short,1,production,3,pass,2026-10-03T23:50:55.075760+00:00,2026-10-03T23:52:31.534942+00:00,0,True,True,True,,False,False,True,True,PrismHadamardQwen35,paged,ssd_complete,False,True
+prism-ml/ternary-bonsai-2-27b,short,2,production,4,pass,2026-10-03T23:52:31.748223+00:00,2026-10-03T23:54:11.987830+00:00,0,True,True,True,,False,False,True,True,PrismHadamardQwen35,paged,ssd_complete,False,True
+prism-ml/ternary-bonsai-2-27b,short,2,candidate,5,pass,2026-10-03T23:54:12.228203+00:00,2026-10-03T23:55:49.361306+00:00,0,True,True,True,,False,False,True,True,PrismHadamardQwen35,paged,ssd_complete,False,True

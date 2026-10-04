@@ -38,6 +38,23 @@ flowchart TD
   L --> G
 ```
 
+### Connected inventory reporting
+
+`coordinator/registry/autopilot_inventory_report.go` (`AutopilotInventory`)
+projects saved `SelectedModels` from connected provider sessions without calling
+the planner or changing consent, leases, routing gates or residency. It uses the
+existing consent predicate and excludes private-only providers. Counts include
+waiting, shadow, paused and stale sessions; they do not assert active control.
+Disconnected sessions disappear immediately and there is no durable offline
+inventory. Each exact model ID counts once per connection, without alias folding
+or filtering against today's catalog. These are last-reported approvals of cached
+builds, not a new disk scan, hash verification, resident count or routing claim.
+
+The admin-only inventory read is independent of controller configuration and the
+operation ledger, so a ledger outage cannot hide this in-memory projection. See
+the [inventory response contract](../reference/api-contracts.md#autopilot-inventory-report)
+for the population, freshness and count definitions.
+
 ### Enrollment and ownership
 
 `Start.resolveAutopilotChoice` asks once on the normal interactive start path.

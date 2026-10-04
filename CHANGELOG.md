@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased - typical MTP acceptance
+
+- Add per-model typical MTP draft acceptance for sampled requests (`[backend] mtp_acceptance`, `mtp_acceptance_by_model`; default `exact`), ported from mlx-serve PR #427. Greedy requests are unchanged; slot posture telemetry reports `mtp_acceptance`.
+
 ## Unreleased - MLX gather row tiles
 
 - Backport row-tile selection for `gather_mm` and `gather_qmm` in the provider's pinned MLX dependencies, with matching regenerated Swift kernel sources. Rebuild with a source-matched metallib; earlier full-model measurements do not qualify performance on these pins.
@@ -527,8 +531,6 @@ Production ran exact prefix-cache routing at 100% and measured a 1.4–5.2% hit 
 - Report coordinator and prompt-sidecar coverage in CI job summaries without adding a coverage pass threshold.
 
 ## v0.9.9 — App Attest recovery and snapshot accuracy (shipped; 2026-09-24)
-
-- Add per-model typical MTP draft acceptance for sampled requests (`[backend] mtp_acceptance`, `mtp_acceptance_by_model`; default `exact`), ported from mlx-serve PR #427. Greedy requests are unchanged; slot posture telemetry reports `mtp_acceptance`.
 
 - Distinguish signed-app availability failures and synthetic Apple callback/proof errors with closed, privacy-bounded diagnostics. Keep the result and trust policy unchanged; native `NSError` codes remain separate.
 - Align `ProviderCore.version` and the coordinator display fallback at 0.9.9. Deploy coordinator and console fixes before publishing the separately qualified signed provider.

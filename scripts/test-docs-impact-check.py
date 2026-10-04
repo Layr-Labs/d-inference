@@ -116,8 +116,8 @@ class DocsImpactCheckTests(unittest.TestCase):
             "coordinator/api/releases/read_handlers.go",
         )
         other_docs = ("docs/architecture/telemetry.md", "docs/operations/provider-release.md",
-                      "docs/architecture/security/attestation.md",
-                      "docs/architecture/security/encryption.md")
+                       "docs/architecture/security/attestation.md",
+                       "docs/architecture/security/encryption.md", "docs/architecture/billing.md")
         for source in sources:
             with self.subTest(source=source):
                 # Other domains' docs must not satisfy the API contract gate.
@@ -260,6 +260,60 @@ class DocsImpactCheckTests(unittest.TestCase):
                 self.assertIn(f"{rule} source changed", still_missing.stderr)
                 covered = self.run_check(source, ownership, *canonical.values())
                 self.assertEqual(covered.returncode, 0, covered.stdout + covered.stderr)
+
+    def test_relocated_domain_owners_require_behavior_documentation(self) -> None:
+        cases = {
+            "billing and accounting": (
+                "coordinator/api/billing/pricing.go",
+                "coordinator/api/billing/payouts/global_payouts_withdraw.go",
+                "coordinator/api/inference/provider_inference.go",
+                "coordinator/api/inference/completion_accounting.go",
+                "coordinator/api/inference/consumer.go",
+                "coordinator/api/inference/dispatch.go",
+                "coordinator/api/inference/reservations.go",
+                "coordinator/api/inference/settlement.go",
+                "coordinator/api/inference/inference_balance.go",
+            ),
+            "model autopilot": (
+                "coordinator/api/inference/autopilot_demand.go",
+                "coordinator/internal/inference/demand/request.go",
+            ),
+            "telemetry": (
+                "coordinator/internal/inference/metrics/attempt_outcomes.go",
+                "coordinator/internal/inference/metrics/backend.go",
+            ),
+            "warm-pool and scheduling": (
+                "coordinator/registry/provider_eligibility.go",
+                "coordinator/registry/provider_eligibility_admit.go",
+                "coordinator/registry/provider_eligibility_vision.go",
+                "coordinator/registry/gate_evaluation.go",
+                "coordinator/registry/gate_preparation.go",
+                "coordinator/registry/queue_assignment.go",
+                "coordinator/registry/reservation_candidates.go",
+                "coordinator/registry/candidate_selection.go",
+                "coordinator/registry/candidate_binding.go",
+                "coordinator/registry/quote_plan_evidence.go",
+                "coordinator/registry/dispatch_plan.go",
+                "coordinator/registry/dispatch_plan_quotes.go",
+                "coordinator/registry/capacity_quotes.go",
+            ),
+        }
+        config = json.loads((ROOT / "scripts/docs-impact-rules.json").read_text())
+        all_docs = {doc for rule in config["rules"] for doc in rule["docs_any_of"]}
+        for domain, sources in cases.items():
+            rule = next(rule for rule in config["rules"] if rule["name"] == domain)
+            unrelated_docs = sorted(all_docs - set(rule["docs_any_of"]))
+            for source in sources:
+                with self.subTest(source=source, domain=domain):
+                    self.assertTrue((ROOT / source).is_file(), source)
+                    missing = self.run_check(source, *unrelated_docs)
+                    self.assertEqual(missing.returncode, 1, missing.stdout + missing.stderr)
+                    self.assertIn(f"{domain} source changed", missing.stderr)
+                    for document in rule["docs_any_of"]:
+                        covered = self.run_check(source, *unrelated_docs, document)
+                        self.assertEqual(covered.returncode, 0, covered.stdout + covered.stderr)
+                    ignored = self.run_check(source.removesuffix(".go") + "_test.go")
+                    self.assertEqual(ignored.returncode, 0, ignored.stdout + ignored.stderr)
 
     def test_mirrored_tests_do_not_become_production_impact_sources(self) -> None:
         result = self.run_check(

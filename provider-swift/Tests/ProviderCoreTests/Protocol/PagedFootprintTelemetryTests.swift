@@ -9,7 +9,7 @@ struct PagedFootprintTelemetryTests {
             .deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent("coordinator/protocol/testdata/paged_footprint_wire.json")
+            .appendingPathComponent("coordinator/tests/protocol/testdata/paged_footprint_wire.json")
         let data = try Data(contentsOf: fixture)
         var sample = try JSONDecoder().decode(PagedStorageTelemetry.self, from: data)
         #expect(sample.allocatorPaddingBytes == 50 && sample.lastAllocationAllowanceBytes == 77)

@@ -113,6 +113,11 @@ extension EngineV2Bridge {
         // Coordinator requests are expressed in ordinary tokens. Convert the
         // provider's byte-exact commitments back through the advertised rate;
         // rounding up preserves fixed recurrent and assistant allocation blocks.
+        // A native row can retain its reservation after client termination.
+        // Its engine ledger remains authoritative until real retirement.
+        if tracksNativeShutdown {
+            committedBytes = max(committedBytes, snapshot.kvBytesReserved)
+        }
         let budgetUsed: Int64
         if kvBytesPerToken > 0 {
             let (roundedBytes, roundingOverflow) = committedBytes.addingReportingOverflow(
@@ -131,13 +136,18 @@ extension EngineV2Bridge {
             boundedKVBytesCapacity = min(
                 boundedKVBytesCapacity, snapshot.kvBytesBackendCapacity)
         }
-        let reportedKVBytesCapacity: Int
+        var reportedKVBytesCapacity: Int
         if let kvBytesBudgetClamp {
             reportedKVBytesCapacity = min(boundedKVBytesCapacity, max(0, kvBytesBudgetClamp))
         } else {
             reportedKVBytesCapacity = boundedKVBytesCapacity
         }
-        let prospectiveRequests = max(0, effectiveServingConcurrency - active.count)
+        if tracksNativeShutdown {
+            reportedKVBytesCapacity = min(reportedKVBytesCapacity, nativeAdmissionCapacityBytes())
+        }
+        let servingConcurrency = memoryLimitedConcurrency(
+            configured: effectiveServingConcurrency, capacityBytes: reportedKVBytesCapacity)
+        let prospectiveRequests = max(0, servingConcurrency - active.count)
         let prospectiveOverheadBytes: Int?
         if let perRequestOverhead = maximumRequestOverheadBytes() {
             let (bytes, overflow) = perRequestOverhead.multipliedReportingOverflow(
@@ -147,7 +157,7 @@ extension EngineV2Bridge {
             prospectiveOverheadBytes = nil
         }
         let budgetMax: Int64
-        if kvBytesPerToken > 0, let prospectiveOverheadBytes {
+        if servingConcurrency > 0, kvBytesPerToken > 0, let prospectiveOverheadBytes {
             budgetMax = Int64(
                 max(0, reportedKVBytesCapacity - prospectiveOverheadBytes)
                     / kvBytesPerToken)
@@ -210,7 +220,7 @@ extension EngineV2Bridge {
             numWaiting: UInt32(clamping: max(0, snapshot.waitingRequests)),
             activeTokens: Int64(snapshot.activeTokens),
             maxTokensPotential: maxTokensPotential,
-            maxConcurrency: UInt32(clamping: effectiveServingConcurrency),
+            maxConcurrency: UInt32(clamping: servingConcurrency),
             observedDecodeTps: observedDecodeTpsEwma,
             // Engine-measured cold-prefill EWMA published as soon as prompt
             // computation completes. Explicit metadata carries age and count.
@@ -295,8 +305,8 @@ extension EngineV2Bridge {
     /// Number of requests currently active on this bridge (heartbeat
     /// aggregate `inferenceActive` input).
     public func activeRequestCount() -> Int {
-        if let native = ownedEngine as? CBv2NativeBlockEngine {
-            let capacity = native.capacity()
+        if tracksNativeShutdown || ownedEngine is CBv2NativeBlockEngine {
+            let capacity = capacitySnapshot()
             // Early terminal delivery is not an idle/evictable native slot.
             // Include pending retirement and requests still owned by its queue.
             return max(Set(active.keys).union(pendingSubmissionIDs).count,

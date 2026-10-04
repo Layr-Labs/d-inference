@@ -12,6 +12,7 @@ enum MiMoV26AdmissionGeometryError: Error, Equatable {
 /// rings via its residency policy; only the shared bridge needs the extra fixed
 /// target-ring term. Other model families/global defaults are unchanged.
 struct MiMoV26AdmissionGeometry {
+    static let admissionWatermarkPercent = 5
     let elementBytes: Int
     let fullKVBytesPerToken: Int
     let targetWindowLogicalBytes: Int
@@ -62,7 +63,8 @@ struct MiMoV26AdmissionGeometry {
     }
 
     var internalAdmissionConfig: AdmissionV2.Config {
-        .init(elementBytes: elementBytes) // ZERO extra fixed target-ring bytes.
+        .init(watermarkFraction: Double(Self.admissionWatermarkPercent) / 100,
+            elementBytes: elementBytes) // ZERO extra fixed target-ring bytes.
     }
 
     func sharedFixedRequestBytes(resolvedNonTargetFixedBytes: Int) throws -> Int {

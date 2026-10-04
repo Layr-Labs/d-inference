@@ -1,6 +1,6 @@
 # Deploy the coordinator (production)
 
-> Last updated: 2026-09-29
+> Last updated: 2026-10-04
 
 Runbook for swapping the production coordinator container on the GCE VM
 `darkbloom-coordinator` to a Cloud-Build image of a reviewed `master` commit,
@@ -24,7 +24,7 @@ before the container swap.
 For the remaining coordinator performance upgrade, also follow
 [the Tiers 2 and 3 rollout checks](coordinator-perf-tier23-rollout.md).
 
-For international payout configuration and validation, also follow [Global Payouts](global-payouts.md).
+For bank payout configuration and validation, follow [Global Payouts](global-payouts.md) and the [Stripe account cutover](stripe-migration.md). The global-only cutover is explicit and remains false in release defaults; deploying code alone does not switch accounts.
 
 ## When to use
 
@@ -63,7 +63,8 @@ For international payout configuration and validation, also follow [Global Payou
 | Access | `gcloud compute ssh darkbloom-coordinator --project darkbloom-mainnet --zone us-east4-a --tunnel-through-iap` |
 | Ingress | `api.darkbloom.dev` → host Caddy (systemd, static certificate) → `:8080`. Do not reload Caddy during a swap; it reconnects the whole provider fleet |
 | Image | `us-east4-docker.pkg.dev/darkbloom-mainnet/coordinator/coordinator:<SHORT_SHA>` built by [`deploy/gcp/cloudbuild-prod.yaml`](../../deploy/gcp/cloudbuild-prod.yaml) from [`coordinator/Dockerfile`](../../coordinator/Dockerfile) |
-| Container | `coordinator`: `--network host`, `--restart unless-stopped`, `--stop-timeout 690`, `-v /mnt/disks/userdata:/mnt/disks/userdata`, `--env-file /etc/d-inference/env`; entrypoint [`coordinator/deploy/start.sh`](../../coordinator/deploy/start.sh) |
+| Container | `coordinator`: `--network host`, `--restart unless-stopped`, `--stop-timeout 75`, `-v /mnt/disks/userdata:/mnt/disks/userdata`, `--env-file /etc/d-inference/env`; entrypoint [`coordinator/deploy/start.sh`](../../coordinator/deploy/start.sh) |
+| Shutdown policy | Production sets `EIGENINFERENCE_DRAIN_GRACE=45s`; Docker allows 75 seconds from SIGTERM before SIGKILL. The application default remains `10m` when the env override is absent. |
 | Inside the container | `start.sh` symlinks `/data -> /mnt/disks/userdata`, starts MicroMDM on `:9002` (state in `/data/micromdm`, command webhook `http://localhost:8080/v1/mdm/webhook`), then `exec coordinator` as PID 1. `/usr/local/bin/promptsidecar` is spawned by the coordinator when `EIGENINFERENCE_PROMPT_SIDECAR_ENABLED=true` |
 | Persistent disk | `/mnt/disks/userdata`: MicroMDM BoltDB, prompt-contract artifacts (`EIGENINFERENCE_PROMPT_SIDECAR_ARTIFACT_ROOT=/mnt/disks/userdata/prompt-contracts`), logs. **Omitting the bind mount boots a blank MDM and drops the fleet to `self_signed` trust** (2026-07-04 incident) |
 | Database | AWS RDS PostgreSQL via `EIGENINFERENCE_DATABASE_URL`; schema migrations run at coordinator start |
@@ -282,18 +283,31 @@ printf '%s\n%s\n%s\n%s\n' "$PREVIOUS_IMAGE" "$PREVIOUS_ENV_BACKUP" "$PREVIOUS_EN
 ### 4. Swap
 
 Rules: **one host-network container at a time** (stop before start; two
-containers on `:8080` caused the 2026-07-03 outage); **690-second stop
-timeout** so the 10-minute application drain plus the shutdown tail (HTTP
-shutdown 15 s, provider-socket close and join 5 s, persistence-loop join
-15 s, the final cache routing flush 10 s, and a second handler join and
-flush of 10 s each when the first join timed out: up to 65 s) completes
-instead of Docker's 10-second SIGKILL; **the volume mount is mandatory**.
+containers on `:8080` caused the 2026-07-03 outage); **45-second application
+drain grace and 75-second Docker stop timeout**; **the volume mount is mandatory**.
+Confirm the override in both the running container and the env file before
+stopping the old container; editing the file does not update an existing process.
+The application's unconfigured default is 10 minutes, not the production policy.
+
+The stop timeout includes the drain, not an additional 75 seconds afterward.
+If the full drain grace is consumed, only 30 seconds remain for cleanup.
+`coordinator/app/lifecycle.go` (`drainAndStop`) separately bounds HTTP shutdown
+at 15 s, provider-socket close and join at 5 s, persistence-loop join at 15 s,
+the final cache routing flush at 10 s, and a second handler join and flush at
+10 s each when the first join timed out: up to 65 s after the drain. These
+budgets are not shortened by Docker's timeout. This policy does **not** guarantee
+all in-flight requests or final persistence complete; Docker can force SIGKILL
+before cleanup finishes. Record forced termination or incomplete flushes when
+verifying the swap.
 
 ```bash
+sudo grep -Fx 'EIGENINFERENCE_DRAIN_GRACE=45s' /etc/d-inference/env || exit 2
+sudo docker inspect coordinator --format '{{range .Config.Env}}{{if eq . "EIGENINFERENCE_DRAIN_GRACE=45s"}}{{println .}}{{end}}{{end}}' \
+  | grep -Fx 'EIGENINFERENCE_DRAIN_GRACE=45s' || exit 2
 sudo docker rename coordinator "$FALLBACK"
-sudo docker stop -t 690 "$FALLBACK"               # drains: /readyz goes 503, new requests get retryable 429s
+sudo docker stop -t 75 "$FALLBACK"                # drains: /readyz goes 503, new requests get retryable 429s
 sudo docker run -d --name coordinator \
-  --network host --restart unless-stopped --stop-timeout 690 \
+  --network host --restart unless-stopped --stop-timeout 75 \
   -v /mnt/disks/userdata:/mnt/disks/userdata \
   --env-file /etc/d-inference/env \
   "$CANDIDATE_IMAGE"
@@ -368,11 +382,18 @@ FALLBACK=$(sudo sed -n 4p "$ROLLBACK_STATE")
 [[ "$(sudo sha256sum "$PREVIOUS_ENV_BACKUP" | cut -d' ' -f1)" == "$PREVIOUS_ENV_BACKUP_SHA256" ]]
 sudo docker image inspect "$PREVIOUS_IMAGE" --format '{{.Id}}'
 
-sudo docker stop -t 690 coordinator && sudo docker rm coordinator     # one host-network container at a time
-sudo docker ps -q --filter "name=$FALLBACK" | grep -q . && sudo docker stop -t 690 "$FALLBACK"
+sudo grep -Fx 'EIGENINFERENCE_DRAIN_GRACE=45s' "$PREVIOUS_ENV_BACKUP" || exit 2
+sudo docker inspect coordinator --format '{{range .Config.Env}}{{if eq . "EIGENINFERENCE_DRAIN_GRACE=45s"}}{{println .}}{{end}}{{end}}' \
+  | grep -Fx 'EIGENINFERENCE_DRAIN_GRACE=45s' || exit 2
+sudo docker stop -t 75 coordinator && sudo docker rm coordinator     # one host-network container at a time
+if sudo docker ps -q --filter "name=$FALLBACK" | grep -q .; then
+  sudo docker inspect "$FALLBACK" --format '{{range .Config.Env}}{{if eq . "EIGENINFERENCE_DRAIN_GRACE=45s"}}{{println .}}{{end}}{{end}}' \
+    | grep -Fx 'EIGENINFERENCE_DRAIN_GRACE=45s' || exit 2
+  sudo docker stop -t 75 "$FALLBACK"
+fi
 sudo cp "$PREVIOUS_ENV_BACKUP" /etc/d-inference/env
 sudo docker run -d --name coordinator \
-  --network host --restart unless-stopped --stop-timeout 690 \
+  --network host --restart unless-stopped --stop-timeout 75 \
   -v /mnt/disks/userdata:/mnt/disks/userdata \
   --env-file /etc/d-inference/env \
   "$PREVIOUS_IMAGE"
@@ -484,4 +505,4 @@ reference copy; editing it changes nothing on the host.
 
 `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS` selects exact authenticated account IDs or stored emails; an empty value disables the SLA for everyone. Provision the selector privately in the runtime environment and verify it against the stored user before rollout. The checked-in template contains only a commented placeholder. Prefer a verified account ID. This is independent of the service role and cannot be selected by a User-Agent/header. Set model exceptions in `EIGENINFERENCE_MODEL_FIRST_CONTENT_SLAS`, for example `ternary-bonsai-2-27b=10000:5` (10-second upstream base, 9-second coordinator base, 5 ms/input token). The code change and template do not mutate the running environment.
 
-During the authorized rollout, verify that an OpenRouter request carries a positive provider first-content budget with its configured slope, while a direct request has no budget and can pass the old cutoff. Verify both API keys on the same selected account inherit the policy. Preserve and restore the prior immutable image and environment for rollback. Policy implementation: `coordinator/api/first_content_accounts.go` (`requestFirstContentDeadline`); configuration details: [configuration](../reference/configuration.md#routing-admission-and-ttft).
+During the authorized rollout, verify that an OpenRouter request carries a positive provider first-content budget with its configured slope, while a direct request has no budget and can pass the old cutoff. Verify both API keys on the same selected account inherit the policy. Preserve and restore the prior immutable image and environment for rollback. Policy implementation: `coordinator/api/inference/first_content_accounts.go` (`requestFirstContentDeadline`); configuration details: [configuration](../reference/configuration.md#routing-admission-and-ttft).

@@ -206,7 +206,7 @@ struct PickerEntryTests {
         let small = entry("org/small", sizeGb: 8)
         let mid = entry("org/mid", sizeGb: 12)
         #expect(
-            Start.resolveFallbackSelection(input: "1,2", entries: [small, mid], memoryGb: 18)
+            Start.resolveFallbackSelection(input: "1,2", entries: [small, mid], memoryGb: 24)
                 == .selected(["org/small", "org/mid"]))
     }
 

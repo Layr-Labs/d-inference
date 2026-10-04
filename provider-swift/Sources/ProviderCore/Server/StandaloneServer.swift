@@ -959,7 +959,7 @@ public actor StandaloneServer {
     /// clears the serviceability floor — the check the load path applies to
     /// a newcomer, applied to a serving-set change that raises the floor
     /// with no newcomer at all (mirrors the provider's advertise preflight).
-    private func reserveKeepsSurvivorsServiceable(reserveBytes: UInt64) async -> Bool {
+    func reserveKeepsSurvivorsServiceable(reserveBytes: UInt64) async -> Bool {
         let survivors = await existingSlotGrants(excludingModelId: "")
         guard !survivors.isEmpty else { return true }
         let targets = EngineV2KVSizing.resliceGrants(
@@ -967,7 +967,7 @@ public actor StandaloneServer {
             newcomer: nil,
             fleetKVBudgetBytes: fleetKVBudgetBytes(
                 extraWeightBytes: 0, activationReserveBytes: reserveBytes))
-        return EngineV2KVSizing.resliceMeetsServiceabilityFloor(targets, fixedCarveBytes: [:])
+        return Self.resliceKeepsSlotsServiceable(targets, existing: survivors)
     }
 
     /// The activation reserve for the standalone serving set — configured
@@ -984,10 +984,21 @@ public actor StandaloneServer {
     /// One existing slot's re-slice bookkeeping (mirrors the ProviderLoop's
     /// `ExistingSlotGrant`): sizing inputs, the grant BEFORE this re-slice
     /// (the restore point), and the bridge whose ceiling gets updated.
-    struct ExistingSlotGrant {
+    struct ExistingSlotGrant: Sendable {
         let slot: EngineV2KVSizing.ResliceSlot
         let previousGrant: Int
+        let minimumGrantBytes: Int
         let bridge: EngineV2Bridge
+    }
+
+    /// Shared by native/ordinary loads and serving-set reserve raises. A local
+    /// model must retain the same native workspace floor as a network provider.
+    nonisolated static func resliceKeepsSlotsServiceable(
+        _ targets: [String: Int], existing: [ExistingSlotGrant]
+    ) -> Bool {
+        EngineV2KVSizing.resliceMeetsServiceabilityFloor(
+            targets, minimumGrantBytes: Dictionary(uniqueKeysWithValues:
+                existing.map { ($0.slot.modelId, $0.minimumGrantBytes) }))
     }
 
     private struct SlotBuild {
@@ -1011,6 +1022,7 @@ public actor StandaloneServer {
                         fp16KVBytesPerToken: slot.sizing.fp16KVBytesPerToken,
                         maxContextLength: slot.sizing.maxContextLength),
                     previousGrant: currentGrant,
+                    minimumGrantBytes: await slot.bridge.minimumServiceableNativeGrantBytes(),
                     bridge: slot.bridge))
         }
         return existing
@@ -1119,8 +1131,7 @@ public actor StandaloneServer {
 
         // Serviceability floor (fail loud): refuse a load that would leave
         // any slot below the minimum serveable live-KV grant.
-        if !EngineV2KVSizing.resliceMeetsServiceabilityFloor(
-            targets, fixedCarveBytes: [:]), prepared.assistant != nil
+        if !Self.resliceKeepsSlotsServiceable(targets, existing: existing), prepared.assistant != nil
         {
             standaloneLogger.warning(
                 "mtp: model=\(modelId) fallback reason=\(MTPFallbackReason.assistantResliceFloor.rawValue); retrying target-only before refusing the load")
@@ -1137,8 +1148,7 @@ public actor StandaloneServer {
                 newcomer: newcomer,
                 fleetKVBudgetBytes: fleetBudget)
         }
-        guard EngineV2KVSizing.resliceMeetsServiceabilityFloor(
-            targets, fixedCarveBytes: [:])
+        guard Self.resliceKeepsSlotsServiceable(targets, existing: existing)
         else {
             let floorGb = String(
                 format: "%.1f",
@@ -1156,8 +1166,8 @@ public actor StandaloneServer {
             await newcomerBox.releaseAfterExternalResources()
             if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
             throw StandaloneServerError.capacityUnavailable(
-                "loading '\(modelId)' would re-slice some model's KV grant below "
-                    + "the \(floorGb) GB serviceability floor "
+                "loading '\(modelId)' would leave a model without its fixed request "
+                    + "workspace, admission watermark and \(floorGb) GB minimum KV allowance "
                     + "(fleet KV budget \(fleetBudget) B across \(existing.count + 1) slots) — refused")
         }
 

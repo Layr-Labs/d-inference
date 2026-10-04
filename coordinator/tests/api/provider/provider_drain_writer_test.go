@@ -12,7 +12,7 @@ import (
 )
 
 func TestProviderDrainAckWaitsForWriterReservationAndLaterBilling(t *testing.T) {
-	s, p, peer := connectedTestProvider(t)
+	s, p, peer := connectedInventoryComponent(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	pr := &registry.PendingRequest{RequestID: "held-writer", Model: testTransportModel}
@@ -79,7 +79,7 @@ func TestProviderDrainAckWaitsForWriterReservationAndLaterBilling(t *testing.T) 
 	if drainAck.RequestID != "final" || p.PendingCount() != 0 {
 		t.Fatalf("wrong settled barrier: %+v pending=%d", drainAck, p.PendingCount())
 	}
-	s.inventory.Replace(ctx, p, &protocol.ModelsReplaceMessage{
+	s.controller.Replace(ctx, p, &protocol.ModelsReplaceMessage{
 		RequestID: "validate", DrainRequestID: "final", ValidateOnly: true,
 		Models: []protocol.ModelInfo{{ID: testTransportModel}},
 	})

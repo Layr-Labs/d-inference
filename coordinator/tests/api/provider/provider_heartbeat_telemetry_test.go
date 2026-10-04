@@ -7,7 +7,7 @@ import (
 )
 
 func TestRejectedHeartbeatDoesNotEmitAllocatorSamples(t *testing.T) {
-	srv, _ := providerTestOwner(t)
+	srv := newHeartbeatFixture(t)
 	collector := newUDPCollector(t)
 	defer collector.Close()
 	dd := newTestDD(t, collector)
@@ -17,7 +17,7 @@ func TestRejectedHeartbeatDoesNotEmitAllocatorSamples(t *testing.T) {
 	apply := func(seq uint64) bool {
 		capacity := mlxCapacity(5, 2, 4096)
 		capacity.CapacitySeq = seq
-		return srv.heartbeat.Apply(p.ID, p, &protocol.HeartbeatMessage{BackendCapacity: capacity})
+		return srv.ingestor.Apply(p.ID, p, &protocol.HeartbeatMessage{BackendCapacity: capacity})
 	}
 	if !apply(2) {
 		t.Fatal("first stamped heartbeat was rejected")

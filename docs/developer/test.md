@@ -910,6 +910,18 @@ is used. Place tests by the behavior they exercise:
 | Composition and global middleware | `coordinator/tests/api/`: configuration/owner wiring, release-policy propagation, request identity and recovery middleware. |
 | Backend conformance | `coordinator/tests/store/contracts/`; backend-specific invariants in `coordinator/tests/store/memory/` and `coordinator/tests/store/postgres/`. |
 
+Provider heartbeat telemetry and inventory write-failure tests construct the
+production components directly in explicit component fixtures. They do not
+embed a provider owner with separately constructed heartbeat or inventory fields.
+Owner/session wiring is tested through the real `/ws/provider` transport:
+`coordinator/tests/api/provider/contracts/heartbeat_wiring_test.go`
+(`TestProviderHeartbeatSessionUsesLiveRegistryAndObservation`) requires the live
+registry update and emitted telemetry after an ordered drain barrier;
+`coordinator/tests/api/provider/contracts/provider_models_replace_test.go`
+(`TestProviderModelsReplaceUsesSameDrainedConnection`) checks inventory replacement
+and readiness on that same connection. Component benchmark names, workloads and
+allocation reporting remain unchanged; they do not claim to measure owner wiring.
+
 Authenticated contract fixtures use `coordinator/tests/internal/testkit/auth.go`
 (`NewSessions`, `Sessions.Token`) to sign local ES256 Privy-compatible JWTs and
 seed users before authentication. They run the real verifier with a local public

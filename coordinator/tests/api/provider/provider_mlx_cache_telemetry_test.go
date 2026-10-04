@@ -2,8 +2,6 @@ package provider_test
 
 import (
 	"fmt"
-	"log/slog"
-	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -13,8 +11,6 @@ import (
 	heartbeat "github.com/eigeninference/d-inference/coordinator/internal/provider/heartbeat"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/store"
-	"github.com/eigeninference/d-inference/coordinator/store/memory"
 	"github.com/google/uuid"
 )
 
@@ -92,9 +88,8 @@ func TestMLXCacheTelemetryBoundedTagsAndDeltas(t *testing.T) {
 	collector := newUDPCollector(t)
 	defer collector.Close()
 
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	reg := registry.New(logger)
-	srv := newProviderFixture(t, Dependencies{Registry: reg, Store: memory.NewMemory(store.Config{AdminKey: "test-key"}), Logger: logger})
+	srv := newHeartbeatFixture(t)
+	reg := srv.registry
 	ddClient := newTestDD(t, collector)
 	defer ddClient.Close()
 	srv.observation.SetDatadog(ddClient)
@@ -110,7 +105,7 @@ func TestMLXCacheTelemetryBoundedTagsAndDeltas(t *testing.T) {
 	// 1. First heartbeat of the session: no baseline → point-in-time
 	// histograms only, no deltas, no last_* samples.
 	first := mlxCapacity(5, 2, 4096)
-	srv.heartbeat.RecordMLXCacheTelemetry(provider, nil, first)
+	srv.ingestor.RecordMLXCacheTelemetry(provider, nil, first)
 	packets := flushAndDrain()
 	assertBoundedTags(t, packets)
 	for _, want := range []string{
@@ -129,7 +124,7 @@ func TestMLXCacheTelemetryBoundedTagsAndDeltas(t *testing.T) {
 
 	// 2. A reclaim happened: deltas as counts + last_* samples.
 	second := mlxCapacity(7, 3, 8192)
-	srv.heartbeat.RecordMLXCacheTelemetry(provider, first, second)
+	srv.ingestor.RecordMLXCacheTelemetry(provider, first, second)
 	packets = flushAndDrain()
 	assertBoundedTags(t, packets)
 	for _, want := range []string{
@@ -143,7 +138,7 @@ func TestMLXCacheTelemetryBoundedTagsAndDeltas(t *testing.T) {
 	}
 
 	// 3. Nothing changed: memory histograms still flow, no counts, no last_*.
-	srv.heartbeat.RecordMLXCacheTelemetry(provider, second, second)
+	srv.ingestor.RecordMLXCacheTelemetry(provider, second, second)
 	packets = flushAndDrain()
 	assertBoundedTags(t, packets)
 	if !hasMetric(packets, "provider.mlx_memory.active_gb:8|h") {
@@ -156,7 +151,7 @@ func TestMLXCacheTelemetryBoundedTagsAndDeltas(t *testing.T) {
 	}
 
 	// 4. Counters went backwards (provider-side reset): no counts.
-	srv.heartbeat.RecordMLXCacheTelemetry(provider, second, first)
+	srv.ingestor.RecordMLXCacheTelemetry(provider, second, first)
 	packets = flushAndDrain()
 	assertBoundedTags(t, packets)
 	if hasMetric(packets, "|c|") {
@@ -164,7 +159,7 @@ func TestMLXCacheTelemetryBoundedTagsAndDeltas(t *testing.T) {
 	}
 
 	// 5. No reclaimer block: memory histograms only.
-	srv.heartbeat.RecordMLXCacheTelemetry(provider, second, &protocol.BackendCapacity{GPUMemoryActiveGB: 8})
+	srv.ingestor.RecordMLXCacheTelemetry(provider, second, &protocol.BackendCapacity{GPUMemoryActiveGB: 8})
 	packets = flushAndDrain()
 	assertBoundedTags(t, packets)
 	if hasMetric(packets, "mlx_cache") {
@@ -180,9 +175,8 @@ func TestMLXCacheTelemetryFleetCardinalityIsBounded(t *testing.T) {
 	collector := newUDPCollector(t)
 	defer collector.Close()
 
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	reg := registry.New(logger)
-	srv := newProviderFixture(t, Dependencies{Registry: reg, Store: memory.NewMemory(store.Config{AdminKey: "test-key"}), Logger: logger})
+	srv := newHeartbeatFixture(t)
+	reg := srv.registry
 	ddClient := newTestDD(t, collector)
 	defer ddClient.Close()
 	srv.observation.SetDatadog(ddClient)
@@ -198,7 +192,7 @@ func TestMLXCacheTelemetryFleetCardinalityIsBounded(t *testing.T) {
 	const sessions = 40
 	for i := 0; i < sessions; i++ {
 		p := newMLXTelemetryProvider(t, reg, uuid.New().String(), families[i%2], versions[(i/2)%2])
-		srv.heartbeat.RecordMLXCacheTelemetry(p, mlxCapacity(1, 1, 1), mlxCapacity(2, 2, 2))
+		srv.ingestor.RecordMLXCacheTelemetry(p, mlxCapacity(1, 1, 1), mlxCapacity(2, 2, 2))
 	}
 	packets := flushAndDrain()
 	if len(packets) < sessions {
@@ -221,16 +215,13 @@ func TestMLXCacheTelemetryFleetCardinalityIsBounded(t *testing.T) {
 }
 
 func TestMLXCacheTelemetryNoDatadogIsNoop(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	reg := registry.New(logger)
-	srv := newProviderFixture(t, Dependencies{Registry: reg, Store: memory.NewMemory(store.Config{AdminKey: "test-key"}), Logger: logger})
+	srv := newHeartbeatFixture(t)
 	// No panic and no work without a Datadog client, including a nil provider.
-	srv.heartbeat.RecordMLXCacheTelemetry(nil, nil, mlxCapacity(1, 1, 1))
-	// A bare Server (tests that never run NewServer) and a nil capacity are
-	// both valid during rollout.
-	bare := &Owner{heartbeat: heartbeat.New(nil, nil)}
-	bare.heartbeat.RecordMLXCacheTelemetry(nil, nil, nil)
-	bare.heartbeat.RecordMLXCacheTelemetry(nil, nil, &protocol.BackendCapacity{GPUMemoryActiveGB: 1})
+	srv.ingestor.RecordMLXCacheTelemetry(nil, nil, mlxCapacity(1, 1, 1))
+	// An ingestor without observation and a nil capacity are both safe.
+	bare := heartbeat.New(nil, nil)
+	bare.RecordMLXCacheTelemetry(nil, nil, nil)
+	bare.RecordMLXCacheTelemetry(nil, nil, &protocol.BackendCapacity{GPUMemoryActiveGB: 1})
 }
 
 func TestSanitizeChipFamilyTag(t *testing.T) {

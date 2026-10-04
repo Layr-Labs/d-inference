@@ -8,7 +8,7 @@ import (
 )
 
 func TestPrefixCacheTelemetryFlowsThroughAcceptedHeartbeat(t *testing.T) {
-	srv, _ := providerTestOwner(t)
+	srv := newHeartbeatFixture(t)
 	collector := newUDPCollector(t)
 	defer collector.Close()
 	dd := newTestDD(t, collector)
@@ -25,7 +25,7 @@ func TestPrefixCacheTelemetryFlowsThroughAcceptedHeartbeat(t *testing.T) {
 		capacity := &protocol.BackendCapacity{CapacitySeq: capacitySeq,
 			Slots:                  []protocol.BackendSlotCapacity{{Model: "test-model", State: "idle", PrefixCache: sample}},
 			PrefixCacheMaintenance: &protocol.PrefixCacheMaintenanceTelemetry{TTLExpiredTotal: maintenance}}
-		if !srv.heartbeat.Apply(p.ID, p, &protocol.HeartbeatMessage{BackendCapacity: capacity}) {
+		if !srv.ingestor.Apply(p.ID, p, &protocol.HeartbeatMessage{BackendCapacity: capacity}) {
 			t.Fatal("fresh heartbeat rejected")
 		}
 		return flush()
@@ -102,7 +102,7 @@ func TestPrefixCacheTelemetryFlowsThroughAcceptedHeartbeat(t *testing.T) {
 	noCounts(apply(nil, 3))                   // missing instrumentation clears baseline
 	noCounts(apply(sample(2, 3, 0, 100), 3))
 	// The existing capacity-sequence gate is also the metric emission gate.
-	if srv.heartbeat.Apply(p.ID, p, &protocol.HeartbeatMessage{BackendCapacity: &protocol.BackendCapacity{CapacitySeq: capacitySeq}}) {
+	if srv.ingestor.Apply(p.ID, p, &protocol.HeartbeatMessage{BackendCapacity: &protocol.BackendCapacity{CapacitySeq: capacitySeq}}) {
 		t.Fatal("stale heartbeat accepted")
 	}
 	if packets := flush(); len(packets) != 0 {

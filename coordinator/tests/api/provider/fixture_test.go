@@ -25,8 +25,6 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/api/releases"
 	"github.com/eigeninference/d-inference/coordinator/datadog"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
-	"github.com/eigeninference/d-inference/coordinator/internal/provider/heartbeat"
-	"github.com/eigeninference/d-inference/coordinator/internal/provider/inventory"
 	"github.com/eigeninference/d-inference/coordinator/internal/provider/session"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -46,8 +44,6 @@ type Owner struct {
 	catalog     *catalog.Owner
 	observation *observation.Owner
 	logger      *slog.Logger
-	heartbeat   *heartbeat.Ingestor
-	inventory   *inventory.Controller
 	sessions    *session.Gate
 }
 
@@ -69,8 +65,7 @@ func newProviderFixture(t testing.TB, d Dependencies) *Owner {
 	d.Sessions = &session.Gate{}
 	owner = &Owner{Owner: providerapi.New(d), registry: d.Registry, store: d.Store,
 		trust: d.Trust, catalog: d.Catalog, observation: d.Observation, logger: d.Logger,
-		sessions: d.Sessions, heartbeat: heartbeat.New(d.Registry, d.Observation),
-		inventory: inventory.New(d.Registry, d.Catalog.ProviderSupportsDesiredModels, d.Logger)}
+		sessions: d.Sessions}
 	d.Trust.Start()
 	t.Cleanup(d.Trust.Close)
 	return owner

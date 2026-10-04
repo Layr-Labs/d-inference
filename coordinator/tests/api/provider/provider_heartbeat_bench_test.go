@@ -1,13 +1,12 @@
 package provider_test
 
-// Benchmarks for the API-side heartbeat branch of providerReadLoop
-// (case protocol.TypeHeartbeat): everything that runs per provider per
-// heartbeat AFTER the frame is decoded. providerReadLoop itself needs a live
-// WebSocket, so the branch body is reproduced here step for step against a
-// registered provider carrying a realistic three-slot BackendCapacity with MLX
-// cache reclaimer telemetry — the shape every current provider reports.
+// Component benchmarks for post-decode heartbeat ingestion and telemetry, plus
+// the production trust rearm check as an explicit separate dependency. These do
+// not exercise provider owner construction or WebSocket dispatch. The registered
+// provider carries a realistic three-slot BackendCapacity with MLX cache
+// reclaimer telemetry — the shape every current provider reports.
 //
-//	go test ./api/ -run '^$' -bench 'HeartbeatBranch' -benchmem
+//	go test ./tests/api/provider/ -run '^$' -bench 'HeartbeatBranch' -benchmem
 
 import (
 	"context"
@@ -17,7 +16,10 @@ import (
 	"testing"
 
 	"github.com/DataDog/datadog-go/v5/statsd"
+	"github.com/eigeninference/d-inference/coordinator/api/observation"
+	"github.com/eigeninference/d-inference/coordinator/api/provider/trust"
 	"github.com/eigeninference/d-inference/coordinator/datadog"
+	"github.com/eigeninference/d-inference/coordinator/internal/provider/heartbeat"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -32,14 +34,20 @@ var benchHeartbeatModels = []string{
 	"mlx-community/bench-model-02-4bit",
 }
 
-func benchHeartbeatServer(tb testing.TB) (*Owner, *registry.Provider) {
+func benchHeartbeatFixture(tb testing.TB) (*heartbeatFixture, *trust.Owner, *registry.Provider) {
 	tb.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := newProviderFixture(tb, Dependencies{Registry: reg, Store: st, Logger: logger})
-	// NewServer starts the telemetry worker and the trust-coverage loop; only
-	// Close stops them, so every benchmark server must be closed.
+	reg.SetStore(st)
+	obs := observation.New(observation.Dependencies{Registry: reg, Store: st, Logger: logger})
+	tb.Cleanup(obs.Close)
+	fixture := &heartbeatFixture{registry: reg, observation: obs, ingestor: heartbeat.New(reg, obs)}
+	// Keep the real trust rearm check in the timed workload, without wrapping
+	// either component in a provider owner facade.
+	trustOwner := trust.New(trust.Dependencies{Registry: reg, Store: st, Observation: obs, Logger: logger}, trust.Config{})
+	trustOwner.Start()
+	tb.Cleanup(trustOwner.Close)
 
 	infos := make([]protocol.ModelInfo, 0, len(benchHeartbeatModels))
 	for _, m := range benchHeartbeatModels {
@@ -55,7 +63,7 @@ func benchHeartbeatServer(tb testing.TB) (*Owner, *registry.Provider) {
 		EncryptedResponseChunks: true,
 	})
 	reg.Heartbeat(benchHeartbeatProviderID, benchHeartbeatMessage())
-	return srv, p
+	return fixture, trustOwner, p
 }
 
 // benchHeartbeatMessage is a baseline (non-event) heartbeat: no prefix-cache
@@ -132,48 +140,47 @@ func benchLocalStatsd(tb testing.TB) *datadog.Client {
 	return &datadog.Client{Statsd: sd}
 }
 
-// runHeartbeatBranch mirrors the post-decode heartbeat branch of
-// providerReadLoop for a baseline heartbeat (no prefix-cache fields, so
-// UpdatePrefixCacheSnapshot is skipped exactly as in production).
-func runHeartbeatBranch(ctx context.Context, s *Owner, providerID string, provider *registry.Provider, hb *protocol.HeartbeatMessage) {
-	s.heartbeat.Apply(providerID, provider, hb)
-	s.trust.MaybeRearmCodeAttest(ctx, providerID, provider, hb)
+// runHeartbeatBranch measures the production ingestor and separate trust check
+// for a baseline heartbeat (no prefix-cache fields).
+func runHeartbeatBranch(ctx context.Context, ingestor *heartbeat.Ingestor, trustOwner *trust.Owner, providerID string, provider *registry.Provider, hb *protocol.HeartbeatMessage) {
+	ingestor.Apply(providerID, provider, hb)
+	trustOwner.MaybeRearmCodeAttest(ctx, providerID, provider, hb)
 }
 
-// runHeartbeatTail is the API-side tail after registry ingest, exactly as the
-// branch runs it today. prev is the pre-ingest capacity snapshot the MLX
+// runHeartbeatTail isolates the capacity snapshot, wedge/MLX telemetry and
+// separate trust check. prev is the pre-ingest capacity snapshot the MLX
 // telemetry diffs its reclaimer counters against.
-func runHeartbeatTail(ctx context.Context, s *Owner, providerID string, provider *registry.Provider, prev *protocol.BackendCapacity, hb *protocol.HeartbeatMessage) {
+func runHeartbeatTail(ctx context.Context, ingestor *heartbeat.Ingestor, trustOwner *trust.Owner, providerID string, provider *registry.Provider, prev *protocol.BackendCapacity, hb *protocol.HeartbeatMessage) {
 	capacity := provider.BackendCapacitySnapshot()
-	s.heartbeat.RecordBackendWedgeTelemetry(capacity)
-	s.heartbeat.RecordMLXCacheTelemetry(provider, prev, capacity)
-	s.trust.MaybeRearmCodeAttest(ctx, providerID, provider, hb)
+	ingestor.RecordBackendWedgeTelemetry(capacity)
+	ingestor.RecordMLXCacheTelemetry(provider, prev, capacity)
+	trustOwner.MaybeRearmCodeAttest(ctx, providerID, provider, hb)
 }
 
 // BenchmarkHeartbeatBranchNoDD is the whole branch with Datadog unconfigured
 // (metric calls are no-ops): registry ingest + snapshot + telemetry extraction.
 func BenchmarkHeartbeatBranchNoDD(b *testing.B) {
-	s, p := benchHeartbeatServer(b)
+	s, trustOwner, p := benchHeartbeatFixture(b)
 	hb := benchHeartbeatMessage()
 	ctx := context.Background()
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		runHeartbeatBranch(ctx, s, benchHeartbeatProviderID, p, hb)
+		runHeartbeatBranch(ctx, s.ingestor, trustOwner, benchHeartbeatProviderID, p, hb)
 	}
 }
 
 // BenchmarkHeartbeatBranchStatsd is the same branch with a real DogStatsD
 // client attached, so the nine per-heartbeat gauge emissions are paid.
 func BenchmarkHeartbeatBranchStatsd(b *testing.B) {
-	s, p := benchHeartbeatServer(b)
+	s, trustOwner, p := benchHeartbeatFixture(b)
 	s.observation.SetDatadog(benchLocalStatsd(b))
 	hb := benchHeartbeatMessage()
 	ctx := context.Background()
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		runHeartbeatBranch(ctx, s, benchHeartbeatProviderID, p, hb)
+		runHeartbeatBranch(ctx, s.ingestor, trustOwner, benchHeartbeatProviderID, p, hb)
 	}
 }
 
@@ -181,7 +188,7 @@ func BenchmarkHeartbeatBranchStatsd(b *testing.B) {
 // + wedge + MLX cache telemetry + code-attest re-arm check) from the registry
 // ingest, with Datadog unconfigured.
 func BenchmarkHeartbeatBranchTelemetryOnly(b *testing.B) {
-	s, p := benchHeartbeatServer(b)
+	s, trustOwner, p := benchHeartbeatFixture(b)
 	hb := benchHeartbeatMessage()
 	ctx := context.Background()
 	b.ReportAllocs()
@@ -190,14 +197,14 @@ func BenchmarkHeartbeatBranchTelemetryOnly(b *testing.B) {
 	// reclaimer deltas are zero — the realistic per-heartbeat tail cost.
 	prev := p.BackendCapacitySnapshot()
 	for i := 0; i < b.N; i++ {
-		runHeartbeatTail(ctx, s, benchHeartbeatProviderID, p, prev, hb)
+		runHeartbeatTail(ctx, s.ingestor, trustOwner, benchHeartbeatProviderID, p, prev, hb)
 	}
 }
 
 // BenchmarkHeartbeatBranchTelemetryOnlyStatsd is the API-side tail with a real
 // DogStatsD client attached.
 func BenchmarkHeartbeatBranchTelemetryOnlyStatsd(b *testing.B) {
-	s, p := benchHeartbeatServer(b)
+	s, trustOwner, p := benchHeartbeatFixture(b)
 	s.observation.SetDatadog(benchLocalStatsd(b))
 	hb := benchHeartbeatMessage()
 	ctx := context.Background()
@@ -207,6 +214,6 @@ func BenchmarkHeartbeatBranchTelemetryOnlyStatsd(b *testing.B) {
 	// reclaimer deltas are zero — the realistic per-heartbeat tail cost.
 	prev := p.BackendCapacitySnapshot()
 	for i := 0; i < b.N; i++ {
-		runHeartbeatTail(ctx, s, benchHeartbeatProviderID, p, prev, hb)
+		runHeartbeatTail(ctx, s.ingestor, trustOwner, benchHeartbeatProviderID, p, prev, hb)
 	}
 }

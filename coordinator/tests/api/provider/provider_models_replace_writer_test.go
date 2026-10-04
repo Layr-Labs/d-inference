@@ -31,7 +31,7 @@ func readReplacementFrame(t *testing.T, ctx context.Context, peer *websocket.Con
 	}
 }
 
-func applyReplacementCapacity(t *testing.T, s *Owner, p *registry.Provider, model string) {
+func applyReplacementCapacity(t *testing.T, s *inventoryComponentFixture, p *registry.Provider, model string) {
 	t.Helper()
 	free := 24.0
 	msg := &protocol.HeartbeatMessage{Status: "idle", BackendCapacity: &protocol.BackendCapacity{
@@ -39,14 +39,14 @@ func applyReplacementCapacity(t *testing.T, s *Owner, p *registry.Provider, mode
 		FreeForLoadGB: &free,
 		Slots:         []protocol.BackendSlotCapacity{{Model: model, State: "idle"}},
 	}}
-	if !s.heartbeat.Apply(p.ID, p, msg) {
+	if !s.ingestor.Apply(p.ID, p, msg) {
 		t.Fatal("fresh replacement heartbeat was rejected")
 	}
-	s.inventory.Heartbeat(context.Background(), p)
+	s.controller.Heartbeat(context.Background(), p)
 }
 
 func TestModelsReplaceFailedAckKeepsRoutingFencedAndQueuesUntouched(t *testing.T) {
-	s, p, peer := connectedTestProvider(t)
+	s, p, peer := connectedInventoryComponent(t)
 	s.registry.SetModelCatalog([]registry.CatalogEntry{{ID: testTransportModel}, {ID: "replacement"}})
 	generation := s.registry.CommitProviderDrain(p, "drain")
 	if !s.registry.CompleteProviderDrain(p, "drain", generation) {
@@ -65,7 +65,7 @@ func TestModelsReplaceFailedAckKeepsRoutingFencedAndQueuesUntouched(t *testing.T
 	// the healthy socket. Inventory must commit, but admission must not resume.
 	failedCtx, fail := context.WithCancel(context.Background())
 	fail()
-	s.inventory.Replace(failedCtx, p, &protocol.ModelsReplaceMessage{
+	s.controller.Replace(failedCtx, p, &protocol.ModelsReplaceMessage{
 		RequestID: "replace", DrainRequestID: "drain", Models: []protocol.ModelInfo{{ID: "replacement"}},
 	})
 	if s.registry.GetProvider(p.ID) != p || !s.registry.ProviderDraining(p.ID) || p.PendingCount() != 0 {
@@ -77,7 +77,7 @@ func TestModelsReplaceFailedAckKeepsRoutingFencedAndQueuesUntouched(t *testing.T
 	if len(models) != 1 || models[0].ID != "replacement" {
 		t.Fatalf("expected committed inventory behind the fence, got %+v", models)
 	}
-	s.inventory.Ready(context.Background(), p, &protocol.ModelsReplaceReadyMessage{RequestID: "replace", DrainRequestID: "drain", CapacitySeq: 1})
+	s.controller.Ready(context.Background(), p, &protocol.ModelsReplaceReadyMessage{RequestID: "replace", DrainRequestID: "drain", CapacitySeq: 1})
 	if !s.registry.ProviderDraining(p.ID) {
 		t.Fatal("readiness without a written commit receipt reopened admission")
 	}
@@ -100,7 +100,7 @@ func TestModelsReplaceFailedAckKeepsRoutingFencedAndQueuesUntouched(t *testing.T
 	// A fresh barrier permits explicit reconciliation on the same socket.
 	generation = s.registry.CommitProviderDrain(p, "reconcile")
 	s.registry.CompleteProviderDrain(p, "reconcile", generation)
-	s.inventory.Replace(ctx, p, &protocol.ModelsReplaceMessage{
+	s.controller.Replace(ctx, p, &protocol.ModelsReplaceMessage{
 		RequestID: "retry", DrainRequestID: "reconcile", Models: models,
 	})
 	var receipt protocol.ModelsReplaceAckMessage
@@ -108,7 +108,7 @@ func TestModelsReplaceFailedAckKeepsRoutingFencedAndQueuesUntouched(t *testing.T
 	if !receipt.Accepted || receipt.RequestID != "retry" || !s.registry.ProviderDraining(p.ID) {
 		t.Fatalf("same-session reconciliation failed: %+v", receipt)
 	}
-	s.inventory.Ready(context.Background(), p, &protocol.ModelsReplaceReadyMessage{RequestID: "retry", DrainRequestID: "reconcile", CapacitySeq: 1})
+	s.controller.Ready(context.Background(), p, &protocol.ModelsReplaceReadyMessage{RequestID: "retry", DrainRequestID: "reconcile", CapacitySeq: 1})
 	if !s.registry.ProviderDraining(p.ID) || s.registry.Queue().QueueSize("replacement") != 1 {
 		t.Fatal("readiness dispatched before refreshed capacity")
 	}
@@ -143,19 +143,19 @@ func TestModelsReplaceFailedAckKeepsRoutingFencedAndQueuesUntouched(t *testing.T
 }
 
 func TestModelsReplaceResumedReceiptCanBeRetriedAfterWriteFailure(t *testing.T) {
-	s, p, peer := connectedTestProvider(t)
+	s, p, peer := connectedInventoryComponent(t)
 	generation := s.registry.CommitProviderDrain(p, "drain")
 	if !s.registry.CompleteProviderDrain(p, "drain", generation) {
 		t.Fatal("drain did not settle")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	s.inventory.Replace(ctx, p, &protocol.ModelsReplaceMessage{
+	s.controller.Replace(ctx, p, &protocol.ModelsReplaceMessage{
 		RequestID: "replace", DrainRequestID: "drain", Models: append([]protocol.ModelInfo(nil), p.Models...),
 	})
 	readReplacementFrame(t, ctx, peer, protocol.TypeModelsReplaceAck, nil)
 	free := 24.0
-	if !s.heartbeat.Apply(p.ID, p, &protocol.HeartbeatMessage{
+	if !s.ingestor.Apply(p.ID, p, &protocol.HeartbeatMessage{
 		Status: "idle", BackendCapacity: &protocol.BackendCapacity{CapacitySeq: 1, FreeForLoadGB: &free},
 	}) {
 		t.Fatal("fresh capacity was not applied")
@@ -163,7 +163,7 @@ func TestModelsReplaceResumedReceiptCanBeRetriedAfterWriteFailure(t *testing.T) 
 	ready := &protocol.ModelsReplaceReadyMessage{RequestID: "replace", DrainRequestID: "drain", CapacitySeq: 1}
 	failedCtx, fail := context.WithCancel(context.Background())
 	fail()
-	s.inventory.Ready(failedCtx, p, ready)
+	s.controller.Ready(failedCtx, p, ready)
 	if s.registry.ProviderDraining(p.ID) {
 		t.Fatal("failed resumed-ack write re-fenced routing")
 	}
@@ -171,7 +171,7 @@ func TestModelsReplaceResumedReceiptCanBeRetriedAfterWriteFailure(t *testing.T) 
 	// write failed. An identical frame on this session resends only the
 	// receipt; it does not repeat the inventory, queue or desired transition.
 	readReplacementFrame(t, ctx, peer, protocol.TypeDesiredModels, nil)
-	s.inventory.Ready(ctx, p, ready)
+	s.controller.Ready(ctx, p, ready)
 	var resumed protocol.ModelsReplaceResumedMessage
 	readReplacementFrame(t, ctx, peer, protocol.TypeModelsReplaceResumed, &resumed)
 	if resumed.RequestID != ready.RequestID || resumed.DrainRequestID != ready.DrainRequestID ||
@@ -189,7 +189,7 @@ func TestModelsReplaceResumedReceiptCanBeRetriedAfterWriteFailure(t *testing.T) 
 func TestModelsReplaceRefreshesDesiredSnapshotAfterAck(t *testing.T) {
 	for _, lineage := range []string{"previous", "retired", "deselected"} {
 		t.Run(lineage, func(t *testing.T) {
-			s, p, peer := connectedTestProvider(t)
+			s, p, peer := connectedInventoryComponent(t)
 			s.registry.SetModelCatalog([]registry.CatalogEntry{
 				{ID: testTransportModel}, {ID: "desired"}, {ID: "previous"}, {ID: "selected"},
 				{ID: "protected", RequiredProviderCapabilities: []string{"unavailable"}},
@@ -219,7 +219,7 @@ func TestModelsReplaceRefreshesDesiredSnapshotAfterAck(t *testing.T) {
 				models = []protocol.ModelInfo{{ID: "selected"}}
 				want = []protocol.DesiredModelEntry{}
 			}
-			s.inventory.Replace(ctx, p, &protocol.ModelsReplaceMessage{RequestID: "replace", DrainRequestID: "drain", Models: models})
+			s.controller.Replace(ctx, p, &protocol.ModelsReplaceMessage{RequestID: "replace", DrainRequestID: "drain", Models: models})
 			var receipt protocol.ModelsReplaceAckMessage
 			readReplacementFrame(t, ctx, peer, protocol.TypeModelsReplaceAck, &receipt)
 			if !receipt.Accepted || receipt.ValidateOnly || receipt.RequestID != "replace" {
@@ -228,7 +228,7 @@ func TestModelsReplaceRefreshesDesiredSnapshotAfterAck(t *testing.T) {
 			if !s.registry.ProviderDraining(p.ID) {
 				t.Fatal("receipt reopened admission before provider readiness")
 			}
-			s.inventory.Ready(context.Background(), p, &protocol.ModelsReplaceReadyMessage{RequestID: "replace", DrainRequestID: "drain", CapacitySeq: 1})
+			s.controller.Ready(context.Background(), p, &protocol.ModelsReplaceReadyMessage{RequestID: "replace", DrainRequestID: "drain", CapacitySeq: 1})
 			applyReplacementCapacity(t, s, p, "selected")
 			var after protocol.DesiredModelsMessage
 			readReplacementFrame(t, ctx, peer, protocol.TypeDesiredModels, &after)

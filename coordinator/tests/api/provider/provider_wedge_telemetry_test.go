@@ -4,7 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/eigeninference/d-inference/coordinator/api/observation"
 	heartbeat "github.com/eigeninference/d-inference/coordinator/internal/provider/heartbeat"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
@@ -110,7 +109,7 @@ func TestProviderWideEvalInFlightLong(t *testing.T) {
 	}
 }
 
-// TestEvalInFlightLongEmittedOnceProviderWide verifies the end-to-end emission:
+// TestEvalInFlightLongEmittedOnceProviderWide verifies the component's emission:
 // three loaded models all carrying the SAME process-global in-flight eval must
 // produce the provider.eval_in_flight_long counter EXACTLY ONCE (not once per
 // model) and WITHOUT a model: tag. This is the direct regression for the per-slot
@@ -121,8 +120,7 @@ func TestEvalInFlightLongEmittedOnceProviderWide(t *testing.T) {
 	ddClient := newTestDD(t, collector)
 	defer ddClient.Close()
 
-	obs := observation.New(observation.Dependencies{Logger: quietLogger()})
-	s := &Owner{observation: obs, heartbeat: heartbeat.New(nil, obs)}
+	s := newHeartbeatFixture(t)
 	s.observation.SetDatadog(ddClient)
 
 	hb := &protocol.HeartbeatMessage{
@@ -134,7 +132,7 @@ func TestEvalInFlightLongEmittedOnceProviderWide(t *testing.T) {
 			},
 		},
 	}
-	s.heartbeat.RecordBackendWedgeTelemetry(hb.BackendCapacity)
+	s.ingestor.RecordBackendWedgeTelemetry(hb.BackendCapacity)
 	_ = ddClient.Statsd.Flush()
 	packets := collector.drain()
 
@@ -152,13 +150,13 @@ func TestEvalInFlightLongEmittedOnceProviderWide(t *testing.T) {
 	}
 }
 
-// TestRecordBackendWedgeTelemetryNilSafe verifies the emitter is safe with a
-// Server that has no Datadog client wired (ddIncr is a no-op then), so the
+// TestRecordBackendWedgeTelemetryNilSafe verifies the emitter is safe with an
+// ingestor that has no Datadog client wired (ddIncr is a no-op then), so the
 // heartbeat path never panics on a non-DD deployment.
 func TestRecordBackendWedgeTelemetryNilSafe(t *testing.T) {
-	s := &Owner{heartbeat: heartbeat.New(nil, nil)}
+	ingestor := heartbeat.New(nil, nil)
 	// Must not panic with nil dd and a wedged slot.
-	s.heartbeat.RecordBackendWedgeTelemetry(&protocol.BackendCapacity{
+	ingestor.RecordBackendWedgeTelemetry(&protocol.BackendCapacity{
 		Slots: []protocol.BackendSlotCapacity{
 			{Model: "m", State: "idle", Admits: 3, WedgeSuspected: true},
 		},

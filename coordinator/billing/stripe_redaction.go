@@ -34,6 +34,13 @@ const MaxRedactionObjects = 10
 var checkoutSessionIDRe = regexp.MustCompile(`^cs_[A-Za-z0-9_]{1,255}$`)
 var redactionJobIDRe = regexp.MustCompile(`^prj_[A-Za-z0-9_]{1,255}$`)
 
+func validRedactionJobID(jobID string) error {
+	if !redactionJobIDRe.MatchString(jobID) {
+		return errors.New("stripe redaction: invalid job id")
+	}
+	return nil
+}
+
 // CreateRedactionJob creates a job for the Checkout Sessions with
 // validation_behavior fix. idempotencyKey keeps a retried create from
 // making a second job; Stripe forgets keys after 24 hours.
@@ -44,7 +51,7 @@ func (p *StripeProcessor) CreateRedactionJob(sessionIDs []string, idempotencyKey
 	form := url.Values{"validation_behavior": {"fix"}}
 	for _, id := range sessionIDs {
 		if !checkoutSessionIDRe.MatchString(id) {
-			return nil, fmt.Errorf("stripe redaction: invalid checkout session id")
+			return nil, errors.New("stripe redaction: invalid checkout session id")
 		}
 		form.Add("objects[checkout_sessions][]", id)
 	}
@@ -53,16 +60,16 @@ func (p *StripeProcessor) CreateRedactionJob(sessionIDs []string, idempotencyKey
 
 // GetRedactionJob reads the job's status.
 func (p *StripeProcessor) GetRedactionJob(jobID string) (*RedactionJob, error) {
-	if !redactionJobIDRe.MatchString(jobID) {
-		return nil, fmt.Errorf("stripe redaction: invalid job id")
+	if err := validRedactionJobID(jobID); err != nil {
+		return nil, err
 	}
 	return p.redactionJob(http.MethodGet, "/v1/privacy/redaction_jobs/"+jobID, nil, "")
 }
 
 // RunRedactionJob starts a ready job. Redaction cannot be undone.
 func (p *StripeProcessor) RunRedactionJob(jobID string) (*RedactionJob, error) {
-	if !redactionJobIDRe.MatchString(jobID) {
-		return nil, fmt.Errorf("stripe redaction: invalid job id")
+	if err := validRedactionJobID(jobID); err != nil {
+		return nil, err
 	}
 	return p.redactionJob(http.MethodPost, "/v1/privacy/redaction_jobs/"+jobID+"/run", url.Values{}, "")
 }
@@ -70,8 +77,8 @@ func (p *StripeProcessor) RunRedactionJob(jobID string) (*RedactionJob, error) {
 // RedactionValidationErrors lists the first page of a failed job's
 // validation errors.
 func (p *StripeProcessor) RedactionValidationErrors(jobID string) ([]RedactionValidationError, error) {
-	if !redactionJobIDRe.MatchString(jobID) {
-		return nil, fmt.Errorf("stripe redaction: invalid job id")
+	if err := validRedactionJobID(jobID); err != nil {
+		return nil, err
 	}
 	body, err := p.stripeDo(http.MethodGet, "/v1/privacy/redaction_jobs/"+jobID+"/validation_errors?limit=100", nil, "")
 	if err != nil {
@@ -155,7 +162,7 @@ func IsNotFoundAPIErr(err error) bool {
 // missing, so the worker asks one by one.
 func (p *StripeProcessor) CheckoutSessionExists(sessionID string) (bool, error) {
 	if !checkoutSessionIDRe.MatchString(sessionID) {
-		return false, fmt.Errorf("stripe redaction: invalid checkout session id")
+		return false, errors.New("stripe redaction: invalid checkout session id")
 	}
 	_, err := p.stripeDo(http.MethodGet, "/v1/checkout/sessions/"+sessionID, nil, "")
 	if IsNotFoundAPIErr(err) {

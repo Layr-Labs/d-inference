@@ -227,7 +227,7 @@ func (s *Server) redactCheckoutSessions(row store.ErasureOutboxWork) outboxOutco
 		key := fmt.Sprintf("erasure-redaction-%s-%d", row.ID, row.JobGeneration)
 		job, err := stripe.CreateRedactionJob(ids, key)
 		if billing.IsNotFoundAPIErr(err) {
-			return s.splitMissingSessions(row, ids)
+			return splitMissingSessions(stripe, row, ids, now)
 		}
 		if err != nil {
 			return redactionAPIOutcome(err, "")
@@ -247,7 +247,7 @@ func (s *Server) redactCheckoutSessions(row store.ErasureOutboxWork) outboxOutco
 	case "succeeded":
 		return outboxOutcome{kind: outboxDone}
 	case "failed":
-		return s.failedRedactionJob(row, job.ID)
+		return failedRedactionJob(stripe, row, job.ID, now)
 	case "canceled":
 		return outboxOutcome{kind: outboxManual, err: "redaction job " + job.ID + " was canceled"}
 	}
@@ -271,14 +271,14 @@ func (s *Server) redactCheckoutSessions(row store.ErasureOutboxWork) outboxOutco
 // so each ID is looked up: the found ones stay on the row for a new job,
 // and the missing ones move to a manual_action row, because they may be on
 // the earlier Stripe account and need redaction by hand.
-func (s *Server) splitMissingSessions(row store.ErasureOutboxWork, ids []string) outboxOutcome {
+func splitMissingSessions(stripe *billing.StripeProcessor, row store.ErasureOutboxWork, ids []string, now time.Time) outboxOutcome {
 	const missingMsg = "Checkout Session not found with the current Stripe key; it may belong to the earlier Stripe account. Redact it by hand"
 	if len(ids) == 1 {
 		return outboxOutcome{kind: outboxManual, err: missingMsg}
 	}
 	var found, missing []string
 	for _, id := range ids {
-		ok, err := s.billing.Stripe().CheckoutSessionExists(id)
+		ok, err := stripe.CheckoutSessionExists(id)
 		if err != nil {
 			return redactionAPIOutcome(err, "")
 		}
@@ -296,7 +296,7 @@ func (s *Server) splitMissingSessions(row store.ErasureOutboxWork, ids []string)
 	}
 	keep := strings.Join(found, ",")
 	return outboxOutcome{
-		kind: outboxProgress, next: time.Now().UTC(), externalIDs: &keep, newGeneration: true,
+		kind: outboxProgress, next: now, externalIDs: &keep, newGeneration: true,
 		split: &store.ErasureOutboxItem{
 			ID: uuid.NewString(), RequestID: row.RequestID, Target: store.ErasureTargetCheckoutSessions,
 			ExternalID: strings.Join(missing, ","), LastError: missingMsg,
@@ -307,8 +307,8 @@ func (s *Server) splitMissingSessions(row store.ErasureOutboxWork, ids []string)
 // failedRedactionJob reads why the job failed. When every error says the
 // transactions are too recent, the batch waits and a new job is made later,
 // until erasureRedactionDeadline after the scrub.
-func (s *Server) failedRedactionJob(row store.ErasureOutboxWork, jobID string) outboxOutcome {
-	verrs, err := s.billing.Stripe().RedactionValidationErrors(jobID)
+func failedRedactionJob(stripe *billing.StripeProcessor, row store.ErasureOutboxWork, jobID string, now time.Time) outboxOutcome {
+	verrs, err := stripe.RedactionValidationErrors(jobID)
 	if err != nil {
 		return redactionAPIOutcome(err, jobID)
 	}
@@ -325,20 +325,18 @@ func (s *Server) failedRedactionJob(row store.ErasureOutboxWork, jobID string) o
 	if !tooRecent {
 		return outboxOutcome{kind: outboxManual, err: msg}
 	}
-	if time.Since(row.CreatedAt) > erasureRedactionDeadline {
+	if now.Sub(row.CreatedAt) > erasureRedactionDeadline {
 		return outboxOutcome{kind: outboxManual, err: "still too recent to redact " + erasureRedactionDeadline.String() + " after the scrub: " + msg}
 	}
-	return outboxOutcome{kind: outboxReschedule, err: msg, next: time.Now().UTC().Add(erasureRedactionWait), newGeneration: true}
+	return outboxOutcome{kind: outboxReschedule, err: msg, next: now.Add(erasureRedactionWait), newGeneration: true}
 }
 
 // redactionAPIOutcome classifies a Stripe API error from the redaction
 // endpoints. A definitive 4xx (including "feature not enabled for this
-// account") needs an operator; anything else is retried.
+// account") needs an operator; anything else is retried. A "not found"
+// from the job create or the job read is handled before this call.
 func redactionAPIOutcome(err error, jobID string) outboxOutcome {
-	switch {
-	case billing.IsNotFoundAPIErr(err) && jobID == "":
-		return outboxOutcome{kind: outboxDone}
-	case stripeDefinitive(err):
+	if stripeDefinitive(err) {
 		return outboxOutcome{kind: outboxManual, err: truncateErasureError(err.Error()), jobID: jobID}
 	}
 	return outboxOutcome{kind: outboxRetry, err: truncateErasureError(err.Error()), jobID: jobID}

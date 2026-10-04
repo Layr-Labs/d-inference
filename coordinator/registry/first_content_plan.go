@@ -3,35 +3,32 @@ package registry
 import (
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/forecast"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/performance"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/shortlist"
+	"github.com/eigeninference/d-inference/coordinator/registry/selection"
 )
 
 // firstContentPlanEntries retains the same bounded choices the initial
 // selector would make after successively removing each winner. This keeps the
 // 100-ms band, service load and affinity semantics out of a second comparator.
 func firstContentPlanEntries(pool []*routingCandidate, winner *routingCandidate, affinity string) []planEntry {
-	remaining := make([]*routingCandidate, 0, len(pool))
-	for _, c := range pool {
-		if c != winner {
-			remaining = append(remaining, c)
-		}
-	}
-	entries := make([]planEntry, 0, min(len(remaining), dispatchPlanMaxAlternates))
-	for len(remaining) > 0 && len(entries) < dispatchPlanMaxAlternates {
+	return selection.Retain(pool, winner, dispatchPlanMaxAlternates, func(remaining []*routingCandidate) *routingCandidate {
 		chosen, _, _, _ := selectRoutingCandidateWithAffinity(remaining, affinity)
-		entries = append(entries, planEntry{provider: chosen.provider, view: planViewOf(chosen), evidenceQualified: chosen.firstContentEvidenceQualified, forecastAt: time.Now(), cacheEvidenceWeight: chosen.cacheEvidenceWeight, cacheEstimatedTTFTSavedMs: chosen.cacheEstimatedTTFTSavedMs, cacheAffinityEligible: chosen.cacheAffinityEligible})
-		for i, c := range remaining {
-			if c == chosen {
-				remaining = append(remaining[:i], remaining[i+1:]...)
-				break
-			}
-		}
-	}
-	return entries
+		return chosen
+	}, func(chosen *routingCandidate) planEntry {
+		return planEntry{PlanEntry: planViewOf(chosen), EvidenceQualified: chosen.firstContentEvidenceQualified, ForecastAt: time.Now(), CacheEvidenceWeight: chosen.cacheEvidenceWeight, CacheEstimatedTTFTSavedMs: chosen.cacheEstimatedTTFTSavedMs, CacheAffinityEligible: chosen.cacheAffinityEligible}
+	})
 }
 
 func planViewOf(c *routingCandidate) PlanEntry {
-	return PlanEntry{ProviderID: c.provider.ID, CostMs: c.costMs, FirstContent: c.firstContent, HealthMs: c.breakdown.HealthMs, CapacityRateMs: c.breakdown.CapacityRateMs,
+	return c.Quote()
+}
+
+// Quote captures the identity and forecast used to assemble a retained plan.
+// Reservation always revalidates the session and admission state before debit.
+func (c *Candidate) Quote() PlanEntry {
+	return PlanEntry{CandidateBinding: c.snapshot.CandidateBinding, ProviderID: c.provider.ID, CostMs: c.costMs, FirstContent: c.firstContent, HealthMs: c.breakdown.HealthMs, CapacityRateMs: c.breakdown.CapacityRateMs,
 		TTFTMs: c.firstContent.ExpectedMs, RawTTFTMs: c.breakdown.RawTTFTMs,
 		StateMs: c.breakdown.StateMs, ModelLoaded: c.snapshot.modelLoaded,
 		SlotState: c.snapshot.slotState, ChipFamily: c.snapshot.chipFamily}
@@ -39,21 +36,25 @@ func planViewOf(c *routingCandidate) PlanEntry {
 
 // pendingEntries does not consume unchosen candidates. Primary retries and a
 // hedge may race; claimEntry is the only transition that consumes an identity.
-func (dp *DispatchPlan) pendingEntries() []planEntry {
+func (dp *QuotePlan) pendingEntries() []planEntry {
 	dp.mu.Lock()
 	defer dp.mu.Unlock()
-	return append([]planEntry(nil), dp.entries[dp.cursor:]...)
+	return dp.pendingEntriesLocked()
+}
+
+func (dp *QuotePlan) pendingEntriesLocked() []planEntry {
+	entries := make([]planEntry, 0, dp.alternates().Remaining())
+	dp.alternates().Range(func(handle shortlist.Handle) bool {
+		entries = append(entries, dp.entries[handle.Index])
+		return true
+	})
+	return entries
 }
 
 func (dp *DispatchPlan) claimEntry(id string) bool {
 	dp.mu.Lock()
 	defer dp.mu.Unlock()
-	for i := dp.cursor; i < len(dp.entries); i++ {
-		if dp.entries[i].view.ProviderID != id {
-			continue
-		}
-		dp.entries[dp.cursor], dp.entries[i] = dp.entries[i], dp.entries[dp.cursor]
-		dp.cursor++
+	if dp.alternates().Claim(id) {
 		dp.attempted[id] = struct{}{}
 		return true
 	}
@@ -96,7 +97,7 @@ func (r *Registry) reserveFirstContentFromPlan(pr *PendingRequest, plan *Dispatc
 		r.mu.RLock()
 		now := time.Now()
 		for _, entry := range entries {
-			id, p := entry.view.ProviderID, entry.provider
+			id, p := entry.ProviderID, entry.provider
 			reason := PlanSkipReason("")
 			switch {
 			case excluded[id]:
@@ -125,7 +126,7 @@ func (r *Registry) reserveFirstContentFromPlan(pr *PendingRequest, plan *Dispatc
 				if ok {
 					r.applyCacheRoutingCostPLocked(p, model, pr, candidate)
 					r.estimateFirstContent(candidate, pr, now)
-					applyFirstContentQuote(candidate, pr, entry.view, now)
+					applyFirstContentQuote(candidate, pr, entry.PlanEntry, now)
 					ok = firstContentCandidateAllowed(candidate, pr)
 				}
 				p.mu.Unlock()
@@ -141,10 +142,10 @@ func (r *Registry) reserveFirstContentFromPlan(pr *PendingRequest, plan *Dispatc
 				}
 				continue
 			}
-			scan.candidates.pool = append(scan.candidates.pool, candidate)
-			views[id] = entry.view
+			scan.candidates.Candidates = append(scan.candidates.Candidates, candidate)
+			views[id] = entry.PlanEntry
 		}
-		pool := scan.candidates.pool
+		pool := scan.candidates.Candidates
 		var avoidedIDs []string
 		if pr.Traits.AvoidVersion != "" {
 			for _, c := range pool {
@@ -163,11 +164,11 @@ func (r *Registry) reserveFirstContentFromPlan(pr *PendingRequest, plan *Dispatc
 		if pr.MinDecodeTPS > 0 {
 			pool = preferRoutingCandidates(pool, func(c *routingCandidate) bool { return projectedPerRequestDecodeTPS(&c.snapshot) >= pr.MinDecodeTPS })
 		}
-		scan.candidates.pool = pool
-		scan.candidates.candidateCount = len(pool)
+		scan.candidates.Candidates = pool
+		scan.candidates.CandidateCount = len(pool)
 		affinity := ""
 		if pr.CacheSelectionMode == "active" {
-			affinity = pr.CachePlan.affinityKey
+			affinity = pr.CachePlan.AffinityKey()
 		}
 		scan.selected, _, _, _ = selectRoutingCandidateWithAffinity(pool, affinity)
 		if scan.selected != nil {
@@ -207,28 +208,15 @@ func (r *Registry) reserveFirstContentFromPlan(pr *PendingRequest, plan *Dispatc
 }
 
 func applyFirstContentQuote(c *routingCandidate, pr *PendingRequest, quote PlanEntry, now time.Time) {
-	deadline := candidateFirstContentDeadline(c, pr)
-	if !quote.Confirmed || quote.Demoted || quote.QuoteConfidence != protocol.CapacityConfidenceHigh ||
-		quote.QuoteObservedAt.IsZero() || now.Before(quote.QuoteObservedAt) || now.Sub(quote.QuoteObservedAt) > firstContentFreshness ||
-		quote.QuoteCapacitySeq < c.snapshot.capacitySeq || c.snapshot.newestReservationAt.After(quote.QuoteObservedAt) ||
-		(!pr.RequireFreshFeasibleAfter.IsZero() && !quote.QuoteObservedAt.After(pr.RequireFreshFeasibleAfter)) ||
-		quote.QuoteTTFTP50 <= 0 || quote.QuoteTTFTP90 < quote.QuoteTTFTP50 ||
-		(deadline.IsZero() && (!(pr.Hedge || pr.RequireFreshFeasible) || pr.FirstContentPlanningHorizon <= 0)) ||
-		firstContentForecastUnknownReason(&c.snapshot, pr, c.firstContent.PromptTokens, true) != "" {
-		return
-	}
-	// The provider's quantiles have no sample-age or cache partition on the
-	// wire. A fresh reply can confirm readiness, but cannot improve the local
-	// qualified prediction or erase the current request's restore charge.
-	c.firstContent.ExpectedMs = max(c.firstContent.ExpectedMs, float64(quote.QuoteTTFTP50)/float64(time.Millisecond)+c.firstContent.RestoreMs)
-	c.firstContent.ConservativeMs = max(c.firstContent.ConservativeMs, float64(quote.QuoteTTFTP90)/float64(time.Millisecond)+c.firstContent.RestoreMs)
-	if deadline.IsZero() {
-		c.firstContent.BudgetMs = float64(pr.FirstContentPlanningHorizon) / float64(time.Millisecond)
-	} else {
-		c.firstContent.BudgetMs = max(0, float64(deadline.Sub(now))/float64(time.Millisecond))
-	}
-	c.firstContent.Status, c.firstContent.Reason = FirstContentFeasible, "fresh_quote"
-	if c.firstContent.ConservativeMs > c.firstContent.BudgetMs {
-		c.firstContent.Status = FirstContentPredictedLate
-	}
+	c.firstContent = forecast.ApplyQuote(forecast.Result{Estimate: c.firstContent, Calibrated: c.snapshot.calibratedForecastQualified},
+		firstContentForecastEvidence(&c.snapshot, c.firstContent.PromptTokens),
+		forecast.Request{PromptTokens: c.firstContent.PromptTokens, FreshAfter: pr.RequireFreshFeasibleAfter,
+			Incoming: performance.IncomingWork{RequiresVision: pr.RequiresVision}, Deadline: candidateFirstContentDeadline(c, pr),
+			Hedge: pr.Hedge, RequireFreshFeasible: pr.RequireFreshFeasible, PlanningHorizon: pr.FirstContentPlanningHorizon},
+		forecastQuote(quote), forecast.QuoteContext{CapacitySeq: c.snapshot.capacitySeq, NewestReservationAt: c.snapshot.newestReservationAt}, now)
+}
+
+func forecastQuote(quote PlanEntry) forecast.Quote {
+	return forecast.Quote{Confirmed: quote.Confirmed, Demoted: quote.Demoted, Confidence: quote.QuoteConfidence,
+		ObservedAt: quote.QuoteObservedAt, CapacitySeq: quote.QuoteCapacitySeq, TTFTP50: quote.QuoteTTFTP50, TTFTP90: quote.QuoteTTFTP90}
 }

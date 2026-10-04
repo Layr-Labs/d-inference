@@ -2,6 +2,7 @@
 
 ## Unreleased — demanded prefix reuse
 
+- Pin the provider to the merged MLX-LM PR #289 commit, including bounded demanded checkpoint capture, retention and continuation. Rebuild and validate the combined SDK and provider; earlier full-model measurements retain their recorded dependency pins.
 - Retain a distinct demanded shared-prefix checkpoint even beside the deepest checkpoint, within the existing three-boundary and memory limits. Give authenticated repeated checkpoints access to the reserved SSD write share on their first local appearance; unique extensions continue to use the novel share.
 - Preserve the demanded native-contiguous frontier between the first and latest checkpoints, account for its actual backing allocation before capture, and retire displaced native owners through the tracked fence. A small MiMo fixture verifies reopened fork parity with real MTP off and on; full-model hardware qualification remains separate.
 - Capture one aligned demanded boundary in eligible dense Qwen and the verified current Nemotron Lightning and Bonsai text prompts below the normal solo stripe, so repeated short prefixes can be published for reuse. Nemotron and Bonsai require their exact catalog IDs, weight aggregates and actual recurrent classes; Bonsai remains MTP-ineligible. Keep novel requests and other serving layouts on their existing geometry, and price the extra range in the first-content projection.
@@ -13,6 +14,15 @@
 ## Unreleased — bounded cache holder matching
 
 - Reduce dense cache-routing query copies by retaining the deepest compatible endpoint for each provider and tier. Preserve shorter valid fallbacks, complete hint values and matching/valid-holder counts; bounded scratch overflow restores the original path. Legal synthetic dense workloads reduce CPU query time by 43–46% and cumulative allocated bytes by 97–98%; these measurements do not establish production cache-hit or model TPS gains.
+
+## Unreleased — routing scan cost
+
+- Reduce the per-request provider scan cost after the coordinator reorganization. Autopilot eligibility reads the clock only for a provider holding a matching control grant, candidate ranking reads the projected pool in place, and candidate storage fills one allocation size class. Routing outcomes are unchanged.
+
+## Unreleased - verification concurrency
+
+- Keep a reconnected provider's verification job eligible after its old worker releases the claim. A delayed challenge callback no longer restores the stale running snapshot and postpones verification until claim expiry.
+- Read one synchronized trust-level snapshot for registration metrics and telemetry while verification updates run concurrently.
 
 ## Unreleased — leaderboard availability
 

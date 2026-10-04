@@ -189,9 +189,9 @@ Five provider-side transformations that precede every template are mirrored in
    context once, after all other steps (`sorted_object_keys`). The planner
    never relies on wire order. Today the shared prelude re-serializes every
    provider body from the decoded map, which sorts keys
-   (`coordinator/api/inference_preprocess.go`, `parseInferencePrelude`,
-   `forwardBody.current`), but that follows from the prelude stamping the
-   request date, not from a contract: `forwardBody` forwards the caller's
+   (`coordinator/api/inference/inference_preprocess.go`, `parseInferencePrelude`,
+   `ForwardBody.Current`), but that follows from the prelude stamping the
+   request date, not from a contract: `ForwardBody` forwards the caller's
    bytes verbatim whenever nothing is dirty, and JSON carried inside strings,
    such as tool-call `arguments`, is never re-serialized. The sort is
    therefore load-bearing.
@@ -379,7 +379,7 @@ same production gate; their hashes still remain part of artifact identity.
 ### Block-chain encoding
 
 For block index `i`, the engine, Go package (`BlockHash`,
-`coordinator/promptcontract/blockhash.go`) and Rust sidecar (`block_hash`,
+`coordinator/internal/promptcontract/identity/blockhash.go`) and Rust sidecar (`block_hash`,
 `coordinator/promptsidecar/src/hash.rs`) compute:
 
 ```text
@@ -555,7 +555,7 @@ gate.
    (`compute`).
 3. **Three implementations, one chain.** Go, Rust and the Swift provider
    produce byte-identical chain hashes and boundaries for the shared vectors —
-   `coordinator/promptcontract/blockhash.go` (`BlockHash`,
+   `coordinator/internal/promptcontract/identity/blockhash.go` (`BlockHash`,
    `LastCompleteBoundary`), `coordinator/promptsidecar/src/hash.rs`
    (`chain_hashes`), `fixtures/prompt-contract/v1`,
    `scripts/verify-prompt-parity.sh`.
@@ -597,13 +597,13 @@ gate.
 
 | Concern | File / symbol |
 |---|---|
-| Supervisor: spawn, probes, restart circuit, shutdown | `coordinator/promptcontract/supervisor.go`, `coordinator/promptcontract/supervisor_status.go`, `coordinator/promptcontract/supervisor_process.go`, `coordinator/promptcontract/supervisor_defaults.go` |
+| Supervisor: spawn, probes, restart circuit, shutdown | `coordinator/promptcontract/supervisor.go`, `coordinator/promptcontract/supervisor_status.go`, `coordinator/internal/promptcontract/process/supervisor_process.go`, `coordinator/promptcontract/supervisor_defaults.go` |
 | Configuration and startup checks | `coordinator/promptcontract/config.go` (`ReadSupervisorConfig`, `Check`) |
 | Go client: plan, fail-cold, preload, metrics | `coordinator/promptcontract/client.go` (`Plan`, `PlanFailCold`), `coordinator/promptcontract/client_control.go` (`Ready`, `Preload`, `Metrics`) |
 | Artifact provisioning and verified publication | `coordinator/promptcontract/provisioner.go`, `coordinator/promptcontract/artifact_cache.go` |
-| Descriptor-relative artifact paths | `coordinator/promptcontract/secure_files_unix.go` (`walkSecureDirectories`): absolute and root-relative path validation share descriptor traversal, optional directory creation, `O_NOFOLLOW` checks and ownership cleanup |
+| Descriptor-relative artifact paths | `coordinator/internal/promptcontract/artifacts/secure_files_unix.go` (`walkSecureDirectories`): absolute and root-relative path validation share descriptor traversal, optional directory creation, `O_NOFOLLOW` checks and ownership cleanup |
 | Preload gate per child generation | `coordinator/promptcontract/preload_controller.go` |
-| Contract identity and block chain (Go) | `coordinator/promptcontract/contract.go`, `coordinator/promptcontract/blockhash.go` |
+| Contract identity and block chain (Go) | `coordinator/promptcontract/contract.go`, `coordinator/internal/promptcontract/identity/blockhash.go` |
 | Sidecar process, socket server, routes | `coordinator/promptsidecar/src/main.rs`, `coordinator/promptsidecar/src/server.rs`, `coordinator/promptsidecar/src/server/handler.rs` |
 | Bounded HTTP JSON decoding | `coordinator/promptsidecar/src/server/handler.rs` (`decode_request`): plan and preload share declared/streamed body bounds, read deadline and JSON decoding; each operation retains its own malformed-request message and worker timeout policy |
 | Planner, contract LRU, artifact loading | `coordinator/promptsidecar/src/planner.rs`, `coordinator/promptsidecar/src/artifact_cache.rs`, `coordinator/promptsidecar/src/artifacts.rs` |

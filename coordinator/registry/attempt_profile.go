@@ -7,6 +7,7 @@ package registry
 // request_profile.go.
 
 import (
+	"github.com/eigeninference/d-inference/coordinator/internal/observation/timerslot"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -84,10 +85,11 @@ type AttemptProfile struct {
 	terminalCompletion       int
 	terminalUsageSet         bool
 
-	parts    atomic.Int32
-	once     sync.Once
-	fallback *time.Timer
-	parent   *RequestProfile
+	parts     atomic.Int32
+	once      sync.Once
+	fallback  timerslot.Slot
+	timerSlot *timerslot.Slot
+	parent    *RequestProfile
 }
 
 // Parent returns the owning request profile (nil-safe).

@@ -37,11 +37,10 @@ func (r *Registry) QuickFirstContentCapacityForRequestWithDeadlines(model string
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	_, scan := r.selectBestCandidateLockedFull(model, query)
-	candidateCount, capacityRejections, modelTooLarge = scan.candidateCount, scan.capacityRejections, scan.tooLargeRejections
-	// Expired candidate clocks are distinct from unknown performance and from
-	// other TTFT filters. Retain this cause even when they empty the pool.
-	deadlineUnreachable = len(scan.pool) > 0 || scan.deadlineRejections > 0
-	for _, c := range scan.pool {
+	candidateCount, capacityRejections, modelTooLarge = scan.CandidateCount, scan.CapacityRejections, scan.ModelTooLargeRejections
+	// Retain actual resolved expiry even when it empties the candidate pool.
+	deadlineUnreachable = len(scan.Candidates) > 0 || scan.DeadlineRejections > 0
+	for _, c := range scan.Candidates {
 		if c.firstContent.Status == FirstContentUnknown {
 			return candidateCount, capacityRejections, modelTooLarge, 0, false, false
 		}

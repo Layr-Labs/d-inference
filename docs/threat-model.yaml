@@ -1,5 +1,16 @@
-version: "1.0"
+version: "1.1"
 created: "2026-05-14"
+# T-036 ARV claim corrected 2026-09-28 against 2b714c427: Verify records
+# AuthenticatedRootEnabled as informational; it is not a security requirement.
+# T-051 references the defined malicious-provider adversary (ADV-001), replacing
+# its undefined ADV-004 reference; the threat description is unchanged.
+# Hybrid provider authorization re-verified 2026-09-28 against 58424f171:
+# scope, provider identity assets, TB-002/TB-009/TB-011, T-023/T-033/T-036 and
+# T-052..T-058 describe the independent legacy and App Attest serving paths.
+# This is a scoped source/test review, not a revalidation of every older finding
+# or a claim about live production flags or physical-Mac security transitions.
+# See docs/architecture/security/provider-trust.md and the dated follow-up at
+# docs/reports/2026-09-27-hybrid-provider-trust-review.md.
 # Optional App Attest diagnostic boundary re-checked 2026-09-26 against cf5982227:
 # the added TB-002 paragraph covers diagnostic metadata only; it does not
 # re-verify the older threat entries or change the serving-trust assumptions.
@@ -46,9 +57,10 @@ created: "2026-05-14"
 # verification public key, preventing substitution of model/runtime signature
 # credentials during the later trust transition. Reward rules are unchanged.
 # 2026-09-27: the coordinator serves App Attest protocol 3 only. It replaces the
-# fixed 0.9.4 version gate (protocol 3 was introduced in 0.9.4, which never
-# shipped, and first shipped in 0.9.5; protocol 2 only in 0.9.3). Protocol 1/2 registrations get no frames and are counted as
-# rollout/provider_upgrade_required; pre-v3 stored enrollments never resume.
+# fixed claimed-version gate: protocol 1/2 registrations get no frames and are
+# counted as rollout/provider_upgrade_required; pre-v3 stored enrollments never
+# resume. Legacy registration freshness no longer has a version exemption, and
+# attested-key challenges require status_signature plus SIP/Secure Boot reports.
 # MDM-optional authorization added 2026-09-15: explicit serving opt-in consumes
 # qualified protocol3 evidence; it never sets legacy MDA/APNs flags. Fresh
 # connection/endpoint/policy-bound permission is checked at every final dispatch.
@@ -119,7 +131,10 @@ methodology: STRIDE
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference
   platform. Covers production only. Dev environment, nation-state adversaries, and
-  the release supply chain are explicitly out of scope.
+  the external release build infrastructure are out of scope. Coordinator-side
+  release admission, durable App Attest build qualification and revocation are
+  in scope. Code availability and checked-in defaults do not establish live
+  deployment settings.
 
 # ─────────────────────────────────────────────────────────────
 # SCOPE
@@ -136,13 +151,16 @@ scope:
     - Optional provider → privileged fan-helper XPC boundary and AppleSMC writes
     - Coordinator → Stripe payment network
     - Apple attestation trust chain (cross-cutting)
-    - Optional App Attest shadow evidence exchange (observation only; APNs/MDM still authoritative)
+    - App Attest enrollment/assertions, private evidence archive and receipt renewal
+    - Independent legacy MDM/APNs or qualified App Attest serving authorization
+    - Durable build qualification, credential revocation and final inference handoff
+    - Coexistence, owner routing, machine continuity and optional MDM removal
   out_of_scope:
     - Dev / staging environment (api.dev.darkbloom.xyz)
     - GitHub Actions / R2 release supply chain
     - Nation-state / physical lab attacks on Apple Silicon
     - Denial-of-service via laptop shutdown (accepted operational risk)
-    - Anthropic / Apple server-side infrastructure beyond MDM/MDA APIs
+    - Apple server-side infrastructure beyond the consumed MDM/MDA, APNs and App Attest contracts
 
 # ─────────────────────────────────────────────────────────────
 # ADVERSARIES
@@ -154,7 +172,9 @@ adversaries:
       A Mac owner running the darkbloom provider CLI who wants to exfiltrate consumer
       prompt content, fake attestation to appear trusted, serve manipulated model
       outputs, or steal payment. Has physical and OS-level access to the host machine
-      but cannot bypass SIP, Hardened Runtime, or the Secure Enclave hardware boundary.
+      and can attempt reboots, security-policy changes, process instrumentation and
+      credential relays. Apple hardware key isolation and verified platform policies
+      are trust assumptions, not conclusions drawn from provider-reported flags.
 
   - id: ADV-002
     name: malicious_consumer
@@ -255,7 +275,10 @@ assets:
       SE-signed attestation blob (hardware info, binary hash, SIP/SecureBoot state) and
       the Apple MDA DER certificate chain signed by Apple Enterprise Attestation Root CA.
     sensitivity: critical
-    notes: Basis of the hardware trust level. Integrity must be maintained end-to-end.
+    notes: >
+      Legacy evidence only. MDM SecurityInfo grants hardware after comparison with
+      the signed blob; MDA is a separate device-bound proof. App Attest authorization
+      never fabricates either flag. Integrity must be maintained end-to-end.
 
   - id: A-011
     name: provider_binary_hash_registry
@@ -272,7 +295,8 @@ assets:
     sensitivity: critical
     notes: >
       Retained as a record only. The ACME leg was never wired end-to-end and was removed
-      on 2026-07-03; hardware trust is MDM SecurityInfo only. Any residual step-ca state
+      on 2026-07-03; the legacy hardware level is MDM SecurityInfo only, while qualified
+      App Attest can authorize serving independently. Any residual step-ca state
       on old persistent disks should be destroyed, not migrated.
 
   - id: A-013
@@ -296,6 +320,40 @@ assets:
     notes: >
       Dormant unless the operator explicitly runs sudo darkbloom fan enable.
       Misuse can reduce cooling or interfere with macOS thermal management.
+
+  - id: A-015
+    name: app_attest_credential_and_evidence
+    description: >
+      Apple App Attest key, verified enrollment/assertion evidence, assertion counters,
+      original and renewed risk receipts, and account/machine associations.
+    sensitivity: critical
+    notes: >
+      Separate from the legacy SE signing identity. Raw evidence is private; verified
+      continuity does not certify physical uniqueness, RAM or computation correctness.
+      Code: coordinator/appattest/verify.go, coordinator/appattest/service/archive.go.
+
+  - id: A-016
+    name: app_attest_serving_authorization
+    description: >
+      Expiring coordinator authorization bound to account, machine, credential,
+      connection, process endpoint and current policy/qualification generations.
+    sensitivity: critical
+    notes: >
+      A cached verdict or public diagnostic is not a reusable credential. Final
+      dispatch rechecks live state; revocation cannot retract an in-flight request.
+      Code: coordinator/registry/app_attest_authorization.go,
+      coordinator/registry/inference_authorization.go.
+
+  - id: A-017
+    name: durable_build_qualifications
+    description: >
+      Independently approved signed-artifact and full CodeDirectory identity,
+      qualification provenance, revocations and generations consumed by App Attest.
+    sensitivity: critical
+    notes: >
+      Release publication keys cannot approve qualifications. A reported binary hash
+      or green CI run alone is not operator qualification or Apple code evidence.
+      Code: coordinator/appattest/service/build_qualifications.go.
 
 # ─────────────────────────────────────────────────────────────
 # TRUST BOUNDARIES
@@ -379,7 +437,15 @@ trust_boundaries:
       remains in the registry. If no policy is configured, any binary passes. Weight
       hash enforcement is fail-open: omitting weight_hash never fails admission.
 
-      The private-text routing gate (registry.go providerSupportsPrivateTextLocked)
+      Public serving accepts either an independently valid legacy path or a current
+      qualified App Attest authorization. Registration alone grants neither. The
+      common gate in coordinator/registry/attestation_policy.go
+      (providerSupportsPrivateTextAuthorizationAtLocked) requires the current
+      process encryption key, mlx-swift backend, encrypted responses, checked runtime
+      manifest and all five privacy capabilities. Liveness, RuntimeVerified, model
+      and request-trait gates still apply to both paths.
+
+      The legacy branch of the private-text routing gate
       requires all of: PublicKey present, backend mlx-swift, EncryptedResponseChunks,
       RuntimeManifestChecked, ChallengeVerifiedSIP, current application evidence when
       a release policy is enforced, CodeAttested once code-attestation enforcement is
@@ -391,7 +457,19 @@ trust_boundaries:
       the coordinator after verifying a signed challenge response — not trusted from
       the provider. The gate is evaluated inside providerLivenessGateReasonLocked
       (routing_eligibility.go), which also requires a challenge verified within the
-      last 16 minutes (challengeFreshnessMaxAge).
+      last 16 minutes (challengeFreshnessMaxAge), unless the independent App Attest
+      lease supplies authorization. A live App Attest grant substitutes for legacy
+      trust-minimum, challenge-freshness, SIP, release-evidence and APNs requirements;
+      it does not set TrustHardware, MDAVerified or CodeAttested. Shadow evidence alone
+      never substitutes. See TB-011 and T-052..T-058.
+
+      Every final inference write rechecks the current connection, account/machine/
+      endpoint binding, revocation/expiry, model and request policy under locks
+      (coordinator/registry/inference_authorization.go, authorizeInferenceHandoff).
+      A successful check commits an in-flight frame; later revocation cannot recall
+      that frame or already delivered plaintext. Authenticated owner routing can
+      relax the public trust floor and private-only restriction, but retains runtime,
+      privacy, freshness and explicit denial gates. It is not public-fleet eligibility.
 
       Challenge-response runs immediately after registration and then every 5 minutes.
       The coordinator generates a 32-byte cryptographically random nonce, stores it in
@@ -429,13 +507,15 @@ trust_boundaries:
         (provider.go, SEC-034)."
       - "Provider is added to the active registry before attestation verification
         completes. There is an async window where a provider with an invalid attestation
-        is technically registered (provider.go registry.Register vs async verifyProviderAttestation)."
+        is technically registered. This is not itself serving permission; shared
+        gates and final handoff must reject an unqualified connection."
       - "Weight hash enforcement is fail-open: a provider can omit weight_hash entirely
         and still be admitted, even for models with a known expected hash in the catalog
         (registry.go, SEC-007)."
-      - "WebSocket frames after registration are not individually authenticated. Trust
-        for the session is based entirely on the connection identity established at
-        registration."
+      - "Not every WebSocket frame has an independent signature. Legacy status and
+        App Attest proofs have their own verification; inference uses the selected
+        connection, live dispatch authorization and encrypted transport. Neither
+        attestation path proves that a returned result is correct model execution."
       - "10 MB per-message cap is global with no per-provider send/receive quota."
 
   - id: TB-003
@@ -600,8 +680,8 @@ trust_boundaries:
   - id: TB-005
     name: coordinator_to_apple_mdm_mda
     description: >
-      The coordinator upgrades providers from self-signed to hardware trust level by
-      independently querying Apple's MDM and MDA services. MicroMDM sends SecurityInfo
+      The legacy hardware grant comes from MDM SecurityInfo; MDA is separate device
+      evidence and App Attest is an independent authorization path. MicroMDM sends SecurityInfo
       data to the coordinator via an inbound webhook. The coordinator also sends an SE
       public key hash as a nonce to Apple and receives back a DER-encoded certificate
       chain signed by Apple's Enterprise Attestation Root CA.
@@ -665,18 +745,19 @@ trust_boundaries:
         data."
       - "The MDA freshness code is sha256(SE_public_key_bytes). The SE public key remains
         visible in the privacy-redacted public attestation status. An attacker can
-        pre-compute the expected freshness code, potentially forging a cert with a
-        matching OID value."
+        pre-compute that binding value; it is not a per-challenge freshness nonce.
+        Knowing it does not permit forging Apple's certificate signature."
       - "No OCSP/CRL checks on the Apple MDA certificate chain. A revoked Apple
         intermediate CA would be accepted until the embedded root is manually updated."
-      - "x509.Verify() is called with ExtKeyUsageAny, which does not enforce leaf or
-        intermediate key usage extensions (mda.go)."
+      - "x509.Verify() uses ExtKeyUsageAny, so this call does not select a specific
+        extended-key-usage purpose. Chain/signature and explicit MDA extension checks
+        remain separate; ExtKeyUsageAny is not a bypass of all certificate validation."
       - "ARV (Authenticated Root Volume) and RDMA status are parsed from attestation and
         MDM data but explicitly not enforced by the trust state machine — old provider
         versions omit these fields."
-      - "MDM verification and MDA verification are asynchronous. A provider is routable
-        at TrustSelfSigned while both checks are pending, before any independent Apple
-        verification has completed."
+      - "Registration can precede MDM/MDA completion. TrustSelfSigned alone does not
+        satisfy a public hardware floor; independent App Attest or the separate
+        authenticated-owner policy must still pass the shared serving gates."
 
   - id: TB-006
     name: admin_to_coordinator
@@ -828,12 +909,15 @@ trust_boundaries:
   - id: TB-009
     name: apple_attestation_chain
     description: >
-      The hardware trust guarantee rests on a chain: SE key generation → attestation
+      The legacy evidence path consists of SE key generation → attestation
       blob construction and SE signing → coordinator signature verification → MDM
       SecurityInfo cross-check (the sole hardware grant) → MDA cert chain from Apple
       (the separate mda_verified flag) → ongoing challenge-response.
-      This boundary is cross-cutting; a weakness at any link collapses the trust level
-      of every provider in the field.
+      This describes the legacy path, not every eligible provider. TB-011 describes
+      independent App Attest authorization; a connection may hold either or both.
+      Shared runtime gates and explicit hard denial constrain both. MDA is not a
+      prerequisite for the legacy hardware level, and App Attest does not manufacture
+      legacy hardware, MDA or APNs evidence.
     how_it_works: >
       SE key lifecycle: PersistentEnclaveKey.swift creates or loads a persistent
       SecureEnclave P-256 signing key stored in the macOS keychain under access group
@@ -845,9 +929,10 @@ trust_boundaries:
       hardware-bound identity. The private key never leaves the SE silicon. The public
       key (raw 64-byte X||Y without 0x04 prefix, base64-encoded) is bound to the X25519
       encryption key in the attestation blob and in the coordinator registration message.
-      Key rotation occurs only when the operator explicitly deletes the keychain item
-      (e.g. after a factory reset or device wipe); routine process restarts preserve
-      the established identity.
+      Routine process restarts reuse a working key. PersistentEnclaveKey
+      (loadOrCreateVerified) can repair an unusable key once; startup can fall back
+      to an ephemeral SE key. A new key must not inherit old trust by identifier alone.
+      The separate App Attest credential has its own enrollment/recovery lifecycle.
 
       Attestation blob: AttestationBuilder.swift constructs a JSON structure containing
       hardware info, SIP/SecureBoot/ARV state, the SE public key, the X25519 encryption
@@ -914,9 +999,10 @@ trust_boundaries:
         is unset, a forged SecurityInfo callback matching a live CommandUUID can cause a
         provider to reach TrustHardware without genuine Apple MDM enrollment, which is
         a prerequisite for the MDA step."
-      - "The entire MDM→MDA trust upgrade path is asynchronous and runs in a background
-        goroutine. A provider is routable at TrustSelfSigned during the window between
-        registration and completion of the full verification chain."
+      - "MDM/MDA verification is asynchronous. A self_signed label alone is not
+        public authorization: the configured trust floor and other legacy gates must
+        pass, or a current App Attest lease must independently qualify. Owner routing
+        is a separate authenticated policy with common privacy/runtime gates."
 
   - id: TB-010
     name: provider_to_privileged_fan_helper
@@ -947,6 +1033,78 @@ trust_boundaries:
       - "The root-installed helper is not replaced by the unprivileged self-updater.
         Protocol mismatch intentionally leaves it dormant until the operator reruns
         sudo darkbloom fan enable."
+
+  - id: TB-011
+    name: app_attest_authorization_and_legacy_coexistence
+    description: >
+      Apple authenticates an App Attest credential and signed code/access-policy
+      evidence; the coordinator evaluates that evidence and grants bounded permission
+      to one current provider connection. This is an independent alternative to the
+      legacy MDM/APNs path, not an automatic upgrade of its trust_level or flags.
+    how_it_works: >
+      ProviderLoop.handleAppAttestShadow first opens a challenge encrypted to its own
+      process X25519 endpoint. Only protocol 3 is negotiated; older protocols get no
+      frames and pre-v3 stored enrollments cannot resume. The capability replaces
+      the old fixed claimed-version gate; it is not itself code qualification.
+      Protocol 3 binds account, session, endpoint, environment,
+      credential, challenge, app-reported status/hardware and the legacy verification
+      public key into the assertion transcript. The coordinator verifies enrollment,
+      nonce/signature/counter, exact Mac ACL and authenticated code measurement before
+      EvaluateAuthorization evaluates the serving policy. Names containing shadow
+      remain in the shared protocol; only an explicit serving policy grants permission.
+
+      Serving requires verified current binding, protocol3 hardware/verification-key
+      match, complete private archive, production rollout/build eligibility, approved
+      code measurement, a nonrevoked credential and verified fresh risk receipt.
+      AssertionFreshness is 15 minutes; receipt expiry and renewal deadlines can shorten
+      it. A worker refreshes durable readiness every 5 seconds; revocation and build
+      qualification snapshots impose a 30-second ceiling measured from read start.
+      Failed reads cannot extend that ceiling. Local credential revocation fences
+      matching current/retained presenters immediately after durable success, including
+      their legacy fallback. Expiry or unavailable evidence alone does not invalidate
+      independently valid legacy authorization. Policy and qualification generation
+      changes invalidate stale grants. For existing deployments, full Apple code
+      measurements can still use exact configured build/code mappings if no durable
+      row exists and the qualification snapshot is fresh. Durable rows/tombstones
+      override this compatibility path; truncated measurements and new publication
+      require durable qualification.
+
+      A configured provider-version floor excludes missing versions as well as
+      versions below that floor; this is separate from protocol negotiation.
+      Common routing gates still require an online, non-denied connection, completed
+      identity restoration, runtime verification, checked manifest, encrypted Swift
+      transport, privacy capabilities and the applicable model/trait policy. Every
+      final handoff checks live authorization after frame preparation and owner handoff.
+      Owner-only routing relaxes the public trust floor/private-only gate; it does not
+      bypass hard denial, runtime/privacy checks or the final handoff. App Attest may
+      coexist with legacy self_signed, hardware, MDA and APNs evidence without rewriting
+      those fields. Public snapshot badges describe a past coordinator observation;
+      neither a badge nor an optional diagnostic grants permission.
+
+      New macOS27+ onboarding skips new MDM enrollment and waits for App Attest;
+      existing profiles remain installed. Serving and MDM removal are separate opt-ins.
+      Removal guidance needs a fresh current coordinator decision and exact local
+      Darkbloom profile identification, followed by the user's action. Other MDM
+      profiles and the application's embedded signing profile are not removal targets.
+      Code: coordinator/appattest/authorization.go (EvaluateAuthorization),
+      coordinator/appattest/service/authorization_identity.go (updateServingAuthorization),
+      coordinator/appattest/service/authorizer.go (refresh, applyDetailed),
+      coordinator/registry/app_attest_authorization.go,
+      coordinator/registry/inference_authorization.go (authorizeInferenceHandoff).
+      Canonical explanation: docs/architecture/security/provider-trust.md.
+    current_limitations:
+      - "Neither attestation path proves each inference used the requested model or
+        returned a correct result; inference runs in the provider process/GPU, not SE."
+      - "App-origin hardware/status reports are cryptographically bound assertions,
+        not independent Apple certification of RAM, model bytes or physical uniqueness."
+      - "Signed-artifact and physical SIP/boot-security transition qualification is
+        an operator evidence requirement. Source review and synthetic tests do not
+        establish resistance to a compromised host or all recovery transitions."
+      - "Apple availability, archive/receipt storage, durable policy and coordinator
+        compromise remain trust/availability dependencies. Already delivered plaintext
+        and committed frames cannot be recalled by revocation."
+      - "Checked-in flags and onboarding behavior do not prove live fleet activation.
+        Inspect current authorized deployment state separately."
 
 # ─────────────────────────────────────────────────────────────
 # THREATS
@@ -1591,26 +1749,34 @@ threats:
   - id: T-023
     trust_boundary: TB-005
     stride: Denial_of_Service
-    title: Apple MDA service unavailability degrades hardware trust verification
+    title: Apple or MDM service unavailability delays legacy verification
     description: >
-      The MDA verification step depends on Apple's attestation servers responding
-      to DevicePropertiesAttestation requests. Prolonged Apple-side unavailability
-      prevents new providers from reaching hardware trust level.
+      MDM lookup/SecurityInfo failures can delay the legacy hardware grant; an MDA
+      outage delays its separate certificate flag, not that grant. Registration may
+      remain self_signed without satisfying the public routing floor. A separately
+      valid App Attest grant can authorize serving; neither path's outage converts
+      missing evidence into permission. App Attest has its own availability risk
+      (T-057).
     adversaries: []
     affected_assets: [A-010]
     affected_files:
       - coordinator/mdm/mdm.go
-      - coordinator/attestation/**
+      - coordinator/api/mdm_scheduler.go
+      - coordinator/registry/routing_eligibility.go
+      - coordinator/registry/app_attest_authorization.go
     mitigations:
-      - description: Providers can still operate at self_signed trust level without MDA.
+      - description: >
+          MDM verification has timeout/retry handling and late callbacks; the shared
+          routing gate continues to require independent current authorization.
         status: implemented
-      - description: No timeout/circuit-breaker documented for MDA requests.
-        status: open
+      - description: Apple/MDM availability cannot be guaranteed by the coordinator.
+        status: accepted
     open_findings: []
-    severity: low
+    severity: medium
     detection_hint: >
-      Changes to MDM/MDA request handling should verify graceful degradation to
-      self_signed trust rather than blocking provider registration indefinitely.
+      Verify an MDM timeout never grants TrustHardware and an MDA timeout is not
+      confused with SecurityInfo failure. Missing App Attest evidence must not relax
+      the legacy path. Registration and serving eligibility are distinct.
 
   # ── TB-006: Admin → Coordinator ──────────────────────────────
 
@@ -2090,11 +2256,20 @@ threats:
       - provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift
       - provider-swift/Sources/ProviderCore/Security/AttestationSigner.swift
     mitigations:
-      - description: Attestation blob includes ISO 8601 timestamp; coordinator checks freshness.
+      - description: >
+          verifyProviderAttestation requires every signed registration timestamp to
+          pass CheckTimestamp with RegistrationAttestationMaxAge (2 minutes),
+          regardless of a missing or old claimed provider version. This bounds
+          replay age; it is not a one-time-use registration nonce.
         status: implemented
       - description: 5-minute challenge-response requires signing a fresh coordinator-generated nonce with the SE key.
         status: implemented
-      - description: SE key is hardware-bound and persistent; replay without the originating SE is cryptographically infeasible.
+      - description: >
+          The registered X25519 endpoint must match the signed encryptionPublicKey.
+          A fresh challenge requires possession of the registered signing key, and
+          an attested-key response must also sign current status. A captured blob
+          alone proves neither current possession nor independent hardware provenance;
+          serving still requires the applicable legacy or App Attest authorization.
         status: implemented
     open_findings: []
     severity: critical
@@ -2214,7 +2389,7 @@ threats:
   - id: T-036
     trust_boundary: TB-009
     stride: Elevation_of_Privilege
-    title: Trust level elevated without completing full MDM/MDA chain
+    title: Legacy hardware trust elevated without valid MDM SecurityInfo evidence
     description: >
       If any step in the hardware-trust chain (SE signature check, MDM SecurityInfo
       callback) is bypassed or short-circuited — whether by a code bug, a test flag
@@ -2242,8 +2417,6 @@ threats:
         status: implemented
       - description: MDM webhook shared secret is optional; where unset, an injected callback matching a live CommandUUID can manipulate SecurityInfo state (SEC-004).
         status: open
-      - description: Attestation tests require AuthenticatedRootEnabled=true or earlier errors are overwritten.
-        status: implemented
       - description: >
           DAR-326 trust-reuse fast-skip (coordinator/api/trust_reuse.go tryTrustReuseFastSkip)
           lets a reconnecting, recently-fully-verified provider regain hardware trust from a
@@ -2253,29 +2426,31 @@ threats:
           prior SIP/Secure-Boot posture but does NOT re-prove MDA cert-chain freshness. Admission
           requires ONE of two premises: (a) STALENESS BOUND — the last live MDM verification is
           within the reuse window (EIGENINFERENCE_TRUST_REUSE_WINDOW, default 5m, tightened from
-          10m — cannot span a SIP-disable reboot cycle); or (b) CONNECTION CONTINUITY — the
+          10m); or (b) CONNECTION CONTINUITY — the
           provider was live-verified, stayed continuously connected and hardware-trusted (the
           coordinator batch-advances a durable continuous_coverage_until watermark ~every 30s
           while it observes the live SE-challenged connection, plus exact-time disconnect and
           graceful-shutdown sweeps), and the coordinator-MEASURED offline gap
           (now - continuous_coverage_until) is within the reconnect allowance
           (EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP, default 90s, HARD-clamped to [0,120s] —
-          values above the ceiling clamp DOWN). Premise (b) is sound on RecoveryOS physics:
-          SIP/Secure Boot can only change in RecoveryOS, and entering and leaving Recovery on
-          Apple Silicon (One True Recovery: manual power-button entry, credentialed
-          csrutil/bputil, two boot transitions) takes >= ~3 minutes and drops any WebSocket, so a
-          contiguous coordinator-measured gap <= 120s cannot span a posture flip. The gap is
+          values above the ceiling clamp DOWN). Both premises assume security posture
+          remains valid within the accepted window; the continuity premise further
+          assumes a posture-changing RecoveryOS round trip cannot fit the allowed gap. This is a physical-platform/timing assumption requiring
+          adversarial qualification on supported hardware, not a theorem established
+          by the coordinator timer or unit tests. The gap is
           never provider-claimed; a coordinator crash leaves the last periodic watermark standing
-          so the gap is only ever OVER-estimated (fail-safe). Chained sub-allowance gaps are safe:
-          each continuity reconnect runs the live SE challenge (proving a normal-OS boot) and
+          so a stale watermark over-estimates the offline gap. For chained reconnects,
+          each continuity grant runs a live signature challenge and
           re-anchors coverage at the grant, while the hardware-proof timestamp is NEVER advanced
           by reuse. Both premises stay bounded by (1) the ALWAYS-run live SE challenge that
-          re-proves identity + SIP/Secure-Boot posture + approved binary on every reuse, (2) a
+          re-proves key possession and checks signed posture/binary reports on every reuse,
+          not independent hardware measurements, (2) a
           durable hard-untrust epoch/tombstone that refuses/removes a record if a hard untrust
           races the grant (tombstones win; coverage never resurrects), and (3) declining the
-          fast-skip entirely when no MDM client is configured. A genuine MDA re-verification
+          fast-skip entirely when no MDM client is configured. A live MDM verification
           still runs for every first-ever connection and for any reconnect failing both premises
-          or any other gate. Continuity grants carry a distinct decision label ("continuity" /
+          or any other gate. This reuse applies to legacy evidence only; it does not
+          grant or refresh App Attest authorization. Continuity grants carry a distinct decision label ("continuity" /
           "continuity_release_transition") in logs and metrics so both premises are observable.
         status: accepted
     open_findings: [SEC-004]
@@ -2661,7 +2836,7 @@ threats:
     affected_assets: [A-014]
     affected_files:
       - provider-swift/Sources/darkbloom/FanActivityLease.swift
-      - provider-swift/Sources/darkbloom/StartCommand+Modes.swift
+      - provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift
       - provider-swift/Sources/DarkbloomFanHelper/FanDaemon.swift
     mitigations:
       - description: >
@@ -2933,7 +3108,7 @@ threats:
       - provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift
       - provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift
       - provider-swift/Sources/ProviderCore/Service/ProcessLifecycle.swift
-      - provider-swift/Sources/darkbloom/StartCommand+Modes.swift
+      - provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift
       - libs/mlx-swift-lm/Libraries/MLXLMCommon/MemoryBackedVideoAsset.swift
       - libs/mlx-swift-lm/Libraries/MLXLMCommon/UserInput.swift
       - libs/mlx-swift-lm/Libraries/MLXVLM/MediaProcessing.swift
@@ -2989,7 +3164,7 @@ threats:
       free-form text through its profile object, a client could plant a
       spreadsheet-formula or PII string via X-Request-ID, or a hardware serial /
       stable identity could re-enter a bulk-export surface.
-    adversaries: [ADV-002, ADV-004]
+    adversaries: [ADV-001, ADV-002]
     affected_assets: [A-007, A-009]
     affected_files:
       - coordinator/api/profiler*.go
@@ -3012,3 +3187,220 @@ threats:
       Any new column on request_profiles/fleet_snapshots, any new field on the
       provider profile wire object, or any new admin export must be reviewed
       against the closed-enum / no-identity rules in docs/architecture/system-profiler.md.
+
+  # ── TB-011: Independent App Attest authorization and migration ──
+
+  - id: T-052
+    trust_boundary: TB-011
+    stride: Elevation_of_Privilege
+    title: Shadow evidence or a legacy label is mistaken for serving permission
+    description: >
+      Treating a valid diagnostic, self_signed label or enrolled App Attest key as
+      authorization can admit an unqualified connection. Conversely, requiring both
+      complete legacy and App Attest evidence can deny intentionally migrated providers.
+    adversaries: [ADV-001, ADV-003]
+    affected_assets: [A-001, A-016]
+    affected_files:
+      - coordinator/registry/attestation_policy.go
+      - coordinator/registry/routing_eligibility.go
+      - coordinator/registry/owner_authorization.go
+      - coordinator/appattest/service/config.go
+    mitigations:
+      - description: >
+          Explicit serving opt-in; independent legacy-or-App-Attest evaluation retains
+          shared runtime/privacy gates and separates authenticated owner eligibility.
+          Shadow/optional diagnostics cannot grant permission or manufacture legacy flags.
+        status: implemented
+    open_findings: []
+    severity: critical
+    detection_hint: >
+      Test legacy-only, App-Attest-only, both and neither; distinguish transient missing
+      evidence from hard denial. Exercise owner routing without weakening public gates.
+
+  - id: T-053
+    trust_boundary: TB-011
+    stride: Spoofing
+    title: Replayed proof or stale authorization survives a connection change or revocation
+    description: >
+      A queued request may outlive a grant, credential revocation, endpoint replacement
+      or policy change. Selection-time authorization and a public snapshot are insufficient.
+    adversaries: [ADV-001, ADV-003]
+    affected_assets: [A-001, A-015, A-016]
+    affected_files:
+      - coordinator/appattest/verify.go
+      - coordinator/appattest/service/authorizer.go
+      - coordinator/registry/app_attest_authorization.go
+      - coordinator/registry/app_attest_presenter.go
+      - coordinator/registry/inference_authorization.go
+    mitigations:
+      - description: >
+          Verified transcript/credential/counter and current account/session/endpoint
+          bindings, bounded durable freshness, generation invalidation and final handoff
+          checks cover direct, queued, retry, cold and hedge dispatches.
+        status: implemented
+      - description: >
+          Explicit credential revocation denies matching live presenters and retained
+          grant keys across both paths; failed storage reads never extend readiness.
+        status: implemented
+      - description: Committed in-flight frames and already delivered plaintext cannot be recalled.
+        status: accepted
+    open_findings: []
+    severity: critical
+    detection_hint: >
+      Expire/revoke/replace after selection and during frame preparation; reject the
+      subsequent handoff, including self-route, without reusing cached verdicts.
+
+  - id: T-054
+    trust_boundary: TB-011
+    stride: Tampering
+    title: Unqualified or revoked signed build is accepted through stale code evidence
+    description: >
+      App-reported hashes, a truncated Apple code measurement, a CI publication key or
+      stale approval could be mistaken for independently qualified full artifact identity.
+    adversaries: [ADV-001, ADV-003]
+    affected_assets: [A-005, A-011, A-017]
+    affected_files:
+      - coordinator/appattest/authorization.go
+      - coordinator/appattest/service/build_qualifications.go
+      - coordinator/appattest/service/authorizer.go
+      - coordinator/registry/app_attest_authorization.go
+    mitigations:
+      - description: >
+          Separate operator approval, durable revocation tombstones and current
+          qualification generation; Apple's 20-byte measurement must uniquely match
+          the approved full hash across durable rows, including revoked rows. Existing
+          deployments may use exact configured build/code mappings for a full Apple
+          measurement only when no durable row exists and the policy snapshot is fresh;
+          durable rows/tombstones override this fallback. Truncated measurements and
+          new release publication require durable qualification.
+        status: implemented
+      - description: >
+          Physical-Mac security-transition qualification must be supplied by the operator;
+          source review and CI success cannot establish that qualification.
+        status: open
+    open_findings: []
+    severity: critical
+    detection_hint: >
+      Reject ambiguous or unresolved truncated measurements, report-only identity, stale approval,
+      qualification withdrawal and attempts by release publication credentials to approve.
+
+  - id: T-055
+    trust_boundary: TB-011
+    stride: Spoofing
+    title: Credential continuity is mistaken for unique hardware or certified capacity
+    description: >
+      An operator may rotate credentials, reinstall, create new accounts or inflate
+      app-origin hardware claims. Verified aliases identify known continuity, not a
+      globally unique physical Mac or an Apple-certified RAM entitlement.
+    adversaries: [ADV-001]
+    affected_assets: [A-009, A-015]
+    affected_files:
+      - coordinator/appattest/service/authorization_identity.go
+      - coordinator/store/machine_continuity.go
+      - coordinator/store/machine_floor_settlement.go
+      - coordinator/payments/baserewards/machine_candidates.go
+    mitigations:
+      - description: >
+          Protocol3 binds hardware and the verification key; authenticated associations,
+          canonical settlement identity, overlapping-uptime union and account/pool caps
+          prevent known duplicate sessions from multiplying base floors.
+        status: implemented
+      - description: Deliberate unlinkable identities and false capacity require separate abuse policy/qualification.
+        status: open
+    open_findings: []
+    severity: high
+    detection_hint: >
+      Test rotations/merges and same-epoch settlement races; never present inventory
+      counts or the risk metric as proof of physical uniqueness or measured RAM.
+
+  - id: T-056
+    trust_boundary: TB-011
+    stride: Information_Disclosure
+    title: Attested app identity is overclaimed as runtime secrecy or correct computation
+    description: >
+      Apple-signed code/access-policy evidence and app-signed model/status fields do
+      not provide per-request computation proofs or place inference inside the SE.
+      A compromised running endpoint can expose prompts, keys or results; the
+      coordinator also remains a plaintext endpoint under the hop-by-hop model.
+    adversaries: [ADV-001, ADV-003]
+    affected_assets: [A-001, A-003, A-004]
+    affected_files:
+      - coordinator/appattest/authorization.go
+      - coordinator/registry/attestation_policy.go
+      - provider-swift/Sources/ProviderCore/ProviderLoop+AppAttestShadow.swift
+    mitigations:
+      - description: >
+          Platform access-policy verification, bounded assertions, common privacy/runtime
+          gates and encrypted transport constrain admission and exposure.
+        status: implemented
+      - description: >
+          Physical SIP/boot transitions, host-compromise resistance and inference/result
+          integrity need independent adversarial qualification; neither path proves them.
+        status: open
+    open_findings: []
+    severity: critical
+    detection_hint: >
+      Keep Apple measurements, app-origin assertions and operator qualification distinct;
+      do not infer model correctness or zero plaintext exposure from a verification badge.
+
+  - id: T-057
+    trust_boundary: TB-011
+    stride: Denial_of_Service
+    title: Apple recovery or premature MDM removal strands a provider without authorization
+    description: >
+      Enrollment/assertion errors, receipt/archive failures or unqualified builds can
+      leave App-Attest-only providers pending. Removing a working profile too early
+      can remove their independently valid legacy path.
+    adversaries: [ADV-001, ADV-003]
+    affected_assets: [A-015, A-016]
+    affected_files:
+      - provider-swift/Sources/ProviderAppAttest/EnrollmentKeyLifecycle.swift
+      - provider-swift/Sources/ProviderCore/Auth/ProviderOnboardingPolicy.swift
+      - provider-swift/Sources/ProviderCore/Diagnostics/ProviderAuthorizationReadiness.swift
+      - provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift
+      - coordinator/appattest/service/authorizer.go
+    mitigations:
+      - description: >
+          Bounded persisted enrollment recovery and receipt renewal never grant trust.
+          macOS27+ onboarding waits for App Attest without silently installing MDM;
+          existing profiles remain. Removal is a separate opt-in with fresh readiness,
+          exact profile targeting and explicit local user action.
+        status: implemented
+      - description: Apple availability and a future loss of authorization after removal remain operational risks.
+        status: accepted
+    open_findings: []
+    severity: high
+    detection_hint: >
+      Exercise response loss, exhausted key budgets, receipt failure, stale readiness,
+      foreground-auth denial and employer-profile coexistence without widening permission.
+
+  - id: T-058
+    trust_boundary: TB-011
+    stride: Information_Disclosure
+    title: Evidence archives or verification diagnostics leak stable identities or misstate trust
+    description: >
+      Raw receipts, key/account/machine associations and legacy public SE keys can link
+      sessions. Stale diagnostic snapshots or forged optional metadata can mislead users
+      even when dispatch remains correctly gated.
+    adversaries: [ADV-001, ADV-002, ADV-003]
+    affected_assets: [A-010, A-015, A-016]
+    affected_files:
+      - coordinator/appattest/service/archive.go
+      - coordinator/appattest/service/ready_diagnostics.go
+      - coordinator/registry/verification.go
+      - coordinator/api/me_authorization.go
+    mitigations:
+      - description: >
+          Private evidence storage, bounded diagnostics excluded from authorization,
+          public method states/timestamps, private-only roster filtering and live owner
+          expiry checks separate presentation from dispatch permission.
+        status: implemented
+      - description: >
+          Legacy public SE keys remain linkable; private evidence and operational logs
+          still require access/retention controls. A historical verdict is not a live grant.
+        status: accepted
+    open_findings: []
+    severity: high
+    detection_hint: >
+      Review public payloads, archives, logs and cache timing separately; never expose
+      raw evidence or infer authorization from client-supplied diagnostics.

@@ -128,6 +128,8 @@ public enum CoordinatorEvent: Sendable {
     /// (off-thread) and reply with a `loadModelStatus` outbound message
     /// when the load completes or fails.
     case loadModel(modelId: String)
+    case modelAutopilotControl(ModelAutopilotControl)
+    case modelAutopilot(ModelAutopilotCommand)
     /// Coordinator-driven background prefetch. Provider should download +
     /// verify the build on disk (off-thread, no GPU load) and reply with
     /// `prefetchModelStatus` outbound messages. `priority` orders concurrent
@@ -150,6 +152,7 @@ public struct CoordinatorClientConfig: Sendable {
     public let url: String
     public let hardware: HardwareInfo
     public let models: [ModelInfo]
+    public let autopilotInventory: [ModelInfo]
     public let backendName: String
     public let heartbeatInterval: TimeInterval
     public let publicKey: String?
@@ -193,11 +196,13 @@ public struct CoordinatorClientConfig: Sendable {
         privateOnly: Bool = false,
         apnsDeviceToken: String? = nil,
         apnsEnvironment: String? = nil,
-        idleUnloadMins: UInt64? = nil
+        idleUnloadMins: UInt64? = nil,
+        autopilotInventory: [ModelInfo] = []
     ) {
         self.url = url
         self.hardware = hardware
         self.models = models
+        self.autopilotInventory = autopilotInventory
         self.backendName = backendName
         self.heartbeatInterval = heartbeatInterval
         self.publicKey = publicKey
@@ -255,6 +260,7 @@ public enum OutboundMessage: Sendable {
     case codeAttestationResponse(nonce: String, signature: String, onWritten: (@Sendable () -> Void)? = nil)
     case appAttestShadow(AppAttestShadowPayload)
     case loadModelStatus(modelId: String, status: ProviderMessage.LoadModelStatus.Status, error: String?)
+    case modelAutopilotStatus(ModelAutopilotStatus)
     case prefetchModelStatus(
         modelId: String,
         status: ProviderMessage.PrefetchModelStatus.Status,

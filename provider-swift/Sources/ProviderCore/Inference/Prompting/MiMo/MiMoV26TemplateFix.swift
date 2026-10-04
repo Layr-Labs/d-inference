@@ -12,6 +12,7 @@ struct MiMoV26RawControlEvidence: Sendable, Equatable, Decodable {
     enum Surface: Equatable { case chat, responses }
     var invalid = false
     var unsupportedMediaRichControls = false
+    var templateThinkingAlias: Bool?
     var responseEnableThinking: Bool?
     var responseEffortDisablesThinking: Bool?
 
@@ -80,8 +81,9 @@ struct MiMoV26RawControlEvidence: Sendable, Equatable, Decodable {
             var alias: Bool?
             if root.contains(Key("chat_template_kwargs")) {
                 let kwargs = try root.nestedContainer(keyedBy: Key.self, forKey: Key("chat_template_kwargs"))
-                if kwargs.allKeys.contains(where: { $0.stringValue != "enable_thinking" }) { evidence.invalid = true }
-                alias = try boolean(kwargs, "enable_thinking")
+                if kwargs.allKeys.contains(where: { !["enable_thinking", "thinking"].contains($0.stringValue) }) { evidence.invalid = true }
+                evidence.templateThinkingAlias = try boolean(kwargs, "thinking")
+                alias = try boolean(kwargs, "enable_thinking") ?? evidence.templateThinkingAlias
             }
             if root.contains(Key("reasoning")), try !root.decodeNil(forKey: Key("reasoning")) {
                 let nested = try root.nestedContainer(keyedBy: Key.self, forKey: Key("reasoning"))
@@ -202,7 +204,7 @@ enum MiMoV26TemplateFix {
         let rawEffort = try controls.reasoningEffort.map(thinkingFromEffort)
         let nestedEffort = try request.reasoning?.effort.map(thinkingFromEffort)
         return request.reasoning?.enabled ?? controls.rawMiMoControls.responseEnableThinking
-            ?? controls.enableThinking ?? nestedEffort
+            ?? controls.enableThinking ?? controls.rawMiMoControls.templateThinkingAlias ?? nestedEffort
             ?? controls.rawMiMoControls.responseEffortDisablesThinking ?? rawEffort
     }
 

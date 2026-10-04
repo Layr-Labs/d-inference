@@ -8,6 +8,7 @@
 /// provider the user explicitly stopped; `start` re-enables it.
 
 import Foundation
+import MLXLMCommon
 
 public enum LaunchAgent: Sendable {
 
@@ -258,10 +259,25 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_PREFILL_DEADLINE_MODE`: the operator's `off` / `enforce`
     /// admission-mode control. Both must persist in the provider job because
     /// launchd restarts (including watchdog recovery) reuse this plist.
+    /// `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY`: native MiMo standing
+    /// residency is on by default; exact `0` / `false` / `no` / `off` is the
+    /// rollback, which must reach the launchd provider job to take effect.
+    /// `DARKBLOOM_MIMO_COMPLETE_PREFIX`: model-scoped SSD prefix caching is
+    /// on by default for the supported MiMo identities; preserve its opt-out
+    /// in the provider job independently of the global cache kill switch.
+    /// `MiMoV26DecodeDefaults.environmentKeys`: the MiMo short-forward decode
+    /// kernels (fused norms, distinct-expert MXFP4, FP32 router GEMV) are on by
+    /// default in the SDK; their per-kernel rollbacks use the same values.
+    /// `DARKBLOOM_MIMO_RECTANGULAR_VERIFY` and
+    /// `MiMoV26DecodeDefaults.verifyEnvironmentKeys`: exact rectangular MTP
+    /// verification is the MiMo default; each rollback must reach the job.
     static let inferencePassthroughEnvKeys = [
         EngineV2Factory.maxPartialPrefillsKey,
         PrefillDeadlineMode.environmentKey,
-    ]
+        MiMoV26WiredResidency.environmentFlag,
+        PrefixCachePolicy.mimoCompletePrefixEnvironmentFlag,
+        EngineV2SlotFactory.mimoRectangularVerifyEnvironmentKey,
+    ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 
     static let passthroughEnvKeys = [
         "DARKBLOOM_DRAIN_TIMEOUT_SECONDS",

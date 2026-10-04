@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-09-26
+> Last updated: 2026-10-02
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -21,8 +21,8 @@ proof transcript. Missing, forged, malformed or apparently healthy values cannot
 grant, extend or revoke serving authorization. A local `doctor` pass or an APNs
 send/receipt metric is not a verified serving verdict; use the coordinator's
 current authorization and dispatch snapshot described below. In particular, a
-local diagnostic `sip_enabled` observation is distinct from the coordinator-verified
-posture exposed by the public endpoint. See the [diagnostic field contract](../reference/app-attest-shadow.md#provider-diagnostics)
+local diagnostic `sip_enabled` observation is distinct from the legacy attestation
+fields and method verdict exposed by the public endpoint. See the [diagnostic field contract](../reference/app-attest-shadow.md#provider-diagnostics)
 and [attestation boundary](../architecture/security/attestation.md).
 
 ## Read verification in chat and network stats
@@ -65,7 +65,7 @@ curl https://api.darkbloom.dev/v1/providers/attestation
 ```
 
 `GET /v1/providers/attestation` needs no authentication and returns
-`{"providers": [...]}` (`handleProviderAttestation`, `coordinator/api/provider.go`).
+`{"providers": [...]}` (`HandleProviderAttestation`, `coordinator/api/provider/trust/status.go`).
 Private-only connections are excluded before the response enters its shared
 cache; their owners still see them through authenticated `GET /v1/me/providers`.
 Each entry carries:
@@ -73,10 +73,12 @@ Each entry carries:
 | Field | Meaning |
 |---|---|
 | `provider_id` | Opaque connection ID; also returned per response as `X-Provider-Id` |
+| `verification` | Coordinator verdict for both methods at `observed_at`; see the [verification contract](../reference/api-contracts.md#verification-presentation-contract) |
+| `app_attest_authorized`, `authorization_expires_at`? | App Attest authorization at this snapshot and its exclusive Unix-seconds deadline; not a reusable serving credential |
 | `chip_name`, `hardware_model`, `memory_gb`, `gpu_cores`, `models[]` | Hardware class and served models |
 | `trust_level` | `none`, `self_signed`, or `hardware` (below) |
 | `status` | `online`, `offline`, `untrusted`, … |
-| `secure_enclave`, `sip_enabled`, `secure_boot_enabled`, `authenticated_root_enabled`, `system_volume_hash`? | Latest posture the coordinator verified |
+| `secure_enclave`, `sip_enabled`, `secure_boot_enabled`, `authenticated_root_enabled`, `system_volume_hash`? | Legacy attestation-reported posture; a valid signature binds the reported fields but does not independently certify every value or establish current App Attest authorization |
 | `se_public_key` | The provider's persistent legacy Secure Enclave P-256 public key (base64); permits linking public sessions, is not a private key or the App Attest credential |
 | `mdm_verified` | `true` exactly when the live connection holds `hardware` |
 | `acme_verified` | Deprecated, always `false`; kept on the wire for shipped decoders |
@@ -89,11 +91,14 @@ the `code_attested` flag.
 
 ## What the levels mean
 
+These levels describe legacy evidence. Use the dispatch verification method to
+identify App Attest or legacy serving authorization.
+
 | `trust_level` | What it tells you |
 |---|---|
 | `hardware` | Apple's MDM subsystem on that Mac confirmed SIP and full Secure Boot in agreement with the provider's Secure-Enclave-signed attestation. MDM `SecurityInfo` is the only path to this level; the MDA certificate chain is not required for it |
-| `self_signed` | The Secure-Enclave-signed attestation verified and the provider is passing the coordinator's periodic challenge, but there is no MDM confirmation yet |
-| `none` | No verified attestation |
+| `self_signed` | The legacy registration signature verified without a current hardware-trust grant; the label alone does not prove current challenge freshness or serving authorization |
+| `none` | No legacy trust grant; read the separate verification method for serving authorization |
 
 The grant and loss conditions for each level are tabulated in
 [`../architecture/security/attestation.md#trust-levels`](../architecture/security/attestation.md#trust-levels);
@@ -114,22 +119,29 @@ binds the provider's SE key (or serial) — proof of *which* genuine Apple devic
 holds the key. It is a flag on top of `hardware`, not a level, and it does not
 gate routing ([Flag — Apple Managed Device Attestation](../architecture/security/attestation.md#flag--apple-managed-device-attestation)).
 
-Public routing applies the coordinator's trust floor (`MinTrustLevel`, set by
-[`EIGENINFERENCE_MIN_TRUST`](../reference/configuration.md#routing-admission-and-ttft))
-plus every privacy gate (encrypted response chunks, coordinator-verified SIP,
-required privacy capabilities, code identity once enforced), so a request you
-send without self-routing is served only by a provider that passes all of them
-([`../architecture/security/attestation.md`](../architecture/security/attestation.md#routing-gate)).
+Public routing requires either the legacy authorization path or a current
+qualified App Attest lease, followed by shared liveness, runtime, encryption,
+privacy-capability and model checks. The legacy path applies the coordinator's
+trust floor (`MinTrustLevel`, set by
+[`EIGENINFERENCE_MIN_TRUST`](../reference/configuration.md#routing-admission-and-ttft)),
+fresh challenge-verified SIP and configured APNs/release-evidence gates. A qualified
+App Attest lease substitutes for those legacy requirements without setting the
+legacy evidence fields. Read the response's verification method at dispatch;
+a served response alone does not establish MDM or APNs verification. See the
+[hybrid provider trust model](../architecture/security/provider-trust.md) for the
+independent paths and their shared final handoff checks.
 
 ## Per-response signals
 
 Once a provider has been committed to your request, the coordinator writes
-these headers (`writeCommittedProviderHeaders`,
-`coordinator/api/response_metadata.go`):
+these headers (`WriteCommittedProviderHeaders`,
+`coordinator/api/inference/response/response_metadata.go`):
 
 | Header | Value |
 |---|---|
 | `X-Provider-Id` | Connection ID; join with the endpoint above |
+| `X-Provider-Authorization-Method` | `app_attest`, `legacy`, `dual`, or `none`, derived from the dispatch verification snapshot |
+| `X-Provider-Verification` | Compact JSON containing `observed_at` and the `app_attest` / `legacy` method states, frozen at final dispatch; [exact fields](../reference/api-contracts.md#verification-presentation-contract) |
 | `X-Provider-Trust-Level` | `none` / `self_signed` / `hardware` |
 | `X-Provider-Attested` | `true` / `false` |
 | `X-Provider-Encrypted` | `true` when the provider has a registered X25519 key (the mandatory coordinator → provider hop) |
@@ -139,7 +151,14 @@ these headers (`writeCommittedProviderHeaders`,
 | `X-Attestation-Se-Public-Key` | The provider's SE P-256 public key (base64) |
 | `X-Eigen-Sealed`, `X-Eigen-Sealed-Kid` | Present when you sealed the request; the body is sealed to your ephemeral key ([`../architecture/security/encryption.md`](../architecture/security/encryption.md)) |
 
-The headers are the coordinator's assertion over TLS. Pin the provider identity
+Read `X-Provider-Authorization-Method` to identify the authorization path and
+`X-Provider-Verification` for its frozen verdict and timestamps. Missing fields
+mean the dispatch method is unavailable; do not infer it from the legacy trust
+or MDA fields. These are coordinator assertions over TLS, not Apple-signed
+response receipts. The [verification contract](../reference/api-contracts.md#verification-presentation-contract)
+explains snapshot timing and method states.
+
+Pin the provider identity
 by comparing `X-Attestation-Se-Public-Key` with `se_public_key` from the public
 endpoint across requests.
 
@@ -170,28 +189,34 @@ and therefore no `X-Provider-*` headers.
 OpenAI SDKs generally hide custom headers. Send `metadata_details: true` in the
 request body (or the header `X-Darkbloom-Metadata-Details: true`) on
 `POST /v1/chat/completions` and the same values arrive in the JSON `metadata`
-object: `provider_id`, `provider_attested`, `provider_trust_level`,
+object: `verification`, `provider_id`, `provider_attested`, `provider_trust_level`,
 `provider_encrypted`, `provider_chip`, `provider_machine_model`,
 `provider_secure_enclave`, `provider_mda_verified`,
 `attestation_se_public_key`, `timing`, and `location`
 (`coordinator/api/types/types.go`, `ChatCompletionMetadata`). `location` is
 region/country-level GeoIP only — no city, coordinates, lookup source, or IP.
-See [`../reference/api-contracts.md`](../reference/api-contracts.md).
+Read `metadata.verification.app_attest.state` and
+`metadata.verification.legacy.state` to identify the verified method(s) at
+`metadata.verification.observed_at`; missing metadata is unavailable. See the
+[verification contract](../reference/api-contracts.md#verification-presentation-contract).
 
 ## Code identity
 
-The strongest production gate is APNs code-identity attestation: proof that the
+On the legacy path, APNs code-identity attestation provides evidence that the
 process holding the provider's decryption key is the genuine, team-signed
-Darkbloom binary. It is not a consumer-visible field, but once enforcement is
-switched on (`APNS_ENFORCE_AFTER`) a provider without it is excluded from
-private-text routing, so a served response implies it passed. See
-[`../design/apns-code-attestation.md`](../design/apns-code-attestation.md) and
-[`../architecture/security/attestation.md`](../architecture/security/attestation.md#flag--apns-code-identity).
+Darkbloom binary. Once configured enforcement is active (`APNS_ENFORCE_AFTER`),
+that path requires APNs evidence. A qualified App Attest lease instead provides
+its own verified code, endpoint and build-qualification evidence; it does not
+set `CodeAttested`. A served response therefore does not imply that the provider
+passed APNs attestation. Use the dispatch verification method and the
+[hybrid provider trust model](../architecture/security/provider-trust.md) to
+interpret which path authorized it.
 
-A coordinator reconnect still requires a fresh process-possession challenge before
-private routing. Recorded code-verified continuity can avoid another Apple push
-for the same process; it does not grant hardware trust or bypass verification.
-See [APNs code identity](../architecture/security/attestation.md#flag--apns-code-identity).
+Legacy code-identity continuity after a coordinator reconnect still requires a
+fresh process-possession challenge before private routing. Recorded code-verified
+continuity can avoid another Apple push for the same process; it does not grant
+hardware trust or bypass verification. See [APNs code identity](../architecture/security/attestation.md#flag--apns-code-identity)
+and the [design record](../design/apns-code-attestation.md).
 
 ## Related
 

@@ -28,8 +28,6 @@ The signing validation and benchmark jobs provision GitHub CLI explicitly
 before their first `gh` command; see `scripts/install-macos-github-cli.sh`.
 See [runner setup and cache isolation](build.md#sdk-27-release-builds-and-caches).
 
-The OpenRouter cancellation fixture observes the existing completed-write profile stamp before canceling a dispatched request. Receiving provider bytes alone does not prove that the writer has finished; cancellation during an in-flight write may correctly abort that connection. Registry writer tests cover that separate outcome, while this fixture continues to require a matching cancel frame and exact settlement cleanup.
-
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
 lint — and which CI workflow runs what. `make test` runs every unit suite plus
@@ -1016,9 +1014,10 @@ The thin `coordinator/tests/api/inference/contracts/openrouter_conformance_test.
 adapter (`conformanceSuite`) retains the existing 22 test entry points. It binds
 the real composed runtime together with the ledger and reservation controller it
 constructs, without adding production exports; the outstanding service hold is
-measured at that controller's admission boundary (`outstandingServiceHold`), not
-read from private state. Run the inference contract tests below: the support
-package is not itself a test entry point and is not imported by production.
+measured at that controller's admission boundary, not read from private state, by
+`coordinator/tests/internal/conformance/service_hold.go` (`OutstandingServiceHold`).
+Run the inference contract tests below: the support package is not itself a
+test entry point and is not imported by production.
 Streaming providers emit the concrete build ID; the HTTP assertions require
 the caller's alias, so bypassing the coordinator's model rewrite fails.
 Current-wire fixtures send typed `invalid_request` errors and use explicit
@@ -1051,8 +1050,8 @@ and Transport under that prefix. The incident and readiness additions also requi
 IncidentProvenance, IncidentEnvelope, IncidentRefusal, Scenario,
 ScenarioFragmentation, ScenarioBounds, ScenarioChoiceShape, ReadinessFeed and
 ReadinessCapabilities. Retain every failure and unexpected skip across all
-22 groups. The combined family has 197 leaf cases, including the original 64 H0
-cases. `OR_REPORT` log lines contain bounded synthetic status, attempts,
+22 groups. The combined family has 197 leaf cases, 64 of them in the thirteen
+groups named first. `OR_REPORT` log lines contain bounded synthetic status, attempts,
 terminal, timing, usage and balance evidence.
 Repeat with `-count=2` to compare semantic fields, excluding timing values;
 assert generated identities within each request before normalizing reports.
@@ -1064,6 +1063,13 @@ truncated events, in-band errors, missing or duplicate DONE, changed identity,
 trailing payload and read errors. A provider drain acknowledgement joins prior
 completion workers before duplicate-terminal and no-stray-cancel assertions.
 The transport permits only its fixture address and rejects redirects and proxies.
+
+The OpenRouter cancellation fixture observes the existing completed-write profile
+stamp before canceling a dispatched request. Receiving provider bytes alone does
+not prove that the writer has finished; cancellation during an in-flight write
+may correctly abort that connection. Registry writer tests cover that separate
+outcome, while this fixture continues to require a matching cancel frame and
+exact settlement cleanup.
 
 The incident-envelope and scenario cases preserve the two curated Boston weather
 requests with reasoning disabled and tool choice omitted or auto. Added model

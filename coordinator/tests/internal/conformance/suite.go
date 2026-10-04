@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/coordinator/store/memory"
@@ -24,22 +23,21 @@ type Server interface {
 
 // Backend binds the real server and test-only ownership observations without
 // adding production getters, changing authentication, or copying a server.
+// Outstanding reports an account's unreleased service hold in micro-USD.
 type Backend struct {
 	Server
 	Registry    *registry.Registry
-	Outstanding func(string) int64
+	Outstanding func(account string) int64
 }
 
-// Suite carries per-invocation factories; it has no mutable global server hook.
+// Suite carries the one per-invocation factory the importing test package
+// supplies; it has no mutable global server hook. NewServer composes the real
+// runtime over the fixture's store and returns what it retained. Its holds
+// argument enables service-account reservation holds, and slaAccount is the
+// only account whose requests get a first-content budget. Provider keys, chunk
+// encryption and catalog addresses come from tests/internal/testkit directly.
 type Suite struct {
-	NewServer           func(*testing.T, *memory.MemoryStore, bool, string) Backend
-	ModelR2Prefix       func(string, string) string
-	NewManifest         func() *store.ModelManifest
-	NewProviderKey      func() string
-	ProviderPrivateKey  func(*testing.T, string) *[32]byte
-	DeleteProviderKey   func(string)
-	EncryptChunk        func(*testing.T, protocol.InferenceRequestMessage, string, string) protocol.InferenceResponseChunkMessage
-	PrivacyCapabilities func() *protocol.PrivacyCapabilities
+	NewServer func(t *testing.T, st *memory.MemoryStore, holds bool, slaAccount string) Backend
 }
 
 const testHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"

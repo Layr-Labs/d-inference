@@ -16,6 +16,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/coordinator/store/memory"
+	"github.com/eigeninference/d-inference/coordinator/tests/internal/testkit"
 )
 
 const (
@@ -30,12 +31,10 @@ const (
 type orFixture struct {
 	t            *testing.T
 	srv          Backend
-	suite        Suite
 	st           *memory.MemoryStore
 	ts           *httptest.Server
 	client       *http.Client
 	ctx          context.Context
-	cancel       context.CancelFunc
 	keys         map[string]string
 	providers    []*orProvider
 	model, alias string
@@ -51,7 +50,7 @@ func (s Suite) newORModelFixture(t *testing.T, holds bool, model, alias string) 
 	st := memory.NewMemory(store.Config{})
 	srv := s.NewServer(t, st, holds, orAccount)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	f := &orFixture{t: t, srv: srv, suite: s, st: st, ctx: ctx, cancel: cancel, keys: make(map[string]string), model: model, alias: alias}
+	f := &orFixture{t: t, srv: srv, st: st, ctx: ctx, keys: make(map[string]string), model: model, alias: alias}
 	for _, acct := range []string{orAccount, "conformance-exempt", "conformance-other-service"} {
 		role := store.RoleService
 		if acct == "conformance-exempt" {
@@ -79,7 +78,7 @@ func (s Suite) newORModelFixture(t *testing.T, holds bool, model, alias string) 
 		if id == "conformance-staged" {
 			entry.Metadata["openrouter_is_ready"] = false
 		}
-		version := &store.ModelVersion{ModelID: id, Version: "v1", R2Prefix: s.ModelR2Prefix(id, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready"}
+		version := &store.ModelVersion{ModelID: id, Version: "v1", R2Prefix: testkit.ModelPrefix(id, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready"}
 		if err := st.SetModelVersion(entry, version, []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}); err != nil {
 			t.Fatal(err)
 		}

@@ -1,10 +1,6 @@
 package inference_test
 
 import (
-	"bytes"
-	"crypto/sha256"
-	"fmt"
-	"sort"
 	"testing"
 	"time"
 
@@ -13,12 +9,9 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/internal/inference/reservations"
 	"github.com/eigeninference/d-inference/coordinator/payments"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/coordinator/store/memory"
 	"github.com/eigeninference/d-inference/coordinator/tests/internal/conformance"
-	"github.com/eigeninference/d-inference/coordinator/tests/internal/testkit"
 )
 
 // Keep only the composition bindings here. All scenarios, fixtures and
@@ -27,7 +20,7 @@ import (
 // reservation controller are the constructor dependencies this fixture retains.
 func conformanceSuite() conformance.Suite {
 	return conformance.Suite{
-		NewServer: func(t *testing.T, st *memory.MemoryStore, holds bool, account string) conformance.Backend {
+		NewServer: func(t *testing.T, st *memory.MemoryStore, holds bool, slaAccount string) conformance.Backend {
 			t.Helper()
 			logger := quietLogger()
 			reg := registry.New(logger)
@@ -36,7 +29,7 @@ func conformanceSuite() conformance.Suite {
 			srv := api.NewRuntime(api.RuntimeDependencies{
 				Registry: reg, Store: st, Ledger: ledger, ReadCache: readcache.New(), Logger: logger,
 				InferenceReservations: serviceHolds,
-			}, api.ServerConfig{ServiceReservations: holds, FirstContentSLAAccounts: []string{account}, FirstContentDeadlineBase: 3 * time.Second}).Server
+			}, api.ServerConfig{ServiceReservations: holds, FirstContentSLAAccounts: []string{slaAccount}, FirstContentDeadlineBase: 3 * time.Second}).Server
 			srv.SetChallengeInterval(time.Hour)
 			reg.SetQueue(registry.NewRequestQueue(10, 100*time.Millisecond))
 			srv.SetBilling(billing.NewService(st, ledger, logger, billing.Config{MockMode: true}))
@@ -45,78 +38,9 @@ func conformanceSuite() conformance.Suite {
 					// A disabled manager records nothing, so nothing can be outstanding.
 					return 0
 				}
-				return outstandingServiceHold(t, serviceHolds, st, account)
+				return conformance.OutstandingServiceHold(t, serviceHolds, st, account)
 			}}
 		},
-		ModelR2Prefix: testkit.ModelPrefix, NewManifest: conformanceManifest,
-		NewProviderKey: testkit.PublicKeyB64,
-		ProviderPrivateKey: func(t *testing.T, key string) *[32]byte {
-			t.Helper()
-			value, ok := testkit.ProviderKeys.Load(key)
-			if !ok {
-				t.Fatal("missing fixture provider key")
-			}
-			private := value.(testkit.ProviderKeyPair).Private
-			return &private
-		},
-		DeleteProviderKey: func(key string) { testkit.ProviderKeys.Delete(key) },
-		EncryptChunk: func(t *testing.T, request protocol.InferenceRequestMessage, providerPublicKey, sse string) protocol.InferenceResponseChunkMessage {
-			t.Helper()
-			return testkit.EncryptedChunk(t, request, providerPublicKey, sse)
-		},
-		PrivacyCapabilities: testkit.PrivacyCaps,
-	}
-}
-
-// serviceHoldProbeModel only labels the probe's reservation metrics.
-const serviceHoldProbeModel = "conformance-hold-probe"
-
-// outstandingServiceHold measures a service account's unreleased in-memory
-// hold at the reservation controller's own admission boundary. The controller
-// keeps the per-account sum private and admits a service reservation only while
-// the ledger balance minus that sum covers it, so the largest admitted amount
-// is the unheld balance. Every admitted probe is released before the next one;
-// the fixture issues no concurrent request admission while it measures.
-func outstandingServiceHold(t *testing.T, holds *reservations.Controller, st store.Store, account string) int64 {
-	t.Helper()
-	balance := st.GetBalance(account)
-	if balance <= 0 {
-		t.Fatalf("service hold probe needs a positive balance, got %d", balance)
-	}
-	admits := func(amount int64) bool {
-		serviceMode, err := holds.ReserveInitial(account, serviceHoldProbeModel, amount)
-		if !serviceMode {
-			if err == nil {
-				// Ledger mode debited the probe; refund it before failing.
-				holds.ReleaseInitial(account, serviceHoldProbeModel, amount, false)
-			}
-			t.Fatalf("service hold probe for %q did not use the in-memory hold (err=%v)", account, err)
-		}
-		if err != nil {
-			return false
-		}
-		holds.ReleaseInitial(account, serviceHoldProbeModel, amount, true)
-		return true
-	}
-	// Amounts 1..unheld are admitted and every larger amount is refused.
-	unheld := int64(sort.Search(int(balance), func(i int) bool { return !admits(int64(i) + 1) }))
-	return balance - unheld
-}
-
-// conformanceManifest is independent of the production address builder and
-// manifest hash aggregator, like the catalog contract fixtures.
-func conformanceManifest() *store.ModelManifest {
-	files := []store.ManifestFile{{Path: "config.json", SizeBytes: 123, SHA256: testkit.ModelHash, Role: "config"}}
-	return &store.ModelManifest{
-		SchemaVersion:   1,
-		ModelID:         "mlx-community/test",
-		Version:         "v1",
-		R2Prefix:        testkit.ModelPrefix("mlx-community/test", "v1"),
-		AggregateSHA256: fmt.Sprintf("%x", sha256.Sum256(bytes.Repeat([]byte{0xaa}, 32))),
-		TotalSizeBytes:  123,
-		FileCount:       1,
-		Files:           files,
-		CreatedAt:       time.Now(),
 	}
 }
 

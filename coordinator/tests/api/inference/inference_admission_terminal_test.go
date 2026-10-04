@@ -43,7 +43,6 @@ type terminalEffectStore struct {
 	refundBarrier *terminalEffectBarrier
 	lookupBarrier *terminalEffectBarrier
 	refunds       atomic.Int32
-	lookups       atomic.Int32
 }
 
 func (s *terminalEffectStore) Credit(account string, amount int64, kind store.LedgerEntryType, reference string) error {
@@ -56,7 +55,6 @@ func (s *terminalEffectStore) Credit(account string, amount int64, kind store.Le
 	return s.Store.Credit(account, amount, kind, reference)
 }
 func (s *terminalEffectStore) ListProvidersByAccount(ctx context.Context, account string) ([]store.ProviderRecord, error) {
-	s.lookups.Add(1)
 	if s.lookupBarrier != nil {
 		s.lookupBarrier.block()
 	}
@@ -353,7 +351,8 @@ func TestPreflightSelfRouteTerminalWriterReleasesRoutingScanPermit(t *testing.T)
 	}
 }
 
-// Additional branch controls are kept after the immutable baseline fixture.
+// The remaining rejection branches run through admission directly: each must
+// reach its response writer with only the foreign permit occupied.
 func TestPreflightTerminalBranchWritersReleaseRoutingScanPermit(t *testing.T) {
 	cases := []struct {
 		name    string

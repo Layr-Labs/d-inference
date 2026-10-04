@@ -30,14 +30,15 @@ Autopilot protocol 3 keeps cached planning inventory separate from ordinary serv
 ## Preflight scan permit lifetime
 
 Both inference handlers share `Admission.Run` in
-`coordinator/api/inference/inference_admission_outcome.go`. It owns one
-`admissionScanPermit` while `Admission.evaluate` in
-`coordinator/api/inference/inference_admission.go` evaluates public capacity,
-owner/prefer eligibility, alias fallback, body compatibility, servability and
-cold spill.
-A completed rejection returns its terminal action; the wrapper releases its
-permit before applying refunds, self-route store lookups, rejection recording
-or HTTP output. Successful admission releases the permit without a refund.
+`coordinator/api/inference/inference_admission.go`. It owns one
+`admissionScanPermit` while `Admission.evaluate` in the same file evaluates
+public capacity, owner/prefer eligibility, alias fallback, body compatibility,
+servability and cold spill.
+A completed rejection returns its terminal action (`admissionOutcome` in
+`coordinator/api/inference/inference_admission_outcome.go`); the wrapper
+releases its permit before applying refunds, self-route store lookups,
+rejection recording or HTTP output. Successful admission releases the permit
+without a refund.
 Slow terminal dependencies therefore do not retain completed scan capacity.
 
 External prompt planning and fallback body rebuilding also release the permit,

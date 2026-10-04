@@ -55,7 +55,6 @@ func (s Availability) Rejection(w http.ResponseWriter, r *http.Request, owner, m
 			w.Header().Set("Retry-After", "30")
 			httpx.WriteJSON(w, http.StatusServiceUnavailable, httpx.ErrorResponse("machine_offline",
 				"your machine is offline — self-route will not fall back to paid providers; start your Darkbloom node and retry", httpx.WithCode("machine_offline")))
-			return
 		}
 	}
 	// Online and the model is served for plain requests, but not for THIS

@@ -13,6 +13,26 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
+// Run shares preflight policy across both inference handlers.
+// Every gate's provider walk stays inside evaluation; its completed rejection
+// applies refunds, store lookups, telemetry and HTTP output only after permit
+// release. Rejection telemetry includes the model-type lookup for its tag.
+func (a *Admission) Run(w http.ResponseWriter, r *http.Request, parsed map[string]any, p AdmissionRequest) AdmissionResult {
+	markPublicModelDemand(r, p)
+	model := p.Model
+	armAutopilotDemand(r, p)
+	defer func() { setAutopilotDemandModel(r, model, p.requestTraitsForModel(model)) }()
+	permit := admissionScanPermit{admission: a, w: w, r: r, parsed: parsed, params: p}
+	defer permit.release()
+	outcome := a.evaluate(w, r, parsed, p, &permit)
+	model = outcome.model
+	permit.release()
+	if outcome.applyRejection != nil {
+		outcome.applyRejection()
+	}
+	return AdmissionResult{Model: outcome.model, Handled: outcome.handled}
+}
+
 // evaluate keeps provider evaluation under permit ownership.
 // A completed rejection returns its terminal effects for the caller to apply
 // after release. Failed acquisition and fallback callbacks already handle their

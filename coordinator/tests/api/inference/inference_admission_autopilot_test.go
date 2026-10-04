@@ -123,8 +123,10 @@ func TestPreflightAutopilotShadowTerminalOwnership(t *testing.T) {
 			if !handled || rec.Code != wantStatus || refunds.Load() != 1 || srv.scanGate.InFlight() != 1 {
 				t.Fatalf("handled=%v status=%d refunds=%d permits=%d", handled, rec.Code, refunds.Load(), srv.scanGate.InFlight())
 			}
-			// Finish consumes exactly once: recording public demand here also
-			// proves admission left it for the handler exit.
+			// Finish consumes exactly once, so a recorded sample proves admission
+			// left public demand for the handler exit. The scoped modes never arm
+			// demand: Finish reports false whether or not admission consumed it,
+			// so an early consume there is not observable from this boundary.
 			sample, recorded := demand.Finish(rec.Code, r.Context().Err() != nil)
 			wantRecorded := mode != "self_writer" && mode != "serial_writer"
 			if recorded != wantRecorded {

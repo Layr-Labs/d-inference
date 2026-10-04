@@ -1,10 +1,10 @@
 # Storage
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
-What the coordinator persists, through which interface, in which backend, and
-how the schema reaches a fresh database; then what a provider keeps on its own
-disk and in its Keychain. Read this to understand what survives a restart, what
+What the coordinator persists, through which interface and in which backend;
+then what a provider keeps on its own disk and in its Keychain. How the schema
+changes is [schema lifecycle](schema-lifecycle.md). Read this to understand what survives a restart, what
 does not, and which files an operator may touch. Configuration values are
 listed once in [`../reference/configuration.md`](../reference/configuration.md);
 the SSD cache file format is in
@@ -111,114 +111,39 @@ stats endpoint can hold connections for seconds while heartbeat upserts,
 billing settlements and inference completions also need them. The DSN itself is
 the only connection-level knob; there is no separate host/user/password set.
 
-### Migrations are numbered goose versions
+### Schema migrations
 
-The schema is a list of numbered migrations, applied by
-[goose](https://github.com/pressly/goose) (`github.com/pressly/goose/v3`).
-`NewPostgres` calls `PostgresStore.migrate`
-(`coordinator/store/postgres_migrations.go`) before it returns. Goose applies
-each version once and records it in `goose_db_version`; a later boot finds
-nothing to apply. `coordinator --migrate-only` runs the same step and exits
-before admin key seeding, listeners or background workers. It requires a
-PostgreSQL URL; there is no memory-store fallback or schema-skip mode.
-
-| Version | Source | What it does |
-|---|---|---|
-| 1 | `coordinator/store/schema/migrations/00001_baseline.sql` | The 255 statements that the pre-goose boot ran on every start, unchanged and in the same order. Each block runs on its own, outside a transaction. On a database that already has the schema, every statement is a no-op. |
-| 2 | `checkRetiredBackfills` (`coordinator/store/postgres_retired_backfills.go`) | The retired-backfill guard below. |
-| 3 | `ensureProviderRestoreIndexes` (`coordinator/store/postgres_startup.go`) | Builds the two provider-restore indexes `CONCURRENTLY`. |
-| 4 | `ensureProviderEarningsJobIndex` (`coordinator/store/postgres.go`) | Builds the `provider_earnings(job_id)` unique index `CONCURRENTLY`. |
-| 5 | `ensureProviderEarningsWindowIndex` (`coordinator/store/postgres_earnings_window_index.go`) | Builds the BRIN time index and sets the analyze cadence. |
-
-Versions 2 to 5 are Go migrations (`goMigrations`). They keep the code they had
-before goose and run on the store pool. The SQL migrations run on a separate
-two-connection pool whose sessions set `lock_timeout` to 3 s and
-`statement_timeout` to 10 min (`migrationLockTimeout`,
-`migrationStatementTimeout`); a value set in the database URL wins. A DDL
-statement that cannot get its lock in time fails instead of queueing every
-later query on the table behind it, and `migrate` runs goose again, up to three
-attempts. If a long read query keeps a table busy through all three
-attempts, the boot fails before it serves and changes nothing that it has not
-recorded; start it again later.
-
-Goose first checks for pending versions without a lock; that check also
-creates `goose_db_version` on a database that has none. When versions are
-pending, goose takes a session advisory lock, lists the versions again, and
-applies the ones still missing. Two coordinators that start together take
-turns: one applies, the other waits for the lock and then finds nothing to
-apply. The waiting coordinator gives up after goose's default lock wait of
-5 min (60 tries, 5 s apart) and exits 1. Out-of-order versions are refused.
-
-Each version runs once, so the work in it no longer repeats on every boot.
-The repair statements in the baseline (the `api_keys.id` backfill, the
-`model_registry` capability fix for `EigenLabs/Qwen3.8-27B-4bit`, the two
-`provider_trust_reuse` backfills, the `model_aliases.desired_build` and
-`global_payout_withdrawals.expires_at` backfills) and versions 2 to 5 ran at
-every start before goose. The current writers already write the repaired
-form, so running them once is enough.
-
-`coordinator/store/schema/schema.sql` is the `pg_dump --schema-only` of the
-schema the migrations build, without `goose_db_version`.
-`TestMigrationsBuildCheckedInSchema` builds a fresh database with goose and
-fails when its schema differs from that file. The file is also the schema that
-sqlc reads: the api_keys queries are SQL in `coordinator/store/queries/api_keys.sql`,
-and `make sqlc-generate` turns them into Go in `coordinator/store/storedb`
-(`coordinator/store/sqlc.yaml`). sqlc reads the dump, not the migrations,
-because it cannot see columns that the baseline adds inside `DO` blocks. To add a migration, follow
+`NewPostgres` applies every pending goose migration before it returns; the
+coordinator serves only after they all succeed. Each version runs once and is
+recorded in `goose_db_version`. `coordinator/store/schema/schema.sql` is the
+checked-in `pg_dump` of the schema that the migrations build. The versions,
+locks, timeouts and failure modes are in
+[schema lifecycle](schema-lifecycle.md); adding a migration is
 [Add a database migration](../developer/database-migrations.md).
 
-`schema_migrations` is a separate, older table. It holds the markers of the
-one-shot data migrations inside the baseline and of the retired backfills.
-Two SQL files under `coordinator/store/migrations/` are not migrations and are
-applied by hand with `psql`: `dedupe_provider_earnings.sql` (an offline cleanup
-that once ran at boot, held a relation lock for ~15 minutes on the production
-table and kept the coordinator from binding its port) and
-`request_waterfall.sql` (an analysis view joining `request_profiles` to
-`inference_routes`, kept off the boot path so a `CREATE VIEW` can never queue
-behind a long query's lock). `coordinator/deploy/start.sh` does not touch the
-database; it only prepares the persistent disk and MicroMDM before `exec
-coordinator`.
+```mermaid
+flowchart LR
+  classDef step fill:#dbeafe,stroke:#1d4ed8,color:#0b1220
+  classDef check fill:#fef3c7,stroke:#b45309,color:#1f1300
+  classDef ok fill:#dcfce7,stroke:#15803d,color:#052e16
+  classDef fail fill:#fee2e2,stroke:#b91c1c,color:#450a0a
+  A["ReadAppConfig"]:::step --> B{"EIGENINFERENCE_DATABASE_URL set?"}:::check
+  B -- "yes" --> C["NewPostgres: connect, Ping,<br/>apply pending goose versions"]:::step
+  C -- "ok" --> G["SeedKey admin key, serve"]:::ok
+  C -- "error" --> X["exit 1"]:::fail
+  B -- "no, ALLOW_MEMORY_STORE=true" --> H["NewMemory + 15 min pruner"]:::ok
+  B -- "no" --> X
+```
 
-The one-shot backfills that derived `earnings_summary`, `usage_totals` and
-`balances.withdrawable_micro_usd` from history (markers
-`backfill_earnings_summary_v1`, `backfill_usage_totals_v1`,
-`backfill_withdrawable_balance_v1`) have run in production and are retired
-after v0.9.10. The baseline creates `balances` with
-`withdrawable_micro_usd`. `checkRetiredBackfills` (version 2) then guards the
-first goose boot of a database:
+Legend: blue = step, amber = decision, green = serving, red = exit 1.
 
-- it fails if `balances.withdrawable_micro_usd` is missing;
-- it records each marker whose source table (`balances`, `usage`,
-  `provider_earnings`) is empty, because with no history the current schema is
-  already exact, and v0.9.10 recorded the same markers on an empty database;
-- it seeds the single `usage_totals` row only while `usage` is empty;
-- it fails if a source table holds rows but its marker is missing, or if the
-  `usage_totals` row is missing.
-
-A failed boot writes no marker and no counter for the data it refused, so the
-remedy in the error (boot a coordinator built from v0.9.10, which still
-runs them, once; then this build) still runs the real backfill. Databases that ran the
-backfills keep their markers and their now-unused scratch tables
-(`earnings_summary_backfill_pending`, `usage_totals_backfill_state`).
-
-The Solana-era cleanups are retired the same way: the wallet-keyed price delete (marker `cleanup_wallet_model_prices_v1`,
-which on a fresh database ran before `users` existed and so fired on the second
-boot) and the one-time column drops `billing_sessions.chain`,
-`users.solana_wallet_address`, `users.solana_wallet_id` and
-`releases.image_bridge_hash`. A database migrated by the current binary still
-boots an older one, whose versions of these statements are no-ops or guarded.
+### Provider earnings and history
 
 `RecordProviderEarning` and `CreditProviderAccount` maintain new summaries from
 inserted earning rows, so duplicate non-empty job IDs never increment twice.
 `base_reward` contributes money but zero inference count/tokens, matching floor
 draw settlement and MemoryStore. The record-only method does not credit balances
 or create ledger entries.
-
-Postgres startup logs connection time, one `postgres migration` line per
-applied version with its duration, and named index phases. Logs omit SQL and
-parameters. Preparing migrations before the drain moves index builds out of the
-cutover window; concurrent index creation can still wait for old transactions. See the [deployment procedure](../operations/coordinator-deploy.md)
-for the approval and compatibility boundary.
 
 Provider history is recovered on demand after successful live SE attestation,
 using `GetProviderForRestore` with the verified serial first, then SE key if
@@ -245,22 +170,6 @@ Store errors are logged and do not grant hardware trust. Reputation is still
 loaded by the selected historical record ID. No store operation lists every
 historical provider record.
 
-```mermaid
-flowchart LR
-  A[ReadAppConfig] --> B{DATABASE_URL set?}
-  B -- yes --> C[pgxpool connect + Ping]
-  C --> V{pending versions?\nno lock; creates\ngoose_db_version if missing}
-  V -- none --> G[SeedKey admin key]
-  V -- some --> L[goose advisory lock\nwait up to 5 min]
-  L --> D[list versions again;\napply each pending version once:\n1 baseline, 2 retired-backfill guard,\n3-5 CONCURRENTLY indexes]
-  D --> G
-  D -. lock_timeout, up to 3 attempts .-> V
-  L -. lock wait over .-> X
-  B -- no, ALLOW_MEMORY_STORE=true --> H[NewMemory + 15 min pruner]
-  B -- no --> X[exit 1]
-  D -. any error .-> X
-```
-
 ### Table families
 
 Roughly forty tables; grouped by what would be lost if the family vanished.
@@ -270,7 +179,7 @@ Roughly forty tables; grouped by what would be lost if the family vanished.
 | Identity and access | `api_keys`, `users`, `device_codes`, `provider_tokens`, `publishing_api_keys`, `invite_codes`, `invite_redemptions` | Keys are stored as hashes with a display prefix; `users` carries the Stripe Connect fields. |
 | Money | `balances`, `ledger_entries`, `billing_sessions`, `model_prices`, `referrers`, `referrals`, `stripe_withdrawals`, `global_payout_recipients`, `global_payout_withdrawals`, `provider_earnings`, `earnings_summary`, `provider_payouts`, `provider_floor_draws`, `payments` (legacy) | The ledger is append-only; `balances` is the materialised view of it. `model_prices.cache_read_price` is nullable: `NULL` means the row sets no cache-read rate and billing derives one from `input_price` (`payments.RatesFor`). Semantics in [`billing.md`](billing.md). |
 | Public model demand | `model_demand_requests`, `model_demand_hourly`, `model_demand_collection` | One compact projection per scoped coordinator UUID, hourly counters updated atomically by the `model_demand_rollup` trigger, and a persistent collection epoch; `coordinator/store/postgres_model_demand.go`. |
-| Usage and routing telemetry | `usage`, `usage_totals`, `inference_routes`, `request_rejections`, `request_profiles`, `fleet_snapshots`, `request_outcomes` | Row per request, per dispatched attempt, per rejection, per profiled attempt, per fleet sample; `usage_totals` is a single-row counter seeded at boot by `checkRetiredBackfills` and incremented by `RecordUsage`. `usage.cached_tokens` (`INTEGER NOT NULL DEFAULT 0`) is the subset of `prompt_tokens` billed at the cache-read rate; rows written before the column existed read 0, which is what they were billed. It and `model_prices.cache_read_price` are added by plain `ALTER TABLE … ADD COLUMN IF NOT EXISTS` statements, not exception-swallowing `DO` blocks. Settlement reads and writes both columns, so if either cannot be added (a lock timeout, a missing privilege), startup fails rather than boot a coordinator that bills at the default rates and drops usage rows. |
+| Usage and routing telemetry | `usage`, `usage_totals`, `inference_routes`, `request_rejections`, `request_profiles`, `fleet_snapshots`, `request_outcomes` | Row per request, per dispatched attempt, per rejection, per profiled attempt, per fleet sample; `usage_totals` is a single-row counter seeded by `checkRetiredBackfills` (migration version 2) and incremented by `RecordUsage`. `usage.cached_tokens` (`INTEGER NOT NULL DEFAULT 0`) is the subset of `prompt_tokens` billed at the cache-read rate; rows written before the column existed read 0, which is what they were billed. It and `model_prices.cache_read_price` are added by plain `ALTER TABLE … ADD COLUMN IF NOT EXISTS` statements, not exception-swallowing `DO` blocks. Settlement reads and writes both columns, so if either cannot be added (a lock timeout, a missing privilege), startup fails rather than boot a coordinator that bills at the default rates and drops usage rows. |
 | Provider fleet and trust | `providers`, `provider_reputation`, `provider_sessions`, `provider_trust_reuse`, `provider_verification_jobs`, `code_attestations`, `code_attest_push_budgets`, `provider_log_reports` | Trust reuse and code attestations are durable. `code_attestations.continuous_coverage_until` is compare-and-updated only for the exact original proof tuple; it never refreshes `attested_at` or inserts proof. This allows bounded same-process resume after a redeploy; see [`security/attestation.md`](security/attestation.md). `provider_log_reports.serial_number` is kept empty by trigger. |
 | Models and releases | `model_registry`, `model_versions`, `model_version_files`, `model_active_versions`, `model_aliases`, `releases` | The catalog the registry syncs at boot; see [`model-registry.md`](model-registry.md). |
 | Cache routing state | `cache_routing_holders`, `cache_routing_demand`, `cache_routing_meta` | Write-behind copy of the registry's in-memory exact prefix-cache holder index and observed-demand index, so a restart does not start from an empty index (`coordinator/store/cacheroutingstate_postgres.go`, `coordinator/store/cacheroutingstate/records.go`, `coordinator/registry/cachepersist/persister.go`). Holders are keyed by boundary key plus the provider's cache epoch (a UUID the provider mints per model SSD root and persists), never by connection-scoped provider ID; rows name a boundary by its keyed identifier (the HMAC output under the route key; the key material itself is never stored) and token count, plus the Ready fallback and measured stage costs; the provider-confirmed chain hash is not stored, and no prompt content is. Rows are pruned in 10,000-row batches every five minutes under the active routing TTL (the effective expiry is the earlier of the stored one and `updated_at` plus the TTL, indexed on both columns), so a longer past TTL cannot leave rows in the table after they stopped loading; rows stamped more than a minute ahead of the pruning clock (a previous instance's skew) are removed too, at boot and on every prune, so a current receipt is never outranked by a quarantined future timestamp. `cache_routing_meta` records a non-secret fingerprint of the cache-key generation (HMAC of the master key over every key-derivation label, the block contract and a persistence generation, `deriveCacheKeys`); nothing is written before a boot has recorded it; a boot under a different master key finds rows whose keys can never match a request again and empties both tables with unconditional bounded deletes, recording the new generation last, instead of restoring them (`cachepersist.Restore`, `ResetCacheRoutingState`). Loads apply the current TTL to each row's expiry before ordering and capping. Losing the tables costs minutes of hit rate, nothing else. |
@@ -333,16 +242,13 @@ KV blocks under a per-model key, not tokens.
    `store.Config.Check` fails and `main` exits unless a DSN is present or the
    memory store is opted into by name (`coordinator/store/config.go`,
    `coordinator/cmd/coordinator/main.go`).
-2. **Schema changes ship with the binary as numbered migrations.** The process
-   serves traffic only after every pending version applies; a version applies
-   once and is recorded in `goose_db_version`
-   (`coordinator/store/postgres_migrations.go`). The baseline statements are
-   idempotent, so its first run on a pre-goose database changes nothing.
-3. **Committed migration progress is not applied twice.** Goose records a
-   version after it succeeds, under a session advisory lock. One-shot data
-   migrations in the baseline commit their `schema_migrations` marker in the
-   same statement or transaction as their update
-   (`coordinator/store/schema/migrations/00001_baseline.sql`).
+2. **Schema changes ship with the binary as numbered migrations,** and the
+   process serves only after every pending version applies
+   (`coordinator/store/postgres_migrations.go`); the migration invariants are
+   in [schema lifecycle](schema-lifecycle.md#invariants).
+3. **One-shot data migrations in the baseline commit their
+   `schema_migrations` marker in the same statement or transaction as their
+   update** (`coordinator/store/schema/migrations/00001_baseline.sql`).
 4. **Boot never holds a long lock on a hot table.** The
    `provider_earnings(job_id)` unique index is built `CONCURRENTLY`, only after
    a duplicate check, and skipped when already valid; the dedupe that violated
@@ -371,11 +277,7 @@ KV blocks under a per-model key, not tokens.
 
 | Symptom | Cause | Where to look |
 |---|---|---|
-| Coordinator exits 1 at boot with `store: run migrations` | A migration failed (permissions, a hand-edited schema, or a lock still held after three `lock_timeout` attempts) | The failed `postgres migration` version in the log; `pg_stat_activity` for blockers. |
-| Boot fails with `missing (out-of-order) migration` | A version below the database's highest was never applied, for example two branches added migrations and the higher one deployed first | `SELECT * FROM goose_db_version`; renumber the unapplied migration above the highest applied version. |
-| Boot fails with `found duplicate migration version` | Two migration files use the same number | Renumber one of them. |
-| Boot fails with `database holds data that retired backfills never processed` or `balances.withdrawable_micro_usd is missing` | The database has billing, usage or earnings history but never ran a backfill retired after v0.9.10 | Boot a coordinator built from v0.9.10 (which still runs them) against it once, then redeploy (`checkRetiredBackfills`). |
-| Boot fails with an actionable `provider_earnings` duplicate message | Rows share a non-empty `job_id`, so the unique index cannot be built | Run `dedupe_provider_earnings.sql` offline, then redeploy. |
+| Coordinator exits 1 at boot with `store: run migrations` | A goose migration failed: a lock timeout, the advisory-lock wait, an invalid index, an out-of-order or duplicate version, or the retired-backfill guard | [Schema lifecycle failure modes](schema-lifecycle.md#failure-modes) and the [schema migration runbook](../operations/schema-migration.md#troubleshooting). |
 | `EIGENINFERENCE_DATABASE_URL is required in production` | No DSN and no memory-store opt-in | The environment file; see [`../operations/coordinator-deploy.md`](../operations/coordinator-deploy.md). |
 | Billing or key state gone after a restart | The process ran on the memory store | Startup log line `using in-memory store`. |
 | `/v1/stats` slow and pool saturated | Full scans on `usage` holding connections; the 80-connection floor is the mitigation, not a fix | `pg_stat_activity`; the read cache. |
@@ -391,7 +293,7 @@ KV blocks under a per-model key, not tokens.
 | Earnings rankings and startup time index | `coordinator/store/postgres_leaderboard.go` (`Leaderboard`), `coordinator/store/postgres_earnings_window_index.go` (`ensureProviderEarningsWindowIndex`), `coordinator/store/postgres_startup.go` (`ensureConcurrentIndex`) |
 | Backend selection and validation | `coordinator/store/config.go`, `coordinator/cmd/coordinator/main.go` |
 | Postgres pool | `coordinator/store/postgres.go` |
-| Migrations | `coordinator/store/postgres_migrations.go` (`migrate`, `goMigrations`), `coordinator/store/schema/migrations/`, `coordinator/store/schema/schema.sql`, `coordinator/store/postgres_retired_backfills.go` |
+| Migrations | `coordinator/store/postgres_migrations.go`, `coordinator/store/schema/migrations/`, `coordinator/store/schema/schema.sql`; full map in [schema lifecycle](schema-lifecycle.md#code-map) |
 | Generated queries (sqlc) | `coordinator/store/sqlc.yaml`, `coordinator/store/queries/`, `coordinator/store/storedb/`; api_keys in `coordinator/store/postgres_api_keys.go` |
 | Provider identity and usage reads | `coordinator/store/postgres_provider_read.go` (`providerRecordColumns`, `scanProviderRecord`, `GetProviderRecord`); `coordinator/store/provider_restore.go` (`GetProviderForRestore`, using the same projection); `coordinator/store/postgres_usage_read.go` (`readUsageRecords`, `UsageRecords`); `coordinator/store/postgres_row.go` (`rowScanner`) |
 | Domain files | `coordinator/store/postgres_model_registry.go`, `coordinator/store/postgres_base_rewards.go`, `coordinator/store/postgres_profiles.go`, `coordinator/store/route_telemetry.go`, `coordinator/store/usage_time_series.go`, `coordinator/store/apikey.go` |
@@ -409,6 +311,7 @@ KV blocks under a per-model key, not tokens.
 - [`security/attestation.md`](security/attestation.md) — the trust-reuse and code-attestation caches
 - [`prefix-cache.md`](prefix-cache.md) and [`../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md) — the provider's on-disk cache
 - [`../operations/state-export.md`](../operations/state-export.md) — exporting the non-Postgres state on the persistent disk
+- [`schema-lifecycle.md`](schema-lifecycle.md) — how the schema changes: goose versions, locks, timeouts
 - [`../operations/coordinator-deploy.md`](../operations/coordinator-deploy.md) — where the DSN is set
 
 ## Model token grants

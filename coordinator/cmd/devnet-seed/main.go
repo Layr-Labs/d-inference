@@ -65,14 +65,15 @@ func requireEmptyDatabase(ctx context.Context, dsn string) error {
 		return fmt.Errorf("connect: %w", err)
 	}
 	defer conn.Close(ctx)
-	var hasUsers bool
-	err = conn.QueryRow(ctx, `SELECT to_regclass('users') IS NOT NULL`).Scan(&hasUsers)
+	var usersTableExists bool
+	err = conn.QueryRow(ctx, `SELECT to_regclass('users') IS NOT NULL`).Scan(&usersTableExists)
 	if err != nil {
 		return fmt.Errorf("check users table: %w", err)
 	}
-	if !hasUsers {
+	if !usersTableExists {
 		return nil
 	}
+	var hasUsers bool
 	if err := conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM users)`).Scan(&hasUsers); err != nil {
 		return fmt.Errorf("check users table: %w", err)
 	}

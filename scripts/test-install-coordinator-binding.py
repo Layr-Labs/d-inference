@@ -11,6 +11,12 @@ DEV = "https://api.dev.darkbloom.xyz"
 DEV_WS = 'url = "wss://api.dev.darkbloom.xyz/ws/provider"'
 
 
+def run_binding(coordinator, config):
+    return subprocess.run(
+        ["bash", str(INSTALLER), "--bind-coordinator-test", str(config)],
+        env={**os.environ, "COORD_URL": coordinator}, capture_output=True, text=True)
+
+
 class CoordinatorBindingTests(unittest.TestCase):
     def bind(self, coordinator, existing=None):
         with tempfile.TemporaryDirectory() as directory:
@@ -18,9 +24,7 @@ class CoordinatorBindingTests(unittest.TestCase):
             if existing is not None:
                 config.parent.mkdir(parents=True)
                 config.write_text(existing)
-            result = subprocess.run(
-                ["bash", str(INSTALLER), "--bind-coordinator-test", str(config)],
-                env={**os.environ, "COORD_URL": coordinator}, capture_output=True, text=True)
+            result = run_binding(coordinator, config)
             leftovers = sorted(p.name for p in config.parent.glob("*")) if config.parent.exists() else []
             return result, config.read_text() if config.exists() else None, leftovers
 
@@ -62,9 +66,8 @@ class CoordinatorBindingTests(unittest.TestCase):
             config = Path(directory) / "provider.toml"
             config.write_text(existing)
             for url in (DEV, "https://api.darkbloom.dev"):
-                subprocess.run(
-                    ["bash", str(INSTALLER), "--bind-coordinator-test", str(config)],
-                    env={**os.environ, "COORD_URL": url}, capture_output=True, text=True, check=True)
+                result = run_binding(url, config)
+                self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(config.read_text(), existing)
 
     def test_missing_config_is_created_with_only_the_coordinator(self):

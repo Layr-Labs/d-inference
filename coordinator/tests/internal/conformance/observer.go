@@ -243,8 +243,9 @@ func (o *orObservation) event(data string, start time.Time) error {
 }
 
 // Shape/identity faults are retained separately from generic transport validity:
-// a task oracle must reject incomplete or inconsistent calls, while H0 can still
-// observe legacy semantic deltas. Resource bounds always fail the transport.
+// a task oracle must reject incomplete or inconsistent calls, while the
+// transport-only cases can still observe legacy semantic deltas. Resource bounds
+// always fail the transport.
 func (o *orObservation) accumulateTool(d orToolDelta) error {
 	problem := func(code string) {
 		if o.ToolError == "" {

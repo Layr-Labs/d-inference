@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/eigeninference/d-inference/coordinator/store"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,6 +13,8 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/tests/internal/testkit"
 	"nhooyr.io/websocket"
 )
 
@@ -25,6 +26,7 @@ type orProvider struct {
 	f           *orFixture
 	conn        *websocket.Conn
 	pub, id     string
+	privateKey  [32]byte
 	requests    chan orDispatch
 	cancels     chan string
 	acks        chan string
@@ -38,7 +40,12 @@ type orProvider struct {
 
 func (f *orFixture) provider(version string) *orProvider {
 	f.t.Helper()
-	p := &orProvider{f: f, pub: f.suite.NewProviderKey(), requests: make(chan orDispatch, 8), cancels: make(chan string, 8), acks: make(chan string, 2), faults: make(chan error, 1), ready: make(chan struct{}), done: make(chan struct{})}
+	p := &orProvider{f: f, pub: testkit.PublicKeyB64(), requests: make(chan orDispatch, 8), cancels: make(chan string, 8), acks: make(chan string, 2), faults: make(chan error, 1), ready: make(chan struct{}), done: make(chan struct{})}
+	pair, ok := testkit.ProviderKeys.Load(p.pub)
+	if !ok {
+		f.t.Fatal("missing fixture provider key")
+	}
+	p.privateKey = pair.(testkit.ProviderKeyPair).Private
 	conn, _, err := websocket.Dial(f.ctx, "ws"+strings.TrimPrefix(f.ts.URL, "http")+"/ws/provider", &websocket.DialOptions{HTTPClient: f.client})
 	if err != nil {
 		f.t.Fatal(err)
@@ -47,7 +54,7 @@ func (f *orFixture) provider(version string) *orProvider {
 	f.providers = append(f.providers, p)
 	go p.read()
 	yes := true
-	p.write(protocol.RegisterMessage{Type: protocol.TypeRegister, Hardware: protocol.Hardware{MachineModel: "fixture", ChipName: "Apple M3 Max", MemoryGB: 64}, Models: []protocol.ModelInfo{{ID: f.model, WeightHash: testHash, ModelType: "chat", Quantization: "4bit", TemplateRenderOK: &yes}}, Backend: "mlx-swift", Version: version, DecodeTPS: 200, PublicKey: p.pub, EncryptedResponseChunks: true, PrivacyCapabilities: f.suite.PrivacyCapabilities()})
+	p.write(protocol.RegisterMessage{Type: protocol.TypeRegister, Hardware: protocol.Hardware{MachineModel: "fixture", ChipName: "Apple M3 Max", MemoryGB: 64}, Models: []protocol.ModelInfo{{ID: f.model, WeightHash: testHash, ModelType: "chat", Quantization: "4bit", TemplateRenderOK: &yes}}, Backend: "mlx-swift", Version: version, DecodeTPS: 200, PublicKey: p.pub, EncryptedResponseChunks: true, PrivacyCapabilities: testkit.PrivacyCaps()})
 	select {
 	case <-p.ready:
 	case e := <-p.faults:
@@ -92,7 +99,6 @@ func (p *orProvider) read() {
 		default:
 		}
 	}
-	private := p.f.suite.ProviderPrivateKey(p.f.t, p.pub)
 	for {
 		_, data, err := p.conn.Read(p.f.ctx)
 		if err != nil {
@@ -118,7 +124,7 @@ func (p *orProvider) read() {
 				fail(errORPlaintext)
 				return
 			}
-			body, err := e2e.DecryptWithPrivateKey(&e2e.EncryptedPayload{EphemeralPublicKey: req.EncryptedBody.EphemeralPublicKey, Ciphertext: req.EncryptedBody.Ciphertext}, *private)
+			body, err := e2e.DecryptWithPrivateKey(&e2e.EncryptedPayload{EphemeralPublicKey: req.EncryptedBody.EphemeralPublicKey, Ciphertext: req.EncryptedBody.Ciphertext}, p.privateKey)
 			if err != nil {
 				fail(err)
 				return
@@ -188,7 +194,7 @@ func (p *orProvider) next() orDispatch {
 }
 func (p *orProvider) chunk(r orDispatch, sse string) {
 	p.f.t.Helper()
-	p.write(p.f.suite.EncryptChunk(p.f.t, r.request, p.pub, sse))
+	p.write(testkit.EncryptedChunk(p.f.t, r.request, p.pub, sse))
 }
 func (p *orProvider) complete(r orDispatch) {
 	p.write(protocol.InferenceCompleteMessage{Type: protocol.TypeInferenceComplete, RequestID: r.request.RequestID, Usage: protocol.UsageInfo{PromptTokens: 10, CompletionTokens: 10}})
@@ -217,7 +223,7 @@ func (p *orProvider) close() {
 	case <-time.After(time.Second):
 		p.f.t.Error("provider reader did not join")
 	}
-	p.f.suite.DeleteProviderKey(p.pub)
+	testkit.ProviderKeys.Delete(p.pub)
 }
 
 // barrier fences this provider only after the scenario has finished routing.

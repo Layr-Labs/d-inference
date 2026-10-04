@@ -2,6 +2,25 @@
 
 > Last updated: 2026-10-04
 
+## Component CI routing
+
+Run `python3 scripts/test-ci-component-paths.py` for offline component-routing
+regressions. It creates real temporary Git repositories to check PR merge-base
+comparison, multiple commits, more than 300 changed files, additions, deletions,
+both rename paths, newline-bearing filenames, SDK gitlink updates, push SHAs,
+zero-before fallback and manual runs. Invalid or unavailable revisions must fail
+without emitting skip outputs. No production credentials or model weights are used.
+
+The same suite pins workflow dependency/condition wiring and exhaustively executes
+the `Provider Tests` aggregate shell against detector and lane results. Only a
+successful detector plus three successful selected lanes, or three intentionally
+skipped irrelevant lanes, passes. Failure, cancellation, unexpected skips and
+missing detector outputs fail. `scripts/test-provider-ci-workflow.py` retains its
+independent suite/build prerequisite checks. Release Integrity runs both offline
+suites even for docs-only PRs. See [build routing](build.md) for dependencies and
+default-branch behavior. Relevant E2E benchmarks still require the existing
+`benchmarks` environment approval; irrelevant PRs do not request that approval.
+
 The documentation-impact guards (`scripts/test-docs-impact-check.py`) exercise
 both production components and their adapters after package moves. Billing API
 and inference settlement owners require billing documentation; inference demand
@@ -27,8 +46,6 @@ preserved. The older-OS signed-artifact smoke alone uses Blacksmith macOS 26.
 The signing validation and benchmark jobs provision GitHub CLI explicitly
 before their first `gh` command; see `scripts/install-macos-github-cli.sh`.
 See [runner setup and cache isolation](build.md#sdk-27-release-builds-and-caches).
-
-The OpenRouter cancellation fixture observes the existing completed-write profile stamp before canceling a dispatched request. Receiving provider bytes alone does not prove that the writer has finished; cancellation during an in-flight write may correctly abort that connection. Registry writer tests cover that separate outcome, while this fixture continues to require a matching cancel frame and exact settlement cleanup.
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1016,9 +1033,10 @@ The thin `coordinator/tests/api/inference/contracts/openrouter_conformance_test.
 adapter (`conformanceSuite`) retains the existing 22 test entry points. It binds
 the real composed runtime together with the ledger and reservation controller it
 constructs, without adding production exports; the outstanding service hold is
-measured at that controller's admission boundary (`outstandingServiceHold`), not
-read from private state. Run the inference contract tests below: the support
-package is not itself a test entry point and is not imported by production.
+measured at that controller's admission boundary, not read from private state, by
+`coordinator/tests/internal/conformance/service_hold.go` (`OutstandingServiceHold`).
+Run the inference contract tests below: the support package is not itself a
+test entry point and is not imported by production.
 Streaming providers emit the concrete build ID; the HTTP assertions require
 the caller's alias, so bypassing the coordinator's model rewrite fails.
 Current-wire fixtures send typed `invalid_request` errors and use explicit
@@ -1051,8 +1069,8 @@ and Transport under that prefix. The incident and readiness additions also requi
 IncidentProvenance, IncidentEnvelope, IncidentRefusal, Scenario,
 ScenarioFragmentation, ScenarioBounds, ScenarioChoiceShape, ReadinessFeed and
 ReadinessCapabilities. Retain every failure and unexpected skip across all
-22 groups. The combined family has 197 leaf cases, including the original 64 H0
-cases. `OR_REPORT` log lines contain bounded synthetic status, attempts,
+22 groups. The combined family has 197 leaf cases, 64 of them in the thirteen
+groups named first. `OR_REPORT` log lines contain bounded synthetic status, attempts,
 terminal, timing, usage and balance evidence.
 Repeat with `-count=2` to compare semantic fields, excluding timing values;
 assert generated identities within each request before normalizing reports.
@@ -1064,6 +1082,13 @@ truncated events, in-band errors, missing or duplicate DONE, changed identity,
 trailing payload and read errors. A provider drain acknowledgement joins prior
 completion workers before duplicate-terminal and no-stray-cancel assertions.
 The transport permits only its fixture address and rejects redirects and proxies.
+
+The OpenRouter cancellation fixture observes the existing completed-write profile
+stamp before canceling a dispatched request. Receiving provider bytes alone does
+not prove that the writer has finished; cancellation during an in-flight write
+may correctly abort that connection. Registry writer tests cover that separate
+outcome, while this fixture continues to require a matching cancel frame and
+exact settlement cleanup.
 
 The incident-envelope and scenario cases preserve the two curated Boston weather
 requests with reasoning disabled and tool choice omitted or auto. Added model
@@ -1316,7 +1341,8 @@ It remains subject to the isolated nonempty/no-skips gate.
 
 ### Parallel Provider CI
 
-`.github/workflows/ci.yml` runs three independent jobs on dedicated macOS runners:
+For relevant provider changes, `.github/workflows/ci.yml` runs three independent
+jobs on dedicated macOS runners:
 
 | Job | Coverage |
 |---|---|
@@ -1324,10 +1350,11 @@ It remains subject to the isolated nonempty/no-skips gate.
 | Provider SDK Tests | Full nested SDK test products, DiffusionGemma, paged safety/hash/eligibility/backend/kernel/KV-sharing gates, and every required Nemotron/onboarding selector |
 | Provider Prompt Parity | Real pinned tokenizer/template vectors, Swift/Go/Rust comparison, cold-load singleflight, and the release sidecar's sustained load proof |
 
-The existing `Provider Tests` check aggregates all three results and fails unless
-every lane succeeds. This keeps existing required-check coverage intact without
-an out-of-band branch-protection change; the three macOS lanes still start
-independently and run concurrently.
+The existing `Provider Tests` check aggregates all three results under the
+[component-routing contract](#component-ci-routing). Every selected lane must
+succeed. This keeps existing required-check coverage intact without an
+out-of-band branch-protection change; after detection, the three selected macOS
+lanes still start independently and run concurrently.
 
 No numerical matrix, exclusive allocator assertion, or internal controlled
 concurrency is removed. Tests sharing MLX globals remain serial within a process.
@@ -2538,9 +2565,15 @@ token IDs are accepted.
 
 ## CI workflow map
 
+The CI, integration and benchmark workflows use the
+[component-routing detector](#component-ci-routing). Component jobs run only for
+relevant PR changes; policy checks remain unconditional. Default-branch pushes
+keep full coverage. The required provider aggregate also passes verified
+intentional skips for irrelevant PRs, rather than requiring unselected macOS jobs.
+
 | Workflow | Trigger | Jobs (name → what runs) |
 |---|---|---|
-| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — release/script checks and offline provider CI/cache/routing guards · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `scripts/run-coordinator-tests.py --race --coverprofile` over every package except the top-level `e2e` integration package (`coordinator/internal/e2e` and `e2e/testbed/...` run), isolated API/registry shards and runner guards, with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence; total statement coverage in the job summary, merged `coverage.out` and timing evidence kept 14 days · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh`, then `cargo llvm-cov` (0.9.1) line coverage in the job summary · **Provider Unit Tests** (macOS 12-vcpu) — full debug test build, matched Metal, serial/fresh-process provider tests and installer checks · **Provider SDK Tests** (independent macOS 12-vcpu) — full nested test build and all required numerical/SDK selectors through checked wrappers · **Provider Prompt Parity** (independent macOS 12-vcpu) — `verify-prompt-parity.sh`, pinned Swift/Go/Rust vectors and sustained sidecar load proof · **Provider Tests** (Linux aggregate) — requires all three provider lanes to succeed · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper` · **Console UI Lint & Build** — Node 22, `npm ci`, lint, vitest, and Next.js build |
+| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — release/script checks and offline provider CI/cache/routing guards · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `scripts/run-coordinator-tests.py --race --coverprofile` over every package except the top-level `e2e` integration package (`coordinator/internal/e2e` and `e2e/testbed/...` run), isolated API/registry shards and runner guards, with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence; total statement coverage in the job summary, merged `coverage.out` and timing evidence kept 14 days · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh`, then `cargo llvm-cov` (0.9.1) line coverage in the job summary · **Provider Unit Tests** (macOS 12-vcpu) — full debug test build, matched Metal, serial/fresh-process provider tests and installer checks · **Provider SDK Tests** (independent macOS 12-vcpu) — full nested test build and all required numerical/SDK selectors through checked wrappers · **Provider Prompt Parity** (independent macOS 12-vcpu) — `verify-prompt-parity.sh`, pinned Swift/Go/Rust vectors and sustained sidecar load proof · **Provider Tests** (Linux aggregate) — enforces the component-routing contract above · **Swift Build + Cache** (push only) — release build of `darkbloom` + `darkbloom-fan-helper` · **Console UI Lint & Build** — Node 22, `npm ci`, lint, vitest, and Next.js build |
 | [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 75 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (blocking; explicit SSD opt-in and repeat demand) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`) |
 | [`.github/workflows/benchmarks.yml`](../../.github/workflows/benchmarks.yml) | PR, gated by the `benchmarks` environment (manual approval) | **E2E Benchmarks** — `go test ./e2e/ -count=1 -v -timeout 40m -p=1 -run 'TestBenchmark'`, posts `BENCHMARK_MD_PATH` as a PR comment |
 | [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml) | tag `v*`, manual | Provider release; see [`../operations/provider-release.md`](../operations/provider-release.md) |

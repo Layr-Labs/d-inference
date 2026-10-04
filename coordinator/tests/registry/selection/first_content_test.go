@@ -2,6 +2,7 @@ package selection_test
 
 import (
 	"fmt"
+	"math"
 	"math/rand"
 	"slices"
 	"testing"
@@ -121,5 +122,19 @@ func TestAffinityStableAndSubordinateToWork(t *testing.T) {
 	got := production.Rank(pool).Choose(pool, 0, "scoped-prefix")
 	if pool[got.Winner].ProviderID == winner {
 		t.Fatal("affinity overrode service work")
+	}
+}
+
+// A NaN rank later in the pool must not replace a finite fast-band reference:
+// every comparison against NaN is false, which would leave no eligible winner.
+func TestRankKeepsFiniteBestWhenLaterRankIsNaN(t *testing.T) {
+	pool := []production.Candidate{
+		{ProviderID: "finite", ExpectedMs: 100},
+		{ProviderID: "nan", ExpectedMs: math.NaN()},
+	}
+	ranking := production.Rank(pool)
+	decision := ranking.Choose(pool, 0, "")
+	if ranking.NearTieSize != 1 || ranking.Choices != 1 || decision.Winner != 0 || decision.Path != production.UniqueMin {
+		t.Fatalf("ranking=%+v decision=%+v; want the finite candidate as the unique minimum", ranking, decision)
 	}
 }

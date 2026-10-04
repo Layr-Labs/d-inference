@@ -2,16 +2,20 @@ package conformance
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/tests/internal/testkit"
 )
 
 // Registration is the existing authenticated metadata mutation seam; there is
@@ -21,12 +25,9 @@ func (s Suite) TestOpenRouterConformanceReadinessFeed(t *testing.T) {
 	const publishingKey = "fixture-only-publishing-key"
 	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", publishingKey)
 	f := s.newORFixture(t, true)
-	manifest := s.NewManifest()
-	manifest.ModelID = f.model
 	// The fixture v1 bytes are immutable. Register a new revision, then replay
 	// the identical v2 bytes while changing only launch metadata.
-	manifest.Version = "v2"
-	manifest.R2Prefix = s.ModelR2Prefix(f.model, manifest.Version)
+	manifest := orManifest(f.model, "v2")
 	var manifestReads atomic.Int32
 	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -148,6 +149,24 @@ func (s Suite) TestOpenRouterConformanceReadinessFeed(t *testing.T) {
 	}
 	if manifestReads.Load() != 3 {
 		t.Fatalf("manifest reads=%d", manifestReads.Load())
+	}
+}
+
+// orManifest lists one 123-byte config file, the length the registration CDN
+// fixture reports for it. Its aggregate is the SHA-256 of that file's raw digest
+// bytes, computed independently of the production manifest hash aggregator like
+// the catalog contract fixtures.
+func orManifest(model, version string) *store.ModelManifest {
+	return &store.ModelManifest{
+		SchemaVersion:   1,
+		ModelID:         model,
+		Version:         version,
+		R2Prefix:        testkit.ModelPrefix(model, version),
+		AggregateSHA256: fmt.Sprintf("%x", sha256.Sum256(bytes.Repeat([]byte{0xaa}, 32))),
+		TotalSizeBytes:  123,
+		FileCount:       1,
+		Files:           []store.ManifestFile{{Path: "config.json", SizeBytes: 123, SHA256: testHash, Role: "config"}},
+		CreatedAt:       time.Now(),
 	}
 }
 

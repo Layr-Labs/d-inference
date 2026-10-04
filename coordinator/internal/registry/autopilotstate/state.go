@@ -47,6 +47,12 @@ func (s *State) Managed(state *protocol.ModelAutopilotState, session string, now
 	return Consented(state) && (state.Paused || s.ControlActive(state, session, now))
 }
 
+// managedNow is Managed for the same per-request checks as Lease.activeNow: a
+// pause or a provider without a matching grant is decided without the clock.
+func (s *State) managedNow(state *protocol.ModelAutopilotState, session string, now func() time.Time) bool {
+	return Consented(state) && (state.Paused || s.control().activeNow(state, session, now))
+}
+
 func (s *State) hasPending() bool { return s != nil && s.pending != nil }
 
 func (s *State) Transition(state *protocol.ModelAutopilotState) bool {

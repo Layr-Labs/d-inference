@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — routing scan cost
+
+- Reduce the per-request provider scan cost after the coordinator reorganization. Autopilot eligibility reads the clock only for a provider holding a matching control grant, candidate ranking reads the projected pool in place, and candidate storage fills one allocation size class. Routing outcomes are unchanged.
+
 ## Unreleased — cache reliability
 
 - Remove caller-supplied top-level `user` and generic `metadata` from provider-bound inference bodies across direct, queued and retried requests. Preserve nested content, inference controls, coordinator response metadata, authenticated account ownership and cache controls; this does not anonymize prompt content.

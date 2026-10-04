@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the
@@ -779,7 +779,7 @@ The normal coordinator build also supports `coordinator --migrate-only`. It
 requires `EIGENINFERENCE_DATABASE_URL`, runs store migrations, and exits without
 starting the server or seeding an admin key. Container execution must override
 the default MicroMDM entrypoint script; see the
-[deployment procedure](../operations/coordinator-deploy.md#optional-prepare-compatible-migrations-before-draining).
+[schema migration runbook](../operations/schema-migration.md#4-apply-the-migrations).
 
 The [startup measurement tool](../operations/coordinator-startup-measurement.md)
 requires Python 3.10+ and no third-party packages or build step. Its tests use

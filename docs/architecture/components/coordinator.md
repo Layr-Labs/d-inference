@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-09-04
+> Last updated: 2026-10-04
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -80,8 +80,9 @@ failure in any step marked *fatal* exits the process before it listens.
    memory-store opt-in, mock billing with a live Stripe key, malformed media
    fetch or cache-routing values, an unknown trust level). Every variable is
    listed in [`../../reference/configuration.md`](../../reference/configuration.md).
-3. **Store** (*fatal*). Postgres when a DSN is set — connect, ping, run the
-   idempotent migration slice, seed the admin key — otherwise the memory store
+3. **Store** (*fatal*). Postgres when a DSN is set — connect, ping, apply pending
+   goose migrations ([schema lifecycle](../schema-lifecycle.md)), seed the
+   admin key — otherwise the memory store
    with its 15 minute pruner. Provider sessions orphaned by the previous
    process are closed, best-effort, with a 10 second budget.
 4. **Registry.** `registry.New`, trust floor, dedicated models, quality
@@ -152,7 +153,7 @@ flowchart TD
 
 | Symptom | Likely cause | Where to look |
 |---|---|---|
-| Process exits before binding the port | A `Check` failure, store connect/migration error, missing release inventory, or an unusable trust-reuse journal | The first `Error` log line; [`../storage.md#failure-modes`](../storage.md#failure-modes) |
+| Process exits before binding the port | A `Check` failure, store connect/migration error, missing release inventory, or an unusable trust-reuse journal | The first `Error` log line; [`../storage.md#failure-modes`](../storage.md#failure-modes), [`../schema-lifecycle.md#failure-modes`](../schema-lifecycle.md#failure-modes) |
 | Fleet 429s for minutes after a deploy | Empty registry until providers reconnect and re-attest; release-policy enforcement bites only after its boot grace ([`EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE`](../../reference/configuration.md#release-policy-version-floor-and-binary-hashes)) | [`../../operations/release-policy-rollout.md`](../../operations/release-policy-rollout.md) |
 | CPU saturation under retry storms | Routing scans per dispatch attempt; bounded by `EIGENINFERENCE_ROUTING_CONCURRENCY` | [`../scheduling.md`](../scheduling.md) |
 | Streams cut during a restart | Drain grace shorter than the longest generation | `EIGENINFERENCE_DRAIN_GRACE` in [`../../reference/configuration.md`](../../reference/configuration.md) |

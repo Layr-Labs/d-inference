@@ -1,6 +1,6 @@
 # Darkbloom docs — how this documentation is organised and maintained
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-04
 
 Rules for anyone — human or agent — who reads, writes, or checks a file under
 `docs/`. The code is the source of truth; a doc that disagrees with the code is
@@ -174,7 +174,7 @@ and tests both historical-link handling and date-preserving, idempotent stamping
 | Experimental model Autopilot policy, rollout or enrollment (`coordinator/registry/autopilot*`, `coordinator/api/autopilot*`, provider runtime/CLI `Autopilot/`) | `architecture/model-autopilot.md`, `operations/model-autopilot.md`; apply the configuration, CLI, protocol and API rows for those surfaces too |
 | Trust level, attestation, enrollment, encryption | `architecture/security/*.md`; `provider/attestation.md`; `consumer/verification.md`; `threat-model.yaml` |
 | Pricing, ledger, payouts, referral | `architecture/billing.md`, `reference/pricing-model.md`, `consumer/billing.md` |
-| Store schema / migration | `architecture/storage.md` |
+| Store schema / migration | `architecture/schema-lifecycle.md` (versions, kinds, locks); `architecture/storage.md` (tables); `operations/schema-migration.md` if the change affects the production procedure or rollback rules |
 | Provider version bump (`ProviderCore.version` ↔ `LatestProviderVersion`) | `operations/provider-release.md`; `CHANGELOG.md` |
 | Build, test, CI, or script | `developer/build.md`, `developer/test.md`; `operations/` runbook that invokes it |
 | New model family or engine capability | `architecture/inference.md`, `consumer/models.md`, `provider/hardware-requirements.md` |

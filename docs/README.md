@@ -1,6 +1,6 @@
 # Darkbloom documentation
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
 > Darkbloom is a decentralized private-inference network: an OpenAI- and
 > Anthropic-compatible HTTP API served by a Go coordinator that routes each
@@ -42,7 +42,8 @@
 - [`architecture/prefix-cache.md`](architecture/prefix-cache.md): KV layouts, encrypted SSD checkpoint streaming, exact prefix reuse by model family, and explicit resident-cache modes.
 - [`architecture/prompt-contract-sidecar.md`](architecture/prompt-contract-sidecar.md): the Rust sidecar that derives token boundaries for cache routing, and its failure isolation.
 - [`architecture/model-registry.md`](architecture/model-registry.md): model manifests, aliases, publishing, and provider downloads.
-- [`architecture/storage.md`](architecture/storage.md): coordinator persistence — Postgres schema, memory store, retention.
+- [`architecture/storage.md`](architecture/storage.md): coordinator persistence — Postgres tables, memory store, retention.
+- [`architecture/schema-lifecycle.md`](architecture/schema-lifecycle.md): how the Postgres schema changes — goose versions, migration kinds, locks and timeouts, failure modes.
 - [`architecture/billing.md`](architecture/billing.md): pricing, reservations, ledger, the platform fee (stated only here), Stripe deposits and payouts, referrals, base rewards.
 - [`architecture/telemetry.md`](architecture/telemetry.md): what telemetry exists, how the Go/Swift/TS mirrors stay symmetric, where it goes.
 - [`architecture/request-accounting.md`](architecture/request-accounting.md): unsampled incoming-request evidence, coverage, revision semantics, and normalized codes.
@@ -104,7 +105,7 @@
 - [`developer/navigation.md`](developer/navigation.md): find implementation and tests, choose descriptive filenames, and check path dependencies when moving files.
 - [`developer/build.md`](developer/build.md): build the coordinator, sidecar, provider, and UIs; toolchain pins.
 - [`developer/test.md`](developer/test.md): every test suite, what CI runs, how to run the e2e suite.
-- [`developer/database-migrations.md`](developer/database-migrations.md): add a numbered goose migration and regenerate the checked-in schema.
+- [`developer/database-migrations.md`](developer/database-migrations.md): choose the migration kind, add a numbered goose migration, change a column in two releases, regenerate the checked-in schema.
 - [`developer/threat-model-review.md`](developer/threat-model-review.md): configure full PR text scans against the threat model and non-blocking author feedback.
 - [`developer/serving-performance-qualification.md`](developer/serving-performance-qualification.md): measure and review exact serving profiles before promoting concurrency limits or prefill policy.
 
@@ -112,6 +113,7 @@
 
 - [`operations/README.md`](operations/README.md): index and the two rules that apply to every runbook.
 - [`operations/coordinator-deploy.md`](operations/coordinator-deploy.md): swap the production coordinator to a reviewed build, verify, roll back.
+- [`operations/schema-migration.md`](operations/schema-migration.md): back up, check, apply and verify goose migrations in production; the first goose cut-over; rollback rules.
 - [`operations/dev-environment.md`](operations/dev-environment.md): the GCP dev environment.
 - [`operations/provider-release.md`](operations/provider-release.md): cut a provider release — version bump, signing, notarization, hashing, registration, `latest/` publish, rollback.
 - [`operations/cache-routing-rollout.md`](operations/cache-routing-rollout.md): turn cache-aware routing on in production — percent ramp, verification, kill switch back to `off`.

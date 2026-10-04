@@ -21,6 +21,7 @@ type faultingSettler struct {
 	*memory.MemoryStore
 	afterCommit  bool
 	loseFirstAck bool
+	failThrough  int32
 	failing      atomic.Bool
 	calls        atomic.Int32
 	blockCall    int32
@@ -34,7 +35,7 @@ func (s *faultingSettler) FinalizeConsumerCharge(in store.ConsumerChargeSettleme
 		close(s.entered)
 		<-s.release
 	}
-	fail := s.failing.Load() || (s.loseFirstAck && call == 1)
+	fail := s.failing.Load() || call <= s.failThrough || (s.loseFirstAck && call == 1)
 	if fail && !s.afterCommit {
 		return store.ConsumerChargeResult{}, errSettlementUnavailable
 	}

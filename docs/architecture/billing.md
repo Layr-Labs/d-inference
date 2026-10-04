@@ -484,8 +484,9 @@ credit once in that process (`coordinator/api/inference/completion_financials.go
 `completionFinancials`).
 
 After graceful request/provider drain, `Owner.CloseResources`
-(`coordinator/api/inference/owner.go`) makes a final bounded reconciliation pass
-with a fresh context and waits for outstanding usage writes. Unresolved work
+(`coordinator/api/inference/owner.go`) retries pending settlements with bounded
+backoff until they clear or a fresh shutdown deadline expires, then waits for
+outstanding usage writes within that deadline. Unresolved work
 or expiration of the shutdown deadline is logged for operator reconciliation.
 
 Pending callbacks are in memory, not a durable outbox. A crash or exhausted

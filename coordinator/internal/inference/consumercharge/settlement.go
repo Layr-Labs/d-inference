@@ -112,11 +112,29 @@ func (e *Engine) Run(ctx context.Context, logger *slog.Logger) {
 	}
 }
 
-// Flush runs after completion producers have drained, independently of the
-// cancelled maintenance context. Remaining failures require operator recovery;
-// neither the queued input nor its downstream callback survives process exit.
+// Flush retries after completion producers have drained, independently of the
+// cancelled maintenance context. The deadline bounds recovery of queued inputs
+// and callbacks that would otherwise be lost on process exit.
 func (e *Engine) Flush(ctx context.Context, logger *slog.Logger) {
-	e.Maintain(ctx, logger)
+	delay := 100 * time.Millisecond
+	for ctx.Err() == nil {
+		e.Maintain(ctx, logger)
+		pending := false
+		e.pending.Range(func(_, _ any) bool {
+			pending = true
+			return false
+		})
+		if !pending {
+			return
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+		case <-timer.C:
+		}
+		timer.Stop()
+		delay = min(2*delay, time.Second)
+	}
 	e.pending.Range(func(key, value any) bool {
 		logger.Error("consumer settlement unresolved at shutdown; financial reconciliation required", "request_id", key)
 		return true

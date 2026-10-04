@@ -7,7 +7,7 @@ import (
 )
 
 func providerOrdinaryModelAllowedLocked(p *Provider, model string) bool {
-	return p.autopilotState.OrdinaryAllowed(p.ModelAutopilot, p.ID, model, time.Now())
+	return p.autopilotState.OrdinaryAllowed(p.ModelAutopilot, p.ID, model, time.Now)
 }
 
 func (r *Registry) providerPassesAutopilotGatesLocked(p *Provider, model protocol.ModelInfo, traits RequestTraits, now time.Time) bool {

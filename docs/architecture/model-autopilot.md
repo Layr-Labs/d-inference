@@ -1,6 +1,6 @@
 # Experimental model Autopilot
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
 Autopilot observes demand for an explicitly approved cached model inventory and
 can manage their memory residency during a separately enabled live rollout.
@@ -132,6 +132,10 @@ ownership. Only a matching acknowledged live lease transfers normal network
 cold-load/idle ownership. Shadow planning uses eligible consent hypothetically,
 without requiring a lease acknowledgement, and never reserves, fences or sends residency
 commands (`autopilotFleetSnapshotLocked`, `modelAutopilotController.tick`).
+Request routing checks lease ownership for every candidate and reads the clock
+only for a provider holding a matching grant
+([scan cost per candidate](routing.md#scan-cost-per-candidate)); an expired
+grant still stops managing the provider at its expiry instant.
 Renewals enqueue without waiting on sockets through each connection's bounded
 priority lane. A full queue does not extend that provider's coordinator lease;
 slow connections cannot serialize renewal of healthy peers or the planning tick.

@@ -511,6 +511,38 @@ vocabulary for stored rows: `none`, `unique_min`, `tie_queue`, `tie_pending`,
 use `tie_pending`; `cache_credit` requires a useful verified holder among work
 ties. The runner-up records the next first-content alternative.
 
+### Scan cost per candidate
+
+A reservation evaluates every provider advertising the model while it holds
+`Registry.mu` for reading, so work done per candidate is multiplied by fleet
+size. Three rules keep that work small; none changes a routing outcome.
+
+- **No clock read without a matching grant.** The Autopilot fence
+  (`RoutingBlocked` in `coordinator/internal/registry/autopilotstate/routing.go`,
+  `OrdinaryAllowed` in `coordinator/internal/registry/autopilotstate/inventory.go`)
+  compares a lease expiry only after every other lease condition holds
+  (`Lease.grantMatches`, `coordinator/internal/registry/autopilotstate/lease.go`).
+  A provider without a matching control grant is decided without calling the clock.
+- **Ranking reads candidates in place.** `Rank` and `Ranking.Choose`
+  (`coordinator/registry/selection/first_content.go`) index the projected pool
+  instead of copying each candidate on every pass, and `Project`
+  (`coordinator/registry/selection/project.go`) takes the forecast and cost
+  breakdown by pointer.
+- **Arena chunks fill one allocation size class.** `const ChunkSize = 22`
+  (`coordinator/internal/registry/candidatearena/arena.go`) is the largest
+  number of `Candidate` values (`coordinator/registry/scheduler.go`) that fits
+  the Go allocator's 32 KiB small-object class.
+  `TestCandidateArenaChunkFillsLargestSmallSizeClass`
+  (`coordinator/tests/registry/candidate_arena_test.go`) fails when the struct
+  changes size enough to need retuning.
+
+`BenchmarkReserveProviderEx_350x2`
+(`coordinator/tests/registry/reserve_bench_test.go`),
+`BenchmarkRequestPathSerial`
+(`coordinator/tests/registry/request_path_probe_test.go`) and
+`BenchmarkSelectRoutingCandidate`
+(`coordinator/tests/registry/candidate_selection_test.go`) measure this path.
+
 ### Hedged (speculative) dispatch
 
 A request that has not produced first content by its **speculative point**

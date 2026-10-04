@@ -11,7 +11,7 @@ func selectionCandidate(c *routingCandidate) selection.Candidate {
 	if c.provider != nil {
 		id = c.provider.ID
 	}
-	return selection.Project(id, c.firstContent, c.breakdown, c.cacheEstimatedTTFTSavedMs, c.cacheEvidenceWeight, c.cacheAffinityEligible)
+	return selection.Project(id, &c.firstContent, &c.breakdown, c.cacheEstimatedTTFTSavedMs, c.cacheEvidenceWeight, c.cacheAffinityEligible)
 }
 
 // selectFirstContentCandidate projects immutable candidate values into policy

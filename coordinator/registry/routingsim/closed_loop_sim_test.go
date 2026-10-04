@@ -452,19 +452,19 @@ func (s *loopSim) complete(lp *loopProvider, id string) {
 func (s *loopSim) heartbeat(lp *loopProvider) {
 	lp.seq++
 	running := len(lp.inFlight)
-	zero := int64(0)
-	queued, partial := zero, zero
+	slotState, status := "idle", "idle"
+	if running > 0 {
+		slotState, status = "running", "serving"
+	}
+	var queued, partial int64
 	slot := protocol.BackendSlotCapacity{
 		Model:      loopModel,
-		State:      "idle",
+		State:      slotState,
 		NumRunning: running,
 		Telemetry: &protocol.SlotTelemetry{
 			QueuedPrefillTokens: &queued,
 			PartialPrefillRows:  &partial,
 		},
-	}
-	if running > 0 {
-		slot.State = "running"
 	}
 	initialized := lp.ewmaInitialized
 	slot.Telemetry.EWMAInitialized = &initialized
@@ -486,10 +486,6 @@ func (s *loopSim) heartbeat(lp *loopProvider) {
 			}
 		}
 		slot.PerformanceMeasurements = m
-	}
-	status := "idle"
-	if running > 0 {
-		status = "serving"
 	}
 	model := loopModel
 	msg := &protocol.HeartbeatMessage{

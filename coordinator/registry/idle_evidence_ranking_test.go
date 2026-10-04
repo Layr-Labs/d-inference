@@ -33,16 +33,17 @@ type idleEvidenceFleet struct {
 	staticDecode float64
 	prefill      float64 // 0: the provider reports no prefill measurement
 	decode       float64
-	decodeAge    time.Duration
-	prompt       int
+	// measurementAge dates both the prefill and the decode measurement.
+	measurementAge time.Duration
+	prompt         int
 }
 
 func randomIdleEvidenceFleet(rng *rand.Rand) idleEvidenceFleet {
 	f := idleEvidenceFleet{
-		staticDecode: float64(rng.Intn(3)) * (10 + 90*rng.Float64()), // 0 means not registered
-		decode:       1 + 199*rng.Float64(),
-		decodeAge:    staleIdleDecodeAge + time.Duration(rng.Int63n(int64(12*time.Hour))) + time.Millisecond,
-		prompt:       1 + rng.Intn(8000),
+		staticDecode:   float64(rng.Intn(3)) * (10 + 90*rng.Float64()), // 0 means not registered
+		decode:         1 + 199*rng.Float64(),
+		measurementAge: staleIdleDecodeAge + time.Duration(rng.Int63n(int64(12*time.Hour))) + time.Millisecond,
+		prompt:         1 + rng.Intn(8000),
 	}
 	if rng.Intn(2) == 0 {
 		f.prefill = 100 + 4900*rng.Float64()
@@ -70,11 +71,11 @@ func idleEvidenceProvider(t *testing.T, r *Registry, id string, f idleEvidenceFl
 		prefill := f.prefill
 		slot.ObservedPrefillTPS = prefill
 		slot.Telemetry.IsolatedPrefillTPS = &prefill
-		measurement.rate, measurement.observedAfter = prefill, now.Add(-f.decodeAge)
+		measurement.rate, measurement.observedAfter = prefill, now.Add(-f.measurementAge)
 	}
 	if withDecode {
 		slot.ObservedDecodeTPS = f.decode
-		measurement.decodeRate, measurement.decodeObservedAfter = f.decode, now.Add(-f.decodeAge)
+		measurement.decodeRate, measurement.decodeObservedAfter = f.decode, now.Add(-f.measurementAge)
 	}
 	p.firstContentMeasurements = map[string]firstContentMeasurement{idleEvidenceModel: measurement}
 	return p
@@ -113,7 +114,7 @@ func TestIdleDecodeMeasurementAgeNeverRanksBelowNoMeasurement(t *testing.T) {
 			if withTPS < withoutTPS || measured.firstContent.ExpectedMs > unmeasured.firstContent.ExpectedMs {
 				t.Fatalf("seed %d case %d: %+v\nmeasured decode aged %s ranks below no measurement: "+
 					"effective %.2f < %.2f tok/s or expected %.1f > %.1f ms",
-					seed, i, f, f.decodeAge, withTPS, withoutTPS,
+					seed, i, f, f.measurementAge, withTPS, withoutTPS,
 					measured.firstContent.ExpectedMs, unmeasured.firstContent.ExpectedMs)
 			}
 		}
@@ -132,7 +133,7 @@ func TestIdleDecodeMeasurementAgeDoesNotLoseSelection(t *testing.T) {
 	for range 10 {
 		r.tpsRegistry.Record(idleEvidenceModel, testRegisterMessage().Hardware.ChipFamily, 52)
 	}
-	f := idleEvidenceFleet{decode: 5, decodeAge: staleIdleDecodeAge + time.Minute, prompt: 1000}
+	f := idleEvidenceFleet{decode: 5, measurementAge: staleIdleDecodeAge + time.Minute, prompt: 1000}
 	measured := idleEvidenceProvider(t, r, "measured", f, true, now)
 	idleEvidenceProvider(t, r, "unmeasured", f, false, now)
 	wins := 0
@@ -150,7 +151,7 @@ func TestIdleDecodeMeasurementAgeDoesNotLoseSelection(t *testing.T) {
 	}
 	if wins == 0 {
 		t.Fatalf("the provider with a %s-old decode measurement of %.0f tok/s never won against an identical provider with none",
-			f.decodeAge, f.decode)
+			f.measurementAge, f.decode)
 	}
 }
 
@@ -181,7 +182,7 @@ func TestExploredIdleProviderIsCostedAtFleetMedian(t *testing.T) {
 			for range 10 {
 				r.tpsRegistry.Record(idleEvidenceModel, testRegisterMessage().Hardware.ChipFamily, fleetMedian)
 			}
-			f := idleEvidenceFleet{decode: 5, decodeAge: tc.age, prefill: 2000, prompt: 1000}
+			f := idleEvidenceFleet{decode: 5, measurementAge: tc.age, prefill: 2000, prompt: 1000}
 			p := idleEvidenceProvider(t, r, "explored", f, tc.withDecode, now)
 			pr := &PendingRequest{Model: idleEvidenceModel, EstimatedPromptTokens: f.prompt, RequestedMaxTokens: 256,
 				FirstContentDeadline: now.Add(10 * time.Second)}
@@ -190,7 +191,7 @@ func TestExploredIdleProviderIsCostedAtFleetMedian(t *testing.T) {
 				t.Fatalf("idle provider with %s-old evidence is feasible: %+v", tc.age, c.firstContent)
 			}
 			if got := resolveEffectiveTPS(&c.snapshot); got != fleetMedian {
-				t.Fatalf("explored provider costed at %.1f tok/s, want the fleet median %.1f (decode measurement age %s)",
+				t.Fatalf("explored provider costed at %.1f tok/s, want the fleet median %.1f (measurement age %s)",
 					got, fleetMedian, tc.age)
 			}
 		})

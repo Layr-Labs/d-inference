@@ -241,9 +241,8 @@ public enum BackendParityHarness {
     /// model-level capability claims read off it. `@unchecked Sendable` by the
     /// same ownership-transfer argument as `MTPProductionModelBundle`: it is
     /// built once inside `container.perform` and only ever used from the
-    /// serialized engine construction that follows.
-    // Internal, not private, so unit tests can drive the probes with a
-    // scripted engine and no model.
+    /// serialized engine construction that follows. Internal (not private)
+    /// so unit tests can drive the probes with a scripted engine and no model.
     struct ServingModel: @unchecked Sendable {
         let model: any LanguageModel
         let tokenizer: any MLXLMCommon.Tokenizer

@@ -14,7 +14,7 @@ import Testing
 struct ArrivalInvarianceMeasurementTests {
     private typealias Benchmark = ArrivalInvarianceBenchmark
 
-    private let facts = ArrivalInvarianceBenchmark.ModelFacts(
+    private let facts = Benchmark.ModelFacts(
         baseTokens: [10, 11, 12, 13, 14], weightBytes: 0)
 
     /// Each request gets tokens derived from its id, in two deltas, then a
@@ -33,13 +33,13 @@ struct ArrivalInvarianceMeasurementTests {
     private func measuredRow(
         row: Int, generated: Int, first: UInt64, last: UInt64, finished: UInt64,
         tokens: [Int]
-    ) -> ArrivalInvarianceBenchmark.MeasuredRow {
-        ArrivalInvarianceBenchmark.MeasuredRow(
+    ) -> Benchmark.MeasuredRow {
+        Benchmark.MeasuredRow(
             report: ArrivalInvarianceBenchmarkReport.Row(
                 row: row, promptTokens: 4, tokenArrivalTimesMs: [], scheduledDelayMs: 0,
                 submittedAtMs: 0, arrivalErrorMs: 0, ttftMs: 0, decodeTokensPerSecond: 0,
                 generatedTokens: generated, completedAtMs: 0,
-                tokenChecksum: ArrivalInvarianceBenchmark.checksum(tokens)),
+                tokenChecksum: Benchmark.checksum(tokens)),
             tokenIDs: tokens,
             firstTokenAt: first,
             lastTokenAt: last,
@@ -140,7 +140,7 @@ struct ArrivalInvarianceMeasurementTests {
     @Test("one topology submits tiled prompts at their offsets and records every row")
     func measureTopology() async throws {
         let engine = countingEngine()
-        let pattern = ArrivalInvarianceBenchmark.PatternDefinition(
+        let pattern = Benchmark.PatternDefinition(
             name: "pair", delaysMs: [0, 5])
         let sample = try await Benchmark.measure(
             engine: engine, facts: facts, pattern: pattern, promptLengths: [3, 4],
@@ -178,7 +178,7 @@ struct ArrivalInvarianceMeasurementTests {
     @Test("a topology that misses tolerance on every attempt fails with fresh request ids")
     func measureOutOfTolerance() async throws {
         let engine = countingEngine(gap: .zero)
-        let pattern = ArrivalInvarianceBenchmark.PatternDefinition(
+        let pattern = Benchmark.PatternDefinition(
             name: "tight", delaysMs: [0, 0])
         do {
             _ = try await Benchmark.measure(
@@ -186,7 +186,7 @@ struct ArrivalInvarianceMeasurementTests {
                 decodeTokens: 3, iteration: 1, requestIDBase: 100, toleranceMs: 1e-9,
                 maxAttempts: 2, enforceTolerance: true)
             Issue.record("expected an arrival tolerance failure")
-        } catch let error as ArrivalInvarianceBenchmark.BenchmarkError {
+        } catch let error as Benchmark.BenchmarkError {
             guard case .arrivalOutOfTolerance(
                 let name, let iteration, let observed, let tolerance, let attempts) = error
             else {
@@ -205,7 +205,7 @@ struct ArrivalInvarianceMeasurementTests {
     @Test("without enforcement the first attempt is kept even when arrivals are late")
     func measureWithoutEnforcement() async throws {
         let engine = countingEngine(gap: .zero)
-        let pattern = ArrivalInvarianceBenchmark.PatternDefinition(name: "warm", delaysMs: [0])
+        let pattern = Benchmark.PatternDefinition(name: "warm", delaysMs: [0])
         let sample = try await Benchmark.measure(
             engine: engine, facts: facts, pattern: pattern, promptLengths: [2],
             decodeTokens: 3, iteration: 0, requestIDBase: 7, toleranceMs: 1e-9,
@@ -220,7 +220,7 @@ struct ArrivalInvarianceMeasurementTests {
         _ events: [CBv2Event]
     ) async -> Error? {
         let engine = ScriptedBenchmarkEngine { _ in .events(events, gap: .zero) }
-        let pattern = ArrivalInvarianceBenchmark.PatternDefinition(name: "one", delaysMs: [0])
+        let pattern = Benchmark.PatternDefinition(name: "one", delaysMs: [0])
         do {
             _ = try await Benchmark.measure(
                 engine: engine, facts: facts, pattern: pattern, promptLengths: [2],
@@ -235,7 +235,7 @@ struct ArrivalInvarianceMeasurementTests {
     @Test("a row with no tokens, a wrong terminal or a short stream is refused")
     func rowValidation() async throws {
         let noTokens = await singleRowFailure(decodeTokens: 2, [scriptedFinish(.length)])
-        guard case .noTokens(0)? = noTokens as? ArrivalInvarianceBenchmark.BenchmarkError else {
+        guard case .noTokens(0)? = noTokens as? Benchmark.BenchmarkError else {
             Issue.record("expected noTokens, got \(String(describing: noTokens))")
             return
         }
@@ -243,7 +243,7 @@ struct ArrivalInvarianceMeasurementTests {
         let stopped = await singleRowFailure(
             decodeTokens: 2, [scriptedDelta([1, 2]), scriptedFinish(.stop)])
         guard case .unexpectedFinish(0, let stopReason)? =
-            stopped as? ArrivalInvarianceBenchmark.BenchmarkError
+            stopped as? Benchmark.BenchmarkError
         else {
             Issue.record("expected unexpectedFinish, got \(String(describing: stopped))")
             return
@@ -252,7 +252,7 @@ struct ArrivalInvarianceMeasurementTests {
 
         let unterminated = await singleRowFailure(decodeTokens: 2, [scriptedDelta([1, 2])])
         guard case .unexpectedFinish(0, let missingReason)? =
-            unterminated as? ArrivalInvarianceBenchmark.BenchmarkError
+            unterminated as? Benchmark.BenchmarkError
         else {
             Issue.record("expected unexpectedFinish, got \(String(describing: unterminated))")
             return
@@ -262,7 +262,7 @@ struct ArrivalInvarianceMeasurementTests {
         let short = await singleRowFailure(
             decodeTokens: 3, [scriptedDelta([1, 2]), scriptedFinish(.length)])
         guard case .unexpectedTokenCount(0, 3, 2)? =
-            short as? ArrivalInvarianceBenchmark.BenchmarkError
+            short as? Benchmark.BenchmarkError
         else {
             Issue.record("expected unexpectedTokenCount, got \(String(describing: short))")
             return
@@ -272,7 +272,7 @@ struct ArrivalInvarianceMeasurementTests {
     @Test("a submit refusal from the engine is passed through unchanged")
     func submitRefusal() async {
         let engine = ScriptedBenchmarkEngine { _ in .refuse("pool full") }
-        let pattern = ArrivalInvarianceBenchmark.PatternDefinition(name: "one", delaysMs: [0])
+        let pattern = Benchmark.PatternDefinition(name: "one", delaysMs: [0])
         do {
             _ = try await Benchmark.measure(
                 engine: engine, facts: facts, pattern: pattern, promptLengths: [2],
@@ -288,7 +288,7 @@ struct ArrivalInvarianceMeasurementTests {
 
     @Test("every benchmark error names the row, the counts or the topology")
     func errorDescriptions() {
-        typealias Failure = ArrivalInvarianceBenchmark.BenchmarkError
+        typealias Failure = Benchmark.BenchmarkError
         #expect(Failure.invalidPromptLengths.description
             == "arrival width must be 1...16 and prompt lengths must contain that many integers >= 2")
         #expect(Failure.noTokens(3).description == "row 3 produced no tokens")
@@ -313,11 +313,11 @@ struct ArrivalInvarianceMeasurementTests {
         ]
         for (width, lengths) in cases {
             do {
-                _ = try await ArrivalInvarianceBenchmark.run(
+                _ = try await Benchmark.run(
                     modelID: "fixture", modelDirectory: missing, promptLengths: lengths,
                     width: width, gemmaOptimizations: GemmaOptimizationSettings())
                 Issue.record("width \(width) with \(String(describing: lengths)) was accepted")
-            } catch let error as ArrivalInvarianceBenchmark.BenchmarkError {
+            } catch let error as Benchmark.BenchmarkError {
                 guard case .invalidPromptLengths = error else {
                     Issue.record("unexpected error: \(error)")
                     continue

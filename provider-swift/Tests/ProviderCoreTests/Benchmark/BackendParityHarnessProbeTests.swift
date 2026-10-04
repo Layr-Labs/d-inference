@@ -62,8 +62,8 @@ struct BackendParityHarnessProbeTests {
     private func serving(
         packed: Bool = false,
         vision: Bool = false
-    ) -> BackendParityHarness.ServingModel {
-        BackendParityHarness.ServingModel(
+    ) -> Harness.ServingModel {
+        Harness.ServingModel(
             model: ParityProbeStubModel(),
             tokenizer: ParityProbeTokenizer(template: nil),
             claimsPackedPrefill: packed,
@@ -72,8 +72,8 @@ struct BackendParityHarnessProbeTests {
             spanEmbedding: nil)
     }
 
-    private func box(_ engine: ScriptedBenchmarkEngine) -> BackendParityHarness.EngineBox {
-        BackendParityHarness.EngineBox(
+    private func box(_ engine: ScriptedBenchmarkEngine) -> Harness.EngineBox {
+        Harness.EngineBox(
             engine: engine, kind: .paged, fallbackReason: nil, pagedPoolDType: "float16")
     }
 

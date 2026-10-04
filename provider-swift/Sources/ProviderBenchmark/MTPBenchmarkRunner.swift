@@ -466,9 +466,7 @@ public enum MTPBenchmarkRunner {
                         && $0.sampleCount > 0
                 })
                 let verifiedRequestedWork = !requireCostLearningEvidence
-                    && (metrics.rectangularVerificationRounds ?? 0)
-                        + (metrics.serialVerificationRounds ?? 0) > 0
-                    && metrics.acceptanceByPosition.count >= expectedDepth
+                    && hasVerifiedDraftWork(metrics, minimumDepth: expectedDepth)
                 guard measuredRequestedCost || verifiedRequestedWork else {
                     throw MTPBenchmarkError.invalidMetrics(
                         "\(mode.label), B=\(batchSize) did not measure requested depth/bucket")
@@ -502,19 +500,26 @@ public enum MTPBenchmarkRunner {
                         && $0.draftDepth > 0
                         && $0.sampleCount > 0
                 })
-                // Correctness certifies executed verification, not retention
-                // of a learning window cancelled at a request/token boundary.
-                // Performance still requires a measured positive-depth cost.
                 let verifiedPositiveWork = !requireCostLearningEvidence
-                    && (metrics.rectangularVerificationRounds ?? 0)
-                        + (metrics.serialVerificationRounds ?? 0) > 0
-                    && !metrics.acceptanceByPosition.isEmpty
+                    && hasVerifiedDraftWork(metrics, minimumDepth: 1)
                 guard measuredPositiveCost || verifiedPositiveWork else {
                     throw MTPBenchmarkError.invalidMetrics(
                         "adaptive B=\(batchSize) lacks positive-depth cost evidence for requested bucket \(expectedBucket)")
                 }
             }
         }
+    }
+
+    /// Correctness certifies executed verification, not retention of a
+    /// learning window cancelled at a request/token boundary: verification
+    /// ran and acceptance was tracked through `minimumDepth`. Performance
+    /// still requires a measured depth/bucket cost sample.
+    private static func hasVerifiedDraftWork(
+        _ metrics: MTPBenchmarkMetrics,
+        minimumDepth: Int
+    ) -> Bool {
+        (metrics.rectangularVerificationRounds ?? 0) + (metrics.serialVerificationRounds ?? 0) > 0
+            && metrics.acceptanceByPosition.count >= minimumDepth
     }
 
     private static func validateAutomaticDepthLimitFallback(

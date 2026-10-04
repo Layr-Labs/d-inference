@@ -1,6 +1,6 @@
 # First-content routing
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-04
 
 The coordinator selects providers by expected time to delivered content, with a
 separate conservative forecast for deadline feasibility. The selection policy applies by
@@ -143,11 +143,10 @@ minutes. Each rate is checked on its own. A provider that sent no rates at
 registration, or whose last measurement was slow, is therefore priced like a
 typical peer and can enter the 100 ms band. A reviewed profile point still comes
 first, and a missing median keeps the ordinary fallback ([rate
-order](routing.md#historical-cost-diagnostics)). A served request brings back
-the provider's own value for each rate that it renewed. A provider that is slow
-on every request needs the exploration backoff of PR #1270 to stop repeated
-median pricing; see the known limits in the rate order section. Ordinary ranking need not select it, and a served request need not
-refresh both measurements: cache reuse can leave isolated-prefill evidence
+order](routing.md#historical-cost-diagnostics), which also lists the known
+limits). A served request brings back the provider's own value for each rate
+that it renewed. Ordinary ranking need not select it, and a served request need
+not refresh both measurements: cache reuse can leave isolated-prefill evidence
 unchanged, as can an unchanged legacy EWMA. Exploration offers an opportunity,
 not guaranteed selection or recovery.
 

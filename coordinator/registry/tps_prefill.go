@@ -6,7 +6,7 @@ import "github.com/eigeninference/d-inference/coordinator/protocol"
 // same 50-sample ring per model and chip family as the decode store, and the
 // heartbeat feeds it at the same point. Routing reads PrefillMedian only to
 // price a provider that evidence exploration admits
-// (first_content_exploration.go).
+// (first_content_exploration_pricing.go).
 
 // RecordPrefill adds an isolated prefill rate for the model and chip family.
 func (r *TPSRegistry) RecordPrefill(model, chipFamily string, tps float64) {

@@ -901,6 +901,18 @@ gofmt -l .                                 # must print nothing
 golangci-lint run                          # .golangci.yml
 ```
 
+`TestReserveProviderExSnapshotAgeAndPending` in
+`coordinator/tests/registry/routing_context_test.go` bounds each heartbeat age
+by the scan or commit interval that produced it. Its preparation fixture also
+refreshes the heartbeat between those phases, checking that candidate summaries
+retain the scan evidence while the winner uses fresh commit evidence. The test
+preserves the pre-debit pending-count assertions and uses no sleeps or fixed
+elapsed-time tolerance. Repeat it with:
+
+```bash
+go test -race ./coordinator/tests/registry -run '^TestReserveProviderExSnapshotAgeAndPending$' -count=1000
+```
+
 CI writes the total statement coverage to the job summary and keeps
 `coverage.out` for 14 days as the `coordinator-coverage` artifact. The number
 is for information only. A low number does not fail the job.

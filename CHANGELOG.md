@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — routing scan cost
+
+- Reduce the per-request provider scan cost after the coordinator reorganization. Autopilot eligibility reads the clock only for a provider holding a matching control grant, candidate ranking reads the projected pool in place, and candidate storage fills one allocation size class. Routing outcomes are unchanged.
+
 ## Unreleased — provider service replacement
 
 - Wait for launchd to confirm removal of the previous provider service before installing or starting its replacement. Preserve stop/uninstall intent and report failed or timed-out removal without starting another service.

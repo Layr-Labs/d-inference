@@ -1,10 +1,29 @@
 # Build
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the
 operator’s live status or recovery evidence (`scripts/run-provider-tests.sh`).
+
+Pull-request CI selects expensive component jobs through
+`scripts/ci-component-paths.py`, called by `.github/workflows/component-changes.yml`.
+The detector checks out full history without persisted credentials and compares
+the PR head with its merge base against the event's base SHA. It uses a local,
+NUL-delimited Git diff, including both sides of renames and deleted paths, not
+the truncated GitHub changed-files API. Docs and `AGENTS.md` changes alone do
+not build Swift, Go, Rust or the console, or schedule E2E integration/benchmarks.
+Release Integrity and Docs Lint remain unconditional. Default-branch pushes
+retain full coverage; a new-branch push or manual invocation selects all lanes.
+Other pushes compare the event's before/after SHAs. Missing revisions fail
+detection rather than producing skip outputs.
+
+Component source, pinned SDK submodules, build actions and explicitly selected
+tooling activate their consumers. Protocol fixtures, prompt-contract producers,
+Rust sidecar dependencies and Go module pins also activate provider parity.
+Each CI workflow change exercises that workflow's lanes; changes to the shared
+detector exercise all callers. The existing push-only Swift cache job is unchanged.
+The separate release preparation workflow retains its existing triggers.
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -249,14 +268,15 @@ for first-run costs and rerun behavior.
 
 ## Parallel Provider CI Builds
 
-The ordinary CI workflow runs provider tests, nested SDK correctness gates, and
+When provider dependencies change, the CI workflow runs provider tests, nested SDK correctness gates, and
 production prompt parity as three independent macOS jobs. Each job owns a
 separate checkout, build directory, GPU, and unified-memory allocator. No job
 waits for another job's test outcome. The nested SDK job still builds all of its
 test products; a provider test build does not compile a dependency's tests.
-The existing required `Provider Tests` check is a small aggregate gate: it fails
-unless the unit, SDK, and parity lanes all succeed, including skipped/cancelled
-lanes. It does not serialize their work or change branch-protection settings.
+The existing required `Provider Tests` check is a small aggregate gate with
+[verified intentional-skip handling](test.md#component-ci-routing). Selected
+unit, SDK, and parity lanes must all succeed; unexpected skips or cancellation
+fail. It does not serialize their work or change branch-protection settings.
 
 `.github/actions/provider-ci-build/action.yml` builds each lane using
 `scripts/provider-ci-cache.py` (`keys`). Provider debug tests, SDK debug tests,

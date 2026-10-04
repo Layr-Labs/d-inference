@@ -13,7 +13,8 @@ func (r Ranking) affinityWinner(pool []Candidate, affinity string) int {
 	const domain = "cache-affinity-v1"
 	count, maxIDBytes := 0, 0
 	winner := -1
-	for i, candidate := range pool {
+	for i := range pool {
+		candidate := &pool[i]
 		if !r.equivalent(candidate) || !candidate.AffinityEligible {
 			continue
 		}
@@ -31,7 +32,8 @@ func (r Ranking) affinityWinner(pool []Candidate, affinity string) int {
 	copy(input[4:], domain)
 	var best, score [sha256.Size]byte
 	winner = -1
-	for i, candidate := range pool {
+	for i := range pool {
+		candidate := &pool[i]
 		if !r.equivalent(candidate) || !candidate.AffinityEligible {
 			continue
 		}

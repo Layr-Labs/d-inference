@@ -15,6 +15,7 @@ shapes under [`../reference/README.md`](../reference/README.md).
 | [app-attest-build-qualification.md](app-attest-build-qualification.md) | Approve exact signed builds, retry publication without rebuilding, and revoke durable qualifications |
 | [mdm-optional-rollout.md](mdm-optional-rollout.md) | Qualify and activate App Attest serving, then scoped Darkbloom enrollment removal |
 | [`coordinator-deploy.md`](coordinator-deploy.md) | Swap the production coordinator container to a reviewed build, verify, roll back |
+| [`schema-migration.md`](schema-migration.md) | Back up, check for long queries, apply and verify goose migrations; the first goose cut-over; rollback rules |
 | [`coordinator-startup-measurement.md`](coordinator-startup-measurement.md) | Measure post-stop candidate readiness, per-model routable capacity and optional disposable-test inference separately |
 | [`account-erasure.md`](account-erasure.md) | Erase an account's personal data (GDPR): plan, confirm, grace period, scrub, Stripe deletions, refused credits, replay after a restore, cancel |
 | [`global-payouts.md`](global-payouts.md) | Enable international bank payouts, verify bank arrival and reconcile uncertain transfers |

@@ -11,6 +11,8 @@ candidate/quote plans require routing or scheduling documentation. The guards
 supply every unrelated canonical document to ensure ownership or API-contract
 updates cannot satisfy another domain's requirement, then verify each permitted
 domain document satisfies it. Go test files remain excluded from these rules.
+Shared fixtures in `coordinator/tests/protocol/testdata/` retain the protocol
+documentation requirement because they define cross-language wire examples.
 
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the

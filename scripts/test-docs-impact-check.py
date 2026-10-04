@@ -282,10 +282,15 @@ class DocsImpactCheckTests(unittest.TestCase):
                 "coordinator/internal/inference/metrics/attempt_outcomes.go",
                 "coordinator/internal/inference/metrics/backend.go",
             ),
+            "protocol messages": (
+                "coordinator/tests/protocol/testdata/process_memory_wire.json",
+                "coordinator/tests/protocol/testdata/performance_capacity_wire_fixture.json",
+            ),
             "warm-pool and scheduling": (
                 "coordinator/registry/provider_eligibility.go",
                 "coordinator/registry/provider_eligibility_admit.go",
                 "coordinator/registry/provider_eligibility_vision.go",
+                "coordinator/registry/routing_eligibility.go",
                 "coordinator/registry/gate_evaluation.go",
                 "coordinator/registry/gate_preparation.go",
                 "coordinator/registry/queue_assignment.go",
@@ -312,8 +317,9 @@ class DocsImpactCheckTests(unittest.TestCase):
                     for document in rule["docs_any_of"]:
                         covered = self.run_check(source, *unrelated_docs, document)
                         self.assertEqual(covered.returncode, 0, covered.stdout + covered.stderr)
-                    ignored = self.run_check(source.removesuffix(".go") + "_test.go")
-                    self.assertEqual(ignored.returncode, 0, ignored.stdout + ignored.stderr)
+                    if source.endswith(".go"):
+                        ignored = self.run_check(source.removesuffix(".go") + "_test.go")
+                        self.assertEqual(ignored.returncode, 0, ignored.stdout + ignored.stderr)
 
     def test_mirrored_tests_do_not_become_production_impact_sources(self) -> None:
         result = self.run_check(

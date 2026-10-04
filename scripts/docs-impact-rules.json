@@ -94,6 +94,7 @@
       "name": "protocol messages",
       "source_patterns": [
         "coordinator/protocol/**",
+        "coordinator/tests/protocol/testdata/**",
         "coordinator/internal/wire/**",
         "coordinator/internal/provider/session/provider_drain_ack.go",
         "coordinator/internal/provider/session/provider_completion_barrier.go",
@@ -153,6 +154,7 @@
         "coordinator/registry/provider_lifecycle.go",
         "coordinator/registry/service_reservations.go",
         "coordinator/registry/provider_eligibility*.go",
+        "coordinator/registry/routing_eligibility.go",
         "coordinator/registry/gate_evaluation.go",
         "coordinator/registry/gate_preparation.go",
         "coordinator/registry/queue_assignment.go",

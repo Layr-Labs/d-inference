@@ -359,14 +359,14 @@ class CoordinatorRunnerTests(unittest.TestCase):
 
 
 class CoordinatorPushHookTests(unittest.TestCase):
-    def run_hook(self, go_exit):
+    def run_hook(self, go_exit, changed_files=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "coordinator").mkdir()
             binaries = root / "bin"
             binaries.mkdir()
             scripts = {
-                "git": "#!/bin/sh\nprintf '%s\\n' coordinator/tests/api/inference/contracts/example_test.go\n",
+                "git": "#!/bin/sh\ncat \"$DIFF_LIST\"\n",
                 "gofmt": "#!/bin/sh\nexit 0\n",
                 "go": "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$GO_CALLS\"\nexit \"$GO_TEST_EXIT\"\n",
             }
@@ -375,14 +375,18 @@ class CoordinatorPushHookTests(unittest.TestCase):
                 executable.write_text(source)
                 executable.chmod(0o755)
             calls = root / "go-calls"
+            changed = root / "changed-files"
+            changed.write_text("\n".join(changed_files or [
+                "coordinator/tests/api/inference/contracts/example_test.go",
+            ]) + "\n")
             env = dict(os.environ, PATH=str(binaries) + os.pathsep + os.environ["PATH"],
-                       GO_CALLS=str(calls), GO_TEST_EXIT=str(go_exit))
+                       GO_CALLS=str(calls), GO_TEST_EXIT=str(go_exit), DIFF_LIST=str(changed))
             result = subprocess.run(
                 ["bash", str(ROOT / ".githooks/pre-push"), "origin"], cwd=root, env=env,
                 input="refs/heads/topic " + "1" * 40 + " refs/heads/topic " + "2" * 40 + "\n",
                 text=True, capture_output=True, timeout=10,
             )
-            return result, calls.read_text().splitlines()
+            return result, calls.read_text().splitlines() if calls.exists() else []
 
     def test_standard_discovery_includes_all_mirrored_domains(self):
         result, calls = self.run_hook(0)
@@ -392,6 +396,13 @@ class CoordinatorPushHookTests(unittest.TestCase):
     def test_go_failure_blocks_push(self):
         result, calls = self.run_hook(13)
         self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, ["test ./coordinator/..."])
+        self.assertIn("Go tests failed", result.stdout)
+
+    def test_large_change_list_cannot_skip_go_failure(self):
+        changed = [f"coordinator/tests/api/inference/contracts/case_{i}_test.go" for i in range(20000)]
+        result, calls = self.run_hook(13, changed)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(calls, ["test ./coordinator/..."])
         self.assertIn("Go tests failed", result.stdout)
 

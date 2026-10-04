@@ -99,10 +99,9 @@ func TestDeviceApproveLogsOmitPersonalData(t *testing.T) {
 	assertLogsOmitPersonalData(t, logs)
 }
 
-func TestRejectedAdminAndWebhookLogsOmitPersonalData(t *testing.T) {
+func TestMDMWebhookLogsOmitPersonalData(t *testing.T) {
 	srv, _, logs := logCaptureServer(t)
 	srv.SetMDMWebhookSecret("webhook-secret")
-	t.Setenv(envStateExportEnabled, "true")
 
 	rejected := personalDataRequest(http.MethodPost, "/v1/mdm/webhook", "{}")
 	rejected.Header.Set("X-Webhook-Token", "wrong")
@@ -113,14 +112,24 @@ func TestRejectedAdminAndWebhookLogsOmitPersonalData(t *testing.T) {
 	accepted.Header.Set("X-Webhook-Token", "webhook-secret")
 	srv.Handler().ServeHTTP(httptest.NewRecorder(), accepted)
 
+	for _, want := range []string{"mdm webhook rejected", "mdm webhook received"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("missing log line %q:\n%s", want, logs.String())
+		}
+	}
+	assertLogsOmitPersonalData(t, logs)
+}
+
+func TestRejectedStateExportLogsOmitPersonalData(t *testing.T) {
+	srv, _, logs := logCaptureServer(t)
+	t.Setenv(envStateExportEnabled, "true")
+
 	export := personalDataRequest(http.MethodGet, "/v1/admin/state-export", "")
 	export.Header.Set("Authorization", "Bearer wrong")
 	srv.Handler().ServeHTTP(httptest.NewRecorder(), export)
 
-	for _, want := range []string{"mdm webhook rejected", "mdm webhook received", "state-export: unauthorized access attempt"} {
-		if !strings.Contains(logs.String(), want) {
-			t.Errorf("missing log line %q:\n%s", want, logs.String())
-		}
+	if want := "state-export: unauthorized access attempt"; !strings.Contains(logs.String(), want) {
+		t.Errorf("missing log line %q:\n%s", want, logs.String())
 	}
 	assertLogsOmitPersonalData(t, logs)
 }

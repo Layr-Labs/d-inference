@@ -196,24 +196,19 @@ done.
 2. Find the reason from `last_error`:
 
    ```mermaid
-   flowchart TD
+   flowchart LR
      classDef q fill:#fef3c7,stroke:#a16207,color:#422006
      classDef act fill:#dbeafe,stroke:#1d4ed8,color:#172554
      classDef hand fill:#ffedd5,stroke:#c2410c,color:#431407
 
-     A{"What does last_error say?"}:::q
-     A -- "non-zero balance, or<br/>cannot_delete_account_with_balance" --> B["A. Balance not zero"]:::hand
-     A -- "redaction jobs are<br/>not enabled" --> C["B. Redaction Jobs not enabled"]:::hand
-     A -- "may belong to the<br/>earlier Stripe account" --> D["C. Sessions of the old account"]:::hand
-     A -- "has been (status) since,<br/>or still too recent" --> E["D. Job stuck or past 105 days"]:::hand
-     A -- "retries exhausted<br/>after 8 attempts" --> F["E. Retries exhausted"]:::act
+     A{"last_error<br/>says"}:::q
+     A -- "non-zero balance" --> B["A. Balance not zero"]:::hand
+     A -- "not enabled" --> C["B. Redaction Jobs not enabled"]:::hand
+     A -- "earlier Stripe account" --> D["C. Sessions of the old account"]:::hand
+     A -- "has been ... since,<br/>still too recent" --> E["D. Job stuck or past 105 days"]:::hand
+     A -- "retries exhausted" --> F["E. Retries exhausted"]:::act
      A -- "anything else" --> G["F. Other refusal"]:::hand
-     B --> R["Re-queue (step 3)<br/>or close by hand (step 4)"]:::act
-     C --> R
-     D --> R
-     E --> R
-     F --> R
-     G --> R
+     B & C & D & E & F & G --> R["Re-queue (step 3)<br/>or close by hand (step 4)"]:::act
    ```
 
    | Reason | `last_error` | What to do |

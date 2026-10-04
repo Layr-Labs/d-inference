@@ -249,21 +249,28 @@ stores the outcome (`SaveErasureOutboxResult`), which also ends the lease.
 ```mermaid
 stateDiagram-v2
   classDef wait fill:#fef3c7,stroke:#a16207,color:#422006
-  classDef done fill:#dcfce7,stroke:#15803d,color:#14532d
+  classDef ok fill:#dcfce7,stroke:#15803d,color:#14532d
   classDef stop fill:#fee2e2,stroke:#b91c1c,color:#450a0a
 
   [*] --> pending: scrub writes the row
-  pending --> pending: retry with backoff, job still running, or too recent (wait 7 days)
-  pending --> done: delivered, or Stripe says not found
-  pending --> manual_action: definitive refusal, 8 failed attempts, stuck job, or deadline
-  manual_action --> pending: operator re-queues
+  state pending {
+    due --> waiting: retry, job running, or too recent
+    waiting --> due: next_at passes
+  }
+  pending --> done: delivered, or not found
+  pending --> manual_action: refusal, 8 failures, stuck job, deadline
   manual_action --> done: operator resolves by hand
   done --> [*]
 
-  class pending wait
-  class done done
+  class due wait
+  class waiting wait
+  class done ok
   class manual_action stop
 ```
+
+Inside `pending` a row is either due (`next_at` has passed) or waiting for
+`next_at`. An operator can also move a `manual_action` row back to `pending`
+([re-queue](../operations/account-erasure.md#resolve-manual_action-rows)).
 
 | Outcome (`outboxKind`) | Row after `outboxResult` | Counts an attempt |
 |---|---|---|

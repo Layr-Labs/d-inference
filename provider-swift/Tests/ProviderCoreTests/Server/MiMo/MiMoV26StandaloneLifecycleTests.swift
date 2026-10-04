@@ -154,12 +154,13 @@ final class MiMoV26StandaloneLifecycleTests: XCTestCase {
         try await super.tearDown()
     }
 
-    private func lane() throws {
-        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_SERIAL_NATIVE_TESTS")
+    private func lane(environment: [String: String] = ProcessInfo.processInfo.environment) throws {
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_SERIAL_NATIVE_TESTS", environment: environment)
     }
 
-    private func fixture() throws -> URL {
-        guard let source = ProcessInfo.processInfo.environment["MIMO_V26_SERIAL_LOAD_FIXTURES"] else {
+    private func fixture(environment: [String: String] = ProcessInfo.processInfo.environment) throws -> URL {
+        try lane(environment: environment)
+        guard let source = environment["MIMO_V26_SERIAL_LOAD_FIXTURES"] else {
             throw FixtureError.payloadFixtureRequired
         }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("mimo-serving-" + UUID().uuidString)
@@ -241,10 +242,11 @@ final class MiMoV26StandaloneLifecycleTests: XCTestCase {
     private func makeServer(
         mtp: MTPMode = .off, witness: NativeStandaloneWitness = .init(),
         scannerQuoted: Bool = false,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
         observe: (@Sendable (StandaloneNativeMiMoTestHooks.Phase, UUID?) async throws -> Void)? = nil
     ) async throws -> (StandaloneServer, String, MiMoV26NativeLoadRegistry) {
-        try lane()
-        let root = try fixture()
+        try lane(environment: environment)
+        let root = try fixture(environment: environment)
         let declaration = try XCTUnwrap(MiMoV26ServingLoad.inspect(directory: root))
         let id = "synthetic-native-standalone-" + UUID().uuidString
         let registry = MiMoV26NativeLoadRegistry()
@@ -429,6 +431,7 @@ final class MiMoV26StandaloneLifecycleTests: XCTestCase {
     }
 
     func testActualOnCallerUsesBuiltEmbeddedHeadAndRetiresWithoutWarmRebuild() async throws {
+        try lane()
         XCTAssertTrue(CBv2MTPConfig.envEnabled)
         let (server, id, registry) = try await makeServer(mtp: .on)
         try await server.ensureModelLoaded(id)
@@ -443,6 +446,23 @@ final class MiMoV26StandaloneLifecycleTests: XCTestCase {
         XCTAssertTrue(registry.retainedTransactionIDs.isEmpty)
         let after = await server.nativeView(id)
         XCTAssertTrue(after.stopped); XCTAssertEqual(after.charge, 0)
+    }
+
+    func testFixtureSetupRequiresOptInBeforeFilesOrServer() async {
+        for environment in [[:], ["MIMO_V26_SERIAL_LOAD_FIXTURES": "/unused-mimo-fixtures"]] {
+            XCTAssertThrowsError(try fixture(environment: environment)) {
+                XCTAssertTrue($0 is XCTSkip, "Disabled native tests must skip before fixture setup")
+            }
+        }
+        do {
+            _ = try await makeServer(mtp: .on, environment: ["MIMO_V26_SERIAL_NATIVE_TESTS": "1"])
+            XCTFail("An opted-in missing fixture must fail")
+        } catch {
+            guard case FixtureError.payloadFixtureRequired = error else {
+                return XCTFail("An opted-in missing fixture must fail, not skip: \(error)")
+            }
+        }
+        XCTAssertTrue(retainedServers.isEmpty)
     }
 
     func testPreWeightVetoUsesActualNoSubmissionUnwindAndKeepsUnrelatedCharge() async throws {
@@ -764,6 +784,7 @@ final class MiMoV26StandaloneLifecycleTests: XCTestCase {
     }
 
     func testNonforcedGracefulDrainLetsAlreadyBoundPreSubmitRequestFinish() async throws {
+        try lane()
         #if DEBUG
         let gate = NativeStandaloneGate()
         let (server, id, registry) = try await makeServer()
@@ -813,6 +834,7 @@ final class MiMoV26StandaloneLifecycleTests: XCTestCase {
     }
 
     func testForceStillClosesAndCancelsActualBoundPreSubmitWork() async throws {
+        try lane()
         #if DEBUG
         let gate = NativeStandaloneGate()
         let (server, id, registry) = try await makeServer()

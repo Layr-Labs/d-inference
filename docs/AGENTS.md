@@ -142,7 +142,8 @@ Line 3 of every doc:
 ## 6. Checks (`make docs-check`, CI job "Docs Lint")
 
 `scripts/docs-check.sh` fails on: a missing date-only stamp in the first 12
-lines (SHA suffixes are rejected); a relative link to a
+lines (the first metadata line outside code blocks/spans is used; SHA suffixes
+are rejected); a relative link outside code blocks/spans to a
 missing file; an inline-code citation of a repo path that does not exist
 (exempt: `reports/`, `releases/`, `design/`); and an orphan page that no other
 doc links to. Run it before opening a PR that touches `docs/`. It checks only
@@ -152,10 +153,15 @@ For a missing relative source link in a frozen report, release note, or design
 record, the checker recovers the most recent legacy header stamp from the
 document's committed history and verifies the source at that exact commit.
 For a record created with date-only stamps, it uses the commit that introduced
-the particular link. History follows renames, not copies; freshness dates are
-never mapped to commits. Complete local Git history, resolvable provenance, and
-the exact source target are required; otherwise validation fails. Current docs
-and relative documentation links still require an existing working-tree
+the particular link. Both current and historical extraction ignore links in
+code blocks/spans, and header examples after the actual freshness metadata are
+not provenance. History follows renames, not copies, and inspects merge trees:
+an inherited document follows its matching parent; a resolution follows the
+first parent with a continuous link, or introduces the link at the merge if no
+parent has it. Freshness dates are never mapped to commits. Complete local Git
+history, resolvable provenance, and the exact source target are required;
+otherwise validation fails. Current docs and relative documentation links still
+require an existing working-tree
 target. Keep frozen records unchanged and use the
 [historical source procedure](developer/historical-references.md) to navigate
 their original source. Docs Lint checks out full history for this validation

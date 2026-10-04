@@ -151,9 +151,12 @@ def json_bytes(value):
     return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
 
 
+def write_bytes(path, data):
+    with path.open("xb") as destination:
+        destination.write(data)
+
+
 def prepare(output, asymmetric=False, audio_source=None):
-    if output.exists() or output.is_symlink():
-        raise FileExistsError("fixture output already exists")
     config = configuration(asymmetric)
     if audio_source is not None:
         selected = json.loads((audio_source / "config.json").read_text())
@@ -172,8 +175,10 @@ def prepare(output, asymmetric=False, audio_source=None):
     inventory = tensors(config)
     if len(inventory) != 193:
         raise ValueError("synthetic tensor inventory changed")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.mkdir(mode=0o700, exist_ok=False)
     root = output / "tiny-bf16"
-    root.mkdir(parents=True, mode=0o700)
+    root.mkdir(mode=0o700)
     total = 0
     for name in sorted({entry["file"] for entry in inventory.values()}):
         header, payload = {"__metadata__": {"fixture": "synthetic-ci-not-model-evidence"}}, bytearray()
@@ -204,16 +209,16 @@ def prepare(output, asymmetric=False, audio_source=None):
         encoded += b" " * (-len(encoded) % 8)
         if 8 + len(encoded) + len(payload) >= (128 << 20 if audio_source is not None else 1 << 20):
             raise ValueError("synthetic shard exceeds fixture bound")
-        (root / name).write_bytes(struct.pack("<Q", len(encoded)) + encoded + payload)
+        write_bytes(root / name, struct.pack("<Q", len(encoded)) + encoded + payload)
         total += len(payload)
     config_data = json_bytes(config)
-    (root / "config.json").write_bytes(config_data)
-    (root / "model.safetensors.index.json").write_bytes(json_bytes({
+    write_bytes(root / "config.json", config_data)
+    write_bytes(root / "model.safetensors.index.json", json_bytes({
         "metadata": {"total_size": total}, "weight_map": {key: entry["file"] for key, entry in inventory.items()}}))
     template = "<|im_start|>x<think>{% if enable_thinking is false %}</think>{% endif %}"
     vocab = {"<unk>": 0, "<|im_end|>": 1, "<|im_start|>": 9, "<think>": 10,
              "</think>": 11, "x": 12, "<stop>": 13}
-    (root / "tokenizer.json").write_bytes(json_bytes({
+    write_bytes(root / "tokenizer.json", json_bytes({
         "version": "1.0", "truncation": None, "padding": None,
         "added_tokens": [{"id": token, "content": spelling, "single_word": False,
                           "lstrip": False, "rstrip": False, "normalized": False, "special": True}
@@ -221,9 +226,9 @@ def prepare(output, asymmetric=False, audio_source=None):
         "normalizer": None, "pre_tokenizer": {"type": "Whitespace"}, "post_processor": None,
         "decoder": {"type": "ByteLevel"}, "model": {"type": "BPE", "vocab": vocab, "merges": [],
             "unk_token": "<unk>", "byte_fallback": False, "fuse_unk": False}}))
-    (root / "tokenizer_config.json").write_bytes(json_bytes({"tokenizer_class": "PreTrainedTokenizerFast",
+    write_bytes(root / "tokenizer_config.json", json_bytes({"tokenizer_class": "PreTrainedTokenizerFast",
         "eos_token": "<|im_end|>", "unk_token": "<unk>", "chat_template": template}))
-    (root / "chat_template.jinja").write_text(template, encoding="utf-8")
+    write_bytes(root / "chat_template.jinja", template.encode("utf-8"))
     manifest = {"source_repository": "XiaomiMiMo/MiMo-V2.6-Flash-RL", "source_revision": "a" * 40,
                 "source_config_sha256": hashlib.sha256(config_data).hexdigest(),
                 "experts": "original E2M1/E8M0 codes, group 32, no requantization",
@@ -233,7 +238,7 @@ def prepare(output, asymmetric=False, audio_source=None):
                                            for prefix in ("visual", "audio_encoder", "speech_embeddings")},
                 "mtp_embedded": config["omlx_mimo_mtp"]}
     manifest_data = json_bytes(manifest)
-    (root / "conversion_manifest.json").write_bytes(manifest_data)
+    write_bytes(root / "conversion_manifest.json", manifest_data)
     if audio_source is not None:
         # The native loader authenticates the real selected codec separately.
         # No synthetic sidecar, relaxed hash or test-only authentication path.
@@ -243,7 +248,7 @@ def prepare(output, asymmetric=False, audio_source=None):
             if source.exists():
                 shutil.copy2(source, root / name)
 
-    (output / "provenance.json").write_bytes(json_bytes({
+    write_bytes(output / "provenance.json", json_bytes({
         "artifactID": "synthetic-provider-ci", "sourceRepository": manifest["source_repository"],
         "sourceRevision": manifest["source_revision"],
         "conversionManifestSHA256": hashlib.sha256(manifest_data).hexdigest()}))

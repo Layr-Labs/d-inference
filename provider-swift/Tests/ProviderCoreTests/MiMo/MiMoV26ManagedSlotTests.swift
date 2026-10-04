@@ -75,8 +75,10 @@ final class MiMoV26ManagedSlotTests: XCTestCase {
         let tokenizer: TokenizerHandle
         let sizing: SlotSizingSnapshot
     }
-    private func fixture(float32: Bool = false, asymmetric: Bool = false) throws -> URL {
-        guard let source = ProcessInfo.processInfo.environment["MIMO_V26_SERIAL_LOAD_FIXTURES"] else {
+    private func fixture(float32: Bool = false, asymmetric: Bool = false,
+                         environment: [String: String] = ProcessInfo.processInfo.environment) throws -> URL {
+        try lane(environment: environment)
+        guard let source = environment["MIMO_V26_SERIAL_LOAD_FIXTURES"] else {
             throw FixtureError.payloadFixtureRequired
         }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("mimo-serving-" + UUID().uuidString)
@@ -133,7 +135,6 @@ final class MiMoV26ManagedSlotTests: XCTestCase {
     /// production numerics. Repeated affine codes/scales preserve the synthetic
     /// storage format; no quantization or second production parameter tree.
     private func rewriteSyntheticAdmissionFixture(_ root: URL, float32: Bool, asymmetric: Bool) throws {
-        try lane()
         let configURL = root.appendingPathComponent("config.json")
         var config = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: configURL)) as? [String: Any])
         guard config["hidden_size"] as? Int == 64, config["num_hidden_layers"] as? Int == 2,
@@ -191,8 +192,8 @@ final class MiMoV26ManagedSlotTests: XCTestCase {
     }
 
 
-    private func lane() throws {
-        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_SERIAL_NATIVE_TESTS")
+    private func lane(environment: [String: String] = ProcessInfo.processInfo.environment) throws {
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_SERIAL_NATIVE_TESTS", environment: environment)
     }
     private func loaded(float32: Bool = false, asymmetric: Bool = false) async throws -> Loaded {
         try lane()
@@ -335,6 +336,7 @@ final class MiMoV26ManagedSlotTests: XCTestCase {
     }
 
     func testAutoAndOnReportOnlyTheActualEmbeddedHeadAndBoundedSerialDriver() async throws {
+        try lane()
         XCTAssertTrue(CBv2MTPConfig.envEnabled, "ON cell requires the actual SDK MTP lane to be enabled")
         for mode in [MTPMode.auto, .on] {
             let value = try await loaded()
@@ -411,8 +413,9 @@ final class MiMoV26ManagedSlotTests: XCTestCase {
     /// that contract and failed at preflight, before any geometry was observed.
     /// FP32 byte arithmetic remains covered by the pure admission geometry tests;
     /// refusing this fixture must not be reported as native FP32 execution.
-    private func assertFP32PreflightRefusesBeforeOwnership(mtp: Bool) throws {
-        let root = try fixture(float32: true, asymmetric: true)
+    private func assertFP32PreflightRefusesBeforeOwnership(mtp: Bool,
+        environment: [String: String] = ProcessInfo.processInfo.environment) throws {
+        let root = try fixture(float32: true, asymmetric: true, environment: environment)
         let intent = try MiMoV26ServingLoad.preparation(mode: mtp ? .on : .off,
             externalPath: nil, environment: ["DARKBLOOM_CBV2_MTP": "1"])
         XCTAssertEqual(intent.status.configured, mtp)
@@ -435,6 +438,24 @@ final class MiMoV26ManagedSlotTests: XCTestCase {
     }
     func testFP32AsymmetricMTPIntentRefusesBeforeManagedSlotOwnership() throws {
         try assertFP32PreflightRefusesBeforeOwnership(mtp: true)
+    }
+
+    func testFP32PreflightRequiresOptInBeforeFixtureSetup() {
+        for mtp in [false, true] {
+            for environment in [[:], ["MIMO_V26_SERIAL_LOAD_FIXTURES": "/unused-mimo-fixtures"]] {
+                XCTAssertThrowsError(try assertFP32PreflightRefusesBeforeOwnership(mtp: mtp,
+                    environment: environment)) {
+                    XCTAssertTrue($0 is XCTSkip, "Disabled native tests must skip before fixture setup")
+                }
+            }
+            XCTAssertThrowsError(try assertFP32PreflightRefusesBeforeOwnership(mtp: mtp,
+                environment: ["MIMO_V26_SERIAL_NATIVE_TESTS": "1"])) {
+                guard case FixtureError.payloadFixtureRequired = $0 else {
+                    return XCTFail("An opted-in missing fixture must fail, not skip: \($0)")
+                }
+            }
+        }
+        XCTAssertTrue(registries.isEmpty)
     }
 
     func testForeignPreparedOwnerAndForeignBudgetRefuseBeforeNativeAssembly() async throws {
@@ -467,6 +488,7 @@ final class MiMoV26ManagedSlotTests: XCTestCase {
     }
 
     func testWarmRecoveryRefusesBeforeReleasingActualAssistantOrEngine() async throws {
+        try lane()
         XCTAssertTrue(CBv2MTPConfig.envEnabled)
         let value = try await loaded()
         let (intent, prepared) = try await prepare(value, mode: .on)
@@ -535,6 +557,7 @@ final class MiMoV26ManagedSlotTests: XCTestCase {
     }
 
     func testCallerFinalVetoKeepsActualBundleAndAssistantUntilConfirmedRetirement() async throws {
+        try lane()
         XCTAssertTrue(CBv2MTPConfig.envEnabled)
         let value = try await loaded()
         let (intent, prepared) = try await prepare(value, mode: .on)
@@ -577,6 +600,7 @@ final class MiMoV26ManagedSlotTests: XCTestCase {
     }
 
     func testRealPostEngineTelemetryCancellationUsesOutcomeRetirementNotVoidShutdown() async throws {
+        try lane()
         XCTAssertTrue(CBv2MTPConfig.envEnabled)
         let value = try await loaded()
         let other = value.budget.processLedger.createOwner()

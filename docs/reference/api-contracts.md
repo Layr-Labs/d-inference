@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
 The public HTTP surface of the coordinator, derived from its composed route bindings under `coordinator/api/`, including the `/v1/` catch-all. Every route is listed below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -426,6 +426,7 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 | GET | `/v1/admin/base-rewards` | `HandleAdminBaseRewards` (`coordinator/api/billing/base_rewards_handlers.go`) | `admin-key` | |
 | GET | `/v1/admin/utilization` | `HandleAdminUtilization` (`coordinator/api/reporting/admin_utilization.go`) | `admin-key` | |
 | GET / POST | `/v1/admin/autopilot` | `handleAdminAutopilot` (`coordinator/api/autopilot_handlers.go`) | `admin` | Two registrations; [controller status and runtime pause](#experimental-model-autopilot), not shadow/live promotion |
+| GET | `/v1/admin/autopilot/inventory` | `handleAdminAutopilotInventory` (`coordinator/api/autopilot_handlers.go`) | `admin` | [Connected saved-approval aggregates](#autopilot-inventory-report), independent of the ledger |
 | POST | `/v1/admin/drain` | `HandleAdminDrain` (`coordinator/api/operations/drain.go`) | `admin` | Start a drain; default grace [`DefaultDrainGrace`](#timeouts-and-constants) |
 | GET | `/v1/admin/routes`, `/v1/admin/routes/export` | `HandleAdminRoutes`, `HandleAdminRoutesExport` (`coordinator/api/observation/admin_telemetry.go`) | `admin-key` | Route records |
 | GET | `/v1/admin/rejections`, `/v1/admin/rejections/export` | `HandleAdminRejections`, `HandleAdminRejectionsExport` (`coordinator/api/observation/admin_telemetry.go`) | `admin-key` | Admission rejections; `could_have_served` is nullable: `null` means not evaluated. CSV uses an empty cell; `could_have_served=true|false` filters exclude unknowns. |
@@ -939,6 +940,7 @@ authenticated adapter `coordinator/api/autopilot_handlers.go` (`handleAdminAutop
 | Endpoint | Authorization | Result |
 |---|---|---|
 | `GET /v1/admin/autopilot` | Admin key or authenticated admin | Controller summary and up to 200 durable events in the last 24 hours; ledger read failure returns 503 |
+| `GET /v1/admin/autopilot/inventory` | Admin key or authenticated admin | Read-only connected-session saved-approval aggregates; 200 even without a configured controller or available ledger; `Cache-Control: no-store` |
 | `POST /v1/admin/autopilot` | Admin key or authenticated admin | Required JSON `{ "paused": true }` stops new reservations; `false` resumes in the configured mode, never promotes shadow to live. Existing operations continue reconciliation. Missing/invalid input or unknown fields (including `observe_only`) return 400; unavailable controller returns 409; successful mutation returns the summary independently of ledger availability |
 | `GET /v1/me/providers` | Provider owner | Optional `model_autopilot` live snapshot with consent, exact approved cached network inventory (`selected_models`), `active`, `observe_only`, paused state and last operation; a valid shadow lease reports `active=false`, `observe_only=true` |
 
@@ -961,6 +963,39 @@ still reports the latest tick. See [ledger semantics](../architecture/storage.md
 The operator pause lasts for the current coordinator process. Live intent is persisted
 before dispatch. Ledger read/write errors are not success or rollback evidence.
 Snapshots and operation records contain model/control metadata, never prompts.
+
+### Autopilot inventory report
+
+Source: `coordinator/registry/autopilot_inventory_report.go`
+(`AutopilotInventory`, `AutopilotInventoryReport`), exposed by
+`coordinator/api/autopilot_handlers.go` (`handleAdminAutopilotInventory`).
+No credentials returns 401; an authenticated non-admin returns 403.
+
+The population is connected registry sessions with supported, enabled, cached-only
+consent and a valid nonempty saved selection/revision, excluding private-only
+providers (`coordinator/internal/registry/autopilotstate/state.go`, `Consented`).
+Waiting and shadow sessions need no active lease. All model counts include paused
+and stale sessions. Disconnected/offline selections are unavailable, not persisted.
+No provider identity, account details, keys or request content are returned.
+
+| Field | Definition (`AutopilotInventory`) |
+|---|---|
+| `generated_at` | UTC report-generation time; provider states are read under their individual locks during the registry scan, not one simultaneous fleet heartbeat |
+| `stale_after_seconds` | Normal serving freshness window, `DefaultProviderHeartbeatTimeout` (90 seconds), not the stricter live-command budget |
+| `enrolled_providers` | Total included connected sessions, not distinct physical machines or accounts |
+| `participating_providers` | Included sessions reporting `paused=false`; does not imply a live lease, current controller activity or fresh capacity |
+| `paused_providers` | Included sessions reporting `paused=true`; participating plus paused equals enrolled |
+| `stale_providers` | Overlapping subset with no accepted capacity heartbeat or an accepted capacity timestamp older than the freshness window; registration alone is stale and rejected sequence frames cannot refresh it |
+| `distinct_models` | Number of unique exact saved model IDs across the population |
+| `total_approvals` | Sum of distinct saved models per included session; repeated IDs within a session count once |
+| `models_per_provider` | Ascending `model_count` buckets with `provider_count`; covers all enrolled sessions |
+| `models` | Sorted by exact `model_id`; each row has `approved_providers`, `participating_providers`, `paused_providers`, `stale_providers` using the same population/subset definitions |
+
+Empty reports use zero counts and `[]` arrays. Model IDs are not alias-folded or
+filtered against the current catalog. Saved approvals describe the last-reported
+selection of approved downloaded/cached builds; they are not a fresh disk scan,
+current hash verification, resident inventory or routing-eligibility claim. Reads
+send no provider commands and change no enrollment, pause, lease or routing state.
 
 ## MiMo prompt parity fixtures
 

@@ -35,7 +35,7 @@ can cancel.
 ### Components
 
 ```mermaid
-flowchart LR
+flowchart TB
   classDef api fill:#dbeafe,stroke:#1d4ed8,color:#172554
   classDef loop fill:#dcfce7,stroke:#15803d,color:#14532d
   classDef store fill:#ede9fe,stroke:#6d28d9,color:#2e1065
@@ -47,15 +47,16 @@ flowchart LR
   H -- "force" --> X
   H --> C["CachedStore<br/>(drops cached users)"]:::store
   X --> C
+  X -- "after commit" --> M["In-memory state<br/>registry, trust-reuse cache,<br/>MDM scheduler, ledger usage,<br/>API key cache"]:::mem
   C --> DB[("Postgres or MemoryStore<br/>erasure tables, triggers")]:::store
-  H -- "after confirm" --> M["In-memory state<br/>registry, trust-reuse cache,<br/>MDM scheduler, ledger usage,<br/>API key cache"]:::mem
-  X -- "after commit" --> M
   DB -. "outbox rows" .-> S["Stripe dashboard<br/>(operator, by hand)"]:::ext
 ```
 
 Blue: HTTP handlers. Green: background work. Purple: the store and its
 tables. Cyan: in-process state that the database transaction cannot reach.
-Orange: people and services outside the coordinator.
+Orange: people and services outside the coordinator. After a confirm the
+admin API also disconnects the account's providers and clears the API key
+cache.
 
 | Component | Role | Code |
 |---|---|---|

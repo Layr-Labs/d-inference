@@ -101,6 +101,23 @@ validated cached-token report (`coordinator/api/inference/provider_inference.go`
 `HandleCompleteAt`). See [first-content routing](first-content-routing.md) for
 candidate clocks and retry behavior.
 
+### PostgreSQL debit cancellation
+
+`PostgresStore.Debit` runs the balance update and ledger insert inside an
+explicit transaction. It sends `COMMIT` only after receiving a successful
+statement result and checking the five-second operation context. If the
+statement times out while waiting for an account row lock, a late server-side
+completion remains uncommitted and is rolled back. Cleanup uses a fresh,
+bounded context because the operation context may already have expired.
+
+This adds `BEGIN` and `COMMIT` round trips and holds the account row lock until
+commit; it is a correctness boundary, not a contention or throughput improvement.
+The shared `debitBalance` helper remains transaction-neutral for callers that
+already own a transaction. A timeout or lost acknowledgement **after `COMMIT`
+has been sent** still leaves the result uncertain. Callers must not blindly
+retry or refund an arbitrary debit error; this change does not add an idempotent
+reservation identifier or change the ordinary-account funds check.
+
 ### Ledger
 
 Tables (all `CREATE TABLE IF NOT EXISTS` in `coordinator/store/postgres/`):

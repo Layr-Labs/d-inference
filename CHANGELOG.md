@@ -15,9 +15,17 @@
 
 - Reduce dense cache-routing query copies by retaining the deepest compatible endpoint for each provider and tier. Preserve shorter valid fallbacks, complete hint values and matching/valid-holder counts; bounded scratch overflow restores the original path. Legal synthetic dense workloads reduce CPU query time by 43–46% and cumulative allocated bytes by 97–98%; these measurements do not establish production cache-hit or model TPS gains.
 
+## Unreleased - Autopilot inventory reporting
+
+- Add an admin-only connected Autopilot inventory report with exact per-model last-reported approval counts, deduplicated approval totals and a models-per-provider distribution. Distinguish unpaused, paused and stale connections without exposing provider identities or claiming fresh disk verification, residency or routing eligibility. The read does not depend on the operation ledger.
+
 ## Unreleased — routing scan cost
 
 - Reduce the per-request provider scan cost after the coordinator reorganization. Autopilot eligibility reads the clock only for a provider holding a matching control grant, candidate ranking reads the projected pool in place, and candidate storage fills one allocation size class. Routing outcomes are unchanged.
+
+## Unreleased — canceled PostgreSQL debits
+
+- Keep a PostgreSQL debit uncommitted until its statement succeeds, preventing a timed-out row-lock wait from later becoming a charge. Lost commit acknowledgements remain uncertain and must not be blindly retried.
 
 ## Unreleased - verification concurrency
 

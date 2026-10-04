@@ -75,6 +75,9 @@ owners. `go build ./coordinator/...` builds production code and ordinary
 adds checked shard discovery; coverage explicitly instruments the imported
 production packages, excluding all test helpers. See the
 [test-boundary map](test.md#2-coordinator-go) for focused commands.
+Routing snapshot-age regressions run against the ordinary coordinator build;
+the [test guide](test.md#2-coordinator-go) includes a race-enabled repetition
+command using the existing reservation-preparation fixture.
 
 Registry-ID support changes Swift provider policy and Rust prompt normalization
 together. Build the paired coordinator/sidecar/provider candidate; the v6

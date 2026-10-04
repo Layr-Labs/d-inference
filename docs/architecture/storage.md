@@ -10,6 +10,12 @@ listed once in [`../reference/configuration.md`](../reference/configuration.md);
 the SSD cache file format is in
 [`../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md).
 
+Standalone PostgreSQL debits now use an explicit transaction without changing
+the schema. The statement must succeed before a commit is sent; see
+[debit cancellation and commit uncertainty](billing.md#postgresql-debit-cancellation)
+for the failure boundary and added round-trip cost. Callers already holding a
+transaction continue to use the transaction-neutral debit helper.
+
 Promoted, non-retired model versions remain accepted during automatic weight
 updates. `ModelRegistryRecord.ServingVersions` derives from existing
 `model_versions.promoted_at` and `status`; no new schema migration is required.

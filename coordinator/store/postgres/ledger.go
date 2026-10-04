@@ -210,7 +210,28 @@ func (s *PostgresStore) Debit(accountID string, amountMicroUSD int64, entryType 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	return debitBalance(ctx, s.pool, accountID, amountMicroUSD, entryType, reference)
+	// A client-side query deadline does not prove PostgreSQL stopped executing:
+	// pgx can return before its asynchronous cancellation reaches the server.
+	// Keep the debit uncommitted until its result has been received, so a DML
+	// timeout cannot later become an autocommitted charge.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin debit: %w", err)
+	}
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = tx.Rollback(cleanup)
+	}()
+	if err := debitBalance(ctx, tx, accountID, amountMicroUSD, entryType, reference); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Once COMMIT has been sent, a lost acknowledgement is still an uncertain
+	// outcome. Callers must not interpret every returned error as safe to retry.
+	return tx.Commit(ctx)
 }
 
 // MigrateAccountBalance moves the full balance (and withdrawable subset) from

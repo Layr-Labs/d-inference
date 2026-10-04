@@ -1,6 +1,6 @@
 # Experimental Autopilot operation and recovery
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
 Use this runbook to observe explicitly enrolled providers in shadow and prepare
 a separately approved live rollout. Startup opt-in records interest/consent, not
@@ -53,6 +53,14 @@ Use with compatible protocol-3 coordinator and provider releases. See the
    can age out of the recent events list ([ledger semantics](../architecture/storage.md#autopilot-operation-ledger)).
    Compare qualified demand and donor coverage with the holdout before requesting
    approval to promote. This does not establish causal production improvement.
+   Separately inspect admin-authenticated `GET /v1/admin/autopilot/inventory`
+   for exact per-model saved approval counts and the models-per-provider
+   distribution. Check `enrolled_providers`, `participating_providers`,
+   `paused_providers` and the overlapping `stale_providers` before interpreting
+   coverage; all count connected sessions, not unique machines. Stale and paused
+   approvals remain in totals. This read works without the ledger and does not
+   refresh providers, verify files or establish ready capacity. Offline inventory
+   is unavailable. See the [field definitions](../reference/api-contracts.md#autopilot-inventory-report).
 4. After validation and explicit approval for the production configuration change
    and restart, set `EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY=false` using the
    [coordinator deployment procedure](coordinator-deploy.md). Verify

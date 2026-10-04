@@ -1,216 +1,342 @@
 # Erase an account (GDPR)
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
-This runbook erases the personal data of one provider or consumer account:
-plan, confirm, grace period, scrub, and the external Stripe deletions. It also
-says how to cancel and what is kept. The admin API is in
-[API contracts](../reference/api-contracts.md#account-erasure); the storage
-rules are in [storage](../architecture/storage.md#account-erasure).
+Runbook for erasing the personal data of one consumer or provider account:
+plan, confirm, grace period, scrub, the Stripe deletions, review of refused
+credits, replay after a database restore, and cancel. How erasure works is in
+[account erasure](../architecture/account-erasure.md); the route shapes are
+in [API contracts](../reference/api-contracts.md#account-erasure); what the
+scrub changes and keeps is in [personal-data rules](../reference/personal-data-rules.md).
 
 ## When to use
 
-- A user asks for the erasure of their account and the request is verified.
+- A person asks for the erasure of their account, and support has verified
+  that the request comes from the account holder.
 - An admin closes an account and its personal data must go.
 
-Do not use it to disable an account for abuse; revoke its keys instead. An
-erasure forfeits the balance and cannot be undone after the scrub.
+Do not use it to block an account for abuse; revoke its keys instead. The
+scrub forfeits the balance and cannot be undone.
+
+```mermaid
+flowchart TD
+  classDef step fill:#dbeafe,stroke:#1d4ed8,color:#172554
+  classDef gate fill:#fef3c7,stroke:#a16207,color:#422006
+  classDef done fill:#dcfce7,stroke:#15803d,color:#14532d
+  classDef stop fill:#fee2e2,stroke:#b91c1c,color:#450a0a
+  classDef ext fill:#ffedd5,stroke:#c2410c,color:#431407
+
+  P["Step 2: plan<br/>POST .../erasure/plan"]:::step --> Q{"Email right, wallets found,<br/>open_withdrawals is 0?"}:::gate
+  Q -- "no" --> S["Stop: fix the request<br/>or wait for the withdrawal"]:::stop
+  Q -- "yes" --> C["Step 3: confirm<br/>POST .../erasure"]:::step
+  C --> F{"force?"}:::gate
+  F -- "no" --> G["Step 4: grace period<br/>(account soft deleted)"]:::step
+  G -- "cancel" --> R["Rollback: POST .../erasure/cancel"]:::stop
+  G -- "scrub_after passed" --> L["Grace loop scrubs"]:::step
+  F -- "yes" --> L
+  L --> T["Step 5: status<br/>GET .../erasure"]:::step
+  T -- "pending with last_error" --> L
+  T -- "erased" --> X["Step 6: Stripe objects<br/>(by hand)"]:::ext
+  X --> V["Verification: SQL checks"]:::done
+```
+
+Blue: an API call or wait. Yellow: a check you make. Red: stop or roll back.
+Orange: work in Stripe. Green: done.
 
 ## Prerequisites
 
-- Explicit human approval for this specific erasure. It changes production
-  data.
-- The admin key (`EIGENINFERENCE_ADMIN_KEY`) or a Privy session of an admin
-  email. The API records which admin acted (`admin_key` or `account:<id>`),
-  never an email.
-- The account ID. Find it from the support ticket or the admin console.
-- The wallet addresses of the account, if it ever used the retired on-chain
-  payments. `payments` and `provider_payouts` have no account column, so the
-  admin names the addresses. Give each one exactly as stored.
-- No withdrawal of the account may be in flight: no Stripe withdrawal in
-  `pending` or `transferred`, none `paid` within the last 30 days (a bank can
-  still return it; `stripePayoutBounceWindow`), none waiting for a
-  confirmed-rejection refund, and no Global Payout in `pending`,
-  `processing`, or `posted` within 90 days.
-  The plan shows `open_withdrawals`; the confirm call refuses with 409
-  `open_withdrawal`.
+- Explicit human approval for this erasure. Every step from step 3 on
+  changes production data.
+- Admin access to the coordinator: the admin key
+  (`EIGENINFERENCE_ADMIN_KEY`) or a Privy session of an email in
+  `EIGENINFERENCE_ADMIN_EMAILS`. The request records `admin_key` or
+  `account:<id>`, never an email.
+- The account ID, from the support ticket or the admin console.
+- The wallet addresses of the account, only if it used the retired on-chain
+  payments. `payments` and `provider_payouts` have no account column, so you
+  name the addresses. Give each one exactly as stored.
+- No open withdrawal. The plan shows `open_withdrawals`; the confirm refuses
+  with 409 `open_withdrawal`. What counts as open is in
+  [configuration and constants](../reference/personal-data-rules.md#configuration-and-constants)
+  (for example a Stripe payout `paid` within the last 30 days).
+- Read access to the production database for the SQL checks, and write
+  access with approval for the outbox updates in step 6.
+- Stripe dashboard access to the platform account (step 6).
 
 ## Steps
 
-1. Run the plan (a dry run; it changes no account data):
+1. Set the variables:
+
+   ```bash
+   export COORD=https://api.darkbloom.dev
+   export ADMIN_KEY='<EIGENINFERENCE_ADMIN_KEY>'   # or a Privy JWT of an admin
+   export ACCOUNT='<account_id>'
+   ```
+
+2. Run the plan. It is a dry run and changes no account data:
 
    ```bash
    curl -sS -X POST "$COORD/v1/admin/accounts/$ACCOUNT/erasure/plan" \
      -H "Authorization: Bearer $ADMIN_KEY" \
+     -H "Content-Type: application/json" \
      -d '{"wallet_addresses": ["0x..."]}'
    ```
 
-   Read `email`, the per-rule `rows`, `stripe_objects` (every Express account
-   and Global Payouts recipient the account ever used, and its Checkout
-   Sessions), `wallets`, `balance_micro_usd`, `withdrawable_micro_usd`,
-   `open_withdrawals` and `retained`. Check that the email matches the
-   verified requester. Each entry in `wallets` shows the rows that hold that
-   address in `payments` and `provider_payouts`; zero rows means the address
-   is wrong. `retained` lists rows that are kept because another account
-   shares them (a machine alias, a Secure Enclave key, an App Attest key).
-   Keep `confirm_token`; it expires after 15 minutes (`erasureConfirmTTL`).
-   The token is bound to this wallet list: to change the list, plan again.
+   Leave out `-d` when the account has no wallet addresses. Check:
 
-2. Confirm the erasure. Repeat the account ID, the token, the email (when the
-   account has one) and the same wallet list as the plan:
+   | Field | Check |
+   |---|---|
+   | `email` | It is the verified requester's email |
+   | `wallets[]` | Each address has rows; all counts 0 means the address is wrong |
+   | `open_withdrawals` | 0; otherwise wait for the withdrawal to end |
+   | `balance_micro_usd`, `withdrawable_micro_usd` | The balance the scrub forfeits; tell the requester |
+   | `rows[]` | Rows each rule will change |
+   | `stripe_objects[]` | The Express accounts, Global Payouts recipients and Checkout Sessions to delete in step 6 |
+   | `retained[]` | Rows kept because another account shares a machine or key |
+
+   Keep `confirm_token`. It expires after 15 minutes (`erasureConfirmTTL`)
+   and is bound to this wallet list: to change the list, plan again.
+
+3. Confirm the erasure. Repeat the account ID, the token, the email (when
+   the account has one) and the same wallet list:
 
    ```bash
    curl -sS -X POST "$COORD/v1/admin/accounts/$ACCOUNT/erasure" \
      -H "Authorization: Bearer $ADMIN_KEY" \
-     -d '{"account_id": "'"$ACCOUNT"'", "confirm_token": "...", "email": "...", "reason": "ticket 1234", "wallet_addresses": ["0x..."]}'
+     -H "Content-Type: application/json" \
+     -d '{"account_id": "'"$ACCOUNT"'", "confirm_token": "<token>", "email": "<email>", "reason": "ticket <number>", "wallet_addresses": ["0x..."]}'
    ```
 
-   The coordinator soft deletes the account: the user and its provider rows
-   get `deleted_at`, API keys and provider tokens are revoked, and the
-   account's connected providers are disconnected. A provider that reconnects
-   comes back unlinked. A Privy login of the account gets 403
-   `account_pending_deletion`. Do not write personal data in `reason`; it is
-   kept.
+   The coordinator soft deletes the user and its providers, revokes the API
+   keys and provider tokens, and disconnects the account's providers. A
+   provider that reconnects comes back unlinked. A Privy login of the account
+   gets 403 `account_pending_deletion`. `reason` is kept: write the ticket
+   number, not personal data. Errors are listed in
+   [erasure confirm](../reference/api-contracts.md#erasure-confirm).
 
-3. Wait for the grace period. The default is 30 days
-   (`EIGENINFERENCE_ERASURE_GRACE`, a Go duration such as `720h`). The
-   response shows `scrub_after`. An hourly loop scrubs each request after its
-   `scrub_after`. To scrub at once, send `"force": true` in step 2.
+4. Wait for the grace period. The default is 30 days
+   (`EIGENINFERENCE_ERASURE_GRACE`); `request.scrub_after` shows the time. The
+   grace loop runs every hour and scrubs each request after its
+   `scrub_after`. To scrub at once (for example when the requester asks for
+   no grace period), add `"force": true` to the body in step 3.
 
-4. Check the scrub:
+5. Check the status:
 
    ```bash
-   curl -sS "$COORD/v1/admin/accounts/$ACCOUNT/erasure" -H "Authorization: Bearer $ADMIN_KEY"
+   curl -sS "$COORD/v1/admin/accounts/$ACCOUNT/erasure" \
+     -H "Authorization: Bearer $ADMIN_KEY"
    ```
 
-   `request.state` is `erased` and `request.summary.applied` has the rows
-   changed. If the state is still `pending` after `scrub_after`, read
-   `request.last_error`. An open withdrawal blocks the scrub until it ends;
-   the loop retries every hour.
+   | Field | Meaning |
+   |---|---|
+   | `request.state` | `planned`: not confirmed. `pending`: soft deleted, waiting. `erased`: scrubbed. `canceled`: canceled |
+   | `request.scrub_after` | Earliest scrub time |
+   | `request.requested_at`, `erased_at`, `canceled_at` | When each step happened |
+   | `request.last_error` | Why the last scrub failed; the loop retries one hour later |
+   | `request.wallet_address_count` | Addresses stored at confirm; 0 after the scrub |
+   | `request.summary.planned`, `request.summary.applied` | Row counts per rule at plan and at scrub; `applied.balance_micro_usd` is the forfeited balance |
+   | `outbox[].target`, `outbox[].state` | One row per Stripe object and one `erasure_log` row; see step 6 |
+   | `outbox[].has_external_id` | The row still holds a Stripe ID |
+   | `refused_credits[]` | Money that arrived after the scrub; see [refused credits](#refused-credits) |
 
-5. Follow the outbox. The scrub writes one `erasure_outbox` row for each
-   Stripe object and one `erasure_log` row; a worker (`StartErasureOutboxLoop`,
-   every minute) delivers them. `GET …/erasure` shows each row's `state`:
+   If the state is still `pending` after `scrub_after`, read `last_error`.
+   `erasure: account has a withdrawal that is not in a terminal state` clears
+   when the withdrawal ends. Other errors are in
+   [failure modes](../architecture/account-erasure.md#failure-modes).
 
-   | Target | What the worker does | Done when |
-   |---|---|---|
-   | `stripe_account` | `DELETE /v1/accounts/{id}` with the Connect key | deleted, or Stripe says the account does not exist |
-   | `global_recipient` | `POST /v2/core/accounts/{id}/close` with `applied_configurations: ["recipient"]` | closed, or not found |
-   | `checkout_sessions` | a Stripe redaction job for up to 10 sessions (`validation_behavior=fix`): create, wait for `ready`, run, wait for `succeeded`; the job ID is kept on the row (`has_stripe_job`) | the job succeeded. A session Stripe cannot find is not done: it moves to its own `manual_action` row (see step 6), and the others continue in a new job |
-   | `erasure_log` | one Datadog log with tag `erasure_log:true`, or a `slog` line without Datadog | written |
-
-   A transient error (network, 5xx, 429) is retried with backoff from 1 min
-   up to 6 h; after 8 attempts the row moves to `manual_action`. A definitive
-   Stripe refusal moves it to `manual_action` at once with the error in
-   `last_error`: for example a live Express account whose balances are not
-   zero, a recipient with a cash balance, or "Redaction Jobs is not enabled
-   for this account" (the feature is in public preview and needs Stripe to
-   grant access). Most transactions can be redacted only 90 days after they
-   were created; when every validation error of a job says so, the row waits
-   7 days (`erasureRedactionWait`) and a new job is made, without counting an
-   attempt. Those waits end 105 days after the scrub
-   (`erasureRedactionDeadline`): the row then moves to `manual_action`. A job
-   that stays in one non-terminal status (for example `validating`) for more
-   than 31 days (`erasureRedactionStuck`; Stripe says a job can take up to 30
-   days) also moves to `manual_action`. When a job disappears at Stripe, the
-   next one is created with a new idempotency key. When the coordinator runs
-   in billing mock mode, Stripe rows end done without a call.
-
-6. Resolve `manual_action` rows by hand. A done row no longer holds its
-   Stripe ID; a `manual_action` row keeps it in `erasure_outbox.external_id`
-   (the API does not return it):
+6. Delete the Stripe objects by hand. No worker delivers the outbox in this
+   version, so every row stays `pending`. The API does not return the Stripe
+   IDs; read them with SQL:
 
    ```sql
-   SELECT id, target, external_id, attempts, last_error
-   FROM erasure_outbox WHERE state = 'manual_action';
+   SELECT o.id, o.target, o.external_id
+   FROM erasure_outbox o JOIN erasure_requests r ON r.id = o.request_id
+   WHERE r.account_id = '<account_id>' AND o.state = 'pending'
+   ORDER BY o.created_at, o.id;
    ```
 
-   Fix the cause in Stripe (pay out or reverse the remaining balance, request
-   Redaction Jobs access, cancel a conflicting job), finish the deletion in
-   the Stripe dashboard, then clear the ID:
-   `UPDATE erasure_outbox SET external_id = '', last_error = 'resolved by hand' WHERE id = '<id>';`.
-   To let the worker try again instead, set `state = 'pending'`,
-   `attempts = 0` and `next_at = NOW()`.
+   | `target` | In Stripe |
+   |---|---|
+   | `stripe_account` | Delete the Express account `acct_…` (Connect key). Stripe deletes it only when all its balances are zero |
+   | `global_recipient` | Close the Global Payouts recipient account (Global Payouts key) |
+   | `checkout_sessions` | Redact the listed `cs_…` sessions with Stripe Redaction Jobs (needs access from Stripe). Most can be redacted only 90 days after they were created |
+   | `erasure_log` | Write the request ID, account ID and `erased_at` in the ticket; this is the record you replay after a restore |
 
-## Cancel
+   After each one, mark the row done (with approval):
 
-During the grace period only (`state` `pending` and before `scrub_after`):
+   ```sql
+   UPDATE erasure_outbox
+   SET state = 'done', done_at = NOW(), external_id = '', last_error = 'done by hand: ticket <number>'
+   WHERE id = '<outbox_id>' AND state = 'pending';
+   ```
 
-```bash
-curl -sS -X POST "$COORD/v1/admin/accounts/$ACCOUNT/erasure/cancel" -H "Authorization: Bearer $ADMIN_KEY"
-```
+### Refused credits
 
-The user and its provider rows are live again. API keys and provider tokens
-stay revoked: the user makes new keys and links the machines again. After the
-scrub there is no cancel.
+After the scrub the balance stays zero. A credit that arrives later (a bank
+returns a paid payout, a Global Payout comes back, a settlement or referral
+reward lands late) is refused by database triggers and recorded in
+`erasure_refused_credits`. The caller sees success, so Stripe does not
+redeliver its webhook. Credits during the grace period still apply.
 
-## Credits after the erasure
+1. List them for one account with `GET …/erasure` (`refused_credits[]`), or
+   for every account with SQL:
 
-After the scrub the account's balance stays zero. Any later credit (a bank
-returns a paid payout, a Global Payout comes back after the reconcile window,
-a settlement or referral reward lands late) is refused by database triggers
-(`00021_erasure_refuse_credits.sql`) and recorded in
-`erasure_refused_credits` (amount, ledger type, reference). The caller sees
-success, so Stripe does not redeliver its webhook. `GET …/erasure` lists them
-as `refused_credits`. Review each one: the money is still with the platform
-(or Stripe) and may need a refund or a transfer to the person by another
-channel. Credits during the grace period still apply, because the erasure
-can be canceled.
+   ```sql
+   SELECT c.id, c.account_id, c.entry_type, c.amount_micro_usd, c.reference, c.created_at, r.id AS request_id
+   FROM erasure_refused_credits c
+   JOIN erasure_requests r ON r.account_id = c.account_id AND r.state = 'erased'
+   WHERE c.created_at > NOW() - interval '7 days'
+   ORDER BY c.created_at;
+   ```
 
-## What is kept, and why
+2. For each row, decide where the money is. `entry_type` and `reference`
+   name the source:
 
-| Data | Why it is kept |
-|---|---|
-| IDs: account, provider, machine, request, key and session IDs, Secure Enclave and App Attest public keys | Not personal data alone; ledger, earnings and audit rows need them. |
-| Ledger entries, balances, provider earnings, floor draws, usage token counts | Financial records. The forfeit is an `erasure_forfeit` ledger entry, so the ledger still sums to the zero balance. |
-| Stripe transfer and payout IDs and amounts on `stripe_withdrawals`; amount, country and payment ID on `global_payout_withdrawals` | Financial records of the platform's own payments. The connected account, recipient and payout method are cleared. |
-| `darkbloom_machine_sessions` and observations | Chip, OS version and IDs only; no serial or key. |
-| App Attest shadow keys, enrollments, revocations and rotations | Key IDs, public keys and owner hashes keep a revoked or used key from being accepted again. Raw proofs, receipts and evidence context are deleted. |
-| An `mda_serial` machine alias that another account also used | Deleting it would break that account's machine identity. The plan lists it under `retained`. |
-| Trust-reuse, verification, code-attestation and push-budget rows of a Secure Enclave key that another account's provider also has; App Attest receipts of a key another account's session used | They belong to the other account too. The in-memory trust cache and MDM jobs of those keys also stay. The plan lists them under `retained`. |
-| `erasure_refused_credits` | Credits refused after the erasure, for manual review; IDs and amounts only. |
-| `erasure_requests` (state, actor, reason, row counts) | The record that the erasure happened. It holds no email, token or wallet address after the scrub. |
-| `erasure_outbox.external_id` | The Stripe ID waits here until Stripe confirms the deletion; a `manual_action` row keeps it until an operator clears it. |
+   | `entry_type` | `reference` | Source |
+   |---|---|---|
+   | `refund` | `stripe_withdraw:<id>` or `stripe_withdraw_fee:<id>` | A Stripe payout or its fee came back (`coordinator/api/stripe_payouts_webhooks.go`) |
+   | `refund` | `global_payout_refund:<id>` | A Global Payout came back |
+   | `payout`, `provider_floor_draw` | job ID, epoch ID | Provider earnings settled late |
+   | `referral_reward` | job ID | A referral share of a served request (`coordinator/billing/referral.go`) |
 
-## Backups and logs
+   The money stays with the platform (or Stripe).
 
-- Postgres backups and point-in-time recovery keep the erased data until
-  their retention ends. After a restore, a request that was `pending` at the
-  backup time is scrubbed again by the loop. An erasure confirmed after the
-  backup time is not in the restored database: plan and confirm it again,
-  with `force`, for each account in the list of completed erasures. That list
-  is the `erasure_log` record of each erasure (request ID, account ID,
-  `erased_at`), written by the outbox worker with the Datadog tag
-  `erasure_log:true`; it survives a restore only in a Datadog log archive.
-  Without Datadog the record is only a process log line. Set up a Datadog log archive (an
-  archive with the query `erasure_log:true`) that keeps these records longer
-  than the database backups.
-- Datadog logs written before the erasure keep any data they hold until
-  their retention ends. The coordinator does not delete log events.
-- Stripe keeps its own data until the outbox deletes or redacts it. A
-  redacted Checkout transaction can no longer be refunded or disputed.
-  Checkout Sessions made on the earlier Stripe account (before the
-  [Stripe migration](stripe-migration.md)) are not reachable with the current
-  key. The worker looks up each session of a batch that Stripe refused as not
-  found, keeps the found ones in the batch, and moves the missing ones to a
-  `manual_action` row whose `last_error` says so. Redact those sessions in the
-  old account's dashboard, then clear the row as in step 6.
+3. Return it to the person by another channel if the policy requires it, or
+   book it as forfeited. Record the decision in the ticket. Do not credit the
+   erased account; the triggers refuse it.
+
+A Checkout payment that completes after the scrub is not a refused credit:
+the webhook answers 200, credits nothing, and logs
+`stripe Checkout completed for an erased account; refund it in Stripe` with
+`billing_session_id`. Refund that payment in the Stripe dashboard.
+
+### After a database restore
+
+A restore to a point in time before an erasure brings the erased data back.
+
+1. List every erasure completed after the restore point. In this version the
+   list is the support tickets (step 6, `erasure_log`).
+2. For each account, read its state:
+
+   ```bash
+   curl -sS "$COORD/v1/admin/accounts/<account_id>/erasure" -H "Authorization: Bearer $ADMIN_KEY"
+   ```
+
+3. Act on the restored state:
+
+   | Restored state | Action |
+   |---|---|
+   | 404, `planned` or `canceled` | Run steps 2 and 3 again with `"force": true` and the wallet list from the ticket |
+   | `pending`, `scrub_after` passed | Nothing: the grace loop scrubs it within an hour |
+   | `pending`, `scrub_after` in the future | Read the stored list (`SELECT wallet_addresses FROM erasure_requests WHERE id = '<request_id>'`), [cancel](#rollback), then run steps 2 and 3 with `"force": true` and that list |
+   | `erased` | Nothing |
+
+4. Do step 6 again for the new outbox rows. Deleting a Stripe object that is
+   already gone is harmless.
 
 ## Verification
 
-- `GET /v1/admin/accounts/{account_id}/erasure` shows `state: erased`.
-- A Privy login with the old identity creates a new, empty account.
-- `SELECT email, privy_user_id FROM users WHERE account_id = '<id>'` returns
-  an empty email and an `erased:` Privy ID.
+1. `GET …/erasure` shows `request.state` `erased`.
+2. Run the checks below in `psql`. Every `n` must be 0:
+
+   ```sql
+   \set acct '<account_id>'
+   SELECT check_name, n FROM (
+     SELECT 'users: email, Privy ID, Stripe fields' AS check_name, COUNT(*) AS n FROM users
+      WHERE account_id = :'acct' AND (email <> '' OR privy_user_id NOT LIKE 'erased:%'
+        OR stripe_account_id <> '' OR stripe_account_status <> '' OR stripe_account_country <> ''
+        OR stripe_destination_type <> '' OR stripe_destination_last4 <> '')
+     UNION ALL SELECT 'api_keys.name', COUNT(*) FROM api_keys
+      WHERE owner_account_id = :'acct' AND name <> ''
+     UNION ALL SELECT 'provider_tokens.label', COUNT(*) FROM provider_tokens
+      WHERE account_id = :'acct' AND label <> ''
+     UNION ALL SELECT 'device_codes rows', COUNT(*) FROM device_codes
+      WHERE account_id = :'acct'
+     UNION ALL SELECT 'providers: serial, location, attestation, MDA chain', COUNT(*) FROM providers
+      WHERE account_id = :'acct' AND (serial_number <> '' OR location IS NOT NULL
+        OR attestation_result IS NOT NULL OR mda_cert_chain IS NOT NULL)
+     UNION ALL SELECT 'provider_sessions: serial or open', COUNT(*) FROM provider_sessions
+      WHERE account_id = :'acct' AND (serial_number <> '' OR disconnected_at IS NULL)
+     UNION ALL SELECT 'provider_log_reports rows', COUNT(*) FROM provider_log_reports
+      WHERE account_id = :'acct'
+     UNION ALL SELECT 'trust rows of unshared SE keys', COUNT(*) FROM provider_trust_reuse t
+      WHERE t.se_pubkey IN (SELECT se_public_key FROM providers WHERE account_id = :'acct')
+        AND NOT EXISTS (SELECT 1 FROM providers o WHERE o.se_public_key = t.se_pubkey AND o.account_id <> :'acct')
+     UNION ALL SELECT 'code_attestations of unshared SE keys', COUNT(*) FROM code_attestations c
+      WHERE c.se_pubkey IN (SELECT se_public_key FROM providers WHERE account_id = :'acct')
+        AND NOT EXISTS (SELECT 1 FROM providers o WHERE o.se_public_key = c.se_pubkey AND o.account_id <> :'acct')
+     UNION ALL SELECT 'machine aliases with account scope', COUNT(*) FROM darkbloom_machine_aliases
+      WHERE kind IN ('app_attest', 'legacy_se') AND scope = :'acct'
+     UNION ALL SELECT 'app_attest_evidence.context', COUNT(*) FROM app_attest_evidence
+      WHERE session_id IN (SELECT id FROM providers WHERE account_id = :'acct') AND context <> '{}'::jsonb
+     UNION ALL SELECT 'app_attest_evidence_blobs rows', COUNT(*) FROM app_attest_evidence_blobs
+      WHERE evidence_id IN (SELECT e.id FROM app_attest_evidence e
+        JOIN providers p ON p.id = e.session_id WHERE p.account_id = :'acct')
+     UNION ALL SELECT 'usage.request_location', COUNT(*) FROM usage
+      WHERE consumer_key_hash = encode(sha256(convert_to(:'acct', 'UTF8')), 'hex') AND request_location IS NOT NULL
+     UNION ALL SELECT 'inference_routes.consumer_region', COUNT(*) FROM inference_routes
+      WHERE consumer_key_hash = encode(sha256(convert_to(:'acct', 'UTF8')), 'hex') AND consumer_region IS NOT NULL
+     UNION ALL SELECT 'inference_routes.provider_region', COUNT(*) FROM inference_routes
+      WHERE provider_id IN (SELECT id FROM providers WHERE account_id = :'acct') AND provider_region IS NOT NULL
+     UNION ALL SELECT 'referrers.code', COUNT(*) FROM referrers
+      WHERE account_id = :'acct' AND code NOT LIKE 'erased-%'
+     UNION ALL SELECT 'billing_sessions: Checkout ID or pending', COUNT(*) FROM billing_sessions
+      WHERE account_id = :'acct' AND (external_id <> '' OR status = 'pending')
+     UNION ALL SELECT 'ledger_entries: Checkout ID or admin note', COUNT(*) FROM ledger_entries
+      WHERE account_id = :'acct' AND ((reference LIKE 'stripe:%' AND reference <> 'stripe:erased')
+        OR (entry_type IN ('admin_credit', 'admin_reward') AND reference <> entry_type))
+     UNION ALL SELECT 'global_payout_recipients: country, recipient, method', COUNT(*) FROM global_payout_recipients
+      WHERE account_id = :'acct' AND (country <> '' OR COALESCE(data->>'recipient_id', '') <> ''
+        OR COALESCE(data->>'payout_method_id', '') <> '')
+     UNION ALL SELECT 'global_payout_withdrawals: recipient, method, request', COUNT(*) FROM global_payout_withdrawals
+      WHERE account_id = :'acct' AND (COALESCE(data->>'recipient_id', '') <> ''
+        OR COALESCE(data->>'payout_method_id', '') <> '' OR COALESCE(data->'request', '{}'::jsonb) <> '{}'::jsonb)
+     UNION ALL SELECT 'stripe_withdrawals.stripe_account_id', COUNT(*) FROM stripe_withdrawals
+      WHERE account_id = :'acct' AND stripe_account_id <> ''
+     UNION ALL SELECT 'balances not zero', COUNT(*) FROM balances
+      WHERE account_id = :'acct' AND (balance_micro_usd <> 0 OR withdrawable_micro_usd <> 0)
+     UNION ALL SELECT 'erasure_requests: wallet list kept', COUNT(*) FROM erasure_requests
+      WHERE account_id = :'acct' AND wallet_addresses <> '{}'
+   ) checks
+   ORDER BY check_name;
+   ```
+
+   A row of a shared Secure Enclave key or machine is kept on purpose and is
+   not counted here
+   ([retained data](../reference/personal-data-rules.md#retained-data)).
+
+3. For each wallet address you named, both counts must be 0:
+
+   ```sql
+   \set wallet '0x...'
+   SELECT
+     (SELECT COUNT(*) FROM payments WHERE consumer_address = :'wallet' OR provider_address = :'wallet') AS payments_rows,
+     (SELECT COUNT(*) FROM provider_payouts WHERE provider_address = :'wallet') AS provider_payouts_rows;
+   ```
+
+4. A Privy login with the old identity creates a new, empty account.
 
 ## Rollback
 
-Before the scrub, cancel. After the scrub, the data is gone from the live
-database; it cannot be brought back, by design. Do not restore a backup to
-undo an erasure.
+Only during the grace period: while `request.state` is `pending` and before
+`scrub_after`.
+
+```bash
+curl -sS -X POST "$COORD/v1/admin/accounts/$ACCOUNT/erasure/cancel" \
+  -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+The user and its provider rows are live again, and `request.state` is
+`canceled`. API keys and provider tokens stay revoked: the user makes new keys
+and links the machines again. A 409 `erasure_conflict` means `scrub_after`
+has passed or the request was never confirmed.
+
+After the scrub there is no rollback. The data is gone from the live
+database by design. Do not restore a backup to undo an erasure.
 
 ## Related
 
-- [Storage](../architecture/storage.md#account-erasure) — rule table, soft delete, scrub transaction
-- [API contracts](../reference/api-contracts.md#account-erasure) — routes, bodies, errors
-- [Configuration](../reference/configuration.md) — `EIGENINFERENCE_ERASURE_GRACE`
+- [Account erasure](../architecture/account-erasure.md): mechanism, invariants, failure modes
+- [Personal-data rules](../reference/personal-data-rules.md): rule table, retained data, constants
+- [API contracts: account erasure](../reference/api-contracts.md#account-erasure): fields and errors
+- [Configuration](../reference/configuration.md): `EIGENINFERENCE_ERASURE_GRACE`

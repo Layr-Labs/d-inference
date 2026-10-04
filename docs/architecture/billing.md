@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -115,7 +115,7 @@ and which balance column moves:
 | `admin_reward` | `handleAdminReward` → `handleAdminBalanceAdjustment` → `CreditWithdrawable` | both |
 | `provider_floor_draw` | `coordinator/store/postgres_floor_draw_batch.go` `SettleProviderFloorDrawBatch` → `settleProviderFloorDraw` (`coordinator/store/postgres_base_rewards.go`) | both |
 | `migration` | `coordinator/store/postgres.go` `MigrateAccountBalance` (balance moved between account identities) | both |
-| `erasure_forfeit` | `ScrubAccount` → `forfeitBalance` (`coordinator/store/erasure_postgres.go`); one entry for the whole balance, see [account erasure](storage.md#account-erasure) | both set to 0 |
+| `erasure_forfeit` | `ScrubAccount` → `forfeitBalance` (`coordinator/store/erasure_postgres.go`); one entry for the whole balance, see [account erasure](account-erasure.md#the-scrub-transaction) | both set to 0 |
 | `deposit`, `withdrawal` | declared for legacy (pre-Stripe) deposit and on-chain withdrawal paths; no current handler writes them | — |
 
 `RewardLedgerTypes = {referral_reward, admin_reward}` is the set the

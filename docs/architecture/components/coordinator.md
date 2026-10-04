@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-09-04
+> Last updated: 2026-10-04
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -104,7 +104,9 @@ failure in any step marked *fatal* exits the process before it listens.
 8. **Background loops.** Provider eviction sweep (`StartEvictionLoop`, cadence and timeout in [scheduling.md](../scheduling.md#heartbeat-cadence-and-eviction)); DogStatsD gauge loop;
    profiler fleet sampler and retention sweep; read-cache janitor; throughput
    anomaly detector; base-rewards settlement (when enabled); Stripe payout
-   reconciler; the prompt sidecar supervisor and preloader.
+   reconciler; the account erasure scrub loop (`StartAccountErasureLoop`,
+   [account erasure](../account-erasure.md)); the prompt sidecar supervisor
+   and preloader.
 9. **Listen.** `http.Server` on `:EIGENINFERENCE_PORT` with a 5 s header
    timeout, 10 s read timeout, no write timeout (SSE), 120 s idle timeout and
    a 64 KiB header cap; an optional private pprof listener.

@@ -128,13 +128,14 @@ struct ServeLoopDispatchTests {
         let task = fixture.start()
         let register = try await fixture.awaitRegistration()
 
-        try await fixture.mock.pushAttestationChallenge(
-            nonce: "c2VydmUtbG9vcA==", timestamp: "2026-09-30T12:00:00Z")
+        let nonce = "c2VydmUtbG9vcA=="
+        let timestamp = "2026-09-30T12:00:00Z"
+        try await fixture.mock.pushAttestationChallenge(nonce: nonce, timestamp: timestamp)
         let answered = try await fixture.mock.waitForSnapshot(timeout: .seconds(10)) {
             !$0.attestationResponses.isEmpty
         }
         let response = try #require(answered?.attestationResponses.first)
-        #expect(response.nonce == "c2VydmUtbG9vcA==")
+        #expect(response.nonce == nonce)
         #expect(response.publicKey == register.publicKey)
         // The signature covers nonce + timestamp and verifies with the
         // signer's public key. Another nonce must not verify.
@@ -142,11 +143,11 @@ struct ServeLoopDispatchTests {
         let signerKey = try #require(Data(base64Encoded: fixture.signer.publicKeyBase64))
         #expect(SecureEnclaveIdentity.verify(
             signature: signature,
-            for: Data("c2VydmUtbG9vcA==2026-09-30T12:00:00Z".utf8),
+            for: Data((nonce + timestamp).utf8),
             publicKey: signerKey))
         #expect(!SecureEnclaveIdentity.verify(
             signature: signature,
-            for: Data("b3RoZXItbm9uY2U=2026-09-30T12:00:00Z".utf8),
+            for: Data(("b3RoZXItbm9uY2U=" + timestamp).utf8),
             publicKey: signerKey))
         #expect(Set(response.modelHashes.keys) == [ServeLoopFixture.modelId],
                 "the reply reports only the model this loop serves")

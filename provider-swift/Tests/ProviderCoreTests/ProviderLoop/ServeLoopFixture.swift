@@ -140,20 +140,24 @@ struct ServeLoopFixture: Sendable {
 
     /// Waits until the engine has `count` submitted streams.
     func awaitSubmissions(_ count: Int, timeout: Duration = .seconds(10)) async throws {
-        let deadline = ContinuousClock.now + timeout
-        while engine.continuations.count < count, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(5))
-        }
-        try #require(engine.continuations.count >= count)
+        try await awaitEngine(timeout: timeout) { $0.continuations.count >= count }
     }
 
     /// Waits until the engine has received `count` cancellations.
     func awaitEngineCancellations(_ count: Int, timeout: Duration = .seconds(10)) async throws {
+        try await awaitEngine(timeout: timeout) { $0.cancelledRequestIDs.count >= count }
+    }
+
+    /// Polls the engine every 5 ms until `condition` holds, then requires it.
+    private func awaitEngine(
+        timeout: Duration, until condition: (PrefillScriptEngine) -> Bool
+    ) async throws {
         let deadline = ContinuousClock.now + timeout
-        while engine.cancelledRequestIDs.count < count, ContinuousClock.now < deadline {
+        while !condition(engine), ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(5))
         }
-        try #require(engine.cancelledRequestIDs.count >= count)
+        try #require(condition(engine),
+                     "\(engine.continuations.count) submissions, \(engine.cancelledRequestIDs.count) cancellations")
     }
 
     /// Finishes submission `index` with one token of text "a".
@@ -185,7 +189,7 @@ struct ServeLoopFixture: Sendable {
     }
 }
 
-final class ServeLoopFlag: @unchecked Sendable {
+private final class ServeLoopFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var isSet = false
     func set() { lock.withLock { isSet = true } }

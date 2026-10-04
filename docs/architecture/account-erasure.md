@@ -42,39 +42,17 @@ flowchart LR
   classDef mem fill:#cffafe,stroke:#0e7490,color:#083344
   classDef ext fill:#ffedd5,stroke:#c2410c,color:#431407
 
-  A["Admin<br/>(admin key or Privy admin)"]:::ext
-  subgraph API["coordinator/api"]
-    H["erasure_handlers.go<br/>plan, confirm, status, cancel"]:::api
-    L["StartAccountErasureLoop<br/>(every hour)"]:::loop
-    X["scrubErasure"]:::loop
-  end
-  subgraph ST["store.Store"]
-    C["CachedStore<br/>(drops cached users)"]:::store
-    P["PostgresStore or MemoryStore<br/>(AccountErasureStore)"]:::store
-  end
-  DB[("Postgres<br/>erasure_requests, erasure_outbox,<br/>erasure_refused_credits, triggers")]:::store
-  subgraph MEM["In-memory state"]
-    R["registry<br/>(DisconnectAccount)"]:::mem
-    T["trust-reuse cache, MDM scheduler"]:::mem
-    G["ledger usage, API key cache"]:::mem
-  end
-  W["StartErasureOutboxLoop<br/>(every minute)"]:::loop
-  S["Stripe<br/>Connect, Global Payouts,<br/>Redaction Jobs"]:::ext
-  D["Datadog Logs<br/>(erasure_log:true)"]:::ext
-
-  A --> H
-  H --> C
+  A["Admin<br/>(admin key or Privy admin)"]:::ext --> H["Admin API<br/>erasure_handlers.go"]:::api
+  L["Grace loop<br/>StartAccountErasureLoop"]:::loop --> X["scrubErasure"]:::loop
   H -- "force" --> X
-  L --> X
+  H --> C["CachedStore<br/>(drops cached users)"]:::store
   X --> C
-  C --> P --> DB
-  H -- "after confirm" --> R
-  X -- "after commit" --> R
-  X -- "after commit" --> T
-  X -- "after commit" --> G
-  W -- "lease due rows" --> C
-  W --> S
-  W --> D
+  C --> DB[("Postgres or MemoryStore<br/>erasure tables, triggers")]:::store
+  H -- "after confirm" --> M["In-memory state<br/>registry, trust-reuse cache,<br/>MDM scheduler, ledger usage,<br/>API key cache"]:::mem
+  X -- "after commit" --> M
+  W["Outbox worker<br/>StartErasureOutboxLoop"]:::loop -- "lease due rows" --> C
+  W --> S["Stripe<br/>Connect, Global Payouts,<br/>Redaction Jobs"]:::ext
+  W --> D["Datadog Logs<br/>(erasure_log:true)"]:::ext
 ```
 
 Blue: HTTP handlers. Green: background work. Purple: the store and its
@@ -102,7 +80,6 @@ stateDiagram-v2
   classDef stop fill:#e5e7eb,stroke:#4b5563,color:#111827
 
   [*] --> planned: plan (dry run, confirm token)
-  planned --> planned: plan again (new token)
   planned --> pending: confirm (soft delete)
   pending --> pending: scrub refused or failed (last_error)
   pending --> canceled: cancel before scrub_after

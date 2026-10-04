@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-03
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -10,6 +10,14 @@ is slow to produce first content — races a second provider against it.
 Capacity, queues, slot states and the warm pool are covered in
 [`scheduling.md`](scheduling.md); this page covers only choosing among
 eligible providers.
+
+`coordinator/registry/admission` owns detached slot/token/memory calculations;
+`coordinator/registry/selection` owns detached ranking and affinity decisions.
+Neither imports the live registry. The registry still captures snapshots,
+draws randomness, holds locks, revalidates a selected provider and commits its
+reservation. HTTP retry, cancellation and settlement ownership is in
+`coordinator/api/inference`; moving calculations does not split atomic fleet
+state across services.
 
 For same-ID weight updates, `CatalogAcceptsWeightHash` and catalog eligibility
 accept the desired and retained approved revisions for that same model. An
@@ -45,7 +53,7 @@ and the control-writer handoff even if a provider reuses a request ID. One
 connection-bound acknowledgement worker coalesces the latest barrier rather than
 dropping it when prior settlement is slow. It waits for pre-barrier reservations
 to leave the writer/pending set and for terminal billing before acknowledgement
-(`providerReadLoop` in `coordinator/api/provider.go`).
+(`providerReadLoop` in `coordinator/api/provider/`).
 
 A validation-only request checks the complete model set without changing routing.
 A committed replacement updates model indexes and stale residency/cache evidence
@@ -74,10 +82,10 @@ Invalid selections leave inventory and drain unchanged. See
 ## Context
 
 First-content forecasts include fresh coordinator-to-provider WebSocket RTT.
-`coordinator/registry/provider_transport.go` (`transportForecast`) requires two
+`coordinator/internal/registry/transport/history.go` (`History.Forecast`) requires two
 successful samples on the current connection within 90 seconds, and adds RTT
 and measured variation to the existing delivery allowances. The 30-second
-probe loop (`coordinator/api/provider_transport.go`) accepts RTT observations
+probe loop (`coordinator/api/provider/provider_transport.go`) accepts RTT observations
 up to three seconds; this is a sample limit, not a probe-specific socket
 deadline. It keeps at most one probe outstanding, and an unanswered pong waits
 for ordinary connection teardown. The WebSocket library's control-frame failure
@@ -92,8 +100,8 @@ eligibility gate requires the selected model's explicit `native_media_tools`
 advertisement, vision support and existing tool-constraint protocol. This trait
 survives alias resolution, queued requests, retries and final reservation;
 ordinary media or text-only tools do not acquire it. A model update or disconnect
-immediately removes eligibility. Code: `coordinator/api/native_media_tools.go`
-(`requestHasMediaToolResults`), `coordinator/registry/native_media_tools.go`
+immediately removes eligibility. Code: `coordinator/api/inference/native_media_tools.go`
+(`RequestHasMediaToolResults`), `coordinator/registry/native_media_tools.go`
 (`providerSupportsNativeMediaToolsLocked`) and
 `coordinator/registry/request_traits.go` (`providerEligibleForTraitsLocked`).
 
@@ -135,11 +143,17 @@ dispatch-time entry point. It scans the fleet
 winner (`selectRoutingCandidate`) and
 returns a bounded **dispatch plan** (`coordinator/registry/dispatch_plan.go`)
 holding the winner plus up to `dispatchPlanMaxAlternates = 8` retained
-alternates. The API layer (`coordinator/api/dispatch.go`) consumes the plan:
-it dispatches to the winner, may probe alternates for capacity quotes
+alternates. This limit aliases `shortlist.MaxAlternates`; `shortlist.Order`
+(`coordinator/internal/registry/shortlist/order.go`) retains bounded candidate
+handles and owns their ordering and consumption. The registry's `DispatchPlan`
+still owns candidate evidence, its mutexes and final reservation. The API layer
+retains one request-scoped `Plan` from
+`coordinator/internal/inference/dispatch/plan.go`: its `Scan` dispatches to the
+winner, `Next` consumes retained identities before one full refresh, and `Probe`
+may probe alternates for capacity quotes
 (`capacityProbeWindow = 250 * time.Millisecond`,
-`dispatchPlanProbeFanout = 2`, `coordinator/api/dispatch_plan_wiring.go`) and
-falls through the plan on retry or hedge. `ReserveNextFromPlan`
+`dispatchPlanProbeFanout = 2`, `coordinator/internal/inference/dispatch/plan_probes.go`).
+Retry and hedge share that plan and its refresh budget. `ReserveNextFromPlan`
 (`coordinator/registry/dispatch_plan.go`) refreshes remaining time after both
 registry and provider locks are acquired, before evaluating and debiting an
 alternate. An expired request does not reserve a candidate; an enabled
@@ -201,7 +215,8 @@ See `provider-swift/Sources/ProviderCore/Models/MiMo/MiMoV26DiscoveryLoadFootpri
 `coordinator/registry/scheduler.go` carries this estimate into cold snapshots.
 `reportedFreeForLoadAdmitsWithOffload` in
 `coordinator/registry/offloaded_weights.go` uses it at the cold-load boundary;
-`coldTokenBudgetEstimateWithOffload` in `coordinator/registry/servability.go`
+`ColdTokenBudgetWithOffload` in
+`coordinator/internal/registry/memorypolicy/structural.go`
 uses it for the post-load token-budget estimate.
 This does not subtract request KV, prove physical capacity, waive catalog
 minimum RAM or activate a model. Wire fields are defined in
@@ -227,7 +242,7 @@ Gates run in the order below. The first failing gate names the rejection;
 | 7 | `GateCapacityCooldown` | `capacity_cooldown` | `providerRoutingGateReasonLockedEx` | Pair is in capacity-reject cooldown (black-hole 503s). |
 | 8 | `GateBreaker` | `breaker` | `providerRoutingGateReasonLockedEx` | Node-health breaker open for genuine-fault errors. |
 | 9 | `GateEjection` | `ejection` | `providerRoutingGateReasonLockedEx` | Stable-identity health ejection open. |
-| 10 | `GateOffline` | `offline` | `providerLivenessGateReasonLocked` | `Status == StatusOffline` — set by the provider socket handler (`coordinator/api/provider.go`) the moment the WebSocket dies, before the deferred `Disconnect()` removes the record ([`scheduling.md`](scheduling.md#disconnect)). |
+| 10 | `GateOffline` | `offline` | `providerLivenessGateReasonLocked` | `Status == StatusOffline` — set by the provider socket handler (`coordinator/api/provider/`) the moment the WebSocket dies, before the deferred `Disconnect()` removes the record ([`scheduling.md`](scheduling.md#disconnect)). |
 | 11 | `GateUntrusted` | `untrusted` | `providerLivenessGateReasonLocked` | `Status == StatusUntrusted`. |
 | 12 | `GateStateRestoring` | `state_restoring` | `providerLivenessGateReasonLocked` | Verified SE identity is still awaiting durable account/counter/reputation restoration. Also excludes owner self-route, capacity and model loading. |
 | 13 | `GatePrivateOnly` | `private_only` | `providerLivenessGateReasonLocked` | Provider is `PrivateOnly` and the request is not from its owner. |
@@ -242,7 +257,7 @@ Gates run in the order below. The first failing gate names the rejection;
 | 22 | `GateNoHeadroom` | `no_headroom` | `hasConcurrencyHeadroomForModelCapResolvedLocked` | Provider or slot is at its concurrency cap ([`scheduling.md`](scheduling.md#concurrency-caps)). |
 | 23 | `GateThermalCritical` | `thermal_critical` | `buildCandidateInto` | `SystemMetrics.ThermalState == "critical"`. |
 | 24 | `GateModelTooLarge` | `model_too_large` | `modelFitsHardware` | Model is not resident and cannot fit the node's total memory. Permanent, not capacity. |
-| 25 | `GateFreeMemory` | `free_memory` | `freeMemoryAdmits` | Token-budget or memory admission fails, or the pair is budget-clamped. |
+| 25 | `GateFreeMemory` | `free_memory` | `memorypolicy.Admits` | Token-budget or memory admission fails, or the pair is budget-clamped. |
 | 26 | `GateTTFTCeiling` | `ttft_ceiling` | `scanCandidatesLocked` | Estimated TTFT exceeds `pr.MaxTTFTMs` (public non-vision requests with a ceiling only). |
 
 Gates 5–9 are the coordinator's own fault memory and are evaluated *before*
@@ -252,8 +267,16 @@ providers rejected by gates 8–9 (`breakerRejected`) and providers that would
 have been routable but for gate 7 (`capacityRejections`) because both feed the
 fail-open and 429 decisions described under [Failure modes](#failure-modes).
 
-Registration recovery (`coordinator/api/provider_restore.go`,
-`restorePersistedProviderState`) retries transient reads within one bounded
+`classifyRejectedProvider` (`coordinator/registry/routing_rejection_classification.go`)
+holds the provider lock while `identitygate.View.ClassifyRejection`
+(`coordinator/internal/registry/identitygate/rejection.go`) distinguishes
+breaker/ejection rejection from otherwise-eligible draining or capacity-cooled
+providers. The view confirms its session binding and repeats the reads after
+an identity move, so an emptied migration source cannot suppress fail-open or
+turn a capacity rejection into structural absence.
+
+Registration recovery (`coordinator/api/provider/provider_restore.go`,
+`RestorePersistedProviderState`) retries transient reads within one bounded
 deadline. Until it completes, `providerStateRestoreRequiredLocked` keeps the
 verified identity out of routing, public capacity and warm-pool candidates.
 A sustained failure closes the new connection for retry before evicting an
@@ -360,7 +383,7 @@ retirement ownership remain enforced. See
 for the age, prompt and failure-backoff bounds.
 `SetPrefillToDecodeRatio` changes the ratio process-wide; the coordinator
 binary wires it to `EIGENINFERENCE_PREFILL_DECODE_RATIO`
-(`coordinator/cmd/coordinator/main.go`).
+(`coordinator/app/routing.go`).
 
 **Historical prefill cost weighting for long prompts.** `longPromptPenalty(promptTokens,
 ttftBlockMs)` returns `(longPromptPrefillWeight − 1) × ttftBlockMs` when a
@@ -376,19 +399,36 @@ fast prefill is dwarfed by the load. The setters are
 **TTFT estimate.** Separately from cost, each candidate carries an estimated
 time-to-first-token (`ttftMsFromSnapshot`): slot state penalty + prefill of
 tokens queued ahead + this request's prefill + one decode step
-(`1000 / effectiveTPS`). The per-(model, chip family) calibration scales only
-the flow terms, leaving the cold-load state penalty unchanged. It learns
-dispatch-to-first-content samples at content commit, not full completion
-(`ttftCalibration.appliedRatio`, `coordinator/registry/ttft_calibration.go`).
+(`1000 / effectiveTPS`). The scheduler delegates that historical arithmetic to
+`ttftforecast.Estimate.Base` and `Work.QueuedPrefill`
+(`coordinator/internal/registry/ttftforecast/forecast.go`). The per-(model, chip
+family) calibration scales only the flow terms, leaving the cold-load state
+penalty unchanged (`ttftcalibration.Apply`,
+`coordinator/internal/registry/ttftcalibration/ratio.go`). The process-wide
+`ttftCalibration` adapter in `coordinator/registry/ttft_calibration.go` shares
+one `ttftcalibration.Calibrator` between reservation and content observation.
+`NotePrediction` records the raw warm-slot estimate; `RecordActual` consumes
+the matching request/attempt once and learns dispatch-to-first-content latency,
+not completion latency. `AppliedRatio` selects the warmed-up chip window before
+the model aggregate (`coordinator/internal/registry/ttftcalibration/calibrator.go`).
 `ttftOccupancyAlpha` applies only to the diagnostic shadow estimate, including
 when `EIGENINFERENCE_TTFT_ADMISSION_MODE=enforce`; it does not change the live TTFT ceiling.
 This calibrated mean remains a diagnostic, separate from the expected and
 conservative forecasts used by current selection and deadline feasibility.
 A learned ratio cannot certify unknown performance evidence.
 
+The prediction join is bounded by `PendingTTL = 10 * time.Minute` and
+`MaxPending = 8192`. `PendingPredictions.Maintain`
+(`coordinator/internal/registry/ttftcalibration/pending.go`) rate-limits whole-map
+sweeps and makes bounded room between sweeps; the calibrator lock covers
+maintenance plus insertion and consumption plus learning. Speculative and
+cache-routing attempts do not train the ratio (`Reporter.ObserveTTFTCalibration`,
+`coordinator/internal/inference/metrics/calibration.go`).
+
 When the matching heartbeat reports zero running and waiting requests,
 `fillSnapshotPendingAndPool` supplies each local pending request's own prompt
-estimate to `queuedPrefillTokensAhead`. Attempts that already committed
+estimate to `queuedPrefillTokensAhead`, which calls `ttftforecast.Work.QueuedPrefill`.
+Attempts that already committed
 content contribute no further prefill. Non-positive prompt estimates and
 cache-routing participants retain the arriving-prompt proxy because their
 prefill work is unknown. With nonzero heartbeat occupancy, the existing
@@ -447,26 +487,31 @@ ties. The runner-up records the next first-content alternative.
 
 A request that has not produced first content by its **speculative point**
 may launch one distinct feasible backup with spare service allowance. A logical
-request never launches a second hedge after retry. The mechanics live in
-`coordinator/api/dispatch.go` (`runSpeculative`, `runRace`) with timing in
-`coordinator/api/hedge_schedule.go` and `coordinator/api/first_token_clock.go`.
+request never launches a second hedge after retry. `runSpeculative` and `runRace`
+in `coordinator/api/inference/dispatch.go` delegate to `Speculative.Run`
+(`coordinator/api/inference/speculative_run.go`) and the `attempt.Race` owner
+(`coordinator/internal/inference/attempt/race.go`). Timing lives in
+`coordinator/internal/inference/hedge/hedge_schedule.go` and
+`coordinator/internal/inference/firstcontent/clock.go`.
 
 **Launch offset.** The initial speculative point is
-`deadline × speculativeTimerRatio`, `speculativeTimerRatio = 0.5`
-(`coordinator/api/consumer.go`). When the probe round returns a
+`deadline × 0.5` (`AccountPolicy.HedgeDelay`,
+`coordinator/internal/inference/firstcontent/accounts.go`). For exempt requests,
+the account policy uses an advisory model budget without creating a deadline.
+When the probe round returns a
 high-confidence quote for the best alternate, it may deliver one strictly
 earlier absolute launch instant through `hedgeAdvanceCh`, computed by
-`hedgeLaunchOffset(deadline, backupTTFTQ90, confidence)`:
+`hedge.LaunchOffset(deadline, backupTTFTQ90, confidence)`:
 
 ```text
 halfPoint    = deadline / hedgeRatioDenominator          # hedgeRatioDenominator = 2
 backupBudget = max(backupTTFTQ90, hedgeMinBackupBudget)  # hedgeMinBackupBudget = time.Second
 latestUseful = deadline − backupBudget − hedgeCommitGuard # hedgeCommitGuard = 500 * time.Millisecond
-offset       = max(0, min(halfPoint, latestUseful))      # halfPoint alone unless confidence == hedgeConfidenceHigh
+offset       = max(0, min(halfPoint, latestUseful))      # halfPoint alone unless confidence == hedge.ConfidenceHigh
 ```
 
-`firstTokenSpeculativeWait` converts the offset into a wait measured from the
-request's `ReceivedAt`, so retries do not restart the clock.
+`firstcontent.Clock.SpeculativeWait` converts the offset into a wait measured
+from the request's `ReceivedAt`, so retries do not restart the clock.
 
 **Backup selection.** The backup is drawn from the retained dispatch plan
 (`dispatchFromPlanMachinery`), reranked and revalidated against current evidence,
@@ -475,25 +520,29 @@ or, when the plan is exhausted, from a fresh
 provider excluded. A `PreferOwner` request being served by the owner's own
 machine never hedges onto the paid public fleet.
 
-**Governor.** `hedgeGovernor.tryAcquireHedge` (`coordinator/api/hedge_governor.go`)
-must return `hedgeAllow` before a backup launches; the verdict and the budget
+**Governor.** `hedge.Governor.TryAcquire` (`coordinator/internal/inference/hedge/governor.go`)
+must return `hedge.Allow` before a backup launches; the verdict and the budget
 slot are one atomic operation. Suppression verdicts, in evaluation order:
 
 | Verdict | Condition |
 |---|---|
-| `hedgeSuppressQueued` | The model has coordinator-queued demand (`modelQueueDepth > 0`). |
-| `hedgeSuppressNoIdleCapacity` | No idle eligible alternative exists and fleet idle slots < `hedgeFleetIdleHeadroomSlots = 2`. |
-| `hedgeSuppressGlobalBudget` | Active hedges ≥ `max(1, fleetIdleSlots / hedgeGlobalBudgetDivisor)`, `hedgeGlobalBudgetDivisor = 4` (budget `0` when nothing is idle). |
-| `hedgeSuppressWinRate` | Model win-rate EWMA (`hedgeWinRateAlpha = 0.2`) < `hedgeWinRateFloor = 0.10` after ≥ `hedgeWinRateMinSamples = 8` outcomes; every `hedgeWinRateExploreInterval = 16` suppressions one hedge is allowed through to re-measure. |
+| `hedge.SuppressQueued` | The model has coordinator-queued demand (`ModelQueueDepth > 0`). |
+| `hedge.SuppressNoIdleCapacity` | No idle eligible alternative exists and fleet idle slots < `FleetIdleHeadroomSlots = 2`. |
+| `hedge.SuppressGlobalBudget` | Active hedges ≥ `GlobalBudget(FleetIdleSlots, IdleAlternativeExists)`: idle slots divided by `GlobalBudgetDivisor = 4`, floored at one when either idle-capacity signal is positive, otherwise zero. |
+| `hedge.SuppressWinRate` | Model win-rate EWMA (`WinRateAlpha = 0.2`) < `WinRateFloor = 0.10` after ≥ `WinRateMinSamples = 8` outcomes; every `WinRateExploreInterval = 16` suppressions one hedge is allowed through to re-measure. |
+
+Verdicts and constants are defined in
+`coordinator/internal/inference/hedge/hedge_policy.go` (`Evaluate`, `GlobalBudget`).
 
 **Cancel and win.** `runRace` commits whichever attempt delivers first
 content and calls `cancelDispatch` on the other, which sends the provider a
 cancel and releases the reservation. A backup win sets `BackupWon`, emits
 `inference.speculative_win`, and is counted by
-`recordHedgeOutcome`. Both attempts are marked `UsedBackup`; settlement
-excludes them from TTFT calibration (`observeTTFTCalibration`,
-`coordinator/api/settlement.go`). The acquired governor slot is released
-exactly once on every exit path (`noteHedgeResolved`).
+`Governor.RecordOutcome`. Both attempts are marked `UsedBackup`; content
+observation excludes them from TTFT calibration (`Reporter.ObserveTTFTCalibration`,
+`coordinator/internal/inference/metrics/calibration.go`). `Speculative.Run`
+releases the acquired governor slot exactly once on every exit path through
+`Governor.Resolve`, including the accepted-empty-completion wait.
 
 ### Early-429 servability predictor
 
@@ -509,9 +558,10 @@ reasons:
   (`FleetMaxBudget`). If any eligible provider's budget is unknown the
   verdict stays servable.
 
-A provider's structural budget (`snapshotStructuralBudget`) is its reported
+A provider's structural budget (`StructuralBudget` in
+`coordinator/internal/registry/memorypolicy/structural.go`) is its reported
 `ActiveTokenBudgetMax` when the slot reports one; for a provider that is not
-resident it is `coldTokenBudgetEstimate`:
+resident it is `ColdTokenBudgetWithOffload`:
 
 ```text
 weightsGiB   = measured resident GiB (model in servabilityMeasuredResidentGiB) else catalogGB × coldLoadCatalogGBToMemGiB
@@ -524,7 +574,7 @@ tokens       = (postLoadGiB − activationFloorGiB) × 2^30 / kvBytesPerToken  #
 `servabilityActivationFloorGB` and `servabilityModelActivationFloorsGB` mirror
 the provider's `UnifiedMemoryCap` constants, whose values are stated once in
 [`hardware-support.md`](hardware-support.md#constants); the two tables move in
-the same commit. The activation floor (`servabilityActivationFloor`) is the
+the same commit. The activation floor (`ActivationFloor`) is the
 model's entry in `servabilityModelActivationFloorsGB`, else
 `servabilityActivationFloorGB`. Neither term depends on the provider version:
 they mirror the per-model reserve that v0.8.16 and later providers hold, and
@@ -532,7 +582,7 @@ older providers are expected to sit below the routing floor
 (`EIGENINFERENCE_MIN_PROVIDER_VERSION`,
 [`configuration.md`](../reference/configuration.md#release-policy-version-floor-and-binary-hashes)).
 
-Per-model tables (`coordinator/registry/servability.go`):
+Per-model tables (`coordinator/internal/registry/memorypolicy/structural.go`):
 
 | Table | Entries |
 |---|---|
@@ -542,7 +592,7 @@ Per-model tables (`coordinator/registry/servability.go`):
 The consumer path turns an unservable verdict into an immediate `429` instead
 of queueing; the coordinator binary enables this by default and
 `EIGENINFERENCE_SERVABILITY_GATE=false` disables it
-(`coordinator/cmd/coordinator/main.go`, `SetServabilityGate`).
+(`coordinator/app/routing.go`, `SetServabilityGate`).
 
 ### Gray-box capacity signals
 
@@ -552,8 +602,10 @@ their heartbeat still advertises room.
 **Budget clamp** (`coordinator/registry/budget_clamp.go`). The first
 capacity/token-budget rejection for a (provider, model) pair
 (`recordBudgetClampLocked`, fed by `RecordCapacityReject`) makes admission
-stop believing that pair's heartbeat budget: `freeMemoryAdmits` rejects it as
-`free_memory` and `providerBudgetFits` reports zero live headroom. Release
+stop believing that pair's heartbeat budget: `memorypolicy.Admits` rejects it as
+`free_memory` and `BudgetFits` in
+`coordinator/internal/registry/memorypolicy/structural.go` reports zero live
+headroom. Release
 requires both a heartbeat delivered after the clamp showing at least
 `budgetClampReleaseMinHeadroomTokens = 1024` tokens of headroom
 (`releaseBudgetClampsOnHeartbeat`) and an accept for the pair after the clamp
@@ -565,9 +617,9 @@ TTL override `EIGENINFERENCE_BUDGET_CLAMP_TTL_SECONDS`.
 The typed `media_memory_unavailable` refusal describes one request's media
 preparation reservation. It is excluded from model-wide budget clamps,
 capacity-rate penalties, health breakers and reputation through
-`isProviderHealthNeutralErrorReason` (`coordinator/api/route_outcome.go`). It
+`failure.IsProviderHealthNeutralErrorReason` (`coordinator/internal/inference/failure/failure_reasons.go`). It
 still receives bounded capacity failover (`classifyRejection`,
-`coordinator/api/inference_failure_class.go`). A genuine native engine terminal
+`coordinator/internal/inference/rejection/inference_failure_class.go`). A genuine native engine terminal
 cannot claim this exemption. Deploy the coordinator's reason handling before
 providers that emit it; older coordinators treat unknown capacity reasons as
 ordinary capacity refusals.
@@ -592,8 +644,8 @@ accept is gated (`capacity_cooldown`) for `defaultCapacityCooldownTTL =
 `EIGENINFERENCE_CAPACITY_COOLDOWN_MAX_TTL_SECONDS`.
 
 First-content accepts carry their observation time from
-`coordinator/api/dispatch.go` (`commitFirstContent`) to
-`coordinator/registry/capacity_cooldown.go` (`RecordCapacityAcceptObserved`).
+`coordinator/api/inference/dispatch.go` (`commitFirstContent`) to
+`coordinator/registry/gate_preparation.go` (`RecordCapacityAcceptObserved`).
 The recorder runs asynchronously so the first client byte does not wait for
 `registry.mu`. Reject strikes after the observation survive a delayed accept;
 a cooldown is rebuilt from fresh backoff when those surviving strikes
@@ -606,22 +658,24 @@ outcome exactly once at first content or completion.
 
 | Mechanism | File | Keyed by | Trips when | Holds for |
 |---|---|---|---|---|
-| Inference-error cooldown (`error_cooldown`) | `coordinator/registry/error_cooldown.go` | provider × model × error shape | `inferenceErrorThreshold = 2` strikes within `inferenceErrorWindow = 60 * time.Second` | `inferenceErrorCooldownTTL = 5 * time.Minute` |
-| Node-health breaker (`breaker`) | `coordinator/registry/provider_breaker.go` | stable provider identity | `providerBreakerConsecTrip = 5` consecutive genuine faults, or fail rate > `providerBreakerFailRate = 0.80` over ≥ `providerBreakerMinVolume = 20` outcomes in `providerBreakerWindow = 120 * time.Second` (ring of `providerHealthRingSize = 20`) | `providerBreakerBaseCooldown = 60 * time.Second`, doubling to `providerBreakerMaxCooldown = 5 * time.Minute` |
-| Health ejection (`ejection`) | `coordinator/registry/health_ejection.go` | stable provider identity | `healthEjectionConsecTrip = 8` consecutive failures, or success rate < `healthEjectionMinSuccessRate = 0.10` over ≥ `healthEjectionMinSample = 15` outcomes in `healthEjectionWindow = 10 * time.Minute`, or `healthEjectionCapacityConsecTrip = 10` consecutive capacity rejects | `healthEjectionBaseCooldown = 60 * time.Second`, doubling to `healthEjectionMaxCooldown = 10 * time.Minute` |
-| Dispatch-load cooldown (`dispatch_load_cooldown`) | `coordinator/registry/model_loading.go` | provider × model | a dispatch-time `load_model` fails | `dispatchLoadCooldownTTL = 2 * time.Minute` |
+| Inference-error cooldown (`error_cooldown`) | `coordinator/internal/registry/identitygate/error_cooldown.go` | provider × model × error shape | `inferenceErrorThreshold = 2` strikes within `inferenceErrorWindow = 60 * time.Second` | `inferenceErrorCooldownTTL = 5 * time.Minute` |
+| Node-health breaker (`breaker`) | `coordinator/internal/registry/identitygate/provider_breaker.go`; `coordinator/internal/registry/identitygate/health_history.go` | stable provider identity | `ProviderBreakerConsecTrip = 5` consecutive genuine faults, or fail rate > `providerBreakerFailRate = 0.80` over ≥ `providerBreakerMinVolume = 20` outcomes in `BreakerWindow = 120 * time.Second` (ring of `HealthRingSize = 20`) | `providerBreakerBaseCooldown = 60 * time.Second`, doubling to `providerBreakerMaxCooldown = 5 * time.Minute` |
+| Health ejection (`ejection`) | `coordinator/internal/registry/identitygate/health_ejection.go` | stable provider identity | `healthEjectionConsecTrip = 8` consecutive failures, or success rate < `healthEjectionMinSuccessRate = 0.10` over ≥ `healthEjectionMinSample = 15` outcomes in `healthEjectionWindow = 10 * time.Minute`, or `healthEjectionCapacityConsecTrip = 10` consecutive capacity rejects | `healthEjectionBaseCooldown = 60 * time.Second`, doubling to `healthEjectionMaxCooldown = 10 * time.Minute` |
+| Dispatch-load cooldown (`dispatch_load_cooldown`) | `coordinator/internal/registry/identitygate/dispatch_load.go` | provider × model | a dispatch-time `load_model` fails | `dispatchLoadCooldownTTL = 2 * time.Minute` |
 
 Fault state keys by the provider's stable identity when one is bound, so it
-survives disconnect and reconnect (`Disconnect`, `coordinator/registry/provider_lifecycle.go`).
+survives disconnect and reconnect (`ConnectionLifecycle.Disconnect`,
+`coordinator/registry/connection_disconnect.go`).
 Every tracker in this table and in [gray-box capacity signals](#gray-box-capacity-signals)
-stores its state in one `gateState` per identity
+stores its state in one `identitygate.State` per identity
 ([below](#concurrency-scan-commit-and-fault-state-gates)).
 
-The health rings share `providerHealthWindow.recordOutcome` for insertion and
+The health rings share `HealthHistory.recordOutcome` for insertion and
 `rebuild` for identity merges and version-reset filtering. Rebuilds preserve
 each outcome's disconnect-flush marker and recompute the trailing fault streak
-from the retained chronological history (`coordinator/registry/provider_breaker.go`,
-`coordinator/registry/version_reset.go`).
+from the retained chronological history
+(`coordinator/internal/registry/identitygate/health_history.go`,
+`coordinator/internal/registry/identitygate/version_reset.go`).
 
 **Fail-open.** If the scan produced no winner, at least one provider was
 rejected only by the breaker or ejection, and there were no capacity or TTFT
@@ -638,13 +692,18 @@ the request path takes it for writing.
 | Lock | Guards | Request-path holders |
 |---|---|---|
 | `Registry.mu` (`sync.RWMutex`, `coordinator/registry/registry.go`) | The provider map, catalog, aliases and routing configuration. | The scan and the commit, for READING (`scanProviderReservation`, `commitLock`). Writers are `Register`, `Disconnect`, `evictStale`, the swap planner and the config setters. |
-| `Provider.mu` | One provider's heartbeat state, pending set, attestation and cached gate pointer (`Provider.gate`). | The scan per provider (`snapshotProviderIntoLockedEx`); the commit's whole decide-and-debit section; the identity bind (`bindStableFaultKey`). |
-| `Registry.gatesMu` (`sync.RWMutex`) | The gate index: fault key → `gateState`, session → `Provider` (`coordinator/registry/gate_index.go`). | Recorders for READING (session → gate resolution), first insertion (`ensureGateLocked`), and the rare validated retry fallback (`lockGateWithIndex`). Also written by `attachSessionGate`, `detachSessionGate`, `bindStableFaultKey` and `sweepGates`. |
-| `gateState.mu` | One identity's fault trackers (`coordinator/registry/gate_state.go`). | Recorders (`lockGate`), the commit's probe claim (`tryClaimCapacityProbe`), the per-model gate reads. Microseconds, per identity. |
+| `Provider.mu` | One provider's heartbeat state, pending set, attestation and retained directory session (`Provider.gateSession`). | The scan per provider (`snapshotProviderIntoLockedEx`); the commit's whole decide-and-debit section; the identity bind (`bindStableFaultKey`). |
+| `Registry.sessionsMu` (`sync.RWMutex`) | Session → live `Provider` projection (`coordinator/registry/gate_index.go`, `sessionProvider`). | Attach/detach brackets directory publication; budget projection reads finish before directory fault mutations. The directory itself never acquires a provider lock. |
+| `identitygate.Directory.gatesMu` (`sync.RWMutex`) | Private fault-key → `State` and session → `identitygate.Session` indexes (`coordinator/internal/registry/identitygate/directory.go`). | Recorders resolve under the index read lock; insertion, identity bind, sweep and retry fallback stabilize the index before state acquisition (`gate_index.go`, `gate_lock.go` under `coordinator/internal/registry/identitygate/`). |
+| `identitygate.State.mu` | One identity's fault trackers (`coordinator/internal/registry/identitygate/gate_state.go`). | Recorders (`lockGate`), the commit's probe claim (`tryClaimCapacityProbe`), the per-model gate reads. Microseconds, per identity. |
 
-Lock order: `r.mu → p.mu → gatesMu → gate.mu`. `r.mu` or `p.mu` is never
-acquired while `gatesMu` or a `gate.mu` is held, and there is no walk-wide
-gates lock on the scan (`gate_state.go` header).
+Lock order retains the caller's registry/provider critical sections before the
+directory index and identity state: `r.mu → p.mu → Directory.gatesMu → State.mu`.
+The optional live-session projection lock brackets attach/detach before directory
+publication. `r.mu` or `p.mu` is never acquired while a directory index or state
+lock is held, and the scan takes no walk-wide gates lock
+(`coordinator/internal/registry/identitygate/directory.go`, `Directory`;
+`coordinator/registry/gate_index.go`, `attachSessionGate`, `detachSessionGate`).
 
 **Two-phase reservation** (`coordinator/registry/scheduler.go`).
 `scanProviderReservation` walks the fleet under `r.mu.RLock`; concurrent
@@ -669,15 +728,17 @@ takes `r.mu.Lock()` for the commit — the previous fleet-wide serialization,
 kept as the kill switch behind
 [`EIGENINFERENCE_RESERVE_COMMIT_MODE`](../reference/configuration.md#routing-admission-and-ttft).
 
-**Per-identity gates.** Each fault tracker's state lives in a `gateState`
+**Per-identity gates.** Each fault tracker's state lives in an `identitygate.State`
 keyed by fault key (serial → SE key → account → session id) with its own
-mutex; a connected provider caches its gate in `Provider.gate` (an atomic
-pointer). Recorders (`RecordProviderOutcome`, `RecordProviderServeOutcome`,
+mutex; a connected provider retains an `identitygate.Session` whose private gate
+pointer is atomic. `Directory` owns the index, state and bindings; the registry
+keeps only live-provider projection and decision adapters. Recorders
+(`RecordProviderOutcome`, `RecordProviderServeOutcome`,
 `RecordProviderSessionServeOutcome`, `RecordInferenceError`,
 `RecordInferenceSuccess`, `RecordCapacityReject`, `RecordCapacityAcceptObserved`,
 `RecordCapacityAcceptOutcome`, `RecordDispatchLoadFailure`,
 `ClearDispatchLoadCooldown`) resolve the gate and take `gate.mu` through
-`lockGate` (`coordinator/registry/gate_lock.go`), never `r.mu`; `lockGate`
+`lockGate` (`coordinator/internal/registry/identitygate/gate_lock.go`), never `r.mu`; `lockGate`
 re-validates under the lock that the gate is still the session's current one
 and not retired, and re-resolves otherwise. A missing identity makes a
 clear operation a no-op. After `gateRelockMaxRetries` optimistic retries,
@@ -688,15 +749,17 @@ ejection verdicts from atomics (`breakerOpenAt`, `ejectedAt`) and takes
 per-model state, so a provider with no fault state costs a few atomic loads.
 
 Version-reset history and disconnect-flush tags live under the same identity
-mutex (`coordinator/registry/version_reset.go`). `disconnectSource` captures
+mutex (`coordinator/internal/registry/identitygate/version_reset.go`). `DisconnectSource` captures
 the session before acquiring the gate and compares its disconnect timestamp
-with `gateState.versionResetAt` while the mutation lock is held. This preserves
+with `State.versionResetAt` while the mutation lock is held. This preserves
 the [restart behavior](scheduling.md#disconnect) without returning terminal
 recorders to the fleet lock. `RecordCapacityAcceptObserved` likewise replays
 only rejection strikes newer than the accepted observation, retaining a newer
 cooldown or clamp even when accept bookkeeping arrives late.
 
-**Identity rebinds** (`coordinator/registry/gate_migrate.go`). `bindStableFaultKey`
+**Identity rebinds** (`coordinator/internal/registry/identitygate/gate_migrate.go`).
+`bindStableFaultKey` (`coordinator/registry/gate_preparation.go`) delegates to
+`Directory.Bind`, which
 runs at every (re-)attestation and at account linkage, under the session's
 `p.mu` and `gatesMu`. When the key changes it MOVES the identity's accumulated
 state to the refined identity (`migrateGateLocked`; merge policy
@@ -706,27 +769,40 @@ chronologically) and empties the source: an orphaned source is forwarded
 to a sibling session is reset and republished. Cached disconnected identities
 follow the refined identity without changing their disconnect timestamps.
 Their recorder references carry a `disconnectedGateBinding`
-(`coordinator/registry/gate_disconnected_binding.go`), updated under the source
+(`coordinator/internal/registry/identitygate/gate_disconnected_binding.go`), updated under the source
 gate's mutex and validated on acquisition, so an in-flight late flush cannot
 recreate or write into the former identity after a shared-source migration.
 Because the bind holds
-`p.mu`, a section that reads `p.gate` under `p.mu` — the scan's gate chain,
+`p.mu`, a section that resolves `p.gateSession` under `p.mu` — the scan's gate chain,
 the commit through its debit, the alias resolver's `providerCanRouteBuildLocked`
 — never sees the identity change underneath it. The one dispatch-deciding
 read made without `p.mu`, the candidate's capacity-rate penalty
-(`capacityRatePenaltyFor`), confirms its verdict against `p.gate` afterwards
-and re-reads on a move (`gateView`, `coordinator/registry/gate_index.go`); the
+(`capacityRatePenaltyFor`), confirms its verdict against the session's binding
+and re-reads on a move (`identitygate.View.Confirm`,
+`coordinator/internal/registry/identitygate/view.go`; registry `gateView` adapter,
+`coordinator/registry/gate_index.go`); the
 other gate reads confirm the same way as defence in depth.
 
-**Sweep** (`coordinator/registry/gate_sweep.go`). `sweepGates` runs from the
-eviction loop: it prunes per-model entries that can no longer gate routing
+**Sweep** (`coordinator/internal/registry/identitygate/gate_sweep.go`). The registry's
+`sweepGates` adapter (`coordinator/registry/gate_index.go`) invokes
+`Directory.Sweep` from the eviction loop. `Sweep` delegates to `Maintain`, which
+captures `DefaultRetention(now)` and calls `MaintainWithRetention`
+(`coordinator/internal/registry/identitygate/directory.go`). `RetentionCutoffs`
+keeps history freshness (`HistoryNow`), disconnected-session expiry
+(`DisconnectedBefore`) and idle-identity retention (`IdleBefore`) distinct.
+Maintenance prunes per-model entries that can no longer gate routing
 and drops a gate with no live session once it has been idle for
 `gateIdleGrace = 10 * time.Minute`, marking it `retired` under `gate.mu`
 before the index delete so a recorder holding a stale pointer re-resolves.
 Version metadata additionally keeps its gate for `identityVersionRetention`
-after activity, disconnect or reset (`coordinator/registry/version_reset.go`);
+after activity, disconnect or reset (`coordinator/internal/registry/identitygate/version_reset.go`);
 see [disconnect and reconnect](scheduling.md#disconnect). Half-open trip memory
 of a live gate is never pruned.
+`InferenceHistory.Prune` (`coordinator/internal/registry/identitygate/inference_history.go`)
+removes expired strike/cooldown buckets and their expired disconnect provenance;
+`MaintenanceReport` reports retained evidence and retired identities, not mutable
+state. Expiring a disconnected-session lookup does not itself retire an identity
+with live sessions, active history or retained version metadata.
 
 **Observability.** `registry.gate.wait_ms` (DogStatsD histogram tagged
 `site:`, via `SetGateWaitObserver`) records a recorder's `gate.mu`
@@ -749,7 +825,7 @@ through `RecordChallengeFailure`.
 
 ### `Retry-After` derivation
 
-When the consumer path sheds a request with `429`, `estimateRetryAfter` (`coordinator/api/consumer.go`) derives the header:
+When the consumer path sheds a request with `429`, `estimateRetryAfter` (`coordinator/api/inference/consumer.go`) derives the header:
 
 1. Base `2` seconds. If the model's queue is non-empty,
    `queueDepth × 3`, clamped to [2, 30].
@@ -792,7 +868,7 @@ traffic before deploy. It has no binary; it is driven from tests.
   `EstimatedCliff` finds the prompt size where acceptance collapses.
 
 Run it with the package tests, for example
-`go test ./coordinator/registry/routingsim/...` (`TestRoutingSimCalibration`
+`go test ./coordinator/tests/registry/routingsim/...` (`TestRoutingSimCalibration`
 and friends in `routingsim_test.go`). Tests that change process-wide tunables
 such as `SetPrefillToDecodeRatio` restore them afterwards, so the harness
 must not run in parallel with other scheduler tests in the same process.
@@ -819,9 +895,9 @@ must not run in parallel with other scheduler tests in the same process.
    `AvoidVersion` and `MinDecodeTPS` filter in `scanCandidatesLocked` is
    applied only when its result is non-empty.
 8. **A hedge never launches while the model has queued demand, and never
-   exceeds the fleet-wide hedge budget** — `hedgeGovernorVerdict`;
-   acquisition and release are exactly-once (`tryAcquireHedge`,
-   `noteHedgeResolved`).
+    exceeds the fleet-wide hedge budget** — `hedge.Evaluate`;
+    acquisition and release are exactly-once (`Governor.TryAcquire`,
+    `Governor.Resolve`, called by `Speculative.Run`).
 9. **Exactly one attempt of a race commits; the other is cancelled** —
    `runRace` calls `cancelDispatch` on the loser before committing.
 10. **Fault memory survives reconnects** — `Disconnect` preserves breaker,
@@ -835,8 +911,9 @@ must not run in parallel with other scheduler tests in the same process.
     hold; `commitLock` takes `r.mu` for reading unless the kill switch is set.
 12. **A dispatch decision never straddles an identity rebind** —
     `bindStableFaultKey` runs under the session's `p.mu`, so a section that
-    read `p.gate` under `p.mu` acts on that same identity; a read made without
-    `p.mu` confirms against `p.gate` (`gateView.moved`).
+    resolves `p.gateSession` under `p.mu` acts on that same identity; a read made
+    without `p.mu` confirms the session binding (`gateView.moved`, backed by
+    `identitygate.View.Confirm`).
 13. **Fault state moves with the identity and is never double-counted** —
     `migrateGateLocked` merges the source into the destination (`mergeLocked`)
     and empties the source; the state is not copied.
@@ -849,9 +926,9 @@ must not run in parallel with other scheduler tests in the same process.
 
 | Symptom | Cause | What the code does |
 |---|---|---|
-| `no_provider` | No provider advertises the model, or every advertising provider fails a non-capacity gate (`candidateCount == 0` with no capacity rejections). | Preflight returns `429` with `Retry-After` and reason code `no_provider` (`coordinator/api/inference_admission.go`). With [`EIGENINFERENCE_COLD_DISPATCH`](../reference/configuration.md#routing-admission-and-ttft) enabled and an idle on-disk provider that could load the model, the request is queued for a cold dispatch instead (`coldSpillAvailable`, `coordinator/api/cold_dispatch.go`). With breaker-only rejections, fail-open re-scans first (`shouldBypassBreakerFailOpen`). |
+| `no_provider` | No provider advertises the model, or every advertising provider fails a non-capacity gate (`candidateCount == 0` with no capacity rejections). | Preflight returns `429` with `Retry-After` and reason code `no_provider` (`coordinator/api/inference/inference_admission.go`). With [`EIGENINFERENCE_COLD_DISPATCH`](../reference/configuration.md#routing-admission-and-ttft) enabled and an idle on-disk provider that could load the model, the request is queued for a cold dispatch instead (`coldSpillAvailable`, `coordinator/api/inference/cold_dispatch.go`). With breaker-only rejections, fail-open re-scans first (`shouldBypassBreakerFailOpen`). |
 | `model_too_large` | Every advertising provider is cold and `modelFitsHardware` fails (`rejectModelTooLarge`). | Permanent rejection for this fleet composition; `routingsim` reports `OutcomeModelTooLarge`. |
-| All gated on capacity (`machine_busy`) | Providers serve the model but all are at `no_headroom`, `free_memory` or `capacity_cooldown`. | With [`EIGENINFERENCE_QUEUE_BEFORE_SHED`](../reference/configuration.md#routing-admission-and-ttft) enabled (`coordinator/api/cold_dispatch.go`) the request queues per [`scheduling.md`](scheduling.md); otherwise `429` with `Retry-After` from `estimateRetryAfter`. |
+| All gated on capacity (`machine_busy`) | Providers serve the model but all are at `no_headroom`, `free_memory` or `capacity_cooldown`. | With [`EIGENINFERENCE_QUEUE_BEFORE_SHED`](../reference/configuration.md#routing-admission-and-ttft) enabled (`coordinator/api/inference/cold_dispatch.go`) the request queues per [`scheduling.md`](scheduling.md); otherwise `429` with `Retry-After` from `estimateRetryAfter`. |
 | `ttft_too_slow` | Every candidate with credible conservative evidence exceeds the first-content deadline. | Soft by default: the best-available provider still serves. `EIGENINFERENCE_TTFT_HARD_REJECT=true` restores the legacy `429`; vision requests and accounts outside the first-content SLA selector are never TTFT-gated. |
 | Queue timeout | A queued request found no eligible provider within the queue's wait bound. | `ErrQueueTimeout` → `429` with `Retry-After`; see [`scheduling.md`](scheduling.md#per-model-request-queue). |
 | Budget-clamped fleet | Every pair for the model is clamped after capacity 503s. | Pairs show as `free_memory` until release or `defaultBudgetClampTTL` ([above](#gray-box-capacity-signals)); heartbeat headroom plus one accept releases early. |
@@ -862,26 +939,29 @@ must not run in parallel with other scheduler tests in the same process.
 | Concern | File / symbol |
 |---|---|
 | Dispatch-time selection, cost model, TTFT estimate | `coordinator/registry/scheduler.go` — `ReserveProviderWithPlan`, `scanCandidatesLocked`, `snapshotProviderIntoLockedEx`, `buildCandidateInto`, `slotStatePenalty`, `healthPenaltyMs`, `resolveEffectiveTPS`, `ttftMsFromSnapshot`, `longPromptPenalty` |
+| Historical TTFT and occupancy shadow arithmetic | `coordinator/internal/registry/ttftforecast/forecast.go` (`Estimate.Base`, `Work.QueuedPrefill`, `OccupancyDelay`, `Shadow`, `Deadline`); callers in `coordinator/registry/scheduler.go` and `coordinator/registry/ttft_shadow.go` |
 | Provider-state projection for selection and capacity preflight | `coordinator/registry/routing_snapshot.go` — `fillRoutingSnapshotPLocked`; callers retain their own eligibility gates and hold both registry and provider locks |
 | Candidate preferences and ranking | `coordinator/registry/candidate_selection.go` — `preferRoutingCandidates`, `selectRoutingCandidate` |
 | Shared gate primitives | `coordinator/registry/routing_eligibility.go` — `providerLivenessGateReasonLocked`, `providerServesRoutableModelLocked` |
 | Closed vocabularies | `coordinator/registry/gate_reason.go` — `GateReason`, `SelectionPath`, `SlotState` |
 | Trust floor and challenge failures | `coordinator/registry/registry.go` — `MinTrustLevel`; `coordinator/registry/provider.go` — `MaxFailedChallenges`; `coordinator/registry/attestation_policy.go` — `RecordChallengeFailure` |
-| Dispatch-load cooldown and disconnect | `coordinator/registry/model_loading.go` — `dispatchLoadCooldownTTL`; `coordinator/registry/provider_lifecycle.go` — `Disconnect` |
+| Dispatch-load cooldown and disconnect | `coordinator/internal/registry/identitygate/dispatch_load.go` (`dispatchLoadCooldownTTL`); `coordinator/registry/connection_disconnect.go` (`ConnectionLifecycle.Disconnect`) |
 | Two-phase reservation (scan, commit, plan consumption) | `coordinator/registry/scheduler.go` — `scanProviderReservation`, `commitProviderReservation`, `providerCanAdmitLockedEx`; `coordinator/registry/dispatch_plan.go` — `ReserveNextFromPlan` |
-| Per-identity fault-state gates | `coordinator/registry/gate_state.go` — `gateState`, `publishLocked`, `breakerOpenAt`, `ejectedAt`; `coordinator/registry/gate_index.go` — `gateOf`, `gateView`, `attachSessionGate`, `detachSessionGate`; `coordinator/registry/gate_migrate.go` — `bindStableFaultKey`, `migrateGateLocked`, `mergeLocked`; `coordinator/registry/gate_lock.go` — `lockGate`, `gateRef`, `SetGateWaitObserver`; `coordinator/registry/gate_sweep.go` — `sweepGates`, `gateIdleGrace`; `coordinator/registry/gate_commit_mode.go` — `reserveCommitMode`, `commitLock` |
-| Bounded dispatch plan | `coordinator/registry/dispatch_plan.go` — `dispatchPlanMaxAlternates`, `PlanEntry` |
-| Servability predictor | `coordinator/registry/servability.go` — `PredictServable`, `coldTokenBudgetEstimate`, `servabilityActivationFloor` |
+| Per-identity fault-state gates | `coordinator/internal/registry/identitygate/directory.go` (`Directory`, `Session`, `Bind`, `Sweep`); `coordinator/internal/registry/identitygate/gate_state.go` (`State`, `publishLocked`, `breakerOpenAt`, `ejectedAt`); `coordinator/internal/registry/identitygate/gate_migrate.go` (`migrateGateLocked`, `mergeLocked`); `coordinator/internal/registry/identitygate/gate_lock.go` (`lockGate`, `Reference`, `SetGateWaitObserver`); `coordinator/internal/registry/identitygate/gate_sweep.go` (`sweepGatesLocked`, `gateIdleGrace`); registry adapters in `coordinator/registry/gate_index.go`, `coordinator/registry/gate_preparation.go`; `coordinator/registry/gate_commit_mode.go` (`commitLock`) |
+| Identity retention and rejection classification | `coordinator/internal/registry/identitygate/directory.go` (`DefaultRetention`, `MaintainWithRetention`, `MaintenanceReport`); `coordinator/internal/registry/identitygate/inference_history.go` (`InferenceHistory.Prune`); `coordinator/internal/registry/identitygate/rejection.go` (`View.ClassifyRejection`); `coordinator/registry/routing_rejection_classification.go` (`classifyRejectedProvider`) |
+| Bounded dispatch plan | `coordinator/registry/dispatch_plan.go` (`DispatchPlan`, `PlanEntry`); `coordinator/internal/registry/shortlist/order.go` (`MaxAlternates`, `Order.Claim`, `Order.Rank`); `coordinator/registry/first_content_plan.go` (`reserveFirstContentFromPlan`, `claimEntry`) |
+| Servability predictor | `coordinator/registry/servability.go` — `PredictServable`; `coordinator/internal/registry/memorypolicy/structural.go` — `StructuralBudget`, `ColdTokenBudgetWithOffload`, `ActivationFloor`, `ColdWeightsGiB` |
 | Budget clamp | `coordinator/registry/budget_clamp.go` — `recordBudgetClampLocked`, `releaseBudgetClampsOnHeartbeat` |
 | Capacity-rate penalty and cooldown | `coordinator/registry/capacity_rate.go`, `coordinator/registry/capacity_cooldown.go` |
 | Breakers and ejection | `coordinator/registry/error_cooldown.go`, `coordinator/registry/provider_breaker.go`, `coordinator/registry/health_ejection.go` |
 | Provider operational history | `coordinator/registry/reputation.go` — `Reputation`, `RecordLatency` |
-| TTFT calibration | `coordinator/registry/ttft_calibration.go`; fed by `observeTTFTCalibration` in `coordinator/api/settlement.go` |
-| Hedge timing, governor, race | `coordinator/api/hedge_schedule.go`, `coordinator/api/hedge_governor.go`, `coordinator/api/dispatch.go` (`runSpeculative`, `runRace`), `coordinator/api/first_token_clock.go` |
-| Probes and plan wiring | `coordinator/api/dispatch_plan_wiring.go` |
-| `Retry-After`, speculative ratio, route EWMA | `coordinator/api/consumer.go` — `estimateRetryAfter`, `estimateTTFTRetryAfter`, `speculativeTimerRatio` |
-| Queue-before-shed and cold dispatch flags | `coordinator/api/cold_dispatch.go` |
-| Flag wiring at startup | `coordinator/cmd/coordinator/main.go` |
+| TTFT calibration | `coordinator/internal/registry/ttftcalibration/calibrator.go` (`Calibrator.NotePrediction`, `RecordActual`, `AppliedRatio`); `pending.go` (`PendingPredictions.Maintain`); `ratio.go` (`Apply`); process-wide adapter in `coordinator/registry/ttft_calibration.go`, fed by `Reporter.ObserveTTFTCalibration` in `coordinator/internal/inference/metrics/calibration.go` |
+| Hedge timing, governor, race | `coordinator/internal/inference/hedge/hedge_schedule.go` (`LaunchOffset`); `coordinator/internal/inference/hedge/governor.go` (`Governor.TryAcquire`, `Resolve`, `RecordOutcome`); `coordinator/api/inference/speculative_run.go` (`Speculative.Run`); `coordinator/internal/inference/attempt/race.go` (`Race`); `coordinator/internal/inference/firstcontent/clock.go` (`Clock`) |
+| Request-scoped plan, probes and evidence refresh | `coordinator/internal/inference/dispatch/plan.go` (`Plan.Scan`, `Plan.Next`); `plan_probes.go` (`Plan.Probe`, `Plan.RefreshQuotes`); `coordinator/api/inference/dispatch_plan_wiring.go` binds the request inputs |
+| `Retry-After` and route EWMA | `coordinator/api/inference/consumer.go` — `estimateRetryAfter`, `estimateTTFTRetryAfter` |
+| Initial speculative delay | `coordinator/internal/inference/firstcontent/accounts.go` (`AccountPolicy.HedgeDelay`); `coordinator/api/inference/first_content_accounts.go` (`firstContentHedgeDelay`) |
+| Queue-before-shed and cold dispatch flags | `coordinator/api/inference/cold_dispatch.go` |
+| Flag wiring at startup | `coordinator/app/routing.go` |
 | Simulation harness | `coordinator/registry/routingsim/` — `runner.go`, `fleet.go`, `fleet_ndjson.go`, `trace.go`, `report.go` |
 
 ## Related
@@ -905,7 +985,7 @@ concurrency or memory limits.
 `coordinator/modelpolicy/first_content_sla.go` (`SetFirstContentSLAsFromEnv`) configures both fixed and per-input-token terms for exact model IDs, independently of model registration. Bonsai 2 uses a 10-second upstream base plus 5 ms per estimated prompt token; the live coordinator cutoff retains the existing 1-second response margin. This is the request-absolute first-content budget, carried through admission, queueing, retries and provider writer handoff, not an independent kernel prefill clock. These budgets apply only to accounts selected by `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS`. Provision the selector privately in the deployment environment; its value must match the authenticated account ID or stored email. Other service accounts and direct consumers are exempt, including for Bonsai. An explicit public-model policy takes precedence over its resolved build. Enforcement is selected before media and admission; a concrete native-media post-fetch recount may correct the input-token term once, anchored to the original receive time. Alias fallback and retries retain that clock. Configuration details are in [configuration.md](../reference/configuration.md).
 
 Concrete native MiMo requests replace recognized media fallback costs with
-processor-aware estimates (`coordinator/api/media_prompt_work.go`,
+processor-aware estimates (`coordinator/internal/inference/media/media_prompt_work.go`,
 `mediaPromptTokens`). The background prompt-artifact provisioner verifies and
 retains `config.json` geometry; a changed active artifact invalidates its use.
 `coordinator/mediawork` reads bounded image headers, ordinary MP4/MOV sample
@@ -924,9 +1004,9 @@ top-up. The corrected deadline spends time from the original request arrival;
 it never grants a fresh clock after fetching. Provider memory and deadline
 checks remain authoritative.
 
-`coordinator/api/first_content_accounts.go` (`requestFirstContentDeadline`) selects the policy using authenticated identity. Empty selectors disable the SLA for all accounts. An email lookup storage failure returns a retryable service error before reservation rather than silently changing account policy. Missing user records do not match an email selector.
+`coordinator/api/inference/first_content_accounts.go` (`requestFirstContentDeadline`) selects the policy using authenticated identity. Empty selectors disable the SLA for all accounts. An email lookup storage failure returns a retryable service error before reservation rather than silently changing account policy. Missing user records do not match an email selector.
 
-For exempt accounts, zero explicitly disables first-content deadlines: preflight skips its TTFT ceiling, queued and dispatched requests retain an empty `FirstContentDeadline`, and the provider frame omits `first_content_budget_ms`. The Swift inbound handler already interprets an omitted budget as no coordinator first-content deadline. `coordinator/api/first_token_clock.go` (`newFirstContentTimer`) disables the timeout select arm in every first-content wait, including accepted, retry and speculative-race paths. There is no 600-second first-content fallback. Clean empty completions remain eligible for speculative arbitration even with a zero deadline.
+For exempt accounts, zero explicitly disables first-content deadlines: preflight skips its TTFT ceiling, queued and dispatched requests retain an empty `FirstContentDeadline`, and the provider frame omits `first_content_budget_ms`. The Swift inbound handler already interprets an omitted budget as no coordinator first-content deadline. `coordinator/api/inference/first_token_clock.go` (`newFirstContentTimer`) disables the timeout select arm in every first-content wait, including accepted, retry and speculative-race paths. There is no 600-second first-content fallback. Clean empty completions remain eligible for speculative arbitration even with a zero deadline.
 
 Queue limits, provider write watchdogs, client cancellation and disconnect cleanup remain. The existing response/stream timers apply after first content commits. Ranking, ordinary hedge launch hints and capacity probes remain active; exempt probes, hedges and fresh-evidence recovery after repeated predictive refusal use a finite advisory planning horizon without arming a request timeout or advancing SLA hedges. Exempt primary scans use the short admission scan-wait slice. Speculative backup scans only acquire an immediately available scan slot; saturation skips the backup and resumes reading the primary. Shadow TTFT metrics remain counterfactual measurements, not enforcement.
 

@@ -2,9 +2,10 @@ package autopilot
 
 import (
 	"math"
-	"sort"
 	"sync"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/demandwindow"
 )
 
 // DemandSample is one validated PUBLIC logical HTTP request, never a
@@ -42,22 +43,17 @@ var autopilotPromptBounds = [...]int{64, 256, 1024, 4096, 16384, 65536, 262144, 
 type autopilotDemandBucket struct {
 	deadlineKnown                                    bool
 	deadlineSeconds                                  float64
-	at                                               time.Time
-	requests, shed, completed, serviceSamples        int
+	shed, completed, serviceSamples                  int
 	promptSum, requestedOutputSum, observedOutputSum float64
 	serviceSeconds                                   float64
 	prompts                                          [8]int
 	requirements                                     Requirements
 }
-type autopilotModelDemand struct {
-	first, last time.Time               // accepted arrival times, never terminal refresh times
-	buckets     []autopilotDemandBucket // sorted; one entry per ten-second interval
-}
 type DemandTracker struct {
-	cohort bool
-	shapes map[string]*DemandTracker
-	mu     sync.Mutex
-	models map[string]*autopilotModelDemand
+	cohort  bool
+	shapes  map[string]*DemandTracker
+	mu      sync.Mutex
+	history *demandwindow.Window[autopilotDemandBucket]
 }
 type DemandView struct {
 	InFlight int // current qualified public reservations, not logical arrivals
@@ -100,40 +96,38 @@ func (d *DemandTracker) Record(s DemandSample, now time.Time, window time.Durati
 		return
 	}
 
+	b := &autopilotDemandBucket{deadlineKnown: s.DeadlineKnown, requirements: s.Requirements}
+	if seconds := s.FirstContentDeadline.Seconds(); s.DeadlineKnown && seconds > 0 {
+		b.deadlineSeconds = seconds
+	}
+	if s.CapacityShed {
+		b.shed++
+	}
+	b.promptSum += float64(s.PromptTokens)
+	b.requestedOutputSum += float64(s.RequestedMaxTokens)
+	for i, bound := range autopilotPromptBounds {
+		if s.PromptTokens <= bound {
+			b.prompts[i]++
+			break
+		}
+	}
+	if s.Completed && s.ObservedOutputTokens >= 0 && s.ObservedOutputTokens <= autopilotDemandMaxTokens {
+		// A real completion supplies output even when cold loading, unknown
+		// timing, or a very long request makes warm service time unusable.
+		b.completed++
+		b.observedOutputSum += float64(s.ObservedOutputTokens)
+		if s.ServiceTime > 0 && s.ServiceTime <= 10*time.Minute {
+			b.serviceSamples++
+			b.serviceSeconds += s.ServiceTime.Seconds()
+		}
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.models == nil {
-		d.models = make(map[string]*autopilotModelDemand)
+	if d.history == nil {
+		d.history = NewDemandHistory()
 	}
-	m := d.models[s.Model]
-	if m != nil && m.last.Before(now.Add(-2*window)) {
-		delete(d.models, s.Model)
-		m = nil
-	}
-	if m == nil {
-		d.pruneModels(now, window)
-		if len(d.models) >= autopilotDemandMaxModels {
-			return
-		}
-		m = &autopilotModelDemand{first: arrival, last: arrival}
-		d.models[s.Model] = m
-	}
-	if arrival.Before(m.first) {
-		m.first = arrival
-	}
-	if arrival.After(m.last) {
-		m.last = arrival
-	}
-	m.pruneBuckets(now.Add(-window))
-
-	at := arrival.Truncate(autopilotDemandBucketWidth)
-	// Completions arrive out of order. Insert into the arrival interval rather
-	// than append another copy or attribute its work to the terminal interval.
-	i := sort.Search(len(m.buckets), func(i int) bool { return !m.buckets[i].at.Before(at) })
-	if i == len(m.buckets) || !m.buckets[i].at.Equal(at) {
-		m.buckets = append(m.buckets, autopilotDemandBucket{})
-		copy(m.buckets[i+1:], m.buckets[i:])
-		m.buckets[i] = autopilotDemandBucket{at: at}
+	if !d.history.Record(s.Model, arrival, now, window, *b) {
+		return
 	}
 	if !d.cohort {
 		if d.shapes == nil {
@@ -149,59 +143,6 @@ func (d *DemandTracker) Record(s DemandSample, now time.Time, window time.Durati
 			tracker.Record(s, now, window)
 		}
 	}
-	b := &m.buckets[i]
-	b.requests++
-	b.deadlineKnown = b.deadlineKnown || s.DeadlineKnown
-	if seconds := s.FirstContentDeadline.Seconds(); s.DeadlineKnown && seconds > 0 && (b.deadlineSeconds == 0 || seconds < b.deadlineSeconds) {
-		b.deadlineSeconds = seconds
-	}
-	if s.CapacityShed {
-		b.shed++
-	}
-	b.promptSum += float64(s.PromptTokens)
-	b.requestedOutputSum += float64(s.RequestedMaxTokens)
-	for i, bound := range autopilotPromptBounds {
-		if s.PromptTokens <= bound {
-			b.prompts[i]++
-			break
-		}
-	}
-	b.requirements.merge(s.Requirements)
-	if s.Completed && s.ObservedOutputTokens >= 0 && s.ObservedOutputTokens <= autopilotDemandMaxTokens {
-		// A real completion supplies output even when cold loading, unknown
-		// timing, or a very long request makes warm service time unusable.
-		b.completed++
-		b.observedOutputSum += float64(s.ObservedOutputTokens)
-		if s.ServiceTime > 0 && s.ServiceTime <= 10*time.Minute {
-			b.serviceSamples++
-			b.serviceSeconds += s.ServiceTime.Seconds()
-		}
-	}
-}
-
-// pruneModels runs under d.mu. Arrival-based expiry prevents delayed terminals
-// from keeping stale demand alive or filling the bounded model map forever.
-func (d *DemandTracker) pruneModels(now time.Time, window time.Duration) {
-	for model, m := range d.models {
-		if m.last.Before(now.Add(-2 * window)) {
-			delete(d.models, model)
-		}
-	}
-}
-
-// Keep the interval intersecting the cutoff. Counts therefore have ten-second
-// resolution: an unaligned snapshot can retain <10s of old work, but never loses
-// the valid part of that interval. At aligned ticks the cutoff is exact. New
-// samples still pass the exact arrival cutoff before insertion. There are at
-// most ceil(window/10s)+1 occupied intervals, independent of request volume.
-func (m *autopilotModelDemand) pruneBuckets(cutoff time.Time) {
-	at := cutoff.Truncate(autopilotDemandBucketWidth)
-	i := sort.Search(len(m.buckets), func(i int) bool { return !m.buckets[i].at.Before(at) })
-	if i > 0 {
-		copy(m.buckets, m.buckets[i:])
-		clear(m.buckets[len(m.buckets)-i:])
-		m.buckets = m.buckets[:len(m.buckets)-i]
-	}
 }
 
 func (d *DemandTracker) Snapshot(now time.Time, window time.Duration) map[string]DemandView {
@@ -211,54 +152,43 @@ func (d *DemandTracker) Snapshot(now time.Time, window time.Duration) map[string
 	if window <= 0 || window > autopilotDemandMaxWindow || now.IsZero() {
 		return out
 	}
-	d.pruneModels(now, window)
-	for model, m := range d.models {
-		m.pruneBuckets(now.Add(-window))
+	if d.history == nil {
+		return out
+	}
+	for model, m := range d.history.Snapshot(now, window) {
 		var sum autopilotDemandBucket
+		requests := 0
 		fast := 0
 		observedBuckets := 0
 		fastCutoff := now.Add(-time.Minute).Truncate(autopilotDemandBucketWidth)
-		for _, b := range m.buckets {
-			if b.at.After(now) {
+		for _, interval := range m.Intervals {
+			b := interval.Value
+			if interval.At.After(now) {
 				continue // a backwards clock adjustment must not count future work
 			}
-			if b.requests > 0 {
+			if interval.Count > 0 {
 				observedBuckets++
 			}
-			sum.deadlineKnown = sum.deadlineKnown || b.deadlineKnown
-			if b.deadlineSeconds > 0 && (sum.deadlineSeconds == 0 || b.deadlineSeconds < sum.deadlineSeconds) {
-				sum.deadlineSeconds = b.deadlineSeconds
-			}
-			sum.requests += b.requests
-			sum.shed += b.shed
-			sum.completed += b.completed
-			sum.serviceSamples += b.serviceSamples
-			sum.promptSum += b.promptSum
-			sum.requestedOutputSum += b.requestedOutputSum
-			sum.observedOutputSum += b.observedOutputSum
-			sum.serviceSeconds += b.serviceSeconds
-			sum.requirements.merge(b.requirements)
-			for i, count := range b.prompts {
-				sum.prompts[i] += count
-			}
-			if !b.at.Before(fastCutoff) {
-				fast += b.requests
+			requests += interval.Count
+			sum = mergeDemandBucket(sum, b)
+			if !interval.At.Before(fastCutoff) {
+				fast += interval.Count
 			}
 		}
 		v := DemandView{
 			DeadlineKnown: sum.deadlineKnown, DeadlineSeconds: sum.deadlineSeconds,
-			Sustained:  observedBuckets >= 3 && sum.requests >= autopilotDemandMinSamples,
-			LastDemand: m.last, Requests: sum.requests, CapacityShed: sum.shed,
+			Sustained:  observedBuckets >= 3 && requests >= autopilotDemandMinSamples,
+			LastDemand: m.Last, Requests: requests, CapacityShed: sum.shed,
 			Completed: sum.completed, ServiceSamples: sum.serviceSamples,
 			Requirements: sum.requirements,
 		}
-		if sum.requests > 0 {
-			elapsed := math.Max(autopilotDemandBucketWidth.Seconds(), math.Min(window.Seconds(), now.Sub(m.first).Seconds()))
-			v.Rate = math.Max(float64(sum.requests)/elapsed, float64(fast)/math.Min(60, elapsed))
+		if requests > 0 {
+			elapsed := math.Max(autopilotDemandBucketWidth.Seconds(), math.Min(window.Seconds(), now.Sub(m.First).Seconds()))
+			v.Rate = math.Max(float64(requests)/elapsed, float64(fast)/math.Min(60, elapsed))
 			// Arithmetic mean prices throughput work. The histogram tail must
 			// not inflate every arrival's expected prefill cost.
-			v.PromptTokens = int(math.Ceil(sum.promptSum / float64(sum.requests)))
-			v.RequestedMaxTokens = int(math.Ceil(sum.requestedOutputSum / float64(sum.requests)))
+			v.PromptTokens = int(math.Ceil(sum.promptSum / float64(requests)))
+			v.RequestedMaxTokens = int(math.Ceil(sum.requestedOutputSum / float64(requests)))
 			v.OutputTokens = min(256, max(1, v.RequestedMaxTokens))
 			if sum.completed >= autopilotDemandMinSamples {
 				v.OutputTokens = max(1, int(math.Ceil(sum.observedOutputSum/float64(sum.completed))))
@@ -268,7 +198,7 @@ func (d *DemandTracker) Snapshot(now time.Time, window time.Duration) map[string
 			}
 			// Deadline fit uses the p90 histogram upper bound, at least the
 			// mean. This is a conservative shape, not an observed token count.
-			quantile := int(math.Ceil(float64(sum.requests) * .9))
+			quantile := int(math.Ceil(float64(requests) * .9))
 			for i, count := range sum.prompts {
 				quantile -= count
 				if quantile <= 0 {
@@ -280,4 +210,37 @@ func (d *DemandTracker) Snapshot(now time.Time, window time.Duration) map[string
 		out[model] = v
 	}
 	return out
+}
+
+// NewDemandHistory constructs the bounded arrival history retained by trackers.
+func NewDemandHistory() *demandwindow.Window[autopilotDemandBucket] {
+	return demandwindow.New(autopilotDemandMaxModels, autopilotDemandBucketWidth, mergeDemandBucket)
+}
+
+// NewDemandTracker retains an independently owned arrival history. The zero
+// value also initializes this same history lazily on its first accepted sample.
+func NewDemandTracker(history *demandwindow.Window[autopilotDemandBucket]) *DemandTracker {
+	if history == nil {
+		history = NewDemandHistory()
+	}
+	return &DemandTracker{history: history}
+}
+
+func mergeDemandBucket(sum, b autopilotDemandBucket) autopilotDemandBucket {
+	sum.deadlineKnown = sum.deadlineKnown || b.deadlineKnown
+	if b.deadlineSeconds > 0 && (sum.deadlineSeconds == 0 || b.deadlineSeconds < sum.deadlineSeconds) {
+		sum.deadlineSeconds = b.deadlineSeconds
+	}
+	sum.shed += b.shed
+	sum.completed += b.completed
+	sum.serviceSamples += b.serviceSamples
+	sum.promptSum += b.promptSum
+	sum.requestedOutputSum += b.requestedOutputSum
+	sum.observedOutputSum += b.observedOutputSum
+	sum.serviceSeconds += b.serviceSeconds
+	sum.requirements.merge(b.requirements)
+	for i, count := range b.prompts {
+		sum.prompts[i] += count
+	}
+	return sum
 }

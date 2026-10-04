@@ -53,16 +53,5 @@ func (t *cacheRoutingTracker) reconcileFences(
 	now := t.now()
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	for key, fence := range t.rejectedV2 {
-		if key.ProviderID != providerID {
-			continue
-		}
-		current := ssd
-		if key.Tier == "memory" {
-			current = memory
-		}
-		if capability, ok := current[key.ModelID]; ok && capability != fence.capability {
-			t.forgetFenceLocked(key, fence, now)
-		}
-	}
+	t.proofs.Reconcile(providerID, ssd, memory, now)
 }

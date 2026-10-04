@@ -386,22 +386,23 @@ jobs:
           import json, sys
           data = json.load(open(sys.argv[1]))["data"][0]
           root = sys.argv[2].rstrip("/") + "/"
-          rows = [
-              ("Provider (Swift) product", ["ProviderCore", "ProviderCoreFoundation", "ProviderAppAttest", "DarkbloomFanCore"]),
-              ("Provider CLI (`darkbloom`)", ["darkbloom"]),
-              ("Provider benchmark (`ProviderBenchmark`)", ["ProviderBenchmark"]),
-          ]
+          product = ["ProviderCore", "ProviderCoreFoundation", "ProviderAppAttest", "DarkbloomFanCore"]
+          rows = {
+              "Provider (Swift) product": product,
+              "Provider CLI (`darkbloom`)": ["darkbloom"],
+              "Provider benchmark (`ProviderBenchmark`)": ["ProviderBenchmark"],
+          }
+          row_of = {target: name for name, targets in rows.items() for target in targets}
           kinds = ("lines", "regions", "functions")
-          sums = {name: {k: [0, 0] for k in kinds} for name, _ in rows}
+          sums = {name: {k: [0, 0] for k in kinds} for name in rows}
           seen = set()
           for entry in data["files"]:
               target = entry["filename"].removeprefix(root).split("/")[0]
               seen.add(target)
-              for name, targets in rows:
-                  if target in targets:
-                      for k in kinds:
-                          sums[name][k][0] += entry["summary"][k]["covered"]
-                          sums[name][k][1] += entry["summary"][k]["count"]
+              if target in row_of:
+                  for k in kinds:
+                      sums[row_of[target]][k][0] += entry["summary"][k]["covered"]
+                      sums[row_of[target]][k][1] += entry["summary"][k]["count"]
           sums["Provider (Swift) total"] = {k: [data["totals"][k]["covered"], data["totals"][k]["count"]] for k in kinds}
           print("| Component | Statements or Lines | Regions or Branches | Functions | Target |")
           print("|---|---|---|---|---|")
@@ -410,10 +411,10 @@ jobs:
                   sys.exit(f"No lines for {name}")
               lines, regions, functions = (f"{100 * c / n:.2f}%" for c, n in (s[k] for k in kinds))
               print(f"| {name} | {lines} of {s['lines'][1]:,} lines | {regions} regions | {functions} | 80% (report-only) |")
-          grouped = {t for _, targets in rows for t in targets}
-          other = ", ".join(f"`{t}`" for t in sorted(seen - grouped, key=str.lower))
+          product_names = [f"`{t}`" for t in product]
+          other = ", ".join(f"`{t}`" for t in sorted(seen.difference(row_of), key=str.lower))
           print()
-          print("The product row counts the code that serves requests: `ProviderCore`, `ProviderCoreFoundation`, `ProviderAppAttest` and `DarkbloomFanCore`. "
+          print(f"The product row counts the code that serves requests: {', '.join(product_names[:-1])} and {product_names[-1]}. "
                 f"The CLI and the benchmark harness have their own rows. The total counts every file in the report. These targets are only in the total: {other}.")
           PY
           cat "$out/provider-coverage-summary.md"

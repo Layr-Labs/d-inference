@@ -5,11 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"io"
-	"log/slog"
-	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -19,39 +14,6 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"nhooyr.io/websocket"
 )
-
-// connectedShadowProvider registers a provider whose writer sends frames over a
-// loopback websocket. The returned client conn reads what the coordinator sent.
-func connectedShadowProvider(t *testing.T, endpoint string) (*registry.Provider, *websocket.Conn) {
-	t.Helper()
-	serverConns := make(chan *websocket.Conn, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := websocket.Accept(w, r, nil)
-		if err != nil {
-			t.Errorf("accept websocket: %v", err)
-			return
-		}
-		serverConns <- conn
-	}))
-	t.Cleanup(server.Close)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	client, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
-	if err != nil {
-		t.Fatalf("dial websocket: %v", err)
-	}
-	t.Cleanup(func() { _ = client.Close(websocket.StatusNormalClosure, "done") })
-	var serverConn *websocket.Conn
-	select {
-	case serverConn = <-serverConns:
-	case <-ctx.Done():
-		t.Fatal("server websocket not accepted")
-	}
-	r := registry.New(slog.New(slog.NewTextHandler(io.Discard, nil)))
-	p := r.Register("connected", serverConn, &protocol.RegisterMessage{PublicKey: endpoint})
-	t.Cleanup(func() { r.Disconnect(p.ID) })
-	return p, client
-}
 
 func readShadowFrame(t *testing.T, client *websocket.Conn) protocol.AppAttestShadowPayload {
 	t.Helper()
@@ -69,7 +31,7 @@ func readShadowFrame(t *testing.T, client *websocket.Conn) protocol.AppAttestSha
 }
 
 func newSendSession(st store.Store, p *registry.Provider, endpoint string) *Session {
-	s := &Service{store: st, logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	s := &Service{store: st, logger: discardLogger(),
 		config: Config{AppID: "TEST.app", Environment: "production"}}
 	return &Session{s: s, provider: p, id: "session", owner: "owner", account: "account", publicKey: endpoint,
 		protocolVersion: 3, key: &store.AppAttestShadowKey{KeyID: rotationKeyID(7)}}

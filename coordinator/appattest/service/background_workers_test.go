@@ -3,8 +3,6 @@ package service
 import (
 	"context"
 	"errors"
-	"io"
-	"log/slog"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -76,7 +74,7 @@ func TestStartRunsEveryWorkerUntilServiceContextEnds(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		logger := discardLogger()
 		r := registry.New(logger)
 		st := &workerStore{MemoryStore: store.NewMemory(store.Config{})}
 		m := newMetricLog()
@@ -117,9 +115,7 @@ func TestStartRunsEveryWorkerUntilServiceContextEnds(t *testing.T) {
 		if reconciles, queues, _, inventory := st.counts(); reconciles != 1 || queues != 1 || inventory != 1 {
 			t.Fatalf("first maintenance pass reconciles=%d queues=%d inventory=%d", reconciles, queues, inventory)
 		}
-		m.mu.Lock()
-		interrupted, recovery := m.counts["app_attest.maintenance.interrupted"], m.counts["app_attest.maintenance.receipt_recovery"]
-		m.mu.Unlock()
+		interrupted, recovery := m.count("app_attest.maintenance.interrupted"), m.count("app_attest.maintenance.receipt_recovery")
 		if len(interrupted) != 1 || interrupted[0] != 2 || len(recovery) != 1 || recovery[0] != 3 {
 			t.Fatalf("maintenance counts interrupted=%v recovery=%v", interrupted, recovery)
 		}
@@ -169,7 +165,7 @@ func TestStartWithoutOptInsKeepsOnlyUnconditionalWorkers(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		logger := discardLogger()
 		r := registry.New(logger)
 		mem := store.NewMemory(store.Config{})
 		m := newMetricLog()
@@ -194,8 +190,8 @@ func TestStartWithoutOptInsKeepsOnlyUnconditionalWorkers(t *testing.T) {
 
 func TestAuthorizerStartsOnlyForProductionServing(t *testing.T) {
 	for _, cfg := range []Config{{ServingEnabled: true, Environment: "development"}, {Environment: "production"}} {
-		r := registry.New(slog.New(slog.NewTextHandler(io.Discard, nil)))
-		s := &Service{registry: r, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), config: cfg}
+		r := registry.New(discardLogger())
+		s := &Service{registry: r, logger: discardLogger(), config: cfg}
 		s.startAppAttestAuthorizer(context.Background())
 		if enabled, _ := r.AppAttestServingPolicy(); s.authorizer != nil || enabled {
 			t.Fatalf("authorizer started for %+v", cfg)
@@ -208,7 +204,7 @@ func TestMaintenanceFailureIsCountedOnlyWhileRunning(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		st := &workerStore{MemoryStore: store.NewMemory(store.Config{}), maintenanceErr: errors.New("database unavailable")}
 		m := newMetricLog()
-		s := &Service{store: st, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), metrics: m.metrics()}
+		s := &Service{store: st, logger: discardLogger(), metrics: m.metrics()}
 		s.startAppAttestMaintenance(ctx)
 		synctest.Wait()
 		if got := m.incrCount("app_attest.maintenance.failed"); got != 1 {
@@ -229,7 +225,7 @@ func TestBuildQualificationWorkerCountsRefreshFailures(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		m := newMetricLog()
-		s := &Service{store: &failingBuildStore{store.NewMemory(store.Config{})}, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), metrics: m.metrics(),
+		s := &Service{store: &failingBuildStore{store.NewMemory(store.Config{})}, logger: discardLogger(), metrics: m.metrics(),
 			config: Config{ServingEnabled: true}, refreshReleasePolicy: func() error { return errors.New("catalog unavailable") }}
 		s.startBuildQualifications(ctx)
 		if m.incrCount("app_attest.qualification.refresh_failed") != 1 || m.incrCount("app_attest.release_refresh_failed") != 1 {
@@ -252,7 +248,7 @@ func TestInventoryReconcilerRepeatsUntilCancelled(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		st := &workerStore{MemoryStore: store.NewMemory(store.Config{})}
-		s := &Service{store: st, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), inventorySlots: make(chan struct{}, 4)}
+		s := &Service{store: st, logger: discardLogger(), inventorySlots: make(chan struct{}, 4)}
 		s.startMachineInventoryReconciler(ctx)
 		synctest.Wait()
 		time.Sleep(10 * time.Second)

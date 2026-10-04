@@ -8,11 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"io"
-	"log/slog"
-	"net"
-	"net/http"
-	"sync"
+	"slices"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -26,63 +22,6 @@ import (
 	"nhooyr.io/websocket"
 )
 
-// pipeListener serves exactly one in-memory connection. Everything stays in
-// the synctest bubble, so fake time can pass the exchange's jitter and
-// 90-second response timers instantly.
-type pipeListener struct {
-	conns chan net.Conn
-	once  sync.Once
-	done  chan struct{}
-}
-
-func (l *pipeListener) Accept() (net.Conn, error) {
-	select {
-	case c := <-l.conns:
-		return c, nil
-	case <-l.done:
-		return nil, net.ErrClosed
-	}
-}
-
-func (l *pipeListener) Close() error   { l.once.Do(func() { close(l.done) }); return nil }
-func (l *pipeListener) Addr() net.Addr { return pipeAddr{} }
-
-type pipeAddr struct{}
-
-func (pipeAddr) Network() string { return "pipe" }
-func (pipeAddr) String() string  { return "pipe" }
-
-// pipeWebSocket returns a server-side conn for the provider writer and the
-// client conn that reads what the coordinator sent. Call it inside a bubble.
-func pipeWebSocket(t *testing.T) (server, client *websocket.Conn, closeAll func()) {
-	t.Helper()
-	serverSide, clientSide := net.Pipe()
-	ln := &pipeListener{conns: make(chan net.Conn, 1), done: make(chan struct{})}
-	ln.conns <- serverSide
-	accepted := make(chan *websocket.Conn, 1)
-	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		c, err := websocket.Accept(w, r, nil)
-		if err != nil {
-			t.Errorf("accept: %v", err)
-			return
-		}
-		accepted <- c
-	})}
-	go func() { _ = srv.Serve(ln) }()
-	transport := &http.Transport{DialContext: func(context.Context, string, string) (net.Conn, error) { return clientSide, nil }}
-	client, _, err := websocket.Dial(context.Background(), "ws://pipe/", &websocket.DialOptions{HTTPClient: &http.Client{Transport: transport}})
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	server = <-accepted
-	return server, client, func() {
-		_ = client.CloseNow()
-		_ = server.CloseNow()
-		_ = srv.Close()
-		transport.CloseIdleConnections()
-	}
-}
-
 // attemptHarness runs a real exchange worker against an in-memory provider
 // socket. The test plays the provider: it reads challenges and offers replies.
 type attemptHarness struct {
@@ -93,8 +32,7 @@ type attemptHarness struct {
 	endpoint *e2e.SessionKeys
 	device   *ecdsa.PrivateKey
 	keyID    string
-	mu       sync.Mutex
-	events   []map[string]any
+	events   eventLog
 }
 
 // newAttemptHarness must be called inside a synctest bubble.
@@ -115,21 +53,10 @@ func newAttemptHarness(t *testing.T, st store.Store) *attemptHarness {
 		AppID: "TEST.app", Environment: "production", PublicKey: elliptic.Marshal(h.device.Curve, h.device.X, h.device.Y)}); err != nil {
 		t.Fatal(err)
 	}
-	server, client, closeAll := pipeWebSocket(t)
-	h.client = client
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	r := registry.New(logger)
 	endpoint := base64.StdEncoding.EncodeToString(h.endpoint.PublicKey[:])
-	p := r.Register("connected", server, &protocol.RegisterMessage{PublicKey: endpoint})
-	t.Cleanup(func() {
-		r.Disconnect(p.ID)
-		closeAll()
-	})
-	h.s = New(context.Background(), Config{AppID: "TEST.app", Environment: "production"}, Dependencies{Store: st, Logger: logger, Emit: func(fields map[string]any) {
-		h.mu.Lock()
-		h.events = append(h.events, fields)
-		h.mu.Unlock()
-	}})
+	var p *registry.Provider
+	p, h.client = connectedShadowProvider(t, endpoint)
+	h.s = New(context.Background(), Config{AppID: "TEST.app", Environment: "production"}, Dependencies{Store: st, Logger: discardLogger(), Emit: h.events.emit})
 	h.x = &Session{s: h.s, provider: p, id: "first-session", owner: "owner", account: "account", publicKey: endpoint, protocolVersion: 3,
 		in: make(chan protocol.AppAttestShadowPayload, 2), store: h.mem, archive: h.mem,
 		verifier: appattest.New(appattest.Policy{AppID: "TEST.app", Environment: "production"})}
@@ -184,25 +111,6 @@ func (h *attemptHarness) assertion(t *testing.T, frame protocol.AppAttestShadowP
 		Proof: base64.StdEncoding.EncodeToString(body), ProtocolVersion: 3, Status: status}
 }
 
-func (h *attemptHarness) outcomes() []string {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	var out []string
-	for _, e := range h.events {
-		out = append(out, e["stage"].(string)+":"+e["outcome"].(string))
-	}
-	return out
-}
-
-func contains(list []string, want string) bool {
-	for _, v := range list {
-		if v == want {
-			return true
-		}
-	}
-	return false
-}
-
 func TestExchangeWorkerAssertsWaitsReassertsAndRecovers(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := newAttemptHarness(t, nil)
@@ -247,9 +155,9 @@ func TestExchangeWorkerAssertsWaitsReassertsAndRecovers(t *testing.T) {
 		cancel()
 		<-done
 
-		got := h.outcomes()
+		got := h.events.outcomes()
 		for _, want := range []string{"protocol:unexpected_reply", "ready:reported_supported", "assertion:verified", "assertion:timeout", "recovery:retry_scheduled", "ready:disconnected"} {
-			if !contains(got, want) {
+			if !slices.Contains(got, want) {
 				t.Fatalf("missing %s in %v", want, got)
 			}
 		}
@@ -265,8 +173,8 @@ func TestExchangeWorkerStopsOnClientFailureAndBusyVerifier(t *testing.T) {
 			prepare := h.read(t)
 			h.x.Offer(protocol.AppAttestShadowPayload{Session: prepare.Session, Action: "ready", Result: "unsupported"})
 			<-done
-			if h.x.lastOutcome != "unsupported" || !contains(h.outcomes(), "ready:unsupported") {
-				t.Fatalf("outcome %q events %v", h.x.lastOutcome, h.outcomes())
+			if h.x.lastOutcome != "unsupported" || !slices.Contains(h.events.outcomes(), "ready:unsupported") {
+				t.Fatalf("outcome %q events %v", h.x.lastOutcome, h.events.outcomes())
 			}
 		})
 	})
@@ -281,8 +189,8 @@ func TestExchangeWorkerStopsOnClientFailureAndBusyVerifier(t *testing.T) {
 			prepare := h.read(t)
 			h.x.Offer(protocol.AppAttestShadowPayload{Session: prepare.Session, Action: "ready", Result: "ok", KeyID: h.keyID})
 			<-done
-			if h.x.lastOutcome != "verifier_busy" || !contains(h.outcomes(), "archive:verifier_busy") {
-				t.Fatalf("outcome %q events %v", h.x.lastOutcome, h.outcomes())
+			if h.x.lastOutcome != "verifier_busy" || !slices.Contains(h.events.outcomes(), "archive:verifier_busy") {
+				t.Fatalf("outcome %q events %v", h.x.lastOutcome, h.events.outcomes())
 			}
 		})
 	})
@@ -312,8 +220,8 @@ func TestExchangeWorkerObservesDisconnectAndMissingReady(t *testing.T) {
 			h.x.runAttempt(ctx)
 			// With zero jitter the prepare frame may still be sent first; either
 			// way the attempt ends as a disconnect and never reaches ready.
-			if h.x.lastOutcome != "disconnected" || contains(h.outcomes(), "ready:reported_supported") {
-				t.Fatalf("events %v", h.outcomes())
+			if h.x.lastOutcome != "disconnected" || slices.Contains(h.events.outcomes(), "ready:reported_supported") {
+				t.Fatalf("events %v", h.events.outcomes())
 			}
 		})
 	})

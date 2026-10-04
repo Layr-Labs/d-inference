@@ -61,10 +61,10 @@ func waitFor(t *testing.T, ch <-chan struct{}, what string) {
 	}
 }
 
-// newTestClient builds a client with NewClient, then points its intake URLs
+// newIntakeClient builds a client with NewClient, then points its intake URLs
 // at the local recorder. The flush ticker is an hour, so only Close or a
 // full batch sends logs.
-func newTestClient(t *testing.T, apiKey string, srv *httptest.Server, logs *bytes.Buffer) *Client {
+func newIntakeClient(t *testing.T, apiKey string, srv *httptest.Server, logs *bytes.Buffer) *Client {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	c, err := NewClient(Config{
@@ -90,7 +90,7 @@ func newTestClient(t *testing.T, apiKey string, srv *httptest.Server, logs *byte
 
 func TestNewClientDerivesIntakeURLsFromSite(t *testing.T) {
 	t.Setenv("DD_HOSTNAME", "")
-	c := newTestClient(t, "", nil, &bytes.Buffer{})
+	c := newIntakeClient(t, "", nil, &bytes.Buffer{})
 	defer c.Close()
 
 	if c.logsURL != "https://http-intake.logs.example.test/api/v2/logs" ||
@@ -166,7 +166,7 @@ func TestForwardLogFlushesOnCloseAndSendsFatalEvent(t *testing.T) {
 	rec, srv := newIntakeRecorder(http.StatusAccepted)
 	defer srv.Close()
 	t.Setenv("DD_ENV", "test")
-	c := newTestClient(t, "test-api-key", srv, &bytes.Buffer{})
+	c := newIntakeClient(t, "test-api-key", srv, &bytes.Buffer{})
 
 	c.ForwardLog(TelemetryLogEntry{
 		Source:    "provider",
@@ -227,7 +227,7 @@ func TestForwardLogFlushesOnCloseAndSendsFatalEvent(t *testing.T) {
 func TestForwardLogFlushesAFullBatchWithoutWaiting(t *testing.T) {
 	rec, srv := newIntakeRecorder(http.StatusAccepted)
 	defer srv.Close()
-	c := newTestClient(t, "test-api-key", srv, &bytes.Buffer{})
+	c := newIntakeClient(t, "test-api-key", srv, &bytes.Buffer{})
 	defer c.Close()
 
 	for i := 0; i < 100; i++ {
@@ -248,7 +248,7 @@ func TestFlushLogsReportsIntakeErrors(t *testing.T) {
 	rec, srv := newIntakeRecorder(http.StatusForbidden)
 	defer srv.Close()
 	var logs bytes.Buffer
-	c := newTestClient(t, "test-api-key", srv, &logs)
+	c := newIntakeClient(t, "test-api-key", srv, &logs)
 
 	c.ForwardLog(TelemetryLogEntry{Source: "coordinator", Severity: "warn", Kind: "k", Message: "m"})
 	c.Close()
@@ -259,7 +259,7 @@ func TestFlushLogsReportsIntakeErrors(t *testing.T) {
 
 	// An unreachable intake is logged too, not retried or panicked on.
 	var down bytes.Buffer
-	c2 := newTestClient(t, "test-api-key", nil, &down)
+	c2 := newIntakeClient(t, "test-api-key", nil, &down)
 	c2.logsURL = "http://127.0.0.1:1/logs"
 	c2.eventsURL = "http://127.0.0.1:1/events"
 	c2.ForwardLog(TelemetryLogEntry{Source: "coordinator", Severity: "error", Kind: "k", Message: "m"})

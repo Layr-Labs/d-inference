@@ -5,10 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"io"
-	"log/slog"
+	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"testing/synctest"
 
@@ -17,32 +15,11 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-type eventLog struct {
-	mu     sync.Mutex
-	events []map[string]any
-}
-
-func (l *eventLog) emit(fields map[string]any) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.events = append(l.events, fields)
-}
-
-func (l *eventLog) outcomes() []string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	var out []string
-	for _, e := range l.events {
-		out = append(out, e["stage"].(string)+":"+e["outcome"].(string))
-	}
-	return out
-}
-
 func TestStartSessionRunsExchangeForEnrolledCohort(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		server, client, closeAll := pipeWebSocket(t)
 		defer closeAll()
-		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		logger := discardLogger()
 		r := registry.New(logger)
 		endpoint := base64.StdEncoding.EncodeToString(make([]byte, 32))
 		p := r.Register("connected", server, &protocol.RegisterMessage{PublicKey: endpoint})
@@ -73,7 +50,7 @@ func TestStartSessionRunsExchangeForEnrolledCohort(t *testing.T) {
 		}
 		got := log.outcomes()
 		for _, w := range []string{"registration:observed", "prepare:attempted", "ready:disconnected"} {
-			if !contains(got, w) {
+			if !slices.Contains(got, w) {
 				t.Fatalf("missing %s in %v", w, got)
 			}
 		}
@@ -85,14 +62,14 @@ func TestStartSessionOutsideCohortObservesWithoutChallenge(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		log := &eventLog{}
 		s := New(ctx, Config{Enabled: true, RolloutPercent: 0, AppID: "TEST.app", Environment: "production"},
-			Dependencies{Store: store.NewMemory(store.Config{}), Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Emit: log.emit})
+			Dependencies{Store: store.NewMemory(store.Config{}), Logger: discardLogger(), Emit: log.emit})
 		p := newSessionProvider(base64.StdEncoding.EncodeToString(make([]byte, 32)), "se")
 		if x := s.StartSession(ctx, p, &protocol.RegisterMessage{AppAttestProtocol: 3}, "account"); x == nil {
 			t.Fatal("session not created")
 		}
 		synctest.Wait()
 		got := log.outcomes()
-		if !contains(got, "registration:observed") || contains(got, "prepare:attempted") {
+		if !slices.Contains(got, "registration:observed") || slices.Contains(got, "prepare:attempted") {
 			t.Fatalf("events %v", got)
 		}
 		var rollout string
@@ -133,11 +110,11 @@ func TestStartSessionRefusesUnservableRegistrations(t *testing.T) {
 				st = store.NewMemory(store.Config{})
 			}
 			log := &eventLog{}
-			s := New(ctx, tc.cfg, Dependencies{Store: st, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Emit: log.emit})
+			s := New(ctx, tc.cfg, Dependencies{Store: st, Logger: discardLogger(), Emit: log.emit})
 			if x := s.StartSession(ctx, newSessionProvider(tc.endpoint, "se"), &protocol.RegisterMessage{AppAttestProtocol: tc.protocol}, "account"); x != nil {
 				t.Fatal("unservable registration started an exchange")
 			}
-			if got := log.outcomes(); !contains(got, tc.want) {
+			if got := log.outcomes(); !slices.Contains(got, tc.want) {
 				t.Fatalf("events %v, want %s", got, tc.want)
 			}
 		})

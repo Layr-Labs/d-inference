@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// preloadTestSidecar serves /v1/preload with an all-warm report and /metrics
+// preloadTestSidecar serves /v1/preload with an all-cold report and /metrics
 // with a valid status, and counts calls to each path.
 type preloadTestSidecar struct {
 	preloads atomic.Int64

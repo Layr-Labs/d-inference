@@ -91,7 +91,7 @@ func TestTrustStatusAndMetricHooksAreOptional(t *testing.T) {
 	if len(sent) != 1 || sent[0] != "online:reason" {
 		t.Fatalf("trust status %v", sent)
 	}
-	if c := m.counts["count"]; len(c) != 1 || c[0] != 4 {
+	if c := m.count("count"); len(c) != 1 || c[0] != 4 {
 		t.Fatalf("count %v", c)
 	}
 	if g := m.gauge("gauge"); len(g) != 1 || g[0] != 2.5 {

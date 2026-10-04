@@ -1,6 +1,8 @@
 package service
 
 import (
+	"io"
+	"log/slog"
 	"strings"
 	"sync"
 
@@ -28,6 +30,34 @@ func testShadowStatus() *protocol.AppAttestStatus {
 // current challenge signs over status.
 func testAssertionHash(x *Session, keyID string, status *protocol.AppAttestStatus) [32]byte {
 	return protocol.AppAttestShadowHashV3("assert", x.id, x.s.config.Environment, keyID, x.challenge, x.publicKey, x.accountScope(), status)
+}
+
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// eventLog records emitted exchange events. Exchange workers emit from their
+// own goroutines, so every access takes the lock.
+type eventLog struct {
+	mu     sync.Mutex
+	events []map[string]any
+}
+
+func (l *eventLog) emit(fields map[string]any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.events = append(l.events, fields)
+}
+
+// outcomes lists every event as "stage:outcome".
+func (l *eventLog) outcomes() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []string
+	for _, e := range l.events {
+		out = append(out, e["stage"].(string)+":"+e["outcome"].(string))
+	}
+	return out
 }
 
 // metricLog records metric hook calls; background workers call the hooks from
@@ -67,6 +97,12 @@ func (m *metricLog) metrics() Metrics {
 			m.hist[name]++
 		},
 	}
+}
+
+func (m *metricLog) count(name string) []int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]int64(nil), m.counts[name]...)
 }
 
 func (m *metricLog) gauge(name string) []float64 {

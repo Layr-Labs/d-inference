@@ -1487,6 +1487,15 @@ bin=$(swift build --show-bin-path)
 PROVIDER_COVERAGE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/darkbloom-coverage.XXXXXX")
 export PROVIDER_COVERAGE_DIR
 export LLVM_PROFILE_FILE="$PROVIDER_COVERAGE_DIR/%p-%m.profraw"
+python3 ../scripts/prepare-mimo-provider-fixtures.py \
+  --output "$PROVIDER_COVERAGE_DIR/mimo-fixtures"
+export MIMO_V26_SERIAL_LOAD_FIXTURES="$PROVIDER_COVERAGE_DIR/mimo-fixtures"
+export MIMO_V26_WIRED_METADATA_FIXTURE="$MIMO_V26_SERIAL_LOAD_FIXTURES/tiny-bf16"
+python3 ../scripts/prepare-mimo-prompt-fixtures.py \
+  --output "$PROVIDER_COVERAGE_DIR/mimo-prompt-fixtures"
+export MIMO_PROMPT_ARTIFACT_DIRECTORY="$PROVIDER_COVERAGE_DIR/mimo-prompt-fixtures"
+export MIMO_PROMPT_REFERENCE_VECTORS="$PWD/../fixtures/prompt-contract/mimo-v26-additional20.json"
+export MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS=1
 test_status=0
 ../scripts/run-provider-tests.sh || test_status=$?
 xcrun llvm-profdata merge -sparse -o "$PROVIDER_COVERAGE_DIR/provider.profdata" \
@@ -1506,9 +1515,11 @@ exit "$test_status"
 )
 ```
 
-This preserves a failing test exit even when reporting succeeds. It does not
-provision or enable the separate [MiMo CI fixtures](#mimo-provider-ci-fixtures)
-and selected native gates, so its totals need not match CI. Keep instrumentation
+This preserves a failing test exit even when reporting succeeds. It prepares
+the bounded synthetic MiMo inputs required by scanner and load-quotation tests
+and fetches four checksum-pinned public prompt metadata files, never model weights
+or credentials. It does not fetch the audio [MiMo CI fixtures](#mimo-provider-ci-fixtures)
+or enable selected native gates, so its totals need not match CI. Keep instrumentation
 enabled when building every reported product; do not use these instrumented
 timings as production throughput evidence.
 

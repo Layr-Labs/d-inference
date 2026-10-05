@@ -96,7 +96,7 @@ func applyServiceHint(limits *serviceCostLimits, c *serviceCostCandidate, hint p
 	c.ForecastCache.Apply(&request, now)
 	evidence := c.evidence
 	evidence.PrefillTPS = c.Rates.Prefill()
-	c.firstContent = forecast.Evaluate(evidence, request, now).Estimate
+	c.firstContent = forecast.Evaluate(&evidence, request, now).Estimate
 }
 
 func serviceColdCandidate(id string, cost float64, queue, pending int, discount float64) *serviceCostCandidate {

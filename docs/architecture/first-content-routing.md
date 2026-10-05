@@ -1,6 +1,6 @@
 # First-content routing
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
 The coordinator selects providers by expected time to delivered content, with a
 separate conservative forecast for deadline feasibility. The selection policy applies by
@@ -411,6 +411,12 @@ do not acquire a separate live-state lock or release pending reservations.
 
 ### Retries, quotes and hedges
 
+Alternate creation projects selection evidence once, then reranks after every
+removal through `selection.RetainRanked`. Borrowed forecast/calibration evidence
+lasts only through evaluation; retained quotes remain detached. Pending scalar
+work and service-report validation are shared only within the provider snapshot
+critical section, preserving exact lease overlap and retirement accounting.
+
 Retained plans are reranked from current evidence before reservation; a quote
 does not reserve capacity. Predictive refusals exclude the refusing provider for
 the logical request without counting as permanent health faults. After two such
@@ -494,7 +500,7 @@ does not represent a random sample of all outcomes.
 | Candidate selection | `coordinator/registry/candidate_selection.go` — `selectRoutingCandidateWithAffinity` |
 | Physical reservation | `coordinator/registry/scheduler.go` — `commitProviderReservation` |
 | Cache-aware preflight | `coordinator/registry/first_content_preflight.go` — `QuickFirstContentCapacityForRequest` |
-| Retained alternatives | `coordinator/registry/dispatch_plan.go` (`DispatchPlan`, `ReserveNextFromPlan`, `RefreshDispatchPlan`); `coordinator/registry/quote_plan.go` (`QuotePlan`, `NewQuotePlan`); `coordinator/registry/quote_plan_evidence.go` (`ConfirmEntry`, `DemoteEntry`, `BestConfirmedBackup`); `coordinator/internal/registry/shortlist/order.go` (`Order.Claim`, `Order.Rank`); `coordinator/registry/selection/retain.go` (`Retain`); `coordinator/registry/first_content_plan.go` (`reserveFirstContentFromPlan`, `claimEntry`) |
+| Retained alternatives | `coordinator/registry/dispatch_plan.go` (`DispatchPlan`, `ReserveNextFromPlan`, `RefreshDispatchPlan`); `coordinator/registry/quote_plan.go` (`QuotePlan`, `NewQuotePlan`); `coordinator/registry/quote_plan_evidence.go` (`ConfirmEntry`, `DemoteEntry`, `BestConfirmedBackup`); `coordinator/internal/registry/shortlist/order.go` (`Order.Claim`, `Order.Rank`); `coordinator/registry/selection/retain_ranked.go` (`RetainRanked`); `coordinator/registry/first_content_plan.go` (`reserveFirstContentFromPlan`, `claimEntry`) |
 | Request-scoped plan and probe budget | `coordinator/internal/inference/dispatch/plan.go` (`Plan.Scan`, `Plan.Next`); `plan_probes.go` (`Plan.Probe`, `Plan.RefreshQuotes`) retains the initial chain, shares one refresh across retry and hedge, and waits for the initial quote round before refreshing evidence |
 | Quote correlation | `coordinator/internal/registry/capacityquote/tracker.go` (`Tracker.Add`, `Take`, `Resolve`, `FailProvider`); `coordinator/registry/capacity_quotes.go` (`ProbePlanCandidates`, `HandleCapacityQuote`) |
 | Quote qualification and backup timing | `coordinator/internal/registry/forecast/quote.go` (`ApplyQuote`, `BackupTiming`); adapters in `coordinator/registry/first_content_plan.go` (`applyFirstContentQuote`) and `coordinator/registry/dispatch_plan.go` (`BestConfirmedBackup`) |

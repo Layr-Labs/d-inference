@@ -60,21 +60,21 @@ func TestFirstContentForecastConfidenceAndCacheBeforeDeadline(t *testing.T) {
 			Workload: forecast.Workload{WholeMacKnown: true}}
 	}
 	c := measured()
-	estimate := forecast.Evaluate(c, pr, now).Estimate
+	estimate := forecast.Evaluate(&c, pr, now).Estimate
 	if estimate.Status != forecast.PredictedLate || estimate.ExpectedMs >= estimate.ConservativeMs {
 		t.Fatalf("need distinct expected/late conservative prediction: %+v", estimate)
 	}
 	benefit := forecast.CacheBenefit{Tokens: 9000, Weight: 1, RestoreMS: 80, ExpiresAt: now.Add(time.Minute)}
 	cachedRequest := pr
 	benefit.Apply(&cachedRequest, now)
-	estimate = forecast.Evaluate(c, cachedRequest, now).Estimate
+	estimate = forecast.Evaluate(&c, cachedRequest, now).Estimate
 	if estimate.Status != forecast.Feasible || estimate.CachedTokens != 4000 || estimate.RestoreMs != 80 {
 		t.Fatalf("cache should fit deadline, bound reuse, and charge restore once: %+v", estimate)
 	}
 	benefit.ExpiresAt = now
 	cachedRequest = pr
 	benefit.Apply(&cachedRequest, now)
-	estimate = forecast.Evaluate(c, cachedRequest, now).Estimate
+	estimate = forecast.Evaluate(&c, cachedRequest, now).Estimate
 	if estimate.Status != forecast.PredictedLate || estimate.CachedTokens != 0 {
 		t.Fatal("expired proof retained credit")
 	}
@@ -91,7 +91,7 @@ func TestFirstContentForecastConfidenceAndCacheBeforeDeadline(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			c := measured()
 			tc.change(&c)
-			estimate := forecast.Evaluate(c, pr, now).Estimate
+			estimate := forecast.Evaluate(&c, pr, now).Estimate
 			if estimate.Status != forecast.Unknown || estimate.ExpectedMs <= 0 {
 				t.Fatalf("unknown must have nonzero estimate: %+v", estimate)
 			}
@@ -161,18 +161,18 @@ func TestFirstContentDeadlineExemptHedgeUsesAdvisoryHorizon(t *testing.T) {
 		Workload: forecast.Workload{WholeMacKnown: true}}
 	pr := forecast.Request{PromptTokens: 2000, UpperBoundTokens: 2000,
 		Incoming: performance.IncomingWork{RequestedMaxTokens: 128}, Hedge: true, PlanningHorizon: 10 * time.Minute}
-	estimate := forecast.Evaluate(c, pr, now).Estimate
+	estimate := forecast.Evaluate(&c, pr, now).Estimate
 	if estimate.Status != forecast.Feasible || !forecast.Allows(estimate, pr, c.Workload.WholeMacBusy) || !pr.Deadline.IsZero() {
 		t.Fatalf("exempt hedge lost credible advisory forecast or gained deadline: %+v", estimate)
 	}
 	pr.PlanningHorizon = 0
-	estimate = forecast.Evaluate(c, pr, now).Estimate
+	estimate = forecast.Evaluate(&c, pr, now).Estimate
 	if forecast.Allows(estimate, pr, c.Workload.WholeMacBusy) {
 		t.Fatal("hedge without deadline or planning horizon invented feasibility")
 	}
 	pr.PlanningHorizon = 10 * time.Minute
 	c.Workload.WholeMacBusy = true
-	estimate = forecast.Evaluate(c, pr, now).Estimate
+	estimate = forecast.Evaluate(&c, pr, now).Estimate
 	if forecast.Allows(estimate, pr, c.Workload.WholeMacBusy) {
 		t.Fatal("exempt hedge consumed occupied whole-Mac allowance")
 	}
@@ -223,7 +223,7 @@ func TestFirstContentAcceptedCapacityCannotRejuvenatePerformance(t *testing.T) {
 		p.Mu().Lock()
 		e := f.evidence(time.Now())
 		p.Mu().Unlock()
-		return forecast.Evaluate(e, pr, time.Now()).Estimate
+		return forecast.Evaluate(&e, pr, time.Now()).Estimate
 	}
 	if e := evaluate(); e.Status != forecast.Unknown || e.Reason != "performance_age_unknown_or_stale" {
 		t.Fatalf("unchanged sample became fresh: %+v", e)
@@ -299,11 +299,11 @@ func TestFirstContentExemptRetryQuoteRequiresQualifiedAdvisoryForecast(t *testin
 			if tc.horizon {
 				pr.PlanningHorizon = 10 * time.Minute
 			}
-			result := forecast.Evaluate(c, pr, now)
+			result := forecast.Evaluate(&c, pr, now)
 			if result.Estimate.Status != forecast.Unknown {
 				t.Fatal("pre-refusal evidence allowed exempt recovery")
 			}
-			estimate := forecast.ApplyQuote(result, c, pr, forecast.Quote{Confirmed: true, Confidence: protocol.CapacityConfidenceHigh,
+			estimate := forecast.ApplyQuote(result, &c, pr, forecast.Quote{Confirmed: true, Confidence: protocol.CapacityConfidenceHigh,
 				ObservedAt: now, TTFTP50: time.Millisecond, TTFTP90: 2 * time.Millisecond}, forecast.QuoteContext{}, now)
 			if estimate.Status != tc.want || !pr.Deadline.IsZero() || pr.MaxTTFTMS != 0 {
 				t.Fatalf("forecast=%+v, want %s without deadline", estimate, tc.want)

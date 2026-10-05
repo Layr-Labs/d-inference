@@ -71,12 +71,12 @@ func TestTTFTOccupancyTermZeroWhenAlphaZero(t *testing.T) {
 	}
 	work := ttftforecast.Work{Running: 8, Pending: 8}
 	if got := shadowTestOccupancy(work); got != 0 {
-		t.Fatalf("ttftOccupancyMs must be 0 when alpha=0, got %f", got)
+		t.Fatalf("occupancy delay must be 0 when alpha=0, got %f", got)
 	}
 }
 
 // TestTTFTEstimateOccupancyTermActiveAndMonotonic exercises the flag ON via the
-// SHADOW estimate (occupancyAwareTTFTMsFromSnapshot — the only place the term is
+// SHADOW estimate (candidateSnapshot.shadowTTFT — the only place the term is
 // added; ttftMsFromSnapshot stays occupancy-free, see Fix D): the occupancy term
 // raises the estimate, the estimate is strictly increasing in occupancy, and it
 // crosses the verified ~10s deadline at a knee. It also pins the safety invariant

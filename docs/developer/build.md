@@ -25,6 +25,13 @@ Each CI workflow change exercises that workflow's lanes; changes to the shared
 detector exercise all callers. The existing push-only Swift cache job is unchanged.
 The separate release preparation workflow retains its existing triggers.
 
+Registry performance comparisons use the same pinned Go toolchain for both
+revisions. Build each `coordinator/tests/registry` test binary with `go test -c`
+before timing, then run the prebuilt binaries without concurrent compilation.
+The [reservation benchmark procedure](test.md#reservation-storage-and-scan-benchmarks)
+describes fixtures, interleaving and the distinction between local routing cost
+and production latency.
+
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
 source-matched `mlx.metallib`), and the console and marketing Next.js UIs.
@@ -75,6 +82,9 @@ owners. `go build ./coordinator/...` builds production code and ordinary
 adds checked shard discovery; coverage explicitly instruments the imported
 production packages, excluding all test helpers. See the
 [test-boundary map](test.md#2-coordinator-go) for focused commands.
+Routing snapshot-age regressions run against the ordinary coordinator build;
+the [test guide](test.md#2-coordinator-go) includes a race-enabled repetition
+command using the existing reservation-preparation fixture.
 
 Registry-ID support changes Swift provider policy and Rust prompt normalization
 together. Build the paired coordinator/sidecar/provider candidate; the v6

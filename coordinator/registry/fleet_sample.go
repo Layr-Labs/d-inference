@@ -295,14 +295,15 @@ func (r *Registry) fleetSnapshotModelLocked(raw string) string {
 // first failing GateReason name or "eligible". Caller holds r.mu (read) and
 // must NOT hold p.mu (the snapshot helper takes it).
 func (r *Registry) slotEligibilityReasonLocked(p *Provider, model string, probe *PendingRequest, now time.Time) string {
-	// One stack-resident candidate: the arena variants fill the snapshot in
-	// place and return the closed GateReason the dispatch scan would tally.
+	// The same evaluation pipeline as the scan uses stack-local storage and
+	// returns the closed GateReason the dispatch scan would tally.
 	var c routingCandidate
-	ok, reason := r.snapshotProviderIntoLockedEx(&c.snapshot, p, model, probe.Traits, false, false, now)
+	var snapshot routingSnapshot
+	ok, reason := r.snapshotProviderIntoLockedEx(&snapshot, p, model, probe.Traits, false, false, now)
 	if !ok {
 		return reason.String()
 	}
-	if _, gateReason, built := r.buildCandidateInto(&c, probe, now); !built {
+	if _, gateReason, built := r.buildCandidateInto(&c, &snapshot, probe, now); !built {
 		return gateReason.String()
 	}
 	return EligibilityReasonEligible

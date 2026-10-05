@@ -1,6 +1,6 @@
 # Archived analytics and verified source retention
 
-> Last updated: 2026-09-29
+> Last updated: 2026-10-05
 
 Status: Superseded by [Fourteen-day operational storage and durable history](operational-history-retention.md) - 2026-10-05. The new decision includes historical accounting detail while retaining operational state and financial correctness records; source retirement remains disabled.
 

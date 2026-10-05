@@ -32,23 +32,41 @@ func validateWindow(w Window) error {
 		return errors.New("analytics totals do not reconcile")
 	}
 	expected := min(w.Totals.ActiveAccounts, 200)
-	common := map[string]store.LeaderboardRow{}
+	rankedAccounts := map[string]store.LeaderboardRow{}
 	for _, metric := range Metrics {
 		rows, ok := w.Leaderboards[metric]
 		if !ok || rows == nil || int64(len(rows)) != expected {
 			return errors.New("analytics ranking missing or oversized")
 		}
-		if err := validateRanking(rows, metric, common); err != nil {
+		if err := validateRanking(rows, metric, rankedAccounts); err != nil {
 			return err
 		}
 	}
 	// Each metric contains expected distinct IDs, so this also forces identical
 	// complete cohorts. Larger top-200 sets may differ within the actual cohort.
-	if int64(len(common)) > w.Totals.ActiveAccounts {
+	if int64(len(rankedAccounts)) > w.Totals.ActiveAccounts {
 		return errors.New("analytics rankings exceed provider cohort")
 	}
+	for _, metric := range Metrics {
+		rows := w.Leaderboards[metric]
+		if len(rows) == 0 {
+			continue
+		}
+		listed := make(map[string]bool, len(rows))
+		for _, row := range rows {
+			listed[row.AccountID] = true
+		}
+		last := rows[len(rows)-1]
+		lastValue := rankValue(last, metric)
+		for account, row := range rankedAccounts {
+			value := rankValue(row, metric)
+			if !listed[account] && (value > lastValue || value == lastValue && account < last.AccountID) {
+				return errors.New("analytics ranking omits a higher-ranked account")
+			}
+		}
+	}
 	remainingJobs := w.Totals.Jobs
-	for _, row := range common {
+	for _, row := range rankedAccounts {
 		// Count each account once across metrics, without overflowing INT64.
 		// Totals may include anonymous work, so equality is not required.
 		if row.Jobs > remainingJobs {
@@ -59,16 +77,16 @@ func validateWindow(w Window) error {
 	return nil
 }
 
-func validateRanking(rows []store.LeaderboardRow, metric string, common map[string]store.LeaderboardRow) error {
+func validateRanking(rows []store.LeaderboardRow, metric string, rankedAccounts map[string]store.LeaderboardRow) error {
 	seen := map[string]bool{}
 	for _, r := range rows {
 		if r.AccountID == "" || len(r.AccountID) > 512 || seen[r.AccountID] || r.Jobs < 0 || !sumMatches(r.EarningsMicroUSD, r.WorkEarningsMicroUSD, r.RewardEarningsMicroUSD) {
 			return errors.New("analytics ranking does not reconcile")
 		}
-		if prior, ok := common[r.AccountID]; ok && prior != r {
+		if prior, ok := rankedAccounts[r.AccountID]; ok && prior != r {
 			return errors.New("analytics metrics disagree on account totals")
 		}
-		common[r.AccountID] = r
+		rankedAccounts[r.AccountID] = r
 		seen[r.AccountID] = true
 	}
 	if !sort.SliceIsSorted(rows, func(i, j int) bool {

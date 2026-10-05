@@ -1,6 +1,6 @@
 # Copy and verify historical telemetry
 
-> Last updated: 2026-09-26
+> Last updated: 2026-10-05
 
 Use the standalone copy-only exporter to preserve a bounded telemetry snapshot
 in Cloud Storage and verify it with BigQuery. This phase does not change the

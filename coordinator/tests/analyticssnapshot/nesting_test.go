@@ -79,6 +79,45 @@ func TestSnapshotAllowsAccountToLeaveWiderTop200(t *testing.T) {
 	}
 }
 
+func TestDecodeRequiresNarrowAccountsInCompleteWiderCohort(t *testing.T) {
+	for boundary := 1; boundary < len(Windows); boundary++ {
+		for _, count := range []int{1, 200, 201} {
+			t.Run(fmt.Sprintf("%s/accounts=%d", Windows[boundary], count), func(t *testing.T) {
+				now := time.Now().UTC()
+				s := fixture(now)
+				rows := make([]store.LeaderboardRow, min(count, 200))
+				for i := range rows {
+					rows[i] = store.LeaderboardRow{AccountID: fmt.Sprintf("b-%03d", i), Jobs: 1}
+				}
+				for i, name := range Windows {
+					if i < boundary {
+						setRankingWindow(s, name, rows[:1], 1)
+						continue
+					}
+					setRankingWindow(s, name, rows, int64(count))
+					w := s.Windows[name]
+					w.Totals.ActiveAccounts = int64(count)
+					s.Windows[name] = w
+				}
+				if _, err := Decode(bytes.NewReader(data(t, s)), now); err != nil {
+					t.Fatalf("valid contained cohort control: %v", err)
+				}
+				for _, name := range Windows[:boundary] {
+					setRankingWindow(s, name, []store.LeaderboardRow{{AccountID: "z", Jobs: 1}}, 1)
+				}
+				_, err := Decode(bytes.NewReader(data(t, s)), now)
+				if count > 200 {
+					if err != nil {
+						t.Fatalf("absent account is allowed in a truncated wider cohort: %v", err)
+					}
+				} else if err == nil || !strings.Contains(err.Error(), "account missing from complete wider cohort") {
+					t.Fatalf("expected missing account rejection, got %v", err)
+				}
+			})
+		}
+	}
+}
+
 func TestSnapshotRejectsLifetimeJobsBelowThirtyDays(t *testing.T) {
 	now := time.Now().UTC()
 	s := fixture(now)

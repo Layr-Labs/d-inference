@@ -143,7 +143,11 @@ func writeState(path string, state *durableState) error {
 	if err := os.Rename(tmpPath, path); err != nil {
 		return err
 	}
-	d, err := os.Open(dir)
+	return syncStateDirectory(path)
+}
+
+func syncStateDirectory(path string) error {
+	d, err := os.Open(filepath.Dir(path))
 	if err != nil {
 		return err
 	}

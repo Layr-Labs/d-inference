@@ -49,6 +49,11 @@ not rule out external automation or jobs in other regions. A publisher success
 does not imply the preceding capture completed; metadata did not establish why
 the telemetry capture stopped.
 
+A subsequent read-only `gcloud datastream streams list` request for `us-east4`
+returned `SERVICE_DISABLED` for `datastream.googleapis.com`; no API was enabled.
+The request therefore did not inventory streams or prove an alternative capture
+mechanism exists.
+
 The pinned images under
 `us-east4-docker.pkg.dev/darkbloom-mainnet/coordinator/` were:
 

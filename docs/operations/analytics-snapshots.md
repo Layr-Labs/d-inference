@@ -40,10 +40,13 @@ catalogs are incomplete and cannot supply a qualified production snapshot.
    tokens and jobs matching `store.LeaderboardRow`. Supply exactly
    min(active_accounts,200) rows for each metric, ranked descending with account
    ID ascending as the tie breaker. When there are at most 200 active accounts,
-   all metrics must contain the same account-ID set. Empty rankings must be arrays, not null.
+   all metrics must contain the same account-ID set. A truncated ranking cannot
+   omit an account seen in another metric if it outranks that ranking's last row.
+   Empty rankings must be arrays, not null.
    Across 24h/7d/30d/all at the same `as_of`, network job and active-account
    counts cannot decrease. A ranked account's job count cannot decrease when
-   that account appears in both windows; an account may leave a wider top 200.
+   that account appears in both windows. An account may leave a wider top 200
+   only when the wider cohort has more than 200 accounts.
    Use integer JSON amounts within signed INT64; never float-round or truncate.
    Include `series` for 30m/24h/7d/30d with `start_at`, `end_at`,
    `bucket_seconds` (60/1800/14400/43200), and `buckets` shaped as
@@ -95,7 +98,9 @@ Every different generation must advance
 `as_of` or `source_complete_through`, and neither may regress. Publish corrections with the
 next qualified source cut.
 It fsyncs the accepted source cutoffs and every generation checksum to the
-separate private state file before serving a new generation. Missing, corrupt
+separate private state file and syncs its directory before serving a new
+generation. Reloading the same generation repeats the directory barrier, so
+a failed barrier cannot be bypassed by a retry or restart. Missing, corrupt
 or unwritable state prevents a new acceptance; a restarted coordinator has no
 cached success and returns 503. It
 rejects changed content even if an older generation ID reappears. An invalid
@@ -111,9 +116,13 @@ PostgreSQL queries, even on cold start or expiry. Missing/stale data returns 503
 The old network-totals database refresher is disabled. Stats, geography and private billing readers still use their existing paths. This mode
 does not authorize retirement of their underlying detail.
 
-`go test -race ./coordinator/analyticssnapshot ./coordinator/api -run
-'TestSnapshot|TestCacheFailure|TestIncompleteTopRanks|TestArchiveAnalytics'`
-checks validation, retained prior generations and HTTP behavior with a store
+Run the focused suites from the repository root:
+
+```sh
+go test -race ./coordinator/tests/analyticssnapshot ./coordinator/tests/api/reporting ./coordinator/tests/api
+```
+
+These check validation, retained prior generations and HTTP behavior with a store
 that fails the test if it is scanned. Python sync tests check immutable object
 identity, private scope, hash mismatches and preservation of the previous file.
 
@@ -132,9 +141,11 @@ existing refresh behavior.
 
 Stop publication/sync of bad generations. A prior still-fresh validated snapshot
 can continue serving within its freshness bounds. To return to the old database
-path, remove the env var through an approved deployment **only while source
-history is intact**. After future retention, restore/reconcile required source
-history before attempting that rollback.
+path, remove both `EIGENINFERENCE_ANALYTICS_SNAPSHOT_PATH` and
+`EIGENINFERENCE_ANALYTICS_SNAPSHOT_STATE_PATH` through an approved deployment
+**only while source history is intact**. Retain the accepted-generation file;
+do not reset its continuity fence. After future retention, restore/reconcile
+required source history before attempting that rollback.
 
 ## Related
 

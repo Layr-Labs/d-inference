@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	. "github.com/eigeninference/d-inference/coordinator/analyticssnapshot"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,6 +69,52 @@ func TestPartialTopRankingsMayContainDifferentAccounts(t *testing.T) {
 	s.Windows["all"] = w
 	if _, err := Decode(bytes.NewReader(data(t, s)), now); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDecodeRejectsTop200OmittingKnownHigherRank(t *testing.T) {
+	for _, metric := range Metrics {
+		for _, tied := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/tied=%v", metric, tied), func(t *testing.T) {
+				now := time.Now().UTC()
+				s := fixture(now)
+				w := s.Windows["all"]
+				w.Totals.ActiveAccounts = 201
+				rows := make([]store.LeaderboardRow, 201)
+				for i := range rows {
+					r := store.LeaderboardRow{AccountID: fmt.Sprintf("account-%03d", i), Jobs: 1}
+					if !tied {
+						switch metric {
+						case "tokens":
+							r.Tokens = int64(100 - i)
+						case "jobs":
+							r.Jobs = int64(201 - i)
+						case "earnings":
+							r.EarningsMicroUSD = int64(100 - i)
+							r.WorkEarningsMicroUSD = r.EarningsMicroUSD
+						}
+					}
+					rows[i] = r
+					w.Totals.Jobs += r.Jobs
+					w.Totals.Tokens += r.Tokens
+					w.Totals.EarningsMicroUSD += r.EarningsMicroUSD
+					w.Totals.WorkEarningsMicroUSD += r.WorkEarningsMicroUSD
+				}
+				for _, board := range Metrics {
+					w.Leaderboards[board] = rows[:200]
+				}
+				s.Windows["all"] = w
+				if _, err := Decode(bytes.NewReader(data(t, s)), now); err != nil {
+					t.Fatalf("valid top-200 control: %v", err)
+				}
+				// Still sorted and internally consistent, but another board exposes
+				// the omitted account that outranks this board's last entry.
+				w.Leaderboards[metric] = rows[1:]
+				if _, err := Decode(bytes.NewReader(data(t, s)), now); err == nil || !strings.Contains(err.Error(), "omits a higher-ranked account") {
+					t.Fatalf("expected omitted higher rank rejection, got %v", err)
+				}
+			})
+		}
 	}
 }
 

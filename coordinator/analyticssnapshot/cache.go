@@ -92,6 +92,10 @@ func (c *Cache) load(path, statePath string, now time.Time) error {
 			if err := writeState(statePath, state); err != nil {
 				return err
 			}
+		} else if err := syncStateDirectory(statePath); err != nil {
+			// A prior write may have renamed the synced file but failed its
+			// directory barrier, including in a previous process.
+			return err
 		}
 		c.snapshot = s
 		c.checksums = state.Checksums

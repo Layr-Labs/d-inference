@@ -2,9 +2,11 @@ package analyticssnapshot_test
 
 import (
 	"bytes"
+	"errors"
 	. "github.com/eigeninference/d-inference/coordinator/analyticssnapshot"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -127,4 +129,98 @@ func mustReadFile(t *testing.T, path string) []byte {
 		t.Fatal(err)
 	}
 	return raw
+}
+
+func TestPersistentAcceptanceRetriesDirectorySyncBeforeServing(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("requires Unix directory permissions enforced for a non-root user")
+	}
+	for _, prior := range []bool{false, true} {
+		name := "empty cache"
+		if prior {
+			name = "prior snapshot"
+		}
+		t.Run(name, func(t *testing.T) {
+			now := time.Date(2026, 9, 29, 12, 0, 30, 0, time.UTC)
+			dir := t.TempDir()
+			stateDir := filepath.Join(dir, "accepted")
+			if err := os.Mkdir(stateDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := os.Chmod(stateDir, 0o700); err != nil {
+					t.Error(err)
+				}
+			})
+			statePath := filepath.Join(stateDir, "state.json")
+			snapshotPath := filepath.Join(dir, "current.json")
+			if err := os.WriteFile(statePath, []byte(`{"version":1,"checksums":{}}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			s := fixture(now)
+			var cache Cache
+			var previous *Snapshot
+			if prior {
+				if err := os.WriteFile(snapshotPath, data(t, s), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := cache.LoadPersistent(snapshotPath, statePath, now); err != nil {
+					t.Fatal(err)
+				}
+				previous, _ = cache.Get(now)
+			}
+			s.Generation = "next"
+			s.AsOf = s.AsOf.Add(time.Second)
+			s.SourceCompleteThrough = s.SourceCompleteThrough.Add(time.Second)
+			if err := os.WriteFile(snapshotPath, data(t, s), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// Named files remain accessible and temp creation/rename work, but
+			// opening the directory for the durability barrier must fail.
+			if err := os.Chmod(stateDir, 0o300); err != nil {
+				t.Fatal(err)
+			}
+			var restarted Cache
+			for attempt, c := range []*Cache{&cache, &cache, &restarted} {
+				err := c.LoadPersistent(snapshotPath, statePath, now)
+				var pathErr *os.PathError
+				if !errors.As(err, &pathErr) || pathErr.Op != "open" || pathErr.Path != stateDir || !os.IsPermission(err) {
+					t.Fatalf("attempt %d: expected directory-open permission failure, got %v", attempt, err)
+				}
+				got, ok := c.Get(now)
+				if c == &cache {
+					if got != previous || ok != prior {
+						t.Fatalf("attempt %d: failure changed previously served snapshot", attempt)
+					}
+				} else if ok {
+					t.Fatal("restart served state without a successful directory barrier")
+				}
+				if !bytes.Contains(mustReadFile(t, statePath), []byte(`"latest_generation":"next"`)) {
+					t.Fatal("failure did not occur after state rename")
+				}
+			}
+			before, err := os.Stat(statePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(stateDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			for _, c := range []*Cache{&cache, &restarted} {
+				if err := c.LoadPersistent(snapshotPath, statePath, now); err != nil {
+					t.Fatalf("retry after restoring directory access: %v", err)
+				}
+				if got, ok := c.Get(now); !ok || got.Generation != s.Generation {
+					t.Fatal("durable generation was not served after successful retry")
+				}
+			}
+			after, err := os.Stat(statePath)
+			if err != nil || !os.SameFile(before, after) {
+				t.Fatalf("same-generation retry unnecessarily replaced state file: %v", err)
+			}
+			if leftovers, err := filepath.Glob(filepath.Join(stateDir, ".analytics-accepted-*.tmp")); err != nil || len(leftovers) != 0 {
+				t.Fatalf("temporary state files left behind: %v, %v", leftovers, err)
+			}
+		})
+	}
 }

@@ -30,6 +30,20 @@ snapshot, but is not copied into the installed provider's launchd environment:
 `passthroughEnvironment`). See [LaunchAgent environment passthrough](../provider/cli-reference.md#launchagent-environment-passthrough).
 This setting does not grant sandbox permissions or change snapshot binding checks.
 
+## Deployment environment
+
+| Setting | Default / bounds | Consumer |
+|---|---|---|
+| `EIGENINFERENCE_DEPLOYMENT_ENVIRONMENT` | `production`; only `production` or `development`, unknown values fail startup | `coordinator/config/deployment.go` (`CheckDeploymentEnvironment`, `RequiresProductionAppAttest`); `coordinator/internal/startup/legacy_mdm.go` (`InitializeLegacyMDMPolicy`) |
+
+Production requires the [App Attest cutover prerequisites](../operations/coordinator-deploy.md#frozen-legacy-mdm-cutover-prerequisites)
+and freezes the legacy cohort. Explicit `development`, or actual memory-store
+fallback (`EIGENINFERENCE_ALLOW_MEMORY_STORE=true` with no database URL), skips
+that startup freeze. Allowing memory fallback does not exempt a configured
+Postgres store. `DD_ENV`, the App Attest proof environment, base URL and client
+claims do not classify deployment security. A later production startup freezes
+then-current eligible membership; dev startup does not establish a cutoff.
+
 ## Provider drain deadline
 
 | Setting | Default / bounds | Consumer |

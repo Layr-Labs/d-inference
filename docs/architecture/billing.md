@@ -11,7 +11,7 @@ routes, and env vars are tabulated in
 [`reference/pricing-model.md`](../reference/pricing-model.md); the consumer
 how-to is [`consumer/billing.md`](../consumer/billing.md).
 
-Qualified App Attest-only providers can receive base rewards through the [canonical machine settlement contract](../reference/provider-authorization.md#machine-identity-and-base-rewards). `coordinator/payments/baserewards/machine_candidates.go` unions known-machine uptime, aggregates account-matching organic earnings and rechecks current serving authorization before credit. Historical balances and organic-earning keys remain unchanged; neither a fresh connection nor a credential rotation creates another same-epoch floor.
+Base rewards require macOS 27 or later and current qualified App Attest authorization for every provider, old or new, through the [canonical machine settlement contract](../reference/provider-authorization.md#machine-identity-and-base-rewards), whether or not the machine also has legacy MDM. `coordinator/payments/baserewards/machine_candidates.go` (`rewardSnapshotEligible`) checks this when building candidates and immediately before credit. Grandfathered legacy-MDM-only machines may still serve and earn completed-inference work payments, but cannot receive new base rewards. Expired, revoked or unqualified App Attest authorization cannot use legacy serving eligibility as a reward fallback. Historical balances, finalized base rewards, reserved withdrawals and organic-earning keys remain unchanged; neither a fresh connection nor a credential rotation creates another same-epoch floor.
 
 The remaining epoch allocation commits as one transaction in `coordinator/payments/baserewards/settlement_plan.go` (`settleCandidatePlan`) and `coordinator/store/floor_draw_batch.go` (`FloorDrawBatchStore`). If authorization or canonical identity changes before commit, the pending plan rolls back and the engine reallocates its unspent budget. This includes partial and zero-value waitlisted rows, so a rejected provider cannot permanently reduce another provider's payment. Previously finalized rows remain unchanged.
 
@@ -337,7 +337,8 @@ per-epoch base income on top of organic earnings. It is wired in
 `Engine.Run`. Per closed `SettlementPeriod = 5 * time.Minute` epoch
 (`epoch.go`), for each machine that passes every gate in
 `machine_candidates.go` `buildCandidates` — current complete public serving
-authorization through legacy verification or qualified App Attest; online with the
+authorization through qualified App Attest with a macOS 27-or-later OS claim
+bound to that same authorization (legacy verification alone is insufficient); online with the
 model loaded; `MemoryPressure < 0.8` and thermal state not `critical`; a
 provider key; uptime from `provider_sessions` ≥ `MinUptimeFrac` (`0.90`, open
 sessions accrue to `last_seen + defaultGraceSeconds = 90`); hardware model in
@@ -373,9 +374,15 @@ by a per-epoch lock (an advisory lock in PostgreSQL).
 the design record is [`design/base-rewards.md`](../design/base-rewards.md).
 
 The base-reward model memory ceiling lives in `coordinator/hardware/mac_models.go`
-(`ModelMaxMemoryGB`). Moving that static catalog out of MDM does not change any
-cap, eligibility rule, serial/accounting key, or payout. App Attest hardware claims are observational in
-this release; they do not replace the existing reward inputs or eligibility gates.
+(`ModelMaxMemoryGB`). The current App Attest authorization binds the model and
+memory inputs used by `coordinator/registry/provider_snapshot.go`
+(`providerRewardSnapshotLocked`); the static catalog still caps those inputs.
+The reward OS claim also comes from that current authorization, carried in
+`ProviderSnapshot.AppAttestOSVersion`; an unsigned registration or inventory
+version cannot replace it. Missing, malformed or below-27 versions fail the
+reward gate. The App Attest assertion and qualified executable authenticate this
+claim; it is not an independently Apple-certified OS measurement. This
+reward-only gate does not change temporary frozen legacy serving eligibility.
 The current catalog includes the 2026 M6 and M5 Pro Mac minis and M5 Max Mac
 Studio. The M5 Ultra Studio identifier remains excluded because Apple's model
 pages also assign it to the lower-memory M5 Pro mini; see the

@@ -15,7 +15,7 @@ trap 'exit 143' HUP INT TERM
 system=$(uname -s)
 found=0
 # Native SwiftPM writes one <Package>PackageTests.xctest; Swift Build writes one
-# <Target>.xctest per test target. Darwin cp -c clones on APFS and copies elsewhere.
+# <Target>.xctest per test target. Prefer APFS cloning on Darwin, with a copy fallback.
 for bundle in "$bin_directory"/*.xctest; do
     [ -d "$bundle" ] || continue
     for destination in "$bundle/Contents/MacOS/mlx.metallib" \
@@ -24,7 +24,8 @@ for bundle in "$bin_directory"/*.xctest; do
         mkdir -p "$directory"
         staging_file=$(mktemp "$directory/.mlx-metallib.XXXXXX")
         if [[ "$system" == Darwin ]]; then
-            cp -c "$bin_directory/mlx.metallib" "$staging_file"
+            cp -c "$bin_directory/mlx.metallib" "$staging_file" 2>/dev/null ||
+                cp "$bin_directory/mlx.metallib" "$staging_file"
         else
             cp "$bin_directory/mlx.metallib" "$staging_file"
         fi

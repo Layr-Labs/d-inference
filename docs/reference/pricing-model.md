@@ -194,7 +194,8 @@ Connected-account status `users.stripe_account_status`
 | `MinUptimeForAvail` / `FullUptimeForAvail` | `0.90` / `1.00` | `floor.go` |
 | `defaultGraceSeconds` | `90` (open sessions accrue to `last_seen + grace`) | `engine.go` |
 | `FloorDrawBatchLimit` | `4096` pending rows; a larger plan returns an error without truncation or credit | `coordinator/store/floor_draw_batch.go` |
-| Health gates | Current complete public serving authorization; memory/thermal health and loaded-model readiness; linked account; qualified hardware capped by `hardware.ModelMaxMemoryGB` | `machine_candidates.go` (`rewardSnapshotEligible`, `rewardMemoryGB`) |
+| Authorization gate | Every provider, old or new, requires macOS 27 or later and current qualified App Attest public serving authorization, including machines also enrolled in MDM. The OS claim must be bound to the same authorization; missing, malformed or older versions fail closed. Grandfathered legacy MDM alone never earns new base rewards. Expired, revoked or unqualified App Attest fails this gate even when legacy serving remains available. | `coordinator/payments/baserewards/machine_candidates.go` (`rewardSnapshotEligible`, `candidateSessionAuthorized`) |
+| Health gates | Memory/thermal health and loaded-model readiness; linked account and durable machine binding; qualified hardware capped by `hardware.ModelMaxMemoryGB` | `coordinator/payments/baserewards/machine_candidates.go` (`buildCandidates`, `rewardSnapshotEligible`); `coordinator/internal/payments/rewardpolicy/memory.go` (`RewardMemoryGB`) |
 
 Tier table (`floor.go` `floorTiers`; a machine takes the largest tier whose
 `MinGB` it meets; below 24 GB → `0`):

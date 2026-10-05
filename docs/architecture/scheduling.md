@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-05
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -11,6 +11,12 @@ eligible provider gets a request is the subject of
 [`routing.md`](routing.md); this page stops where that choice begins.
 Provider-local weekly availability separately controls when a Mac joins that
 fleet, as described under [Provider availability windows](#provider-availability-windows).
+
+The immutable connection origin also supplies inventory registration order via
+`Provider.RegisteredAt` in `coordinator/registry/connection_origin.go`. This
+read-only projection leaves connection-age calculations, duplicate arbitration
+and admission unchanged. [Email campaign selection](storage.md#inventory-registration-timestamps)
+uses it outside the scheduler and does not change serving eligibility.
 
 For automatic same-ID weight updates, desired state includes a revision and
 aggregate hash for providers advertising `model_revisions_v1`. The provider

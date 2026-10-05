@@ -1,9 +1,6 @@
 package store
 
-import (
-	"context"
-	"errors"
-)
+import "context"
 
 // FloorDrawBatchStore commits one remaining epoch allocation atomically. The
 // caller holds WithEpochSettlementLock. authorize must be a fast, read-only
@@ -42,33 +39,4 @@ const (
 	FloorDrawAlreadyPaid  = "already_settled"
 	FloorDrawIdentity     = "identity_changed"
 	FloorDrawDuplicate    = "duplicate_machine"
-)
-
-func validateFloorDrawBatch(items []FloorDrawBatchItem, authorize func(int) bool) error {
-	if len(items) > FloorDrawBatchLimit {
-		return errors.New("provider_floor_draw_batch_too_large")
-	}
-	if len(items) > 0 && authorize == nil {
-		return errors.New("provider_floor_draw_batch_authorization_required")
-	}
-	for _, item := range items {
-		if item.SessionID == "" || item.Draw.AccountID == "" || item.Draw.ProviderKey == "" || item.Draw.EpochID == "" ||
-			item.Draw.EpochID != items[0].Draw.EpochID || item.Draw.AmountMicroUSD < 0 {
-			return errors.New("invalid_provider_floor_draw_batch")
-		}
-	}
-	return nil
-}
-
-func floorDrawBatchRejected(index int, reason string) FloorDrawBatchResult {
-	return FloorDrawBatchResult{Rejections: []FloorDrawBatchRejection{{Index: index, Reason: reason}}}
-}
-
-func floorDrawBatchDuplicate(index, prior int, machine string) FloorDrawBatchResult {
-	return FloorDrawBatchResult{Rejections: []FloorDrawBatchRejection{{Index: index, Reason: FloorDrawDuplicate, DuplicateOf: prior, CanonicalMachineID: machine}}}
-}
-
-var (
-	_ FloorDrawBatchStore = (*MemoryStore)(nil)
-	_ FloorDrawBatchStore = (*PostgresStore)(nil)
 )

@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the
@@ -182,6 +182,10 @@ Go/Swift fixture and focused checks are described in [test.md](test.md) and
 [prediction telemetry](../reference/prediction-decision-telemetry.md).
 
 The `ProviderAppAttest` Swift target uses public DeviceCheck/Security APIs. Its [shadow packaging and live-validation requirements](../reference/app-attest-shadow.md#packaging-and-live-acceptance) are separate from a successful local compile.
+
+The provider email operator command builds separately with
+`go build -o /tmp/provider-emails ./coordinator/cmd/provider-emails`. It is not
+part of the coordinator server process. See the [provider email runbook](../operations/provider-emails.md).
 
 Provider signing, R2 staging and publication run in separate jobs in `.github/workflows/release-swift.yml`. `scripts/provider-release-publication.py` stages the final signed bundle under an immutable digest path, retains metadata, and gates publication on coordinator qualification. A staging or publication retry downloads and reuses the original signed artifact and does not rerun compilation or notarization. `scripts/provider_release_github.py` resumes draft/upload state, verifies asset hashes before publishing and never replaces completed mismatched bytes. See [build qualification](../operations/app-attest-build-qualification.md).
 
@@ -956,6 +960,9 @@ one `<Package>PackageTests.xctest`. CI uses the native build system through
 Build, which makes one `<Target>.xctest` for each test target. `make provider-test`
 and the provider/nested CI jobs invoke this helper. A missing test runner or
 failed source verification is an error; an existing library is always replaced.
+Staging uses `cp -c` on Darwin to retain APFS cloning and ordinary `cp` on other
+hosts, including Linux fixture runners. Copy errors and byte-comparison failures
+stop before the destination is replaced; no failed clone is silently retried.
 See [the live-test setup](test.md) for the pinned DiffusionGemma artifact and
 opt-in encrypted transport gate.
 

@@ -21,6 +21,7 @@ import (
 	inferhedge "github.com/eigeninference/d-inference/coordinator/internal/inference/hedge"
 	"github.com/eigeninference/d-inference/coordinator/internal/inference/promotions"
 	"github.com/eigeninference/d-inference/coordinator/internal/inference/reservations"
+	"github.com/eigeninference/d-inference/coordinator/internal/inference/responselimit"
 	"github.com/eigeninference/d-inference/coordinator/internal/inference/scangate"
 	latesettlement "github.com/eigeninference/d-inference/coordinator/internal/inference/settlement"
 	"github.com/eigeninference/d-inference/coordinator/mediafetch"
@@ -56,6 +57,9 @@ type Config struct {
 	FirstContentDeadlineBase time.Duration
 	FirstContentSLAAccounts  []string
 	MediaFetch               *mediafetch.Config
+	// Non-positive values retain the safe defaults; limits cannot be disabled.
+	NonStreamingResponseMaxBytes  int
+	NonStreamingResponseMaxChunks int
 }
 
 type Owner struct {
@@ -82,6 +86,7 @@ type Owner struct {
 	keyTokenLimiter          *ratelimit.KeyTokenLimiter
 	coordinatorKey           *e2e.CoordinatorKey
 	mediaResolver            *mediafetch.Resolver
+	responseLimits           responselimit.Limits
 
 	// One owner arbitrates active requests, late settlement, and cancellation.
 	late         *latesettlement.Controller
@@ -162,6 +167,7 @@ func New(d Dependencies, cfg Config) *Owner {
 		mediaResolver:            mediafetch.NewResolver(mediaConfig, d.Logger),
 		firstContentDeadlineBase: deadline, firstContentPolicy: accountPolicy,
 		late: late, cancels: cancels, promotions: promos,
+		responseLimits: responselimit.Limits{MaxBytes: cfg.NonStreamingResponseMaxBytes, MaxChunks: cfg.NonStreamingResponseMaxChunks},
 
 		hedgeGov: hedgeGov, reservations: holds,
 		scanGate: scans, backoff: retryBackoff, chunkKeys: keys,

@@ -1,6 +1,6 @@
 # Encryption and privacy model
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
 An inference request crosses three NaCl Box hops: consumer → coordinator
 (optional), coordinator → provider (mandatory), provider → coordinator
@@ -139,7 +139,7 @@ This table is the privacy statement. [`../../consumer/privacy-expectations.md`](
 | Explicitly avoided | Code |
 |---|---|
 | Prompt content is decrypted for routing "but never logs prompt content, then re-encrypts each request to the provider" | `coordinator/api/inference/consumer.go` (package comment) |
-| Provider inference errors are reduced to a closed vocabulary before logging or returning | `coordinator/internal/inference/failure/inference_error_sanitize.go` (`sanitizeProviderInferenceError`, `clientSafeInferenceErrorMessage`) |
+| Provider inference errors are reduced to a closed vocabulary before logging or returning. The coordinator-only `response_limit` terminal carries one fixed message and cannot be set from a provider frame | `coordinator/internal/inference/failure/inference_error_sanitize.go` (`SanitizeProviderError`, `ClientSafeMessage`, `NonStreamingResponseLimitError`) |
 | The coordinator has no client telemetry ingestion route (the retired `POST /v1/telemetry/events` is unregistered), because provider telemetry had free-form `message` / `stack` fields | `coordinator/api/routes.go` (`routes`); `coordinator/tests/api/operations/contracts/telemetry_e2e_test.go` (`TestTelemetryE2E_NoClientIngestionRoute`) |
 | Sealed requests never trigger remote-media fetching (no coordinator egress derived from sealed content) | `coordinator/api/inference/sender_encryption.go` (`isSealedRequest`) |
 | Session private key and memoized shared key are dropped at request end | `coordinator/internal/inference/chunkkeys/chunk_key_cache.go` (`Forget`) |

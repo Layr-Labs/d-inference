@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-04
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -228,6 +228,7 @@ Choose **Unlink Stripe account and start over** to remove the destination curren
 | `401` `auth_error` on `POST /v1/keys`, `/v1/referral/register`, `/v1/referral/apply` | Called with an API key | Use the Privy access token |
 | `429` on `create-session`, key mutations, referral or invite calls | The [financial rate limiter](../reference/pricing-model.md#constants) | Back off for `Retry-After` |
 | Balance dropped by more than the response should cost, then recovered | Reservation debited at admission, refund at settlement | Expected; read balance after the response completes |
+| `502` `provider_error` "provider response exceeds non-streaming response limit" | A non-streaming response grew past the coordinator's [provider-output limits](../reference/api-contracts.md#limits-and-validation) | Stream the request or lower `max_tokens`; the reservation is refunded in full and the request is not charged |
 | `503` `billing_error` | Stripe or the referral service is not configured on this coordinator | Operator issue |
 
 Mechanism for each error, including the exact functions, is in

@@ -67,6 +67,18 @@ func (s *Owner) HandleChunk(providerID string, provider *registry.Provider, msg 
 		})
 		return
 	}
+	// Account before classification, queuing or completion settlement. Checking
+	// only the HTTP accumulator lets a fast completion bill an oversized body
+	// while that consumer is still draining its channel.
+	if !pr.NonStreamingResponseBudget.Accept(len(chunkData)) {
+		s.sendAbandonCancel(provider, pr.RequestID, pr.Model, cancellation.CauseOverflow)
+		s.HandleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
+			Type: protocol.TypeInferenceError, RequestID: pr.RequestID,
+			Error: failure.NonStreamingResponseLimitError, StatusCode: http.StatusBadGateway,
+			CoordinatorCause: protocol.CoordinatorCauseResponseLimit,
+		})
+		return
+	}
 	if ap := pr.Profile; ap != nil {
 		ap.ChunksIn.Add(1)
 		ap.DecryptUSTotal.Add(time.Since(decryptStart).Microseconds())
@@ -969,6 +981,10 @@ func (s *Owner) handleInferenceErrorOwned(providerID string, provider *registry.
 		return
 	}
 	safeMsg, invalidFailureCode, invalidTerminalCause := failure.SanitizeProviderError(msg)
+	if msg != nil && msg.CoordinatorCause == protocol.CoordinatorCauseResponseLimit {
+		safeMsg = failure.NormalizeInternalError(*msg)
+		invalidFailureCode, invalidTerminalCause = false, false
+	}
 	msg = &safeMsg
 	if invalidFailureCode {
 		s.observation.Incr("inference.invalid_failure_code", nil)

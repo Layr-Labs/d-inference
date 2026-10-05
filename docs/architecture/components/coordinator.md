@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -55,7 +55,7 @@ The application, transport and service owners under `coordinator/`:
 | `coordinator/api/reporting`, `coordinator/api/operations` | Public projections and operational liveness/readiness/drain handlers. |
 | `coordinator/api/observation` | Metrics, request profiles, route records and compact outcomes; their queues and flush/loss policies remain distinct. |
 | `coordinator/internal/api` | Production-consumed middleware, account projections, catalog validation and reporting calculations; HTTP binding stays with API owners. |
-| `coordinator/internal/inference` | Cohesive request components: media preparation, provider-body sealing/memoization, first-content and scan/backoff policy, relay, cancellation, promotions, monetary reservations, settlement and outcome recording. Each retains its own dependencies and private state; the inference owner coordinates them. |
+| `coordinator/internal/inference` | Cohesive request components: media preparation, provider-body sealing/memoization, first-content and scan/backoff policy, relay, non-streaming response limits, cancellation, promotions, monetary reservations, settlement and outcome recording. Each retains its own dependencies and private state; the inference owner coordinates them. |
 | `coordinator/internal/provider` | Challenge verification, session/inventory/heartbeat components, identity budget/push/coverage, MDM scheduling, trust authority, reuse cache and revocation journal. Trust adapters bind these to live provider sessions. |
 | `coordinator/internal/observation` | Independent route, profile and compact-outcome pipelines; queues, backpressure, flush cadence and shutdown remain pipeline-specific. |
 | `coordinator/registry` | Live fleet state, atomic admission/reservation transitions, queues and controllers. Pure detached calculations live in `registry/admission` and `registry/selection`. |
@@ -192,6 +192,15 @@ existing lock-scoped revalidation and debit algorithm in
 preparation must `Close`. Quote evidence stays separate from admission in the
 embedded `QuotePlan` (`coordinator/registry/quote_plan.go`); its immutable
 `CandidateBinding` never bypasses commit-time session checks.
+
+Private reservations own an exclusive storage borrower through scan, commit and
+detached result projection (`coordinator/registry/reservation_storage.go`). Public
+scans and decorated preparations keep ordinary GC-owned chunks. The arena retains
+compact `candidateSnapshot` values; full admission/forecast snapshots stay in
+transient evaluation storage. `pending_snapshot.go` assembles scalar pending work
+once under `Provider.mu`, and `capacityvalue.ServiceReport` borrows validation
+only within that same critical section. Neither adds persistent provider state or
+an independent admission authority. See [routing scan cost](../routing.md#scan-cost-per-candidate).
 
 Live membership has one `ProviderDirectory`
 (`coordinator/registry/provider_directory.go`, `Load`, `Store`, `Delete`), bound

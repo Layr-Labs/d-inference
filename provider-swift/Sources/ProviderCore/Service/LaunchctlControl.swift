@@ -9,6 +9,26 @@ import Darwin
 
 enum LaunchctlControl {
 
+    // Runner and home seams follow the approach in upstream PR #1296.
+    // Nil defaults preserve normal launchctl and home-directory behavior.
+    @TaskLocal static var runnerForTesting: (@Sendable ([String]) throws -> Output)?
+    @TaskLocal static var homeDirectoryForTesting: URL?
+    @TaskLocal static var uptimeForTesting: (@Sendable () -> TimeInterval)?
+    @TaskLocal static var sleepForTesting: (@Sendable (TimeInterval) -> Void)?
+
+    static func homeDirectory() -> URL {
+        homeDirectoryForTesting ?? FileManager.default.homeDirectoryForCurrentUser
+    }
+
+    static func uptime() -> TimeInterval {
+        uptimeForTesting?() ?? ProcessInfo.processInfo.systemUptime
+    }
+
+    static func sleep(forTimeInterval interval: TimeInterval) {
+        if let sleepForTesting { sleepForTesting(interval) }
+        else { Thread.sleep(forTimeInterval: interval) }
+    }
+
     static func guiDomain(uid: uid_t = getuid()) -> String { "gui/\(uid)" }
     static func target(label: String, uid: uid_t = getuid()) -> String { "gui/\(uid)/\(label)" }
 
@@ -35,6 +55,7 @@ enum LaunchctlControl {
         _ arguments: [String], captureStdout: Bool = false, captureStderr: Bool = false
     ) throws -> Output {
         precondition(!(captureStdout && captureStderr), "capture at most one stream")
+        if let runnerForTesting { return try runnerForTesting(arguments) }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
         process.arguments = arguments

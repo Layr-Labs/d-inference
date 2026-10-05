@@ -143,13 +143,30 @@ jobs:
             echo "coverage.out has no coverage data"
             exit 1
           fi
-          total=$(go tool cover -func="$RUNNER_TEMP/coverage.out" | awk '$1 == "total:" {print $NF}')
-          test -n "$total"
-          echo "Coordinator (Go) statement coverage: $total"
+          # The runner passes -coverpkg, so tests in coordinator/tests credit
+          # the production packages they run. The profile also holds
+          # e2e/testbed and a frozen docs evidence package. The reported
+          # number counts coordinator packages only.
+          scoped="$RUNNER_TEMP/coverage-coordinator.out"
+          head -n 1 "$RUNNER_TEMP/coverage.out" > "$scoped"
+          if ! grep '^github.com/eigeninference/d-inference/coordinator/' "$RUNNER_TEMP/coverage.out" >> "$scoped"; then
+            echo "coverage.out has no coordinator rows"
+            exit 1
+          fi
+          statements=$(go tool cover -func="$scoped" | awk '$1 == "total:" && $2 == "(statements)" {print $3}')
+          if ! [[ "$statements" =~ ^[0-9]+(\.[0-9]+)?%$ ]]; then
+            echo "Missing statement coverage: '$statements'"
+            exit 1
+          fi
+          echo "Coordinator (Go) statement coverage: $statements"
           {
-            echo "| Component | Statement coverage |"
-            echo "|---|---|"
-            echo "| Coordinator (Go) | $total |"
+            echo "| Component | Statements or Lines | Regions or Branches | Functions | Target |"
+            echo "|---|---|---|---|---|"
+            echo "| Coordinator (Go) | $statements statements | not reported | not reported | 80% (report-only) |"
+            echo
+            echo "Denominator: statements in the \`coordinator/...\` production packages, from the test run above. The runner instruments them in every test binary with \`-coverpkg\`, so the tests in \`coordinator/tests/\` credit the code they run. The top-level \`e2e\` package does not run here, and \`e2e/testbed/...\` and a frozen docs evidence package are left out."
+            echo
+            echo "Excluded: \`_test.go\` files, the \`coordinator/tests/...\` packages and their helpers, and generated code (there is none); \`go test\` has no branch counters, so only statements are reported."
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload coverage profile
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -219,18 +236,28 @@ jobs:
       - name: Report coverage
         working-directory: coordinator/promptsidecar
         run: |
-          set -o pipefail
-          cargo llvm-cov --locked --all-targets --summary-only | tee "$RUNNER_TEMP/sidecar-coverage.txt"
-          # Column 10 of the TOTAL row is the line coverage percent.
-          lines=$(awk '$1 == "TOTAL" {v = $10} END {print v}' "$RUNNER_TEMP/sidecar-coverage.txt")
-          if ! [[ "$lines" =~ ^[0-9]+\.[0-9]+%$ ]]; then
-            echo "Unexpected line coverage value: '$lines'"
-            exit 1
-          fi
+          cargo llvm-cov --locked --all-targets --no-report
+          cargo llvm-cov report --summary-only
+          json="$RUNNER_TEMP/sidecar-coverage.json"
+          cargo llvm-cov report --json --summary-only --output-path "$json"
+          # Read each total by its field name. jq -e fails when it is missing.
+          percent() {
+            local value
+            value=$(jq -er --arg k "$1" '.data[0].totals[$k].percent | select(type == "number")' "$json") || return 1
+            printf '%.2f%%' "$value"
+          }
+          lines=$(percent lines)
+          regions=$(percent regions)
+          functions=$(percent functions)
+          echo "Prompt sidecar (Rust) coverage: lines $lines, regions $regions, functions $functions"
           {
-            echo "| Component | Line coverage |"
-            echo "|---|---|"
-            echo "| Prompt sidecar (Rust) | $lines |"
+            echo "| Component | Statements or Lines | Regions or Branches | Functions | Target |"
+            echo "|---|---|---|---|---|"
+            echo "| Prompt sidecar (Rust) | $lines lines | $regions regions | $functions | 80% (report-only) |"
+            echo
+            echo "Denominator: lines and regions in \`coordinator/promptsidecar/src\`, from a \`cargo test --all-targets\` run."
+            echo
+            echo "Excluded: the tests under \`tests/\`, every \`tests.rs\` test module under \`src/\`, dependencies and generated code (the crate has none); inline unit-test modules inside other \`src\` files are counted. Branch counters need a nightly toolchain, so branches are not reported."
           } >> "$GITHUB_STEP_SUMMARY"
 
   test-provider:

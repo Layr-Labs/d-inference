@@ -27,6 +27,7 @@ type workerStore struct {
 	reconciles, queues      int
 	claims, inventoryPasses int
 	maintenanceErr          error
+	inventoryErr            error
 }
 
 func (s *workerStore) ReconcileAppAttestEvidence(_ context.Context, before time.Time, limit int) (int64, error) {
@@ -61,6 +62,9 @@ func (s *workerStore) ReconcileMachineInventory(ctx context.Context, before time
 	s.mu.Lock()
 	s.inventoryPasses++
 	s.mu.Unlock()
+	if s.inventoryErr != nil {
+		return 0, s.inventoryErr
+	}
 	return s.MemoryStore.ReconcileMachineInventory(ctx, before, limit)
 }
 
@@ -306,6 +310,25 @@ func TestInventoryReconcilerRepeatsUntilCancelled(t *testing.T) {
 		synctest.Wait()
 		if _, _, _, passes := st.counts(); passes != 3 {
 			t.Fatalf("reconciler passes %d, want start plus two ticks", passes)
+		}
+		cancel()
+		synctest.Wait()
+	})
+}
+
+func TestInventoryReconcileStorageFailureIsCounted(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		st := &workerStore{MemoryStore: memorystore.NewMemory(store.Config{}), inventoryErr: errors.New("database unavailable")}
+		m := newMetricLog()
+		s := service.New(ctx, service.Config{}, service.Dependencies{Store: st, Logger: discardLogger(), Metrics: m.metrics()})
+		s.Start()
+		synctest.Wait()
+		if got := m.incrCount("app_attest.inventory.reconcile_failed|reason:storage_error"); got != 1 {
+			t.Fatalf("storage failures counted %d times on the first pass", got)
+		}
+		if got := m.count("app_attest.inventory.reconciled"); len(got) != 0 {
+			t.Fatalf("failed pass reported reconciled machines: %v", got)
 		}
 		cancel()
 		synctest.Wait()

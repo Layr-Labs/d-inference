@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -85,20 +85,38 @@ to its existing admission and remaining request budget.
 Requests carrying media (`HasMedia`) never produce a participating plan.
 
 Planning uses a child context capped at the original request receipt time plus
-the already-selected first-content budget. It does not restart that clock after
-alias fallback, replace the inference context, or carry the child's deferred
-cancellation into dispatch (`CachePlanner.PlanResult`, `coordinator/internal/inference/routeplan/cache_planning.go`;
-`FirstTokenWriteContext`, `coordinator/internal/inference/firstcontent/first_content_policy.go`). Zero/exempt
-budgets and a missing receipt timestamp add no artificial deadline. An earlier
-parent deadline or the client's own timeout still wins. An exhausted request
+the already-selected first-content budget. The request handlers derive it with
+`promptwork.PlanningContext` (`coordinator/api/promptwork/planning.go`) each
+time the request's `routeplan.Memo` computes a plan (`HandleChatCompletions` and
+`handleGenericInference`, `coordinator/api/inference/consumer.go`). It does not
+restart that clock after alias fallback, replace the inference context, or carry
+the child's deferred cancellation into dispatch. Zero/exempt
+budgets and a missing receipt timestamp add no artificial deadline.
+`CachePlanner.PlanResult` (`coordinator/internal/inference/routeplan/cache_planning.go`)
+can apply the same bound itself through `FirstTokenWriteContext`
+(`coordinator/internal/inference/firstcontent/first_content_policy.go`) when
+`CachePlanningInput.ReceivedAt` and `FirstContentBudget` are set;
+`planPromptRoute` does not set them, so in production that step passes its
+caller's context through. An earlier parent deadline, the
+`promptcontract.DefaultRequestTimeout` prompt-accounting bound (`promptwork.Account`,
+`coordinator/api/promptwork/accounting.go`) or the client's own timeout still
+wins. An exhausted request
 uses the existing dispatch deadline outcome; optional cache work grants no
 extra service time.
 
-Each post-preflight planning decision is counted once, including unsupported
-generic lowering and dependency/artifact/preload refusals. This broader metric
+Each planning decision is counted once, when the request's plan for a concrete
+model and provider-bound body is first computed; for a request that takes the
+public capacity preflight that is while admission builds its forecast. The count
+includes dependency/artifact/preload refusals, and a generic-endpoint body that
+cannot be lowered is counted as `lowering_unsupported` after admission
+(`CachePlanner.EmitDecision`, called from `handleGenericInference`,
+`coordinator/api/inference/consumer.go`). This broader metric
 does not change legacy Registry outcomes, sampling/QPS precedence or public
-status fields. In particular, ready media still reaches the Registry's existing
-`ineligible` decision. Artifact and preload checks are scoped to the resolved
+status fields. It adds one legacy sample: a media request whose model is
+verified and whose contract is preload-acknowledged now reaches the Registry's
+existing `ineligible` decision, because the planner is consulted to record its
+decision, and is counted once in `exact_cache_plan_total`; routing and billing
+are unaffected. Artifact and preload checks are scoped to the resolved
 model and its exact contract: unrelated pending or failed artifacts do not close
 an acknowledged healthy member. Current catalog/child/verified-set identity
 and actual runtime readiness still gate participation; see
@@ -123,6 +141,12 @@ preserves existing eligibility, while `[]` declines every request. Excluded
 requests return `ineligible` with no participating plan or reusable remote scope
 (`coordinator/internal/registry/cachepolicy/artifacts.go`, `ArtifactAllowlist.Allows`;
 `coordinator/registry/cache_route_keys.go`, `PlanCacheRouteWithResult`).
+A revision therefore leaves its model listed under an artifact that is no
+longer live. The status counts such models as `artifact_allowlist.stale_models`
+and the coordinator log names each live tuple once, so the missing entry is
+reported instead of appearing only as a model whose hits stopped
+(`ArtifactAllowlist.StaleFor`; `coordinator/api/inference/exact_cache_allowlist_staleness.go`,
+`missingAllowlistEntries`).
 
 An authenticated eligible request can record bounded demand for its exact resolved
 artifact tuple before tokenizer readiness, without waiting for tokenizer preload
@@ -154,7 +178,7 @@ After those unchanged rollout gates, planning admission waits within its
 existing deadline instead of oversubscribing the sidecar's worker pool.
 Count/byte bounds and explicit server-connection headroom for independent
 health/control pools are enforced by `NewClient`,
-`planAdmission` and `Client.Plan` (`coordinator/internal/promptcontract/sidecar/plan_admission.go`,
+`PlanAdmission` and `Client.Plan` (`coordinator/internal/promptcontract/sidecar/plan_admission.go`,
 `coordinator/internal/promptcontract/sidecar/client.go`); see
 [the sidecar mechanism](prompt-contract-sidecar.md#process-and-lifecycle).
 Successful planning is an opportunity for reuse, not proof that a provider
@@ -433,35 +457,66 @@ evidence (`coordinator/registry/cache_receipts.go`).
 The tracker admits at most `cacheRoutingMaxAttemptBytes` (67,108,864) logical
 bytes of attempt records in addition to its unchanged 50,000-record count cap.
 `CacheAttemptCharge` in `coordinator/internal/registry/cachetracker/attempt_budget.go` charges
-`2048 + 96*N + 2*sum(boundary hash byte lengths) + 128 + scalar byte lengths`;
+`2048 + 96*N + sum(boundary hash byte lengths) + 128 + scalar byte lengths`;
 the `AttemptBudget` ledger in that file holds the admitted total and its limit.
-`N` counts input boundaries; both boundary representations are charged, even if
-their detached strings share storage. Scalars include nonce, request/provider/
-model identities, every plan string, expected-prompt hash and all string fields
-of both tier capabilities. The 128-byte allowance prepays both future READY hashes.
+`N` counts input boundaries. The boundary slice and the frozen boundary claims
+share one detached immutable hash string per boundary. Scalars include nonce,
+request/provider/model identities, every plan string, expected-prompt hash and
+all string fields of both tier capabilities. The 128-byte allowance prepays both
+future READY hashes.
 
 `StoreAttemptLocked` (`coordinator/internal/registry/cachetracker/cache_receipts_kernel.go`)
-validates the charge and budget before cloning retained
-strings, boundary slice and claims map. Checked replacement accounting preserves an
-incumbent on refusal; each removal refunds its stored charge exactly once.
+validates the charge, clones retained strings and the boundary slice and derives
+its own boundary claims before reclaiming any terminal record. Checked
+replacement accounting subtracts the incumbent's stored charge; reclaiming never
+selects the nonce being replaced, and a refusal preserves the incumbent.
+On byte pressure, a separate terminal-only expiry order (`TerminalOrder`, built
+for each generation in `coordinator/registry/cache_tracker_controller.go`)
+offers at most 64 of its earliest-expiring records
+(`terminalBudgetVictimsLocked` in
+`coordinator/internal/registry/cachetracker/attempt_pressure.go`, walking
+`Order.Earliest` in `coordinator/internal/registry/cacheindex/order.go` without
+mutating it). Only completed attempts' optional late-receipt grace is eligible;
+live attempt authority is not reclaimed by this byte-pressure policy. Records
+are removed only when their complete refund admits the candidate; otherwise no
+grace evidence is discarded and the attempt is refused. A record larger than
+the whole budget is refused without reclaiming anything. The existing count-cap
+policy still evicts the record that expires first, which can be a live record;
+this change does not claim otherwise. Every removal refunds the stored charge
+exactly once and removes the record from both expiry orders.
+
 `PreparePrefixCacheV2Attempt` publishes an owner only after successful insertion
 and uses the admitted detached scope. Refusal returns ordinary cold inference,
 without receipt metadata, cache participation or discarded TTFT calibration.
-The existing count/expiry race can remove a successfully inserted record before
-owner publication; publication is not a promise of continuing map retention.
+A reclaimed nonce cannot later recreate a holder through READY. The existing
+count/expiry race can remove a successfully inserted record before owner
+publication; publication is not a promise of continuing map retention.
 
-The two-hour in-flight lifetime, two-minute terminal grace, sweep cadence,
-generation revocation and final dispatch authorization are unchanged. Terminal
-state retains the record's full charge during its late-receipt grace; retiring
-the tracker revokes it before clearing the counter. Validated READY updates clone
-only their prepaid retained hash (`ApplyReadyV2`,
+The in-flight lifetime remains two hours. The first terminal marking
+(`MarkAttemptTerminal`, `coordinator/internal/registry/cachetracker/lifecycle.go`)
+starts a maximum two-minute late-receipt grace; repeated terminal callbacks do
+not extend it, and byte pressure may shorten it. Terminal records retain their
+full charge until removal. Generation retirement revokes the tracker before
+clearing both expiry orders and the counter. Validated READY updates clone only
+their prepaid retained hash (`ApplyReadyV2`,
 `coordinator/internal/registry/cachetracker/receipt_ready.go`).
+
+The aggregate status and metric gauges expose `attempt_bytes`,
+`attempt_budget_refused`, and `attempt_grace_reclaimed` (Prometheus prefix
+`exact_cache_`; Datadog prefix `exact_cache.`), read through
+`Tracker.AttemptLifecycle` into `CacheRoutingLifecycleStatus`
+(`coordinator/registry/cache_routing.go`). The latter two are monotonic within
+the current tracker generation and reset on reconfiguration. They contain no
+account, prompt, nonce or provider labels. Refusal is an admission outcome, not
+a cache hit-rate denominator.
 
 This is a logical bound on tracked records, not a process RSS or OOM guarantee.
 Request plans, published owners/snapshots, provider and holder state, map capacity,
-temporary replacement allocations and garbage-collection timing have separate
-lifetimes. The budget neither changes encrypted SSD retention nor grants cache
-credit without the existing authenticated receipt and owner checks.
+temporary candidate/replacement allocations and garbage-collection timing have
+separate lifetimes. All-live occupancy can still exhaust the global budget;
+terminal reclamation is not per-tenant fairness or a production sizing result.
+The budget neither changes encrypted SSD retention nor grants cache credit
+without the existing authenticated receipt and owner checks.
 
 ### Persistence across restarts
 
@@ -728,7 +783,8 @@ tags only.
 `GET /v1/cache/status` (`HandleExactCacheStatus`,
 `coordinator/api/inference/exact_cache_status.go`) exposes only aggregate rollout state:
 activation and lifecycle counters (including `fences_applied`,
-`fences_expired` and `fenced_capabilities`); sidecar enabled/running/ready, child
+`fences_expired`, `fenced_capabilities`, `attempt_bytes`,
+`attempt_budget_refused` and `attempt_grace_reclaimed`); sidecar enabled/running/ready, child
 generation, categorical restart reason, failure streak, timeouts/overloads/RSS,
 cold/warm contract loads, and planner outcomes; preload generation/counts;
 prompt artifact ready/pending/failed counts; protocol 0/1/2 provider counts;
@@ -977,8 +1033,15 @@ back are operator procedures, kept in the runbook
 
 ## Invariants
 
-1. **Routing `off` prevents sidecar planning, new cache participation and
-   cache-based selection; API planning-decision telemetry remains active.**
+1. **Routing `off` prevents cache planning, new cache participation and
+   cache-based selection; API planning-decision telemetry and count-only prompt
+   accounting remain active.** With routing `off` the Registry declines without
+   calling the sidecar: `off`, or `ineligible` for a request its eligibility
+   guard rejects first, such as media. A text request whose model's artifacts
+   are verified and whose contract is preload-acknowledged is still tokenized
+   through a count-only `POST /v1/plan` call, inside the prompt-accounting
+   bound; its boundaries are discarded and it creates no cache participation
+   (`promptwork.Plan`, `coordinator/api/promptwork/planner.go`).
    Applying `off` clears in-memory routing evidence: `ConfigureCacheRouting` installs a fresh, empty
    holder/attempt tracker on every application
    (`coordinator/registry/cache_routing.go`). With routing and persistence
@@ -992,7 +1055,8 @@ back are operator procedures, kept in the runbook
    `coordinator/internal/registry/cacheactivation/gate.go`); a sidecar failure or a media
    request yields a non-participating plan; ordinary admission and the remaining
    original deadline still decide whether dispatch is possible
-   (`CachePlanner.PlanResult`, `coordinator/internal/inference/routeplan/cache_planning.go`).
+   (`CachePlanner.PlanResult`, `coordinator/internal/inference/routeplan/cache_planning.go`;
+   the budget bound is `promptwork.PlanningContext`, `coordinator/api/promptwork/planning.go`).
 3. **Only exact text-token prefix proofs from protocol-v2 providers affect
    selection**; V1 receipt frames stay decodable but cannot mutate routing
    evidence (`coordinator/registry/cache_receipts.go`).
@@ -1075,7 +1139,7 @@ and `coordinator/api/observation/cache_model_telemetry.go`.
 | Parked rows, fences and durable pruning | `coordinator/internal/registry/cachepersist/pending.go` (`Park`, `Take`); `coordinator/internal/registry/cachepersist/delete_fences.go` (`Tombstoned`); `coordinator/internal/registry/cachequeue/time_order.go` (`TimeOrder`); `coordinator/internal/registry/cachepersist/maintenance.go` (`Prune`) |
 | Persistence counters | `coordinator/internal/registry/cachepersist/status.go` (`Status`) |
 | Configuration and validation | `coordinator/registry/config.go` — `CacheRoutingConfig`, `Check`; `coordinator/registry/cache_routing.go` — `ConfigureCacheRouting` |
-| Optional artifact membership | `coordinator/internal/registry/cachepolicy/artifacts.go` (`ArtifactAllowlist.Allows`, exact tuple parsing, validation and immutable membership); aliases and construction in `coordinator/registry/cache_artifact_allowlist.go`; unset unrestricted, `[]` denied |
+| Optional artifact membership | `coordinator/internal/registry/cachepolicy/artifacts.go` (`ArtifactAllowlist.Allows`, `ArtifactAllowlist.StaleFor`, exact tuple parsing, validation and immutable membership); aliases, construction and `MissingCacheRoutingAllowlistEntries` in `coordinator/registry/cache_artifact_allowlist.go`; stale count and one-time warning in `coordinator/api/inference/exact_cache_allowlist_staleness.go`; unset unrestricted, `[]` denied |
 | Activation cohort and plan QPS | `coordinator/internal/registry/cacheactivation/gate.go` (`Gate`, `Allow`); `coordinator/registry/cache_activation_view.go` (`CacheRoutingActivationStatus`) |
 | Resident proof/publication and unique receipt correlation | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/ResidentPrefixCacheEvidence.swift` — `ResidentPrefixCacheEvidence`, `ResidentPrefixCachePromptProof`; `PrefixCacheEvidenceSequencer.swift` |
 | Per-tier holders, lifetime and lookup | `coordinator/registry/cache_tiers.go` (`cacheTierBoundaryKey`, `receiptTTL`); `coordinator/registry/cache_routing_hints.go` (`CacheHintQuery.Query`, `MatchBoundaries`, `CacheHintsForMatches`); `coordinator/internal/registry/cachetracker/matching.go` (`Tracker.MatchBoundaries`) |

@@ -211,7 +211,12 @@ func assertCallerIdentityAbsent(t *testing.T, body []byte) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{"user", "metadata"} {
+	// Protocol-0 may append its coordinator-authored cache-bust key after
+	// sanitization. Exact body oracles distinguish it from caller input.
+	if parsed["prompt_cache_key"] == "synthetic-caller-key" {
+		t.Error("caller cache key forwarded")
+	}
+	for _, field := range []string{"user", "metadata", "safety_identifier"} {
 		if _, exists := parsed[field]; exists {
 			t.Errorf("provider-bound request retains top-level caller %q", field)
 		}

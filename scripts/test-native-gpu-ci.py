@@ -20,7 +20,8 @@ flag = os.environ.get('DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST')
 with open(os.environ['FAKE_SWIFT_LOG'], 'a') as log:
     log.write(json.dumps({'filter': selected, 'args': args, 'exclusive': flag,
                          'deadline_isolated': os.environ.get('DARKBLOOM_ISOLATED_DEADLINE_TEST'),
-                         'mimo_native': os.environ.get('MIMO_V26_SERIAL_NATIVE_TESTS')}) + '\n')
+                         'mimo_native': os.environ.get('MIMO_V26_SERIAL_NATIVE_TESTS'),
+                         'profile': os.environ.get('LLVM_PROFILE_FILE')}) + '\n')
 if selected == os.environ.get('FAKE_SWIFT_FAIL'):
     print('simulated assertion failure')
     raise SystemExit(17)
@@ -94,6 +95,19 @@ class NativeGPUTestRouting(unittest.TestCase):
         result, calls = self.run_script('run-provider-tests.sh', MIMO_V26_SERIAL_NATIVE_TESTS='1')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertTrue(all(row['mimo_native'] is None for row in calls))
+
+    def test_coverage_dir_gives_every_provider_test_process_a_profile_path(self):
+        result, calls = self.run_script('run-provider-tests.sh')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual({row['profile'] for row in calls}, {None})
+        profiles = self.work / 'profiles'
+        result, calls = self.run_script('run-provider-tests.sh', PROVIDER_COVERAGE_DIR=str(profiles))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(calls), 8)
+        self.assertEqual({row['profile'] for row in calls}, {f'{profiles}/%p-%m.profraw'})
+        # swift test --enable-code-coverage would delete earlier profiles.
+        self.assertTrue(all('--enable-code-coverage' not in row['args'] for row in calls))
+        self.assertTrue(profiles.is_dir())
 
     def test_kernel_suite_and_composition_use_separate_invocations(self):
         result, calls = self.run_script('run-paged-kernel-tests.sh')
@@ -172,7 +186,8 @@ class NativeGPUTestRouting(unittest.TestCase):
 
     def test_workflow_keeps_checked_entrypoints(self):
         workflow = (ROOT / '.github/workflows/ci.yml').read_text()
-        self.assertIn('run: ../scripts/run-provider-tests.sh', workflow)
+        self.assertIn('python3 ../scripts/run-provider-test-watchdog.py', workflow)
+        self.assertIn('-- ../scripts/run-provider-tests.sh', workflow)
         self.assertIn('run: ../../scripts/run-paged-kernel-tests.sh', workflow)
         self.assertIn('run: python3 scripts/test-native-gpu-ci.py', workflow)
 

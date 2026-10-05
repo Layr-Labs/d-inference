@@ -184,11 +184,25 @@ func TestCacheAttemptBudgetInflightExpiryRefundPaths(t *testing.T) {
 func TestCacheAttemptBudgetCountEvictionRefundsWithoutChangingPublication(t *testing.T) {
 	for _, cap := range []int{0, 1} {
 		t.Run(fmt.Sprint(cap), func(t *testing.T) {
+			// Under the frozen test clock both records expire together and the
+			// expiry heap breaks the tie on the nonce. The newer nonce sorts first,
+			// so a cap of one evicts the newer record before its owner is
+			// published, the scenario a zero cap covered before the registry
+			// stopped accepting one.
+			nonces := []string{"count-cutoff-nonce-1", "count-cutoff-nonce-0"}
 			r, provider, _ := budgetLifecycleRegistry(t, func(f *budgetLifecycleFixture, deps *production.CacheDependencies) {
 				// The registry accepts only a positive count cap. The zero case
 				// therefore reaches the kernel alone, which applies it below.
 				deps.MaxAttempts = cap
 				f.kernel = func(config *cachetracker.Config[*production.Provider]) { config.MaxAttempts = cap }
+				deps.Nonces = func() (string, error) {
+					if len(nonces) == 0 {
+						return "", fmt.Errorf("count-cutoff fixture ran out of nonces")
+					}
+					next := nonces[0]
+					nonces = nonces[1:]
+					return next, nil
+				}
 			})
 			tracker := r.tracker()
 			var requests []*production.PendingRequest
@@ -205,6 +219,11 @@ func TestCacheAttemptBudgetCountEvictionRefundsWithoutChangingPublication(t *tes
 					tracker.core.EnforceAttemptCapLocked()
 				}
 				budgetLifecycleWant(t, tracker, cap)
+			}
+			if cap == 1 {
+				if _, retained := tracker.config.Attempts.Load("count-cutoff-nonce-0"); retained {
+					t.Fatal("the newer record was not the one the count cap evicted before publication")
+				}
 			}
 			// A successful insertion can lose legacy count retention before
 			// publication. A live owner is not proof of a retained charged record.
@@ -396,7 +415,7 @@ func TestCacheAttemptBudgetConcurrentPrepareRefuseSweepAndReconfigure(t *testing
 	check := func() {
 		gate.Lock()
 		defer gate.Unlock()
-		if _, _, err := budgetLifecycleInvariant(old); err != nil {
+		if _, _, err := budgetLifecycleInvariant(old.config); err != nil {
 			errors <- err
 		}
 	}
@@ -439,6 +458,12 @@ func TestCacheAttemptBudgetConcurrentPrepareRefuseSweepAndReconfigure(t *testing
 		second = append(second, prepare(request))
 	}
 	second = append(second,
+		func() {
+			for _, request := range requests[:count] {
+				operate(func() { r.MarkCacheAttemptTerminal(request) })
+				check()
+			}
+		},
 		func() {
 			// The retained maintainer sweeps under the tracker's own mutex.
 			operate(func() { old.maintenance.StateCounts(time.Now().Add(3 * time.Hour)) })

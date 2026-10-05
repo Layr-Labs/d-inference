@@ -126,18 +126,15 @@ func budgetLifecyclePrepare(t *testing.T, r *budgetLifecycleFixture, provider *p
 // production charging function. Formula correctness belongs to the unit suite.
 // Returning errors lets concurrent callers report without Fatal in a goroutine.
 // Callers must not run it while a registry operation is inside the tracker.
-func budgetLifecycleInvariant(tracker *budgetLifecycleTracker) (int, uint64, error) {
-	config := tracker.config
+func budgetLifecycleInvariant(config cachetracker.Config[*production.Provider]) (int, uint64, error) {
 	ledger, limit := config.AttemptBudget.Bytes(), config.AttemptBudget.MaxBytes()
 	count := config.Attempts.Len()
 	if count != config.AttemptOrder.Len() || count != config.AttemptOrder.KeyCount() || count > config.MaxAttempts {
 		return count, ledger, fmt.Errorf("attempt map/heap/count cap mismatch")
 	}
-	heap := make([]*cacheindex.Entry[cacheindex.AttemptRef], config.AttemptOrder.Len())
-	for index, entry := range config.AttemptOrder.Entries() {
-		heap[index] = entry
-	}
+	heap, terminalHeap := budgetOrderHeap(config.AttemptOrder), budgetOrderHeap(config.TerminalOrder)
 	var sum uint64
+	terminalCount := 0
 	for nonce, attempt := range config.Attempts.Entries() {
 		if attempt.AccountedBytes == 0 || attempt.AccountedBytes > ^uint64(0)-sum {
 			return count, ledger, fmt.Errorf("zero or overflowing stored charge")
@@ -147,6 +144,15 @@ func budgetLifecycleInvariant(tracker *budgetLifecycleTracker) (int, uint64, err
 		if entry == nil || entry.Key().Nonce != nonce || entry.Position() < 0 || entry.Position() >= len(heap) || heap[entry.Position()] != entry {
 			return count, ledger, fmt.Errorf("attempt heap ownership mismatch")
 		}
+		terminal := config.TerminalOrder.Load(nonce)
+		if attempt.Terminal {
+			terminalCount++
+			if terminal == nil || terminal.Key().Nonce != nonce || terminal.Position() < 0 || terminal.Position() >= len(terminalHeap) || terminalHeap[terminal.Position()] != terminal || !terminal.ExpiresAt().Equal(attempt.ExpiresAt) {
+				return count, ledger, fmt.Errorf("terminal heap ownership mismatch")
+			}
+		} else if terminal != nil {
+			return count, ledger, fmt.Errorf("live record indexed as terminal")
+		}
 		if entry.Key().ProviderID != attempt.ProviderID || !entry.ExpiresAt().Equal(attempt.ExpiresAt) {
 			return count, ledger, fmt.Errorf("attempt expiry/provider index metadata mismatch")
 		}
@@ -154,15 +160,27 @@ func budgetLifecycleInvariant(tracker *budgetLifecycleTracker) (int, uint64, err
 			return count, ledger, fmt.Errorf("attempt missing from provider index")
 		}
 	}
+	if terminalCount != config.TerminalOrder.Len() || terminalCount != config.TerminalOrder.KeyCount() {
+		return count, ledger, fmt.Errorf("terminal heap count mismatch")
+	}
 	if sum != ledger || sum > limit {
 		return count, ledger, fmt.Errorf("retained charge sum=%d ledger=%d limit=%d", sum, ledger, limit)
 	}
 	return count, sum, nil
 }
 
+// budgetOrderHeap lists an expiry order's entries by heap position.
+func budgetOrderHeap(order *cacheindex.Order[cacheindex.AttemptRef, string]) []*cacheindex.Entry[cacheindex.AttemptRef] {
+	heap := make([]*cacheindex.Entry[cacheindex.AttemptRef], order.Len())
+	for index, entry := range order.Entries() {
+		heap[index] = entry
+	}
+	return heap
+}
+
 func budgetLifecycleWant(t *testing.T, tracker *budgetLifecycleTracker, count int) uint64 {
 	t.Helper()
-	got, bytes, err := budgetLifecycleInvariant(tracker)
+	got, bytes, err := budgetLifecycleInvariant(tracker.config)
 	if err != nil || got != count {
 		t.Fatalf("attempts=%d want=%d bytes=%d invariant=%v", got, count, bytes, err)
 	}

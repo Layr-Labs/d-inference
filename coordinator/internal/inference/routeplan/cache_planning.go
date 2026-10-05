@@ -28,6 +28,9 @@ type CachePlanner struct {
 	Contract    *promptcontract.Client
 	Preloader   *promptcontract.PreloadController
 	Observation *observation.Owner
+	// PreloadPlanning, when set, answers planning's demand and observation
+	// calls in place of Preloader, which it must wrap. Nil uses Preloader.
+	PreloadPlanning PreloadPlanning
 }
 
 // PlanResult is the cache planning adapter. Production request memoization
@@ -64,13 +67,14 @@ func (p CachePlanner) PlanResult(ctx context.Context, input CachePlanningInput) 
 		Body:                 input.Body,
 		HasMedia:             input.HasMedia,
 	}
+	preload := p.preloadPlanning()
 	_, rejected := p.Registry.CachePlanRejection(p.Contract, planInput)
 	if !rejected && CachePreloadDemandWithinDeadline(ctx, input) {
 		// Once per memoized authenticated candidate body, before the
 		// readiness gate. No QPS/sample debit, waiting, or request data retention.
-		p.Preloader.NoteDemand(identity)
+		preload.NoteDemand(identity)
 	}
-	state := p.Preloader.PlanningState(identity)
+	state := preload.PlanningState(identity)
 	result, decided := p.commitCachePlanning(ctx, input, planInput, identity, rejected, state)
 	if !decided {
 		reason = CachePlanningPreloadNotReady

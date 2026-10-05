@@ -15,6 +15,8 @@ func (s *Owner) planPromptRoute(ctx context.Context, account, model string, body
 	result := promptwork.Result{Work: promptwork.Heuristic(calibratedContextPromptTokens(model, estimate))}
 	cachePlanner := s.NewCachePlanner()
 	cacheInput := routeplan.CachePlanningInput{Account: account, Model: model, Body: body, HasMedia: hasMedia}
+	// The two early returns call the planner only to record why this request
+	// has no cache plan; they do not use its result.
 	if hasMedia || s.promptArtifacts == nil || s.promptContract == nil || s.promptPreloader == nil {
 		cachePlanner.PlanResult(ctx, cacheInput)
 		return result

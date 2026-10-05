@@ -33,6 +33,7 @@ pub struct Planner {
     #[cfg(test)]
     test_hooks: Arc<readiness_tests::Hooks>,
     metrics: Arc<Metrics>,
+    continuity: Arc<std::sync::atomic::AtomicBool>,
     max_concurrency: u32,
     max_tokens: usize,
 }
@@ -109,6 +110,7 @@ impl Planner {
             #[cfg(test)]
             test_hooks: Arc::new(readiness_tests::Hooks::default()),
             metrics: Arc::new(Metrics::default()),
+            continuity: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             max_concurrency: max_concurrency_u32,
             max_tokens,
         }
@@ -191,9 +193,22 @@ impl Planner {
             self.metrics.plan_not_ready(started.elapsed());
             return Err(PlanError::NotReady);
         }
+        // Membership check and resident ownership are one admission action.
+        // No removed contract can start a lazy reload after v2 revokes it.
+        let resident = match self.readiness.admit(&request.prompt_contract_id, || {
+            self.cache.resident(&request.prompt_contract_id)
+        }) {
+            Ok(value) => value,
+            Err(()) => {
+                self.metrics.plan_not_ready(started.elapsed());
+                return Err(PlanError::NotReady);
+            }
+        };
         let planner = self.clone();
         let result =
-            match tokio::task::spawn_blocking(move || planner.plan_sync(request, permit)).await {
+            match tokio::task::spawn_blocking(move || planner.plan_sync(request, permit, resident))
+                .await
+            {
                 Ok(result) => result,
                 Err(_) => Err(PlanError::Worker),
             };
@@ -214,6 +229,7 @@ impl Planner {
         &self,
         request: PlanRequest,
         _permit: OwnedSemaphorePermit,
+        resident: Option<Arc<LoadedArtifacts>>,
     ) -> Result<Planned, PlanError> {
         // Reject known key, number and argument-shape bridge ambiguities
         // before lowering or normalization can discard the input evidence;
@@ -222,7 +238,12 @@ impl Planner {
         #[cfg(test)]
         self.test_hooks
             .before_plan_load(&request.prompt_contract_id);
-        let (contract, _) = self.load_contract(&request.prompt_contract_id)?;
+        let contract = if let Some(contract) = resident {
+            self.metrics.warm_load();
+            contract
+        } else {
+            self.load_contract(&request.prompt_contract_id)?.0
+        };
         let model_type = contract
             .model_config
             .get("model_type")
@@ -286,12 +307,17 @@ impl Planner {
     ) -> Result<(Arc<LoadedArtifacts>, CacheAccess), PlanError> {
         let metrics = self.metrics.clone();
         let root = self.artifact_root.clone();
-        let loaded = self.cache.get_or_load(contract_id, || {
+        let loader = || {
             let started = Instant::now();
             let result = artifacts::load(&root, contract_id, &self.tokenizers);
             metrics.cold_load_finished(started.elapsed(), result.is_ok());
             result
-        });
+        };
+        let loaded = if self.continuity.load(std::sync::atomic::Ordering::Acquire) {
+            self.cache.get_or_load_bounded(contract_id, loader)
+        } else {
+            self.cache.get_or_load(contract_id, loader)
+        };
         match loaded {
             Ok((contract, CacheAccess::Warm)) => {
                 self.metrics.warm_load();

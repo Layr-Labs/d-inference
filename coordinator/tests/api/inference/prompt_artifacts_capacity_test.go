@@ -11,9 +11,10 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 )
 
-// Same oracle and public lifecycle on b8eba688 and the candidate. All nine
-// tokenizers first prove usable in bounded direct Rust batches. The intended
-// old-source failure is the controller's over-C refusal, not invalid artifacts.
+// Same oracle and public lifecycle on the pre-selection controller and the
+// candidate. All nine tokenizers first prove usable in bounded direct Rust
+// batches. The intended old-source failure is the controller's over-C refusal,
+// not invalid artifacts.
 func TestPromptArtifactCapacityRealSidecarAndAuthenticatedNinth(t *testing.T) {
 	for _, shared := range []bool{false, true} {
 		name := "nine_distinct"
@@ -89,8 +90,9 @@ func TestPromptArtifactCapacityRealSidecarAndAuthenticatedNinth(t *testing.T) {
 				for index := 0; index < 8; index++ {
 					f.request(t, index)
 				}
-				// This is the intended baseline red: b8's whole-catalog attempt
-				// refuses before HTTP even though all nine controls really loaded.
+				// This is the intended baseline red: the pre-selection controller's
+				// whole-catalog attempt refuses before HTTP even though all nine
+				// controls really loaded.
 				if f.controller.Status().Failures > 0 && f.metrics(t).Metrics.Preloads.Runs == before {
 					t.Fatal("nine verified valid contracts still collapse to pre-HTTP whole-catalog capacity refusal")
 				}

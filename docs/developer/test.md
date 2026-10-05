@@ -264,6 +264,11 @@ The Make target and CI use this shared setup. The native cancellation fixture
 resolves `localhost` and tries its address families; its hermetic socket test
 covers separate IPv4 and IPv6 listeners.
 
+`python3 scripts/test-stage-test-metallib.py` runs the real staging script with
+isolated fetch/copy fixtures. It checks Darwin and non-Darwin copy flags, all
+test-bundle layouts, destination preservation, and staging cleanup on copy or
+comparison failure. No Metal compiler or model is needed.
+
 For a new native family, run the same production corpus against its exact
 config/tokenizer/template artifacts before accepting cache routing. Diffusion
 controls are mirrored by `coordinator/promptsidecar/src/diffusion.rs`; its tests
@@ -845,7 +850,8 @@ With a disposable `DATABASE_URL`, `TestReadSnapshotPostgres` uses an isolated
 schema to verify owner changes, merged identities, delayed first captures and
 unknown-registration exclusions. Registration capture and immutable-origin tests
 run with `go test -race ./coordinator/tests/appattest/service ./coordinator/tests/registry -run 'TestInventoryCapture|TestConnectionOriginTime|TestProviderRegisteredAt'`.
-API contract tests use a local HTTP server; no tests send live email. The
+API contract tests use a local HTTP server; they pin broadcast `reply_to` arrays
+and pagination through `GET /segments/{id}/contacts`. No tests send live email. The
 [provider email runbook](../operations/provider-emails.md) separates live
 self-addressed delivery verification from these checks.
 

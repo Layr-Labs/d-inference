@@ -32,14 +32,14 @@ type Broadcast struct {
 func (b Broadcast) identifier() string { return b.ID }
 
 type Draft struct {
-	Name      string `json:"name"`
-	SegmentID string `json:"segment_id"`
-	From      string `json:"from"`
-	ReplyTo   string `json:"reply_to"`
-	Subject   string `json:"subject"`
-	HTML      string `json:"html"`
-	Text      string `json:"text"`
-	TopicID   string `json:"topic_id,omitempty"`
+	Name      string   `json:"name"`
+	SegmentID string   `json:"segment_id"`
+	From      string   `json:"from"`
+	ReplyTo   []string `json:"reply_to"`
+	Subject   string   `json:"subject"`
+	HTML      string   `json:"html"`
+	Text      string   `json:"text"`
+	TopicID   string   `json:"topic_id,omitempty"`
 	// No send or scheduled_at fields: campaigns are reviewed in the dashboard.
 }
 

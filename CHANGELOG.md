@@ -3,6 +3,7 @@
 ## Unreleased - provider email campaigns
 
 - Add the `provider-emails` operator command to preview provider software/macOS update audiences, sync owner groups to Resend, render and test notices, and create unsent broadcasts for review. Preserve unsubscribe preferences and remove owners from managed groups when their reported machines meet the target.
+- Serialize campaign reply-to addresses in the Resend broadcast API's array form while keeping the campaign configuration's single-address input.
 
 ## Unreleased - Autopilot inventory reporting
 

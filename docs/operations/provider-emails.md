@@ -57,6 +57,8 @@ scheduler or send automatic reminders.
    Both are examples, not approval to publish a version requirement. Choose a
    unique `id`, the qualified `minimum_version`, a useful subject and body, a
    monitored `reply_to`, and an HTTPS `instructions_url` with the update steps.
+   `reply_to` is one address in this JSON; the Resend adapter serializes it as
+   a one-element array for broadcasts and test emails.
    Use `audience: "all"` without a minimum version for a general announcement.
    `severity` is `recommended` or `required`; required notices need a
    `deadline` in `YYYY-MM-DD` form. Explain any actual deadline consequence in

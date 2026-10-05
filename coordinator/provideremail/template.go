@@ -60,6 +60,6 @@ func Render(c Campaign, test bool) (resend.Draft, error) {
 	if !test {
 		text += "\n\nEmail preferences / unsubscribe: {{{RESEND_UNSUBSCRIBE_URL}}}"
 	}
-	return resend.Draft{Name: c.DraftName(), From: c.Message.From, ReplyTo: c.Message.ReplyTo,
+	return resend.Draft{Name: c.DraftName(), From: c.Message.From, ReplyTo: []string{c.Message.ReplyTo},
 		Subject: c.Message.Subject, HTML: html.String(), Text: text, TopicID: c.Message.TopicID}, nil
 }

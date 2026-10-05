@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Exercise staging layouts/failures without compiling or initializing Metal."""
+import os
 import pathlib
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -25,9 +27,29 @@ class StageTestMetallibTests(unittest.TestCase):
         self.fetch.chmod(0o755)
         self.bin = self.root / "build with spaces"
         self.bin.mkdir()
+        self.env = os.environ.copy()
 
     def run_stage(self):
-        return subprocess.run([str(self.stage), str(self.bin)], capture_output=True, text=True)
+        return subprocess.run([str(self.stage), str(self.bin)], capture_output=True, text=True,
+                              env=self.env)
+
+    def fake_copy_platform(self, system, copy_body=None):
+        tools = self.root / "tools"
+        tools.mkdir(exist_ok=True)
+        uname = tools / "uname"
+        uname.write_text(f"#!/bin/bash\nprintf '%s\\n' {shlex.quote(system)}\n")
+        uname.chmod(0o755)
+        calls = tools / "copy-calls"
+        calls.write_text("")
+        cp = tools / "cp"
+        flags = '[ "$1" = -c ]; shift' if system == "Darwin" else '[ "$1" != -c ]'
+        if copy_body is None:
+            copy_body = f'exec {shlex.quote(shutil.which("cp"))} "$@"'
+        cp.write_text(f"#!/bin/bash\nset -eu\nprintf 'copy\\n' >> {shlex.quote(str(calls))}\n"
+                      f"{flags}\n{copy_body}\n")
+        cp.chmod(0o755)
+        self.env["PATH"] = str(tools) + os.pathsep + os.environ["PATH"]
+        return calls
 
     def assert_stages_every_bundle(self, bundle_names):
         paths = []
@@ -56,6 +78,29 @@ class StageTestMetallibTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         for relative in RUNTIME_LIBRARY_PATHS:
             self.assertEqual((bundle / relative).read_text(), "verified-by-fetch")
+
+    def test_copy_flags_match_platform(self):
+        for system in ("Darwin", "Linux", "FreeBSD"):
+            with self.subTest(system=system):
+                calls = self.fake_copy_platform(system)
+                self.assert_stages_every_bundle([f"{system}Tests.xctest"])
+                self.assertEqual(len(calls.read_text().splitlines()),
+                                 len(list(self.bin.glob("*.xctest"))) * len(RUNTIME_LIBRARY_PATHS))
+
+    def test_copy_and_verification_failures_preserve_destination_and_clean_staging(self):
+        path = self.bin / "OnlyPackageTests.xctest/Contents/MacOS/mlx.metallib"
+        path.parent.mkdir(parents=True)
+        for system in ("Darwin", "Linux"):
+            for copy_exit in (23, 0):
+                with self.subTest(system=system, copy_exit=copy_exit):
+                    path.write_text("prior-runtime")
+                    calls = self.fake_copy_platform(
+                        system, f'printf partial > "$2"\nexit {copy_exit}')
+                    result = self.run_stage()
+                    self.assertEqual(result.returncode, copy_exit or 1, result.stderr)
+                    self.assertEqual(path.read_text(), "prior-runtime")
+                    self.assertFalse(list(self.bin.rglob(".mlx-metallib.*")))
+                    self.assertEqual(calls.read_text(), "copy\n")
 
     def test_no_runner_cannot_be_reported_as_success(self):
         self.assertNotEqual(self.run_stage().returncode, 0)

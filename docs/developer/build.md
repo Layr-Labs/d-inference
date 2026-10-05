@@ -960,6 +960,9 @@ one `<Package>PackageTests.xctest`. CI uses the native build system through
 Build, which makes one `<Target>.xctest` for each test target. `make provider-test`
 and the provider/nested CI jobs invoke this helper. A missing test runner or
 failed source verification is an error; an existing library is always replaced.
+Staging uses `cp -c` on Darwin to retain APFS cloning and ordinary `cp` on other
+hosts, including Linux fixture runners. Copy errors and byte-comparison failures
+stop before the destination is replaced; no failed clone is silently retried.
 See [the live-test setup](test.md) for the pinned DiffusionGemma artifact and
 opt-in encrypted transport gate.
 

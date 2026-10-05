@@ -40,7 +40,9 @@ INSERT INTO darkbloom_machines VALUES ('transferred',NULL),('anonymous',NULL),('
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Now().UTC()
+	// pgx truncates binary timestamps to microseconds, while PostgreSQL rounds
+	// JSON timestamp text. Keep equal fixture instants equal in both encodings.
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	add := func(id, machine, account, source string, start, seen time.Time) {
 		t.Helper()
 		raw, _ := json.Marshal(map[string]any{"source": source, "registered_at": start, "version": "0.9.3", "os_version": "26.5", "os_source": "registration_report", "os_observed_at": now})
@@ -140,6 +142,33 @@ INSERT INTO darkbloom_machines VALUES ('transferred',NULL),('anonymous',NULL),('
 				if recipient.Email != "new@example.com" {
 					t.Fatalf("selected an old owner: %+v", recipient)
 				}
+			}
+		})
+	}
+	// Deliberately retain submicrosecond inputs here: rounded registration text
+	// that falls after binary first_seen must still fail closed.
+	for _, tc := range []struct {
+		name        string
+		fraction    time.Duration
+		wantUnknown int
+	}{
+		{"exact microsecond", time.Microsecond, 0},
+		{"round down", 499 * time.Nanosecond, 0},
+		{"round up", 501 * time.Nanosecond, 1},
+		{"round into next second", time.Second - time.Nanosecond, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := conn.Exec(ctx, `TRUNCATE darkbloom_machine_sessions`); err != nil {
+				t.Fatal(err)
+			}
+			start := now.Add(-time.Minute).Truncate(time.Second).Add(tc.fraction)
+			add("new", "transferred", "new-owner", "live_registration", start, now)
+			snapshot, err := provideremail.ReadSnapshot(ctx, testDSN, 30)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if snapshot.UnknownRegistration != tc.wantUnknown || len(snapshot.Machines) != 1-tc.wantUnknown {
+				t.Fatalf("unexpected snapshot for %s: %+v", start.Format(time.RFC3339Nano), snapshot)
 			}
 		})
 	}

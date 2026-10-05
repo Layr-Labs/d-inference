@@ -3,6 +3,8 @@ package autopilot
 import (
 	"math"
 	"slices"
+
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/residency"
 )
 
 type CoverageView struct {
@@ -122,37 +124,23 @@ func Coverage(f Fleet) CoverageView {
 }
 
 func floor(f Fleet, model string) int {
-	floor := max(0, f.Floors[model])
 	d := demandForModel(f.Demand, model)
-	if d.Rate > 0 && (d.Requests >= 3 || d.CapacityShed > 0) {
-		floor = max(1, floor)
-	}
-	return floor
+	return residency.ProtectedFloor(f.Floors[model], d.Rate, d.Requests, d.CapacityShed)
 }
 
 func autopilotDonorsProtected(f Fleet, c CoverageView, n Node) bool {
 	// Loading fences the entire device, including retained co-residents. Debit
 	// every contribution for the whole transition; future capacity cannot protect
 	// a currently needed donor. Other commands are already absent from Ready.
+	residents := make([]residency.ResidentBudget, 0, len(n.Residents))
 	for _, model := range n.Residents {
-		if autopilotQualifiedResident(n, model) && c.Warm[model]-1 < floor(f, model) {
-			return false
-		}
+		residents = append(residents, residency.ResidentBudget{
+			Qualified: autopilotQualifiedResident(n, model), Warm: c.Warm[model], Floor: floor(f, model),
+		})
 	}
-	for cohort, contribution := range c.Contribution[n.ID] {
-		if c.Ready[cohort]-contribution+1e-9 < c.Need[cohort] {
-			return false
-		}
-	}
-
-	return true
+	return residency.ProtectsDonors(residents, c.Contribution[n.ID], c.Ready, c.Need)
 }
 
 func autopilotQualifiedResident(n Node, model string) bool {
-	for key, fit := range n.Fits {
-		if ModelID(key) == model && fit.MeetsDeadline && fit.Rate > 0 {
-			return true
-		}
-	}
-	return false
+	return residency.QualifiedResident(n.Fits, model)
 }

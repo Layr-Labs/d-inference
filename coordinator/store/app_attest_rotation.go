@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 )
 
@@ -58,35 +57,3 @@ type AppAttestRotationLimit struct {
 // AppAttestRotationCountCap bounds failure-count queries; callers compare
 // against small thresholds, so an exact count is never needed.
 const AppAttestRotationCountCap = 100
-
-const appAttestKeyRotationDDL = `
-CREATE TABLE IF NOT EXISTS app_attest_key_rotations (
- key_id TEXT PRIMARY KEY, machine_id TEXT NOT NULL, account_id TEXT NOT NULL,
- requested_at TIMESTAMPTZ NOT NULL, failures INTEGER NOT NULL, reason TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS app_attest_key_rotations_machine ON app_attest_key_rotations(machine_id,requested_at DESC);
-`
-
-// appAttestRotationFailureContext mirrors the archived evidence context
-// fields used by the memory backend; PostgreSQL evaluates the same rule.
-type appAttestRotationFailureContext struct {
-	KeyID      string `json:"key_id"`
-	Source     string `json:"apple_error_source"`
-	AppleError *struct {
-		Domain string `json:"domain"`
-		Code   int64  `json:"code"`
-	} `json:"apple_error"`
-}
-
-// A synthetic proof_oversize failure means Apple did return a proof, so the
-// key is alive; it never counts toward rotation.
-func appAttestRotationEligibleFailure(e AppAttestEvidence, outcome, keyID string) bool {
-	if e.Action != "assertion" || outcome != "apple_error" || e.KeyID != keyID {
-		return false
-	}
-	var c appAttestRotationFailureContext
-	if json.Unmarshal(e.Context, &c) != nil || c.KeyID != keyID || c.Source == "proof_oversize" {
-		return false
-	}
-	return c.AppleError == nil || c.AppleError.Domain == "devicecheck" && (c.AppleError.Code == 0 || c.AppleError.Code == 2)
-}

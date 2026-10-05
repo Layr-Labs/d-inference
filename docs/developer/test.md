@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 ## Reservation storage and scan benchmarks
 
@@ -31,6 +31,23 @@ observations; neither is production inference latency. See
 [the October 4 measurement record](../reports/2026-10-04-registry-scan-optimization.md).
 
 ## Component CI routing
+
+CI and Integration Tests stop superseded PR runs without cancelling independent
+default-branch pushes. Routing regressions pin both concurrency policies.
+Cancellation is not a passing test result or an intentional component skip.
+
+The ordinary provider `Run Swift tests` step invokes the unchanged
+`scripts/run-provider-tests.sh` through `scripts/run-provider-test-watchdog.py`.
+After 480 seconds it captures process diagnostics; at 900 seconds it terminates
+owned test processes and exits 124. A 20-minute outer step timeout allows time
+for diagnostics and cleanup. Failure does not suppress later isolated native
+gates; cancellation does. Non-cancelled attempts upload the transcript, result
+and available stack samples as `provider-test-diagnostics` for seven days.
+Run `python3 scripts/test-provider-test-watchdog.py` for real subprocess exit,
+deadline and cancellation regressions. `scripts/test-provider-ci-workflow.py`
+pins the watchdog wiring; `scripts/test-integration-ci-workflow.py` checks cache
+wiring while retaining all E2E gates, and `scripts/test-provider-ci-cache.py`
+checks integration/provider/release cache isolation and compatibility boundaries.
 
 Run `python3 scripts/test-ci-component-paths.py` for offline component-routing
 regressions. It creates real temporary Git repositories to check PR merge-base
@@ -263,6 +280,11 @@ used for cache identity. Use it after rebuilding either Swift package's tests.
 The Make target and CI use this shared setup. The native cancellation fixture
 resolves `localhost` and tries its address families; its hermetic socket test
 covers separate IPv4 and IPv6 listeners.
+
+`python3 scripts/test-stage-test-metallib.py` runs the real staging script with
+isolated fetch/copy fixtures. It checks Darwin and non-Darwin copy flags, all
+test-bundle layouts, destination preservation, and staging cleanup on copy or
+comparison failure. No Metal compiler or model is needed.
 
 For a new native family, run the same production corpus against its exact
 config/tokenizer/template artifacts before accepting cache routing. Diffusion
@@ -839,6 +861,17 @@ source/dependency/binary/metallib/artifact tuple:
 
 The [App Attest shadow validation commands](../reference/app-attest-shadow.md#validation) cover cryptography, protocol symmetry, counter races, unchanged routing, and coexistence signing. Live macOS 27 acceptance remains separate.
 
+The provider email command and Resend adapter tests run with
+`go test -race ./coordinator/tests/provideremail/... ./coordinator/tests/cmd/provider-emails/...`.
+With a disposable `DATABASE_URL`, `TestReadSnapshotPostgres` uses an isolated
+schema to verify owner changes, merged identities, delayed first captures and
+unknown-registration exclusions. Registration capture and immutable-origin tests
+run with `go test -race ./coordinator/tests/appattest/service ./coordinator/tests/registry -run 'TestInventoryCapture|TestConnectionOriginTime|TestProviderRegisteredAt'`.
+API contract tests use a local HTTP server; they pin broadcast `reply_to` arrays
+and pagination through `GET /segments/{id}/contacts`. No tests send live email. The
+[provider email runbook](../operations/provider-emails.md) separates live
+self-addressed delivery verification from these checks.
+
 ## Prerequisites
 
 - Toolchain from [build.md](build.md) (`mise install`, submodules, `cmake`).
@@ -872,6 +905,21 @@ make test   # coordinator-test prompt-sidecar-test provider-test ui-test benchma
 ```
 
 ### 2. Coordinator (Go)
+
+For Open Sales Program changes, run the referral HTTP/service, consumer settlement,
+and cross-backend contracts from the repository root:
+
+```bash
+go test ./coordinator/tests/api/billing/... ./coordinator/tests/billing/... ./coordinator/tests/api/inference/... ./coordinator/tests/store/... -run 'Referral|ConsumerCharge|ConsumerSettlement'
+```
+
+`coordinator/tests/internal/testkit/billing.go` (`NewBilling`) supplies isolated
+mock billing and a funded consumer; it does not set a configurable referral rate.
+Use the real composed router with locally signed Privy sessions for referral
+mutations, and verify that API keys cannot register or apply a code. Store
+contracts exercise atomic collected-spend rewards and paid-only promotion rewards
+on memory and disposable PostgreSQL backends. Follow the database isolation
+requirements below; no production credentials or databases are permitted.
 
 The Go module lives at the repository root. Run `go test ./coordinator/...`
 there to select coordinator packages; keep component `cd` commands in separate
@@ -924,7 +972,9 @@ make coordinator-test                      # runner guards + complete coordinato
 DATABASE_URL='postgres://testbed:testbed@127.0.0.1:5432/testbed?sslmode=disable' \
   python3 scripts/run-coordinator-tests.py --race --coverprofile coverage.out \
     $(go list ./... | grep -vx 'github.com/eigeninference/d-inference/e2e')
-go tool cover -func=coverage.out | tail -n 1   # total statement coverage
+# coordinator packages only, as CI reports it:
+{ head -n 1 coverage.out; grep '^github.com/eigeninference/d-inference/coordinator/' coverage.out; } > coverage-coordinator.out
+go tool cover -func=coverage-coordinator.out | tail -n 1   # total statement coverage
 gofmt -l .                                 # must print nothing
 golangci-lint run                          # .golangci.yml
 ```
@@ -941,9 +991,21 @@ elapsed-time tolerance. Repeat it with:
 go test -race ./coordinator/tests/registry -run '^TestReserveProviderExSnapshotAgeAndPending$' -count=1000
 ```
 
-CI writes the total statement coverage to the job summary and keeps
-`coverage.out` for 14 days as the `coordinator-coverage` artifact. The number
-is for information only. A low number does not fail the job.
+CI writes a coverage table to the job summary and keeps the full
+`coverage.out` for 14 days as the `coordinator-coverage` artifact. The table
+has the columns Component, Statements or Lines, Regions or Branches, Functions
+and Target. The target is 80% and is for information only: a low number does
+not fail the job. The step fails only when the profile has no coordinator data
+or no total. The denominator is the statements in the `coordinator/...`
+production packages. The runner instruments them in every test binary with
+`-coverpkg`, so the tests in `coordinator/tests/` credit the production code
+they run. A production package that no test imports still counts, at 0%. The
+`coordinator/tests/...` packages and their helpers are not instrumented, and
+`_test.go` files never count. The profile also holds `e2e/testbed/...` and a
+frozen docs evidence package; the step leaves them out. `go test` has no
+branch counters, so the table reports statements only. The table appears only
+when the [component router](#component-ci-routing) runs the job; pushes to the
+default branch always run it.
 
 The runner compiles each selected large API test package once and discovers its
 tests, examples, and fuzz seeds from that binary: `coordinator/tests/api`, its
@@ -1213,16 +1275,22 @@ checks `file` reports `statically linked|static-pie linked`, and replays the
 production prompt vectors against it with
 `scripts/verify-prompt-sidecar-linux.sh <binary>`.
 
-CI then measures coverage with `cargo-llvm-cov` 0.9.1 and writes the line
-coverage from its `TOTAL` row to the job summary. A low number does not fail
-the job. `cargo llvm-cov` runs the sidecar tests a second time, with coverage
-instrumentation, so a test failure can first appear in the Report coverage
-step. To measure it locally:
+CI then measures coverage with `cargo-llvm-cov` 0.9.1. It writes the same
+table shape as the coordinator job: lines, regions and functions, with an 80%
+report-only target, and it also appears only when the router runs the job.
+The step reads each value by its field name from the JSON report and fails if
+one is missing. A low number does not fail the job. The
+denominator is `coordinator/promptsidecar/src`. The tests under `tests/`,
+every `tests.rs` test module under `src/` and dependencies are left out;
+inline unit-test modules inside other `src` files are counted. Branch counters
+need a nightly toolchain, so branches are not reported. `cargo llvm-cov` runs
+the sidecar tests a second time, with coverage instrumentation, so a test
+failure can first appear in the Report coverage step. To measure it locally:
 
 ```bash
 rustup component add llvm-tools-preview --toolchain 1.88.0
 cargo install cargo-llvm-cov --version 0.9.1 --locked
-cd coordinator/promptsidecar && cargo +1.88.0 llvm-cov --locked --all-targets --summary-only
+cd coordinator/promptsidecar && cargo +1.88.0 llvm-cov --locked --all-targets --summary-only   # lines, regions, functions
 ```
 
 A number measured on macOS can differ from the Linux number in CI.
@@ -1429,10 +1497,10 @@ CPU-only check runs in the Release Integrity job; it is not GPU qualification.
 
 ```bash
 make provider-test
-# = cd provider-swift && swift build --build-tests
-#   ./scripts/fetch-metallib.sh <bin-path>            (build mlx.metallib from libs/mlx-swift source)
-#   cp mlx.metallib into every <bin-path>/*PackageTests.xctest/Contents/MacOS/
-#   cd provider-swift && swift test --skip-build
+# = python3 scripts/test-stage-test-metallib.py
+#   cd provider-swift && swift build --build-tests
+#   ./scripts/stage-test-metallib.sh <bin-path>   (build mlx.metallib from libs/mlx-swift source; copy it into every <bin-path>/*.xctest bundle)
+#   cd provider-swift && ../scripts/run-provider-tests.sh
 ```
 
 `PagedKernelPreflightTests.noisyChildCannotDeadlock` runs an owned failing child
@@ -1448,6 +1516,97 @@ Without it kernel-backed tests fail or silently exercise a different kernel
 set than production. To run a subset: `cd provider-swift && swift test
 --skip-build --filter <Suite>` after `make provider-test` has staged the
 metallib once.
+
+#### Provider coverage (report-only)
+
+The Provider Unit Tests job builds the provider tests with `swift build
+--build-tests --enable-code-coverage` (the `provider` lane of
+`.github/actions/provider-ci-build`). The next step sets
+`PROVIDER_COVERAGE_DIR` and `LLVM_PROFILE_FILE` for the rest of the job, so
+each provider test process writes its own `%p-%m.profraw` profile to one
+directory. This includes the isolated native MiMo gates.
+`scripts/run-provider-tests.sh` sets the same `LLVM_PROFILE_FILE` when
+`PROVIDER_COVERAGE_DIR` is set, which is what the local recipe below uses.
+The `swift test` calls do not pass `--enable-code-coverage`: with that flag,
+SwiftPM deletes the profiles of earlier calls and replaces `LLVM_PROFILE_FILE`.
+
+The last steps of the Provider Unit Tests job merge the profiles with
+`xcrun llvm-profdata merge`, run `xcrun llvm-cov` on the test bundle and the
+four executables, and write a table to the job summary: lines, regions,
+functions and an 80% target for each row. The table has four rows:
+
+| Row | Targets |
+|---|---|
+| Product | `ProviderCore`, `ProviderCoreFoundation`, `ProviderAppAttest`, `DarkbloomFanCore`: the code that serves requests |
+| CLI | `darkbloom` |
+| Benchmark | `ProviderBenchmark` |
+| Total | every file in the report, including the targets that have no row of their own |
+
+The full report is kept for 14 days as the `provider-coverage` artifact:
+`provider-coverage.txt` and `provider-coverage.json` have every file, and
+`provider-coverage-summary.md` has the table. The denominator is the Swift code in
+`provider-swift/Sources`. `Tests/`, `.build/` and the `libs/` checkouts do not
+count. The Provider SDK Tests and Provider Prompt Parity lanes build without
+coverage in their own jobs and do not count. The one C++ file in
+`ProviderMetallibControl` is not instrumented. Swift has no branch counters.
+A low number does not fail the job. The report step fails only when there are
+no profiles, a value is missing or a row has no lines; the test steps keep
+their own results.
+
+To measure the local provider suite, first initialize the pinned submodules and
+use the [provider build prerequisites](build.md#prerequisites). Run on an owned
+Apple Silicon test machine, with no other build using this `.build` directory.
+The runner isolates `DARKBLOOM_STATE_FILE` and `DARKBLOOM_LOADED_MODELS_FILE` in a
+fresh temporary directory and removes that state on exit. The profile directory
+below is also fresh, but retained for inspection; it never merges a previous
+build's counters. Leave unrelated live-model opt-ins unset.
+
+```bash
+(
+set -e
+cd provider-swift
+swift build --build-tests --enable-code-coverage
+swift build --product darkbloom-fan-helper --enable-code-coverage
+bin=$(swift build --show-bin-path)
+../scripts/stage-test-metallib.sh "$bin"
+PROVIDER_COVERAGE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/darkbloom-coverage.XXXXXX")
+export PROVIDER_COVERAGE_DIR
+export LLVM_PROFILE_FILE="$PROVIDER_COVERAGE_DIR/%p-%m.profraw"
+python3 ../scripts/prepare-mimo-provider-fixtures.py \
+  --output "$PROVIDER_COVERAGE_DIR/mimo-fixtures"
+export MIMO_V26_SERIAL_LOAD_FIXTURES="$PROVIDER_COVERAGE_DIR/mimo-fixtures"
+export MIMO_V26_WIRED_METADATA_FIXTURE="$MIMO_V26_SERIAL_LOAD_FIXTURES/tiny-bf16"
+python3 ../scripts/prepare-mimo-prompt-fixtures.py \
+  --output "$PROVIDER_COVERAGE_DIR/mimo-prompt-fixtures"
+export MIMO_PROMPT_ARTIFACT_DIRECTORY="$PROVIDER_COVERAGE_DIR/mimo-prompt-fixtures"
+export MIMO_PROMPT_REFERENCE_VECTORS="$PWD/../fixtures/prompt-contract/mimo-v26-additional20.json"
+export MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS=1
+test_status=0
+../scripts/run-provider-tests.sh || test_status=$?
+xcrun llvm-profdata merge -sparse -o "$PROVIDER_COVERAGE_DIR/provider.profdata" \
+  "$PROVIDER_COVERAGE_DIR"/*.profraw
+test_objects=()
+for bundle in "$bin"/*.xctest; do
+  test -d "$bundle" || continue
+  test_objects+=(-object "$bundle/Contents/MacOS/$(basename "$bundle" .xctest)")
+done
+test "${#test_objects[@]}" -gt 0
+xcrun llvm-cov report "$bin/darkbloom" "${test_objects[@]}" \
+  -object "$bin/darkbloom-fan-helper" \
+  -object "$bin/darkbloom-enclave" -object "$bin/darkbloom-publish" \
+  -instr-profile "$PROVIDER_COVERAGE_DIR/provider.profdata" \
+  -ignore-filename-regex '/(Tests|\.build|libs)/' "$PWD/Sources"
+exit "$test_status"
+)
+```
+
+This preserves a failing test exit even when reporting succeeds. It prepares
+the bounded synthetic MiMo inputs required by scanner and load-quotation tests
+and fetches four checksum-pinned public prompt metadata files, never model weights
+or credentials. It does not fetch the audio [MiMo CI fixtures](#mimo-provider-ci-fixtures)
+or enable selected native gates, so its totals need not match CI. Keep instrumentation
+enabled when building every reported product; do not use these instrumented
+timings as production throughput evidence.
 
 For a custom SwiftPM `--scratch-path`, stage the authoritative `mlx.metallib`
 in the active `debug` or `release` directory containing the `.xctest` bundle.
@@ -1520,8 +1679,7 @@ cd libs/mlx-swift-lm
 swift package unedit --force mlx-swift >/dev/null 2>&1 || true
 swift package edit --path ../mlx-swift mlx-swift      # use the local mlx-swift, not the remote branch
 swift build --build-tests
-../../scripts/fetch-metallib.sh "$PWD/.build/debug"            # stage mlx.metallib beside the nested test runner
-for b in .build/debug/*PackageTests.xctest; do cp .build/debug/mlx.metallib "$b/Contents/MacOS/"; done
+../../scripts/stage-test-metallib.sh "$(swift build --show-bin-path)"   # stage mlx.metallib into every nested test bundle
 for suite in CBv2PagedSafetyTests CBv2PrefixCacheHasherTests CBv2PagedEligibilityTests \
              CBv2PagedBackendTests CBv2PagedKernelTests CBv2KVSharingParityTests; do
   ../../scripts/run-nested-suite.sh "$suite"
@@ -1554,6 +1712,52 @@ Other folders follow provider responsibilities: `ProviderLoop`, `Server`,
 `Telemetry`, `Update`, and the smaller source subsystems. `Benchmark` tests
 the `ProviderBenchmark` module and its production-engine integration.
 Drain/swap orchestration stays with `ProviderLoop` and `Server`.
+
+#### Provider lifecycle, CLI and benchmark groups
+
+These groups run in the ordinary provider test products. Paths in the first
+column are below `provider-swift/Tests/`; suite names are usable with
+`swift test --skip-build --no-parallel --filter` after building and staging the
+matched metallib. Prefer `scripts/run-provider-tests.sh` for the complete run
+and its state isolation and fresh-process gates.
+
+| Test group | Representative suites and assertions | Fixture boundary |
+|---|---|---|
+| `ProviderCoreTests/ProviderLoop` | `ModelLoadRefusalTests`, `ModelLoadEvictionAndAdmissionTests`, `ModelSlotBookkeepingTests`: admission, eviction, slot publication, rollback and saved loaded-model state | Temporary model/state files, scripted engines and memory inputs |
+| `ProviderCoreTests/Server` | `StandaloneServerModelAdmissionTests`, `StandaloneServerDrainTests`: load limits, same-model reuse, active-request drain and shutdown | Scripted engines; local request and ownership paths, not model-quality evidence |
+| `ProviderCoreTests/ProviderLoop` and `ProviderCoreTests/Server` | `TinyModelLoadTests`: real loader, hash/tokenizer/sizing, generation, reuse and unload through provider and standalone owners | Generated tiny GPT-OSS checkpoint; actual MLX execution |
+| `ProviderCoreTests/ProviderLoop` and `ProviderCoreTests/Update` | `ServeLoopConnectionTests`, `ServeLoopDispatchTests`, `AutoUpdateCycleTests`: registration, reconnect, encrypted dispatch/cancellation and update recovery | Loopback coordinator, software signing key, scripted engine, temporary install root and injected restart/host services |
+| `ProviderCoreTests/Service` and `ProviderCoreTests/KVCacheSSD` | `LaunchAgentLifecycleTests`, `SSDPrefixCacheFactoryPathTests`, `SSDPrefixCacheFactoryRefusalTests`, `SSDPrefixCacheFactoryConstructionTests`, `SSDPrefixCacheFactoryMaintenanceTests`: service lifecycle, cache construction/refusals, epochs and maintenance | Scripted launchctl, temporary home/cache roots and ephemeral cache keys |
+| `DarkbloomCLITests` | Command-run, doctor, picker, start/service/watchdog and fan suites: parsing, output, refusals, persistence and cleanup | Child-process command sandbox, stubbed HTTP, scripted terminal input and injected service/SMC operations |
+| `ProviderCoreTests/Benchmark` | `ArrivalInvarianceMeasurementTests`, `BackendParityHarnessProbeTests`, `SchedulerPrefillDecisionLiveRunnerTests`, `ThroughputSweepNotesTests`, `ModelBenchmarkReportTests`, `BenchmarkEntryPointRefusalTests`: event accounting, cancellation, metadata, reporting and entry-point refusals | Scripted benchmark engines and temporary reports; no performance or model-parity qualification |
+
+`Inference/Fixtures/TinyModelCheckpoint.swift` (`TinyModelCheckpoint`) creates
+seeded synthetic weights and tokenizer files in a temporary Hugging Face cache
+layout. It needs Apple Silicon, a working Metal runtime and the source-matched
+metallib, but no downloaded checkpoint. Its load-admission inputs are scripted;
+post-load headroom checks still read the actual machine. Run with `--no-parallel`:
+the shared `TinyModelLoadTests` suite is serialized, but that alone does not
+isolate the process-wide model-cache setting from other suites. Generated-token
+and cleanup assertions prove this tiny execution path, not trained-model output
+quality, full-checkpoint memory bounds or production throughput.
+
+`DarkbloomCLITests/CLICommandSandbox.swift` (`CLICommandSandbox.enter`) changes
+environment and shared URL-session behavior only inside exit-test children.
+Keep command config, auth tokens, caches, daemon/guard/watchdog state and test
+reports temporary. Service/fan tests must use their injected host and SMC
+boundaries: they do not authorize real `sudo`, launchd installation, fan writes,
+Keychain changes or provider restarts. The SSD factory tests use in-memory keys;
+persistent-Keychain qualification remains a separate opt-in procedure. Never
+replace fixture URLs or tokens with production endpoints or credentials.
+
+`Benchmark/ScriptedBenchmarkEngine.swift` (`ScriptedBenchmarkEngine`) supplies
+controlled events and counters to the real measurement code. A passing harness
+test is not a measured speedup or proof of backend numerical parity. Use the
+separate model-backed gates for those claims. Coverage reports count executed
+code, not these evidence distinctions; retain test results and prerequisites
+alongside the report.
+
+#### Shared fixture locations
 
 Keep model fixtures in `Inference/Live/Fixtures`, synthetic engine support in
 `Inference/Fixtures`, checkpoint support in `KVCacheSSD/Fixtures`, and shared
@@ -2613,7 +2817,7 @@ intentional skips for irrelevant PRs, rather than requiring unselected macOS job
 
 | Workflow | Trigger | Jobs (name → what runs) |
 |---|---|---|
-| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — release/script checks and offline provider CI/cache/routing guards · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `scripts/run-coordinator-tests.py --race --coverprofile` over every package except the top-level `e2e` integration package (`coordinator/internal/e2e` and `e2e/testbed/...` run), isolated API/registry shards and runner guards, with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence; total statement coverage in the job summary, merged `coverage.out` and timing evidence kept 14 days · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh`, then `cargo llvm-cov` (0.9.1) line coverage in the job summary · **Provider Unit Tests** (macOS 12-vcpu) — full debug test build, matched Metal, serial/fresh-process provider tests and installer checks · **Provider SDK Tests** (independent macOS 12-vcpu) — full nested test build and all required numerical/SDK selectors through checked wrappers · **Provider Prompt Parity** (independent macOS 12-vcpu) — `verify-prompt-parity.sh`, pinned Swift/Go/Rust vectors and sustained sidecar load proof · **Provider Tests** (Linux aggregate) — enforces the component-routing contract above · **Swift Build + Cache** (push only) — release build of `darkbloom` + `darkbloom-fan-helper` · **Console UI Lint & Build** — Node 22, `npm ci`, lint, vitest, and Next.js build |
+| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — release/script checks and offline provider CI/cache/routing guards · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `scripts/run-coordinator-tests.py --race --coverprofile` over every package except the top-level `e2e` integration package (`coordinator/internal/e2e` and `e2e/testbed/...` run), isolated API/registry shards and runner guards, with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence; job-summary coverage table (statements over `coordinator/...` only, 80% report-only target, no branch counters), merged `coverage.out` and timing evidence kept 14 days · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh`, then `cargo llvm-cov` (0.9.1) job-summary coverage table (lines, regions and functions over `coordinator/promptsidecar/src`, 80% report-only target, no branch counters) · **Provider Unit Tests** (macOS 12-vcpu) — full debug test build with `--enable-code-coverage`, matched Metal, serial/fresh-process provider tests and installer checks, then a job-summary coverage table (lines, regions and functions over Swift code in `provider-swift/Sources`, with product, CLI, benchmark and total rows, 80% report-only target, no branch counters; the SDK and prompt parity lanes are not counted), full report kept 14 days as the `provider-coverage` artifact · **Provider SDK Tests** (independent macOS 12-vcpu) — full nested test build and all required numerical/SDK selectors through checked wrappers · **Provider Prompt Parity** (independent macOS 12-vcpu) — `verify-prompt-parity.sh`, pinned Swift/Go/Rust vectors and sustained sidecar load proof · **Provider Tests** (Linux aggregate) — enforces the component-routing contract above · **Swift Build + Cache** (push only) — release build of `darkbloom` + `darkbloom-fan-helper` · **Console UI Lint & Build** — Node 22, `npm ci`, lint, vitest, and Next.js build |
 | [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 75 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (blocking; explicit SSD opt-in and repeat demand) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`) |
 | [`.github/workflows/benchmarks.yml`](../../.github/workflows/benchmarks.yml) | PR, gated by the `benchmarks` environment (manual approval) | **E2E Benchmarks** — `go test ./e2e/ -count=1 -v -timeout 40m -p=1 -run 'TestBenchmark'`, posts `BENCHMARK_MD_PATH` as a PR comment |
 | [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml) | tag `v*`, manual | Provider release; see [`../operations/provider-release.md`](../operations/provider-release.md) |

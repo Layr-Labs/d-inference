@@ -37,6 +37,15 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer func() {
 		loopCancel()
+		// Protocol-error exits can bypass closeSessionOffline. Never leave a
+		// closed connection routable while its completion workers drain.
+		if provider != nil {
+			provider.Mu().Lock()
+			if provider.Status != registry.StatusUntrusted {
+				provider.Status = registry.StatusOffline
+			}
+			provider.Mu().Unlock()
+		}
 		s.trust.UnbindConnection(providerID, schedulerSEKey, schedulerGeneration)
 		// End connection-continuity coverage with the EXACT coordinator-
 		// observed disconnect time (before registry.Disconnect tears the
@@ -44,6 +53,15 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 		// than at the last periodic coverage pass.
 		s.trust.StopTrustCoverageForProvider(providerID)
 		s.trust.StopCodeAttestCoverageForProvider(providerID)
+		// The reader can exit while an off-loop completion is still pricing
+		// or settling a parked request. Include those workers in the handler
+		// join before final shutdown accounting flushes. No new terminal can
+		// enter this per-connection barrier once the reader has stopped. The
+		// read-error path already marked this provider offline; let completions
+		// claim their pending requests before disconnect removes the remainder.
+		for _, done := range terminalWork.Snapshot() {
+			<-done
+		}
 		s.registry.DisconnectWithReason(providerID, registry.ClassifyPeerClose(peerCloseStatus, false))
 		conn.Close(websocket.StatusNormalClosure, "goodbye")
 	}()

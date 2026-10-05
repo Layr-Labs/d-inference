@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-04
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -9,6 +9,16 @@ operator has to plan for. For operators choosing or checking a machine. The
 memory constants and the load-gate arithmetic behind the RAM table are stated
 once in [`../architecture/hardware-support.md`](../architecture/hardware-support.md)
 and are not repeated here.
+
+## Registering interest for unsupported hardware
+
+| Earn-page behavior | Meaning | Code |
+|---|---|---|
+| Smaller-model or production-readiness notification action | Both register the same account's selected Mac hardware; selecting different hardware permits an update | `console-ui/src/app/earn/SmallModelsInterest.tsx`, `useSmallModelsInterest.ts` |
+| Pending sign-in or saving state | Registration has not been acknowledged; closing the sign-in modal keeps the visible intent pending until explicit cancellation or expiry | `console-ui/src/app/earn/useSmallModelsInterest.ts` (`useSmallModelsInterest`) |
+| Confirmed notification interest | The coordinator acknowledged persistence, or authenticated readback matched the selected hardware; this does not change hardware eligibility | `coordinator/api/accounts/small_models_interest.go` (`HandleRegisterSmallModelsInterest`, `HandleGetSmallModelsInterest`) |
+
+Follow the [authenticated registration steps](../consumer/authentication.md#6-register-hardware-interest). Registration is an opt-in record; email delivery is a separate operation.
 
 ## Minimum requirements
 

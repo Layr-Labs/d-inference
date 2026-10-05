@@ -56,6 +56,14 @@ class IntegrationWorkflowTests(unittest.TestCase):
         for name in ("provider-build", "rust-build", "timestamps", "metallib"):
             self.assertIsNone(field(self.ids[name], "if"))
 
+    def test_compression_tools_are_installed_before_any_cache_restore(self):
+        install = self.named["Install Postgres"]
+        self.assertEqual(run_command(install), "brew install postgresql@16 zstd")
+        self.assertLess(self.steps.index(self.named["Set up Homebrew"]), self.steps.index(install))
+        for step in self.steps:
+            if "actions/cache/restore@" in step or "actions/setup-go@" in step:
+                self.assertLess(self.steps.index(install), self.steps.index(step))
+
     def test_all_integration_gates_and_flags_remain(self):
         gates = [step for step in self.steps if "go test ./e2e/" in step]
         self.assertEqual(len(gates), 3)

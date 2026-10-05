@@ -51,6 +51,12 @@ jobs:
         run: ./scripts/install-release-cmake.sh
       - name: Prepare source-matched Metal compiler
         run: python3 scripts/prepare-metal-toolchain.py
+      # Cache versions include compression. Install zstd before every restore
+      # and save, not midway through the job as a PostgreSQL dependency.
+      - name: Set up Homebrew
+        run: ./scripts/setup-macos-homebrew.sh
+      - name: Install Postgres
+        run: brew install postgresql@16 zstd
       - name: Resolve compatible integration build caches
         id: keys
         run: python3 scripts/provider-ci-cache.py keys --lane integration >> "$GITHUB_OUTPUT"
@@ -84,11 +90,6 @@ jobs:
       - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
         with:
           go-version-file: go.mod
-
-      - name: Set up Homebrew
-        run: ./scripts/setup-macos-homebrew.sh
-      - name: Install Postgres
-        run: brew install postgresql@16
 
       - name: Build provider (Swift)
         id: provider-build

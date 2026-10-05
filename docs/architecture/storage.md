@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 What the coordinator persists, through which interface and in which backend;
 then what a provider keeps on its own disk and in its Keychain. How the schema

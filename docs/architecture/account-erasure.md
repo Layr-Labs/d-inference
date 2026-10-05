@@ -1,6 +1,6 @@
 # Account erasure
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 This page explains how the coordinator erases the personal data of one
 consumer or provider account (GDPR Article 17): the request states, the scrub

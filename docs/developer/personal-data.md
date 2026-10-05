@@ -1,6 +1,6 @@
 # Add personal data safely
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 How-to for a coordinator change that stores personal data or writes to an
 account: add an erasure rule for a new column or table, add an outbox target

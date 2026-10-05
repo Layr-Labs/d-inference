@@ -1,6 +1,6 @@
 # Personal-data rules
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 Reference for account erasure: every personal column the scrub changes and
 how, the data it keeps and why, the erasure tables, and the constants. How the

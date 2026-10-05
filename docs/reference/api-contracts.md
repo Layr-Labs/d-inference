@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 The public HTTP surface of the coordinator, derived from its composed route bindings under `coordinator/api/`, including the `/v1/` catch-all. Every route is listed below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 

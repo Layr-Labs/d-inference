@@ -59,6 +59,10 @@ func (c *Client) do(ctx context.Context, method, path, account, key string, body
 	if err != nil {
 		return err
 	}
+	// Automatic transport POST retries could hide an ambiguous first send.
+	if method != http.MethodGet {
+		req.GetBody = nil
+	}
 	req.Header.Set("Authorization", "Bearer "+c.Key)
 	req.Header.Set("Stripe-Version", APIVersion)
 	req.Header.Set("Content-Type", "application/json")

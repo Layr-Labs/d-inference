@@ -2,9 +2,8 @@ package registry
 
 import (
 	"strings"
-	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/ttftforecast"
 )
 
 // Phase-0 SLA-aware, occupancy-aware admission — SHADOW + MEASUREMENT slice.
@@ -16,7 +15,7 @@ import (
 // caller as fields on RoutingDecision, which the API layer emits as metrics.
 //
 //   - WouldShed: the occupancy-aware TTFT estimate
-//     (occupancyAwareTTFTMsFromSnapshot = base + the occupancy term, which is
+//     (candidateSnapshot.shadowTTFT = base + the occupancy term, which is
 //     non-zero only when EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA > 0) for the chosen
 //     provider exceeds the model's upstream deadline base (standard ~10s;
 //     exact-model policies may be shorter). This is NOT the live coordinator
@@ -78,7 +77,7 @@ func ParseTTFTAdmissionMode(s string) TTFTAdmissionMode {
 // 1.002 (telemetry-db findings §2). The live coordinator cutoff is selected
 // separately with response headroom; exact-model policy can tighten either
 // clock without conflating the two.
-const defaultTTFTDeadlineBaseMs = 10000.0
+const defaultTTFTDeadlineBaseMs = ttftforecast.DefaultDeadlineBaseMS
 
 // Both are configured once at startup (from main.go env wiring) and read-only on
 // routing paths thereafter, mirroring prefillToDecodeRatio / ttftOccupancyAlpha.
@@ -117,9 +116,7 @@ func TTFTDeadlineBaseMs() float64 {
 // the same shared policy table as the live coordinator clock. This remains
 // shadow only and does not change routing decisions.
 func ttftDeadlineMsForPrompt(model string, promptTokens int) float64 {
-	defaultBase := time.Duration(ttftDeadlineBaseMs * float64(time.Millisecond))
-	deadline := modelpolicy.UpstreamFirstContentDeadline(model, promptTokens, defaultBase)
-	return float64(deadline) / float64(time.Millisecond)
+	return ttftforecast.Deadline(model, promptTokens, ttftDeadlineBaseMs)
 }
 
 // ttftShadowEval is the result of the read-only Phase-0 evaluation. It is copied
@@ -175,10 +172,10 @@ func (r *Registry) evaluateTTFTShadowLocked(
 	// Occupancy-aware estimate (base + occupancy term). The occupancy term lives
 	// here, in the SHADOW path only — ttftMsFromSnapshot (the live cost / ceiling /
 	// bestTTFT input) stays occupancy-free so raising alpha cannot tighten the
-	// live request-local HARD_REJECT ceiling. See occupancyAwareTTFTMsFromSnapshot.
-	estimate := occupancyAwareTTFTMsFromSnapshot(snap, reqPrompt)
+	// live request-local HARD_REJECT ceiling. See candidateSnapshot.shadowTTFT.
+	estimate := snap.shadowTTFT(reqPrompt)
 	deadline := ttftDeadlineMsForPrompt(model, reqPrompt)
-	occ := snapshotOccupancy(snap)
+	occ := snap.occupancy()
 
 	eval := ttftShadowEval{
 		Evaluated: true,
@@ -196,23 +193,23 @@ func (r *Registry) evaluateTTFTShadowLocked(
 	// to. When herded, check whether an instantly-usable loaded-idle peer for the
 	// same model was routable.
 	if occ > 0 {
-		eval.IdleAlternativeExists = loadedIdleAlternativeExistsFromScan(scan, winner.provider)
+		eval.IdleAlternativeExists = scan.HasLoadedIdleAlternative(winner.provider)
 	}
 	return eval
 }
 
-// loadedIdleAlternativeExistsFromScan derives the shadow spread signal from the
+// HasLoadedIdleAlternative derives the shadow spread signal from the
 // selector's already-filtered pool. The scan and its snapshots are immutable.
-func loadedIdleAlternativeExistsFromScan(scan candidateScan, winner *Provider) bool {
+func (scan CandidateScan) HasLoadedIdleAlternative(winner *Provider) bool {
 	winnerID := ""
 	if winner != nil {
 		winnerID = winner.ID
 	}
-	for _, candidate := range scan.pool {
+	for _, candidate := range scan.Candidates {
 		if candidate.provider == nil || candidate.provider.ID == winnerID {
 			continue
 		}
-		if candidate.snapshot.modelLoaded && snapshotOccupancy(&candidate.snapshot) == 0 {
+		if candidate.snapshot.modelLoaded && candidate.snapshot.occupancy() == 0 {
 			return true
 		}
 	}
@@ -233,6 +230,5 @@ func loadedIdleAlternativeExistsFromScan(scan candidateScan, winner *Provider) b
 // can never count a peer the scheduler would have rejected. Caller holds r.mu and
 // no provider lock.
 func (r *Registry) loadedIdleAlternativeExistsLocked(model string, pr *PendingRequest, winner *Provider, excludeIDs ...string) bool {
-	return loadedIdleAlternativeExistsFromScan(
-		r.scanCandidatesLocked(model, pr, false, excludeIDs...), winner)
+	return r.scanCandidatesLocked(model, pr, false, excludeIDs...).HasLoadedIdleAlternative(winner)
 }

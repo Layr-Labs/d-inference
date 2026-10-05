@@ -1,6 +1,6 @@
 # MLX stack: the three pinned submodules and the metallib
 
-> Last updated: 2026-09-27
+> Last updated: 2026-09-30
 
 What the provider links from `libs/`, at which commits, what each submodule
 contributes, how the Metal kernel library (`mlx.metallib`) is built from the
@@ -191,7 +191,7 @@ flowchart LR
 | Submodule declarations | `.gitmodules` (superproject), `libs/mlx-swift/.gitmodules` (nested `mlx`, `mlx-c`) |
 | Metallib build | `scripts/fetch-metallib.sh` |
 | Metallib locate / snapshot / bind / hash | `provider-swift/Sources/ProviderCore/Security/BinaryHasher.swift`, `provider-swift/Sources/ProviderMetallibControl/ProviderMetallibControl.cpp` |
-| Bind before first GPU op | `provider-swift/Sources/darkbloom/ServeRuntimePreparer.swift`, `provider-swift/Sources/darkbloom/StartCommand.swift` |
+| Bind before first GPU op | `provider-swift/Sources/darkbloom/ServeRuntimePreparer.swift`, `provider-swift/Sources/darkbloom/Start/StartCommand.swift` |
 | Digest on the wire | `provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift` (`augmentRuntimeHashesWithMetallib`) |
 | `MLXLMServer` contracts used | `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift`, `libs/mlx-swift-lm/Libraries/MLXLMServer/` |
 | CBv2 engine | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/` — [`../inference.md`](../inference.md) |

@@ -1,23 +1,26 @@
 package promptcontract
 
 import (
-	"errors"
 	"net/url"
 	"path/filepath"
 	"time"
 
+	artifacts "github.com/eigeninference/d-inference/coordinator/internal/promptcontract/artifacts"
+	"github.com/eigeninference/d-inference/coordinator/internal/promptcontract/catalog"
+
 	"github.com/eigeninference/d-inference/coordinator/env"
+	sidecar "github.com/eigeninference/d-inference/coordinator/internal/promptcontract/sidecar"
 )
 
-var ErrInvalidConfig = errors.New("invalid prompt-sidecar configuration")
+var ErrInvalidConfig = catalog.ErrInvalidConfig
 
 func ReadSupervisorConfig() SupervisorConfig {
 	const prefix = env.EnvPrefix + "_PROMPT_SIDECAR"
 	return SupervisorConfig{
 		Enabled:                env.EnvBool(prefix+"_ENABLED", false),
 		BinaryPath:             env.EnvOr(prefix+"_BINARY", "promptsidecar"),
-		SocketPath:             env.EnvOr(prefix+"_SOCKET", DefaultSocketPath),
-		ArtifactRoot:           env.EnvOr(prefix+"_ARTIFACT_ROOT", DefaultArtifactRoot),
+		SocketPath:             env.EnvOr(prefix+"_SOCKET", sidecar.DefaultSocketPath),
+		ArtifactRoot:           env.EnvOr(prefix+"_ARTIFACT_ROOT", artifacts.DefaultArtifactRoot),
 		ArtifactBaseURL:        env.EnvOr(prefix+"_ARTIFACT_BASE_URL", "https://models.darkbloom.ai"),
 		ArtifactTimeout:        time.Duration(env.EnvInt(prefix+"_ARTIFACT_TIMEOUT_MS", 120000)) * time.Millisecond,
 		ProvisionWorkers:       env.EnvInt(prefix+"_PROVISION_WORKERS", defaultProvisionConcurrency),
@@ -36,11 +39,11 @@ func ReadSupervisorConfig() SupervisorConfig {
 		RestartMaxInWindow:     env.EnvInt(prefix+"_RESTART_MAX_IN_WINDOW", 3),
 		RestartCooldown:        time.Duration(env.EnvInt(prefix+"_RESTART_COOLDOWN_MS", 30000)) * time.Millisecond,
 		StderrMaxBytes:         env.EnvInt(prefix+"_STDERR_MAX_BYTES", 16<<10),
-		MaxBodyBytes:           env.EnvInt(prefix+"_MAX_BODY_BYTES", DefaultMaxRequestBytes),
-		MaxConcurrency:         env.EnvInt(prefix+"_MAX_CONCURRENCY", DefaultMaxConcurrency),
-		MaxConnections:         env.EnvInt(prefix+"_MAX_CONNECTIONS", DefaultMaxConnections),
+		MaxBodyBytes:           env.EnvInt(prefix+"_MAX_BODY_BYTES", sidecar.DefaultMaxRequestBytes),
+		MaxConcurrency:         env.EnvInt(prefix+"_MAX_CONCURRENCY", sidecar.DefaultMaxConcurrency),
+		MaxConnections:         env.EnvInt(prefix+"_MAX_CONNECTIONS", sidecar.DefaultMaxConnections),
 		MaxLoadedContracts:     env.EnvInt(prefix+"_MAX_LOADED_CONTRACTS", 8),
-		MaxTokens:              env.EnvInt(prefix+"_MAX_TOKENS", DefaultMaxTokens),
+		MaxTokens:              env.EnvInt(prefix+"_MAX_TOKENS", sidecar.DefaultMaxTokens),
 		MemoryLimitMiB:         env.EnvInt(prefix+"_MEMORY_LIMIT_MIB", 1024),
 	}
 }
@@ -81,7 +84,7 @@ func (c SupervisorConfig) Check() error {
 		c.StderrMaxBytes < 1024 || c.StderrMaxBytes > 1<<20 ||
 		c.MaxBodyBytes <= 0 ||
 		c.MaxConcurrency <= 0 ||
-		c.MaxConnections <= reservedControlConnections ||
+		c.MaxConnections <= sidecar.ReservedControlConnections ||
 		c.MaxLoadedContracts <= 0 ||
 		c.MaxTokens <= 0 ||
 		c.MemoryLimitMiB < 256 {

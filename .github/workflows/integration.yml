@@ -6,17 +6,25 @@ on:
   pull_request:
 
 jobs:
+  changes:
+    uses: ./.github/workflows/component-changes.yml
+    permissions:
+      contents: read
+
   integration-tests:
     name: E2E Integration Tests
-    runs-on: blacksmith-12vcpu-macos-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.integration == 'true' }}
+    runs-on: blacksmith-12vcpu-macos-27
     # Job budget = the sum of every step's worst case, not the warm-path wall
-    # time. Test allowances: 25m (blocking paged lane) + 15m (expected-red
+    # time. Test allowances: 25m (blocking paged lane) + 15m (blocking
     # exact-cache lane) + 10m (default-posture smoke) = 50m. Setup/build/
     # download overhead: ~3m warm, but a cold runner pays the full Swift
     # provider build, the cargo sidecar build, and the gpt-oss-20b (~12 GB)
     # + gemma-4 snapshot downloads — budget 25m. 50m + 25m = 75m.
     timeout-minutes: 75
     env:
+      LC_ALL: en_US.UTF-8
       DARKBLOOM_REPO_ROOT: ${{ github.workspace }}
       DARKBLOOM_PROMPT_SIDECAR_BINARY: ${{ github.workspace }}/coordinator/promptsidecar/target/release/promptsidecar
       TESTBED_PROVIDER_CONFIG: debug
@@ -28,10 +36,24 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
+      - name: Select SDK 27 provider toolchain
+        run: ./scripts/prepare-provider-release-toolchain.sh
+      - name: Install pinned Rust toolchain
+        run: ./scripts/install-release-rust.sh
+      - name: Install pinned CMake
+        run: ./scripts/install-release-cmake.sh
+      - name: Prepare source-matched Metal compiler
+        run: python3 scripts/prepare-metal-toolchain.py
+
       - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
         with:
           go-version-file: go.mod
 
+      - name: Set up Homebrew
+        run: ./scripts/setup-macos-homebrew.sh
       - name: Install Postgres
         run: brew install postgresql@16
 
@@ -46,7 +68,7 @@ jobs:
       - name: Build and stage source-matched mlx.metallib
         run: |
           set -euo pipefail
-          command -v cmake >/dev/null 2>&1 || brew install cmake
+          cmake --version
           METALLIB_CACHE_DIR="$RUNNER_TEMP/metallib-cache" \
             ./scripts/fetch-metallib.sh "$RUNNER_TEMP"
           metallib="$RUNNER_TEMP/mlx.metallib"
@@ -135,13 +157,8 @@ jobs:
       # expectation covers everything else (a future degrade path, a testbed
       # regression that stops writing the TOML, the wrong binary under test).
       #
-      # BLOCKING as of the v0.8.0 gate audit. This step used to be
-      # `continue-on-error: true` because ONE fixture-specific test
-      # (TestIntegrationExactCacheRouting) is expected-red on paged — which
-      # meant the whole 16-test paged lane could fail without failing the
-      # job, and on the PR head it was in fact swallowing a live FAIL. The
-      # expected-red test now runs in its own informational step below;
-      # everything here must pass.
+      # Both paged lanes are blocking. Exact-cache runs separately because it
+      # controls cold loading and donation before checking reuse.
       - name: Run integration + profile tests (paged @ 8 — BLOCKING gate)
         env:
           DARKBLOOM_TESTBED_KV_BACKEND: paged
@@ -168,40 +185,11 @@ jobs:
             -run 'TestIntegration|TestProfile' \
             -skip '^TestIntegrationExactCacheRouting$'
 
-      # EXPECTED RED — because of the FIXTURE, not because of the default.
-      # This test runs gemma-4-e2b-it-4bit, and e2b is the one checkpoint
-      # where paged ADOPTION is the inexact arm: an adopted paged slot
-      # answers differently from its own cold run. e2b appears zero times
-      # in the production catalog -- on the two models we do serve, paged
-      # adoption is the EXACT arm and contiguous is the one that diverges.
-      #
-      # STILL RED AFTER THE v0.8.1 FLIP, and deliberately unchanged. The
-      # v0.8.0 comment here predicted this: "promote back to blocking when
-      # the fixture stops being the exception -- NOT on any further `.auto`
-      # change." This lane pins DARKBLOOM_TESTBED_KV_BACKEND=paged
-      # EXPLICITLY, so it never read the default in the first place; it
-      # still runs e2b on paged and still hits the one adoption path that
-      # diverges. `.auto` moving to contiguous changes what the FLEET
-      # serves, not what this lane measures.
-      #
-      # (The v0.8.1 contiguous prefix-cache gate does not reach it either:
-      # that gate skips cache construction only on a RESOLVED-contiguous
-      # slot, and this lane resolves paged.)
-      #
-      # EXPECTED RED until the e2b paged adoption path is fixed or this
-      # fixture moves to a served model. Kept, pinned, and visible rather
-      # than removed: the red IS the finding, and unpinning it would
-      # recreate the "gate that cannot fail" pattern this release fixed
-      # four separate times.
-      #
-      # ISOLATED in its own step (v0.8.0 gate audit) so `continue-on-error`
-      # covers exactly the one expected-red test instead of the entire paged
-      # lane it used to blanket. No DARKBLOOM_TESTBED_EXPECT_KV_BACKEND here:
-      # the expectation pre-warms every slot at suite start, and this test's
-      # cold-vs-adopted routing semantics are exactly what a pre-warm would
-      # perturb — its posture is already pinned by the explicit paged TOML.
-      - name: Run exact-cache routing (paged @ 8 — expected red, informational)
-        continue-on-error: true
+      # Use the same pinned e2b artifact and assert exact cached output. The
+      # fixture explicitly enables SSD caching and establishes repeat demand
+      # before requiring a donation. No pre-warm assertion here: the test owns
+      # loading order, while the explicit paged TOML keeps the backend pinned.
+      - name: Run exact-cache routing (paged @ 8 — BLOCKING gate)
         env:
           DARKBLOOM_TESTBED_KV_BACKEND: paged
           DARKBLOOM_TESTBED_MAX_CONCURRENT: "8"
@@ -214,7 +202,7 @@ jobs:
                  "the kill switch degrades paged silently and voids this lane"
             exit 1
           fi
-          echo "Expected-red fixture lane: e2b paged adoption is the known inexact arm."
+          echo "Exact-cache gate: cold, donation, reuse, isolation and recovery must pass."
           go test ./e2e/ -count=1 -v -timeout 15m -p=1 \
             -run '^TestIntegrationExactCacheRouting$'
 

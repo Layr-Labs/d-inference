@@ -1,4 +1,8 @@
 import Foundation
+import Hummingbird
+import HummingbirdTesting
+import NIOCore
+import NIOFoundationCompat
 import MLXLMServer
 import ProviderCoreFoundation
 import XCTest
@@ -41,7 +45,7 @@ final class MiMoV26ManagedAudioProviderTests: XCTestCase {
             additionalSystemReserveBytes:4 << 30),maximumSidecarReservationBytes:4 << 30,
             additionalSystemReserveBytes:4 << 30)
     }
-    private func metadataLoad() throws -> (URL,MiMoV26ServingLoad) {
+    private func metadataLoad(ordinaryBudget: GlobalKVCacheBudget? = nil) throws -> (URL,MiMoV26ServingLoad) {
         try MiMoTestPrerequisites.requireOptIn("MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS")
         let path = try XCTUnwrap(ProcessInfo.processInfo.environment["MIMO_V26_MANAGED_AUDIO_FIXTURE_ROOT"])
         let root = URL(fileURLWithPath:path)
@@ -50,17 +54,22 @@ final class MiMoV26ManagedAudioProviderTests: XCTestCase {
         guard config.hiddenSize <= 64, config.numHiddenLayers <= 4, config.vocabularySize > 151674 else {
             throw Failure.inputRequired // never accidentally load the full target
         }
-        let load = try XCTUnwrap(MiMoV26ServingLoad.inspect(directory:root,decodedAudioPolicy:policy()))
+        let load: MiMoV26ServingLoad
+        if let ordinaryBudget {
+            load = try XCTUnwrap(MiMoV26OrdinaryServingPolicy.inspect(directory:root,budget:ordinaryBudget))
+        } else {
+            load = try XCTUnwrap(MiMoV26ServingLoad.inspect(directory:root,decodedAudioPolicy:policy()))
+        }
         guard load.plan.bundlePlan.tensorBytes <= 128 << 20 else { throw Failure.inputRequired }
         return (root,load)
     }
-    private func loaded() async throws -> Loaded {
+    private func loaded(ordinaryPolicy: Bool = false) async throws -> Loaded {
         try MiMoTestPrerequisites.requireOptIn("MIMO_V26_SERIAL_NATIVE_TESTS")
-        let (root,load) = try metadataLoad(), registry = MiMoV26NativeLoadRegistry()
+        // Real allocator/OS observations, including the production activation floor.
+        let budget = ordinaryPolicy ? GlobalKVCacheBudget() : GlobalKVCacheBudget(configReserveBytes:4 << 30)
+        let (root,load) = try metadataLoad(ordinaryBudget:ordinaryPolicy ? budget : nil)
+        let registry = MiMoV26NativeLoadRegistry()
         registries.append(registry)
-        // Real allocator/OS reader and ordinary floors. No synthetic usage
-        // admission or activation/system reserve reduction for native work.
-        let budget = GlobalKVCacheBudget(configReserveBytes:4 << 30)
         try load.claim(budget:budget,lifecycle:registry.openLifecycle(),registry:registry)
         let container = try await load.load()
         return .init(root:root,load:load,transaction:try XCTUnwrap(load.transaction),
@@ -68,8 +77,8 @@ final class MiMoV26ManagedAudioProviderTests: XCTestCase {
             tokenizer:await container.tokenizerHandle(modelType:"mimo_v2",directory:root),
             sizing:await container.sizing(modelPath:root,defaultMaxTokens:2))
     }
-    private func published() async throws -> (Loaded,ProviderEngineBundle,EngineV2) {
-        let value = try await loaded()
+    private func published(ordinaryPolicy: Bool = false) async throws -> (Loaded,ProviderEngineBundle,EngineV2) {
+        let value = try await loaded(ordinaryPolicy:ordinaryPolicy)
         let env = ["DARKBLOOM_PREFIX_CACHE":"0","DARKBLOOM_PREFIX_CACHE_MEMORY":"0",
             PrefillDeadlineMode.environmentKey:PrefillDeadlineMode.enforce.rawValue,
             EngineV2Factory.maxPartialPrefillsKey:"1"]
@@ -78,7 +87,7 @@ final class MiMoV26ManagedAudioProviderTests: XCTestCase {
             isVLM:false,modelDirectory:value.root,container:value.container,specDecPreparation:intent)
         let bundle = try await EngineV2SlotFactory.makeProductionBundle(modelId:"audio-fixture",modelType:"mimo_v2",
             isVLM:false,modelDirectory:value.root,container:value.container,tokenizer:value.tokenizer,
-            sizing:value.sizing,kvBytesCapacity:64 << 20,maxConcurrentRequests:1,kvBudget:value.budget,
+            sizing:value.sizing,kvBytesCapacity:2 << 30,maxConcurrentRequests:1,kvBudget:value.budget,
             kvBackendConfig:"contiguous",prefillDeadlineMode:.enforce,specDecPreparation:intent,
             preparedModel:prepared,environment:env,startServingTelemetry:false)
         _ = try await value.load.sealConstructionForPublication()
@@ -182,6 +191,89 @@ final class MiMoV26ManagedAudioProviderTests: XCTestCase {
     }
 
     #if DEBUG
+    func testNativeAudioReleaseAcceptsOpenRouterPCM8WAVThroughAuthenticatedHTTP() async throws {
+        func u16(_ n: UInt16) -> [UInt8] { [UInt8(truncatingIfNeeded:n),UInt8(truncatingIfNeeded:n >> 8)] }
+        func u32(_ n: UInt32) -> [UInt8] { (0..<4).map { UInt8(truncatingIfNeeded:n >> ($0 * 8)) } }
+        // Same 22.05 kHz, unsigned PCM8, mono and 47048 samples as the
+        // OpenRouter failure. Use synthetic samples, never user recordings.
+        let samples = (0..<47048).map { UInt8(128 + Int(40 * sin(Double($0) * 0.025))) }
+        let fmt = u16(1) + u16(1) + u32(22050) + u32(22050) + u16(1) + u16(8)
+        let waveBody = Array("WAVEfmt ".utf8) + u32(16) + fmt + Array("data".utf8) + u32(UInt32(samples.count)) + samples
+        let wave = Data(Array("RIFF".utf8) + u32(UInt32(waveBody.count)) + waveBody)
+        try await assertNativeHTTPMedia([
+            ["type":"text","text":"What do you hear in this audio?"],
+            ["type":"input_audio","input_audio":["format":"wav","data":wave.base64EncodedString()]]])
+    }
+
+    func testNativeAudioReleaseAcceptsOpenRouterAACVideoThroughAuthenticatedHTTP() async throws {
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS")
+        let path = try XCTUnwrap(ProcessInfo.processInfo.environment["MIMO_V26_MANAGED_AAC_VIDEO_FIXTURE"])
+        let video = try Data(contentsOf:URL(fileURLWithPath:path))
+        XCTAssertEqual(video.count,6934922)
+        XCTAssertEqual(MiMoConsumerFixture.sha(video),"dc11648bd3546cd0a37ecc1077ccc426d42c409fe4822ece0354eb250804431e")
+        try await assertNativeHTTPMedia([
+            ["type":"text","text":"What is shown in this video?"],
+            ["type":"video_url","video_url":["url":"data:video/mp4;base64," + video.base64EncodedString()]]])
+    }
+
+    private func assertNativeHTTPMedia(_ content: [[String:Any]]) async throws {
+        @Sendable func phase(_ message: String) {
+            FileHandle.standardError.write(Data(("MiMo audio qualification: " + message + "\n").utf8))
+        }
+        phase("loading genuine codec with ordinary policy")
+        let (value,bundle,actual) = try await published(ordinaryPolicy:true)
+        phase("native engine published")
+        let binding = try await bundle.bridge.nativeMiMoDecodedAudioBinding()
+        XCTAssertTrue(binding.load === value.load)
+        let before = actual.stepCount
+        let body = try JSONSerialization.data(withJSONObject:[
+            "model":"audio-fixture","stream":true,"stream_options":["include_usage":true],
+            "enable_thinking":false,"temperature":0,"max_tokens":3,
+            "messages":[["role":"user","content":content]]])
+        let lease = NativeLocalConsumerLease()
+        let app = makeLocalInferenceApplication(config:.init(host:"127.0.0.1",port:0,authToken:"audio-test-token"),
+            defaultMaxTokens:3,acquire:{ _ in
+                .init(tokenizer:value.tokenizer,
+                    releaseToken:.init(release:{ _ in },modelId:"audio-fixture",nativeConsumerLease:lease),
+                    modelType:"mimo_v2",container:value.container.autoregressive,isVLM:false,engineV2Bridge:bundle.bridge)
+            },tokenizerProvider:{ _ in .init(tokenizer:value.tokenizer,modelType:"mimo_v2") },
+            availableModels:{ ["audio-fixture"] },mtpSlots:{ [] },
+            modelTypeProvider:{ _ in "mimo_v2" })
+        phase("sending authenticated media")
+        try await app.test(.router) { client in
+            try await client.execute(uri:"/v1/chat/completions",method:.post,
+                headers:[.contentType:"application/json",.authorization:"Bearer audio-test-token"],
+                body:ByteBuffer(bytes:body)) { response in
+                let text = String(buffer:response.body)
+                phase("HTTP status " + String(response.status.code))
+                XCTAssertEqual(response.status,.ok,text)
+                XCTAssertTrue(text.contains("data: [DONE]"))
+                var generated = 0
+                for line in text.split(separator:"\n") where line.hasPrefix("data: {") {
+                    let object = try XCTUnwrap(JSONSerialization.jsonObject(with:Data(line.dropFirst(6).utf8)) as? [String:Any])
+                    XCTAssertNil(object["error"])
+                    if let usage = object["usage"] as? [String:Any] {
+                        generated = max(generated,usage["completion_tokens"] as? Int ?? 0)
+                    }
+                }
+                XCTAssertGreaterThan(generated,0)
+            }
+        }
+        phase("HTTP stream finished; joining owner")
+        if lease.snapshot().phase == .awaitingBinding {
+            _ = try lease.abandonUnstartedHandoff()
+        }
+        await lease.joinFromOutside()
+        phase("owner joined")
+        XCTAssertGreaterThan(actual.stepCount,before)
+        XCTAssertEqual(lease.snapshot().phase,.completed)
+        XCTAssertEqual(value.transaction.managedMediaReservationCountForTesting,0)
+        XCTAssertNil(actual.nativeCompletionFault)
+        let receipt = try await retire(value)
+        XCTAssertEqual(receipt.audioSessionID,binding.receipt.request.sessionID)
+        XCTAssertEqual(value.budget.processLedger.snapshot().chargedBytes,0)
+    }
+
     func testChatAndResponsesRouteEncodedAudioThroughActualNativeScheduler() async throws {
         let (value, bundle, actual) = try await published()
         let audio = try await bundle.bridge.nativeMiMoDecodedAudioBinding()

@@ -46,8 +46,13 @@ pub(crate) fn additional_context(
     let raw_effort = effort(body.get("reasoning_effort"))?;
     let kwargs = match body.get("chat_template_kwargs") {
         None => None,
-        Some(Value::Object(values)) if values.keys().all(|key| key == "enable_thinking") => {
-            boolean(values.get("enable_thinking"))?
+        Some(Value::Object(values))
+            if values
+                .keys()
+                .all(|key| key == "enable_thinking" || key == "thinking") =>
+        {
+            let alias = boolean(values.get("thinking"))?;
+            boolean(values.get("enable_thinking"))?.or(alias)
         }
         _ => return Err(NormalizeError::InvalidMessages),
     };

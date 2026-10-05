@@ -1,6 +1,6 @@
 # Cache-aware routing: activation, ramp and rollback
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-04
 
 How to turn provider-confirmed prefix-cache routing on for the production
 coordinator, widen its activation bounds one at a time, and turn it off again.
@@ -39,7 +39,7 @@ that local provider setting.
 
 The mode remains global, and `PERCENT` samples a deterministic cohort keyed on
 account + resolved model + provider-bound body (`cacheActivationCohort`,
-`coordinator/registry/cache_activation.go`). Within the admitted artifact subset,
+`coordinator/internal/registry/cacheactivation/gate.go`). Within the admitted artifact subset,
 the same request from the same account remains in or out of the cohort.
 
 ## Prerequisites
@@ -78,9 +78,9 @@ the same request from the same account remains in or out of the cohort.
   `.preload.ready` and `.preload.contract_count` are subset diagnostics, not
   proof of a particular contract or a native KV hit.
 - Datadog open on the `exact_cache.*` gauges
-  (`emitExactCacheDDGauges`, `coordinator/api/exact_cache_metrics.go`) and the
+  (`EmitExactCacheDDGauges`, `coordinator/api/inference/exact_cache_metrics.go`) and the
   `routing.cache_selection_terminal`, `routing.cache_selection_precision` and
-  `routing.cache_selection_discount_ms` series (`coordinator/api/provider.go`).
+  `routing.cache_selection_discount_ms` series (`coordinator/api/provider/`).
 
 ## Steps
 
@@ -144,7 +144,7 @@ the same request from the same account remains in or out of the cohort.
    percentage is a deterministic per-request cohort over account, resolved
    model and provider-bound body, the QPS cap bounds sidecar planning; neither
    rejects or delays ordinary inference (`cacheActivationGate`,
-   `coordinator/registry/cache_activation.go`). Take a root-only backup, then
+   `coordinator/internal/registry/cacheactivation/gate.go`). Take a root-only backup, then
    edit the three lines in place:
 
    ```bash
@@ -172,7 +172,7 @@ the same request from the same account remains in or out of the cohort.
    → "Refresh the env file" and "Swap", with the currently approved image. On
    boot the process logs `provider-confirmed cache routing configured` with
    `mode`, `activation_percent`, `max_plan_qps`, `ttl`, `max_holders`,
-   `max_discount_ms` and `max_cost_fraction` (`coordinator/cmd/coordinator/main.go`);
+   `max_discount_ms` and `max_cost_fraction` (`coordinator/app/registry.go`);
    `null` means no optional clipping beyond avoidable prefill work. A rejected configuration logs `cache routing configuration rejected` and
    exits before listening. With `EIGENINFERENCE_CACHE_ROUTING_PERSIST` on (the
    default), boot also logs `cache routing persistence restored` with parked
@@ -374,7 +374,7 @@ curl -fsS localhost:8080/v1/cache/status | jq -e \
 
 Adjust the two numbers to the bounds you set. Then, over the observation
 window (fields from `CacheRoutingActivationStatus`,
-`coordinator/registry/cache_activation.go`, and `CacheRoutingLifecycleStatus`,
+`coordinator/internal/registry/cacheactivation/gate.go`, and `CacheRoutingLifecycleStatus`,
 `coordinator/registry/cache_routing.go`):
 
 - `.activation.evaluated` climbs; `.activation.sampled_in` tracks the

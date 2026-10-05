@@ -1,6 +1,6 @@
 # Data flow: one request end to end
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-04
 
 A consumer request travels consumer → coordinator → provider → coordinator → consumer. This page shows that journey once — as a sequence diagram and a stage table naming the code that owns each step — for anyone tracing a request through the coordinator.
 
@@ -25,7 +25,7 @@ sequenceDiagram
     K->>K: parseInferencePrelude, shape checks, traits, tool preflight
     K->>K: resolveRequestedModel (alias → build)
     K->>K: reserveInferenceBalance (worst-case hold)
-    K->>K: runInferenceAdmission, planCacheRoute
+    K->>K: Admission.Run, planCacheRoute
     K->>D: dispatchState.run
     D->>D: select provider from the scheduler plan (routing.md)
     D->>D: e2e.GenerateSessionKeys / e2e.Encrypt
@@ -49,46 +49,46 @@ Two things the diagram makes visible. First, the consumer receives no bytes unti
 
 | # | Stage | What happens | Owning symbol |
 |---|---|---|---|
-| 1 | Ingress | HTTP request hits the mux; `X-Request-ID` is honoured or minted; global body ceiling [`maxRequestBodyBytes`](../reference/api-contracts.md#limits-and-validation) | `loggingMiddleware`, `bodyLimitMiddleware` (`coordinator/api/server.go`) |
-| 2 | Drain gate | While draining, new inference is refused with 429 `rate_limit_exceeded` and a fixed [`Retry-After`](../reference/api-contracts.md#timeouts-and-constants) (`coordinatorDrainRetryAfter`) | `drainGate` (`coordinator/api/drain.go`) |
-| 3 | Authenticate | Bearer resolved to an API key, Privy user, or admin; key lookups cached for [`apiKeyCacheTTL`](../reference/api-contracts.md#timeouts-and-constants) | `requireAuth`, `extractBearerToken` (`coordinator/api/server.go`) |
-| 4 | Rate limit | Per-key `rpm_limit`, then the account limiter; 429 with `Retry-After` | `rateLimitConsumer`, `applyKeyRPMLimit` (`coordinator/api/server.go`) |
-| 5 | Unseal (optional) | `application/eigeninference-sealed+json` bodies are decrypted; the response will be sealed per event | `sealedTransport` (`coordinator/api/sender_encryption.go`); [`security/encryption.md`](security/encryption.md) |
-| 6 | Parse and validate | Inference body cap [`maxInferenceBodyBytes`](../reference/api-contracts.md#limits-and-validation), tool-schema normalisation, `model` required, key allow-list, `n == 1`, tool-choice and vision rules | `parseInferencePrelude` (`coordinator/api/inference_preprocess.go`), `validateToolConstraintPolicy` (`coordinator/api/tool_constraints.go`), `visionToolsFailFast` |
-| 7 | Resolve model | Alias → concrete build; the response will still echo the alias | `resolveRequestedModel` (`coordinator/api/consumer.go`); [`model-registry.md`](model-registry.md) |
-| 8 | Deadline and shedding | First-content deadline computed from the prompt size; rejecting models shed with 429 | `FirstContentDeadline`, `shedIfModelRejected` (`coordinator/api/consumer.go`) |
-| 9 | Token-rate admission | Input/output tokens per minute | `applyTokenRateLimitWithAdmission` (`coordinator/api/server.go`) |
-| 10 | Reserve funds | Worst-case cost held on the account ledger; 402 when it cannot be | `reserveInferenceBalance` (`coordinator/api/inference_admission.go`); [`billing.md`](billing.md) |
-| 11 | Fetch media | Remote `image_url` parts fetched and inlined; billed as media | `resolveRemoteMedia` (`coordinator/api/media_resolve.go`) |
-| 12 | Capacity admission | Is there an eligible provider that can accept this prompt now? 429/503/413 otherwise | `runInferenceAdmission` (`coordinator/api/inference_admission.go`) |
-| 13 | Plan | Cache-aware route plan for the prompt prefix | `planCacheRoute` (`coordinator/api/cache_planning.go`); [`cache-aware-routing.md`](cache-aware-routing.md) |
-| 14 | **Select provider** | Lowest-estimated-cost candidate from the request-local plan, with bounded alternatives for failover | `dispatchPrimary` → `registry.Queue` (`coordinator/api/dispatch.go`); scoring in [`routing.md`](routing.md) |
+| 1 | Ingress | HTTP request hits the mux; `X-Request-ID` is honoured or minted; global body ceiling [`maxRequestBodyBytes`](../reference/api-contracts.md#limits-and-validation) | `loggingMiddleware`, `bodyLimitMiddleware` (`coordinator/internal/api/middleware/middleware.go`) |
+| 2 | Drain gate | While draining, new inference is refused with 429 `rate_limit_exceeded` and a fixed [`Retry-After`](../reference/api-contracts.md#timeouts-and-constants) (`coordinatorDrainRetryAfter`) | `DrainGate` (`coordinator/api/operations/drain.go`) |
+| 3 | Authenticate | Bearer resolved to an API key, Privy user, or admin; key lookups cached for [`apiKeyCacheTTL`](../reference/api-contracts.md#timeouts-and-constants) | `RequireAuth`, `ExtractBearerToken` (`coordinator/api/access/auth.go`) |
+| 4 | Rate limit | Per-key `rpm_limit`, then the account limiter; 429 with `Retry-After` | `RateLimitConsumer`, `applyKeyRPMLimit` (`coordinator/api/access/rate_limits.go`) |
+| 5 | Unseal (optional) | `application/eigeninference-sealed+json` bodies are decrypted; the response will be sealed per event | `SealedTransport` (`coordinator/api/inference/sender_encryption.go`); [`security/encryption.md`](security/encryption.md) |
+| 6 | Parse and validate | Inference body cap [`maxInferenceBodyBytes`](../reference/api-contracts.md#limits-and-validation), tool-schema normalisation, `model` required, key allow-list, `n == 1`, tool-choice and vision rules | `parseInferencePrelude` (`coordinator/api/inference/inference_preprocess.go`), `ValidateToolConstraintPolicy` (`coordinator/api/inference/request/tool_constraints.go`), `visionToolsFailFast` |
+| 7 | Resolve model | Alias → concrete build; the response will still echo the alias | `resolveRequestedModel` (`coordinator/api/inference/consumer.go`); [`model-registry.md`](model-registry.md) |
+| 8 | Deadline and shedding | First-content deadline computed from the prompt size; rejecting models shed with 429 | `FirstContentDeadline`, `shedIfModelRejected` (`coordinator/api/inference/consumer.go`) |
+| 9 | Token-rate admission | Input/output tokens per minute | `applyTokenRateLimitWithAdmission` (`coordinator/api/inference/configuration.go`) |
+| 10 | Reserve funds | Worst-case cost held on the account ledger; 402 when it cannot be | `reserveInferenceBalance` (`coordinator/api/inference/inference_balance.go`); [`billing.md`](billing.md) |
+| 11 | Fetch media | Remote `image_url` parts fetched and inlined; billed as media | `Bridge.Resolve` (`coordinator/internal/inference/media/media_resolve.go`), bound by `coordinator/api/inference/media_bridge.go` |
+| 12 | Capacity admission | Is there an eligible provider that can accept this prompt now? 429/503/413 otherwise | `Admission.Run` (`coordinator/api/inference/inference_admission.go`) |
+| 13 | Plan | Cache-aware route plan for the prompt prefix | `planPromptRoute` (`coordinator/api/inference/prompt_work.go`) through `CachePlanner.PlanResult` (`coordinator/internal/inference/routeplan/cache_planning.go`); [`cache-aware-routing.md`](cache-aware-routing.md) |
+| 14 | **Select provider** | Lowest-estimated-cost candidate from the request-local plan, with bounded alternatives for failover | `dispatchPrimary` → `registry.Queue` (`coordinator/api/inference/dispatch.go`); scoring in [`routing.md`](routing.md) |
 | 15 | Encrypt | Fresh session keys; the job body is sealed to the provider's public key | `e2e.GenerateSessionKeys`, `e2e.Encrypt` (`coordinator/internal/e2e/e2e.go`), called from `dispatchPrimary` |
-| 16 | Send | `inference_request` over the provider WebSocket | `coordinator/api/dispatch.go`, message types in `coordinator/protocol/messages.go` |
+| 16 | Send | `inference_request` over the provider WebSocket | `coordinator/api/inference/dispatch.go`, message types in `coordinator/protocol/messages.go` |
 | 17 | **Provider executes** | Decrypts, loads or reuses the model, streams `inference_response_chunk`, ends with `inference_complete` or `inference_error` | [`inference.md`](inference.md), [`components/provider.md`](components/provider.md) |
-| 18 | Wait for first content | Chunks buffered ([`chunkBufferSize`](../reference/api-contracts.md#timeouts-and-constants)); a speculative backup may race; failover on error or deadline | `waitFirstChunk`, `runSpeculative`, `runRace`, `shouldStopFailover` (`coordinator/api/dispatch.go`) |
-| 19 | Commit | Status, headers and the first frame are written; from here the status cannot change | `commitFirstContent`, `writeCommittedResponse` (`coordinator/api/dispatch.go`), `writeSSEResponseHeader` (`coordinator/api/sse_response.go`), `writeCommittedProviderHeaders` (`coordinator/api/response_metadata.go`) |
-| 20 | Relay | Each chunk normalised and forwarded as one SSE event; usage/finish frames held to the end; single `[DONE]` | `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consumer_stream.go`); `normalizeSSEChunk` (`coordinator/api/sse_normalize.go`); `stripSSEDoneEvents` (`coordinator/api/sse_events.go`) |
-| 21 | Settle | Charge the account from provider-reported usage, record usage against the alias, credit the provider | `handleCompleteAt` → `claimSettlement`, `ledger.Charge`, `store.RecordUsage`, `store.CreditProviderAccount` (`coordinator/api/provider.go`); [`billing.md`](billing.md) |
-| 22 | Client gone | Disconnect before commit records 499 and sends `cancel` to the provider | `emitClientGone` (`coordinator/api/dispatch.go`), `sendProviderCancel` (`coordinator/api/consumer.go`) |
+| 18 | Wait for first content | Chunks buffered ([`chunkBufferSize`](../reference/api-contracts.md#timeouts-and-constants)); a speculative backup may race; failover on error or deadline | `waitFirstChunk`, `runSpeculative`, `runRace`, `shouldStopFailover` (`coordinator/api/inference/dispatch.go`) |
+| 19 | Commit | Status, headers and the first frame are written; from here the status cannot change | `commitFirstContent`, `writeCommittedResponse` (`coordinator/api/inference/dispatch.go`), `WriteSSEResponseHeader` (`coordinator/api/inference/response/sse_response.go`), `WriteCommittedProviderHeaders` (`coordinator/api/inference/response/response_metadata.go`) |
+| 20 | Relay | Each chunk normalised and forwarded as one SSE event; usage/finish frames held to the end; single `[DONE]` | `handleStreamingResponseWithFirstChunkAndError` (`coordinator/internal/inference/relay/consumer_stream.go`); `NormalizeSSEChunk` (`coordinator/internal/inference/sse/sse_normalize.go`); `stripSSEDoneEvents` (`coordinator/api/inference/response/sse_events.go`) |
+| 21 | Settle | Charge the account from provider-reported usage, record usage against the alias, credit the provider | `HandleCompleteAt` → `claimSettlement`, `ledger.Charge`, `store.RecordUsage`, `store.CreditProviderAccount` (`coordinator/api/provider/`); [`billing.md`](billing.md) |
+| 22 | Client gone | Disconnect before commit records 499 and sends `cancel` to the provider | `emitClientGone` (`coordinator/api/inference/dispatch.go`), `sendProviderCancel` (`coordinator/api/inference/consumer.go`) |
 
 The platform fee applied at stage 21 is stated once, in [`billing.md#invariants`](billing.md#invariants).
 
 ### What the consumer can observe
 
-- **Timing.** `X-Timing` is a JSON object of microsecond segments (`parse_us`, `reserve_us`, `media_fetch_us`, `route_us`, `queue_us`, `encrypt_us`, `dispatch_us`, `provider_us`, …) computed from the stamps taken at stages 6, 10, 11, 14, 16 and 19 (`requestTimingDetails`, `coordinator/api/response_metadata.go`). With metadata details enabled the same object appears as `metadata.timing`.
+- **Timing.** `X-Timing` is a JSON object of microsecond segments (`parse_us`, `reserve_us`, `media_fetch_us`, `route_us`, `queue_us`, `encrypt_us`, `dispatch_us`, `provider_us`, …) computed from the stamps taken at stages 6, 10, 11, 14, 16 and 19 (`RequestTimingDetails`, `coordinator/api/inference/response/response_metadata.go`). With metadata details enabled the same object appears as `metadata.timing`.
 - **Provenance.** `X-Provider-*` headers and `metadata` name the provider, its attestation status and hardware; `se_signature` / `response_hash` in the body let the client verify the response — see [`../consumer/verification.md`](../consumer/verification.md).
 - **Correlation.** `X-Request-ID` identifies the HTTP request; `X-Inference-Job-ID` identifies the coordinator job, which can differ across retries.
 
 ## Invariants
 
-1. **Nothing reaches the consumer before first content.** Status, headers and body are written together at the commit (stage 19), so every earlier failure is an ordinary HTTP error with a real status — `commitFirstContent`, `writeCommittedResponse` (`coordinator/api/dispatch.go`).
-2. **The provider never talks to the consumer.** Both legs terminate at the coordinator, which is what lets it hold the money, the identity and the encryption boundary — `dispatchPrimary` (`coordinator/api/dispatch.go`), provider socket in `coordinator/api/provider.go`.
-3. **Funds are reserved before dispatch and settled from provider-reported usage** — `reserveInferenceBalance` (`coordinator/api/inference_admission.go`), `handleCompleteAt` (`coordinator/api/provider.go`).
+1. **Nothing reaches the consumer before first content.** Status, headers and body are written together at the commit (stage 19), so every earlier failure is an ordinary HTTP error with a real status — `commitFirstContent`, `writeCommittedResponse` (`coordinator/api/inference/dispatch.go`).
+2. **The provider never talks to the consumer.** Both legs terminate at the coordinator, which is what lets it hold the money, the identity and the encryption boundary — `dispatchPrimary` (`coordinator/api/inference/dispatch.go`), provider socket in `coordinator/api/provider/`.
+3. **Funds are reserved before dispatch and settled from provider-reported usage** — `reserveInferenceBalance` (`coordinator/api/inference/inference_balance.go`), `HandleCompleteAt` (`coordinator/api/inference/provider_inference.go`).
 4. **Every job body is sealed with fresh session keys to the provider's public key** — `e2e.GenerateSessionKeys`, `e2e.Encrypt` (`coordinator/internal/e2e/e2e.go`).
-5. **The response echoes the alias the client sent** even though the provider ran the concrete build — `resolveRequestedModel` (`coordinator/api/consumer.go`).
-6. **Once committed the status cannot change**; usage and finish frames are held to the end and exactly one `[DONE]` is written — `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consumer_stream.go`), `stripSSEDoneEvents` (`coordinator/api/sse_events.go`).
-7. **A client that leaves before commit cancels the job**: 499 is recorded and the provider receives `cancel` — `emitClientGone` (`coordinator/api/dispatch.go`), `sendProviderCancel` (`coordinator/api/consumer.go`).
+5. **The response echoes the alias the client sent** even though the provider ran the concrete build — `resolveRequestedModel` (`coordinator/api/inference/consumer.go`).
+6. **Once committed the status cannot change**; usage and finish frames are held to the end and exactly one `[DONE]` is written — `handleStreamingResponseWithFirstChunkAndError` (`coordinator/internal/inference/relay/consumer_stream.go`), `stripSSEDoneEvents` (`coordinator/api/inference/response/sse_events.go`).
+7. **A client that leaves before commit cancels the job**: 499 is recorded and the provider receives `cancel` — `emitClientGone` (`coordinator/api/inference/dispatch.go`), `sendProviderCancel` (`coordinator/api/inference/consumer.go`).
 
 ## Failure modes
 
@@ -96,31 +96,31 @@ Each row is the stage at which a request can end early and what the consumer see
 
 | Stage | Symptom | Owning symbol |
 |---|---|---|
-| 2 | 429 `rate_limit_exceeded` with the fixed drain `Retry-After` while the coordinator drains | `drainGate` (`coordinator/api/drain.go`) |
-| 4, 8, 9 | 429 with `Retry-After` from key/account rate limits, token-rate admission, or a model that is currently rejecting | `rateLimitConsumer`, `applyTokenRateLimitWithAdmission`, `shedIfModelRejected` |
+| 2 | 429 `rate_limit_exceeded` with the fixed drain `Retry-After` while the coordinator drains | `DrainGate` (`coordinator/api/operations/drain.go`) |
+| 4, 8, 9 | 429 with `Retry-After` from key/account rate limits, token-rate admission, or a model that is currently rejecting | `RateLimitConsumer`, `applyTokenRateLimitWithAdmission`, `shedIfModelRejected` |
 | 10 | 402 when the worst-case cost cannot be reserved — taxonomy in [`billing.md`](billing.md#payment-required-responses) | `reserveInferenceBalance` |
-| 12 | 429 / 503 / 413 when no eligible provider can accept the prompt now | `runInferenceAdmission` |
-| 18 | First-content deadline missed on every attempt → 429 with `Retry-After`; provider faults fail over to the next candidate, a speculative backup may win the race | `waitFirstChunk`, `runSpeculative`, `runRace`, `shouldStopFailover` (`coordinator/api/dispatch.go`) |
-| 20 | Provider fails after commit → in-band `error` event, status already 200 | `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consumer_stream.go`) |
+| 12 | 429 / 503 / 413 when no eligible provider can accept the prompt now | `Admission.Run` |
+| 18 | First-content deadline missed on every attempt → 429 with `Retry-After`; provider faults fail over to the next candidate, a speculative backup may win the race | `waitFirstChunk`, `runSpeculative`, `runRace`, `shouldStopFailover` (`coordinator/api/inference/dispatch.go`) |
+| 20 | Provider fails after commit → in-band `error` event, status already 200 | `handleStreamingResponseWithFirstChunkAndError` (`coordinator/internal/inference/relay/consumer_stream.go`) |
 | 22 | Client disconnects before commit → 499 in logs, `cancel` to the provider | `emitClientGone`, `sendProviderCancel` |
 
 ## Code map
 
 | Concern | File / symbol |
 |---|---|
-| Middleware chain, authentication, rate limits, token-rate admission | `coordinator/api/server.go` — `loggingMiddleware`, `bodyLimitMiddleware`, `requireAuth`, `rateLimitConsumer`, `applyTokenRateLimitWithAdmission` |
-| Drain gate | `coordinator/api/drain.go` — `drainGate` |
-| Sealed client transport | `coordinator/api/sender_encryption.go` — `sealedTransport` |
-| Prelude parsing and validation | `coordinator/api/inference_preprocess.go` — `parseInferencePrelude`; `coordinator/api/tool_constraints.go` — `validateToolConstraintPolicy` |
-| Model resolution, first-content deadline, cancel | `coordinator/api/consumer.go` — `resolveRequestedModel`, `FirstContentDeadline`, `shedIfModelRejected`, `sendProviderCancel` |
-| Response relay and SSE | `coordinator/api/consumer_stream.go` — `handleStreamingResponseWithFirstChunkAndError`; `coordinator/api/sse_normalize.go` — `normalizeSSEChunk`; `coordinator/api/sse_events.go` — `stripSSEDoneEvents` |
-| Reservation and capacity admission | `coordinator/api/inference_admission.go` — `reserveInferenceBalance`, `runInferenceAdmission` |
-| Remote media | `coordinator/api/media_resolve.go` — `resolveRemoteMedia` |
-| Cache route plan | `coordinator/api/cache_planning.go` — `planCacheRoute` |
-| Dispatch, speculative backup, commit, client-gone | `coordinator/api/dispatch.go` — `dispatchState.run`, `dispatchPrimary`, `waitFirstChunk`, `runSpeculative`, `runRace`, `commitFirstContent`, `writeCommittedResponse`, `emitClientGone`; `coordinator/api/sse_response.go` — `writeSSEResponseHeader`; `coordinator/api/response_metadata.go` — `writeCommittedProviderHeaders`, `requestTimingDetails` |
+| Middleware chain, authentication, rate limits, token-rate admission | `coordinator/internal/api/middleware/middleware.go` (`loggingMiddleware`, `bodyLimitMiddleware`); `coordinator/api/access/` (`RequireAuth`, `RateLimitConsumer`); `coordinator/api/inference/` (`applyTokenRateLimitWithAdmission`) |
+| Drain gate | `coordinator/api/operations/drain.go` — `DrainGate` |
+| Sealed client transport | `coordinator/api/inference/sender_encryption.go` — `SealedTransport` |
+| Prelude parsing and validation | `coordinator/api/inference/inference_preprocess.go` — `parseInferencePrelude`; `coordinator/api/inference/tool_constraints.go` — `ValidateToolConstraintPolicy` |
+| Model resolution, first-content deadline, cancel | `coordinator/api/inference/consumer.go` — `resolveRequestedModel`, `FirstContentDeadline`, `shedIfModelRejected`, `sendProviderCancel` |
+| Response relay and SSE | `coordinator/internal/inference/relay/consumer_stream.go` — `handleStreamingResponseWithFirstChunkAndError`; `coordinator/internal/inference/sse/sse_normalize.go` — `NormalizeSSEChunk`; `coordinator/api/inference/response/sse_events.go` — `stripSSEDoneEvents` |
+| Reservation and capacity admission | `coordinator/api/inference/inference_balance.go` — `reserveInferenceBalance`; `coordinator/api/inference/inference_admission.go` — `Admission.Run` |
+| Remote media | `coordinator/internal/inference/media/media_resolve.go` (`Bridge.Gate`, `Bridge.Resolve`); `coordinator/api/inference/media_bridge.go` binds accounting, self-route and deadline callbacks |
+| Cache route plan | `coordinator/internal/inference/routeplan/cache_planning.go` — `CachePlanner.PlanResult`; `coordinator/api/inference/prompt_work.go` — `planPromptRoute` |
+| Dispatch, speculative backup, commit, client-gone | `coordinator/api/inference/dispatch.go` — `dispatchState.run`, `dispatchPrimary`, `waitFirstChunk`, `runSpeculative`, `runRace`, `commitFirstContent`, `writeCommittedResponse`, `emitClientGone`; `coordinator/api/inference/response/sse_response.go` — `WriteSSEResponseHeader`; `coordinator/api/inference/response/response_metadata.go` — `WriteCommittedProviderHeaders`, `RequestTimingDetails` |
 | Per-request encryption | `coordinator/internal/e2e/e2e.go` — `GenerateSessionKeys`, `Encrypt` |
 | Wire messages | `coordinator/protocol/messages.go` |
-| Settlement | `coordinator/api/provider.go` — `handleCompleteAt`, `claimSettlement` |
+| Settlement | `coordinator/api/provider/` — `HandleCompleteAt`, `claimSettlement` |
 
 ## Related
 

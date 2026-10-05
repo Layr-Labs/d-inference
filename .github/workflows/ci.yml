@@ -280,6 +280,15 @@ jobs:
         uses: ./.github/actions/provider-ci-build
         with:
           lane: provider
+      # The provider lane builds with --enable-code-coverage. Every provider
+      # process after this step writes its own profile here, and the report
+      # step at the end of this job merges them.
+      - name: Collect provider coverage profiles
+        run: |
+          profiles="$RUNNER_TEMP/provider-profiles"
+          mkdir -p "$profiles"
+          echo "PROVIDER_COVERAGE_DIR=$profiles" >> "$GITHUB_ENV"
+          echo "LLVM_PROFILE_FILE=$profiles/%p-%m.profraw" >> "$GITHUB_ENV"
       - name: Test Qwen resources in a relocated app
         run: python3 scripts/test-qwen4-packaged-resources.py
       - name: Test profile inventory authentication in a terminal
@@ -385,6 +394,109 @@ jobs:
         if: ${{ !cancelled() }}
         timeout-minutes: 2
         run: ./scripts/test-install-atomic.sh
+      # Report-only. The test steps above keep their own exit codes, so a
+      # coverage failure here cannot hide or replace a test failure.
+      - name: Report provider coverage
+        id: provider-coverage
+        if: ${{ !cancelled() && steps.provider-unit-tests.outcome != 'skipped' }}
+        working-directory: provider-swift
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          profiles=("$PROVIDER_COVERAGE_DIR"/*.profraw)
+          if [ "${#profiles[@]}" -eq 0 ]; then
+            echo "::error::No provider coverage profiles in $PROVIDER_COVERAGE_DIR"
+            exit 1
+          fi
+          echo "Merging ${#profiles[@]} provider coverage profiles"
+          out="$RUNNER_TEMP/provider-coverage"
+          mkdir -p "$out"
+          xcrun llvm-profdata merge -sparse -o "$out/provider.profdata" "${profiles[@]}"
+          bin=$(swift build --show-bin-path)
+          # The test bundle holds the libraries and the executables the tests
+          # import; the executables are added so their own code also counts.
+          bundles=("$bin"/*.xctest)
+          if [ "${#bundles[@]}" -eq 0 ]; then
+            echo "::error::No test bundle in $bin"
+            exit 1
+          fi
+          binaries=()
+          for bundle in "${bundles[@]}"; do
+            binaries+=("$bundle/Contents/MacOS/$(basename "$bundle" .xctest)")
+          done
+          for tool in darkbloom darkbloom-fan-helper darkbloom-enclave darkbloom-publish; do
+            binaries+=("$bin/$tool")
+          done
+          # llvm-cov takes the first binary as an argument, the rest as -object.
+          args=("${binaries[0]}")
+          for binary in "${binaries[@]:1}"; do
+            args+=(-object "$binary")
+          done
+          args+=(-instr-profile "$out/provider.profdata"
+            -ignore-filename-regex '/(Tests|\.build|libs)/'
+            "$PWD/Sources")
+          xcrun llvm-cov report "${args[@]}" > "$out/provider-coverage.txt"
+          tail -n 1 "$out/provider-coverage.txt"
+          xcrun llvm-cov export -summary-only "${args[@]}" > "$out/provider-coverage.json"
+          # One row for the code that serves requests (the product), one each
+          # for the CLI and the benchmark harness, and the total of all files.
+          # Each value is read by its field name; a missing field or an empty
+          # row fails the step.
+          python3 - "$out/provider-coverage.json" "$PWD/Sources" \
+            > "$out/provider-coverage-summary.md" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1]))["data"][0]
+          root = sys.argv[2].rstrip("/") + "/"
+          product = ["ProviderCore", "ProviderCoreFoundation", "ProviderAppAttest", "DarkbloomFanCore"]
+          rows = {
+              "Provider (Swift) product": product,
+              "Provider CLI (`darkbloom`)": ["darkbloom"],
+              "Provider benchmark (`ProviderBenchmark`)": ["ProviderBenchmark"],
+          }
+          row_of = {target: name for name, targets in rows.items() for target in targets}
+          kinds = ("lines", "regions", "functions")
+          sums = {name: {k: [0, 0] for k in kinds} for name in rows}
+          seen = set()
+          for entry in data["files"]:
+              target = entry["filename"].removeprefix(root).split("/")[0]
+              seen.add(target)
+              if target in row_of:
+                  for k in kinds:
+                      sums[row_of[target]][k][0] += entry["summary"][k]["covered"]
+                      sums[row_of[target]][k][1] += entry["summary"][k]["count"]
+          sums["Provider (Swift) total"] = {k: [data["totals"][k]["covered"], data["totals"][k]["count"]] for k in kinds}
+          print("| Component | Statements or Lines | Regions or Branches | Functions | Target |")
+          print("|---|---|---|---|---|")
+          for name, s in sums.items():
+              if s["lines"][1] == 0:
+                  sys.exit(f"No lines for {name}")
+              lines, regions, functions = (f"{100 * c / n:.2f}%" for c, n in (s[k] for k in kinds))
+              print(f"| {name} | {lines} of {s['lines'][1]:,} lines | {regions} regions | {functions} | 80% (report-only) |")
+          product_names = [f"`{t}`" for t in product]
+          other = ", ".join(f"`{t}`" for t in sorted(seen.difference(row_of), key=str.lower))
+          print()
+          print(f"The product row counts the code that serves requests: {', '.join(product_names[:-1])} and {product_names[-1]}. "
+                f"The CLI and the benchmark harness have their own rows. The total counts every file in the report. These targets are only in the total: {other}.")
+          PY
+          cat "$out/provider-coverage-summary.md"
+          {
+            cat "$out/provider-coverage-summary.md"
+            echo
+            echo "Denominator: Swift lines and regions in \`provider-swift/Sources\`, from every provider test process in this job; the Provider SDK Tests and Provider Prompt Parity lanes run in other jobs and do not count."
+            echo
+            echo "Excluded: \`Tests/\`, \`.build/\` (dependencies and generated code), the \`libs/\` checkouts, and the one C++ file in \`ProviderMetallibControl\`, which is not instrumented; Swift has no branch counters, so branches are not reported."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload provider coverage report
+        if: ${{ !cancelled() && steps.provider-coverage.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: provider-coverage
+          path: |
+            ${{ runner.temp }}/provider-coverage/provider-coverage.txt
+            ${{ runner.temp }}/provider-coverage/provider-coverage.json
+            ${{ runner.temp }}/provider-coverage/provider-coverage-summary.md
+          if-no-files-found: error
+          retention-days: 14
 
   test-provider-sdk:
     name: Provider SDK Tests

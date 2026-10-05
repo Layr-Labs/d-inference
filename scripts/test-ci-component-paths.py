@@ -42,6 +42,7 @@ class ComponentPathsTests(unittest.TestCase):
             "coordinator/promptsidecar/Cargo.lock": {"coordinator", "provider", "sidecar", "integration", "benchmark"},
             "go.sum": {"coordinator", "provider", "sidecar", "integration", "benchmark"},
             "scripts/run-coordinator-tests.py": {"coordinator", "integration", "benchmark"},
+            "scripts/coordinator-statement-coverage.sh": {"coordinator", "integration", "benchmark"},
             "scripts/install-release-rust.sh": {"provider", "sidecar", "integration", "benchmark"},
             ".github/actions/provider-ci-build/action.yml": {"provider", "integration", "benchmark"},
             ".github/workflows/ci.yml": {"coordinator", "provider", "sidecar", "console"},

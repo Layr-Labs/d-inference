@@ -159,7 +159,7 @@
 
 ## Unreleased — CI and contributor workflow
 
-- Report coordinator statement coverage from the e2e tests as its own job-summary row, and keep the lane data as the `coordinator-e2e-coverage` artifact. The tests and their pass/fail rules do not change.
+- Report coordinator statement coverage from the e2e tests as its own job-summary row, and keep the lane data as the `coordinator-e2e-coverage` artifact. The e2e lanes instrument the production coordinator packages only, as the coordinator test runner does, and both coverage reports use `scripts/coordinator-statement-coverage.sh`. The tests and their pass/fail rules do not change.
 - Explicitly enable SSD caching for the exact-cache E2E development checkpoint and establish repeat demand before expecting a donation. The gate now requires exact cached output, account isolation and recovery to pass; CI no longer ignores its failure.
 - Set up Homebrew in the macOS integration and benchmark workflows with `scripts/setup-macos-homebrew.sh` instead of the `Homebrew/actions/setup-homebrew` action. The organization Actions policy does not allow that action, so both workflows stopped at startup. The script uses an installed `brew` or installs Homebrew from a pinned, checksum-verified installer.
 - Run provider unit, SDK and prompt-parity checks on independent workers with compatible build caches, retaining MiMo fixture preparation and isolated native gates.

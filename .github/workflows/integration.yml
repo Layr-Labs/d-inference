@@ -28,13 +28,6 @@ jobs:
     timeout-minutes: 75
     env:
       LC_ALL: en_US.UTF-8
-      # Statement coverage of the coordinator code that the e2e tests run.
-      # The testbed serves the coordinator in the test process
-      # (e2e/testbed/suite.go calls api.NewServer), so `go test -coverpkg`
-      # counts it. Each lane runs with `-covermode=set`: it stores 1 per block
-      # and is the cheapest mode, so the TestProfile latency checks see the
-      # least extra work.
-      E2E_COVER_PKG: github.com/eigeninference/d-inference/coordinator/...
       DARKBLOOM_REPO_ROOT: ${{ github.workspace }}
       DARKBLOOM_PROMPT_SIDECAR_BINARY: ${{ github.workspace }}/coordinator/promptsidecar/target/release/promptsidecar
       TESTBED_PROVIDER_CONFIG: debug
@@ -61,6 +54,20 @@ jobs:
       - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
         with:
           go-version-file: go.mod
+      # Statement coverage of the coordinator code that the e2e tests run.
+      # The testbed serves the coordinator in the test process
+      # (e2e/testbed/suite.go calls api.NewServer), so `go test -coverpkg`
+      # counts it. The package list leaves out the test-only `tests`,
+      # `testkit` and `testdb` packages, as scripts/run-coordinator-tests.py
+      # does. Each lane runs with `-covermode=set`: it stores 1 per block and
+      # is the cheapest mode, so the TestProfile latency checks see the least
+      # extra work.
+      - name: Select e2e coverage packages
+        run: |
+          set -euo pipefail
+          packages=$(go list ./coordinator/... | grep -Ev '/(tests|testkit|testdb)(/|$)' | paste -sd, -)
+          test -n "$packages"
+          echo "E2E_COVER_PKG=$packages" >> "$GITHUB_ENV"
 
       - name: Set up Homebrew
         run: ./scripts/setup-macos-homebrew.sh
@@ -321,27 +328,15 @@ jobs:
           fi
           merged="$root/e2e-coverage.out"
           go tool covdata textfmt -i="$(IFS=,; echo "${inputs[*]}")" -o "$merged"
-          scoped="$root/e2e-coverage-coordinator.out"
-          if ! grep -q '^github.com/eigeninference/d-inference/coordinator/' "$merged"; then
-            echo "e2e-coverage.out has no coordinator rows"
-            exit 1
-          fi
-          {
-            head -n 1 "$merged"
-            grep '^github.com/eigeninference/d-inference/coordinator/' "$merged"
-          } > "$scoped"
-          statements=$(go tool cover -func="$scoped" | awk '$1 == "total:" && $2 == "(statements)" {print $3}')
-          if ! [[ "$statements" =~ ^[0-9]+(\.[0-9]+)?%$ ]]; then
-            echo "Missing statement coverage: '$statements'"
-            exit 1
-          fi
+          statements=$(scripts/coordinator-statement-coverage.sh \
+            "$merged" "$root/e2e-coverage-coordinator.out")
           echo "Coordinator (Go) e2e statement coverage: $statements"
           {
             echo "| Component | Statements or Lines | Regions or Branches | Functions | Target |"
             echo "|---|---|---|---|---|"
             echo "| Coordinator (Go), e2e | $statements statements | not reported | not reported | none (report-only) |"
             echo
-            echo "Denominator: statements in the \`coordinator/...\` packages that the \`e2e\` test binary links. Packages it does not link (for example \`cmd/...\`) are not counted. Lanes merged: $lanes."
+            echo "Denominator: statements in the \`coordinator/...\` production packages that the \`e2e\` test binary links. The \`coordinator/tests/...\` packages and their helpers are not instrumented, and packages the binary does not link (for example \`cmd/...\`) are not counted. Lanes merged: $lanes."
           } >> "$GITHUB_STEP_SUMMARY"
           exit "$missing"
 

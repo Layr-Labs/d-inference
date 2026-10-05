@@ -137,27 +137,13 @@ jobs:
           fi
       - name: Report coverage
         run: |
-          set -o pipefail
-          # A profile with only its "mode:" line measured nothing.
-          if [ "$(wc -l < "$RUNNER_TEMP/coverage.out")" -le 1 ]; then
-            echo "coverage.out has no coverage data"
-            exit 1
-          fi
+          set -euo pipefail
           # The runner passes -coverpkg, so tests in coordinator/tests credit
           # the production packages they run. The profile also holds
           # e2e/testbed and a frozen docs evidence package. The reported
           # number counts coordinator packages only.
-          scoped="$RUNNER_TEMP/coverage-coordinator.out"
-          head -n 1 "$RUNNER_TEMP/coverage.out" > "$scoped"
-          if ! grep '^github.com/eigeninference/d-inference/coordinator/' "$RUNNER_TEMP/coverage.out" >> "$scoped"; then
-            echo "coverage.out has no coordinator rows"
-            exit 1
-          fi
-          statements=$(go tool cover -func="$scoped" | awk '$1 == "total:" && $2 == "(statements)" {print $3}')
-          if ! [[ "$statements" =~ ^[0-9]+(\.[0-9]+)?%$ ]]; then
-            echo "Missing statement coverage: '$statements'"
-            exit 1
-          fi
+          statements=$(scripts/coordinator-statement-coverage.sh \
+            "$RUNNER_TEMP/coverage.out" "$RUNNER_TEMP/coverage-coordinator.out")
           echo "Coordinator (Go) statement coverage: $statements"
           {
             echo "| Component | Statements or Lines | Regions or Branches | Functions | Target |"

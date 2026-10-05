@@ -1,0 +1,40 @@
+name: Component Changes
+
+on:
+  workflow_call:
+    outputs:
+      coordinator:
+        value: ${{ jobs.changes.outputs.coordinator }}
+      provider:
+        value: ${{ jobs.changes.outputs.provider }}
+      sidecar:
+        value: ${{ jobs.changes.outputs.sidecar }}
+      console:
+        value: ${{ jobs.changes.outputs.console }}
+      integration:
+        value: ${{ jobs.changes.outputs.integration }}
+      benchmark:
+        value: ${{ jobs.changes.outputs.benchmark }}
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    name: Detect Component Changes
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    outputs:
+      coordinator: ${{ steps.paths.outputs.coordinator }}
+      provider: ${{ steps.paths.outputs.provider }}
+      sidecar: ${{ steps.paths.outputs.sidecar }}
+      console: ${{ steps.paths.outputs.console }}
+      integration: ${{ steps.paths.outputs.integration }}
+      benchmark: ${{ steps.paths.outputs.benchmark }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Classify complete base-to-head Git diff
+        id: paths
+        run: python3 scripts/ci-component-paths.py

@@ -168,6 +168,21 @@ if [ "$global_payouts_enabled" = "true" ]; then
     done
 fi
 
+# Preserve the cutover while paused; never fall back to the Payments key.
+global_only=$(awk -F= '$1=="EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ONLY" { print $2 }' "$tmp")
+case "$global_only" in ""|true|false) ;; *) fail "STRIPE_GLOBAL_PAYOUTS_ONLY must be true or false" ;; esac
+if [ "$global_only" = true ]; then
+    for key in EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_SECRET_KEY EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_FINANCIAL_ACCOUNT EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_WEBHOOK_SECRET; do
+        if ! awk -F= -v key="$key" '$1 == key && length(substr($0, index($0, "=") + 1)) > 0 { found=1 } END { exit !found }' "$tmp"; then
+            fail "Global Payouts cutover requires $key even while paused"
+        fi
+    done
+    connect_webhooks=$(awk -F= '$1 ~ /^EIGENINFERENCE_STRIPE_CONNECT_(ACCOUNTS_)?WEBHOOK_SECRET$/ { print substr($0, index($0, "=") + 1) }' "$tmp")
+    if [ -n "$connect_webhooks" ] && ! awk -F= '$1=="EIGENINFERENCE_STRIPE_CONNECT_SECRET_KEY" && length($2)>0 { found=1 } END { exit !found }' "$tmp"; then
+        fail "retained Connect webhooks require EIGENINFERENCE_STRIPE_CONNECT_SECRET_KEY"
+    fi
+fi
+
 old_keys=$(mktemp "${TMPDIR:-/tmp}/darkbloom-env-old.XXXXXX")
 new_keys=$(mktemp "${TMPDIR:-/tmp}/darkbloom-env-new.XXXXXX")
 trap 'rm -f "$tmp" "$old_keys" "$new_keys"' EXIT

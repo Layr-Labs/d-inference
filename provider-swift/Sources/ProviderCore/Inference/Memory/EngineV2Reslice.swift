@@ -158,13 +158,17 @@ extension EngineV2KVSizing {
     /// (`grant − carve`) — a total that only covers the cache would leave
     /// the slot rejecting every request. Slots absent from the map (the
     /// newcomer and existing slots are floored on the live-KV grant.
+    /// `minimumGrantBytes` additionally preserves each native engine's fixed
+    /// request workspace, its admission watermark and the same minimum KV.
     static func resliceMeetsServiceabilityFloor(
         _ grants: [String: Int],
-        fixedCarveBytes: [String: Int] = [:]
+        fixedCarveBytes: [String: Int] = [:],
+        minimumGrantBytes: [String: Int] = [:]
     ) -> Bool {
         grants.allSatisfy { modelId, grant in
             let engineShare = grant - (fixedCarveBytes[modelId] ?? 0)
-            return UInt64(max(0, engineShare)) >= minimumServiceableGrantBytes
+            let floor = max(Int(minimumServiceableGrantBytes), minimumGrantBytes[modelId] ?? 0)
+            return engineShare >= floor
         }
     }
 }

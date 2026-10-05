@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"strings"
-	"sync"
+
+	metricseries "github.com/eigeninference/d-inference/coordinator/internal/datadog/series"
 )
 
 // HTTP metric submission. DogStatsD sends metrics over UDP to a local agent;
@@ -19,68 +19,6 @@ import (
 // appears, with divergent host tags); without an API key, DogStatsD is the
 // only leg. Histograms remain DogStatsD-only: their percentile aggregation
 // happens agent-side and isn't replicated here.
-
-// seriesBuffer accumulates metric points between flushes: gauges are
-// last-write-wins per (metric, tags) series; counters sum per series over the
-// flush interval — both matching what a local agent would submit.
-type seriesBuffer struct {
-	mu     sync.Mutex
-	gauges map[string]seriesPoint
-	counts map[string]seriesPoint
-}
-
-type seriesPoint struct {
-	metric string
-	tags   []string
-	value  float64
-	ts     int64
-}
-
-func newSeriesBuffer() *seriesBuffer {
-	return &seriesBuffer{
-		gauges: make(map[string]seriesPoint),
-		counts: make(map[string]seriesPoint),
-	}
-}
-
-func seriesKey(metric string, tags []string) string {
-	return metric + "|" + strings.Join(tags, ",")
-}
-
-func (b *seriesBuffer) setGauge(metric string, value float64, tags []string, ts int64) {
-	key := seriesKey(metric, tags)
-	b.mu.Lock()
-	b.gauges[key] = seriesPoint{metric: metric, tags: tags, value: value, ts: ts}
-	b.mu.Unlock()
-}
-
-func (b *seriesBuffer) addCount(metric string, value float64, tags []string, ts int64) {
-	key := seriesKey(metric, tags)
-	b.mu.Lock()
-	p, ok := b.counts[key]
-	if !ok {
-		p = seriesPoint{metric: metric, tags: tags}
-	}
-	p.value += value
-	p.ts = ts
-	b.counts[key] = p
-	b.mu.Unlock()
-}
-
-// drain returns and clears the buffered gauges and counts.
-func (b *seriesBuffer) drain() (gauges, counts []seriesPoint) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	for _, p := range b.gauges {
-		gauges = append(gauges, p)
-	}
-	for _, p := range b.counts {
-		counts = append(counts, p)
-	}
-	b.gauges = make(map[string]seriesPoint)
-	b.counts = make(map[string]seriesPoint)
-	return gauges, counts
-}
 
 // ddMetric is the v1 /series payload entry.
 type ddMetric struct {
@@ -99,17 +37,17 @@ func (c *Client) flushSeries() {
 	if c == nil || c.apiKey == "" || c.series == nil {
 		return
 	}
-	gauges, counts := c.series.drain()
+	gauges, counts := c.series.Drain()
 	if len(gauges)+len(counts) == 0 {
 		return
 	}
 
 	series := make([]ddMetric, 0, len(gauges)+len(counts))
-	emit := func(p seriesPoint, typ string, interval int64) {
-		tags := append(append([]string{}, c.metricsTags...), p.tags...)
+	emit := func(p metricseries.Point, typ string, interval int64) {
+		tags := append(append([]string{}, c.metricsTags...), p.Tags...)
 		series = append(series, ddMetric{
-			Metric:   "d_inference." + p.metric, // mirror the DogStatsD WithNamespace prefix
-			Points:   [][2]float64{{float64(p.ts), p.value}},
+			Metric:   "d_inference." + p.Metric, // mirror the DogStatsD WithNamespace prefix
+			Points:   [][2]float64{{float64(p.Timestamp), p.Value}},
 			Type:     typ,
 			Interval: interval,
 			Tags:     tags,

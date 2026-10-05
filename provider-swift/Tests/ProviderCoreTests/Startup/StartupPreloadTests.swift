@@ -216,6 +216,9 @@ struct StartupPreloaderTests {
             "Model 'raced' loaded but its engine build left insufficient KV headroom under the memory cap (0.1 GB free) — unloaded",
             "loading 'raced' would re-slice some model's KV grant below the 1.0 GB serviceability floor (fleet KV budget 123 B across 2 slots) — refused",
             "Model 'raced' MTP fallback engine construction failed: model load failed: loading 'raced' would re-slice some model's KV grant below the 1.0 GB serviceability floor (fleet KV budget 123 B across 2 slots) — refused — unloaded",
+            "loading 'raced' would leave a model without its fixed request workspace, admission watermark and 1.0 GB minimum KV allowance (fleet KV budget 123 B across 2 slots) — refused",
+            "Model 'raced' MTP fallback engine construction failed: model load failed: loading 'raced' would leave a model without its fixed request workspace, admission watermark and 1.0 GB minimum KV allowance (fleet KV budget 123 B across 2 slots) — refused — unloaded",
+            "MiMo memory grant cannot fit one request workspace plus minimum KV",
         ] {
             let recorder = PreloadRecorder()
             var deps = makeDeps(

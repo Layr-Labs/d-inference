@@ -1,6 +1,11 @@
 package registry
 
-import "math"
+import (
+	"math"
+
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/capacityvalue"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/serviceretirement"
+)
 
 // ServiceReservationID snapshots the current committed attempt's opaque lease
 // identity. Writer frames freeze this value before a later attempt can replace it.
@@ -22,6 +27,13 @@ func (p *Provider) serviceChargeForModelLocked(model string) float64 {
 // prove a delayed report contains a reservation, especially with local traffic.
 // This is checked again under the provider lock at atomic commitment.
 func (p *Provider) hasWholeMacServiceHeadroomLocked(model string) bool {
+	return p.serviceReservationsLocked().HasHeadroom(model)
+}
+
+// HasHeadroom reconciles captured reservations with the producer's service
+// report. The caller holds the provider lock through admission commitment.
+func (s *ServiceReservations) HasHeadroom(model string) bool {
+	p := s.provider
 	if p.BackendCapacity == nil || p.BackendCapacity.WholeMacServiceUsed == nil {
 		return !p.serviceRetirementProtocol // opted-in sessions cannot reset accounting by omitting capacity
 	}
@@ -29,13 +41,11 @@ func (p *Provider) hasWholeMacServiceHeadroomLocked(model string) bool {
 	if math.IsNaN(reported) || math.IsInf(reported, 0) || reported < 0 || reported > 1+1e-12 {
 		return false
 	}
-	if !validWholeMacServiceReservations(p.BackendCapacity) {
+	if !capacityvalue.ValidWholeMacServiceReservations(p.BackendCapacity) {
 		return false
 	}
 	used := reported
-	for id, charge := range p.serviceRetirementShadows {
-		used += max(0, charge-p.reportedServiceChargeLocked(id))
-	}
+	used += p.serviceRetirement.Account(p.BackendCapacity.WholeMacServiceReservations).UnreportedCharge
 	for _, pending := range p.pendingReqs {
 		charge := pending.reservedServiceCharge
 		if charge <= 0 { // legacy/test owner without a captured profile charge
@@ -48,10 +58,5 @@ func (p *Provider) hasWholeMacServiceHeadroomLocked(model string) bool {
 }
 
 func (p *Provider) reportedServiceChargeLocked(id string) float64 {
-	for _, reservation := range p.BackendCapacity.WholeMacServiceReservations {
-		if reservation.ID == id {
-			return reservation.UsedFraction
-		}
-	}
-	return 0
+	return serviceretirement.ReportedCharge(p.BackendCapacity.WholeMacServiceReservations, id)
 }

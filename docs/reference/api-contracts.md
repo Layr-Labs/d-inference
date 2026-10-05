@@ -289,12 +289,50 @@ Ledger semantics, reservations and payouts: [`../architecture/billing.md`](../ar
 
 | Method | Path | Handler | Auth | Limiter | Notes |
 |---|---|---|---|---|---|
-| POST | `/v1/referral/register` | `HandleReferralRegister` (`coordinator/api/billing/referrals.go`) | `user` | `fin` | 400 `referral_error` on invalid input |
-| POST | `/v1/referral/apply` | `HandleReferralApply` (`coordinator/api/billing/referrals.go`) | `user` | `fin` | 400 `referral_error` |
-| GET | `/v1/referral/stats` | `HandleReferralStats` (`coordinator/api/billing/referrals.go`) | `key` | — | 404 `referral_error` when no referral record exists |
-| GET | `/v1/referral/info` | `HandleReferralInfo` (`coordinator/api/billing/referrals.go`) | `key` | — | 404 `referral_error` when no referral record exists |
+| POST | `/v1/referral/register` | `HandleReferralRegister` (`coordinator/api/billing/referrals.go`) | `user` | `fin` | Normalized code; repeated registration returns the existing code; 400 `referral_error` on invalid input |
+| POST | `/v1/referral/apply` | `HandleReferralApply` (`coordinator/api/billing/referrals.go`) | `user` | `fin` | Same-code application is idempotent; self-referral or reassignment returns 400 `referral_error` |
+| GET | `/v1/referral/stats` | `HandleReferralStats` (`coordinator/api/billing/referrals.go`) | `key` | — | 404 `referral_error` before registration |
+| GET | `/v1/referral/info` | `HandleReferralInfo` (`coordinator/api/billing/referrals.go`) | `key` | — | 200 before registration; empty `code`, current `referred_by` |
 | POST | `/v1/invite/redeem` | `HandleRedeemInviteCode` (`coordinator/api/accounts/invite_handlers.go`) | `key` | `fin` | Redeem an invite code |
 | GET | `/v1/providers/attestation` | `HandleProviderAttestation` (`coordinator/api/provider/trust/status.go`) | `—` | — | Public attestation roster; see [`../architecture/security/attestation.md`](../architecture/security/attestation.md) |
+
+### Open Sales Program payloads
+
+All routes resolve the caller's account; they do not accept an account ID from
+the body. Register and apply require Privy authentication. Read routes accept
+an authenticated API key or Privy user. New registration trims whitespace,
+uppercases ASCII letters, and enforces the
+[code rules](pricing-model.md#constants). Applying legacy codes containing
+Unicode letters remains supported.
+
+| Route | Request JSON | Success JSON | Citation |
+|---|---|---|---|
+| `POST /v1/referral/register` | `{"code":"MYCODE"}` | `code`, `share_percent`, `reward_basis`, `message` | `coordinator/api/billing/referrals.go` (`HandleReferralRegister`) |
+| `POST /v1/referral/apply` | `{"code":"MYCODE"}` | `status: "applied"`, normalized `code`, `message` | `HandleReferralApply` |
+| `GET /v1/referral/info` | — | `code` (empty before registration), `share_percent`, `reward_basis`, `referred_by` (empty without attribution) | `HandleReferralInfo` |
+| `GET /v1/referral/stats` | — | Fields below; 404 `referral_error` before registration | `coordinator/billing/referral.go` (`ReferralStatsResponse`); `HandleReferralStats` |
+
+| Stats field | Type | Meaning | Citation |
+|---|---|---|---|
+| `code` | string | Caller's own registered referral code | `coordinator/billing/referral.go` (`ReferralStatsResponse`) |
+| `share_percent` | integer | Fixed rate defined in [pricing constants](pricing-model.md#constants) | `ReferralService.SharePercent` |
+| `reward_basis` | string | `"consumer_spend"`; [reward arithmetic](pricing-model.md#formulas) | `ReferralStatsResponse` |
+| `total_referred` | integer | Accounts attributed to this code | `coordinator/store/postgres/referrals.go` (`GetReferralStats`) |
+| `total_referred_spend_micro_usd`, `total_referred_spend_usd` | integer, decimal string | Eligible collected spend attributed to this referrer in settlement records; excludes pre-program historical usage. [Routing exclusions](pricing-model.md#formulas) also apply to paid promotion portions. | `GetReferralStats` |
+| `total_rewards_micro_usd`, `total_rewards_usd` | integer, decimal string | Lifetime credited referral rewards, including historical referral ledger entries | `GetReferralStats`; `coordinator/billing/referral.go` (`ReferralStatsResponse`) |
+| `balance_micro_usd`, `balance_usd` | integer, decimal string | Current spendable account balance, including other funds; not lifetime rewards or the withdrawable subset | `ReferralService.Stats` |
+
+Get `withdrawable_micro_usd` from `GET /v1/payments/balance` or the authenticated
+summary when displaying available earned funds. USD strings use six decimal
+places. A per-request reward rounds down independently, so lifetime reward
+need not equal a percentage of the displayed aggregate spend; old referral
+rewards can also predate the settlement-based spend counter.
+
+Malformed JSON or missing code returns 400 `invalid_request_error`; invalid,
+taken, self-referral or conflicting codes return 400 `referral_error`.
+Unexpected store failures return a sanitized 503 `referral_error`; an unavailable
+referral service returns 503 `billing_error`
+(`coordinator/api/billing/referrals.go`, `writeReferralError` and referral handlers).
 
 <a id="public-stats-and-health-5"></a>
 
@@ -836,8 +874,10 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/internal/
 
 | Rule | Value / behaviour | Symbol |
 |---|---|---|
+| Non-streaming provider output | Default 64 MiB of decrypted chunk data and 262,144 frames per attempt, inclusive. All four inference endpoints share the limits, including first/preamble chunks, reasoning, tool calls and usage JSON. Overflow cancels the attempt and returns 502 `provider_error`; no partial success. Streaming consumers keep the existing backpressure policy. Limits are deployment-configurable; see [configuration](configuration.md). | `NewBudget` (`coordinator/internal/inference/responselimit/nonstream_response_limit.go`), `HandleChunk` (`coordinator/api/inference/provider_inference.go`), `NonStream` (`coordinator/internal/inference/relay/consumer_response.go`) |
 | Global request body | 64 MiB ceiling on every request (`maxRequestBodyBytes`, `bodyLimitMiddleware`) | `coordinator/api/server.go`, `coordinator/internal/api/middleware/middleware.go` |
 | Inference body | 16 MiB (`maxInferenceBodyBytes`) → 413 `invalid_request_error`; sealed bodies are read with the same cap (400 `invalid_request_error` when exceeded) | `parseInferencePrelude` (`coordinator/api/inference/inference_preprocess.go`), `SealedTransport` (`coordinator/api/inference/sender_encryption.go`) |
+| Console chat preflight | `MAX_CHAT_REQUEST_BYTES = 16 * 1024 * 1024`; send and retry measure the complete serialized UTF-8 body and, when encryption is enabled, the actual sealed envelope before `POST /api/chat`. Exactly at the cap is allowed. Oversized requests produce a local error and retain the user message/images in current chat state. Uploads still allow four images, each up to 10 MiB; base64, history and envelope overhead can make an accepted upload too large to send. Coordinator rewrite and final-forwarding checks remain authoritative | `assertChatRequestBudget` (`console-ui/src/lib/chat/request-budget.ts`), `streamChat` (`console-ui/src/lib/chat/stream.ts`), `useChatStream` (`console-ui/src/hooks/useChatStream.ts`) |
 | Control-plane bodies | 64 KiB (`maxControlPlaneBodyBytes`) for enroll, device token, admin auth | `coordinator/api/server.go` |
 | MDM webhook body | 1 MiB (`maxMDMWebhookBodyBytes`) | `HandleMDMWebhook` (`coordinator/api/provider/trust/settings.go`) |
 | `n` | Must be 1 | `HandleChatCompletions` |
@@ -933,7 +973,7 @@ An unknown payout outcome held for manual reconciliation remains `status=pending
 | Sealed transport | `coordinator/api/inference/sender_encryption.go` |
 | Models and catalog | `coordinator/api/catalog/models_endpoints.go`, `coordinator/api/catalog/concrete_model_entries.go`, `coordinator/api/catalog/openrouter_endpoint.go`, `coordinator/api/catalog/`, `coordinator/api/catalog/model_alias_handlers.go`, `coordinator/api/catalog/openrouter_alias_handlers.go`, `coordinator/api/catalog/capacity.go`, `coordinator/api/inference/exact_cache_status.go` |
 | Keys, device code, accounts | `coordinator/api/access/keys/handlers.go`, `coordinator/store/apikey.go`, `coordinator/api/access/device/handlers.go`, `coordinator/api/accounts/` |
-| Billing, Stripe, referral, invites | `coordinator/api/billing/`, `coordinator/api/billing/payouts/`, `coordinator/api/billing/payouts/stripe_withdraw.go`, `coordinator/api/billing/payouts/stripe_payouts_webhooks.go`, `coordinator/api/accounts/invite_handlers.go`, `coordinator/api/billing/base_rewards_handlers.go` |
+| Billing, Stripe, referral, invites | `coordinator/api/billing/`, `coordinator/api/billing/referrals.go`, `coordinator/api/billing/payouts/`, `coordinator/api/billing/payouts/stripe_withdraw.go`, `coordinator/api/billing/payouts/stripe_payouts_webhooks.go`, `coordinator/api/accounts/invite_handlers.go`, `coordinator/api/billing/base_rewards_handlers.go` |
 | Stats | `coordinator/api/reporting/stats_handler.go`, `coordinator/api/reporting/refresh_start.go`, `coordinator/api/reporting/totals_handler.go`, `coordinator/api/reporting/leaderboard.go`, `coordinator/api/reporting/network_series.go` |
 | Release, enrollment, provider WS, log reports | `coordinator/api/releases/release_handlers.go`, `coordinator/api/provider/trust/enroll.go`, `coordinator/api/provider/`, `coordinator/api/operations/log_reports.go` |
 | Drain, admin telemetry, profiler, state export | `coordinator/api/operations/drain.go`, `coordinator/api/observation/admin_telemetry.go`, `coordinator/api/reporting/admin_utilization.go`, `coordinator/api/observation/profiler_admin.go`, `coordinator/api/operations/state_export.go` |

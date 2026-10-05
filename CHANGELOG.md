@@ -4,9 +4,23 @@
 
 - Cancel superseded pull-request CI and integration runs without cancelling default-branch pushes. Bound provider unit-test stalls with the existing diagnostic watchdog, and reuse compatible integration build caches while retaining every test gate and parallel job.
 
+## Unreleased - provider email campaigns
+
+- Add the `provider-emails` operator command to preview provider software/macOS update audiences, sync owner groups to Resend, render and test notices, and create unsent broadcasts for review. Preserve unsubscribe preferences and remove owners from managed groups when their reported machines meet the target.
+- Serialize campaign reply-to addresses in the Resend broadcast API's array form while keeping the campaign configuration's single-address input.
+
 ## Unreleased - Autopilot inventory reporting
 
 - Add an admin-only connected Autopilot inventory report with exact per-model last-reported approval counts, deduplicated approval totals and a models-per-provider distribution. Distinguish unpaused, paused and stale connections without exposing provider identities or claiming fresh disk verification, residency or routing eligibility. The read does not depend on the operation ledger.
+
+## Unreleased - Open Sales Program
+
+- Add an Open Sales Program page to register and share a code, apply a referrer, and track referred consumers and earned rewards. Preserve referral links through sign-in and invite redemption.
+- Reward referrers with 5% of their referred consumers' collected token spend as withdrawable earnings funded by Darkbloom. Consumer prices, provider earnings, and platform-fee credits remain unchanged.
+- Settle consumer charges and referral credits atomically per request, excluding free or uncollected usage and preventing duplicate rewards. Keep attribution immutable and prospective; retire the old platform-fee-share setting.
+- Include only the paid portion of token-promotion requests in referral earnings, atomically with promotion settlement.
+- Exclude execution on the consumer's own machines, explicit self-routing, and selected-machine routing from referral rewards and eligible-spend totals, including paid owner-preferred fallbacks. The same exclusions apply to the paid portion of promotion requests. Request billing, provider payouts, and promotion grant use are unchanged.
+- Require Privy sessions for referral mutations and retry uncertain settlement without releasing reserved service funds or repeating live-request accounting. Reconcile pending settlements during graceful shutdown.
 
 ## Unreleased — routing scan cost
 
@@ -100,6 +114,10 @@
 - Apply current full Autopilot settings at each new scheduled window. Disabling between windows restores ordinary saved model selection even if unchanged; other runtime inputs remain frozen.
 - Queue pending-operation uncertainty before removing a disconnected provider, persisting outside registry/provider locks. Connection loss never implies rollback or a confirmed terminal resident set.
 
+## Unreleased — console chat request budget
+
+- Refuse oversized chat requests locally with guidance to reduce images or conversation length. Check the full UTF-8 request and optional encrypted envelope before sending, retain the user's message and images, and apply the same check on retry. Existing per-file and image-count limits remain unchanged.
+
 ## Unreleased — canceled queue waiters
 
 - Stop canceled waiters held by a scheduling pass from returning as queued demand and occupying slots needed by fresh requests. Drop completed entries during queue pop and stale cleanup while preserving live FIFO order, timeout notifications, and reservation cleanup.
@@ -144,6 +162,10 @@
 - Match vision scratch to the selected fused Metal kernel and complete audio encoder/RVQ stages before reusing their workspace. Reserve actual audio tiles rather than charging a maximum tile and every layer simultaneously.
 - Report media-preparation memory refusals as `media_memory_unavailable`. Keep bounded failover while leaving text-capacity clamps, health breakers and reputation unchanged. Genuine native completion faults retain their existing quarantine behavior.
 - Add exact OpenRouter JPEG/MP4/MOV fixture coverage and media-refusal-to-text-serving regressions.
+
+## Unreleased — bounded non-streaming responses
+
+- Bound coordinator retention of non-streaming provider output by aggregate bytes and frame count, including empty frames and the first chunk. Oversized attempts are cancelled and fail with 502 before successful settlement; streaming behavior is unchanged.
 
 ## Release candidate v0.9.13 — MiMo memory admission (not shipped)
 

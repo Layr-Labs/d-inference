@@ -11,6 +11,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/internal/inference/estimate"
 	"github.com/eigeninference/d-inference/coordinator/internal/inference/firstcontent"
 	"github.com/eigeninference/d-inference/coordinator/internal/inference/reservations"
+	"github.com/eigeninference/d-inference/coordinator/internal/inference/responselimit"
 	"github.com/eigeninference/d-inference/coordinator/internal/inference/scangate"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -57,6 +58,7 @@ type Config struct {
 	BillingEnabled bool
 	HardTTFTReject bool
 	MinDecodeTPS   float64
+	ResponseLimits responselimit.Limits
 }
 
 type Dispatcher struct {
@@ -74,13 +76,15 @@ type Dispatcher struct {
 	billingEnabled bool
 	ttftHardReject bool
 	minDecodeTPS   float64
+	responseLimits responselimit.Limits
 }
 
 func New(d Dependencies, cfg Config) *Dispatcher {
 	return &Dispatcher{registry: d.Registry, store: d.Store, observation: d.Observation, logger: d.Logger,
 		reservations: d.Reservations, cancels: d.Cancellation, gate: d.Gate, backoff: d.Backoff,
 		calibration: d.Calibration, recordPolicy: d.RecordPolicy, closeAttempt: d.CloseAttempt,
-		billingEnabled: cfg.BillingEnabled, ttftHardReject: cfg.HardTTFTReject, minDecodeTPS: cfg.MinDecodeTPS}
+		billingEnabled: cfg.BillingEnabled, ttftHardReject: cfg.HardTTFTReject, minDecodeTPS: cfg.MinDecodeTPS,
+		responseLimits: cfg.ResponseLimits}
 }
 
 func (s *Dispatcher) hardTTFTGate(requiresVision bool) bool {

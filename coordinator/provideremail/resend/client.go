@@ -17,19 +17,21 @@ import (
 
 type Client struct {
 	key      string
-	baseURL  string
 	http     *http.Client
 	interval time.Duration
 	mu       sync.Mutex
 	next     time.Time
 }
 
-func New(key string) (*Client, error) {
+// New creates a rate-limited client for the official Resend API. A nil transport
+// uses http.DefaultTransport; callers may supply one for connection management.
+// Redirects are always refused to keep credentials and recipient data private.
+func New(key string, transport http.RoundTripper) (*Client, error) {
 	if key == "" {
 		return nil, errors.New("RESEND_API_KEY is required")
 	}
-	return &Client{key: key, baseURL: "https://api.resend.com", interval: 600 * time.Millisecond,
-		http: &http.Client{Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
+	return &Client{key: key, interval: 600 * time.Millisecond,
+		http: &http.Client{Transport: transport, Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
 }
 
 type APIError struct {
@@ -78,7 +80,7 @@ func (c *Client) request(ctx context.Context, method, path string, body, out any
 		if err := c.pace(ctx); err != nil {
 			return err
 		}
-		req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bytes.NewReader(raw))
+		req, err := http.NewRequestWithContext(ctx, method, "https://api.resend.com"+path, bytes.NewReader(raw))
 		if err != nil {
 			return errors.New("invalid Resend request")
 		}

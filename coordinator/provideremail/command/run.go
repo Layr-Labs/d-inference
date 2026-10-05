@@ -1,4 +1,5 @@
-package main
+// Package command runs the operator-controlled provider email workflow.
+package command
 
 import (
 	"context"
@@ -28,7 +29,9 @@ Environment: PROVIDER_EMAIL_DATABASE_URL (read-only database), RESEND_API_KEY.
 No command sends or schedules a provider campaign. Review and send in Resend.
 `
 
-func run(ctx context.Context, args []string, out io.Writer, getenv func(string) string) error {
+// Run executes a provider-emails command. Campaign delivery remains a manual
+// Resend dashboard action; only an explicitly addressed test can be sent here.
+func Run(ctx context.Context, args []string, out io.Writer, getenv func(string) string) error {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
 		_, err := fmt.Fprint(out, usage)
 		return err
@@ -86,7 +89,7 @@ func run(ctx context.Context, args []string, out io.Writer, getenv func(string) 
 			_, err := fmt.Fprintln(out, "Test rendered; no email sent. Use -apply to send to the selected test address.")
 			return err
 		}
-		client, err := resend.New(getenv("RESEND_API_KEY"))
+		client, err := resend.New(getenv("RESEND_API_KEY"), nil)
 		if err != nil {
 			return err
 		}
@@ -125,7 +128,7 @@ func run(ctx context.Context, args []string, out io.Writer, getenv func(string) 
 	if command == "preview" {
 		return nil
 	}
-	client, err := resend.New(getenv("RESEND_API_KEY"))
+	client, err := resend.New(getenv("RESEND_API_KEY"), nil)
 	if err != nil {
 		return err
 	}
@@ -170,9 +173,6 @@ func writePrivateFile(path string, raw []byte) error {
 	if err != nil {
 		return err
 	}
-	if _, err := f.Write(raw); err != nil {
-		f.Close()
-		return err
-	}
-	return f.Close()
+	_, writeErr := f.Write(raw)
+	return errors.Join(writeErr, f.Close())
 }

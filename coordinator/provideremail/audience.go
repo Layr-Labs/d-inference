@@ -3,6 +3,7 @@ package provideremail
 import (
 	"errors"
 	"io"
+	"slices"
 	"sort"
 	"time"
 
@@ -22,9 +23,10 @@ type Machine struct {
 }
 
 type Snapshot struct {
-	CapturedAt        time.Time `json:"captured_at"`
-	UntrackedSessions int       `json:"untracked_sessions"`
-	Machines          []Machine `json:"machines"`
+	CapturedAt          time.Time `json:"captured_at"`
+	UntrackedSessions   int       `json:"untracked_sessions"`
+	UnknownRegistration int       `json:"unknown_registration"`
+	Machines            []Machine `json:"machines"`
 }
 
 type Recipient struct {
@@ -34,16 +36,17 @@ type Recipient struct {
 }
 
 type Counts struct {
-	Machines          int `json:"machines"`
-	Inactive          int `json:"inactive"`
-	UnknownOwner      int `json:"unknown_owner"`
-	Historical        int `json:"historical"`
-	UnknownVersion    int `json:"unknown_version"`
-	AtTarget          int `json:"at_target"`
-	NeedsUpdate       int `json:"needs_update"`
-	MissingEmail      int `json:"missing_email"`
-	Recipients        int `json:"recipients"`
-	UntrackedSessions int `json:"untracked_sessions"`
+	Machines            int `json:"machines"`
+	Inactive            int `json:"inactive"`
+	UnknownOwner        int `json:"unknown_owner"`
+	Historical          int `json:"historical"`
+	UnknownVersion      int `json:"unknown_version"`
+	AtTarget            int `json:"at_target"`
+	NeedsUpdate         int `json:"needs_update"`
+	MissingEmail        int `json:"missing_email"`
+	Recipients          int `json:"recipients"`
+	UntrackedSessions   int `json:"untracked_sessions"`
+	UnknownRegistration int `json:"unknown_registration"`
 }
 
 type Audience struct {
@@ -69,6 +72,8 @@ func BuildAudience(c Campaign, s Snapshot, now time.Time) (Audience, error) {
 		return a, errors.New("snapshot must have been captured within the last 15 minutes")
 	}
 	a.Counts.UntrackedSessions = s.UntrackedSessions
+	a.Counts.UnknownRegistration = s.UnknownRegistration
+	a.Counts.Machines = s.UnknownRegistration
 	seen := make(map[string]bool)
 	recipients := make(map[string]*Recipient)
 	target, _ := version(c.MinimumVersion, c.Audience == "macos_update")
@@ -94,7 +99,11 @@ func BuildAudience(c Campaign, s Snapshot, now time.Time) (Audience, error) {
 			raw := m.ProviderVersion
 			if c.Audience == "macos_update" {
 				raw = m.OSVersion
-				if m.OSSource != "registration_report" && m.OSSource != "app_attest_assertion_report" || m.OSObservedAt.IsZero() || m.OSObservedAt.After(s.CapturedAt.Add(time.Minute)) || m.OSObservedAt.Before(s.CapturedAt.AddDate(0, 0, -c.OSMaxAgeDays)) {
+				knownSource := m.OSSource == "registration_report" || m.OSSource == "app_attest_assertion_report"
+				freshObservation := !m.OSObservedAt.IsZero() &&
+					!m.OSObservedAt.After(s.CapturedAt.Add(time.Minute)) &&
+					!m.OSObservedAt.Before(s.CapturedAt.AddDate(0, 0, -c.OSMaxAgeDays))
+				if !knownSource || !freshObservation {
 					raw = ""
 				}
 			}
@@ -120,11 +129,7 @@ func BuildAudience(c Campaign, s Snapshot, now time.Time) (Audience, error) {
 			recipients[email] = r
 		}
 		r.AffectedMachines++
-		found := false
-		for _, id := range r.AccountIDs {
-			found = found || id == m.AccountID
-		}
-		if !found {
+		if !slices.Contains(r.AccountIDs, m.AccountID) {
 			r.AccountIDs = append(r.AccountIDs, m.AccountID)
 		}
 	}

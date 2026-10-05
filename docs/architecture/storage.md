@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -46,6 +46,28 @@ owner upgrade notices; it does not certify an OS or alter trust gates, and needs
 no SQL migration.
 
 The additive `app_attest_build_qualifications` table stores immutable signed-artifact approval, test evidence and server-attributed operator/time, plus permanent revocation tombstones. `coordinator/store/postgres/app_attest_builds.go` (`SetQualifiedRelease`) locks the same row used for revocation and atomically checks the exact identity before writing the active release. `store.As[AppAttestBuildStore]` unwraps the store decorator; qualification reads are deliberately uncached there. Service snapshots have a separate bounded lifetime, and stored approval never restores a live serving lease. See the [qualification runbook](../operations/app-attest-build-qualification.md).
+
+## Inventory registration timestamps
+
+`MachineObservation.RegisteredAt` in `coordinator/store/machine_inventory.go`
+is additive JSON metadata, not a new SQL column. `Session.Capture` in
+`coordinator/internal/appattest/inventory/session.go` copies the registry
+connection's immutable creation time, even after an earlier capture failed.
+Both stores retain it through their existing observation serialization. A missing
+origin is omitted, never replaced with the capture time; historical rows are not
+backfilled with guessed registration dates.
+
+The read-only campaign selector (`coordinator/provideremail/postgres.go`,
+`ReadSnapshot`) ranks this timestamp before filtering owners or versions.
+For an undated legacy observation, `first_seen` is only an upper bound on
+registration time. If that bound could beat or tie the newest known registration,
+the whole machine is excluded and counted as `unknown_registration`. If a known
+registration is later than the bound, the legacy session cannot displace it.
+Tied newest timestamps, including values collapsed by PostgreSQL's timestamp
+precision, are also excluded rather than assigning ownership by session ID.
+Merged identities use the surviving machine's combined session history.
+See [campaign operations](../operations/provider-emails.md) for rollout and
+recipient review; these observations do not grant serving permission.
 
 ## Hardware-interest persistence
 

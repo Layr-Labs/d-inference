@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -18,6 +18,7 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | Behavior | Start here |
 |---|---|
 | Process assembly and shutdown | `coordinator/app/`; command parsing stays in `coordinator/cmd/coordinator/` |
+| Provider-owner email campaigns | `coordinator/provideremail/`; CLI orchestration in `provideremail/command/`, Resend transport in `provideremail/resend/`, thin executable in `coordinator/cmd/provider-emails/` |
 | HTTP composition | `coordinator/api/`; `NewServer` binds domain owners to the real router |
 | Authentication, principals, keys and device login | `coordinator/api/access/`, `access/keys/`, `access/device/` |
 | Request admission, dispatch and settlement | `coordinator/api/inference/`; request/response codecs in its `request/` and `response/` packages |
@@ -57,7 +58,7 @@ components for the specific invariant:
 | Apple transcript, exchange/evidence/storage, recovery, qualification and authorization | `coordinator/internal/appattest/`; `coordinator/appattest/service/` binds the live session lifecycle and collaborators |
 | Independent route/profile/outcome pipelines | `coordinator/internal/observation/` |
 | Writer lanes/watchdog, drain authority, identity gates, queue-drain coalescing, bounded demand and detached residency/capacity/forecast/deadline policy | `coordinator/internal/registry/` |
-| Connection age/order and eviction grace | `coordinator/internal/registry/connectiontime/origin.go` (`Origin`), `coordinator/internal/registry/eviction/grace.go` (`Grace`); `coordinator/registry/connection_lifecycle.go` binds maintenance to the live registry |
+| Connection age/order and eviction grace | `coordinator/internal/registry/connectiontime/origin.go` (`Origin`), `coordinator/internal/registry/eviction/grace.go` (`Grace`); `coordinator/registry/connection_lifecycle.go` binds maintenance to the live registry; `coordinator/registry/connection_origin.go` (`RegisteredAt`) exposes the immutable origin to inventory capture |
 | Live connection membership and advertisement counts | `coordinator/registry/provider_directory.go` (`ProviderDirectory`) shares `Registry.mu`; `coordinator/internal/registry/modelindex/counts.go` (`Counts`) owns live-advertisement counts |
 | Restore publication and pending service charges | `coordinator/registry/provider_persistence.go` (`ProviderPersistence`), `coordinator/registry/service_reservations.go` (`ServiceReservations`); both retain the provider's existing lock boundaries |
 | Cache restore, maintenance and capability publication | `coordinator/registry/cache_restoration.go`, `coordinator/registry/cache_maintenance.go`, `coordinator/registry/cache_snapshot.go`; factories in `coordinator/registry/cache_dependencies.go` retain the actual tracker/registry |

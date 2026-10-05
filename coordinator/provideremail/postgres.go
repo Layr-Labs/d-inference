@@ -9,18 +9,23 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Rank before filtering by account, recency or source: a newer anonymous or
-// historical session must not resurrect a previous owner's membership. Inventory
-// merges rewrite machine_id on all sessions; first_seen orders registrations so
-// a delayed disconnect/heartbeat on an older session cannot reclaim ownership.
-const audienceSQL = `WITH latest AS (
- SELECT DISTINCT ON (s.machine_id)
-  s.machine_id, s.account_id, s.last_seen, s.observation
+// Rank before filtering ownership or recency. first_seen is only an upper bound
+// for legacy registrations without a recorded origin: if one could be newer,
+// select it and exclude the machine below rather than resurrect a previous owner.
+const audienceSQL = `WITH sessions AS (
+ SELECT s.*, NULLIF(s.observation->>'registered_at','0001-01-01T00:00:00Z')::timestamptz AS registered_at
  FROM darkbloom_machine_sessions s
  JOIN darkbloom_machines m ON m.id=s.machine_id AND m.merged_into IS NULL
- ORDER BY s.machine_id, s.first_seen DESC, s.last_seen DESC, s.session_id DESC
+), latest AS (
+ SELECT DISTINCT ON (s.machine_id)
+  s.machine_id, s.account_id, s.last_seen, s.observation, s.registered_at, s.first_seen,
+  COUNT(*) OVER (PARTITION BY s.machine_id, COALESCE(s.registered_at,s.first_seen)) AS same_order
+ FROM sessions s
+ ORDER BY s.machine_id, COALESCE(s.registered_at,s.first_seen) DESC,
+  (s.registered_at IS NULL) DESC, s.session_id DESC
 )
-SELECT l.machine_id, l.account_id, COALESCE(u.email,''), l.last_seen, l.observation
+SELECT l.machine_id, l.account_id, COALESCE(u.email,''), l.last_seen, l.observation,
+ l.registered_at IS NOT NULL AND l.registered_at <= l.first_seen AND l.same_order=1
 FROM latest l LEFT JOIN users u ON u.account_id=l.account_id
 ORDER BY l.machine_id`
 
@@ -65,8 +70,13 @@ func ReadSnapshot(ctx context.Context, databaseURL string, activeDays int) (Snap
 	for rows.Next() {
 		var m Machine
 		var raw []byte
-		if err := rows.Scan(&m.ID, &m.AccountID, &m.Email, &m.LastSeen, &raw); err != nil {
+		var registrationKnown bool
+		if err := rows.Scan(&m.ID, &m.AccountID, &m.Email, &m.LastSeen, &raw, &registrationKnown); err != nil {
 			return s, err
+		}
+		if !registrationKnown {
+			s.UnknownRegistration++
+			continue
 		}
 		var observation struct {
 			Source       string    `json:"source"`

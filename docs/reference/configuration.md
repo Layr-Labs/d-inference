@@ -85,8 +85,8 @@ not the coordinator server. See [provider email campaigns](../operations/provide
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `PROVIDER_EMAIL_DATABASE_URL` | PostgreSQL connection string | unset | `coordinator/cmd/provider-emails/run.go` (`loadSnapshot`) | Read fleet ownership, reported versions and owner email in a read-only snapshot; unnecessary with a local fixture or `test`. |
-| `RESEND_API_KEY` | Secret, Full access for contact/segment/broadcast operations | unset | `coordinator/cmd/provider-emails/run.go` (`run`) | Authenticate Resend sync/draft operations and explicitly addressed test sends; unnecessary for fleet preview. |
+| `PROVIDER_EMAIL_DATABASE_URL` | PostgreSQL connection string | unset | `coordinator/provideremail/command/run.go` (`loadSnapshot`) | Read fleet ownership, reported versions and owner email in a read-only snapshot; unnecessary with a local fixture or `test`. |
+| `RESEND_API_KEY` | Secret, Full access for contact/segment/broadcast operations | unset | `coordinator/provideremail/command/run.go` (`Run`) | Authenticate Resend sync/draft operations and explicitly addressed test sends; unnecessary for fleet preview. |
 
 ## Coordinator
 

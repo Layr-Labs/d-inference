@@ -1,4 +1,4 @@
-package provideremail
+package provideremail_test
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/provideremail"
 	"github.com/eigeninference/d-inference/coordinator/provideremail/resend"
 )
 
@@ -71,10 +72,10 @@ func (f *fakeAPI) CreateDraft(_ context.Context, d resend.Draft) (string, error)
 	return "draft", nil
 }
 
-func testAudience(t *testing.T, c Campaign) Audience {
+func testAudience(t *testing.T, c provideremail.Campaign) provideremail.Audience {
 	t.Helper()
 	now := time.Now().UTC()
-	a, err := BuildAudience(c, Snapshot{CapturedAt: now, Machines: []Machine{testMachine(now, "m")}}, now)
+	a, err := provideremail.BuildAudience(c, provideremail.Snapshot{CapturedAt: now, Machines: []provideremail.Machine{testMachine(now, "m")}}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,14 +86,14 @@ func TestSyncDryRunIdempotencyAndPreferences(t *testing.T) {
 	c := testCampaign()
 	a := testAudience(t, c)
 	f := &fakeAPI{segments: []resend.Segment{{ID: "segment", Name: c.SegmentName()}}, contacts: []resend.Contact{{ID: "contact", Email: "owner@example.com", Unsubscribed: true}}, members: []resend.Contact{{ID: "old", Email: "old@example.com"}}}
-	result, err := Sync(context.Background(), f, c, a, false)
+	result, err := provideremail.Sync(context.Background(), f, c, a, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(f.mutations) != 0 || result.Add != 1 || result.Remove != 1 || result.Unsubscribed != 1 {
 		t.Fatalf("%+v / %+v", result, f.mutations)
 	}
-	result, err = Sync(context.Background(), f, c, a, true)
+	result, err = provideremail.Sync(context.Background(), f, c, a, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,14 +101,14 @@ func TestSyncDryRunIdempotencyAndPreferences(t *testing.T) {
 		t.Fatalf("%+v / %+v", result, f)
 	}
 	f.mutations = nil
-	if _, err = Sync(context.Background(), f, c, a, true); err != nil {
+	if _, err = provideremail.Sync(context.Background(), f, c, a, true); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.mutations) != 0 {
 		t.Fatal("repeat sync changed remote state")
 	}
 	for i := 0; i < 2; i++ {
-		if _, err = EnsureDraft(context.Background(), f, c, "segment"); err != nil {
+		if _, err = provideremail.EnsureDraft(context.Background(), f, c, "segment"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -122,7 +123,7 @@ func TestSyncRemovesUpdatedOwnersEvenForEmptyAudience(t *testing.T) {
 	a.Recipients = nil
 	a.Counts.Recipients = 0
 	f := &fakeAPI{segments: []resend.Segment{{ID: "segment", Name: c.SegmentName()}}, members: []resend.Contact{{ID: "old", Email: "old@example.com"}}}
-	result, err := Sync(context.Background(), f, c, a, true)
+	result, err := provideremail.Sync(context.Background(), f, c, a, true)
 	if err != nil || !result.Applied || len(f.members) != 0 {
 		t.Fatalf("%+v %v", result, err)
 	}
@@ -133,16 +134,16 @@ func TestSyncStopsOnFailureOrActiveBroadcast(t *testing.T) {
 	a := testAudience(t, c)
 	for _, status := range []string{"scheduled", "sending", "queued", "unknown"} {
 		f := &fakeAPI{segments: []resend.Segment{{ID: "segment", Name: c.SegmentName()}}, broadcasts: []resend.Broadcast{{SegmentID: "segment", Status: status}}}
-		if _, err := Sync(context.Background(), f, c, a, true); err == nil || len(f.mutations) > 0 {
+		if _, err := provideremail.Sync(context.Background(), f, c, a, true); err == nil || len(f.mutations) > 0 {
 			t.Fatalf("status %s allowed mutation", status)
 		}
 	}
 	f := &fakeAPI{segments: []resend.Segment{{ID: "segment", Name: c.SegmentName()}}, members: []resend.Contact{{ID: "old", Email: "old@example.com"}}, failRemove: true}
-	if _, err := Sync(context.Background(), f, c, a, true); err == nil || len(f.mutations) != 1 {
+	if _, err := provideremail.Sync(context.Background(), f, c, a, true); err == nil || len(f.mutations) != 1 {
 		t.Fatal("continued after removal failure")
 	}
 	f = &fakeAPI{pageError: true}
-	if _, err := Sync(context.Background(), f, c, a, true); err == nil || len(f.mutations) != 0 {
+	if _, err := provideremail.Sync(context.Background(), f, c, a, true); err == nil || len(f.mutations) != 0 {
 		t.Fatal("mutated on incomplete remote snapshot")
 	}
 }
@@ -150,7 +151,7 @@ func TestSyncStopsOnFailureOrActiveBroadcast(t *testing.T) {
 func TestDraftNeverReusesSentCampaign(t *testing.T) {
 	c := testCampaign()
 	f := &fakeAPI{broadcasts: []resend.Broadcast{{ID: "sent", Name: c.DraftName(), Status: "sent", SegmentID: "segment"}}}
-	if _, err := EnsureDraft(context.Background(), f, c, "segment"); err == nil || len(f.mutations) > 0 {
+	if _, err := provideremail.EnsureDraft(context.Background(), f, c, "segment"); err == nil || len(f.mutations) > 0 {
 		t.Fatal("reused sent campaign")
 	}
 }

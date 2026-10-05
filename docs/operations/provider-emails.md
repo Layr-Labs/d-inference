@@ -29,6 +29,10 @@ scheduler or send automatic reminders.
   `coordinator/provideremail/postgres.go` sets read-only mode and timeouts; it
   never constructs the migrating coordinator store. The existing machine
   inventory schema must already be present.
+- Deploy the inventory registration-timestamp support before using production
+  audiences, then inspect `unknown_registration` in the preview. This PR does
+  not authorize that deployment. Legacy observations without a provable order
+  are excluded; a fresh registration on the updated coordinator resolves them.
 - Provide `RESEND_API_KEY` for sync, draft and live tests. Contacts, segments
   and broadcasts require a Full access key; a sending-only key is insufficient.
   Keep credentials outside tracked files. The command only uses the official
@@ -116,7 +120,11 @@ in `coordinator/provideremail/postgres.go` define selection:
 
 - Take the newest registration per canonical inventory machine before applying
   ownership or activity filters. A delayed heartbeat on an old registration
-  cannot select its previous owner. Merged identities resolve to the surviving
+  cannot select its previous owner, even when its first inventory write was
+  delayed. The recorded connection origin supplies the order, not capture time.
+  `unknown_registration` counts machines excluded because an undated observation
+  could be newer or the newest timestamps tie. Reconnect on the updated coordinator rather than changing
+  timestamps by hand. Merged identities resolve to the surviving
   machine. Inventory identities can be provisional or key-bound; these counts
   are not proof of distinct physical Macs.
 - Include only authenticated `live_registration` observations with an account
@@ -160,3 +168,4 @@ an audience sync.
 - [Build](../developer/build.md) and [test](../developer/test.md).
 - [Provider release](provider-release.md) and [provider installation](../provider/installation.md).
 - [Resend contacts and broadcasts](https://resend.com/docs/dashboard/broadcasts/introduction).
+- [Inventory registration timestamps](../architecture/storage.md#inventory-registration-timestamps).

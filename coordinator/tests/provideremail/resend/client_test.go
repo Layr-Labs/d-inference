@@ -1,26 +1,43 @@
-package resend
+package resend_test
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/provideremail/resend"
 )
 
-func testClient(t *testing.T, handler http.HandlerFunc) *Client {
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func testClient(t *testing.T, handler http.HandlerFunc) *resend.Client {
 	t.Helper()
 	s := httptest.NewServer(handler)
 	t.Cleanup(s.Close)
-	c, err := New("test-secret")
+	target, err := url.Parse(s.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.baseURL = s.URL
-	c.http = s.Client()
-	c.interval = 0
+	c, err := resend.New("test-secret", roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Scheme != "https" || r.URL.Host != "api.resend.com" {
+			t.Errorf("unexpected Resend endpoint: %s", r.URL)
+		}
+		request := r.Clone(r.Context())
+		request.URL.Scheme, request.URL.Host = target.Scheme, target.Host
+		return s.Client().Transport.RoundTrip(request)
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
 	return c
 }
 
@@ -68,7 +85,7 @@ func TestWritesDoNotResetPreferencesOrSendDrafts(t *testing.T) {
 	if _, err := c.CreateContact(context.Background(), "owner@example.com"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.CreateDraft(context.Background(), Draft{SegmentID: "segment", Subject: "Update"}); err != nil {
+	if _, err := c.CreateDraft(context.Background(), resend.Draft{SegmentID: "segment", Subject: "Update"}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -103,7 +120,7 @@ func TestTestSendHasOneRecipientAndIdempotency(t *testing.T) {
 		}
 		fmt.Fprint(w, `{"id":"email"}`)
 	})
-	if _, err := c.SendTest(context.Background(), Draft{Subject: "Update"}, "tester@example.com", "test-id"); err != nil {
+	if _, err := c.SendTest(context.Background(), resend.Draft{Subject: "Update"}, "tester@example.com", "test-id"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -114,5 +131,34 @@ func TestCancellationStopsRateLimitWait(t *testing.T) {
 	c := testClient(t, func(w http.ResponseWriter, r *http.Request) { calls++; cancel(); w.WriteHeader(429) })
 	if _, err := c.Segments(ctx); err == nil || calls != 1 {
 		t.Fatalf("calls=%d err=%v", calls, err)
+	}
+}
+
+func TestClientRefusesRedirects(t *testing.T) {
+	calls := 0
+	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		http.Redirect(w, r, "https://api.resend.com/redirected", http.StatusTemporaryRedirect)
+	})
+	_, err := c.Contacts(context.Background())
+	var apiErr *resend.APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusTemporaryRedirect || calls != 1 {
+		t.Fatalf("redirect followed or hidden: calls=%d err=%v", calls, err)
+	}
+}
+
+func TestInjectedTransportPreservesPacing(t *testing.T) {
+	calls := 0
+	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		fmt.Fprint(w, `{"data":[],"has_more":false}`)
+	})
+	if _, err := c.Contacts(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := c.Contacts(ctx); !errors.Is(err, context.DeadlineExceeded) || calls != 1 {
+		t.Fatalf("request bypassed pacing: calls=%d err=%v", calls, err)
 	}
 }

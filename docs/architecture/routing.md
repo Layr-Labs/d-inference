@@ -487,7 +487,8 @@ ties. The runner-up records the next first-content alternative.
 
 A reservation evaluates every provider advertising the model while it holds
 `Registry.mu` for reading, so work done per candidate is multiplied by fleet
-size. Three rules keep that work small; none changes a routing outcome.
+size. The scan keeps admission policy and observed results intact while reducing
+retained storage, copied evidence and repeated aggregation.
 
 - **No clock read without a matching grant.** The Autopilot fence
   (`RoutingBlocked` in `coordinator/internal/registry/autopilotstate/routing.go`,
@@ -500,13 +501,45 @@ size. Three rules keep that work small; none changes a routing outcome.
   instead of copying each candidate on every pass, and `Project`
   (`coordinator/registry/selection/project.go`) takes the forecast and cost
   breakdown by pointer.
-- **Arena chunks fill one allocation size class.** `const ChunkSize = 22`
+- **Arena chunks fill one allocation size class.** `const ChunkSize = 55`
   (`coordinator/internal/registry/candidatearena/arena.go`) is the largest
   number of `Candidate` values (`coordinator/registry/scheduler.go`) that fits
   the Go allocator's 32 KiB small-object class.
   `TestCandidateArenaChunkFillsLargestSmallSizeClass`
   (`coordinator/tests/registry/candidate_arena_test.go`) fails when the struct
   changes size enough to need retuning.
+
+The full `routingSnapshot` is transient evaluation storage, reused on the scan's
+stack. `candidateSnapshot` (`coordinator/registry/candidate_snapshot.go`) retains
+only the detached values needed for ranking, quotes, diagnostics and commit
+comparison. The canonical provider/model binding stays in `Candidate`; no
+candidate retains a pointer into the transient snapshot. Forecast and calibration
+operations borrow immutable evidence for the duration of the call, while
+`PredictCalibrated` still copies its work before adding the incoming request.
+
+Ordinary private reservations lazily borrow exclusive `candidatearena.Storage`
+through `reservationCandidateStorage` (`coordinator/registry/reservation_storage.go`).
+The model index is copied once before choosing storage. A scan above
+`MaxReusableCandidates` uses ordinary request-owned chunks immediately. Pooled
+objects retain at most `MaxStorageChunks` chunks (2 MiB); extra chunks needed by a
+fail-open pass remain request owned. Retries reset storage after the previous
+commit result is consumed, and returning a borrower clears every historical
+chunk, including rejected slots. This is a per-object bound; `sync.Pool` may drop
+idle objects and does not impose a global memory cap. Public scans and decorated
+preparations always own their candidate chunks. Dispatch decisions and alternate
+plans contain detached values before private storage is returned.
+
+`fillPendingSnapshot` (`coordinator/registry/pending_snapshot.go`) freezes pending
+content state once under the provider lock and shares the resulting scalar work
+across forecast slot passes. Memory commitments still include prompt and maximum
+output until the pending owner retires. `capacityvalue.ServiceReport` shares one
+validation result between deadline work and headroom within the same provider
+critical section; it cannot cross capacity owners or survive a mutation.
+
+Alternate planning projects immutable selection values once through
+`selection.RetainRanked` (`coordinator/registry/selection/retain_ranked.go`). After
+each removal it recomputes the current fast-band, service-work and cache-credit
+classes, preserving pool order, random draw counts and affinity semantics.
 
 `BenchmarkReserveProviderEx_350x2`
 (`coordinator/tests/registry/reserve_bench_test.go`),
@@ -723,7 +756,7 @@ the request path takes it for writing.
 
 | Lock | Guards | Request-path holders |
 |---|---|---|
-| `Registry.mu` (`sync.RWMutex`, `coordinator/registry/registry.go`) | The provider map, catalog, aliases and routing configuration. | The scan and the commit, for READING (`scanProviderReservation`, `commitLock`). Writers are `Register`, `Disconnect`, `evictStale`, the swap planner and the config setters. |
+| `Registry.mu` (`sync.RWMutex`, `coordinator/registry/registry.go`) | The provider map, catalog, aliases and routing configuration. | The scan and the commit, for READING (`prepareProviderReservationIntoStorage`, `commitLock`). Writers are `Register`, `Disconnect`, `evictStale`, the swap planner and the config setters. |
 | `Provider.mu` | One provider's heartbeat state, pending set, attestation and retained directory session (`Provider.gateSession`). | The scan per provider (`snapshotProviderIntoLockedEx`); the commit's whole decide-and-debit section; the identity bind (`bindStableFaultKey`). |
 | `Registry.sessionsMu` (`sync.RWMutex`) | Session → live `Provider` projection (`coordinator/registry/gate_index.go`, `sessionProvider`). | Attach/detach brackets directory publication; budget projection reads finish before directory fault mutations. The directory itself never acquires a provider lock. |
 | `identitygate.Directory.gatesMu` (`sync.RWMutex`) | Private fault-key → `State` and session → `identitygate.Session` indexes (`coordinator/internal/registry/identitygate/directory.go`). | Recorders resolve under the index read lock; insertion, identity bind, sweep and retry fallback stabilize the index before state acquisition (`gate_index.go`, `gate_lock.go` under `coordinator/internal/registry/identitygate/`). |
@@ -738,7 +771,7 @@ lock is held, and the scan takes no walk-wide gates lock
 `coordinator/registry/gate_index.go`, `attachSessionGate`, `detachSessionGate`).
 
 **Two-phase reservation** (`coordinator/registry/scheduler.go`).
-`scanProviderReservation` walks the fleet under `r.mu.RLock`; concurrent
+`prepareProviderReservationIntoStorage` walks the fleet under `r.mu.RLock`; concurrent
 requests scan together and no capacity is consumed. `commitProviderReservation`
 holds `r.mu` for reading — the provider identity, catalog and cache-routing
 configuration must be stable, not the fleet frozen — and does everything that
@@ -978,7 +1011,7 @@ must not run in parallel with other scheduler tests in the same process.
 | Closed vocabularies | `coordinator/registry/gate_reason.go` — `GateReason`, `SelectionPath`, `SlotState` |
 | Trust floor and challenge failures | `coordinator/registry/registry.go` — `MinTrustLevel`; `coordinator/registry/provider.go` — `MaxFailedChallenges`; `coordinator/registry/attestation_policy.go` — `RecordChallengeFailure` |
 | Dispatch-load cooldown and disconnect | `coordinator/internal/registry/identitygate/dispatch_load.go` (`dispatchLoadCooldownTTL`); `coordinator/registry/connection_disconnect.go` (`ConnectionLifecycle.Disconnect`) |
-| Two-phase reservation (scan, commit, plan consumption) | `coordinator/registry/scheduler.go` — `scanProviderReservation`, `commitProviderReservation`, `providerCanAdmitLockedEx`; `coordinator/registry/dispatch_plan.go` — `ReserveNextFromPlan` |
+| Two-phase reservation (scan, commit, plan consumption) | `coordinator/registry/scheduler.go` — `prepareProviderReservationIntoStorage`, `commitProviderReservation`, `providerCanAdmitLockedEx`; `coordinator/registry/dispatch_plan.go` — `ReserveNextFromPlan` |
 | Per-identity fault-state gates | `coordinator/internal/registry/identitygate/directory.go` (`Directory`, `Session`, `Bind`, `Sweep`); `coordinator/internal/registry/identitygate/gate_state.go` (`State`, `publishLocked`, `breakerOpenAt`, `ejectedAt`); `coordinator/internal/registry/identitygate/gate_migrate.go` (`migrateGateLocked`, `mergeLocked`); `coordinator/internal/registry/identitygate/gate_lock.go` (`lockGate`, `Reference`, `SetGateWaitObserver`); `coordinator/internal/registry/identitygate/gate_sweep.go` (`sweepGatesLocked`, `gateIdleGrace`); registry adapters in `coordinator/registry/gate_index.go`, `coordinator/registry/gate_preparation.go`; `coordinator/registry/gate_commit_mode.go` (`commitLock`) |
 | Identity retention and rejection classification | `coordinator/internal/registry/identitygate/directory.go` (`DefaultRetention`, `MaintainWithRetention`, `MaintenanceReport`); `coordinator/internal/registry/identitygate/inference_history.go` (`InferenceHistory.Prune`); `coordinator/internal/registry/identitygate/rejection.go` (`View.ClassifyRejection`); `coordinator/registry/routing_rejection_classification.go` (`classifyRejectedProvider`) |
 | Bounded dispatch plan | `coordinator/registry/dispatch_plan.go` (`DispatchPlan`, `PlanEntry`); `coordinator/internal/registry/shortlist/order.go` (`MaxAlternates`, `Order.Claim`, `Order.Rank`); `coordinator/registry/first_content_plan.go` (`reserveFirstContentFromPlan`, `claimEntry`) |

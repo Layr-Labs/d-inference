@@ -2,6 +2,34 @@
 
 > Last updated: 2026-10-04
 
+## Reservation storage and scan benchmarks
+
+Registry regression tests in `coordinator/tests/registry/candidate_storage_test.go`
+and `reservation_storage_test.go` cover high-water reference clearing, separate
+scan passes, retained public/decorated candidates and plans, and scans at and
+above the bounded private storage cutoff. `pending_snapshot_test.go` checks
+report ownership/validation boundaries and pending work beyond the inline
+buffer, including content commitment and exact memory retirement. Selection
+regressions in `coordinator/tests/registry/selection/` compare alternate order
+and random draw traces against successive calls to the production selector.
+
+Run `go test -race ./coordinator/tests/registry/...` with the repository's pinned
+Go version. Freeze time through `testing/synctest` for retained-quote comparisons;
+wall-clock forecast ages are part of the quote contract. Fixtures bind only
+isolated localhost endpoints and need no production credentials.
+
+For timing, build identical benchmark harnesses on both revisions first, then
+run their prebuilt test binaries sequentially in fresh processes. Interleave
+revision order across at least six rounds, fix `GOMAXPROCS`, and keep other builds
+and tests idle. `BenchmarkReservationScale` covers 32–6,000 providers and two or
+fifteen models; the 3,000/two-model and larger cutoff cases guard pool economics.
+`BenchmarkReserveProviderExPendingService_350x2` adds exact reported/local lease
+overlap and zero, four or sixteen pending owners. Atomic request IDs in the
+parallel reservation benchmarks prevent worker debits from colliding. Parallel
+ns/op measures aggregate throughput, while writer wait maxima are noisy local
+observations; neither is production inference latency. See
+[the October 4 measurement record](../reports/2026-10-04-registry-scan-optimization.md).
+
 ## Component CI routing
 
 Run `python3 scripts/test-ci-component-paths.py` for offline component-routing
@@ -930,6 +958,18 @@ DATABASE_URL='postgres://testbed:testbed@127.0.0.1:5432/testbed?sslmode=disable'
 go tool cover -func=coverage.out | tail -n 1   # total statement coverage
 gofmt -l .                                 # must print nothing
 golangci-lint run                          # .golangci.yml
+```
+
+`TestReserveProviderExSnapshotAgeAndPending` in
+`coordinator/tests/registry/routing_context_test.go` bounds each heartbeat age
+by the scan or commit interval that produced it. Its preparation fixture also
+refreshes the heartbeat between those phases, checking that candidate summaries
+retain the scan evidence while the winner uses fresh commit evidence. The test
+preserves the pre-debit pending-count assertions and uses no sleeps or fixed
+elapsed-time tolerance. Repeat it with:
+
+```bash
+go test -race ./coordinator/tests/registry -run '^TestReserveProviderExSnapshotAgeAndPending$' -count=1000
 ```
 
 CI writes the total statement coverage to the job summary and keeps

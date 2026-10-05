@@ -68,6 +68,7 @@ type Registry struct {
 	serviceReservationsFactory func(string) *ServiceReservations
 	reservations               ReservationPreparation
 	reservationPlanner         *ReservationPlanner
+	reservationStorage         sync.Pool
 	planOrderFactory           func() *shortlist.Order
 	// drainSuppress rate-limits HEARTBEAT-triggered queue drains per model
 	// after a saturated pass (queue_drain_suppress.go). Zero value ready.

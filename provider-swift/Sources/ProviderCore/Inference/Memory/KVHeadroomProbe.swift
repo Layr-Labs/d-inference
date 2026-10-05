@@ -34,6 +34,22 @@ public enum KVHeadroomProbe {
             activationReserveBytes: activationReserveBytes)
     }
 
+    /// The same measurement over one sample from `budget`'s memory reader.
+    /// A load owner's post-load guards use this, so they read memory from the
+    /// source its load admission reads. The production budget samples the
+    /// live MLX and OS counters that the parameterless form reads.
+    static func measuredLiveKVHeadroomBytes(
+        budget: GlobalKVCacheBudget, activationReserveBytes: UInt64
+    ) -> UInt64 {
+        let sample = budget.memoryHeadroomSnapshot()
+        let (mlxUsed, overflow) = sample.activeBytes.addingReportingOverflow(sample.cacheBytes)
+        return UnifiedMemoryCap.liveKVHeadroomBytes(
+            physicalBytes: sample.totalBytes,
+            mlxUsedBytes: overflow ? .max : mlxUsed,
+            systemAvailableBytes: sample.systemAvailableBytes,
+            activationReserveBytes: activationReserveBytes)
+    }
+
     /// Post-load guard: true iff the freshly-loaded model leaves at least
     /// the minimum serveable KV headroom under the cap. When false the
     /// caller must unload + clearCache + reject — keeping the model would

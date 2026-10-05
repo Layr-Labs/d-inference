@@ -66,6 +66,7 @@ components for the specific invariant:
 | Sidecar identity, protocol, artifacts, catalog/preload and endpoint lowering | `coordinator/internal/promptcontract/` |
 | Remote media policy, read budgets and reference grouping | `coordinator/internal/mediafetch/` |
 | Frame scanning and decoding | `coordinator/internal/wire/` |
+| Command bodies: coordinator lifecycle, payout audit and DevNet seed data | `coordinator/internal/command/coordinator/`, `payoutaudit/`, `devnetseed/`; each `coordinator/cmd/<name>/main.go` is a thin entry point |
 
 Application assembly supplies the same registry/store/ledger/read-cache instances
 through `api.RuntimeDependencies` (`coordinator/api/server.go`, `NewRuntime`).

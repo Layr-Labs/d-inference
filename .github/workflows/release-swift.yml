@@ -37,6 +37,15 @@ on:
       - 'v*.*.*'
   workflow_dispatch:
     inputs:
+      resume_run_id:
+        description: 'Optional failed tag run with successful build and qualification; resume signing without rebuilding'
+        required: false
+        type: string
+      resume_run_attempt:
+        description: 'Attempt containing the successful retained build and qualification'
+        required: false
+        type: string
+        default: '1'
       environment:
         description: 'Target environment'
         required: true
@@ -79,17 +88,30 @@ jobs:
   resolve-env:
     permissions:
       contents: read
+      actions: read
     runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       environment: ${{ steps.pick.outputs.environment }}
       version: ${{ steps.pick.outputs.version }}
       publish: ${{ steps.pick.outputs.publish }}
+      resume: ${{ steps.pick.outputs.resume || 'false' }}
+      source_sha: ${{ steps.pick.outputs.source_sha || github.sha }}
+      release_tag: ${{ steps.pick.outputs.release_tag || (github.ref_type == 'tag' && github.ref_name) || '' }}
+      build_run_id: ${{ steps.pick.outputs.build_run_id || github.run_id }}
+      build_run_attempt: ${{ steps.pick.outputs.build_run_attempt || github.run_attempt }}
+      unsigned_artifact: ${{ steps.pick.outputs.unsigned_artifact }}
+      unsigned_artifact_id: ${{ steps.pick.outputs.unsigned_artifact_id }}
+      unsigned_artifact_digest: ${{ steps.pick.outputs.unsigned_artifact_digest }}
+      build_sdk_version: ${{ steps.pick.outputs.build_sdk_version }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
       - id: pick
         env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_RESUME_RUN_ID: ${{ inputs.resume_run_id }}
+          RELEASE_RESUME_RUN_ATTEMPT: ${{ inputs.resume_run_attempt || '1' }}
           RELEASE_ENVIRONMENT: ${{ inputs.environment }}
           RELEASE_VERSION_OVERRIDE: ${{ inputs.version_override }}
           RELEASE_VALIDATION_ONLY: ${{ inputs.validation_only || false }}
@@ -98,6 +120,7 @@ jobs:
   build-provider:
     name: Build optimized SDK 27 provider
     needs: resolve-env
+    if: needs.resolve-env.outputs.resume != 'true'
     runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 60
     permissions:
@@ -147,6 +170,7 @@ jobs:
   qualify-sdk:
     name: Qualify provider with SDK 27
     needs: resolve-env
+    if: needs.resolve-env.outputs.resume != 'true'
     runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 60
     permissions:
@@ -166,6 +190,10 @@ jobs:
   build-and-release:
     name: Sign, notarize and retain exact artifact
     needs: [resolve-env, build-provider, qualify-sdk]
+    if: >-
+      ${{ !cancelled() && needs.resolve-env.result == 'success' &&
+          ((needs.resolve-env.outputs.resume == 'true' && needs.build-provider.result == 'skipped' && needs.qualify-sdk.result == 'skipped') ||
+           (needs.resolve-env.outputs.resume == 'false' && needs.build-provider.result == 'success' && needs.qualify-sdk.result == 'success')) }}
     # The signed artifact and its unsigned inputs are all built on Blacksmith.
     runs-on: blacksmith-12vcpu-macos-27
     environment: ${{ needs.resolve-env.outputs.environment }}
@@ -176,6 +204,14 @@ jobs:
     env:
       VERSION: ${{ needs.resolve-env.outputs.version }}
       ENV_PREFIX: ${{ needs.resolve-env.outputs.environment }}
+      RELEASE_SOURCE_SHA: ${{ needs.resolve-env.outputs.source_sha }}
+      RELEASE_TAG: ${{ needs.resolve-env.outputs.release_tag }}
+      RELEASE_RESUME_RUN_ID: ${{ inputs.resume_run_id }}
+      RELEASE_RESUME_RUN_ATTEMPT: ${{ inputs.resume_run_attempt || '1' }}
+      RELEASE_UNSIGNED_ARTIFACT_ID: ${{ needs.resolve-env.outputs.unsigned_artifact_id }}
+      RELEASE_UNSIGNED_ARTIFACT_DIGEST: ${{ needs.resolve-env.outputs.unsigned_artifact_digest }}
+      RELEASE_BUILD_RUN_ID: ${{ needs.resolve-env.outputs.build_run_id }}
+      RELEASE_BUILD_RUN_ATTEMPT: ${{ needs.resolve-env.outputs.build_run_attempt }}
 
     steps:
       - name: Resolve release metadata URLs
@@ -223,11 +259,23 @@ jobs:
         with:
           python-version: '3.12.10'
 
+      - name: Install pinned GitHub CLI
+        run: ./scripts/install-macos-github-cli.sh
+
       - name: Validate release version integrity
         run: ./scripts/check-release-version.sh "$VERSION"
 
       - name: Select SDK 27 signing toolchain
         run: ./scripts/prepare-provider-release-toolchain.sh
+
+      - name: Check signing runner prerequisites
+        run: |
+          set -euo pipefail
+          for tool in gh python3 security codesign ditto spctl shasum strings unzip tar; do
+            command -v "$tool"
+          done
+          xcrun --find notarytool
+          xcrun --find stapler
 
       - name: Ensure matching Metal compiler is available
         timeout-minutes: 20
@@ -236,14 +284,18 @@ jobs:
       - name: Fetch and verify this run's unsigned build
         env:
           GH_TOKEN: ${{ github.token }}
-          EXPECTED_ARTIFACT: ${{ needs.build-provider.outputs.artifact_name }}
-          EXPECTED_SOURCE: ${{ github.sha }}
-          BUILD_SDK_VERSION: ${{ needs.build-provider.outputs.build_sdk_version }}
+          EXPECTED_ARTIFACT: ${{ needs.resolve-env.outputs.unsigned_artifact || needs.build-provider.outputs.artifact_name }}
+          EXPECTED_SOURCE: ${{ needs.resolve-env.outputs.source_sha }}
+          BUILD_SDK_VERSION: ${{ needs.resolve-env.outputs.build_sdk_version || needs.build-provider.outputs.build_sdk_version }}
         run: |
           set -euo pipefail
           test "$BUILD_SDK_VERSION" = "$PROVIDER_SDK_VERSION"
-          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
-            --name "$EXPECTED_ARTIFACT" --dir "$RUNNER_TEMP/unsigned-download"
+          if [ -n "$RELEASE_RESUME_RUN_ID" ]; then
+            python3 scripts/provider-release-resume.py download --output "$RUNNER_TEMP/unsigned-download"
+          else
+            gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "$EXPECTED_ARTIFACT" --dir "$RUNNER_TEMP/unsigned-download"
+          fi
           python3 scripts/provider-signing-validation.py unpack \
             --archive "$RUNNER_TEMP/unsigned-download/unsigned-provider.tar.gz" \
             --output "$RUNNER_TEMP/qualified-unsigned" \
@@ -797,7 +849,7 @@ jobs:
           set -euo pipefail
           python3 scripts/provider-release-publication.py prepare \
             --directory "$RUNNER_TEMP/provider-publication" --bundle /tmp/darkbloom-bundle-macos-arm64.tar.gz
-          echo "artifact_name=provider-publication-${GITHUB_SHA}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=provider-publication-${RELEASE_SOURCE_SHA}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
           {
             echo '### Exact signed release awaiting qualification'
             echo 'After the R2 staging job succeeds, review qualification-request.json and supply test evidence to POST /v1/admin/app-attest/builds.'
@@ -826,7 +878,7 @@ jobs:
   stage-release:
     name: Stage retained signed artifact in R2
     needs: [resolve-env, build-and-release]
-    if: needs.resolve-env.outputs.publish == 'true'
+    if: ${{ !cancelled() && needs.resolve-env.result == 'success' && needs.build-and-release.result == 'success' && needs.resolve-env.outputs.publish == 'true' }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     environment: ${{ needs.resolve-env.outputs.environment }}
@@ -836,6 +888,14 @@ jobs:
     env:
       VERSION: ${{ needs.resolve-env.outputs.version }}
       ENV_PREFIX: ${{ needs.resolve-env.outputs.environment }}
+      RELEASE_SOURCE_SHA: ${{ needs.resolve-env.outputs.source_sha }}
+      RELEASE_TAG: ${{ needs.resolve-env.outputs.release_tag }}
+      RELEASE_RESUME_RUN_ID: ${{ inputs.resume_run_id }}
+      RELEASE_RESUME_RUN_ATTEMPT: ${{ inputs.resume_run_attempt || '1' }}
+      RELEASE_UNSIGNED_ARTIFACT_ID: ${{ needs.resolve-env.outputs.unsigned_artifact_id }}
+      RELEASE_UNSIGNED_ARTIFACT_DIGEST: ${{ needs.resolve-env.outputs.unsigned_artifact_digest }}
+      RELEASE_BUILD_RUN_ID: ${{ needs.resolve-env.outputs.build_run_id }}
+      RELEASE_BUILD_RUN_ATTEMPT: ${{ needs.resolve-env.outputs.build_run_attempt }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -910,7 +970,7 @@ jobs:
   publish-release:
     name: Publish qualified signed release
     needs: [resolve-env, build-and-release, stage-release]
-    if: needs.resolve-env.outputs.publish == 'true'
+    if: ${{ !cancelled() && needs.resolve-env.result == 'success' && needs.build-and-release.result == 'success' && needs.stage-release.result == 'success' && needs.resolve-env.outputs.publish == 'true' }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     environment: ${{ needs.resolve-env.outputs.environment }}
@@ -920,6 +980,14 @@ jobs:
     env:
       VERSION: ${{ needs.resolve-env.outputs.version }}
       ENV_PREFIX: ${{ needs.resolve-env.outputs.environment }}
+      RELEASE_SOURCE_SHA: ${{ needs.resolve-env.outputs.source_sha }}
+      RELEASE_TAG: ${{ needs.resolve-env.outputs.release_tag }}
+      RELEASE_RESUME_RUN_ID: ${{ inputs.resume_run_id }}
+      RELEASE_RESUME_RUN_ATTEMPT: ${{ inputs.resume_run_attempt || '1' }}
+      RELEASE_UNSIGNED_ARTIFACT_ID: ${{ needs.resolve-env.outputs.unsigned_artifact_id }}
+      RELEASE_UNSIGNED_ARTIFACT_DIGEST: ${{ needs.resolve-env.outputs.unsigned_artifact_digest }}
+      RELEASE_BUILD_RUN_ID: ${{ needs.resolve-env.outputs.build_run_id }}
+      RELEASE_BUILD_RUN_ATTEMPT: ${{ needs.resolve-env.outputs.build_run_attempt }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -1003,7 +1071,7 @@ jobs:
   validate-older-macos:
     name: Signed SDK 27 artifact on older macOS
     needs: [resolve-env, build-and-release]
-    if: needs.resolve-env.outputs.publish == 'false'
+    if: ${{ !cancelled() && needs.resolve-env.result == 'success' && needs.build-and-release.result == 'success' && needs.resolve-env.outputs.publish == 'false' }}
     # Keep the older-OS proof within the release trust boundary.
     runs-on: blacksmith-12vcpu-macos-26
     permissions:
@@ -1013,6 +1081,8 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      - name: Install pinned GitHub CLI
+        run: ./scripts/install-macos-github-cli.sh
       - name: Verify and smoke the exact signed validation artifact
         env:
           GH_TOKEN: ${{ github.token }}

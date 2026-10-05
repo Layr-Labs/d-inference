@@ -3,13 +3,18 @@ package registry
 import (
 	"context"
 	"encoding/base64"
-	"sort"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/capacityvalue"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/eviction"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/autopilot"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"nhooyr.io/websocket"
 )
+
+// DefaultProviderHeartbeatTimeout is the normal serving liveness window.
+const DefaultProviderHeartbeatTimeout = 90 * time.Second
 
 // Register adds a new provider to the registry, returning its assigned ID.
 // Provider-reported model inventory is preserved even when the current catalog
@@ -27,32 +32,33 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	// Clamp provider-reported performance stats used in routing score.
 	// Refuse to trust unbounded values — a malicious provider reporting
 	// DecodeTPS=1e9 would otherwise starve all other providers.
-	if v, changed := clampNonNeg(msg.DecodeTPS, maxDecodeTPS); changed {
+	if v, changed := capacityvalue.ClampNonNeg(msg.DecodeTPS, capacityvalue.MaxDecodeTPS); changed {
 		r.logger.Warn("provider decode_tps out of range, clamping",
 			"provider_id", id, "reported", msg.DecodeTPS, "clamped", v)
 		msg.DecodeTPS = v
 	}
-	if v, changed := clampNonNeg(msg.PrefillTPS, maxPrefillTPS); changed {
+	if v, changed := capacityvalue.ClampNonNeg(msg.PrefillTPS, capacityvalue.MaxPrefillTPS); changed {
 		r.logger.Warn("provider prefill_tps out of range, clamping",
 			"provider_id", id, "reported", msg.PrefillTPS, "clamped", v)
 		msg.PrefillTPS = v
 	}
-	if v, changed := clampNonNeg(msg.Hardware.MemoryBandwidthGBs, maxMemoryBandwidthGBs); changed {
+	if v, changed := capacityvalue.ClampNonNeg(msg.Hardware.MemoryBandwidthGBs, capacityvalue.MaxMemoryBandwidthGBs); changed {
 		r.logger.Warn("provider memory_bandwidth_gbs out of range, clamping",
 			"provider_id", id, "reported", msg.Hardware.MemoryBandwidthGBs, "clamped", v)
 		msg.Hardware.MemoryBandwidthGBs = v
 	}
-	if msg.Hardware.MemoryGB < 0 || msg.Hardware.MemoryGB > maxMemoryGB {
+	if msg.Hardware.MemoryGB < 0 || msg.Hardware.MemoryGB > capacityvalue.MaxMemoryGB {
 		r.logger.Warn("provider memory_gb out of range, clamping",
 			"provider_id", id, "reported", msg.Hardware.MemoryGB)
 		if msg.Hardware.MemoryGB < 0 {
 			msg.Hardware.MemoryGB = 0
 		} else {
-			msg.Hardware.MemoryGB = maxMemoryGB
+			msg.Hardware.MemoryGB = capacityvalue.MaxMemoryGB
 		}
 	}
 
-	models := msg.Models
+	autopilotState := r.newAutopilotState(id)
+	models := autopilotState.RegisterInventory(msg.Models, msg.AutopilotInventory, msg.ModelAutopilot)
 	modelInventory, _ := uniqueProviderModels(models)
 	cacheStatuses, cacheStatusReported := sanitizePrefixCacheStatuses(
 		msg.PrefixCacheStatuses, modelInventory)
@@ -81,10 +87,22 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	}
 
 	p := &Provider{
+		drain:                       r.newProviderDrain(id),
+		serviceRetirement:           r.newServiceRetirement(id),
+		modelMembership:             r.newModelMembership(id),
+		performanceProfiles:         r.performanceProfiles,
+		deadlineProfiles:            r.deadlineProfiles,
+		deadlinePosture:             r.newDeadlinePosture(id),
+		firstContentMeasurements:    r.newMeasurementHistory(id),
+		transport:                   r.newTransportHistory(id),
+		kvBackends:                  r.newKVBackendHistory(id),
+		ModelAutopilot:              autopilot.CloneState(msg.ModelAutopilot),
 		ID:                          id,
-		stateRestorePending:         r.store != nil,
+		persistence:                 ProviderPersistence{pending: r.store != nil},
 		Hardware:                    msg.Hardware,
 		Models:                      models,
+		autopilotState:              autopilotState,
+		capacitySamples:             r.newCapacitySamples(id),
 		Backend:                     msg.Backend,
 		appAttestProtocol:           msg.AppAttestProtocol,
 		ReportedRuntimeCapabilities: normalizeRuntimeCapabilities(msg.RuntimeCapabilities, msg.Hardware),
@@ -97,13 +115,14 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		PrefillTPS:                  msg.PrefillTPS,
 		DecodeTPS:                   msg.DecodeTPS,
 		PrefixCacheProtocol:         msg.PrefixCacheProtocol,
+		prefixCacheRevision:         r.newCacheRevision(id),
 		PrefixCacheV2Models:         cacheCapabilities,
 		PrefixCacheMemoryModels:     prefixCacheV2CapabilityMap(msg.PrefixCacheMemoryModels),
 		PrefixCacheStatuses:         cacheStatuses,
 		PrefixCacheStatusReported:   cacheStatusReported,
 		PrefixCacheDonationOutcomes: cacheDonationOutcomes,
 		ToolConstraintProtocol:      msg.ToolConstraintProtocol,
-		ToolConstraintModels:        toolConstraintModelSet(msg.ToolConstraintModels, msg.Models),
+		ToolConstraintModels:        toolConstraintModelSet(msg.ToolConstraintModels, models),
 		TrustLevel:                  TrustNone,
 		RuntimeVerified:             true,  // default to verified; API layer sets false when manifest check fails
 		RuntimeManifestChecked:      true,  // default to true; API layer sets false when no manifest is configured
@@ -112,14 +131,21 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		TemplateHashes:              CloneStringMap(msg.TemplateHashes),
 		Status:                      StatusOnline,
 		Conn:                        conn,
-		writer:                      newProviderWriter(conn),
+		writer:                      r.connections.Open(id, conn),
+		warmWork:                    r.newWarmHistory(id),
+		warmLoads:                   r.newWarmLifecycle(id),
 		LastHeartbeat:               time.Now(),
-		registeredAt:                time.Now(),
+		connectionOrigin:            r.newConnectionOrigin(id, time.Now()),
 		Reputation:                  NewReputation(),
 		pendingReqs:                 make(map[string]*PendingRequest),
 		applicationProofSettled:     make(chan struct{}),
 		challengeKick:               make(chan struct{}, 1),
 		registry:                    r,
+	}
+	r.providerPersistenceFor(p)
+	r.bindServiceReservations(p)
+	if r.modelCommandFactory != nil {
+		p.modelCommands = r.modelCommandFactory(id, providerModelCommandTransport{provider: p})
 	}
 
 	r.mu.Lock()
@@ -131,7 +157,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		r.logger.Warn("duplicate provider registration ignored", "provider_id", id)
 		return existing
 	}
-	r.providers[id] = p
+	r.providerDirectory.storeLocked(id, p)
 	r.attachSessionGate(p)
 	p.mu.Lock()
 	r.modelIndex.sync(p)
@@ -280,189 +306,7 @@ func (r *Registry) Disconnect(id string) {
 // disconnectWithCause preserves the read loop's graceful/abrupt classification
 // for unconditional disconnects. Eviction adds an identity/freshness guard.
 func (r *Registry) disconnectWithCause(id string, cause protocol.CoordinatorInferenceErrorCause) {
-	r.disconnectProvider(id, nil, 0, cause)
-}
-
-// disconnectProvider applies an optional eviction guard atomically with removal.
-// expected is the exact session observed by the stale scan; nil is an ordinary
-// unconditional disconnect. A negative timeout is a pointer-only guard for
-// canonical duplicate eviction. Otherwise its identity and heartbeat are checked
-// while r.mu and p.mu exclude replacement and heartbeat updates. The supplied
-// cause is stamped on every flushed pending-request terminal.
-func (r *Registry) disconnectProvider(id string, expected *Provider, timeout time.Duration, cause protocol.CoordinatorInferenceErrorCause) bool {
-	var disconnectedModels []string
-	releasedModelLoad := false
-	r.mu.Lock()
-	cacheTracker := r.cacheRouting
-	p, ok := r.providers[id]
-	if ok {
-		if expected != nil && p != expected {
-			r.mu.Unlock()
-			return false
-		}
-		p.mu.Lock()
-		if expected != nil && timeout >= 0 && time.Since(p.LastHeartbeat) <= timeout {
-			p.mu.Unlock()
-			r.mu.Unlock()
-			return false
-		}
-		delete(r.providers, id)
-		p.transport = transportMeasurement{}
-		p.warmWorkCounters = nil
-		p.lastWarmPlacementAt = time.Time{}
-		p.modelLoadSendRetryAt = time.Time{}
-		p.drainCommitted = false
-		p.drainReady = false
-		p.drainReplacementPending = false
-		p.drainReplacementAcked = false
-		p.drainReplacementReadySeq = 0
-		p.drainReplacementAppliedSeq = 0
-		p.drainReplacementID = ""
-		p.lastResumedModelReplacement = protocol.ModelsReplaceResumedMessage{}
-		p.drainRemovedModels = nil
-		p.drainRequestID = ""
-		p.appAttestAuthorization = AppAttestServingAuthorization{}
-		// Clear any pending model load entries for this provider.
-		for key := range r.pendingModelLoads {
-			if key.ProviderID == id {
-				delete(r.pendingModelLoads, key)
-				delete(r.pendingModelLoadStarted, key)
-				releasedModelLoad = true
-			}
-		}
-		p.detachModelIndexLocked(r)
-		// FAULT STATE IS NOT CLEARED ON DISCONNECT. Every fault tracker
-		// (node-health breaker, inference-error cooldowns, dispatch-load
-		// cooldowns, health ejection, capacity trackers) lives on the STABLE
-		// identity's gate when one is bound, so it must survive reconnect
-		// churn — wiping it here was the zombie exploit. detachSessionGate
-		// caches the identity (keyed by this session id) before the pending
-		// flush below so the 502 "provider disconnected" faults — the dominant
-		// reconnecting-zombie signal — still resolve to it even though the
-		// provider is already gone from r.providers; only a provider that never
-		// had a stable identity (sid == "": its gate WAS this session id, which
-		// never recurs) has its session-keyed residue dropped for hygiene.
-		r.detachSessionGate(p, stableProviderIdentityLocked(p))
-		disconnectedModels = make([]string, 0, len(p.Models))
-		for _, m := range p.Models {
-			disconnectedModels = append(disconnectedModels, m.ID)
-		}
-		if p.Status != StatusUntrusted {
-			r.onlineCount.Add(-1)
-			for _, m := range p.Models {
-				r.modelProviderDec(m.ID)
-			}
-		}
-		p.mu.Unlock()
-	}
-	r.mu.Unlock()
-
-	if releasedModelLoad {
-		r.RequestWarmPoolTrigger()
-	}
-	if !ok {
-		return false
-	}
-	// Removing the last capable provider can turn a queued constrained request
-	// from temporarily capacity-blocked into permanently unservable. Re-run
-	// the canonical drain after removal so those waiters receive the immediate
-	// capability-unavailable result instead of sleeping until maxWait.
-	r.drainQueuedRequestsForModelsWithReason(disconnectedModels, DrainTriggerDisconnect)
-	// Cache holders and nonce-bound attempts are connection-scoped. Clear them
-	// after releasing registry/provider locks.
-	cacheTracker.disconnect(id, cacheHolderRemovalDisconnect)
-	// Outstanding capacity-probe waiters bound to this connection can never be
-	// answered now (the socket is gone) — resolve them as SendFailed so probe
-	// collectors demote the entries immediately instead of burning the full
-	// quote window. Like the cache-holder cleanup above, this runs after the
-	// registry/provider locks are released (quoteTracker has its own leaf
-	// mutex; see capacity_quotes.go).
-	r.capacityQuotes.failProvider(id)
-
-	// Close all pending request channels so consumers get errors. Pending
-	// requests created by tests may leave these channels nil, and consumer
-	// goroutines may have already closed them on a successful/error path. Use
-	// non-nil checks and recover so a single bad request cannot hang or panic
-	// the disconnect cleanup.
-	p.mu.Lock()
-	pending := p.pendingReqs
-	for reqID, pr := range pending {
-		if pr == nil {
-			continue
-		}
-		if pr.ErrorCh != nil {
-			func() {
-				defer func() { recover() }()
-				pr.ErrorCh <- protocol.InferenceErrorMessage{
-					Type:             protocol.TypeInferenceError,
-					RequestID:        reqID,
-					Error:            "provider disconnected",
-					StatusCode:       502,
-					ErrorReason:      disconnectFlushErrorReason(cause),
-					CoordinatorCause: cause,
-				}
-			}()
-			func() {
-				defer func() { recover() }()
-				close(pr.ErrorCh)
-			}()
-		}
-		if pr.ChunkCh != nil {
-			func() {
-				defer func() { recover() }()
-				close(pr.ChunkCh)
-			}()
-		}
-		if pr.CompleteCh != nil {
-			func() {
-				defer func() { recover() }()
-				close(pr.CompleteCh)
-			}()
-		}
-	}
-	p.pendingReqs = make(map[string]*PendingRequest)
-	p.serviceRetirementShadows = nil
-	p.serviceRetirementProtocol = false
-	p.deadlineActivityAt = time.Time{}
-	p.deadlinePostureInvalidAt = time.Time{}
-	p.settleDrainPendingLocked()
-	p.mu.Unlock()
-	for _, pr := range pending {
-		if pr != nil {
-			r.MarkCacheAttemptTerminal(pr)
-		}
-	}
-
-	// Tear down the socket. Deleting the map entry only makes the provider
-	// unroutable; its read loop and challenge loop keep running on the open
-	// socket and the coordinator keeps auto-ponging it, so the provider never
-	// detects the drop and never reconnects — a "zombie" that's unroutable yet
-	// still reports stale trust locally. CloseNow unblocks the read loop, which
-	// unwinds the rest, and re-arms the provider's reconnect. CloseNow not Close:
-	// Disconnect runs serially in the eviction loop and Close would block ~5s
-	// waiting for a handshake the stale peer won't send. No-op if already closed;
-	// outside r.mu so it can't stall the registry.
-	p.closeWriterNow()
-
-	// Final reputation persist: job successes are persisted on a 30 s throttle
-	// (RecordJobSuccess), so flush whatever accumulated since the last window
-	// before the row goes cold. Async, like every other persist.
-	r.persistReputation(p)
-
-	// Close this connection's session row (async; durable uptime history).
-	// Covers both graceful disconnects and evictStale (which calls Disconnect).
-	if r.store != nil {
-		saferun.Go(r.logger, "registry.closeSession", func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := r.store.CloseProviderSession(ctx, id, "disconnect", time.Now()); err != nil {
-				r.logger.Warn("failed to close provider session", "provider_id", id, "error", err)
-			}
-		})
-	}
-
-	r.logger.Info("provider disconnected", "provider_id", id)
-	return true
+	r.connectionLifecycle.Disconnect(id, nil, 0, cause)
 }
 
 // SetProviderIdle updates a provider's status after a request completes.
@@ -499,17 +343,20 @@ func (r *Registry) StartEvictionLoop(ctx context.Context, timeout time.Duration)
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				r.evictStale(timeout)
+				r.connectionLifecycle.Sweep(timeout)
 			}
 		}
 	})
 }
 
-func (r *Registry) evictStale(timeout time.Duration) {
+// Sweep scans liveness, carries one grace strike, then revalidates each stale
+// session atomically with removal. A single maintenance loop owns its cadence.
+func (l *ConnectionLifecycle) Sweep(timeout time.Duration) {
+	r := l.registry
 	now := time.Now()
 
 	// Scan under the READ lock: the walk only reads LastHeartbeat (under p.mu)
-	// and the previous sweep's strikes. evictStrikes is written solely by this
+	// and the previous sweep's strikes. evictionGrace is written solely by this
 	// function on the single eviction goroutine, so a read-scan followed by a
 	// short write-locked install is race-free — and the routing scans that
 	// share r.mu are no longer blocked for a whole fleet walk every timeout/3.
@@ -521,7 +368,7 @@ func (r *Registry) evictStale(timeout time.Duration) {
 	r.mu.RLock()
 	fleet := len(r.providers)
 	ages := make([]time.Duration, 0, fleet)
-	var nextStrikes map[string]int // allocated lazily: steady state carries nothing
+	nextStrikes := r.evictionGrace.Begin() // allocated lazily: steady state carries nothing
 	var toEvict []*Provider
 	var evictAges []time.Duration
 	for id, p := range r.providers {
@@ -531,39 +378,31 @@ func (r *Registry) evictStale(timeout time.Duration) {
 		age := now.Sub(lastHeartbeat)
 		ages = append(ages, age)
 		if age > timeout {
-			strikes := r.evictStrikes[id] + 1
-			if strikes >= evictStrikeThreshold {
+			strikes := nextStrikes.ObserveStale(id)
+			if strikes >= eviction.Threshold {
 				toEvict = append(toEvict, p)
 				evictAges = append(evictAges, age)
-			} else {
-				if nextStrikes == nil {
-					nextStrikes = make(map[string]int)
-				}
-				nextStrikes[id] = strikes // carry the strike to next sweep
 			}
 		}
 	}
-	hadStrikes := len(r.evictStrikes) > 0
+	hadStrikes := r.evictionGrace.Count() > 0
 	r.mu.RUnlock()
 
 	// Install the rebuilt strike map under the write lock only when it changes
 	// anything (a strike carried or cleared). The steady state — nobody stale,
 	// nothing carried — never takes the write lock at all.
-	if hadStrikes || len(nextStrikes) > 0 {
-		if nextStrikes == nil {
-			nextStrikes = make(map[string]int)
-		}
+	if hadStrikes || nextStrikes.Count() > 0 {
 		r.mu.Lock()
-		r.evictStrikes = nextStrikes
+		r.evictionGrace.Commit(nextStrikes)
 		r.mu.Unlock()
 	}
 
 	if len(ages) > 0 {
-		amin, amed, ap90, amax := durationStats(ages)
+		amin, amed, ap90, amax := eviction.DurationStats(ages)
 		// A tight evicted-age spread (emax-emin small) means many providers went
 		// stale at the same instant — a coordinator-side stall. A broad spread
 		// means independent provider sleeps. The summary makes that diagnosable.
-		emin, _, _, emax := durationStats(evictAges)
+		emin, _, _, emax := eviction.DurationStats(evictAges)
 		r.logger.Info("eviction sweep",
 			"fleet", fleet,
 			"evicting", len(toEvict),
@@ -579,7 +418,7 @@ func (r *Registry) evictStale(timeout time.Duration) {
 	for _, p := range toEvict {
 		// A heartbeat may recover this session after the read scan, or the
 		// same id may name a replacement. Revalidate inside the removal lock.
-		if r.disconnectProvider(p.ID, p, timeout, protocol.CoordinatorCauseProviderDisconnected) {
+		if r.connectionLifecycle.Disconnect(p.ID, p, timeout, protocol.CoordinatorCauseProviderDisconnected) {
 			r.logger.Warn("evicted stale provider", "provider_id", p.ID, "timeout", timeout)
 		}
 	}
@@ -588,20 +427,4 @@ func (r *Registry) evictStale(timeout time.Duration) {
 	// prunes dead per-model entries and drops gates no live session references
 	// once idle. Off the request path and outside r.mu.
 	r.sweepGates(now)
-}
-
-// evictStrikeThreshold is how many consecutive stale sweeps trigger eviction.
-// With a timeout/3 sweep cadence, 2 strikes ≈ one extra sweep interval of grace.
-const evictStrikeThreshold = 2
-
-// durationStats returns min, median, p90, max of ds (zeros for an empty slice).
-// Sorts a copy; ds is small (fleet-sized) so this is cheap.
-func durationStats(ds []time.Duration) (min, median, p90, max time.Duration) {
-	if len(ds) == 0 {
-		return 0, 0, 0, 0
-	}
-	s := make([]time.Duration, len(ds))
-	copy(s, ds)
-	sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
-	return s[0], s[len(s)/2], s[(len(s)*9)/10], s[len(s)-1]
 }

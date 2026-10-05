@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-03
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -10,8 +10,67 @@ re-downloads artifacts and requires independent App Attest qualification before
 activating a production release. Staging/publication failures retry the retained
 artifact; GitHub and R2 publication are separate recoverable steps.
 
-The prepared version is **0.9.13**. Its MiMo memory-admission changes are
-collected in [`CHANGELOG.md`](../../CHANGELOG.md). Qualify the signed build
+The macOS signing and older-OS smoke jobs install the checksum-pinned GitHub CLI
+with `scripts/install-macos-github-cli.sh` before downloading retained artifacts.
+A `gh: command not found` error in an older run is runner setup failure before
+artifact verification, not a failed model test or notarization rejection. A
+retry of that old workflow still uses its original source. For an unchanged
+candidate with successful build and SDK qualification, merge the tooling fix
+and use the retained unsigned recovery path below.
+
+The **0.9.17** candidate separates normal model selection from Autopilot's
+verified cached inventory using protocol 3. Version preparation does not publish
+the release; tag only the reviewed merged commit and qualify the retained signed
+artifact before production registration. Validate a one-model selection with
+additional cached models: waiting/shadow enrollment must not load those models,
+change preload or memory policy, or expose them as serving models in My Macs.
+Check explicit overrides, scheduled windows, and selected-model successor updates.
+An older coordinator keeps ordinary selected-model serving while protocol 3 waits;
+a compatible coordinator restores full separate-inventory shadow planning.
+A live lease alone must not load anything: an explicit placement command owns
+its target publication and memory-reserve transition. See the
+[Autopilot rollout gates](model-autopilot.md).
+
+Released **0.9.16** repairs enrolled-daemon status, graceful lifecycle
+control and watchdog health observation. Its schema-1 state files write detailed
+Autopilot data under `autopilot_state`, leaving the old optional `autopilot` key
+absent so a still-running 0.9.15 watchdog can read the candidate heartbeat. New
+readers accept both layouts. Qualify the upgrade with consent already recorded:
+confirm status, graceful restart and promotion after the full stabilization
+window, including when the watchdog process predates the update. A newer release
+can recover machines that quarantined 0.9.15 without overriding quarantine.
+Also verify a busy model update produces a prompt retry message during inventory
+verification and preserves the running daemon and recorded selection.
+
+The **0.9.15** release added automatic idle native MiMo
+calibration through the actual serving engine; see
+[calibration behavior](../architecture/first-content-routing.md#automatic-mimo-calibration).
+On the exact signed artifact, verify short/4k phase observations reach capacity
+heartbeats, customer requests on any model preempt calibration until real
+retirement, original deadlines remain anchored, and probe work is excluded from
+served-request/token counters. Compare utilization and capacity/deadline
+refusals under real traffic without expanding memory or concurrency limits.
+
+It retains native MiMo text-prefix SSD caching enabled by default since the
+0.9.14 candidate; the exact model identities and rollback controls are in
+[prefix-cache policy](../architecture/prefix-cache.md#mimo-complete-state).
+Qualify the exact signed build with an ordinary launchd configuration: record a
+cold text request, a useful repeated-prefix donation and an authenticated SSD
+restore, including target/assistant output correctness and memory headroom.
+Verify image, audio and video requests still complete through the joint native
+path without reporting media-prefix reuse. Set `DARKBLOOM_MIMO_COMPLETE_PREFIX=0`
+and rerun the replacement `darkbloom start` flow, preserving the selected models
+and existing start options, then repeat with `DARKBLOOM_PREFIX_CACHE=0`.
+Replacement start drains the old process, rewrites its plist from the current
+shell environment and starts the provider; `darkbloom restart` reuses the saved
+plist and does not apply newly exported variables. Verify each replacement
+provider serves cold, then unset both overrides and repeat replacement start
+to restore the model default. RAM
+retention and experimental paging/rectangular verification stay off for this
+qualification. The source change does not qualify those runtime results.
+
+The MiMo memory/media fixes carried forward from 0.9.13 are collected in
+[`CHANGELOG.md`](../../CHANGELOG.md). Qualify the signed build
 on a 256 GiB host both with MiMo alone and with another model resident:
 confirm a positive usable token budget, successful inference, bounded memory
 pressure, and correct concurrency reduction or load refusal when grants shrink.
@@ -108,7 +167,7 @@ Production publication requires independent [durable App Attest build qualificat
    provider publication are separate operations.
 
 The drain implementation lives in `provider-swift/Sources/darkbloom/ServiceDrain.swift`
-(`ServiceDrain`) and `coordinator/api/provider_completion_barrier.go`
+(`ServiceDrain`) and `coordinator/internal/provider/session/provider_completion_barrier.go`
 (`providerCompletionBarrier`). See [CLI lifecycle behavior](../provider/cli-reference.md)
 for normal timeout and explicit-force semantics.
 
@@ -153,8 +212,8 @@ A coordinator binary upgrade is not required solely to register 0.9.2. The
 0.9.1 coordinator already validates and stores the release, refreshes active
 binary/metallib trust, preserves other active releases and serves the new
 version through `GET /v1/releases/latest`. `LatestProviderVersion` is a display
-fallback, not an exact-version admission pin (`coordinator/api/release_handlers.go`,
-`handleRegisterRelease`; `coordinator/api/server.go`, `SyncBinaryHashes` and
+fallback, not an exact-version admission pin (`coordinator/api/releases/release_handlers.go`,
+`HandleRegisterRelease`; `coordinator/api/server.go`, `SyncBinaryHashes` and
 `SyncRuntimeManifest`).
 
 The 0.9.2 assistant transition uses existing slot state `reloading`, capacity
@@ -227,6 +286,38 @@ Implementation: `.github/actions/provider-release-build/action.yml`,
 `scripts/provider-signing-validation.py` (`stage`, `unpack`). See the
 [build cache contract](../developer/build.md#sdk-27-release-builds-and-caches) and
 [SDK qualification checks](../developer/test.md#sdk-27-release-qualification).
+
+## Resume signing from a retained unsigned build
+
+Use this when build and SDK qualification succeeded but signing failed because
+of workflow tooling or runner setup. Keep the release tag on the original
+candidate. After the corrected workflow is merged into current `master`, run:
+
+```bash
+gh workflow run release-swift.yml --ref master \
+  -f environment=prod -f resume_run_id=36750197236 -f resume_run_attempt=1
+```
+
+The example identifies the failed 0.9.13 candidate at `ee46e5f34`. Substitute the
+explicit source run and successful build attempt for another recovery.
+`scripts/provider-release-resume.py` validates repository, workflow, push/tag
+origin, current signed tag, source signature/version, both successful jobs, and
+one unexpired immutable unsigned artifact. It refuses a source run that already
+retained a signed publication artifact. The resolver and download step both
+check identity; download verifies the GitHub artifact ZIP digest before the
+existing archive, file inventory, source/version and entitlement checks.
+
+The recovery skips compilation and SDK qualification and resumes at the normal
+protected signing job. Code signing, notarization, final signed-bundle smoke,
+independent App Attest qualification, R2 staging and publication remain required.
+`release-provenance.json` distinguishes original build source/run from the
+current signing workflow source/run. The tag is rechecked before registration.
+The unsigned artifact expires after three days; missing/expired bytes require a
+new build. Changed candidate source also requires a new build and reviewed tag.
+
+For a failure after a signed artifact was retained, retry only the failed
+staging/publication jobs from that signing run. That existing retry path
+preserves signed bytes and does not need unsigned recovery or re-signing.
 
 ## Environment-free signing validation
 
@@ -322,8 +413,8 @@ Coordinator deploys are a separate runbook:
 
 The provider and coordinator versions must be identical strings:
 
-- `provider-swift/Sources/ProviderCore/ProviderCore.swift` — `public static let version = "0.9.10"`
-- `coordinator/api/server.go` — `var LatestProviderVersion = "0.9.10"`
+- `provider-swift/Sources/ProviderCore/ProviderCore.swift` — `public static let version = "0.9.15"`
+- `coordinator/api/server.go` — `var LatestProviderVersion = "0.9.15"`
 
 ```bash
 ./scripts/check-release-version.sh          # provider == coordinator, semver
@@ -331,8 +422,8 @@ The provider and coordinator versions must be identical strings:
 ```
 
 `check-release-version.sh` accepts an optional expected version
-(`check-release-version.sh v0.9.10`) and an optional reported string from a
-built binary (`darkbloom 0.9.10` or `0.9.10`); the workflow calls it in all
+(`check-release-version.sh v0.9.15`) and an optional reported string from a
+built binary (`darkbloom 0.9.15` or `0.9.15`); the workflow calls it in all
 three forms. CI job "Release Integrity" runs the two commands above on every
 push.
 
@@ -494,7 +585,7 @@ never overwrite them. Code: `scripts/provider_release_github.py`
 [release-asset API reference](https://docs.github.com/en/rest/releases/assets).
 
 The retained production registration payload (`registerReleaseRequest` in
-`coordinator/api/release_handlers.go`; unknown fields are rejected) contains:
+`coordinator/api/releases/release_handlers.go`; unknown fields are rejected) contains:
 
 ```json
 {
@@ -514,7 +605,7 @@ The retained production registration payload (`registerReleaseRequest` in
 ```
 
 Use the downloaded payload instead of reconstructing signed-artifact hashes
-by hand. `handleRegisterRelease` authenticates the scoped release key,
+by hand. `HandleRegisterRelease` authenticates the scoped release key,
 validates semver/platform/digests and the exact configured R2 origin/path,
 then downloads and verifies the final archive and provider binary (2 GiB cap,
 two-minute timeout). New publication uses the bundle-digest path; the original
@@ -547,8 +638,8 @@ curl -fsS "$COORD/v1/admin/releases" -H "Authorization: Bearer $ADMIN_KEY" | jq 
 ```
 
 - `GET /v1/releases/latest` returns the **highest active semver** for the
-  platform (`GetLatestRelease` in `coordinator/store/postgres.go`, ordered by
-  `releaseVersionGreater` in `coordinator/store/release_version.go`), not the
+  platform (`GetLatestRelease` in `coordinator/store/postgres/`, ordered by
+  `releaseVersionGreater` in `coordinator/store/`), not the
   most recently registered row.
 - Install on a clean Mac: `curl -fsSL $COORD/install.sh | bash`;
   `scripts/install.sh` reads `/v1/releases/latest` and verifies the bundle
@@ -582,7 +673,7 @@ it** so the previous active version becomes "latest" again.
      -d '{"version":"0.9.10","platform":"macos-arm64"}'
    ```
 
-   `handleAdminDeleteRelease` answers `409 release_in_use` while connected
+   `HandleAdminDeleteRelease` answers `409 release_in_use` while connected
    providers still run that `binary_hash` (in-use protection is active when
    binary-hash enforcement is on **or** a release inventory has ever been
    published). Add `"force":true` only when the release must be pulled

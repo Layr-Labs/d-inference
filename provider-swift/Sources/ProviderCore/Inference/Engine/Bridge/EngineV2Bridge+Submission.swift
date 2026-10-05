@@ -149,11 +149,28 @@ extension EngineV2Bridge {
             continuation.finish()
             return stream
         }
+        // Foreground work on any model preempts the shared idle calibration.
+        // The original deadline keeps running while native retirement completes.
+        let foreground = mimoCalibration.requests[id] == nil
+            ? await serviceBudget?.idleCalibration.beginForeground() : nil
+        defer { foreground?.finish() }
+        // Waiting for a probe is an actor suspension: revalidate request and
+        // engine ownership before creating any service/KV reservations.
+        guard canSubmitWithNativeOwner(), active[id] == nil, !pendingSubmissionIDs.contains(id) else {
+            continuation.yield(.error("token_budget_exhausted: request ownership changed during calibration retirement"))
+            continuation.finish()
+            return stream
+        }
+        try checkBeforeServiceAdmission(firstContentDeadline, profile: profile, usageSignal: usageSignal)
         let retirementTransfer = EngineV2RetirementTransfer()
         guard acquireServiceAllowance(requestID: id, serviceReservationID: serviceReservationID,
             serviceReservation: serviceReservation, promptTokens: promptTokens.count,
             maxOutputTokens: max(0, request.max_tokens ?? defaultMaxTokens),
-            qualifiedTextWork: multimodal == nil && mediaKind == nil) else {
+            qualifiedTextWork: multimodal == nil && mediaKind == nil,
+            recoverPrefillEvidence: canRecoverPrefillEvidence(
+                promptTokens: promptTokens.count, maxOutputTokens: request.max_tokens ?? defaultMaxTokens,
+                deadline: firstContentDeadline,
+                isMultimodal: multimodal != nil || mediaKind != nil)) else {
             usageSignal?.finalizeLookup(failure: .capacity, fallbackTier: prefixCacheFallbackTier)
             continuation.yield(.error("token_budget_exhausted: whole-Mac service allowance exhausted"))
             continuation.finish()
@@ -206,6 +223,7 @@ extension EngineV2Bridge {
             cacheEnabled: cacheEnabled,
             multimodal: multimodal,
             tokenConstraint: tokenConstraint,
+            samplingDefaults: samplingDefaults,
             // The same coordinator hint that gates the write also tells the
             // engine which fork boundary is worth staging.
             prefixCheckpointTargetTokens: donationDemand?.repeatedPrefixTokens
@@ -520,8 +538,30 @@ extension EngineV2Bridge {
         let cbv2Id = mintEngineRequestId(
             seed: cbv2Request.sampling.seed, promptTokens: promptTokens)
         cbv2Request.id = cbv2Id
+        // Own staging/reclamation can invalidate guards during preparation.
+        // Bind the measurement interval only after every such suspension,
+        // while the original exclusive lease still owns the whole Mac.
+        if prefillEvidenceRecovery.owner == id {
+            prefillEvidenceRecovery.bindEvidenceGuard(
+                serviceBudget?.exclusiveEvidenceGuard(ownerID: serviceOwnerPrefix + ":" + id), ownerID: id)
+        }
+        let calibrationGuard: CBv2FirstContentEvidenceGuard?
+        if mimoCalibration.requests[id]?.width == 1 {
+            if let captured = serviceBudget?.calibrationEvidenceGuard(ownerID: serviceOwnerPrefix + ":" + id) {
+                calibrationGuard = captured
+            } else {
+                let invalid = CBv2FirstContentEvidenceGuard()
+                invalid.invalidate()
+                calibrationGuard = invalid
+            }
+        } else { calibrationGuard = nil }
+        let nativeCausalMedia = nativeMediaMeasurementEligible(multimodal)
+        let nativeMediaEvidence = nativeCausalMedia ? captureNativeMediaRateEvidence(requestID: id) : nil
         let prefillReceipt = EnginePrefillReceipt(activity: measurementActivity, model: modelId,
-            deadlineRateEvidence: deadlineProfile == nil ? nil : serviceBudget?.captureDeadlineRateEvidence())
+            deadlineRateEvidence: deadlineProfile == nil ? nil : serviceBudget?.captureDeadlineRateEvidence(),
+            isolationGuard: prefillEvidenceRecovery.owner == id ? prefillEvidenceRecovery.evidenceGuard : calibrationGuard,
+            nativeCausalMedia: nativeCausalMedia,
+            nativeRateEvidence: nativeMediaEvidence)
         cbv2Request.onPrefillCompleted = { [weak self, prefillReceipt] usage in
             prefillReceipt.complete(usage)
             Task { await self?.consumePrefillReceipt(id: id, receipt: prefillReceipt) }
@@ -550,7 +590,8 @@ extension EngineV2Bridge {
         do {
             deadlineAdmission = try firstTokenDeadlineAdmission(
                 deadline: firstContentDeadline, multimodal: multimodal,
-                requestID: id, promptTokens: promptTokens.count, promptWork: promptWork)
+                requestID: id, promptTokens: promptTokens.count, promptWork: promptWork,
+                nativeMediaEvidence: nativeMediaEvidence)
         } catch {
             // The capability check is after shared-KV/prefix preparation.
             // Preserve the existing cold-refusal unwind before returning.
@@ -631,6 +672,7 @@ extension EngineV2Bridge {
                     firstTokenDeadline: admission)
                 switch result {
                 case .admitted(let stream, let projectedWork, let admittedAt, let retirement):
+                    prefillEvidenceRecovery.admit(id)
                     profile?.observeDeadlineDecision(
                         .accepted, work: projectedWork, deadline: firstContentDeadline)
                     if Task.isCancelled || pendingCancellationIDs.contains(id) {
@@ -727,7 +769,12 @@ extension EngineV2Bridge {
                 // Projection fails open when mode is off, no isolated rate has
                 // been measured, or media makes token projection incomplete.
                 // Absolute expiry does not: it was checked immediately above.
-                if let native = engine as? CBv2NativeBlockEngine {
+                if prefillEvidenceRecovery.owner == id {
+                    let submitted = try submitPrefillEvidenceRecovery(
+                        engineRequest, requestID: id, deadline: firstContentDeadline)
+                    events = submitted.events
+                    nativeRetirement = submitted.retirement
+                } else if let native = engine as? CBv2NativeBlockEngine {
                     let submitted = try native.submitWithRetirement(engineRequest)
                     events = submitted.events
                     nativeRetirement = submitted.retirement
@@ -740,6 +787,25 @@ extension EngineV2Bridge {
                     events = try engine.submit(engineRequest)
                 }
                 profile?.observeDeadlineDecision(.accepted, deadline: firstContentDeadline)
+                if prefillEvidenceRecovery.owner == id {
+                    do {
+                        try Task.checkCancellation()
+                        if pendingCancellationIDs.contains(id) { throw CancellationError() }
+                        try firstContentDeadline?.check()
+                    } catch {
+                        let continuation: DeadlineContinuation = error is CancellationError ? .cancelled : .expired
+                        profile?.stopDeadlineContinuation(continuation)
+                        engine.cancel(cbv2Id)
+                        transferPreSubmitRetirement(
+                            retirementTransfer, requestID: id, engineID: cbv2Id,
+                            stream: events, retirement: nativeRetirement ?? .acknowledged,
+                            prefillReceipt: prefillReceipt, sharedKVReserved: sharedKVReserved,
+                            prefixCacheReceiptID: prefixCacheReceiptID, ssdStaged: ssdStaged,
+                            readyReceiptRegistered: readyReceiptRegistered,
+                            usageSignal: usageSignal, failure: Self.prefixCacheFailureClass(for: error))
+                        throw error
+                    }
+                }
                 if let profile {
                     // Evaluated AFTER the submit returned: the deadline may
                     // have expired meanwhile, hence the zero clamp.
@@ -753,6 +819,7 @@ extension EngineV2Bridge {
                 }
             }
         } catch let cancellation as CBv2FirstTokenAdmissionCancellation {
+            prefillEvidenceRecovery.admit(id)
             // This exception proves acceptance but carries no projected work.
             profile?.observeDeadlineDecision(
                 .accepted, deadline: firstContentDeadline, continuation: .cancelled)

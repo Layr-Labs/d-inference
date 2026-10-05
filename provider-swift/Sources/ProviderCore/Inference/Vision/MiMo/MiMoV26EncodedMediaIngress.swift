@@ -63,6 +63,14 @@ enum MiMoV26EncodedMediaIngress {
         .multimodalRejected("native media input is unsupported or exceeds its bound")
     }
     static func outwardFailure(_ error: Error) -> Error {
+        // These are request/device quota checks before vision execution, not
+        // evidence that the loaded text engine or its KV budget is unhealthy.
+        if let failure = error as? MiMoV26VisionError, case .executionLimit = failure {
+            return MultiModelBatchSchedulerEngineError.mediaMemoryUnavailable
+        }
+        if let failure = error as? MiMoV26Pixels.Failure, case .resourceLimit = failure {
+            return MultiModelBatchSchedulerEngineError.mediaMemoryUnavailable
+        }
         if let failure = error as? MiMoV26EncodedAudioDecoder.Failure {
             switch failure {
             case .limit,.arithmeticOverflow: return MediaIngest.MediaError.mediaTooLarge("native audio input bound")
@@ -91,8 +99,7 @@ enum MiMoV26EncodedMediaIngress {
         if let failure = error as? MiMoV26MultimodalError {
             switch failure {
             case .reservationRejected:
-                return MultiModelBatchSchedulerEngineError.fromSchedulerMessage(
-                    "token_budget_exhausted: native media memory admission refused")
+                return MultiModelBatchSchedulerEngineError.mediaMemoryUnavailable
             case .invalidInput,.limit,.unsupportedProfile,.missingAudioCodec:
                 return refusal()
             case .cancelled: return CancellationError()

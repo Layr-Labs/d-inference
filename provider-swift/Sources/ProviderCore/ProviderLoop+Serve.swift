@@ -179,7 +179,8 @@ extension ProviderLoop {
             privateOnly: loopConfig.config.coordinator.privateOnly,
             apnsDeviceToken: apnsDeviceToken,
             apnsEnvironment: apnsDeviceToken != nil ? "production" : nil,
-            idleUnloadMins: loopConfig.config.backend.idleTimeoutMins
+            idleUnloadMins: loopConfig.config.backend.idleTimeoutMins,
+            autopilotInventory: loopConfig.autopilotInventory
         )
 
         // A termination received during the APNs/startup awaits can already
@@ -191,6 +192,7 @@ extension ProviderLoop {
             return
         }
         // 4. Create coordinator client and start connection
+        publishModelAutopilotSnapshot()
         let coordinator = CoordinatorClient(
             config: coordinatorConfig,
             stats: stats,
@@ -283,6 +285,7 @@ extension ProviderLoop {
                     await coordinator.completeDrainAcknowledgement(id)
                 case .connected:
                     clearConnectionAuthorization()
+                    clearAutopilotControl()
                     logger.info(.coordinatorConnected)
                     // The post-retirement reconnect's admission barrier
                     // (see `requestPlannedReconnect`) lifts with the new
@@ -293,6 +296,7 @@ extension ProviderLoop {
                 case .disconnected:
                     clearConnectionAuthorization()
                     modelSwitchTask?.cancel()
+                    clearAutopilotControl()
                     cancelAppAttestShadow()
                     logger.warning(.coordinatorDisconnected)
                     // Cancel all in-flight requests on disconnect -- the coordinator
@@ -346,6 +350,11 @@ extension ProviderLoop {
                     for m in mismatches {
                         logger.warning("  \(m.component): expected=\(m.expected), got=\(m.got)")
                     }
+
+                case .modelAutopilotControl(let control):
+                    await handleAutopilotControl(control)
+                case .modelAutopilot(let command):
+                    handleModelAutopilot(command, send: send)
 
                 case .loadModel(let modelId):
                     handleLoadModelRequest(modelId: modelId, send: send)
@@ -417,6 +426,7 @@ extension ProviderLoop {
         // any still-running startup preload driver (it outlives the readiness
         // gate when the timeout passed).
         var preloads = Array(preloadTasks.values)
+        if let autopilotTask { preloads.append(autopilotTask) }
         if let startupTask = startupPreloadTask {
             preloads.append(startupTask)
         }

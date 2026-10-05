@@ -251,6 +251,37 @@ struct WatchdogRecoveryIntegrationTests {
         #expect(state.candidate == nil)
     }
 
+    @Test("enrolled candidate promotes through persisted state with current and pre-update readers", arguments: [false, true])
+    func enrolledCandidatePromotes(legacyReader: Bool) async throws {
+        let context = try await installedCandidate(stabilizationSeconds: 60)
+        defer { context.fixture.cleanup() }
+        defer { Task { await context.mock.shutdown() } }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("enrolled-watchdog-\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        func heartbeat(now: Double) throws -> DaemonState {
+            var snapshot = ModelAutopilotSnapshot(enabled: true,
+                residentModels: [.init(modelId: "test", residentSeconds: 90, idleSeconds: 60, weightsGb: 1)])
+            snapshot.observeOnly = true
+            snapshot.loadHistory = [.init(modelId: "test", loadMs: 200, measuredAtMs: 1000)]
+            DaemonStateFile.write(DaemonState(pid: 4242, version: "2.0.0", writtenAt: now,
+                startedAt: 150, autopilot: snapshot, autopilotPhase: "shadow"), to: url)
+            if legacyReader {
+                let decoder = JSONDecoder()
+                decoder.keyDecodingStrategy = .convertFromSnakeCase
+                return try decoder.decode(LegacyAutopilotDaemonState.self, from: Data(contentsOf: url)).heartbeat()
+            }
+            return try #require(DaemonStateFile.read(from: url))
+        }
+        #expect(context.service.observeHealthyProvider(providerRunning: true,
+            daemonState: try heartbeat(now: 200), now: 200) == .stabilizing(since: 200))
+        #expect(context.service.observeHealthyProvider(providerRunning: true,
+            daemonState: try heartbeat(now: 261), now: 261) == .promoted(version: "2.0.0"))
+        let state = try recoveryStore(context.fixture).loadState()
+        #expect(state.candidate == nil)
+        #expect(state.quarantine == nil)
+        #expect(state.current?.version == "2.0.0")
+    }
+
     @Test("watchdog network session is bounded")
     func watchdogSessionIsBounded() {
         let session = SelfUpdater.watchdogURLSession()

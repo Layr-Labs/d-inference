@@ -18,10 +18,12 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/api"
+	"github.com/eigeninference/d-inference/coordinator/api/releases"
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/registry/autopilot"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/e2e/testbed/deps"
 )
@@ -53,6 +55,7 @@ func execCommandContext(ctx context.Context, name string, args ...string) *exec.
 
 type Suite struct {
 	providerAttempts []*Provider
+	stopAutopilot    func()
 
 	Ctx    context.Context
 	Logger *slog.Logger
@@ -208,6 +211,13 @@ func (s *Suite) Start(ctx context.Context) (err error) {
 	if err = s.waitForProviderRegistration(3 * time.Minute); err != nil {
 		return err
 	}
+	if s.Config.Autopilot {
+		cfg := autopilot.DefaultConfig()
+		// This isolated suite explicitly exercises live load/pause transitions.
+		cfg.ObserveOnly = false
+		cfg.Interval = time.Second
+		s.stopAutopilot = s.Coordinator.Registry.StartAutopilotController(s.Ctx, cfg)
+	}
 	// Built-backend assertion: when the lane declares an expected KV backend
 	// (DARKBLOOM_TESTBED_EXPECT_KV_BACKEND or SuiteConfig.ExpectKVBackend),
 	// refuse to come up until every provider slot proves the engine it
@@ -220,6 +230,10 @@ func (s *Suite) Stop() { _ = s.StopAndWait() }
 
 func (s *Suite) StopAndWait() error {
 	var result error
+	if s.stopAutopilot != nil {
+		s.stopAutopilot()
+		s.stopAutopilot = nil
+	}
 	seen := make(map[*Provider]bool)
 	for _, providers := range [][]*Provider{s.Providers, s.providerAttempts} {
 		for _, p := range providers {
@@ -307,7 +321,7 @@ func (s *Suite) startCoordinator() error {
 		srv.SyncModelCatalog()
 	}
 	srv.SetAdminKey("testbed-admin-key")
-	srv.SetRuntimeManifest(&api.RuntimeManifest{})
+	srv.SetRuntimeManifest(&releases.RuntimeManifest{})
 	srv.SetChallengeInterval(1 * time.Hour)
 	srv.SetSkipChallenge(true)
 	srv.SetAllowDuplicateProviderSerialsForTesting(s.Config.ProviderTargets == nil)
@@ -367,6 +381,7 @@ func (s *Suite) startProviders() error {
 				s.providerAttempts = append(s.providerAttempts, p)
 			}
 			if err := p.Start(s.Ctx, providerURL, ProviderConfig{
+				Autopilot:                  s.Config.Autopilot,
 				LocalEndpointPort:          s.Config.LocalEndpointPort,
 				ModelIDs:                   modelIDs,
 				PrefixCacheMode:            s.Config.PrefixCacheMode,

@@ -2,8 +2,8 @@ package registry
 
 import (
 	"os"
-	"strings"
-	"sync/atomic"
+
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/configswitch"
 )
 
 // health_ejection_switch.go — the process-wide health-ejection kill switch.
@@ -11,28 +11,10 @@ import (
 // EIGENINFERENCE_HEALTH_EJECTION is parsed exactly once at package init and
 // cached in an atomic so the routing gate (providerPassesRoutingGatesLockedEx,
 // once per provider per scan) reads a single atomic load instead of
-// os.Getenv + ToLower + TrimSpace. A running process cannot observe a change
-// to its own environment, so this is behavior-identical to the former per-call
-// read; the only writer after init is the test hook
-// setHealthEjectionEnabledForTest (health_ejection_switch_test.go).
+// os.Getenv + ToLower + TrimSpace. Later environment changes do not alter the
+// cached policy; the process-wide switch is initialized once here.
 
 // healthEjectionEnvKey is the kill-switch variable; off/0/false/no disable.
-const healthEjectionEnvKey = "EIGENINFERENCE_HEALTH_EJECTION"
+const healthEjectionEnvKey = configswitch.HealthEjectionEnvKey
 
-var healthEjectionSwitch = func() *atomic.Bool {
-	var b atomic.Bool
-	b.Store(parseHealthEjectionEnv(os.Getenv(healthEjectionEnvKey)))
-	return &b
-}()
-
-// parseHealthEjectionEnv maps the raw environment value to the switch state:
-// off/0/false/no (case-insensitive, whitespace-trimmed) disable; anything
-// else — including unset — enables.
-func parseHealthEjectionEnv(raw string) bool {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "off", "0", "false", "no":
-		return false
-	default:
-		return true
-	}
-}
+var healthEjectionSwitch = configswitch.New(os.Getenv(healthEjectionEnvKey))

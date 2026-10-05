@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — stale cache allowlist entries
+
+- Report cache-routing allowlist entries that a model revision has left behind. Publishing new weights or a new template under the same model ID changes the artifact tuple, so the model silently lost cache routing and its cache hits fell to zero until an operator appended the new tuple. `GET /v1/cache/status` now counts such models as `artifact_allowlist.stale_models`, with matching Prometheus and Datadog gauges, and the coordinator log names each live tuple once. Routing behaviour and the allowlist's exact-match rule are unchanged.
+
 ## Unreleased - Mac CI cost controls
 
 - Cancel superseded pull-request CI and integration runs without cancelling default-branch pushes. Bound provider unit-test stalls with the existing diagnostic watchdog, and reuse compatible integration build caches while retaining every test gate and parallel job.

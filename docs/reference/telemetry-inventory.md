@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-05
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -183,6 +183,7 @@ have different populations and must not be summed together.
 | `profiler.fleet_snapshot` | count | `status:written`, `write_failed` | each fleet sample |
 | `profiler.pruned_rows` | count | — | each hourly retention sweep |
 | `providers.online`, `providers.per_model{model}`, `providers.per_version{version}`, `providers.by_trust_status{…}`, `providers.by_mdm_failure{reason}`, `attestation.code_attested`, `attestation.code_enforced`, `coordinator.min_provider_version_set{min_version}`, `request_queue.depth`, `utilization.network`, `utilization.warm`, `utilization.token_budget`, `utilization.bottleneck`, `utilization.model{model}`, `capacity.tps`, `capacity.demand_concurrency`, `capacity.serving_capacity`, `capacity.spill_arrival_rate` | gauge | as listed | every 15 s from `StartDDGaugeLoop` (`coordinator/api/observation/fleet_gauge_loop.go`), which also pushes the `exact_cache.*` gauges (`EmitExactCacheDDGauges`, `coordinator/api/inference/exact_cache_metrics.go`); the loop returns immediately when no Datadog client is configured |
+| `exact_cache.artifact_allowlist.stale_models` | gauge | — | every gauge-loop tick; catalog models the cache-routing allowlist names only under a superseded artifact, `0` unless routing is `on`. Aggregate only: the tuple to append is named in the coordinator log, never in a metric (`EmitExactCacheDDGauges`, `coordinator/api/inference/exact_cache_metrics.go`; `missingAllowlistEntries`, `coordinator/api/inference/exact_cache_allowlist_staleness.go`) |
 | `request_queue.depth_by_model`, `request_queue.oldest_age_ms` | gauge | `model` | every gauge-loop tick for served or queued models; a disappearing model gets one final zero for both series and is then forgotten (`coordinator/internal/observation/fleet/fleet_gauges.go`, `emitPerModelQueueGauges`) |
 
 ### In-process registry (not Datadog)

@@ -28,6 +28,9 @@ func (s *Owner) RegisterExactCacheGauges() {
 	s.observation.Metrics().RegisterGauge("exact_cache_artifact_allowlist_count", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.ArtifactAllowlist.Count)
 	}))
+	s.observation.Metrics().RegisterGauge("exact_cache_artifact_allowlist_stale_models", gauge(func(s ExactCacheStatus) float64 {
+		return float64(s.ArtifactAllowlist.StaleModels)
+	}))
 	s.observation.Metrics().RegisterGauge("exact_cache_sidecar_enabled", gauge(func(s ExactCacheStatus) float64 {
 		return observation.BoolGauge(s.Sidecar.Enabled)
 	}))
@@ -281,6 +284,7 @@ func (s *Owner) EmitExactCacheDDGauges() {
 	s.observation.Gauge("exact_cache.routing_mode", 1, []string{"mode:" + status.RoutingMode})
 	s.observation.Gauge("exact_cache.artifact_allowlist.configured", observation.BoolGauge(status.ArtifactAllowlist.Configured), nil)
 	s.observation.Gauge("exact_cache.artifact_allowlist.count", float64(status.ArtifactAllowlist.Count), nil)
+	s.observation.Gauge("exact_cache.artifact_allowlist.stale_models", float64(status.ArtifactAllowlist.StaleModels), nil)
 	s.observation.Gauge("exact_cache.activation.percent", status.Activation.Percent, nil)
 	s.observation.Gauge("exact_cache.activation.max_plan_qps", status.Activation.MaxPlanQPS, nil)
 	s.observation.Gauge("exact_cache.activation.total", float64(status.Activation.Evaluated), []string{"outcome:evaluated"})

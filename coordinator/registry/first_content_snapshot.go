@@ -11,7 +11,7 @@ import (
 // additional provider read. Whole-Mac service work uses bounded expected output
 // demand, not maximum-token memory commitments. Reported/local work overlap is
 // reconciled per model with max, so one request is not charged twice.
-func (r *Registry) fillFirstContentSnapshot(s *routingSnapshot, p *Provider, now time.Time) {
+func (r *Registry) fillFirstContentSnapshot(s *routingSnapshot, p *Provider, now time.Time, pendingWork []forecast.PendingWork, report capacityvalue.ServiceReport) {
 	s.capacityAcceptedAt, s.capacitySeq = p.CapacityAcceptedAt, p.capacitySeq
 	s.transportMs, s.conservativeTransportMs, s.transportAgeMs = p.transport.Forecast(now)
 	s.capacityAgeMs, s.performanceAgeMs = -1, -1
@@ -35,7 +35,7 @@ func (r *Registry) fillFirstContentSnapshot(s *routingSnapshot, p *Provider, now
 		(capacity.WholeMacServiceUsed != nil && *capacity.WholeMacServiceUsed != 0) ||
 		len(capacity.WholeMacServiceReservations) > 0 ||
 		(capacity.LoadTransitionActive != nil && *capacity.LoadTransitionActive)
-	fillCalibratedWorkSnapshot(s, p, now)
+	fillCalibratedWorkSnapshot(s, p, now, report)
 	builder := forecast.NewWorkBuilder(s.model, capacity, p.CapacityAcceptedAt, s.decodeTPS, s.prefillTPS, s.wholeMacBusy)
 	for i := range capacity.Slots {
 		slot := &capacity.Slots[i]
@@ -66,13 +66,13 @@ func (r *Registry) fillFirstContentSnapshot(s *routingSnapshot, p *Provider, now
 			}
 		}
 		builder.BeginSlot(i)
-		for _, pending := range p.pendingReqs {
-			builder.Pending(firstContentPendingWork(pending))
+		for _, pending := range pendingWork {
+			builder.Pending(pending)
 		}
 		builder.EndSlot()
 	}
-	for _, pending := range p.pendingReqs {
-		builder.UnreportedPending(firstContentPendingWork(pending))
+	for _, pending := range pendingWork {
+		builder.UnreportedPending(pending)
 	}
 	work := builder.Finish()
 	s.wholeMacWorkKnown, s.wholeMacBusy = work.WholeMacKnown, work.WholeMacBusy

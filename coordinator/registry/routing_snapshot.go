@@ -3,6 +3,8 @@ package registry
 import (
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/capacityvalue"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/forecast"
 	kvbudget "github.com/eigeninference/d-inference/coordinator/internal/registry/kvbudget"
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/memorypolicy"
 )
@@ -12,7 +14,7 @@ import (
 // applied its routing gates. It overwrites caller-owned storage, so reused
 // snapshots cannot retain slots or budgets from another model/provider.
 // Selection-only headroom and heartbeat-age fields are filled by its caller.
-func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider, model string, now time.Time) {
+func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider, model string, now time.Time, report capacityvalue.ServiceReport) {
 	*snap = routingSnapshot{}
 	snap.CandidateBinding = BindCandidate(p, model)
 	snap.chipFamily = p.Hardware.ChipFamily
@@ -30,8 +32,8 @@ func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider
 	snap.freeForLoadGB = footprint.FreeForLoadGB
 	snap.minRAMGb = r.catalogMinRAMGbLocked(model)
 
-	fillSnapshotPendingAndPool(snap, p, model)
-	fillFirstContentPending(snap, p, model)
+	var pendingBuffer [16]forecast.PendingWork
+	pendingWork := fillPendingSnapshot(snap, p, model, pendingBuffer[:0])
 	snap.firstContentPendingKnown = true
 
 	snap.hasBackendCapacity = p.BackendCapacity != nil
@@ -87,5 +89,5 @@ func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider
 	if !r.deadlineProfileApplicableLocked(p, snap.deadlineProfile, now) {
 		snap.deadlineProfile = nil
 	}
-	r.fillFirstContentSnapshot(snap, p, now)
+	r.fillFirstContentSnapshot(snap, p, now, pendingWork, report)
 }

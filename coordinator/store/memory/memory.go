@@ -21,6 +21,7 @@ var _ store.Store = (*MemoryStore)(nil)
 type MemoryStore struct {
 	now                       func() time.Time
 	history                   *memoryhistory.State
+	smallModelsInterest       map[string]store.SmallModelsInterest
 	autopilotRecords          map[string]store.AutopilotRecord
 	modelTokenProviderCarries map[string]int64
 	modelTokenPromotions      map[string]store.ModelTokenPromotion
@@ -156,6 +157,7 @@ func NewMemory(scfg store.Config) *MemoryStore {
 	s := &MemoryStore{
 		now:                           now,
 		history:                       memoryhistory.New(),
+		smallModelsInterest:           make(map[string]store.SmallModelsInterest),
 		modelDemandStartedAt:          time.Now().UTC(),
 		keyRecords:                    make(map[string]*store.APIKey),
 		keysByID:                      make(map[string]string),

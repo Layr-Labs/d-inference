@@ -94,6 +94,12 @@ func (s *Server) routes() {
 
 	s.mux.HandleFunc("GET /v1/provider/account-earnings", s.access.RequireAuth(s.billingHTTP.HandleAccountEarnings))
 
+	// Earn-page hardware interest — registration and own readback require an
+	// interactive Privy session; the admin export is authorized in its handler.
+	s.mux.HandleFunc("POST /v1/interest/small-models", s.access.RequirePrivyAuth(s.access.RateLimitFinancial(s.accounts.HandleRegisterSmallModelsInterest)))
+	s.mux.HandleFunc("GET /v1/interest/small-models", s.access.RequirePrivyAuth(s.accounts.HandleGetSmallModelsInterest))
+	s.mux.HandleFunc("GET /v1/admin/interest/small-models", s.access.RequireAuth(s.accounts.HandleAdminSmallModelsInterest))
+
 	// Account-scoped provider dashboard.
 	s.mux.HandleFunc("GET /v1/me/providers", s.access.RequirePrivyAuth(s.accounts.HandleMyProviders))
 	s.mux.HandleFunc("GET /v1/me/token-promotions", s.access.RequirePrivyAuth(s.inference.HandleMyModelTokenPromotions))

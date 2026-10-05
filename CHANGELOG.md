@@ -97,6 +97,11 @@
 - Give customer requests priority across models: cancel calibration and wait for real native retirement before admission. Keep probe work out of served-request/token counters; publish actual phase measurements and optional peak-concurrency workload buckets through existing heartbeats.
 - Align `ProviderCore.version` and the coordinator latest-provider display fallback at `0.9.15`. Publication, signed-artifact qualification and coordinator rollout remain separate operations.
 
+## Unreleased — durable hardware interest
+
+- Save Earn-page notification interest against the authenticated account before showing confirmation. Both notification buttons preserve pending hardware through sign-in, expose cancellation and retry, and recover confirmed status from the server after reload.
+- Add per-account memory/Postgres upserts and a bounded admin-only export joined to current email. Hardware updates replace the account's previous selection; legacy anonymous browser markers no longer claim registration. No email delivery is added.
+
 ## Unreleased — provider prefill evidence recovery
 
 - Let an idle native text provider renew expired isolated-prefill measurements through one short request under its original first-content deadline. Serialize the final idle check and native registration, then restore ordinary concurrency after prompt completion while retaining service and memory ownership until actual engine retirement. Back off failed or cache-only recovery; busy, loading, media and large requests retain predictive admission.

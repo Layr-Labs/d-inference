@@ -24,6 +24,7 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | Provider sessions and trust | `coordinator/api/provider/` and `provider/trust/`; terminal inference events return to the shared inference owner |
 | Catalog publication and release policy | `coordinator/api/catalog/` and `coordinator/api/releases/` |
 | Accounts, billing HTTP and payouts | `coordinator/api/accounts/`, `coordinator/api/billing/`, `billing/payouts/` |
+| Earn-page hardware interest: registration, own readback and admin export | `coordinator/api/accounts/small_models_interest.go`; contract in `coordinator/store/small_models_interest.go`, backends in `coordinator/store/memory/small_models_interest.go` and `coordinator/store/postgres/small_models_interest.go` |
 | Public projections and operational endpoints | `coordinator/api/reporting/` and `coordinator/api/operations/` |
 | Profiles, request outcomes and route sinks | `coordinator/api/observation/`; separate bounded queues retain their own loss/flush rules |
 | Prompt accounting and planning | `coordinator/api/promptwork/` and the inference owner |

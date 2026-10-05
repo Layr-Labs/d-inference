@@ -25,6 +25,28 @@ models. This uses `Provider.ServingModelsLocked` in
 `coordinator/registry/autopilot_inventory.go`; see
 [model Autopilot](../architecture/model-autopilot.md).
 
+## Small-model interest
+
+Both Earn-page notification buttons register the same per-account interest; a later registration replaces that account's selected hardware. No endpoint sends email.
+
+| Route | Authentication and rate limit | Result | Code |
+|---|---|---|---|
+| `POST /v1/interest/small-models` | Privy JWT only; financial mutation bucket | Empty `204` only after the store upsert completes | `coordinator/api/accounts/small_models_interest.go` (`HandleRegisterSmallModelsInterest`), `coordinator/api/routes.go` (`routes`) |
+| `GET /v1/interest/small-models` | Privy JWT only | Own record (`account_id`, hardware, `created_at`, `updated_at`), or `404`; private/no-store | `coordinator/api/accounts/small_models_interest.go` (`HandleGetSmallModelsInterest`) |
+| `GET /v1/admin/interest/small-models?limit=100&after=<account_id>` | Admin key or verified Privy admin; inference/provider keys rejected | `{data: [...], next_cursor?: string}`; each record includes the current user email; private/no-store | `coordinator/api/accounts/small_models_interest.go` (`HandleAdminSmallModelsInterest`) |
+
+| Registration field / constraint | Accepted values | Code |
+|---|---|---|
+| `mac_type` | `MacBook Pro`, `Mac Mini`, `Mac Studio`, `Mac Pro` | `coordinator/api/accounts/small_models_interest.go` (`HandleRegisterSmallModelsInterest`) |
+| `chip` | Nonblank string, at most 128 bytes, no control characters | Same handler |
+| `ram_gb` | Integer from 1 through 2048 | Same handler |
+| Identity/contact | Derived from the verified session and stored user; caller-supplied identity, email, or other unknown fields reject with `400` | Same handler |
+| Body | One JSON object, no trailing values; maximum 1024 bytes (`413` when exceeded) | Same handler, `interestJSONError` |
+| Contactability | A stored account email is required (`422 email_required`); `401` invalid/missing session, `403` noninteractive credentials, `429` rate limit, `500` storage failure never acknowledge registration | Same handler and `RequirePrivyAuth` in `coordinator/api/access/auth.go`, `RateLimitFinancial` in `coordinator/api/access/rate_limits.go` |
+| Export page | `limit` defaults to 100, valid range 1–100; `after` is exclusive account ID, at most 256 bytes; follow `next_cursor` until absent | `coordinator/api/accounts/small_models_interest.go` (`HandleAdminSmallModelsInterest`) |
+
+The console forwards only to this fixed coordinator path. Its pending hardware marker is not proof of registration; success requires `204` or authenticated readback. See [sign-in and registration steps](../consumer/authentication.md#6-register-hardware-interest).
+
 ## Graceful provider lifecycle
 
 Lifecycle drains preserve the existing public inference protocol. A reservation

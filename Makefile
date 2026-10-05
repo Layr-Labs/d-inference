@@ -16,7 +16,8 @@ help:
 # ---- Coordinator (Go) ------------------------------------------------------
 
 coordinator-test: ## Run Go unit tests for the coordinator
-	cd coordinator && go test ./...
+	python3 scripts/test-coordinator-tests.py
+	python3 scripts/run-coordinator-tests.py
 
 coordinator-build: ## Build the coordinator binary for the host platform
 	cd coordinator && go build ./cmd/coordinator

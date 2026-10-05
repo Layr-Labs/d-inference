@@ -1,6 +1,6 @@
 # EigenCloud → GCP Confidential VM Migration Runbook
 
-> Last updated: 2026-07-17 · commit `7c2aacd79`
+> Last updated: 2026-07-17
 
 How to move the prod coordinator off EigenCloud onto a GCP Confidential VM with **no fleet disruption**, and how to handle the `darkbloom.dev → darkbloom.ai` domain change (separately).
 

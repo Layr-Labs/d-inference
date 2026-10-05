@@ -52,7 +52,7 @@ private final class MiMoSlotCancellationWitness: @unchecked Sendable {
 /// tiny filesystem factory/transaction. No successful native result is mocked.
 /// Synthetic CPU fixture transforms are bounded and never touch real artifacts.
 final class MiMoV26ManagedSlotTests: XCTestCase {
-    private enum FixtureError: Error { case nativeLaneRequired, payloadFixtureRequired, unexpectedRetirement }
+    private enum FixtureError: Error { case payloadFixtureRequired, unexpectedRetirement }
     private let literal = "<|im_start|>x<think>{% if enable_thinking is false %}</think>{% endif %}"
     private let environment = ["DARKBLOOM_PREFIX_CACHE": "0", "DARKBLOOM_PREFIX_CACHE_MEMORY": "0"]
     private var registries: [MiMoV26NativeLoadRegistry] = []
@@ -192,9 +192,7 @@ final class MiMoV26ManagedSlotTests: XCTestCase {
 
 
     private func lane() throws {
-        guard ProcessInfo.processInfo.environment["MIMO_V26_SERIAL_NATIVE_TESTS"] == "1" else {
-            throw FixtureError.nativeLaneRequired
-        }
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_SERIAL_NATIVE_TESTS")
     }
     private func loaded(float32: Bool = false, asymmetric: Bool = false) async throws -> Loaded {
         try lane()
@@ -224,10 +222,11 @@ final class MiMoV26ManagedSlotTests: XCTestCase {
     private func build(_ value: Loaded, intent: SpecDecPreparation, prepared: EngineV2ServingPreparation,
                        backend: String = "contiguous", budget: GlobalKVCacheBudget? = nil,
                        environment: [String: String]? = nil,
+                       grantBytes: Int = 2 << 30, concurrency: Int = 2,
                        emit: (@Sendable (TelemetryEvent) -> Void)? = nil) async throws -> ProviderEngineBundle {
         try await EngineV2SlotFactory.makeProductionBundle(modelId: "managed-mimo-fixture", modelType: "mimo_v2",
             isVLM: false, modelDirectory: value.root, container: value.container, tokenizer: value.tokenizer,
-            sizing: value.sizing, kvBytesCapacity: 64 << 20, maxConcurrentRequests: 2,
+            sizing: value.sizing, kvBytesCapacity: grantBytes, maxConcurrentRequests: concurrency,
             kvBudget: budget ?? value.budget, kvBackendConfig: backend,
             specDecPreparation: intent, preparedModel: prepared, environment: environment ?? self.environment,
             startServingTelemetry: false, emitTelemetry: emit ?? { _ in })
@@ -246,6 +245,54 @@ final class MiMoV26ManagedSlotTests: XCTestCase {
     private func engine(_ bundle: ProviderEngineBundle) async throws -> EngineV2 {
         let value = await bundle.bridge.ownedEngine
         return try XCTUnwrap(value as? EngineV2)
+    }
+
+    func testNativeMemoryAdmissionShrinksAndRecoversWithActualEngine() async throws {
+        let value = try await loaded()
+        let (intent, prepared) = try await prepare(value, mode: .on)
+        let bundle = try await build(value, intent: intent, prepared: prepared, concurrency: 4)
+        let bridge = bundle.bridge
+        let native = try await engine(bundle)
+        let overheadValue = await bridge.maximumRequestOverheadBytes()
+        let overhead = try XCTUnwrap(overheadValue)
+        XCTAssertGreaterThan(overhead, 0)
+        let initial = await bridge.backendSlotCapacity()
+        XCTAssertEqual(initial.maxConcurrency, 4)
+        XCTAssertGreaterThan(initial.activeTokenBudgetMax, 0)
+
+        let oneRequestGrant = EngineV2Bridge.minimumNativeGrantBytes(fixedRequestBytes: overhead)
+        await bridge.updateKVBytesCapacity(oneRequestGrant)
+        let narrowed = await bridge.backendSlotCapacity()
+        XCTAssertEqual(narrowed.maxConcurrency, 1)
+        XCTAssertGreaterThan(narrowed.activeTokenBudgetMax, 0)
+        XCTAssertEqual(narrowed.activeTokenBudgetMax,
+            Int64((native.admissibleKVBytesCapacity - overhead) / Int(narrowed.kvBytesPerToken)))
+
+        let fleetClamped = await bridge.backendSlotCapacity(kvBytesBudgetClamp: 0)
+        XCTAssertEqual(fleetClamped.maxConcurrency, 0)
+        XCTAssertEqual(fleetClamped.activeTokenBudgetMax, 0)
+        await bridge.updateKVBytesCapacity(0)
+        let exhausted = await bridge.backendSlotCapacity()
+        XCTAssertEqual(exhausted.maxConcurrency, 0)
+        XCTAssertEqual(exhausted.activeTokenBudgetMax, 0)
+
+        await bridge.updateKVBytesCapacity(2 << 30)
+        let recovered = await bridge.backendSlotCapacity()
+        XCTAssertEqual(recovered.maxConcurrency, 4)
+        XCTAssertEqual(recovered.activeTokenBudgetMax, initial.activeTokenBudgetMax)
+        _ = try await retire(value)
+    }
+
+    func testNativeMemoryAdmissionRefusesUnderfundedNewSlot() async throws {
+        let value = try await loaded()
+        let (intent, prepared) = try await prepare(value, mode: .on)
+        do {
+            _ = try await build(value, intent: intent, prepared: prepared, grantBytes: 64 << 20)
+            XCTFail("a new native slot without minimum serveable KV must not publish")
+        } catch {
+            XCTAssertTrue(String(describing: error).contains("cannot fit one request workspace"))
+        }
+        _ = try await retire(value)
     }
 
     func testPreparationIsOnlyMetadataUntilOneActualPipelineBuilds() async throws {
@@ -467,7 +514,7 @@ final class MiMoV26ManagedSlotTests: XCTestCase {
             defer { gate.taskEnded() }
             return try await EngineV2SlotFactory.makeProductionBundle(modelId: "managed-mimo-fixture", modelType: "mimo_v2",
                 isVLM: false, modelDirectory: value.root, container: value.container, tokenizer: value.tokenizer,
-                sizing: value.sizing, kvBytesCapacity: 64 << 20, maxConcurrentRequests: 2,
+                sizing: value.sizing, kvBytesCapacity: 2 << 30, maxConcurrentRequests: 2,
                 kvBudget: value.budget, specDecPreparation: intent, preparedModel: prepared,
                 environment: env, startServingTelemetry: false, emitTelemetry: { event in
                     if (event.fields?["operation"]?.value as? String) == "engine_v2_kv_backend" { gate.visit() }
@@ -501,7 +548,7 @@ final class MiMoV26ManagedSlotTests: XCTestCase {
                 let bundle = try await EngineV2SlotFactory.makeProductionBundle(
                     modelId: "managed-mimo-fixture", modelType: "mimo_v2", isVLM: false,
                     modelDirectory: value.root, container: value.container, tokenizer: value.tokenizer,
-                    sizing: value.sizing, kvBytesCapacity: 64 << 20, maxConcurrentRequests: 2,
+                    sizing: value.sizing, kvBytesCapacity: 2 << 30, maxConcurrentRequests: 2,
                     kvBudget: value.budget, specDecPreparation: intent, preparedModel: prepared,
                     environment: env, startServingTelemetry: false)
                 witness.observe(bundle)

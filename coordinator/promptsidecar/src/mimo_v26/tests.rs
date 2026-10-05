@@ -292,6 +292,39 @@ fn strict_boolean_controls_aliases_absence_and_precedence_match_swift() {
 }
 
 #[test]
+fn openrouter_thinking_alias_preserves_controls_and_tool_history() {
+    for enabled in [false, true] {
+        for kwargs in [
+            json!({"thinking":enabled}),
+            json!({"thinking":enabled,"enable_thinking":enabled}),
+            json!({"thinking":!enabled,"enable_thinking":enabled}),
+        ] {
+            let mut body = history(json!("{}"));
+            body["chat_template_kwargs"] = kwargs;
+            body["reasoning"] = json!({"enabled":enabled});
+            body["max_tokens"] = json!(131072);
+            let result = normalized(body).unwrap();
+            assert_eq!(result.additional_context["enable_thinking"], enabled);
+            assert_eq!(
+                result.messages[0]["reasoning_content"],
+                "Keep &amp; e\u{301}"
+            );
+        }
+        let result = normalized(json!({"model":"m", "messages":[],
+            "chat_template_kwargs":{"thinking":enabled}}))
+        .unwrap();
+        assert_eq!(result.additional_context["enable_thinking"], enabled);
+    }
+    for invalid in [json!("false"), json!(0), Value::Null] {
+        assert!(
+            normalized(json!({"model":"m", "messages":[],
+            "chat_template_kwargs":{"thinking":invalid,"enable_thinking":true}}))
+            .is_err()
+        );
+    }
+}
+
+#[test]
 fn malformed_shadowed_controls_and_unsupported_efforts_are_not_dropped() {
     for bad in [
         json!("false"),

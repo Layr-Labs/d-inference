@@ -56,12 +56,13 @@ final class MiMoV26WiredDeviceContextTests: XCTestCase {
     /// Run separately with CASE=cpu-retire, gpu-retire, or cpu-retire-foreign.
     /// Root must provide a genuinely fresh isolated process and owned GPU lane.
     func testGPUStartRetiresInItsCapturedDeviceContextAndRestoresBaseline() async throws {
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_WIRED_DEVICE_CONTEXT_NATIVE")
         #if DEBUG && os(macOS) && canImport(Metal)
         let environment = ProcessInfo.processInfo.environment
-        guard environment["MIMO_V26_WIRED_DEVICE_CONTEXT_NATIVE"] == "1",
-              let mode = environment["MIMO_V26_WIRED_DEVICE_CONTEXT_CASE"],
+        guard let mode = environment["MIMO_V26_WIRED_DEVICE_CONTEXT_CASE"],
               ["cpu-retire","gpu-retire","cpu-retire-foreign"].contains(mode) else {
-            throw XCTSkip("Fresh-process owned hardware selector requires explicit Device-context opt-ins")
+            XCTFail("Enabled Device-context gate requires a valid isolated case")
+            throw Failure.freshProcessRequired
         }
         guard Self.lock.withLock({
             if Self.entered { return false }; Self.entered = true; return true
@@ -231,7 +232,7 @@ final class MiMoV26WiredDeviceContextTests: XCTestCase {
         if let firstFailure { throw firstFailure }
         withExtendedLifetime((registry,transaction,helper,other)) {}
         #else
-        throw XCTSkip("Device-context hardware regression requires a separately bound DEBUG macOS/Metal build")
+        throw NSError(domain: "MiMoWiredDeviceContext.requiresDebugMetalBuild", code: 1)
         #endif
     }
 }

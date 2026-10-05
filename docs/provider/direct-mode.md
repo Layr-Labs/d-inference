@@ -1,6 +1,6 @@
 # Direct mode: a local OpenAI-compatible endpoint
 
-> Last updated: 2026-09-27 · commit `4ad3034df`
+> Last updated: 2026-09-30
 
 Run the provider's inference engine as an OpenAI-compatible HTTP server on your
 own Mac, either standalone (`darkbloom start --local`, no coordinator, no
@@ -20,7 +20,7 @@ Requests never leave the machine and are never billed.
 
 1. Pick a mode. The two flags are mutually exclusive; `darkbloom start`
    rejects the combination with exit 1
-   (`provider-swift/Sources/darkbloom/StartCommand.swift`, `Start.run`).
+   (`provider-swift/Sources/darkbloom/Start/StartCommand.swift`, `Start.run`).
 
    | Mode | Command | Coordinator | Models come from | Earns |
    |---|---|---|---|---|
@@ -36,7 +36,7 @@ Requests never leave the machine and are never billed.
    ```
 
    `--port` defaults to `8000`, `--bind` to `127.0.0.1`. Before serving,
-   `Start.runLocalStandalone` (`provider-swift/Sources/darkbloom/StartCommand+Modes.swift`)
+   `Start.runLocalStandalone` (`provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift`)
    loads or creates the API token, filters the chosen models to those with an
    engine-v2 adapter (exit 1 with `No engine-v2-capable models available to
    serve.` if none remain), and preloads the selected models before listening

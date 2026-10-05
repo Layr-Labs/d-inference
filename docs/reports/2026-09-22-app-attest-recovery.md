@@ -1,6 +1,6 @@
 # App Attest enrollment recovery and network snapshot investigation
 
-> Last updated: 2026-09-22 · commit `736911a19`
+> Last updated: 2026-09-22
 
 This investigation covers provider 0.9.8 and coordinator source `011ccd3d1`.
 The repairs described here are a proposed patch, not a production deployment

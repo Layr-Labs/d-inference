@@ -256,7 +256,7 @@ extension ProviderLoop {
         guard engineV2SlotHooks == nil else { throw MiMoV26ServingLoadError.nativeOwnerMismatch }
         let started = ContinuousClock.now
         try requireNativeMiMoPublication(modelID: modelID, load: load)
-        let reusableSSD = PrefixCachePolicy.isEnabled(modelId: modelID)
+        let reusableSSD = PrefixCachePolicy.isMiMoCompletePrefixEnabled(modelId: modelID)
         let artifactIdentityRequired = reusableSSD
             || ServingPerformanceProfiles.requiresArtifactHash(modelID: modelID)
         let before = try await captureWeightHash(modelId: modelID, modelPath: directory,
@@ -400,6 +400,7 @@ extension ProviderLoop {
         for waiter in loadingWaiters.removeValue(forKey: modelID) ?? [] { waiter.resume() }
         releaseLoadGateWaiters()
         await retryReserveDeferredPrefetches()
+        await refreshMimoCalibration()
     }
 
     func finishNativeMiMoLoadFailure(modelID: String, load: MiMoV26ServingLoad, error: Error) async {

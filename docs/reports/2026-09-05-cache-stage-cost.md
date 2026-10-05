@@ -1,6 +1,6 @@
 # Coordinator cache restore cost
 
-> Last updated: 2026-09-05 · commit `1a9c78d84`
+> Last updated: 2026-09-05
 
 Routing now includes an SSD restore that costs more than the prefill it saves.
 Previously that hint was discarded and the provider kept its cold score, even

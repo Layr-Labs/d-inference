@@ -1,6 +1,6 @@
 # Actual attention metadata with confirmed sample identity
 
-> Last updated: 2026-09-06 · commit `5b93195c9`
+> Last updated: 2026-09-06
 
 The standalone benchmark can observe original attention input and cache dtypes
 at one ordinary decode position without another model forward or tensor readback.

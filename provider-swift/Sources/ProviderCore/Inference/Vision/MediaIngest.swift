@@ -276,6 +276,8 @@ public enum MediaIngest {
         maxRequestVideoFramePixels: Int = Self.maxRequestVideoFramePixels
     ) async throws -> UserInput {
         try rejectUnsupportedAudio(request)
+        let tools = ChatTemplateFixes.normalizeToolMetadata(
+            tools, context: .init(modelId: request.model, modelType: modelType))
         let additionalContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(
             for: request, controls: templateControls, modelType: modelType, hasMedia: true)
         if preserveTemplateFields {

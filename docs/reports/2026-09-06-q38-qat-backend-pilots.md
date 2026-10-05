@@ -1,6 +1,6 @@
 # Qwen 3.8 and Gemma QAT backend/cache pilots
 
-> Last updated: 2026-09-06 · commit `384c321aa`
+> Last updated: 2026-09-06
 
 Seven real-model B1 runs pass their individual integrity checks. Five strict
 comparisons pass, but Gemma QAT contiguous/paged output parity fails; two historical

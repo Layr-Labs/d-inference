@@ -132,6 +132,12 @@ extension ProviderLoop {
     /// could keep reservations non-empty and hold `run()` open for the full
     /// shutdown drain timeout, then have its models unloaded mid-stream.
     internal func throwIfRefusingNewLocalWork(modelId: String? = nil) throws {
+        if let modelId, !autopilotAllowsModel(modelId) {
+            throw MultiModelBatchSchedulerEngineError.requestRejected("model_not_selected")
+        }
+        if autopilotCommand != nil {
+            throw MultiModelBatchSchedulerEngineError.queueFull("model autopilot placement in progress")
+        }
         if isShuttingDown {
             throw MultiModelBatchSchedulerEngineError.queueFull("provider shutting down")
         }
@@ -487,6 +493,17 @@ extension ProviderLoop {
         // and requestToModel registration, so the drain sees every old owner.
         if rejectIfDrainingForMTP(modelId: modelId, requestId: requestId, send: send,
             lookupReceiptFinalizer: lookupReceiptFinalizer) { return }
+
+        // Authoritative autopilot check after all admission suspensions and
+        // before request ownership is registered. Managed network work may use
+        // warm models only; owner-local work retains its own load path.
+        if !autopilotAllowsModel(modelId) || autopilotCommand != nil || (autopilotManagesResidency && modelSlots[modelId] == nil) {
+            lookupReceiptFinalizer.sendTerminal(
+                .inferenceError(requestId: requestId,
+                    failure: InferenceFailure(code: .capacity, statusCode: 503), profile: profile),
+                fallbackFailure: .capacity, send: send)
+            return
+        }
 
         // 5. Send inference_accepted
         acceptedLifecycleRequests.insert(requestId)

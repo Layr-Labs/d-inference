@@ -1,6 +1,6 @@
 # Provider quickstart
 
-> Last updated: 2026-09-27 · commit `a2ccc2499`
+> Last updated: 2026-10-01
 
 From a fresh Apple Silicon Mac to a provider that is registered with the
 coordinator, linked to your account and serving. For operators; install, check,
@@ -12,8 +12,8 @@ deactivated soon; upgrade to macOS 27 to avoid the legacy enrollment step.
 
 - A Mac that meets [hardware requirements](./hardware-requirements.md#minimum-requirements).
   `darkbloom start` refuses machines below the RAM floor or without a
-  Metal GPU (`provider-swift/Sources/darkbloom/StartCommand+Preflight.swift`,
-  `Start.runPreflightChecks`; `provider-swift/Sources/darkbloom/StartCommand.swift`,
+  Metal GPU (`provider-swift/Sources/darkbloom/Start/StartCommand+Preflight.swift`,
+  `Start.runPreflightChecks`; `provider-swift/Sources/darkbloom/Start/StartCommand.swift`,
   `Start.prepareServeRuntime`).
 - Outbound HTTPS (443) to `api.darkbloom.dev`; the provider is an outbound-only
   WebSocket client to `wss://api.darkbloom.dev/ws/provider`
@@ -45,7 +45,7 @@ listed in [troubleshooting](./troubleshooting.md#doctor-checks).
 
 ### 3. Download a model
 
-`darkbloom start` (`provider-swift/Sources/darkbloom/StartCommand.swift`) runs
+Ordinary non-enrolled `darkbloom start` (`provider-swift/Sources/darkbloom/Start/StartCommand.swift`) runs
 preflight checks (SIP, debugger, GPU, memory), offers to link your account if
 you are not logged in, shows an interactive model picker, asks whether models
 should stay loaded while idle (`Always ready`) or be unloaded after 60 minutes
@@ -59,7 +59,9 @@ limit and available memory ([startup preload details](./cli-reference.md#darkblo
 resolves the catalog entry and fetches from `https://models.darkbloom.ai`
 (`provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift`,
 `defaultR2CDNURL`). `darkbloom start` also offers an interactive catalog picker
-when nothing is downloaded yet, so this step can be skipped.
+when nothing is downloaded yet, so this step can be skipped for ordinary serving.
+Autopilot enrollment never downloads models: download desired network models
+separately before enrolling.
 
 ### 4. Link your account
 
@@ -81,17 +83,29 @@ to your account. `darkbloom start` offers this step inline if you skip it.
 darkbloom start
 ```
 
-`Start` (`provider-swift/Sources/darkbloom/StartCommand.swift`,
-`provider-swift/Sources/darkbloom/StartCommand+Daemon.swift`) prints the
+`Start` (`provider-swift/Sources/darkbloom/Start/StartCommand.swift`,
+`provider-swift/Sources/darkbloom/Start/StartCommand+Daemon.swift`) prints the
 Terms-of-Service notice (starting is acceptance), runs preflight, offers inline
-login, shows the model picker unless `--model <id>` (repeatable) or `--all` is
-given, then writes `~/Library/LaunchAgents/io.darkbloom.provider.plist`
+login, uses the ordinary model picker unless explicit selection or Autopilot
+enrollment bypasses it, then writes `~/Library/LaunchAgents/io.darkbloom.provider.plist`
 (`RunAtLoad = true`, `KeepAlive = false`;
 `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`) and starts it.
 With `provider.auto_restart = true` (the default) it also arms the crash-recovery
 watchdog `io.darkbloom.watchdog`
 (`provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift`). The service
 starts again at every login.
+
+The experimental Autopilot interest prompt defaults to No. Yes records consent
+for the default shadow rollout, **not active residency control**. It skips the
+picker and discovers/verifies all eligible already-downloaded active network
+models, excluding arbitrary local/off-catalog, retired, ineligible or unverified
+builds. No downloads occur; if none qualify, enrollment fails before replacing
+the daemon. Saved model, preload, idle and other preferences are preserved, and
+ordinary startup/serving continues. Check `darkbloom autopilot status` for the
+recorded inventory and `shadow` (not activated) phase. Live rollout later chooses
+among cached models for utilization, not guaranteed earnings. Refresh the static
+inventory explicitly with `darkbloom autopilot models` after separately downloading
+new models. See [Autopilot CLI](./cli-reference.md#darkbloom-autopilot).
 
 ### 6. Confirm verification
 
@@ -169,7 +183,7 @@ private_only = false         # true = serve only your own self-route traffic
 - Provider TOML is authoritative for both controls. Changes take effect at
   process restart; after setting either key to `false`, run `darkbloom restart`
   to activate the rollback. The start path projects config before Metal access
-  (`provider-swift/Sources/darkbloom/StartCommand.swift:84-91` and
+  (`provider-swift/Sources/darkbloom/Start/StartCommand.swift:84-91` and
   `provider-swift/Sources/darkbloom/ServeRuntimePreparer.swift:24-35`), while
   `darkbloom beta` durably locks, reloads, and saves the selected value before
   printing the restart boundary

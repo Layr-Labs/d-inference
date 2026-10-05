@@ -11,12 +11,23 @@ import MLXVLM
 import Metal
 #endif
 
-/// Optional acceleration only. Neither a model-memory permit nor a promise
-/// that specific buffers are wired. The native transaction owns this handle.
+/// Default standing residency, acceleration only. Neither a model-memory
+/// permit nor a promise that specific buffers are wired. The native
+/// transaction owns this handle.
+///
+/// Without a standing residency set, every command buffer must make MiMo's
+/// ~161 GiB of expert tensors resident again; under the memory pressure of a
+/// 256 GiB host the driver keeps unwiring them and decode collapses (measured
+/// ~0.4 tok/s versus ~38 tok/s with residency on an M3 Ultra). The bounded
+/// ceiling below still leaves max(16 GiB, 10%) of physical memory unwired.
 final class MiMoV26WiredResidency: @unchecked Sendable {
     static let environmentFlag = "DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY"
+    /// Values that roll back to per-command-buffer residency. Unset or any
+    /// other value (including the former opt-in `1`) keeps the default.
+    static let rollbackValues: Set<String> = ["0", "false", "no", "off"]
     static func isEnabled(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
-        environment[environmentFlag] == "1"
+        guard let raw = environment[environmentFlag] else { return true }
+        return !rollbackValues.contains(raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }
 
     enum Refusal: String, Sendable {

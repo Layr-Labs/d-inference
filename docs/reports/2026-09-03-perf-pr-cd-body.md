@@ -1,6 +1,6 @@
 # PR body — coordinator performance program, PR C/D: 2026-09-02 wave fixes (2026-09-03)
 
-> Last updated: 2026-09-04 · commit `637cf48ea`
+> Last updated: 2026-09-04
 
 Branch `perf/coordinator-wave-fixes-2026-09-03`.
 **Base: `perf/coordinator-tier2-base-2026-09-03` (PR A + PR B); retarget to master after PR #820 and PR #819 merge; Retry-After policy left for the owner.**

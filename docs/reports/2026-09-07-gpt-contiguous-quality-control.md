@@ -1,6 +1,6 @@
 # GPT-OSS: matched contiguous quality control
 
-> Last updated: 2026-09-07 · commit `e7f9c53ee`
+> Last updated: 2026-09-07
 
 All eight GPT-OSS responses reproduce the earlier Paged Attention outputs exactly when run with contiguous attention. This closes the migration-specific investigation for these four fixed tasks. The generated-code failure and incomplete answers remain recorded as model/task limitations.
 

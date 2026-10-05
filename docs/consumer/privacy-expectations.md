@@ -1,6 +1,6 @@
 # Privacy expectations
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-03
 
 What you can and cannot rely on when you send an inference request through Darkbloom. For consumers deciding what to send; the mechanism — which key opens which hop, wire formats, error codes, and the code that enforces each guarantee — is stated once in [`../architecture/security/encryption.md`](../architecture/security/encryption.md) and is not restated here.
 

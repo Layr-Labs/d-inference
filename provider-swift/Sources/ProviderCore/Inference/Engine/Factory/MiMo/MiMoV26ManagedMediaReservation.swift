@@ -22,12 +22,14 @@ final class MiMoV26ManagedMediaReservation: MiMoV26MediaWorkReservation, @unchec
     private var planBinding: (digest: String, owner: UUID)?
     private var audioBinding: AudioBinding?
     private let ledger: ProcessMemoryLedger
+    private let serviceBudget: WholeMacServiceBudget
     private let lock = NSLock()
     private var state: ProcessMemoryLedger.OwnerState
     private let additionalSystemReserveBytes: UInt64
     private let maximumBytes: UInt64
     private var retired = false
     private var failed: [MiMoV26FailedMediaWork] = []
+    private var failedRateActivity: WholeMacUnboundedActivity?
     private var nativeBytes: UInt64 = 0
     private var hostBytes: UInt64 = 0
     private var nativeCompleted = false
@@ -36,6 +38,7 @@ final class MiMoV26ManagedMediaReservation: MiMoV26MediaWorkReservation, @unchec
 
     convenience init(plan: MiMoV26MultimodalPlan, bytes: Int, maximumBytes: UInt64,
          additionalSystemReserveBytes: UInt64, ledger: ProcessMemoryLedger,
+         serviceBudget: WholeMacServiceBudget,
          audioBinding: AudioBinding? = nil) throws {
         guard bytes > 0, let amount = UInt64(exactly: bytes), amount <= maximumBytes,
               additionalSystemReserveBytes > 0, plan.audioPlan == nil || audioBinding != nil else {
@@ -43,7 +46,8 @@ final class MiMoV26ManagedMediaReservation: MiMoV26MediaWorkReservation, @unchec
         }
         try audioBinding?.validate()
         try self.init(initialBytes:amount, hostBytes:0, maximumBytes:maximumBytes,
-            additionalSystemReserveBytes:additionalSystemReserveBytes, ledger:ledger)
+            additionalSystemReserveBytes:additionalSystemReserveBytes, ledger:ledger,
+            serviceBudget:serviceBudget)
         planBinding = (plan.preparationSHA256,plan.loadedOwnerIdentity)
         self.audioBinding = audioBinding
         nativeBytes = amount
@@ -52,10 +56,12 @@ final class MiMoV26ManagedMediaReservation: MiMoV26MediaWorkReservation, @unchec
     /// bytes cover only engine-owned encoded/normalized buffers, not caller
     /// copies, already-accounted transport state or target KV.
     init(initialBytes: UInt64, hostBytes: UInt64, maximumBytes: UInt64,
-         additionalSystemReserveBytes: UInt64, ledger: ProcessMemoryLedger) throws {
+         additionalSystemReserveBytes: UInt64, ledger: ProcessMemoryLedger,
+         serviceBudget: WholeMacServiceBudget) throws {
         guard initialBytes > 0, hostBytes <= initialBytes, initialBytes <= maximumBytes,
               additionalSystemReserveBytes > 0 else { throw MiMoV26MultimodalError.reservationRejected }
         self.ledger = ledger; self.additionalSystemReserveBytes = additionalSystemReserveBytes
+        self.serviceBudget = serviceBudget
         self.maximumBytes = maximumBytes
         self.hostBytes = hostBytes; hostCompleted = hostBytes == 0
         // Real reader is initialized before any reservation/transaction lock.
@@ -154,7 +160,16 @@ final class MiMoV26ManagedMediaReservation: MiMoV26MediaWorkReservation, @unchec
         }
     }
     func retainAfterFailedDrain(_ work: MiMoV26FailedMediaWork) {
-        lock.withLock { if !failed.contains(where: { $0 === work }) { failed.append(work) } }
+        lock.withLock {
+            guard !failed.contains(where: { $0 === work }) else { return }
+            // This can happen after successful preparation, during later
+            // prepared/request retirement. Invalidate and retain at the actual
+            // failure transition, before exposing the retained failed work.
+            if failedRateActivity == nil {
+                failedRateActivity = serviceBudget.beginUnboundedActivity()
+            }
+            failed.append(work)
+        }
     }
     /// Only the SDK's actual prepared/request retirement calls this. All
     /// represented arrays are already detached. M remains zero: a commitment

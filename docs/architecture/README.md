@@ -1,6 +1,6 @@
 # Architecture — how Darkbloom works
 
-> Last updated: 2026-09-28 · commit `1902940eb`
+> Last updated: 2026-09-28
 
 Explanation pages: context, mechanism, invariants, failure modes, and a code
 map for each part of the system. The code in `coordinator/`,
@@ -34,6 +34,7 @@ how-to and runbook directories listed in [`../README.md`](../README.md).
 | Page | Concern |
 |---|---|
 | [security/encryption.md](security/encryption.md) | The privacy model: NaCl Box on each hop, what the coordinator decrypts and does not retain, key lifetimes. The only page that states it |
+| [security/provider-trust.md](security/provider-trust.md) | Independent legacy MDM/APNs and App Attest authorization, common gates and residual trust limits |
 | [security/attestation.md](security/attestation.md) | Trust levels and the exact condition for each: Secure Enclave signature, MDM cross-check, MDA, APNs code identity |
 | [security/enrollment.md](security/enrollment.md) | Device enrollment: MDM profile generation and signing, SCEP, webhook |
 | [security/identity-binding.md](security/identity-binding.md) | How APNs, X25519, SE P-256, and MDA identities bind to one provider |
@@ -44,6 +45,7 @@ how-to and runbook directories listed in [`../README.md`](../README.md).
 |---|---|
 | [first-content-routing.md](first-content-routing.md) | Expected and conservative delivery forecasts, measurement freshness, 100-ms selection and atomic retry policy |
 | [routing.md](routing.md) | How a request becomes a provider choice: eligibility gates, cost model, selection, hedged dispatch, servability, breakers |
+| [model-autopilot.md](model-autopilot.md) | Opt-in cached model placement, useful shared-GPU capacity, explicit eviction ownership and recovery |
 | [scheduling.md](scheduling.md) | Per-model queue, slot states, token-budget admission, concurrency caps, model swaps, warm pool, heartbeat and eviction |
 | [cache-aware-routing.md](cache-aware-routing.md) | Provider-confirmed exact prefix-cache routing: proof, holders, cost discount, kill switch |
 | [prompt-contract-sidecar.md](prompt-contract-sidecar.md) | The Rust `promptsidecar`: token-boundary planning for cache routing, artifact identity, failure isolation |

@@ -1,6 +1,6 @@
 # Exact connected cache inputs and isolated launch package
 
-> Last updated: 2026-09-05 · commit `437bea4fe`
+> Last updated: 2026-09-05
 
 The connected fixture has a verified executable and paired inputs for all five
 exact release artifacts. CPU prompt planning and launch-helper tests pass.

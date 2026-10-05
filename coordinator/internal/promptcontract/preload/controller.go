@@ -30,7 +30,9 @@ type ChildStatus struct {
 type Child interface{ Status() ChildStatus }
 
 type Client interface {
-	Preload(context.Context, []string) (sidecar.PreloadReport, error)
+	// PreloadContinuous submits the selected set through the continuity
+	// endpoint; requireContinuity forbids the legacy replacing fallback.
+	PreloadContinuous(ctx context.Context, contractIDs []string, requireContinuity bool) (sidecar.PreloadReport, error)
 	Ready(context.Context) (bool, error)
 	Metrics(context.Context) (sidecar.SidecarStatus, error)
 	MaxPreloadIDs() int
@@ -82,6 +84,7 @@ type PreloadController struct {
 	metricsAt       time.Time
 	published       PreloadSelectionSnapshot
 	fullyLoaded     bool
+	continuityChild uint64 // Sticky negotiation; only a new child may fall back to v1.
 	retryIdentity   PreloadSelectionSnapshot
 	failureBackoff  time.Duration
 	operation       uint64
@@ -194,9 +197,13 @@ func (c *PreloadController) Reconcile(ctx context.Context) {
 		}
 		return
 	}
-	// The unchanged Client retains its exclusive all-permit replacement and
-	// strict capacity/report validation. D is nonempty and never exceeds C.
-	report, err := c.client.Preload(ctx, lease.Key.Desired)
+	// The Client keeps strict capacity/report validation; D is nonempty and
+	// never exceeds C. A child that negotiated continuity is never sent the
+	// legacy replacement, which closes every member while it loads.
+	c.mu.RLock()
+	requireContinuity := c.continuityChild == lease.Key.ChildGeneration
+	c.mu.RUnlock()
+	report, err := c.client.PreloadContinuous(ctx, lease.Key.Desired, requireContinuity)
 	var successful []string
 	if err == nil {
 		for _, result := range report.Results {
@@ -248,7 +255,10 @@ func (c *PreloadController) prepareAttempt() (PreloadSelectionLease, uint64, boo
 	}
 	c.advanceOperationLocked()
 	c.inflight = c.operation
-	c.clearPublicationLocked("preload in progress")
+	if !c.retainPublicationLocked(key) {
+		c.clearPublicationLocked("preload in progress")
+	}
+	c.fullyLoaded = false
 	return lease, c.inflight, false
 }
 
@@ -293,6 +303,12 @@ func (c *PreloadController) finishAttemptLocked(
 	}
 	c.inflight = 0
 	key, current := c.reconcileSelectionLocked(latest)
+	// Loss of the negotiated guarantee belongs to this child, even when the
+	// selection changed while its response was in flight. A stale success may
+	// not publish; a same-child protocol failure must still withdraw authority.
+	if lease.Key.ChildGeneration == child.ChildGeneration && isContinuityLoss(err) {
+		c.clearPublicationLocked("continuity protocol unavailable")
+	}
 	conflict := err != nil && isPreloadConflict(err)
 	failed := err != nil || !report.Ready
 	if failed && !conflict {
@@ -303,13 +319,17 @@ func (c *PreloadController) finishAttemptLocked(
 		// Consume only this real callback, without publishing old S. The policy
 		// retains any observed key/ABA invalidation until this exact retirement.
 		c.selection.RetireConflict(c.policyNow(), lease)
-		c.clearPublicationLocked("preload identity changed or stopped")
+		if c.closed || ctx.Err() != nil || !current || !child.Running || !c.retainPublicationLocked(key) {
+			c.clearPublicationLocked("preload identity changed or stopped")
+		}
 		c.resetRetryLocked()
 		return preloadCompletionDiagnostic{}
 	}
 	if conflict {
 		c.selection.RetireConflict(c.policyNow(), lease)
-		c.clearPublicationLocked("sidecar preload already in progress")
+		if !c.retainPublicationLocked(key) {
+			c.clearPublicationLocked("sidecar preload already in progress")
+		}
 		return preloadCompletionDiagnostic{}
 	}
 	previouslyFailed := c.failureBackoff != 0
@@ -320,6 +340,9 @@ func (c *PreloadController) finishAttemptLocked(
 	}
 	if err != nil {
 		successful = nil
+		if isContinuityLoss(err) {
+			c.clearPublicationLocked("continuity protocol unavailable")
+		}
 	}
 	backoff := c.failureBackoff
 	if backoff == 0 {
@@ -332,6 +355,9 @@ func (c *PreloadController) finishAttemptLocked(
 	}
 	acknowledged := c.selection.Successes()
 	c.status.LastError = c.selection.Reason()
+	if err == nil && report.ContinuityVersion == 1 {
+		c.continuityChild = key.ChildGeneration
+	}
 	if err == nil && len(acknowledged) > 0 {
 		c.contracts = make(map[string]struct{}, len(acknowledged))
 		for _, id := range acknowledged {
@@ -349,6 +375,9 @@ func (c *PreloadController) finishAttemptLocked(
 		c.status.Warm += uint64(report.Warm)
 		c.status.Cold += uint64(report.Cold)
 		c.metricsAt = time.Now()
+	}
+	if err == nil && len(acknowledged) == 0 {
+		c.clearPublicationLocked("preload_failed")
 	}
 	return preloadCompletionDiagnostic{failed: failed, recovered: previouslyFailed,
 		catalog: key.CatalogGeneration, child: key.ChildGeneration,
@@ -424,4 +453,10 @@ func (c *PreloadController) refreshMetrics(ctx context.Context) {
 
 func isPreloadConflict(err error) bool {
 	return errors.Is(err, sidecar.ErrPreloadRejected) && strings.Contains(err.Error(), "HTTP 409")
+}
+
+// A child that stops honoring the continuity protocol has lost the guarantee
+// under which its acknowledged members stayed published.
+func isContinuityLoss(err error) bool {
+	return errors.Is(err, sidecar.ErrContinuityUnsupported) || errors.Is(err, sidecar.ErrContinuityProtocol)
 }

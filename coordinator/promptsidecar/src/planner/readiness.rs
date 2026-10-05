@@ -52,7 +52,9 @@ impl ReadinessGate {
 
     pub(super) fn status(&self) -> Readiness {
         match &self.lock().mode {
-            Mode::LegacyLazy | Mode::Usable(_) => Readiness::Ready,
+            Mode::LegacyLazy => Readiness::Ready,
+            Mode::Usable(ids) if !ids.is_empty() => Readiness::Ready,
+            Mode::Usable(_) => Readiness::Starting,
             Mode::Starting => Readiness::Starting,
             Mode::Degraded => Readiness::Degraded,
         }
@@ -64,6 +66,38 @@ impl ReadinessGate {
             Mode::Usable(successful) => successful.contains(id),
             Mode::Starting | Mode::Degraded => false,
         }
+    }
+
+    pub(super) fn admit<T>(
+        &self,
+        id: &str,
+        resident: impl FnOnce() -> Option<T>,
+    ) -> Result<Option<T>, ()> {
+        let state = self.lock();
+        match &state.mode {
+            Mode::LegacyLazy => Ok(None),
+            Mode::Usable(ids) if ids.contains(id) => resident().map(Some).ok_or(()),
+            _ => Err(()),
+        }
+    }
+
+    fn begin_retaining(&self, desired: &[String]) -> Option<(u64, HashSet<String>)> {
+        let mut state = self.lock();
+        let Some(next) = state.operation.checked_add(1) else {
+            state.mode = Mode::Degraded;
+            return None;
+        };
+        let retained = match &state.mode {
+            Mode::Usable(ids) => ids
+                .iter()
+                .filter(|id| desired.contains(id))
+                .cloned()
+                .collect(),
+            _ => HashSet::new(),
+        };
+        state.operation = next;
+        state.mode = Mode::Usable(retained.clone());
+        Some((next, retained))
     }
 
     fn begin(&self) -> Option<u64> {
@@ -79,7 +113,7 @@ impl ReadinessGate {
 
     fn finish(&self, operation: u64, successful: HashSet<String>) {
         let mut state = self.lock();
-        if state.operation != operation || !matches!(state.mode, Mode::Starting) {
+        if state.operation != operation || matches!(state.mode, Mode::Degraded) {
             return;
         }
         state.mode = if successful.is_empty() {
@@ -98,6 +132,7 @@ pub(super) struct PreloadOperation {
     metrics: Arc<Metrics>,
     operation: u64,
     finished: bool,
+    retained: HashSet<String>,
 }
 
 impl PreloadOperation {
@@ -116,6 +151,26 @@ impl PreloadOperation {
             metrics,
             operation,
             finished: false,
+            retained: HashSet::new(),
+        })
+    }
+
+    pub(super) fn begin_incremental(
+        gate: Arc<ReadinessGate>,
+        metrics: Arc<Metrics>,
+        desired: &[String],
+    ) -> Result<Self, PreloadError> {
+        metrics.preload_started(desired.len());
+        let Some((operation, retained)) = gate.begin_retaining(desired) else {
+            metrics.preload_finished(false);
+            return Err(PreloadError::Worker);
+        };
+        Ok(Self {
+            gate,
+            metrics,
+            operation,
+            finished: false,
+            retained,
         })
     }
 
@@ -137,7 +192,7 @@ impl PreloadOperation {
 impl Drop for PreloadOperation {
     fn drop(&mut self) {
         if !self.finished {
-            self.gate.finish(self.operation, HashSet::new());
+            self.gate.finish(self.operation, self.retained.clone());
             self.metrics.preload_finished(false);
         }
     }

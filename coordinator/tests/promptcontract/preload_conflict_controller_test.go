@@ -18,7 +18,7 @@ import (
 // accept a Rust replacement and must not become a failed-tokenizer/backoff event.
 func TestPreloadControllerConflictDoesNotBecomeFailedRuntimeLoad(t *testing.T) {
 	id := strings.Repeat("a", 64)
-	ready := sidecar.PreloadReport{Status: "ready", Ready: true, Requested: 1, Warm: 1,
+	ready := sidecar.PreloadReport{ContinuityVersion: 1, Status: "ready", Ready: true, Requested: 1, Warm: 1,
 		Results: []sidecar.PreloadResult{{PromptContractID: id, Status: "warm"}}}
 	// start answers the first preload with HTTP 409 and each later one with
 	// report's choice for that call.
@@ -65,7 +65,7 @@ func TestPreloadControllerConflictDoesNotBecomeFailedRuntimeLoad(t *testing.T) {
 		PolicyNow: func() time.Duration { return time.Duration(now.Load()) },
 	}, func(call int64) sidecar.PreloadReport {
 		if call == 2 {
-			return sidecar.PreloadReport{Status: "degraded", Requested: 1, Failed: 1,
+			return sidecar.PreloadReport{ContinuityVersion: 1, Status: "degraded", Requested: 1, Failed: 1,
 				Results: []sidecar.PreloadResult{{PromptContractID: id, Status: "failed"}}}
 		}
 		return ready

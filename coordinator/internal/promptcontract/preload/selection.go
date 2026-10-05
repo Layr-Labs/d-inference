@@ -100,11 +100,14 @@ func (c *PreloadController) reconcileSelectionLocked(input PreloadSelectionInput
 		c.invalidateLocked("invalid preload selection")
 		return key, false
 	}
+	if c.continuityChild != 0 && c.continuityChild != key.ChildGeneration {
+		c.continuityChild = 0
+	}
 	if !before.Key.Equal(key) {
 		if !c.advanceOperationLocked() {
 			return key, false
 		}
-		if !c.published.nativeEqual(key) {
+		if !c.published.nativeEqual(key) && !c.retainPublicationLocked(key) {
 			c.clearPublicationLocked("preload identity changed")
 		}
 		if c.inflight == 0 && before.InflightOperation == 0 && before.Key.nativeEqual(key) &&
@@ -179,9 +182,13 @@ func (c *PreloadController) PlanningState(identity PreloadDemandIdentity) Preloa
 		Participating: acknowledged && c.selectionSource != nil && slices.Contains(key.Admissible, identity)}
 }
 
+// An attempt in flight closes acknowledgement only on a legacy child, whose
+// replacing preload closes every member. A negotiated child keeps the retained
+// members usable while it loads.
 func (c *PreloadController) nativeAcknowledgedLocked(id string, key PreloadSelectionSnapshot, child ChildStatus) bool {
 	_, included := c.contracts[id]
-	return !c.closed && c.inflight == 0 && c.status.Ready && included && c.published.nativeEqual(key) &&
+	return !c.closed && (c.inflight == 0 || c.continuityChild == key.ChildGeneration) &&
+		c.status.Ready && included && c.published.nativeEqual(key) &&
 		child.Running && child.Ready && key.ChildGeneration != 0 && len(key.Desired) > 0 &&
 		len(key.Desired) <= key.Capacity && slices.Contains(key.Desired, id)
 }
@@ -203,4 +210,24 @@ func preloadUnavailableReason(provisioned catalog.Snapshot, child ChildStatus, s
 		return "prompt artifact provisioning failed"
 	}
 	return "no verified prompt contracts"
+}
+
+// Re-key only completed resident acknowledgements within the same verified
+// catalog/child/capacity. Full in-flight completion still requires its exact key.
+func (c *PreloadController) retainPublicationLocked(key PreloadSelectionSnapshot) bool {
+	old := c.published
+	if c.continuityChild == 0 || c.continuityChild != key.ChildGeneration || old.ChildGeneration != key.ChildGeneration ||
+		old.CatalogGeneration != key.CatalogGeneration || old.Capacity != key.Capacity || !slices.Equal(old.Verified, key.Verified) {
+		return false
+	}
+	for id := range c.contracts {
+		if !slices.Contains(key.Desired, id) {
+			delete(c.contracts, id)
+		}
+	}
+	c.published = key
+	c.status.ContractCount = len(c.contracts)
+	c.status.Ready = len(c.contracts) > 0
+	c.fullyLoaded = false
+	return c.status.Ready
 }

@@ -19,7 +19,7 @@ import (
 type readinessControllerFixture struct {
 	t           *testing.T
 	controller  *preload.PreloadController
-	client      preload.Client
+	client      *sidecar.Client // The actual client, beneath any interposer.
 	provisioner *catalog.State
 	supervisor  *preloadChildFixture
 	// activeSet is the controller's actual selection policy. The controller
@@ -34,6 +34,9 @@ type readinessControllerFixture struct {
 	metricsCalls atomic.Int64
 	ready        atomic.Bool
 	readyStatus  atomic.Int64
+	// continuity makes the child serve /v2/preload through respond, which then
+	// owns the continuity marker. Unset, the child is legacy: /v2/preload is 404.
+	continuity atomic.Bool
 }
 
 // wrap optionally interposes on the controller's actual client, the same
@@ -52,7 +55,11 @@ func newReadinessControllerFixture(t *testing.T, respond func(context.Context, i
 		case "/metrics":
 			f.metricsCalls.Add(1)
 			http.NotFound(w, r)
-		case "/v1/preload":
+		case "/v1/preload", "/v2/preload":
+			if r.URL.Path == "/v2/preload" && !f.continuity.Load() {
+				http.NotFound(w, r)
+				return
+			}
 			var request struct {
 				IDs []string `json:"prompt_contract_ids"`
 			}
@@ -75,7 +82,7 @@ func newReadinessControllerFixture(t *testing.T, respond func(context.Context, i
 	f.provisioner = catalog.New()
 	f.supervisor = &preloadChildFixture{status: preload.ChildStatus{Running: true, Ready: true, ChildGeneration: 1}}
 	var err error
-	f.client = controlled
+	f.client = client
 	origin := time.Now()
 	f.controller, err = preload.New(f.provisioner, f.supervisor, controlled, preload.PreloadControllerConfig{
 		FailureBackoffMin: time.Hour, FailureBackoffMax: 2 * time.Hour,

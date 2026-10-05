@@ -53,7 +53,7 @@ routing.
 ```mermaid
 flowchart LR
     CAT[catalog manifests] -- Provisioner.Reconcile --> AC[ArtifactCache: verified, read-only contract directories]
-    AC -- PreloadController --> PRE[POST /v1/preload: active set]
+    AC -- PreloadController --> PRE[Negotiate preload: active set]
     SUP[Supervisor] -- spawn, /health, /ready, restart circuit --> SC[promptsidecar on the Unix socket]
     PRE --> SC
     REQ[inference request in cohort] -- planCacheRoute / Registry.PlanCacheRouteWithResult / Client.Plan --> SC
@@ -187,8 +187,8 @@ Older Go with new Rust also remains cold for partial batches. These gates do
 not infer success from retained LRU entries.
 
 Rust validates empty, duplicate, malformed and oversized submissions before
-replacement, preserving the prior accepted set on rejection. An accepted
-replacement closes membership and holds the exclusive preload mutex and every
+replacement, preserving the prior accepted set on rejection. An accepted legacy
+`/v1/preload` replacement closes membership and holds the exclusive preload mutex and every
 planning permit through blocking loads and publication; canceled blocking work
 keeps those owners until it exits. Planning rechecks membership after acquiring
 its permit. Operation generations prevent dropped or stale completions from
@@ -209,6 +209,44 @@ only its matching live lease, without failure backoff or success publication
 (`PreloadActiveSet.RetireConflict`,
 `coordinator/internal/promptcontract/preload/active_set_conflict.go`).
 A fresh or stale artifact root alone never grants planning eligibility.
+
+### Negotiated continuity during preload retry
+
+The controller first requests `POST /v2/preload`. A validated response with
+`continuity_version=1` binds continuity support to the exact supervised child.
+Only an initial explicit endpoint-not-found response permits legacy v1 fallback.
+After negotiation, missing/malformed markers or endpoint loss withdraw Go
+publication even if selection changed while the response was in flight. Stale
+success never grants a new acknowledgement. Child replacement clears negotiation.
+Transport failures retain only already acknowledged members within the same
+verified catalog, child and capacity; controller shutdown closes participation.
+The design assumes the supervisor's single controller owns preload mutations
+(`Client.PreloadContinuous`, `coordinator/internal/promptcontract/sidecar/client_control.go`;
+`PreloadController.finishAttemptLocked`, `coordinator/internal/promptcontract/preload/controller.go`;
+`retainPublicationLocked`, `coordinator/internal/promptcontract/preload/selection.go`).
+
+V2 keeps the intersection of acknowledged and desired contracts usable during
+retry. Planning takes a resident reference while holding the readiness gate,
+so a removed member cannot start an untracked lazy reload. The first transition
+drains prior legacy workers once. Later loads hold one worker permit and the
+preload mutex through blocking work. At concurrency one, readiness continuity
+does not guarantee an available planning worker
+(`preload_incremental_contracts`, `coordinator/promptsidecar/src/planner/preloading.rs`;
+`ReadinessGate::admit`, `PreloadOperation::begin_incremental`,
+`coordinator/promptsidecar/src/planner/readiness.rs`).
+
+Resident contracts plus in-flight load reservations cannot exceed configured
+capacity. Removed members with active plan references remain charged; a new
+member is deferred until those references retire rather than evicting a retained
+healthy member. Capacity deferral currently appears as a failed member in the
+bounded retry report, not as a distinct artifact diagnosis. No capacity or QPS
+limit is raised. A canceled blocking load retains its permit/reservation and
+mutex until terminal completion; its result cannot publish new membership, while
+the previously acknowledged intersection remains usable. V1 preload mutations
+are rejected after v2 mode begins in that child. `/ready` describes the usable
+subset; the preload report's `ready` still requires full batch success
+(`SingleflightLru::get_or_load_bounded`, `retain_selected_or_busy`,
+`coordinator/promptsidecar/src/artifact_cache.rs`).
 
 ### Bounded tokenizer preload selection
 
@@ -710,12 +748,12 @@ gate.
 |---|---|
 | Supervisor: spawn, probes, restart circuit, shutdown | `coordinator/promptcontract/supervisor.go`, `coordinator/promptcontract/supervisor_status.go`, `coordinator/internal/promptcontract/process/supervisor_process.go`, `coordinator/promptcontract/supervisor_defaults.go` |
 | Configuration and startup checks | `coordinator/promptcontract/config.go` (`ReadSupervisorConfig`, `Check`) |
-| Go client: plan, fail-cold, preload, metrics | `coordinator/promptcontract/client.go` (`Plan`, `PlanFailCold`), `coordinator/promptcontract/client_control.go` (`Ready`, `Preload`, `Metrics`) |
+| Go client: plan, fail-cold, preload, metrics | `coordinator/promptcontract/client.go` (`Plan`, `PlanFailCold`), `coordinator/promptcontract/client_control.go` (`Ready`, `Preload`, `Metrics`), `coordinator/internal/promptcontract/sidecar/client_control.go` (`PreloadContinuous`) |
 | Artifact provisioning and verified publication | `coordinator/promptcontract/provisioner.go`, `coordinator/promptcontract/artifact_cache.go` |
 | Descriptor-relative artifact paths | `coordinator/internal/promptcontract/artifacts/secure_files_unix.go` (`walkSecureDirectories`): absolute and root-relative path validation share descriptor traversal, optional directory creation, `O_NOFOLLOW` checks and ownership cleanup |
-| Go per-contract publication and identity fences | `coordinator/internal/promptcontract/preload/controller.go` (`prepareAttempt`, `finishAttemptLocked`), `coordinator/internal/promptcontract/preload/selection.go` (`PlanningState`, `ReadyFor`, `reconcileSelectionLocked`) |
+| Go per-contract publication and identity fences | `coordinator/internal/promptcontract/preload/controller.go` (`prepareAttempt`, `finishAttemptLocked`), `coordinator/internal/promptcontract/preload/selection.go` (`PlanningState`, `ReadyFor`, `reconcileSelectionLocked`, `retainPublicationLocked`) |
 | Bounded demand and preload selection | `coordinator/internal/promptcontract/preload/active_set.go` (`PreloadActiveSet`), `coordinator/registry/cache_preload_identity.go` (`CachePreloadIdentities`), `coordinator/api/inference/cache_preload_selection.go` (`cachePreloadSelection`) |
-| Rust managed membership and preload ownership | `coordinator/promptsidecar/src/planner/readiness.rs` (`PreloadOperation`), `coordinator/promptsidecar/src/planner/preloading.rs` (`preload_contracts`) |
+| Rust managed membership and preload ownership | `coordinator/promptsidecar/src/planner/readiness.rs` (`PreloadOperation`), `coordinator/promptsidecar/src/planner/preloading.rs` (`preload_contracts`, `preload_incremental_contracts`) |
 | Contract identity and block chain (Go) | `coordinator/promptcontract/contract.go`, `coordinator/internal/promptcontract/identity/blockhash.go` |
 | Sidecar process, socket server, routes | `coordinator/promptsidecar/src/main.rs`, `coordinator/promptsidecar/src/server.rs`, `coordinator/promptsidecar/src/server/handler.rs` |
 | Bounded HTTP JSON decoding | `coordinator/promptsidecar/src/server/handler.rs` (`decode_request`): plan and preload share declared/streamed body bounds, read deadline and JSON decoding; each operation retains its own malformed-request message and worker timeout policy |

@@ -1314,6 +1314,27 @@ startup. Keep the existing
 the normal all-target gate below; filtered runs must prove their exact named
 tests executed, not merely compile or return zero selected tests.
 
+Negotiated preload continuity has its own controls. Go preload controls cover
+legacy fallback and fail-closed negotiated downgrade
+(`TestPreloadContinuityNegotiationNeverSilentlyDowngrades` and
+`TestPreloadStaleProtocolFailureWithdrawsSameChildAuthority`,
+`coordinator/tests/promptcontract/preload_negotiation_test.go`) and a held retry
+that keeps the acknowledged healthy member admitted
+(`TestIndependentRetryPreservesHealthyContract`,
+`coordinator/tests/promptcontract/preload_continuity_test.go`). The last name
+does not match the `^TestPreload` filter above, so select all three explicitly:
+
+```bash
+go test -race ./coordinator/tests/promptcontract -count=3 -run \
+  '^(TestIndependentRetryPreservesHealthyContract|TestPreloadContinuityNegotiationNeverSilentlyDowngrades|TestPreloadStaleProtocolFailureWithdrawsSameChildAuthority)$'
+```
+
+Rust planner controls hold actual blocking loaders and plan references through
+cancellation and capacity pressure (`planner::readiness_tests::continuity`,
+`coordinator/promptsidecar/src/planner/continuity_tests.rs`). These component
+tests do not establish native MLX cache adoption, production throughput or
+real-model hit rates.
+
 These are tokenizer/readiness and ownership gates, not native KV adoption,
 hosted routing, performance or release certification. Original request
 deadlines, source/authentication checks and configured capacities remain in

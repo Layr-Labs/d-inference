@@ -13,6 +13,7 @@ pub enum CacheAccess {
 pub enum CacheFailure<E> {
     Load(Arc<E>),
     Poisoned,
+    Capacity,
 }
 
 impl<E> Clone for CacheFailure<E> {
@@ -20,6 +21,7 @@ impl<E> Clone for CacheFailure<E> {
         match self {
             Self::Load(error) => Self::Load(error.clone()),
             Self::Poisoned => Self::Poisoned,
+            Self::Capacity => Self::Capacity,
         }
     }
 }
@@ -133,6 +135,50 @@ impl<T, E> SingleflightLru<T, E> {
         key: &str,
         loader: impl FnOnce() -> Result<T, E>,
     ) -> Result<(Arc<T>, CacheAccess), CacheFailure<E>> {
+        self.load(key, loader, false)
+    }
+
+    // A reservation counts before IO and becomes a resident atomically. This
+    // mode never evicts an incumbent; callers must retire undesired idle values.
+    pub fn get_or_load_bounded(
+        &self,
+        key: &str,
+        loader: impl FnOnce() -> Result<T, E>,
+    ) -> Result<(Arc<T>, CacheAccess), CacheFailure<E>> {
+        self.load(key, loader, true)
+    }
+
+    pub fn resident(&self, key: &str) -> Option<Arc<T>> {
+        self.state
+            .lock()
+            .ok()?
+            .entries
+            .get(key)
+            .and_then(Entry::upgrade)
+    }
+
+    // Call only after withdrawing these IDs from admission. A live plan's Arc
+    // keeps its slot charged; retry can reclaim it after that plan ends.
+    pub fn retain_selected_or_busy(&self, desired: &[String]) {
+        if let Ok(mut state) = self.state.lock() {
+            state.entries.retain(|key, entry| {
+                desired.contains(key)
+                    || match entry {
+                        Entry::Strong(value) => Arc::strong_count(value) > 1,
+                        Entry::Weak(value) => value.strong_count() > 0,
+                    }
+            });
+            let keys: std::collections::HashSet<_> = state.entries.keys().cloned().collect();
+            state.order.retain(|key| keys.contains(key));
+        }
+    }
+
+    fn load(
+        &self,
+        key: &str,
+        loader: impl FnOnce() -> Result<T, E>,
+        bounded: bool,
+    ) -> Result<(Arc<T>, CacheAccess), CacheFailure<E>> {
         let (flight, owner) = {
             let mut state = self.state.lock().map_err(|_| CacheFailure::Poisoned)?;
             if let Some(value) = state.entries.get(key).and_then(Entry::upgrade) {
@@ -145,6 +191,9 @@ impl<T, E> SingleflightLru<T, E> {
             if let Some(flight) = state.loading.get(key) {
                 (flight.clone(), false)
             } else {
+                if bounded && state.entries.len() + state.loading.len() >= self.capacity {
+                    return Err(CacheFailure::Capacity);
+                }
                 let flight = Arc::new(Flight::new());
                 state.loading.insert(key.to_owned(), flight.clone());
                 (flight, true)
@@ -166,7 +215,7 @@ impl<T, E> SingleflightLru<T, E> {
         let published = match self.state.lock() {
             Ok(mut state) => {
                 if let Ok(value) = &loaded {
-                    while state.entries.len() >= self.capacity {
+                    while !bounded && state.entries.len() >= self.capacity {
                         if let Some(oldest) = state.order.pop_front() {
                             state.entries.remove(&oldest);
                         }

@@ -13,7 +13,9 @@ import (
 const MaxAttemptBytes uint64 = 64 << 20
 
 // AttemptBudget is the logical-byte ledger of one generation's retained attempt
-// records. The receipt controller serializes it under its existing mutex.
+// records. The receipt controller serializes it under its existing mutex. The
+// tracker stores only a total that replacementTotal found to fit, and zero when
+// the generation's records are cleared.
 type AttemptBudget struct{ bytes, maxBytes uint64 }
 
 func NewAttemptBudget(maxBytes uint64) *AttemptBudget {
@@ -23,6 +25,28 @@ func NewAttemptBudget(maxBytes uint64) *AttemptBudget {
 func (b *AttemptBudget) Bytes() uint64      { return b.bytes }
 func (b *AttemptBudget) MaxBytes() uint64   { return b.maxBytes }
 func (b *AttemptBudget) Store(bytes uint64) { b.bytes = bytes }
+
+// replacementTotal is the total once an incumbent's stored charge (zero for a
+// new record) is exchanged for charge, and whether it fits; it commits nothing.
+// An incumbent charge above the total or an overflowing sum never fits and
+// reports zero. A total above the limit is reported but does not fit.
+func (b *AttemptBudget) replacementTotal(old, charge uint64) (total uint64, fits bool) {
+	if old > b.bytes {
+		return 0, false
+	}
+	total, valid := CheckedCacheAttemptAdd(b.bytes-old, charge)
+	return total, valid && total <= b.maxBytes
+}
+
+// refund releases one stored charge. A charge above the total means the ledger
+// is inconsistent; it saturates so that it never grants new cache admission.
+func (b *AttemptBudget) refund(charge uint64) {
+	if charge > b.bytes {
+		b.bytes = ^uint64(0)
+		return
+	}
+	b.bytes -= charge
+}
 
 // The memory tier's block geometry applies whenever that tier is usable.
 func cacheAttemptBlockSize[P comparable](attempt Attempt[P]) uint32 {

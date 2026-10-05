@@ -16,11 +16,8 @@ func (t *Tracker[P]) StoreAttemptLocked(nonce string, attempt Attempt[P]) bool {
 	}
 	t.SweepIfDueLocked(t.now())
 	old := t.attempts.Lookup(nonce).AccountedBytes
-	if old > t.attemptBudget.Bytes() {
-		return false
-	}
-	total, valid := CheckedCacheAttemptAdd(t.attemptBudget.Bytes()-old, charge)
-	if !valid || total > t.attemptBudget.MaxBytes() {
+	total, fits := t.attemptBudget.replacementTotal(old, charge)
+	if !fits {
 		return false
 	}
 	key, owned, valid := detachCacheAttempt(nonce, attempt)
@@ -47,12 +44,7 @@ func (t *Tracker[P]) StoreAttemptLocked(nonce string, attempt Attempt[P]) bool {
 
 func (t *Tracker[P]) RemoveAttemptLocked(nonce string) {
 	if attempt, exists := t.attempts.Load(nonce); exists {
-		if attempt.AccountedBytes > t.attemptBudget.Bytes() {
-			// An inconsistent counter must not grant new cache admission.
-			t.attemptBudget.Store(^uint64(0))
-		} else {
-			t.attemptBudget.Store(t.attemptBudget.Bytes() - attempt.AccountedBytes)
-		}
+		t.attemptBudget.refund(attempt.AccountedBytes)
 	}
 	t.attempts.Delete(nonce)
 	if entry := t.attemptOrder.Remove(nonce); entry != nil {

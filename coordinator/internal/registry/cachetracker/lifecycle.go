@@ -11,7 +11,8 @@ const AttemptTTL = 2 * time.Minute
 
 func (t *Tracker[P]) MarkAttemptTerminal(nonce string, now time.Time) {
 	if attempt, ok := t.ActiveAttemptLocked(nonce, now); ok {
-		// Through the store so the expiry heap moves with the new deadline.
+		// Re-store the admitted record under a detached key and move its
+		// expiry; its charge is unchanged.
 		attempt.ExpiresAt = now.Add(AttemptTTL)
 		t.attempts.Store(strings.Clone(nonce), attempt)
 		if entry := t.attemptOrder.Load(nonce); entry != nil {

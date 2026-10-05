@@ -373,7 +373,7 @@ of both tier capabilities. The 128-byte allowance prepays both future READY hash
 
 `StoreAttemptLocked` (`coordinator/internal/registry/cachetracker/cache_receipts_kernel.go`)
 validates the charge and budget before cloning retained
-strings, boundary slice and claims map. Checked replacement accounting preserves an
+strings and the boundary slice and deriving its own boundary claims. Checked replacement accounting preserves an
 incumbent on refusal; each removal refunds its stored charge exactly once.
 `PreparePrefixCacheV2Attempt` publishes an owner only after successful insertion
 and uses the admitted detached scope. Refusal returns ordinary cold inference,

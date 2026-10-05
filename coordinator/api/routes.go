@@ -237,10 +237,10 @@ func (s *Server) routes() {
 	// Payment methods info
 	s.mux.HandleFunc("GET /v1/billing/methods", s.billingHTTP.HandleBillingMethods) // no auth needed
 
-	// Referral system — register/apply mutate referral graph (financial
-	// limiter); stats/info are read-only.
-	s.mux.HandleFunc("POST /v1/referral/register", s.access.RequireAuth(s.access.RateLimitFinancial(s.billingHTTP.HandleReferralRegister)))
-	s.mux.HandleFunc("POST /v1/referral/apply", s.access.RequireAuth(s.access.RateLimitFinancial(s.billingHTTP.HandleReferralApply)))
+	// Referral mutations require an interactive session, not a linked API key.
+	// The financial limiter runs after authentication; stats/info are read-only.
+	s.mux.HandleFunc("POST /v1/referral/register", s.access.RequirePrivyAuth(s.access.RateLimitFinancial(s.billingHTTP.HandleReferralRegister)))
+	s.mux.HandleFunc("POST /v1/referral/apply", s.access.RequirePrivyAuth(s.access.RateLimitFinancial(s.billingHTTP.HandleReferralApply)))
 	s.mux.HandleFunc("GET /v1/referral/stats", s.access.RequireAuth(s.billingHTTP.HandleReferralStats))
 	s.mux.HandleFunc("GET /v1/referral/info", s.access.RequireAuth(s.billingHTTP.HandleReferralInfo))
 

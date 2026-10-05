@@ -4,6 +4,15 @@
 
 - Add an admin-only connected Autopilot inventory report with exact per-model last-reported approval counts, deduplicated approval totals and a models-per-provider distribution. Distinguish unpaused, paused and stale connections without exposing provider identities or claiming fresh disk verification, residency or routing eligibility. The read does not depend on the operation ledger.
 
+## Unreleased - Open Sales Program
+
+- Add an Open Sales Program page to register and share a code, apply a referrer, and track referred consumers and earned rewards. Preserve referral links through sign-in and invite redemption.
+- Reward referrers with 5% of their referred consumers' collected token spend as withdrawable earnings funded by Darkbloom. Consumer prices, provider earnings, and platform-fee credits remain unchanged.
+- Settle consumer charges and referral credits atomically per request, excluding free or uncollected usage and preventing duplicate rewards. Keep attribution immutable and prospective; retire the old platform-fee-share setting.
+- Include only the paid portion of token-promotion requests in referral earnings, atomically with promotion settlement.
+- Exclude execution on the consumer's own machines, explicit self-routing, and selected-machine routing from referral rewards and eligible-spend totals, including paid owner-preferred fallbacks. The same exclusions apply to the paid portion of promotion requests. Request billing, provider payouts, and promotion grant use are unchanged.
+- Require Privy sessions for referral mutations and retry uncertain settlement without releasing reserved service funds or repeating live-request accounting. Reconcile pending settlements during graceful shutdown.
+
 ## Unreleased — routing scan cost
 
 - Compact retained routing evidence, reuse bounded private reservation storage, borrow forecast inputs, project alternate-selection values once, and aggregate pending work once per provider snapshot. Public scan and quote lifetimes, selection policy, admission, retirement and billing behavior are preserved.

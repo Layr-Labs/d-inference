@@ -989,6 +989,11 @@ seed users before authentication. They run the real verifier with a local public
 key, without remote Privy user or JWKS calls. A package move must preserve every
 assertion and must not substitute direct handler calls for a public router test.
 
+Tests that run the coordinator in the test process (`app.Run` or the command
+`Main`) get their listen port from `coordinator/tests/internal/testkit/listen_port.go`
+(`FreeListenPort`). The coordinator exits the process on a bind error, so the
+helper picks a free port below the macOS and Linux ephemeral port ranges.
+
 `coordinator/tests/layout_test.go` (`TestCoordinatorTestsAreIsolated`) rejects
 test files outside the mirror and production imports of `testing` or test helpers.
 The offline runner/hook guards in `scripts/test-coordinator-tests.py` also run

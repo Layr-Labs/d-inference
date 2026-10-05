@@ -949,9 +949,15 @@ has the columns Component, Statements or Lines, Regions or Branches, Functions
 and Target. The target is 80% and is for information only: a low number does
 not fail the job. The step fails only when the profile has no coordinator data
 or no total. The denominator is the statements in the `coordinator/...`
-packages. The profile also holds `e2e/testbed/...` and a frozen docs evidence
-package; the step leaves them out. `_test.go` files never count. `go test` has
-no branch counters, so the table reports statements only.
+production packages. The runner instruments them in every test binary with
+`-coverpkg`, so the tests in `coordinator/tests/` credit the production code
+they run. A production package that no test imports still counts, at 0%. The
+`coordinator/tests/...` packages and their helpers are not instrumented, and
+`_test.go` files never count. The profile also holds `e2e/testbed/...` and a
+frozen docs evidence package; the step leaves them out. `go test` has no
+branch counters, so the table reports statements only. The table appears only
+when the [component router](#component-ci-routing) runs the job; pushes to the
+default branch always run it.
 
 The runner compiles each selected large API test package once and discovers its
 tests, examples, and fuzz seeds from that binary: `coordinator/tests/api`, its
@@ -1138,8 +1144,9 @@ production prompt vectors against it with
 
 CI then measures coverage with `cargo-llvm-cov` 0.9.1. It writes the same
 table shape as the coordinator job: lines, regions and functions, with an 80%
-report-only target. The step reads each value by its field name from the JSON
-report and fails if one is missing. A low number does not fail the job. The
+report-only target, and it also appears only when the router runs the job.
+The step reads each value by its field name from the JSON report and fails if
+one is missing. A low number does not fail the job. The
 denominator is `coordinator/promptsidecar/src`. The tests under `tests/`,
 every `tests.rs` test module under `src/` and dependencies are left out;
 inline unit-test modules inside other `src` files are counted. Branch counters

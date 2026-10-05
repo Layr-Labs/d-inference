@@ -7,4 +7,6 @@ package prelude
 func stripProviderCallerIdentity(body map[string]any) {
 	delete(body, "user")
 	delete(body, "metadata")
+	delete(body, "safety_identifier")
+	delete(body, "prompt_cache_key")
 }

@@ -35,9 +35,9 @@ func (s *PostgresStore) FreezeLegacyMDMCohort(ctx context.Context) ([]store.Lega
 		return nil, err
 	}
 	if !frozen {
-		// Hold the evidence and ownership snapshot stable through commit. Alias
-		// presence proves the authenticated association existed at freeze time;
-		// verified_at tracks later refreshes, not the association's creation.
+		// Hold the historical evidence and account-scoped bindings stable through
+		// commit. Aliases can come from live observations or historical backfill;
+		// verified_at tracks refreshes, not fresh account-token authentication.
 		if _, err = tx.Exec(ctx, `LOCK TABLE providers, users, provider_trust_reuse, darkbloom_machine_aliases IN SHARE MODE`); err != nil {
 			return nil, err
 		}

@@ -6,6 +6,11 @@ on:
   pull_request:
 
 jobs:
+  changes:
+    uses: ./.github/workflows/component-changes.yml
+    permissions:
+      contents: read
+
   release-integrity:
     name: Release Integrity
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -26,6 +31,7 @@ jobs:
           python3 scripts/test-stage-test-metallib.py
           python3 scripts/test-provider-ci-cache.py
           python3 scripts/test-provider-ci-workflow.py
+          python3 scripts/test-ci-component-paths.py
           python3 scripts/test-app-attest-entitlements.py
           ./scripts/sync-install-embed.sh check
           ./scripts/test-prod-env-refresh.sh
@@ -37,6 +43,7 @@ jobs:
           python3 .github/scripts/test-threat-model-review.py
           python3 .github/scripts/test-threat-full-scan.py
           python3 .github/scripts/test-threat-ensemble.py
+          python3 .github/scripts/test-threat-budget.py
       - name: Test native GPU CI routing without a GPU
         run: python3 scripts/test-native-gpu-ci.py
       - name: Test bounded MiMo provider fixture provisioning offline
@@ -62,7 +69,9 @@ jobs:
 
   test-coordinator:
     name: Coordinator Tests
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    needs: changes
+    if: ${{ needs.changes.outputs.coordinator == 'true' }}
+    runs-on: blacksmith-16vcpu-ubuntu-2404
     services:
       postgres:
         image: postgres:16
@@ -83,7 +92,9 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Check adversarial numeric parsing without instrumentation
-        run: go test -race=false -cover=false ./coordinator/api -run '^TestConstrainedExactNonnegativeIntBoundsAdversarialLiterals$' -count=1
+        run: go test -race=false -cover=false ./coordinator/tests/api/inference/request -run '^TestConstrainedExactNonnegativeIntBoundsAdversarialLiterals$' -count=1
+      - name: Test coordinator runner guards
+        run: python3 scripts/test-coordinator-tests.py
       - name: Run tests
         env:
           DATABASE_URL: postgres://testbed:testbed@127.0.0.1:5432/testbed?sslmode=disable
@@ -93,8 +104,26 @@ jobs:
           # integration package is excluded (it needs a real Swift provider,
           # see integration.yml); coordinator/internal/e2e and e2e/testbed/...
           # are ordinary unit tests and run here.
-          # shellcheck disable=SC2046
-          go test -race -coverprofile="$RUNNER_TEMP/coverage.out" -covermode=atomic $(go list ./... | grep -vx 'github.com/eigeninference/d-inference/e2e')
+          packages=$(go list ./...)
+          packages=$(printf '%s\n' "$packages" | grep -vx 'github.com/eigeninference/d-inference/e2e')
+          test -n "$packages"
+          # shellcheck disable=SC2086
+          python3 scripts/run-coordinator-tests.py --race \
+            --jobs 8 \
+            --coverprofile "$RUNNER_TEMP/coverage.out" \
+            --output-dir "$RUNNER_TEMP/coordinator-tests" \
+            $packages
+      - name: Upload coordinator test timings
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coordinator-test-timings
+          path: |
+            ${{ runner.temp }}/coordinator-tests/**/*.json
+            ${{ runner.temp }}/coordinator-tests/**/*.jsonl
+            ${{ runner.temp }}/coordinator-tests/**/*.stderr
+          if-no-files-found: warn
+          retention-days: 14
       - name: Check formatting
         run: |
           set -o pipefail
@@ -114,13 +143,30 @@ jobs:
             echo "coverage.out has no coverage data"
             exit 1
           fi
-          total=$(go tool cover -func="$RUNNER_TEMP/coverage.out" | awk '$1 == "total:" {print $NF}')
-          test -n "$total"
-          echo "Coordinator (Go) statement coverage: $total"
+          # The runner passes -coverpkg, so tests in coordinator/tests credit
+          # the production packages they run. The profile also holds
+          # e2e/testbed and a frozen docs evidence package. The reported
+          # number counts coordinator packages only.
+          scoped="$RUNNER_TEMP/coverage-coordinator.out"
+          head -n 1 "$RUNNER_TEMP/coverage.out" > "$scoped"
+          if ! grep '^github.com/eigeninference/d-inference/coordinator/' "$RUNNER_TEMP/coverage.out" >> "$scoped"; then
+            echo "coverage.out has no coordinator rows"
+            exit 1
+          fi
+          statements=$(go tool cover -func="$scoped" | awk '$1 == "total:" && $2 == "(statements)" {print $3}')
+          if ! [[ "$statements" =~ ^[0-9]+(\.[0-9]+)?%$ ]]; then
+            echo "Missing statement coverage: '$statements'"
+            exit 1
+          fi
+          echo "Coordinator (Go) statement coverage: $statements"
           {
-            echo "| Component | Statement coverage |"
-            echo "|---|---|"
-            echo "| Coordinator (Go) | $total |"
+            echo "| Component | Statements or Lines | Regions or Branches | Functions | Target |"
+            echo "|---|---|---|---|---|"
+            echo "| Coordinator (Go) | $statements statements | not reported | not reported | 80% (report-only) |"
+            echo
+            echo "Denominator: statements in the \`coordinator/...\` production packages, from the test run above. The runner instruments them in every test binary with \`-coverpkg\`, so the tests in \`coordinator/tests/\` credit the code they run. The top-level \`e2e\` package does not run here, and \`e2e/testbed/...\` and a frozen docs evidence package are left out."
+            echo
+            echo "Excluded: \`_test.go\` files, the \`coordinator/tests/...\` packages and their helpers, and generated code (there is none); \`go test\` has no branch counters, so only statements are reported."
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload coverage profile
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -132,6 +178,8 @@ jobs:
 
   lint-coordinator:
     name: Coordinator Lint
+    needs: changes
+    if: ${{ needs.changes.outputs.coordinator == 'true' }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -145,6 +193,8 @@ jobs:
 
   test-prompt-sidecar:
     name: Prompt Sidecar Tests
+    needs: changes
+    if: ${{ needs.changes.outputs.sidecar == 'true' }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -186,22 +236,34 @@ jobs:
       - name: Report coverage
         working-directory: coordinator/promptsidecar
         run: |
-          set -o pipefail
-          cargo llvm-cov --locked --all-targets --summary-only | tee "$RUNNER_TEMP/sidecar-coverage.txt"
-          # Column 10 of the TOTAL row is the line coverage percent.
-          lines=$(awk '$1 == "TOTAL" {v = $10} END {print v}' "$RUNNER_TEMP/sidecar-coverage.txt")
-          if ! [[ "$lines" =~ ^[0-9]+\.[0-9]+%$ ]]; then
-            echo "Unexpected line coverage value: '$lines'"
-            exit 1
-          fi
+          cargo llvm-cov --locked --all-targets --no-report
+          cargo llvm-cov report --summary-only
+          json="$RUNNER_TEMP/sidecar-coverage.json"
+          cargo llvm-cov report --json --summary-only --output-path "$json"
+          # Read each total by its field name. jq -e fails when it is missing.
+          percent() {
+            local value
+            value=$(jq -er --arg k "$1" '.data[0].totals[$k].percent | select(type == "number")' "$json") || return 1
+            printf '%.2f%%' "$value"
+          }
+          lines=$(percent lines)
+          regions=$(percent regions)
+          functions=$(percent functions)
+          echo "Prompt sidecar (Rust) coverage: lines $lines, regions $regions, functions $functions"
           {
-            echo "| Component | Line coverage |"
-            echo "|---|---|"
-            echo "| Prompt sidecar (Rust) | $lines |"
+            echo "| Component | Statements or Lines | Regions or Branches | Functions | Target |"
+            echo "|---|---|---|---|---|"
+            echo "| Prompt sidecar (Rust) | $lines lines | $regions regions | $functions | 80% (report-only) |"
+            echo
+            echo "Denominator: lines and regions in \`coordinator/promptsidecar/src\`, from a \`cargo test --all-targets\` run."
+            echo
+            echo "Excluded: the tests under \`tests/\`, every \`tests.rs\` test module under \`src/\`, dependencies and generated code (the crate has none); inline unit-test modules inside other \`src\` files are counted. Branch counters need a nightly toolchain, so branches are not reported."
           } >> "$GITHUB_STEP_SUMMARY"
 
   test-provider:
     name: Provider Unit Tests
+    needs: changes
+    if: ${{ needs.changes.outputs.provider == 'true' }}
     runs-on: blacksmith-12vcpu-macos-27
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -306,6 +368,8 @@ jobs:
 
   test-provider-sdk:
     name: Provider SDK Tests
+    needs: changes
+    if: ${{ needs.changes.outputs.provider == 'true' }}
     runs-on: blacksmith-12vcpu-macos-27
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -442,6 +506,8 @@ jobs:
 
   test-provider-parity:
     name: Provider Prompt Parity
+    needs: changes
+    if: ${{ needs.changes.outputs.provider == 'true' }}
     runs-on: blacksmith-12vcpu-macos-27
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -463,6 +529,9 @@ jobs:
         id: prompt-parity
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
         run: ./scripts/verify-prompt-parity.sh
+      - name: Verify pinned Nemotron prompts and numeric cache plans
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
+        run: ./scripts/verify-nemotron-prompt-parity.sh
       - name: Save verified prompt parity Cargo dependencies
         if: ${{ !cancelled() && steps.prompt-parity.outcome == 'success' && steps.provider-ci-build.outputs.rust-cache-hit != 'true' }}
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
@@ -476,18 +545,26 @@ jobs:
   provider-test-gate:
     name: Provider Tests
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    needs: [test-provider, test-provider-sdk, test-provider-parity]
+    needs: [changes, test-provider, test-provider-sdk, test-provider-parity]
     if: ${{ always() }}
     steps:
-      - name: Require every provider lane
+      - name: Require selected provider lanes or verified intentional skips
         env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          PROVIDER_CHANGED: ${{ needs.changes.outputs.provider }}
           UNIT_RESULT: ${{ needs.test-provider.result }}
           SDK_RESULT: ${{ needs.test-provider-sdk.result }}
           PARITY_RESULT: ${{ needs.test-provider-parity.result }}
         run: |
-          test "$UNIT_RESULT" = success
-          test "$SDK_RESULT" = success
-          test "$PARITY_RESULT" = success
+          test "$CHANGES_RESULT" = success
+          case "$PROVIDER_CHANGED" in
+            true) expected=success ;;
+            false) expected=skipped ;;
+            *) exit 1 ;;
+          esac
+          test "$UNIT_RESULT" = "$expected"
+          test "$SDK_RESULT" = "$expected"
+          test "$PARITY_RESULT" = "$expected"
 
   cache-swift:
     name: Swift Build + Cache
@@ -535,6 +612,8 @@ jobs:
 
   lint-console:
     name: Console UI Lint & Build
+    needs: changes
+    if: ${{ needs.changes.outputs.console == 'true' }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2

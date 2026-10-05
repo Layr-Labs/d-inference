@@ -6,6 +6,9 @@ import subprocess
 import tempfile
 import unittest
 
+RUNTIME_LIBRARY_PATHS = ["Contents/MacOS/mlx.metallib",
+                         "Contents/Resources/mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib"]
+
 
 class StageTestMetallibTests(unittest.TestCase):
     def setUp(self):
@@ -26,11 +29,10 @@ class StageTestMetallibTests(unittest.TestCase):
     def run_stage(self):
         return subprocess.run([str(self.stage), str(self.bin)], capture_output=True, text=True)
 
-    def test_replaces_both_resource_layouts_for_every_bundle(self):
+    def assert_stages_every_bundle(self, bundle_names):
         paths = []
-        for name in ["FirstPackageTests.xctest", "SecondPackageTests.xctest"]:
-            for relative in ["Contents/MacOS/mlx.metallib",
-                             "Contents/Resources/mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib"]:
+        for name in bundle_names:
+            for relative in RUNTIME_LIBRARY_PATHS:
                 path = self.bin / name / relative
                 path.parent.mkdir(parents=True)
                 path.write_text("stale")
@@ -40,6 +42,20 @@ class StageTestMetallibTests(unittest.TestCase):
         for path in paths:
             self.assertEqual(path.read_text(), "verified-by-fetch")
         self.assertFalse(list(self.bin.rglob(".mlx-metallib.*")))
+
+    def test_replaces_both_resource_layouts_for_every_package_bundle(self):
+        self.assert_stages_every_bundle(["FirstPackageTests.xctest", "SecondPackageTests.xctest"])
+
+    def test_replaces_both_resource_layouts_for_every_per_target_bundle(self):
+        self.assert_stages_every_bundle(["ProviderCoreTests.xctest", "DarkbloomCLITests.xctest"])
+
+    def test_stages_per_target_bundle_without_prior_library(self):
+        bundle = self.bin / "ProviderCoreTests.xctest"
+        (bundle / "Contents/MacOS").mkdir(parents=True)
+        result = self.run_stage()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for relative in RUNTIME_LIBRARY_PATHS:
+            self.assertEqual((bundle / relative).read_text(), "verified-by-fetch")
 
     def test_no_runner_cannot_be_reported_as_success(self):
         self.assertNotEqual(self.run_stage().returncode, 0)

@@ -24,6 +24,15 @@ const maxAppAttestServingLease = 15 * time.Minute
 
 var ErrProviderServingUnauthorized = errors.New("provider serving authorization is no longer valid")
 
+// appAttestNow preserves the caller's lock-scoped observation in production.
+// A separate lease clock leaves legacy evidence and capacity freshness untouched.
+func (r *Registry) appAttestNow(observed time.Time) time.Time {
+	if r.appAttestClock != nil {
+		return r.appAttestClock()
+	}
+	return observed
+}
+
 // SetAppAttestServingPolicy changes serving authorization, not enrollment or
 // MDM-removal rollout. Operators may stop new migrations while keeping serving
 // enabled for machines already unenrolled. A generation change invalidates all
@@ -80,14 +89,14 @@ func (r *Registry) GrantAppAttestServingAuthorization(p *Provider, lease AppAtte
 	// Untrusted connection is promoted or counted online. The failure branch
 	// below restores both the previous lease and status atomically.
 	valid := r.providerAppAttestServingAuthorizedLocked(p, now) &&
-		!lease.IssuedAt.IsZero() && !lease.IssuedAt.After(now) &&
+		!lease.IssuedAt.IsZero() && !lease.IssuedAt.After(r.appAttestNow(now)) &&
 		lease.ValidUntil.Sub(lease.IssuedAt) <= maxAppAttestServingLease
 	if !valid {
 		p.appAttestAuthorization = previous
 		p.Status = previousStatus
 	} else {
 		if !previouslyAuthorized {
-			p.warmWorkCounters = nil
+			p.warmWork.Reset()
 		}
 		p.appAttestCredentialID = lease.CredentialID
 		if recovering {
@@ -165,6 +174,7 @@ func (r *Registry) RevokeAppAttestCredential(credentialID string) []string {
 // Caller holds r.mu and p.mu. The current pointer check is also performed at
 // the final writer handoff, including when a same-ID connection was replaced.
 func (r *Registry) providerHasAppAttestAuthorizationLocked(p *Provider, now time.Time) bool {
+	now = r.appAttestNow(now)
 	a := p.appAttestAuthorization
 	_, revoked := r.appAttestRevokedCredentials[a.CredentialID]
 	return r.appAttestServingEnabled && !revoked && !p.appAttestSecurityDenied &&
@@ -287,7 +297,7 @@ func (r *Registry) SetAppAttestQualificationGeneration(generation uint64) {
 // actual lease loss invalidates its cumulative work baseline.
 func (p *Provider) clearAppAttestServingAuthorizationLocked() {
 	if p.appAttestAuthorization.PolicyGeneration != 0 {
-		p.warmWorkCounters = nil
+		p.warmWork.Reset()
 	}
 	p.appAttestAuthorization = AppAttestServingAuthorization{}
 }

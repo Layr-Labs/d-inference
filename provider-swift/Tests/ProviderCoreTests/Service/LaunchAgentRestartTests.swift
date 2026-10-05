@@ -49,6 +49,17 @@ struct LaunchAgentRestartTests {
 
 @Suite("LaunchAgent environment passthrough")
 struct LaunchAgentEnvironmentTests {
+    @Test func memoryPolicyMatchesForegroundIncludingInvalidAndEmptyValues() {
+        let key = SystemMemory.availabilityEnvironmentKey
+        for value: String? in [nil, "reclaimable", "free-only", " FREE-ONLY ", "typo", ""] {
+            let foreground = value.map { [key: $0] } ?? [:]
+            let daemon = LaunchAgent.passthroughEnvironment(from: foreground)
+            #expect(SystemMemory.AvailabilityPolicy.resolve(daemon[key])
+                == SystemMemory.AvailabilityPolicy.resolve(value))
+            if value == nil { #expect(daemon[key] == nil) }
+        }
+    }
+
     @Test func forwardsAllowlistedNonEmptyVars() {
         let env = ["DARKBLOOM_PREFIX_CACHE": "0", "DARKBLOOM_PREFIX_CACHE_MEMORY": "1", "PATH": "/usr/bin", "HOME": "/Users/x"]
         let out = LaunchAgent.passthroughEnvironment(from: env)
@@ -162,6 +173,20 @@ struct LaunchAgentEnvironmentTests {
         #expect(WatchdogAgent.passthroughEnvKeys.allSatisfy { !keys.contains($0) })
     }
 
+    @Test func forwardsMiMoExactVerifyRollbacksToProviderJob() {
+        // Exact rectangular MTP verification is the MiMo default; turning it
+        // back to serial scoring only works if the rollback reaches launchd.
+        let keys = [EngineV2SlotFactory.mimoRectangularVerifyEnvironmentKey]
+            + MiMoV26DecodeDefaults.verifyEnvironmentKeys
+        #expect(keys.count == 3)
+        #expect(keys.allSatisfy { LaunchAgent.inferencePassthroughEnvKeys.contains($0) })
+        let rollback = Dictionary(uniqueKeysWithValues: keys.map { ($0, "0") })
+        let out = LaunchAgent.passthroughEnvironment(from: rollback)
+        #expect(out == rollback)
+        #expect(EngineV2SlotFactory.nativeMiMoVerificationMode(wantsMTP: true, environment: out)
+            == .serialTarget)
+    }
+
     @Test func preservesMalformedNonEmptyControlsForRuntimeSecureDefault() {
         let out = LaunchAgent.passthroughEnvironment(from: [
             EngineV2Factory.maxPartialPrefillsKey: "not-an-integer",
@@ -266,6 +291,26 @@ struct LaunchAgentEnvironmentTests {
 
 @Suite("LaunchAgent service plist")
 struct LaunchAgentServicePlistTests {
+    @Test func memoryPolicySurvivesPlistSerializationAndRestartRefresh() throws {
+        let key = SystemMemory.availabilityEnvironmentKey
+        let plist = LaunchAgent.makeServicePlist(
+            label: "io.darkbloom.provider.test", programArguments: ["/test/darkbloom"],
+            logPath: "/test/provider.log", environment: [key: "free-only"])
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("provider.plist")
+        try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+            .write(to: path)
+        try LaunchAgent.refreshTerminationAllowance(at: path)
+        let restored = try #require(PropertyListSerialization.propertyList(
+            from: Data(contentsOf: path), format: nil) as? [String: Any])
+        let environment = try #require(restored["EnvironmentVariables"] as? [String: String])
+        #expect(environment[key] == "free-only")
+        #expect(restored["ExitTimeOut"] as? Int == 3660)
+    }
+
     @Test(
         "installed service plist retains prefill controls for launchd restarts",
         arguments: [PrefillDeadlineMode.off, PrefillDeadlineMode.enforce]

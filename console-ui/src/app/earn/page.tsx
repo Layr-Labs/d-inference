@@ -12,7 +12,7 @@ import { ProductionReadinessNotice } from "./ProductionReadinessNotice";
 import Link from "next/link";
 
 export default function EarnPage() {
-  const { ready, authenticated, login } = useAuth();
+  const { ready, authenticated, login, user, getAccessToken } = useAuth();
   const calc = useEarningsCalculator();
   let calculatorContent = (
     <div className="rounded-xl border border-dashed border-border-dim bg-bg-secondary/50 px-6 py-10 mb-6 text-center">
@@ -30,6 +30,8 @@ export default function EarnPage() {
         authenticated={authenticated}
         ready={ready}
         login={login}
+        accountId={user?.id ?? null}
+        getAccessToken={getAccessToken}
       />
     );
   } else if (calc.isProductionReady) {
@@ -40,6 +42,8 @@ export default function EarnPage() {
           authenticated={authenticated}
           ready={ready}
           login={login}
+        accountId={user?.id ?? null}
+        getAccessToken={getAccessToken}
         />
         <SetupProviderCTA authenticated={authenticated} ready={ready} login={login} />
         <CalculationFlow calc={calc} />

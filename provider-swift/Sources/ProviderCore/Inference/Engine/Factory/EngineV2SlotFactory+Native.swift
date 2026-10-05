@@ -50,11 +50,21 @@ private struct MiMoV26NativeSlotAssembly: Sendable {
 }
 
 extension EngineV2SlotFactory {
-    /// Experimental strategy opt-in for eligible text rounds only. It does
-    /// not activate MTP, remove media support, or change any fallback gate.
+    /// Exact rectangular verification (scalar-dense rows, row-exact affine
+    /// projections, serialized attention) is the default MiMo MTP strategy for
+    /// eligible text rounds. Exact `0` / `false` / `no` / `off` on this key or
+    /// on the SDK's scalar-dense switch selects serial-target scoring instead.
+    /// The provider never selects the bulk rectangular trunk, whose reductions
+    /// differ from serial decode. This does not activate MTP, change media
+    /// (always target-only) or change any fallback gate.
+    static let mimoRectangularVerifyEnvironmentKey = "DARKBLOOM_MIMO_RECTANGULAR_VERIFY"
     static func nativeMiMoVerificationMode(wantsMTP: Bool,
         environment: [String: String]) -> CBv2MTPVerificationMode {
-        wantsMTP && environment["DARKBLOOM_MIMO_RECTANGULAR_VERIFY"] == "1"
+        wantsMTP
+            && MiMoV26DecodeDefaults.isEnabled(
+                mimoRectangularVerifyEnvironmentKey, environment: environment)
+            && MiMoV26DecodeDefaults.isEnabled(
+                MiMoV26DecodeDefaults.scalarDenseVerifyKey, environment: environment)
             ? .rectangular : .serialTarget
     }
     /// Serial-target scoring spends one ordinary target forward per draft
@@ -509,10 +519,10 @@ extension EngineV2SlotFactory {
             && !SpecDecArtifactFunnel.killSwitchEnabled(environment: environment)
             ? prepared.status.fallingBack(.killSwitchDisabled) : prepared.status
         let wantsMTP = intent.configured && intent.reason == nil
-        let verificationMode = nativeMiMoVerificationMode(wantsMTP: wantsMTP, environment: environment)
+        // The paged profile qualifies target-only and serial-target MTP only,
+        // independently of the contiguous rectangular default.
         guard environment["DARKBLOOM_MIMO_NATIVE_PAGED_TARGET"] == "1",
               prepared.load.decodedMediaPolicy == nil, prepared.load.decodedAudioPolicy == nil,
-              verificationMode == .serialTarget,
               kvBytesCapacity > 0, maxConcurrentRequests > 0, let kvBudget else {
             throw MiMoV26ServingLoadError.unsupportedBackend
         }

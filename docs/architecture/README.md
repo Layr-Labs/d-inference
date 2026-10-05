@@ -45,6 +45,7 @@ how-to and runbook directories listed in [`../README.md`](../README.md).
 |---|---|
 | [first-content-routing.md](first-content-routing.md) | Expected and conservative delivery forecasts, measurement freshness, 100-ms selection and atomic retry policy |
 | [routing.md](routing.md) | How a request becomes a provider choice: eligibility gates, cost model, selection, hedged dispatch, servability, breakers |
+| [model-autopilot.md](model-autopilot.md) | Opt-in cached model placement, useful shared-GPU capacity, explicit eviction ownership and recovery |
 | [scheduling.md](scheduling.md) | Per-model queue, slot states, token-budget admission, concurrency caps, model swaps, warm pool, heartbeat and eviction |
 | [cache-aware-routing.md](cache-aware-routing.md) | Provider-confirmed exact prefix-cache routing: proof, holders, cost discount, kill switch |
 | [prompt-contract-sidecar.md](prompt-contract-sidecar.md) | The Rust `promptsidecar`: token-boundary planning for cache routing, artifact identity, failure isolation |

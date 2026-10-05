@@ -210,6 +210,9 @@ public actor ProviderLoop {
     /// new process has no stalled call).
     internal var appAttestStallRetryAt: ContinuousClock.Instant?
     internal let loopConfig: ProviderLoopConfig
+    internal var ordinaryServingModelIDs: Set<String>
+    internal var autopilotSuccessorNeedsInventoryRefresh = false
+    internal var autopilotInventoryModels: [String: ModelInfo]
     internal let keyPair: NodeKeyPair
     internal let signer: (any AttestationSigner)?
     internal let attestationBuilder: AttestationBuilder?
@@ -285,6 +288,13 @@ public actor ProviderLoop {
         return max(1, min(configuredMaxModelSlots, live))
     }
 
+    /// Counterfactual slot limit for planning; observing more cached models
+    /// never changes the ordinary runtime's effective `maxModelSlots`.
+    internal var autopilotPlanningMaxModelSlots: Int {
+        min(configuredMaxModelSlots, max(maxModelSlots,
+            Set(autopilotInventoryModels.keys).union(advertisedModels.keys).count))
+    }
+
     /// Maps request IDs to the model they're running on, so the idle
     /// monitor knows which model has in-flight work.
     internal var requestToModel: [String: String] = [:]
@@ -293,6 +303,33 @@ public actor ProviderLoop {
     /// (unified mode), used to keep eviction and the idle monitor from pulling a
     /// model out from under a local stream. See `LocalReservationCounter`.
     internal var localReservations = LocalReservationCounter()
+
+    // Residency operations outlive WebSocket reconnects; never clear uncertain
+    // ownership on a transport timeout. Fresh heartbeats reconcile completion.
+    internal var autopilotTimingHistory = ModelAutopilotHistory()
+    internal var autopilotTimingLoaded = false
+    internal var autopilotLastElapsedMs: Int64 = 0
+    internal var autopilotLastReleaseMs: Int64 = 0
+    internal var autopilotLastLoadMs: Int64 = 0
+    internal var autopilotSettingsOverride: ModelAutopilotSettings?
+    internal var autopilotControl: ModelAutopilotControl?
+    internal var autopilotCommand: ModelAutopilotCommand?
+    internal var autopilotTask: Task<Void, Never>?
+    internal var autopilotMutationStarted = false
+    internal var autopilotGeneration: UInt64 = 0
+    internal var autopilotHistory: [String: (ModelAutopilotCommand, ModelAutopilotStatus.State, String?)] = [:]
+    internal var autopilotHistoryOrder: [String] = []
+    internal var autopilotLastCommandId: String?
+    internal var autopilotLastCommandStatus: ModelAutopilotStatus.State?
+    internal var autopilotResidentSince: [String: ContinuousClock.Instant] = [:]
+    internal var autopilotLeaseUntil: [String: ContinuousClock.Instant] = [:]
+    internal var autopilotFreeNoEvictGb: Double?
+    internal var autopilotDeferredDesiredModels: [CoordinatorMessage.DesiredModelEntry]?
+    internal var autopilotDeferredDrops: Set<String> = []
+    /// Explicit desired-build retirements, never inferred from missing catalog
+    /// entries. Release cleanup is distinct from network placement authority.
+    internal var autopilotSupersededModels: Set<String> = []
+
 
     /// The running local OpenAI HTTP server task (unified mode), if any.
     internal var localServerTask: Task<Void, Never>?
@@ -461,6 +498,8 @@ public actor ProviderLoop {
     /// inside `engineV2RecoveryCooldown` unloads the slot instead of
     /// thrashing rebuilds).
     internal var engineV2LastRecoveryAt: [String: ContinuousClock.Instant] = [:]
+    /// Unlike network request pins, maintenance ownership survives disconnect.
+    internal var engineV2RecoveryInProgress: Set<String> = []
 
     /// Tracks in-flight inference tasks by request ID so they can be cancelled.
     internal var inflightTasks: [String: Task<Void, Never>] = [:]
@@ -666,7 +705,7 @@ public actor ProviderLoop {
 
     /// Background task that periodically checks idle state and unloads
     /// the model when the timeout has elapsed. nil when disabled
-    /// (`idleTimeoutMins == 0`) or before `run()` starts it.
+    /// (`idleTimeoutMins == 0` or model autopilot) or before `run()` starts it.
     internal var idleMonitorTask: Task<Void, Never>?
 
     /// Periodically refreshes provider-reported backend capacity so heartbeats
@@ -715,6 +754,11 @@ public actor ProviderLoop {
         nativeMiMoRegistryForTesting: MiMoV26NativeLoadRegistry? = nil
     ) throws {
         self.loopConfig = config
+        self.ordinaryServingModelIDs = Set(config.models.map(\.id))
+        self.autopilotInventoryModels = Dictionary(config.autopilotInventory.filter {
+            $0.weightHash?.isEmpty == false && EngineV2SupportedModels.isSupported(model: $0)
+                && ModelRuntimeRequirements.isEligible(modelID: $0.id, available: config.runtimeCapabilities)
+        }.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         self.nativeMiMoRegistry = nativeMiMoRegistryForTesting ?? .shared
         self.specDecFunnel = SpecDecArtifactFunnel(
             resolver: SpecDecResolver(),

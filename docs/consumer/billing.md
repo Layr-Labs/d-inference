@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-09-28
+> Last updated: 2026-10-04
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -51,7 +51,7 @@ Open `url` and pay. The coordinator does not credit on redirect; it credits
 when Stripe delivers `checkout.session.completed` to its webhook, usually
 within seconds. The credit lands as a `stripe_deposit` ledger entry on your
 spendable balance; deposits are never withdrawable
-(`coordinator/api/billing_handlers.go` `handleStripeWebhook`).
+(`coordinator/api/billing/stripe_checkout_webhook.go` `HandleStripeWebhook`).
 
 In the console, **Buy Credits** on `/billing` reaches the same endpoint through
 the same-origin relay `/api/payments/stripe/checkout`, which forwards your Privy
@@ -67,7 +67,7 @@ curl "https://api.darkbloom.dev/v1/billing/stripe/session?id=3f0e..." \
 ```
 
 `status` moves from `pending` to `completed` when the webhook has been
-processed (`handleStripeSessionStatus`).
+processed (`HandleStripeSessionStatus`).
 
 ### 3. Read your balance and usage
 
@@ -84,18 +84,19 @@ curl https://api.darkbloom.dev/v1/payments/usage   -H "Authorization: Bearer sk-
 `balance_micro_usd` is what requests can spend, in
 [micro-USD](../reference/pricing-model.md#units).
 `withdrawable_micro_usd` is the part you earned (serving inference, referral
-rewards) and can pay out through Stripe Connect; deposits and invite credits
-never count toward it, so a pure consumer sees `0`. `GET /v1/payments/usage` lists settled
+rewards) and can withdraw using the configured payout rail; deposits and invite credits
+never count toward it. A consumer can earn a withdrawable balance by referring
+other consumers. `GET /v1/payments/usage` lists settled
 requests with `job_id`, `model`, `prompt_tokens`, `cached_tokens` (the part of
 the prompt a provider served from its prefix cache; omitted when zero),
 `completion_tokens`, `cost_micro_usd`, `timestamp`
-(`coordinator/api/consumer.go` `handleBalance`, `handleUsage`). Console users get the same figures from `GET /v1/me/summary`
+(`coordinator/api/billing/account.go` `HandleBalance`, `HandleUsage`). Console users get the same figures from `GET /v1/me/summary`
 (**Privy**). Usage is a recent-history view, not a complete billing export;
 the process retains the newest entries up to the [usage history limit](../reference/pricing-model.md#constants).
 Dashboard earnings windows include every row in each window, without the old
 5,000-row truncation. Concurrent tabs share one aggregate per account and may
 lag by the per-account cache interval
-(`coordinator/api/me_summary_cache.go`, `mySummaryWindowsCacheTTL`).
+(`coordinator/api/accounts/me_summary_cache.go`, `mySummaryWindowsCacheTTL`).
 
 ### 4. Understand what a request costs you
 
@@ -139,32 +140,26 @@ curl -X POST https://api.darkbloom.dev/v1/keys \
 `PATCH /v1/keys/{id}`. The cap is checked against the key's settled usage in
 the window before each request's reservation; it is a soft sub-cap under your
 account balance, so several in-flight requests can together overshoot it by up
-to their reservations (`coordinator/api/apikey_handlers.go` `checkKeySpendCap`).
+to their reservations (`coordinator/api/inference/key_policy.go` `checkKeySpendCap`).
 `GET /v1/keys` shows `usage_usd`, `limit_usd`, and `remaining_usd` per key.
 
 ### 6. Referral codes
 
-Register a code of your own (3–20 letters, digits, or hyphens, stored
-uppercased — the rule is in [`reference/pricing-model.md` → Constants](../reference/pricing-model.md#constants);
-**Privy**):
+Visit **Open Sales Program** in the console to register a code, copy your share link,
+apply a referrer's code, and check rewards. Follow
+[Share a referral code and withdraw rewards](referrals.md) for the full flow.
+Referral rewards are earned balance and use the withdrawal steps below.
+Execution on your own machines, explicit self-routing, and routing to selected
+machines are not eligible, even when the request is paid; owner-preferred routing
+remains ineligible when it falls back
+to the paid fleet. These exclusions also apply to the paid portion of promotion
+requests. Billing, provider payouts, and grant use do not change. The reward
+basis and eligibility rules are defined in
+[pricing formulas](../reference/pricing-model.md#formulas).
 
-```bash
-curl -X POST https://api.darkbloom.dev/v1/referral/register \
-  -H "Authorization: Bearer <privy-access-token>" \
-  -H "Content-Type: application/json" -d '{"code": "MYCODE"}'
-```
-
-A referred user attaches your code once, either by
-`POST /v1/referral/apply {"code": "MYCODE"}` (**Privy**) or by passing
-`referral_code` on their first Checkout session (step 1); an account can have
-one referrer and cannot refer itself. From then on you earn a fixed share of
-the platform fee taken on that user's requests, credited as withdrawable
-`referral_reward` entries. The share and the fee it applies to are in
-[`reference/pricing-model.md` → Formulas](../reference/pricing-model.md#formulas)
-and [`architecture/billing.md` → Consumer referral](../architecture/billing.md#consumer-referral);
-read those before promising anyone an income. `GET /v1/referral/stats`
-returns `code`, `total_referred`, `total_rewards_micro_usd`;
-`GET /v1/referral/info` returns `code`, `share_percent`, `referred_by`.
+A `referral_code` on a Checkout session (step 1) still applies after a successful
+deposit. For attribution before the first request, apply the code in Open Sales Program
+before using the API.
 
 ### 7. Redeem an invite code
 
@@ -177,7 +172,7 @@ curl -X POST https://api.darkbloom.dev/v1/invite/redeem \
 Invite codes are created by Darkbloom staff and carry a fixed amount. A
 successful redemption returns `credited_usd` and `balance_usd`; the credit is
 spendable but not withdrawable, and each account can redeem a given code once
-(`coordinator/api/invite_handlers.go` `handleRedeemInviteCode`).
+(`coordinator/api/accounts/invite_handlers.go` `HandleRedeemInviteCode`).
 
 ### 8. High-volume integrations: service accounts
 
@@ -223,11 +218,12 @@ Choose **Unlink Stripe account and start over** to remove the destination curren
 | `400` `invalid_request_error` on `create-session` about `amount_usd` | Deposit below the [minimum](../reference/pricing-model.md#constants) | Send `amount_usd` at or above the minimum, as a string (step 1) |
 | `400` "invalid referral code" on `create-session` | `referral_code` is not a registered code | Drop the field or fix the code |
 | `400` `referral_error` "account already has a referrer" / "cannot refer yourself" | One referrer per account; self-referral rejected | — |
+| `404` `referral_error` on `GET /v1/referral/stats` | You have not registered your own referral code | Visit Open Sales Program and register a code |
 | `400` "invite code … is inactive / has expired / has reached max uses" or "account has already redeemed code" | Code exhausted or reused | Ask for a new code |
-| `404` `referral_error` "not a registered referrer" on `GET /v1/referral/info` | You have not registered a code | Step 6 |
 | `401` `auth_error` on `POST /v1/keys`, `/v1/referral/register`, `/v1/referral/apply` | Called with an API key | Use the Privy access token |
 | `429` on `create-session`, key mutations, referral or invite calls | The [financial rate limiter](../reference/pricing-model.md#constants) | Back off for `Retry-After` |
 | Balance dropped by more than the response should cost, then recovered | Reservation debited at admission, refund at settlement | Expected; read balance after the response completes |
+| `502` `provider_error` "provider response exceeds non-streaming response limit" | A non-streaming response grew past the coordinator's [provider-output limits](../reference/api-contracts.md#limits-and-validation) | Stream the request or lower `max_tokens`; the reservation is refunded in full and the request is not charged |
 | `503` `billing_error` | Stripe or the referral service is not configured on this coordinator | Operator issue |
 
 Mechanism for each error, including the exact functions, is in
@@ -237,6 +233,7 @@ Mechanism for each error, including the exact functions, is in
 
 - [`architecture/billing.md`](../architecture/billing.md) — reservation, settlement, ledger, Stripe, referral, base rewards
 - [`reference/pricing-model.md`](../reference/pricing-model.md) — constants, formulas, routes, environment variables
+- [`referrals.md`](referrals.md) — sharing codes, attribution, earnings, and reward withdrawals
 - [`authentication.md`](authentication.md) — creating, rotating, and scoping API keys
 - [`models.md`](models.md) — `GET /v1/models` and its `pricing` block
 - [`../provider/self-route.md`](../provider/self-route.md) — routing to your own machine, which settles free
@@ -249,3 +246,26 @@ Sign in and click the model offer’s **Claim tokens** button before its deadlin
 Input and output tokens both consume the allowance. Tiny requests consume their actual token usage; there is no extra token deduction for a sponsored payout minimum. When it runs out, requests use your paid balance. If a request crosses the boundary, only its uncovered tokens are billed, subject to the normal request minimum. A `402 free_tokens_exhausted` means no free tokens are available and paid credit cannot cover the request. Add credit, or wait if another request has reserved the remaining free tokens. A `402 promotion_balance_required` means the maximum requested size cannot fit the remaining free tokens plus paid balance; reduce `max_tokens` or add credit. A request may reserve more than it ultimately uses; unused tokens return at settlement.
 
 With an interactive Privy session, `GET /v1/me/token-promotions` lists grants; `POST /v1/me/token-promotions/claim` with `{"model_id":"..."}` claims the selected offer safely. The response also lists available offers, remaining claim slots and eligibility status. API keys may use an existing grant but cannot issue one. See [pricing-model.md](../reference/pricing-model.md).
+
+## Update bank details when prompted
+
+1. Open the bank withdrawal panel in Billing or provider earnings.
+2. If it says **Update your bank details to continue withdrawing**, confirm your
+   country and select **Update bank details**.
+3. Complete the secure Stripe page yourself, including bank and any required
+   identity information, then return to Darkbloom.
+4. Wait for the bank destination to become ready. Review the withdrawal amount,
+   local-currency estimate and destination before confirming.
+
+Your Darkbloom login, provider setup, earned balance and withdrawal history stay
+with your account. Already configured bank-payout users need no migration step.
+The migrated flow offers standard bank payouts; the former Connect instant-card
+option is not part of it. **Reset bank setup** clears the current destination,
+not your history, and requires you to link a bank again. A funding-unavailable
+message before confirmation leaves earnings untouched. An uncertain submitted
+withdrawal must be checked using its existing confirmation, not submitted again
+as a new withdrawal.
+
+The bank panel and self-service migration state are implemented by
+`console-ui/src/components/payouts/StripePayoutsCard.tsx` and
+`coordinator/api/billing/payouts/global_payouts_status.go` (`maybeGlobalStatus`).

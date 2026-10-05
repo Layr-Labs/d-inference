@@ -158,6 +158,11 @@ and is not itself a capacity rejection count.
 The [public stats contract](../reference/api-contracts.md#public-stats-and-health-5)
 defines refresh intervals, maximum cached staleness, and window aliases.
 
+Public leaderboard and network charts can use archived snapshots. In that mode,
+`updated_at` reports the source snapshot time, and missing or expired results
+return 503 rather than an empty ranking. See [public analytics contracts](../reference/api-contracts.md#public-stats-and-health-5)
+for refresh and retry behavior.
+
 ## Troubleshooting
 
 Direct accounts do not have the upstream first-content SLA. Allow enough time for model loading and prefill in your client timeout. Queue, inference-stall and cancellation limits still apply. Accounts explicitly selected by the operator, such as OpenRouter, retain their configured first-content budget and model exceptions. See [timeouts](../reference/api-contracts.md) and [SLA configuration](../reference/configuration.md#routing-admission-and-ttft).
@@ -175,11 +180,6 @@ Direct accounts do not have the upstream first-content SLA. Allow enough time fo
 | Silence before the first byte | Expected: nothing is sent until a provider has produced content (`commitFirstContent`) | Wait; a real error status can still arrive |
 
 ## Related
-
-Public leaderboard and network charts can use archived snapshots. In that mode,
-`updated_at` reports the source snapshot time, and missing or expired results
-return 503 rather than an empty ranking. See [public analytics contracts](../reference/api-contracts.md#public-stats-and-health-5)
-for refresh and retry behavior.
 
 - Balance and top-ups: `GET /v1/payments/balance` and [`billing.md`](billing.md). The platform fee is stated once, in [`../architecture/billing.md#invariants`](../architecture/billing.md#invariants).
 - Key limits, rotation, Privy-only routes: [`authentication.md`](authentication.md).

@@ -15,8 +15,7 @@ func TestPlanningClientTracksConfiguredWorkers(t *testing.T) {
 	for _, workers := range []int{0, 4, 8, 16} {
 		t.Run(fmt.Sprint(workers), func(t *testing.T) {
 			d := newClientDependencies(t)
-			s := production.NewSupervisor(production.SupervisorConfig{MaxConcurrency: workers,
-				PlanAdmissions: d.planAdmissions, Transports: d.transports})
+			s := production.NewSupervisor(production.SupervisorConfig{MaxConcurrency: workers, Clients: d.clients})
 			defer s.Close()
 			// The supervisor configures the sidecar's workers; unset uses the default.
 			configured := workers

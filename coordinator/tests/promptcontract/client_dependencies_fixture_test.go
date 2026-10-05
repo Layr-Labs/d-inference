@@ -14,10 +14,21 @@ type clientDependencies struct {
 	t         *testing.T
 	admission *sidecar.PlanAdmission
 	pools     map[sidecar.Pool]*http.Transport
+	// supervised is the client configuration a supervisor derived from its own
+	// effective configuration, observed where the client is built.
+	supervised sidecar.ClientConfig
 }
 
 func newClientDependencies(t *testing.T) *clientDependencies {
 	return &clientDependencies{t: t, pools: make(map[sidecar.Pool]*http.Transport)}
+}
+
+// clients is injected as a supervisor's Clients. It builds the supervisor's
+// client from the configuration the supervisor derived, with these dependencies.
+func (d *clientDependencies) clients(config sidecar.ClientConfig) *sidecar.Client {
+	d.supervised = config
+	config.PlanAdmissions, config.Transports = d.planAdmissions, d.transports
+	return sidecar.NewClient(config)
 }
 
 func (d *clientDependencies) planAdmissions(workers int) *sidecar.PlanAdmission {

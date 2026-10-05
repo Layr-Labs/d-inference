@@ -27,12 +27,7 @@ func TestPlanningConnectionBudget(t *testing.T) {
 	} {
 		t.Run(fmt.Sprintf("%d_workers_%d_connections", tc.workers, tc.connections), func(t *testing.T) {
 			d := newClientDependencies(t)
-			// The client configuration the supervisor derives from its own
-			// effective configuration, observed where the client is built.
-			var effective sidecar.ClientConfig
-			config := production.SupervisorConfig{Enabled: true, MaxConcurrency: tc.workers, MaxConnections: tc.connections,
-				PlanAdmissions: d.planAdmissions, Transports: d.transports,
-				Clients: func(c sidecar.ClientConfig) *sidecar.Client { effective = c; return sidecar.NewClient(c) }}
+			config := production.SupervisorConfig{Enabled: true, MaxConcurrency: tc.workers, MaxConnections: tc.connections, Clients: d.clients}
 			s := production.NewSupervisor(config)
 			defer s.Close()
 			admission := d.planAdmission()
@@ -65,10 +60,10 @@ func TestPlanningConnectionBudget(t *testing.T) {
 					t.Fatal("HTTP pools exceed Rust's lifetime connection budget")
 				}
 			}
-			if tc.workers > 0 && effective.MaxConcurrency != tc.workers {
+			if tc.workers > 0 && d.supervised.MaxConcurrency != tc.workers {
 				t.Fatal("worker capacity changed")
 			}
-			if tc.connections > 0 && effective.MaxConnections != tc.connections {
+			if tc.connections > 0 && d.supervised.MaxConnections != tc.connections {
 				t.Fatal("server connection limit changed")
 			}
 		})
@@ -109,11 +104,11 @@ func TestControlReconnectsDuringPlanningSaturation(t *testing.T) {
 			})}
 			defer server.Close()
 			defer once.Do(func() { close(release) })
-			go func() { _ = server.Serve(&reviewCappedListener{Listener: listener, permits: permits}) }()
+			go func() { _ = server.Serve(&permitListener{Listener: listener, permits: permits}) }()
 			d := newClientDependencies(t)
 			config := production.SupervisorConfig{Enabled: true, SocketPath: path, MaxConcurrency: 64,
 				MaxConnections: connections, RequestTimeout: 10 * time.Second, HealthTimeout: time.Second,
-				PlanAdmissions: d.planAdmissions, Transports: d.transports}
+				Clients: d.clients}
 			s := production.NewSupervisor(config)
 			defer s.Close()
 			if err := config.Check(); err != nil {

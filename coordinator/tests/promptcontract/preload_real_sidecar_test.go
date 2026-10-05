@@ -176,6 +176,13 @@ func (w *actualReadinessWire) install(pool sidecar.Pool, transport *http.Transpo
 	return transport
 }
 
+// clients is the supervisor's Clients factory. It builds the supervisor-owned
+// client with install as its Transports.
+func (w *actualReadinessWire) clients(config sidecar.ClientConfig) *sidecar.Client {
+	config.Transports = w.install
+	return sidecar.NewClient(config)
+}
+
 // healthGet reads a path over the client's health pool, through the wire.
 func (w *actualReadinessWire) healthGet(ctx context.Context, path string) (*http.Response, error) {
 	if w.health == nil {
@@ -286,7 +293,7 @@ func newActualReadinessFixture(t *testing.T, binary actualReadinessBinary) *actu
 		// Rust allows up to two seconds to drain existing keep-alive connections.
 		// Keep a bounded grace beyond that so its socket guard can unlink normally.
 		ShutdownTimeout: 3 * time.Second, RestartBackoffMin: 20 * time.Millisecond, RestartBackoffMax: 100 * time.Millisecond,
-		Transports: f.wire.install})
+		Clients: f.wire.clients})
 	f.controller, err = production.NewPreloadController(f.provisioner, f.supervisor, production.PreloadControllerConfig{
 		PollInterval: 20 * time.Millisecond, MetricsInterval: time.Hour, FailureBackoffMin: time.Hour, FailureBackoffMax: time.Hour})
 	if err != nil {

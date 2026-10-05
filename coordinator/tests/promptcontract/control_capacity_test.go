@@ -20,22 +20,22 @@ import (
 
 // Mirror Rust server.rs's per-connection semaphore: accept, close immediately
 // if full, and keep a permit until the entire keep-alive connection closes.
-type reviewCappedListener struct {
+type permitListener struct {
 	net.Listener
 	permits chan struct{}
 }
-type reviewCappedConn struct {
+type permitConn struct {
 	net.Conn
 	permits chan struct{}
 	once    sync.Once
 }
 
-func (c *reviewCappedConn) Close() error {
+func (c *permitConn) Close() error {
 	err := c.Conn.Close()
 	c.once.Do(func() { <-c.permits })
 	return err
 }
-func (l *reviewCappedListener) Accept() (net.Conn, error) {
+func (l *permitListener) Accept() (net.Conn, error) {
 	for {
 		c, e := l.Listener.Accept()
 		if e != nil {
@@ -43,15 +43,15 @@ func (l *reviewCappedListener) Accept() (net.Conn, error) {
 		}
 		select {
 		case l.permits <- struct{}{}:
-			return &reviewCappedConn{Conn: c, permits: l.permits}, nil
+			return &permitConn{Conn: c, permits: l.permits}, nil
 		default:
 			_ = c.Close()
 		}
 	}
 }
 
-func TestReviewControlTrafficAtConfiguredWorkerCapacity(t *testing.T) {
-	dir, e := os.MkdirTemp("/tmp", "review-control-")
+func TestControlTrafficAtConfiguredWorkerCapacity(t *testing.T) {
+	dir, e := os.MkdirTemp("/tmp", "control-capacity-")
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -80,10 +80,10 @@ func TestReviewControlTrafficAtConfiguredWorkerCapacity(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(sidecar.Plan{PromptContractID: strings.Repeat("b", 64), PromptTokenCount: 257, BlockBoundaries: []sidecar.Boundary{{TokenCount: 256, ChainHash: hash}}, LastCompleteBlockHash: &hash})
 	})}
 	defer server.Close()
-	go func() { _ = server.Serve(&reviewCappedListener{Listener: listener, permits: make(chan struct{}, 64)}) }()
+	go func() { _ = server.Serve(&permitListener{Listener: listener, permits: make(chan struct{}, 64)}) }()
 	d := newClientDependencies(t)
 	config := production.SupervisorConfig{Enabled: true, SocketPath: socket, MaxConcurrency: 64, MaxConnections: 64, RequestTimeout: 5 * time.Second, HealthTimeout: 200 * time.Millisecond,
-		PlanAdmissions: d.planAdmissions, Transports: d.transports}
+		Clients: d.clients}
 	s := production.NewSupervisor(config)
 	defer s.Close()
 	if e = config.Check(); e != nil {

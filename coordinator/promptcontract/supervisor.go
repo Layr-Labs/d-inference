@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"strconv"
@@ -45,10 +44,6 @@ type SupervisorConfig struct {
 	MaxLoadedContracts     int
 	MaxTokens              int
 	MemoryLimitMiB         int
-	// PlanAdmissions and Transports are forwarded to the supervisor's client;
-	// see sidecar.ClientConfig.
-	PlanAdmissions func(workers int) *sidecar.PlanAdmission
-	Transports     func(pool sidecar.Pool, transport *http.Transport) http.RoundTripper
 	// Clients builds the supervisor's sidecar client from its effective
 	// configuration. Nil, or a nil result, uses sidecar.NewClient.
 	Clients func(sidecar.ClientConfig) *sidecar.Client
@@ -92,8 +87,6 @@ func NewSupervisor(config SupervisorConfig) *Supervisor {
 		MaxTokens:       config.MaxTokens,
 		MaxPreloadIDs:   config.MaxLoadedContracts,
 		MaxRequestBytes: int64(config.MaxBodyBytes),
-		PlanAdmissions:  config.PlanAdmissions,
-		Transports:      config.Transports,
 	}
 	var client *sidecar.Client
 	if config.Clients != nil {

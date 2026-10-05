@@ -60,7 +60,7 @@ struct StatusCommandRunTests {
         }
         let output = decodedText(result.standardOutputContent)
 
-        let none = try #require(ReportCommandRunTests.section(output, from: "== NONE", to: "== EXITED"))
+        let none = try #require(outputSection(output, from: "== NONE", to: "== EXITED"))
         #expect(none.hasPrefix("darkbloom \(ProviderCore.version)\nProvider: cli-sandbox\nConfig: "))
         #expect(none.contains("\nCoordinator: https://coordinator.invalid\n"))
         #expect(none.contains("\nAuto-restart: off (auto_restart = false)\n"))
@@ -70,10 +70,10 @@ struct StatusCommandRunTests {
         #expect(none.contains("\nServing concurrency: "))
         #expect(none.hasSuffix("\nDaemon: not running (run `darkbloom start`)\n"))
 
-        let exited = try #require(ReportCommandRunTests.section(output, from: "== EXITED", to: "== TRUSTED"))
+        let exited = try #require(outputSection(output, from: "== EXITED", to: "== TRUSTED"))
         #expect(exited.hasSuffix("\nDaemon: not running (stale state file)\n"))
 
-        let trusted = try #require(ReportCommandRunTests.section(output, from: "== TRUSTED", to: "== AUTHORIZED"))
+        let trusted = try #require(outputSection(output, from: "== TRUSTED", to: "== AUTHORIZED"))
         #expect(trusted.contains("\nDaemon: running (pid "))
         #expect(trusted.contains(", up 1h1m)\n"))
         #expect(trusted.contains("\nTrust: hardware / online\n  → "))
@@ -83,7 +83,7 @@ struct StatusCommandRunTests {
         #expect(trusted.contains("\nLast model-load error: acme/Alpha-4bit: weights unreadable\n"))
         #expect(trusted.contains("\nKV-backend guard: ACTIVE — `.auto` serves contiguous on this box "))
 
-        let authorized = try #require(ReportCommandRunTests.section(output, from: "== AUTHORIZED", to: "== END"))
+        let authorized = try #require(outputSection(output, from: "== AUTHORIZED", to: "== END"))
         #expect(authorized.contains("\nAuthorization: App Attest authorizes this connection. "))
         #expect(authorized.contains("\nMachine ID: machine-1\n"))
         #expect(!authorized.contains("\nTrust: "))

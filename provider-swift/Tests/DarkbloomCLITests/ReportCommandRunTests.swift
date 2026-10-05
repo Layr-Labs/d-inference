@@ -46,7 +46,7 @@ struct ReportCommandRunTests {
             print("== END")
         }
         let output = decodedText(result.standardOutputContent)
-        let dryRun = try #require(Self.section(output, from: "== DRY RUN", to: "== UPLOAD"))
+        let dryRun = try #require(outputSection(output, from: "== DRY RUN", to: "== UPLOAD"))
         #expect(dryRun.hasPrefix(
             "Darkbloom Log Report\n  Window:  1m\n  Scope:   dev.darkbloom.provider unified logs\n\n"
                 + "Collecting unified logs...\n"))
@@ -58,12 +58,12 @@ struct ReportCommandRunTests {
         #expect(dryRun.contains(#""source":"darkbloom.app_attest_state""#))
         #expect(!dryRun.contains("Uploading to coordinator..."))
 
-        let upload = try #require(Self.section(output, from: "== UPLOAD", to: "== REJECTED"))
+        let upload = try #require(outputSection(output, from: "== UPLOAD", to: "== REJECTED"))
         #expect(upload.contains("Uploading to coordinator...\n"))
         #expect(upload.contains("  Report uploaded successfully!\n  Report ID: 77\n"))
         #expect(!upload.contains(#""source":"darkbloom.app_attest_state""#))
 
-        let rejected = try #require(Self.section(output, from: "== REJECTED", to: "== END"))
+        let rejected = try #require(outputSection(output, from: "== REJECTED", to: "== END"))
         #expect(rejected.contains("Uploading to coordinator...\n"))
         #expect(!rejected.contains("Report uploaded successfully!"))
     }
@@ -84,12 +84,5 @@ struct ReportCommandRunTests {
         #expect(throws: (any Error).self) {
             try Report.decodeUploadReportID(Data("not json".utf8))
         }
-    }
-
-    static func section(_ output: String, from start: String, to end: String) -> String? {
-        guard let lower = output.range(of: start + "\n"),
-              let upper = output.range(of: end, range: lower.upperBound..<output.endIndex)
-        else { return nil }
-        return String(output[lower.upperBound..<upper.lowerBound])
     }
 }

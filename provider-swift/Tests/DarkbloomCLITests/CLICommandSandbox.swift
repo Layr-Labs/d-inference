@@ -178,24 +178,31 @@ enum CLICommandSandboxError: Error {
     case unexpectedCommand(String)
 }
 
+/// Parses `arguments` from the root command and checks the command type.
+private func parseCLICommand<Command: AsyncParsableCommand>(
+    _ type: Command.Type, _ arguments: [String]
+) throws -> Command {
+    guard let command = try Darkbloom.parseAsRoot(arguments) as? Command else {
+        throw CLICommandSandboxError.unexpectedCommand(arguments.joined(separator: " "))
+    }
+    return command
+}
+
 /// Parses `arguments` from the root command, checks the command type and runs it.
 func runCLICommand<Command: AsyncParsableCommand>(
     _ type: Command.Type, _ arguments: [String]
 ) async throws {
-    guard var command = try Darkbloom.parseAsRoot(arguments) as? Command else {
-        throw CLICommandSandboxError.unexpectedCommand(arguments.joined(separator: " "))
-    }
+    var command = try parseCLICommand(type, arguments)
     try await command.run()
 }
 
-/// Runs a command that must fail with `ExitCode.failure`, and returns the
-/// error it threw. Returns nil when it did not throw.
+/// Runs a command that is expected to fail, and returns the error it threw.
+/// Returns nil when it did not throw. A parse failure or an unexpected
+/// command type is thrown, not returned.
 func runFailingCLICommand<Command: AsyncParsableCommand>(
     _ type: Command.Type, _ arguments: [String]
 ) async throws -> (any Error)? {
-    guard var command = try Darkbloom.parseAsRoot(arguments) as? Command else {
-        throw CLICommandSandboxError.unexpectedCommand(arguments.joined(separator: " "))
-    }
+    var command = try parseCLICommand(type, arguments)
     do {
         try await command.run()
         return nil
@@ -217,6 +224,22 @@ func replaceStandardInput(with text: String) throws {
 
 func decodedText(_ bytes: [UInt8]) -> String {
     String(decoding: bytes, as: UTF8.self)
+}
+
+/// The text a child process printed after the `start` marker line and
+/// before the next `end` marker.
+func outputSection(_ output: String, from start: String, to end: String) -> String? {
+    guard let lower = output.range(of: start + "\n"),
+          let upper = output.range(of: end, range: lower.upperBound..<output.endIndex)
+    else { return nil }
+    return String(output[lower.upperBound..<upper.lowerBound])
+}
+
+/// The value of the last `label value` line a child process printed, for
+/// paths and hashes that only the child knows.
+func printedValue(_ output: String, label: String) -> String? {
+    output.split(separator: "\n").last { $0.hasPrefix(label + " ") }
+        .map { String($0.dropFirst(label.count + 1)) }
 }
 
 /// Answers every request on the shared URL session from a fixed table keyed

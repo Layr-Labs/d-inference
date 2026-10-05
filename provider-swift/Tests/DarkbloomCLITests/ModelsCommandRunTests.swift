@@ -34,8 +34,7 @@ struct ModelsCommandRunTests {
             print("CACHE \(sandbox.cache.path)")
         }
         let output = decodedText(result.standardOutputContent)
-        let cache = try #require(output.split(separator: "\n").last { $0.hasPrefix("CACHE ") })
-            .dropFirst("CACHE ".count)
+        let cache = try #require(printedValue(output, label: "CACHE"))
         let empty = try #require(section(output, "EMPTY"))
         #expect(empty == ["No local MLX models found.", "Cache: \(cache)"])
 
@@ -62,8 +61,7 @@ struct ModelsCommandRunTests {
             print("CACHE \(sandbox.cache.path)")
         }
         let output = decodedText(result.standardOutputContent)
-        let cache = String(try #require(output.split(separator: "\n").last { $0.hasPrefix("CACHE ") })
-            .dropFirst("CACHE ".count))
+        let cache = try #require(printedValue(output, label: "CACHE"))
 
         let filtered = try jsonObject(try #require(section(output, "FILTERED")))
         #expect(filtered["cacheDirectory"] as? String == cache)
@@ -97,8 +95,7 @@ struct ModelsCommandRunTests {
             #expect(missing is ValidationError)
         }
         let output = decodedText(result.standardOutputContent)
-        let expected = String(try #require(output.split(separator: "\n").first { $0.hasPrefix("EXPECTED ") })
-            .dropFirst("EXPECTED ".count))
+        let expected = try #require(printedValue(output, label: "EXPECTED"))
         #expect(section(output, "TEXT") == ["acme/Alpha-4bit \(expected)"])
         let json = try jsonObject(try #require(section(output, "JSON")))
         #expect(json["model"] as? String == "acme/Alpha-4bit")
@@ -201,8 +198,7 @@ struct ModelsCommandRunTests {
             print("KEPT \(kept.path)")
         }
         let output = decodedText(result.standardOutputContent)
-        let kept = String(try #require(output.split(separator: "\n").last { $0.hasPrefix("KEPT ") })
-            .dropFirst("KEPT ".count))
+        let kept = try #require(printedValue(output, label: "KEPT"))
         #expect(section(output, "FORCED") == ["Removed acme/Forced-4bit."])
         #expect(section(output, "DECLINED") == ["Will remove: \(kept)", "Type 'yes' to confirm:", "Skipped."])
         #expect(section(output, "CONFIRMED")

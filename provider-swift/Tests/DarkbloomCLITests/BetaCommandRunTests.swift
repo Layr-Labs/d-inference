@@ -25,7 +25,7 @@ struct BetaCommandRunTests {
             print("== END")
         }
         let output = decodedText(result.standardOutputContent)
-        let table = try #require(ReportCommandRunTests.section(output, from: "== TABLE", to: "== JSON"))
+        let table = try #require(outputSection(output, from: "== TABLE", to: "== JSON"))
         #expect(table.hasPrefix("Beta features (config: "))
         #expect(table.contains("Change with:  darkbloom beta enable|disable <feature>   (then: darkbloom restart)\n"))
         #expect(table.hasSuffix("Details with: darkbloom beta status <feature>\n"))
@@ -33,7 +33,7 @@ struct BetaCommandRunTests {
             #expect(table.contains("] \(feature.id)  —  \(feature.summary)\n"))
         }
 
-        let json = try #require(ReportCommandRunTests.section(output, from: "== JSON", to: "== END"))
+        let json = try #require(outputSection(output, from: "== JSON", to: "== END"))
         let reports = try #require(
             try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: Any]])
         #expect(reports.compactMap { $0["id"] as? String } == BetaFeatures.all.map(\.id))
@@ -60,12 +60,12 @@ struct BetaCommandRunTests {
             #expect(String(describing: error).contains("Unknown beta feature 'no-such-feature'."))
         }
         let output = decodedText(result.standardOutputContent)
-        let all = try #require(ReportCommandRunTests.section(output, from: "== ALL", to: "== ONE"))
+        let all = try #require(outputSection(output, from: "== ALL", to: "== ONE"))
         #expect(all.hasPrefix("Config: "))
         for feature in BetaFeatures.all {
             #expect(all.contains("\n\(feature.title) (\(feature.id)): "))
         }
-        let one = try #require(ReportCommandRunTests.section(output, from: "== ONE", to: "== END"))
+        let one = try #require(outputSection(output, from: "== ONE", to: "== END"))
         #expect(one.contains("\n\(first.title) (\(first.id)): "))
         #expect(one.contains("  \(first.details)\n"))
         #expect(one.contains("Requires `darkbloom restart` after a change.") == first.requiresRestart)

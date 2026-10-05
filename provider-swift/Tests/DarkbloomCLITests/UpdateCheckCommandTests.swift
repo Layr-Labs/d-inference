@@ -44,7 +44,7 @@ struct UpdateCheckCommandTests {
         let output = decodedText(result.standardOutputContent)
         let header = "darkbloom update\nCurrent version: \(ProviderCore.version)\n\n"
 
-        let available = try #require(ReportCommandRunTests.section(output, from: "== AVAILABLE", to: "== CURRENT"))
+        let available = try #require(outputSection(output, from: "== AVAILABLE", to: "== CURRENT"))
         #expect(available == header
             + "Update available: v\(ProviderCore.version) -> v99.0.0\n"
             + "Download URL: https://downloads.invalid/darkbloom-99.0.0.tar.gz\n"
@@ -54,11 +54,11 @@ struct UpdateCheckCommandTests {
             + "\n"
             + "Run 'darkbloom update' to install.\n")
 
-        let current = try #require(ReportCommandRunTests.section(output, from: "== CURRENT", to: "== FAILED"))
+        let current = try #require(outputSection(output, from: "== CURRENT", to: "== FAILED"))
         #expect(current.hasPrefix(header + "Up to date (v"))
         #expect(!current.contains("Update available"))
 
-        let failed = try #require(ReportCommandRunTests.section(output, from: "== FAILED", to: "== END"))
+        let failed = try #require(outputSection(output, from: "== FAILED", to: "== END"))
         #expect(failed == header)
     }
 

@@ -91,8 +91,7 @@ struct AccountCommandRunTests {
             print("CONFIG \(config)")
         }
         let output = decodedText(result.standardOutputContent)
-        let config = String(try #require(output.split(separator: "\n").last { $0.hasPrefix("CONFIG ") })
-            .dropFirst("CONFIG ".count))
+        let config = try #require(printedValue(output, label: "CONFIG"))
         #expect(output.contains("""
             Auto-update is ENABLED
             Config: \(config)

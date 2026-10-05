@@ -45,16 +45,16 @@ func TestPlannerRealSidecarAdmission(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	contracts := []string{
-		"ce88a818490c1dcee6f5dac3b53f13ffe56e3f3ab91728626e9985b31a7d38e5",
-		"f3c6c7e1ffc83ced56f5f50702996cc19efc34ca16e026bcb5f2040a9585ea7a",
+	models := []string{"ternary-bonsai-2-27b", "qwen3.8-flash-next"}
+	contracts, err := admissionFixtureContracts(assets, models)
+	if err != nil {
+		t.Fatal(err)
 	}
 	preload, err := s.Client().Preload(ctx, contracts)
 	if err != nil || !preload.Ready || preload.Failed != 0 {
 		t.Fatalf("preload: %v %+v", err, preload)
 	}
 	var durations []time.Duration
-	models := []string{"ternary-bonsai-2-27b", "qwen3.8-flash-next"}
 	for modelIndex, contract := range contracts {
 		for _, repeats := range []int{350, 2800, 4000} {
 			body, err := json.Marshal(map[string]any{

@@ -1,6 +1,6 @@
 # Dev environment
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
 Runbook for the Darkbloom dev environment on Google Cloud (project
 `darkbloom-dev`): a GCE VM running the same coordinator container as production,
@@ -206,7 +206,8 @@ accounts (`seed-<n>@example.invalid`, `did:privy:seed-<n>`), API keys,
 provider machines (serials `SEED00000001`, …) with closed sessions, usage
 rows, provider earnings, ledger entries and balances. It writes through the
 `store` package methods the coordinator uses. It refuses to run when the
-`users` table has any row, and it checks this before it runs migrations.
+`users` table has any row, and it checks this before it runs migrations. The
+command is a thin entry point to `coordinator/internal/command/devnetseed`.
 
 ```bash
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/devnet-seed ./coordinator/cmd/devnet-seed
@@ -285,17 +286,16 @@ gcloud sql instances delete d-inference-dev-db --project=darkbloom-dev --quiet
 These steps need a person with the right access. Agents cannot do them.
 
 1. Re-authenticate `gcloud` against `darkbloom-dev` (`gcloud auth login`).
-2. Bring the dev VM back up. `https://api.dev.darkbloom.xyz` timed out on
-   2026-10-03. Check `gcloud compute instances describe d-inference-dev
-   --zone=us-central1-a --project=darkbloom-dev`, start it if it is stopped,
-   then run the [verification](#verification) commands.
+2. Make sure the dev VM is up. Check `gcloud compute instances describe
+   d-inference-dev --zone=us-central1-a --project=darkbloom-dev`, start it if
+   it is stopped, then run the [verification](#verification) commands.
 3. Add the Cloud Build trigger (step 6,
    [#1067](https://github.com/Layr-Labs/d-inference/issues/1067)).
 4. Put Stripe **test-mode** keys and the Connect test setup into dev Secret
    Manager (step 2). Global Payouts also needs the
    `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_*` variables
    (`coordinator/billing/config.go`); neither `deploy/gcp/refresh-env.sh` nor
-   `deploy/gcp/vm-startup.sh` writes them today.
+   `deploy/gcp/vm-startup.sh` writes them.
 5. Ask Stripe for Redaction Jobs access on the dev account, so that account
    erasure can be tested against Stripe.
 6. Enrol at least one dev Mac (step 9).

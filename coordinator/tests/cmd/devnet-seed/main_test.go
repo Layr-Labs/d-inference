@@ -1,4 +1,4 @@
-package main
+package devnetseed_test
 
 import (
 	"bytes"
@@ -9,7 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/command/devnetseed"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -26,11 +28,11 @@ func TestParseOptionsRejectsInvalidScale(t *testing.T) {
 		{"--providers", "0"},
 		{"extra"},
 	} {
-		if _, err := parseOptions(args); err == nil {
+		if _, err := devnetseed.ParseOptions(args); err == nil {
 			t.Fatalf("invalid options accepted: %v", args)
 		}
 	}
-	if _, err := parseOptions([]string{"--providers", "0", "--requests-per-account", "0"}); err != nil {
+	if _, err := devnetseed.ParseOptions([]string{"--providers", "0", "--requests-per-account", "0"}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -39,12 +41,12 @@ func TestParseOptionsRejectsInvalidScale(t *testing.T) {
 // a provider owner or the platform, so the balances add up to the remaining
 // consumer balances plus the cost of all requests.
 func TestSeedConservesBalancesInMemory(t *testing.T) {
-	st := store.NewMemory(store.Config{})
-	o, err := parseOptions([]string{"--accounts", "4", "--providers", "3", "--requests-per-account", "5", "--balance-micro-usd", "1000"})
+	st := memory.NewMemory(store.Config{})
+	o, err := devnetseed.ParseOptions([]string{"--accounts", "4", "--providers", "3", "--requests-per-account", "5", "--balance-micro-usd", "1000"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := seed(context.Background(), st, o); err != nil {
+	if _, err := devnetseed.Seed(context.Background(), st, o); err != nil {
 		t.Fatal(err)
 	}
 	user, err := st.GetUserByEmail("seed-3@example.invalid")
@@ -82,7 +84,7 @@ func TestSeedsEmptyPostgresAndRefusesNonEmpty(t *testing.T) {
 		"--sessions-per-provider", "2", "--requests-per-account", "4", "--workers", "2",
 	}
 	var out bytes.Buffer
-	if err := run(ctx, args, &out); err != nil {
+	if err := devnetseed.Run(ctx, args, &out); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "seeded 3 accounts, 6 API keys, 2 providers, 4 sessions, 12 requests") {
@@ -104,7 +106,7 @@ func TestSeedsEmptyPostgresAndRefusesNonEmpty(t *testing.T) {
 	}
 	assertCounts(t, dsn, want)
 
-	err := run(ctx, args, &out)
+	err := devnetseed.Run(ctx, args, &out)
 	if err == nil || !strings.Contains(err.Error(), "users table has rows") {
 		t.Fatalf("second run error = %v, want refusal", err)
 	}
@@ -123,7 +125,7 @@ func TestRefusesBeforeMigratingADatabaseWithUsers(t *testing.T) {
 	if _, err := conn.Exec(ctx, `CREATE TABLE users (account_id TEXT); INSERT INTO users VALUES ('existing')`); err != nil {
 		t.Fatal(err)
 	}
-	if err := run(ctx, nil, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "refusing") {
+	if err := devnetseed.Run(ctx, nil, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "refusing") {
 		t.Fatalf("run error = %v, want refusal", err)
 	}
 	var migrated bool

@@ -455,12 +455,13 @@ temporary `provider.toml` files: production removes only the
 add only that line. `InstallerCoordinatorBindingTests`
 (`provider-swift/Tests/DarkbloomCLITests/`) loads the result through the CLI
 config loaders, and `TestServedInstallerBindsProviderToServingCoordinator`
-(`coordinator/api/install_sh_test.go`) runs the installer as the coordinator
-serves it.
+(`coordinator/tests/api/releases/contracts/install_test.go`) runs the installer
+as the coordinator serves it.
 
-`go test ./coordinator/cmd/devnet-seed` seeds a throwaway database on a
-**disposable** `DATABASE_URL`, checks row counts and balances, and checks that
-a database with users is refused before migrations run.
+`go test ./coordinator/tests/cmd/devnet-seed` seeds a throwaway database on a
+**disposable** `DATABASE_URL` through `devnetseed.Run`
+(`coordinator/internal/command/devnetseed`), checks row counts and balances,
+and checks that a database with users is refused before migrations run.
 
 Build qualification regressions run in `coordinator/tests/store/postgres/app_attest_builds_test.go`, `coordinator/tests/appattest/service/authorization/build_qualifications_test.go`, `coordinator/tests/api/releases/contracts/app_attest_builds_test.go`, and `coordinator/tests/api/releases/contracts/app_attest_builds_auth_test.go`. The route tests validate real ES256 Privy JWTs through the mux, server-attributed audit actors, and rejection of admin-owned inference keys. The real PostgreSQL contract requires a **disposable** `DATABASE_URL` (the harness truncates test tables). Test memory/decorated/Postgres persistence, conflicting identities, publish/revoke races, cache fencing, lease expiry and reload; run the affected Go packages with `-race`. `python3 scripts/test-provider-release-publication.py` tests blocked publication, immutable artifacts, retained-byte R2 staging retries across workflow attempts, literal tag-note preservation and recovery after draft creation, interrupted upload, completed upload and publication failures without credentials or live writes; CI runs it with `scripts/test-provider-release-pipeline.py`. The annotated-tag fixture supplies its own commit/tag identity with global and system Git configuration disabled, so a developer account cannot mask missing CI setup. These checks do not replace final signed-Mac/Apple qualification.
 

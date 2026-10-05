@@ -1,4 +1,4 @@
-package main
+package devnetseed
 
 import (
 	"context"
@@ -29,22 +29,23 @@ type seededProvider struct {
 	providerKey    string
 }
 
-type seedResult struct {
-	accounts, apiKeys, providers, sessions, requests int
+// Result counts the rows Seed wrote.
+type Result struct {
+	Accounts, APIKeys, Providers, Sessions, Requests int
 }
 
-// seed writes through the same store methods the coordinator uses: CreateUser
+// Seed writes through the same store methods the coordinator uses: CreateUser
 // (Privy sign-up), CreateAPIKey, UpsertProvider and the provider session calls
 // (registry), Credit/Debit (deposits and charges), RecordUsage and
 // CreditProviderAccount (request settlement).
-func seed(ctx context.Context, st store.Store, o options) (seedResult, error) {
+func Seed(ctx context.Context, st store.Store, o Options) (Result, error) {
 	accounts := make([]seededAccount, o.accounts)
 	if err := parallel(ctx, o.workers, o.accounts, func(i int) error {
 		account, err := seedAccount(st, i+1, o.keysPerAccount)
 		accounts[i] = account
 		return err
 	}); err != nil {
-		return seedResult{}, err
+		return Result{}, err
 	}
 
 	providers := make([]seededProvider, o.providers)
@@ -53,21 +54,21 @@ func seed(ctx context.Context, st store.Store, o options) (seedResult, error) {
 		providers[i] = provider
 		return err
 	}); err != nil {
-		return seedResult{}, err
+		return Result{}, err
 	}
 
 	if err := parallel(ctx, o.workers, o.accounts, func(i int) error {
 		return seedRequests(st, i+1, accounts[i], providers, o.requestsPerAccount, o.balanceMicroUSD)
 	}); err != nil {
-		return seedResult{}, err
+		return Result{}, err
 	}
 
-	return seedResult{
-		accounts:  o.accounts,
-		apiKeys:   o.accounts * o.keysPerAccount,
-		providers: o.providers,
-		sessions:  o.providers * o.sessionsPerProvider,
-		requests:  o.accounts * o.requestsPerAccount,
+	return Result{
+		Accounts:  o.accounts,
+		APIKeys:   o.accounts * o.keysPerAccount,
+		Providers: o.providers,
+		Sessions:  o.providers * o.sessionsPerProvider,
+		Requests:  o.accounts * o.requestsPerAccount,
 	}, nil
 }
 

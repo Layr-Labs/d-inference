@@ -194,7 +194,7 @@ redeliver its webhook. Credits during the grace period still apply.
 
    | `entry_type` | `reference` | Source |
    |---|---|---|
-   | `refund` | `stripe_withdraw:<id>` or `stripe_withdraw_fee:<id>` | A Stripe payout or its fee came back (`coordinator/api/stripe_payouts_webhooks.go`) |
+   | `refund` | `stripe_withdraw:<id>` or `stripe_withdraw_fee:<id>` | A Stripe payout or its fee came back (`coordinator/api/billing/payouts/stripe_payouts_webhooks.go`) |
    | `refund` | `global_payout_refund:<id>` | A Global Payout came back |
    | `payout`, `provider_floor_draw` | job ID, epoch ID | Provider earnings settled late |
    | `referral_reward` | job ID | A referral share of a served request (`coordinator/billing/referral.go`) |

@@ -3411,15 +3411,18 @@ threats:
     adversaries: [ADV-003]
     affected_assets: [A-007, A-008, A-009, A-010]
     affected_files:
-      - coordinator/store/erasure_rules.go
-      - coordinator/store/erasure_keys.go
-      - coordinator/store/erasure_postgres.go
-      - coordinator/store/erasure_memory.go
-      - coordinator/store/erasure_memory_rules.go
+      - coordinator/internal/store/erasure/rules.go
+      - coordinator/internal/store/erasure/keys.go
+      - coordinator/internal/store/erasure/confirm.go
+      - coordinator/store/postgres/erasure.go
+      - coordinator/store/postgres/erasure_rules.go
+      - coordinator/store/postgres/erasure_keys.go
+      - coordinator/store/memory/erasure.go
+      - coordinator/store/memory/erasure_rules.go
       - coordinator/store/cached.go
-      - coordinator/store/schema/migrations/00021_erasure_refuse_credits.sql
-      - coordinator/api/erasure_handlers.go
-      - coordinator/api/erasure_loop.go
+      - coordinator/store/postgres/schema/migrations/00021_erasure_refuse_credits.sql
+      - coordinator/api/accounts/erasure/handlers.go
+      - coordinator/api/accounts/erasure/loop.go
       - coordinator/auth/privy.go
     mitigations:
       - description: >
@@ -3456,4 +3459,4 @@ threats:
     detection_hint: >
       Run the marker tests after every schema change; check each new column that
       holds user-chosen text, a device identifier or a location against
-      coordinator/store/erasure_rules.go (docs/developer/personal-data.md).
+      coordinator/internal/store/erasure/rules.go (docs/developer/personal-data.md).

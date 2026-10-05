@@ -13,7 +13,7 @@ data and the marker tests prove it. Why the scrub works this way is in
 - A Go toolchain and the repository checkout ([build](build.md)).
 - A throwaway Postgres for the Postgres tests, with `DATABASE_URL` set
   ([test](test.md)). Without it the Postgres marker test skips.
-- `sqlc` through `make sqlc-generate` (`coordinator/store/sqlc.yaml`).
+- `sqlc` through `make sqlc-generate` (`coordinator/store/postgres/sqlc.yaml`).
 - The migration procedure: [database migrations](database-migrations.md).
 
 Personal data here is any value that can identify a person: an email, a
@@ -32,7 +32,8 @@ and amounts are not personal data alone
 
 2. Choose the link to the account. The scrub can only reach rows through a
    key that `collectErasureKeys` reads first
-   (`coordinator/store/erasure_keys.go`):
+   (`coordinator/store/postgres/erasure_keys.go`) into `erasure.Keys`
+   (`coordinator/internal/store/erasure/keys.go`):
 
    | The row has | Use |
    |---|---|
@@ -44,14 +45,16 @@ and amounts are not personal data alone
    | A serial number | `k.Serials` or a digest of it |
    | None of these | Add a column that links to the account, or add a new key set |
 
-   For a new key set, add a field to `erasureKeys` and read it in
-   `collectErasureKeys`, inside the same transaction. If another account can
-   hold the same key, remove the shared values (`withoutKeys`), count them,
-   and add a reason to `erasureKeys.retained` and to
+   For a new key set, add a field to `erasure.Keys`. Read it in
+   `collectErasureKeys`, inside the same transaction, and in
+   `collectErasureKeysLocked` (`coordinator/store/memory/erasure.go`). If
+   another account can hold the same key, remove the shared values
+   (`erasure.WithoutKeys`), count them, and add a reason to `Keys.Retained`
+   and to
    [retained data](../reference/personal-data-rules.md#retained-data).
 
 3. Add a count query and an apply query to
-   `coordinator/store/queries/erasure.sql`, after the rule it follows. Give
+   `coordinator/store/postgres/queries/erasure.sql`, after the rule it follows. Give
    both the same `WHERE` clause, bounded by the key from step 2. The count is
    `:one`; the apply is `:execrows`:
 
@@ -72,48 +75,60 @@ and amounts are not personal data alone
    make sqlc-generate
    ```
 
-5. Add a `piiRule` to `erasureRules` (`coordinator/store/erasure_rules.go`):
-   a unique `Name`, the `Table`, a `Link` that says how rows reach the
-   account, and either `Columns` with a `piiAction` each or `Delete: true`
-   with no columns. A count and apply query pair that takes one key is
-   `byKey`; one that takes a key set is `byKeys`, which runs nothing for an
-   account with no such keys. Use `one` when a query takes other parameters:
+5. Add a `Rule` to `erasure.Rules`
+   (`coordinator/internal/store/erasure/rules.go`), at the place in the scrub
+   order where it runs: a unique `Name`, the `Table`, a `Link` that says how
+   rows reach the account, and either `Columns` with an `Action` each or
+   `Delete: true` with no columns:
 
    ```go
    {
        Name: "widgets", Table: "widgets", Link: "account_id",
-       Columns: []piiColumn{{"label", piiSetEmpty}},
-       statements: func(k *erasureKeys) []piiStatement {
-           return byKey(k.AccountID, (*storedb.Queries).CountWidgetLabelRows, (*storedb.Queries).ScrubWidgetLabelRows)
-       },
+       Columns: []Column{{"label", SetEmpty}},
    },
    ```
 
    Pick the action from [rule actions](../reference/personal-data-rules.md#rule-actions).
-   Use a unique random value (`erasedValue`) for a column with a unique
-   constraint; use a tombstone when other code reads the row's existence.
+   Use a unique random value (`SetRandom`) for a column with a unique
+   constraint: add a replacement field to `erasure.Keys` and draw it in
+   `NewKeys` with `erasedValue`. Use a tombstone when other code reads the
+   row's existence.
 
-6. Add the memory form under the same name in `memoryErasureRules`
-   (`coordinator/store/erasure_memory_rules.go`). It returns the number of linked
-   items, and changes them only when `apply` is true. Use `memoryNoTable`
-   only when `MemoryStore` holds no such data. If `MemoryStore` keeps the
-   key elsewhere, read it in `collectErasureKeysLocked` too.
+6. Add the Postgres statements under the same name in `erasureStatements`
+   (`coordinator/store/postgres/erasure_rules.go`). A count and apply query
+   pair that takes one key is `byKey`; one that takes a key set is `byKeys`,
+   which runs nothing for an account with no such keys. Use `one` when a
+   query takes other parameters:
 
-7. Seed the marker tests. Add an `INSERT` to `erasureMarkerFixture`
-   (`coordinator/store/erasure_marker_test.go`) that puts `PIIMARK` in every
+   ```go
+   "widgets": func(k *erasure.Keys) []piiStatement {
+       return byKey(k.AccountID, (*storedb.Queries).CountWidgetLabelRows, (*storedb.Queries).ScrubWidgetLabelRows)
+   },
+   ```
+
+7. Add the memory form under the same name in `memoryErasureRules`
+   (`coordinator/store/memory/erasure_rules.go`). It returns the number of
+   linked items, and changes them only when `apply` is true. Use
+   `memoryNoTable` only when `MemoryStore` holds no such data, and then add
+   the name to `memoryRulesWithoutTable`
+   (`coordinator/tests/store/memory/erasure_marker_test.go`). A backend that
+   has no form for a rule fails every plan and scrub.
+
+8. Seed the marker tests. Add an `INSERT` to `erasureMarkerFixture`
+   (`coordinator/tests/store/postgres/erasure_marker_test.go`) that puts `PIIMARK` in every
    personal column for `acct-A`. If the data can be shared, add a `KEEPMARK`
    row for `acct-B` that must survive. Seed the same data in
-   `seedMemoryMarkers` (`coordinator/store/erasure_marker_memory_test.go`).
+   `seedMemoryMarkers` (`coordinator/tests/store/memory/erasure_marker_test.go`).
    Both tests fail when a rule counts no fixture rows.
 
-8. Add the rule to the [rule table](../reference/personal-data-rules.md#rule-table)
+9. Add the rule to the [rule table](../reference/personal-data-rules.md#rule-table)
    and, when you add a file, to `affected_files` of threat `T-059` in
    [`../threat-model.yaml`](../threat-model.yaml).
 
 ### Respect the erasure hooks in a new writer
 
 1. **A new `Store` method that writes `users`**: override it in `CachedStore`
-   (`coordinator/store/cached.go`) and call `c.users.invalidate()` after the
+   (`coordinator/store/cached.go`) and call `c.users.Invalidate()` after the
    write, as `RequestAccountErasure`, `CancelAccountErasure` and
    `ScrubAccount` do. Otherwise a cached user outlives a soft delete or a
    scrub for up to `UserTTL`. Call erasure methods through the `Store`, not
@@ -131,7 +146,9 @@ and amounts are not personal data alone
 
 4. **A new in-memory copy of personal data** (a cache or map keyed by
    account, provider or Secure Enclave key): add a forget method and call it
-   in `scrubErasure` (`coordinator/api/erasure_loop.go`) after the commit. If
+   from a hook in `erasure.Hooks` (`coordinator/api/accounts/erasure/owner.go`),
+   which `scrub` (`coordinator/api/accounts/erasure/loop.go`) calls after the
+   commit. The hooks are set in `NewRuntime` (`coordinator/api/server.go`). If
    it needs keys the transaction collected, return them in `ErasureResult`.
    Leave entries of shared keys alone; `ErasureResult.SEKeys` already
    excludes them.
@@ -153,7 +170,7 @@ and amounts are not personal data alone
 
 7. **A new external object linked to the account** (a Stripe object or
    another provider's account): collect its ID in `collectErasureKeys` and
-   write an outbox row for it (`erasureKeys.outboxRows`); add the target to
+   write an outbox row for it (`Keys.OutboxRows`); add the target to
    `ErasureTarget` and to the `erasure_outbox.target` `CHECK`.
 
 8. **A new log line**: name the account or provider by `account_id` or
@@ -168,9 +185,9 @@ and amounts are not personal data alone
 ```bash
 cd coordinator
 export DATABASE_URL='postgres://postgres:pg@127.0.0.1:5432/postgres?sslmode=disable'  # throwaway database
-go test ./store -count=1 -run 'Erasure|Erased|ScrubLocks|LocksUserFirst|SoftDeleted'
-go test ./api -count=1 -run 'Erasure|Erased|PrivyLoginRefused|MDMSchedulerForget|TrustReuseCacheForget'
-go test ./auth -count=1 -run PendingErasure
+go test -p 1 ./tests/store/... -count=1 -run 'Erasure|Erased|ScrubLocks|LocksUserFirst|SoftDeleted'
+go test ./tests/api/accounts/... ./tests/api/billing/... ./tests/api/provider/trust/... -count=1 -run 'Erasure|Erased|PrivyLoginRefused|MDMSchedulerForget|TrustReuseCacheForget'
+go test ./tests/auth -count=1 -run PendingErasure
 cd .. && make sqlc-check && make docs-check
 ```
 
@@ -180,7 +197,7 @@ These must pass:
 |---|---|
 | `TestErasureMarkerPostgres` | No `PIIMARK` is left in any text, JSON, array or `bytea` column of any table, the second account's `KEEPMARK` data is unchanged, every rule had fixture rows, applied counts equal planned counts |
 | `TestErasureMarkerMemory` | The same over every value reachable from `MemoryStore` |
-| `TestMemoryErasureRulesCoverRuleTable` | Every rule has a memory form, names are unique, and a delete rule lists no columns |
+| `TestErasurePlanRunsEveryRuleInOrder` | Rule names are unique, a delete rule lists no columns and an update rule lists some, and the plan of each backend has one row per rule in `erasure.Rules` order |
 | `TestAccountErasureLifecycle` | Plan, confirm, cancel and scrub on both backends |
 | `TestErasedAccountRefusesCredits` | Credits after the scrub are refused and recorded |
 | `TestCachedStoreInvalidatesUsersOnErasure` | The erasure writers drop cached users |
@@ -190,10 +207,11 @@ These must pass:
 | Failure | Cause | Fix |
 |---|---|---|
 | `rule <name> (<table>) has no fixture rows` | The fixture has no row the rule's count query sees | Add a fixture row with the link key |
-| `rule <name> has no memory fixture` | `seedMemoryMarkers` seeds no data for the rule | Seed it, or use `memoryNoTable` if `MemoryStore` has no such data |
-| `personal data left in <table>.<column>` | A personal column has no rule, or the rule misses rows | Add or widen the rule (steps 2 to 5) |
+| `rule <name> has no memory fixture` | `seedMemoryMarkers` seeds no data for the rule | Seed it, or use `memoryNoTable` and `memoryRulesWithoutTable` if `MemoryStore` has no such data |
+| `personal data left in <table>.<column>` | A personal column has no rule, or the rule misses rows | Add or widen the rule (steps 2 to 7) |
 | `the other account's data changed` | A predicate reaches another account's rows | Bound it by a collected key; remove shared keys |
-| `rule <name> has no memory form` | `memoryErasureRules` lacks the name | Step 6 |
+| `store: no memory erasure rule "<name>"` | `memoryErasureRules` lacks the name | Step 7 |
+| `store: no postgres erasure rule "<name>"` | `erasureStatements` lacks the name | Step 6 |
 | `erasure: affected rows differ from the count: <rule> counted N, changed M` | The count and apply predicates differ, or a trigger skips the write | Make the `WHERE` clauses equal; check the table's triggers |
 | `make sqlc-check` fails | `storedb` or `schema.sql` is stale | `make sqlc-generate`; regenerate the schema dump ([database migrations](database-migrations.md)) |
 

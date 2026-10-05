@@ -62,9 +62,9 @@ List what production has and what the candidate brings:
 
 ```bash
 psql "$PROD_DB_URL" -Atc "select coalesce(max(version_id), 0) from goose_db_version;"
-git ls-tree --name-only "$CANDIDATE_COMMIT" coordinator/store/schema/migrations/
-git show "$CANDIDATE_COMMIT:coordinator/store/postgres_migrations.go" | grep -n 'step('
-git show "$CANDIDATE_COMMIT:coordinator/store/postgres_migration_indexes.go" | grep -n 'index('
+git ls-tree --name-only "$CANDIDATE_COMMIT" coordinator/store/postgres/schema/migrations/
+git show "$CANDIDATE_COMMIT:coordinator/store/postgres/migrations.go" | grep -n 'step('
+git show "$CANDIDATE_COMMIT:coordinator/store/postgres/migration_indexes.go" | grep -n 'index('
 ```
 
 An error `relation "goose_db_version" does not exist` means no goose build
@@ -131,7 +131,7 @@ The `--entrypoint` override is mandatory: the image's default `start.sh`
 starts MicroMDM and touches persistent MDM state. The container needs no
 userdata mount and publishes no port. The command seeds no admin key, starts
 no listener or worker, and stops after 15 min
-(`runMaintenanceCommand` in `coordinator/cmd/coordinator/maintenance.go`). Do
+(`Maintenance` in `coordinator/internal/command/coordinator/maintenance.go`). Do
 not start a second ordinary coordinator container.
 
 Expected JSON log lines, in this order:
@@ -163,7 +163,7 @@ psql "$PROD_DB_URL" -c "select c.relname, i.indisvalid, i.indisready
   join pg_namespace n on n.oid = c.relnamespace
   where n.nspname = 'public' and not (i.indisvalid and i.indisready);"
 # The schema matches the checked-in file of the candidate commit.
-git show "$CANDIDATE_COMMIT:coordinator/store/schema/schema.sql" > /tmp/schema.candidate.sql
+git show "$CANDIDATE_COMMIT:coordinator/store/postgres/schema/schema.sql" > /tmp/schema.candidate.sql
 pg_dump "$PROD_DB_URL" --schema-only --no-owner --no-privileges --exclude-table=goose_db_version \
   | grep -v '^\\restrict \|^\\unrestrict \|^-- Dumped from database version\|^-- Dumped by pg_dump version' \
   | diff - /tmp/schema.candidate.sql
@@ -172,7 +172,7 @@ pg_dump "$PROD_DB_URL" --schema-only --no-owner --no-privileges --exclude-table=
 `goose_db_version` lists version 0 (goose writes it when it creates the table)
 and then every version up to the candidate's highest. Only objects applied by
 hand, such as the `request_waterfall` view
-(`coordinator/store/migrations/request_waterfall.sql`), may differ in the
+(`coordinator/store/postgres/migrations/request_waterfall.sql`), may differ in the
 diff. Any other difference is a finding: record it and fix it under a separate
 approved operation.
 

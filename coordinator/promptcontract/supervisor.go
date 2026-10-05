@@ -44,6 +44,9 @@ type SupervisorConfig struct {
 	MaxLoadedContracts     int
 	MaxTokens              int
 	MemoryLimitMiB         int
+	// Clients builds the supervisor's sidecar client from its effective
+	// configuration. Nil, or a nil result, uses sidecar.NewClient.
+	Clients func(sidecar.ClientConfig) *sidecar.Client
 }
 
 type SupervisorStatus struct {
@@ -74,19 +77,27 @@ type Supervisor struct {
 
 func NewSupervisor(config SupervisorConfig) *Supervisor {
 	applySupervisorDefaults(&config)
+	clientConfig := sidecar.ClientConfig{
+		MaxConcurrency:  config.MaxConcurrency,
+		MaxConnections:  config.MaxConnections,
+		SocketPath:      config.SocketPath,
+		RequestTimeout:  config.RequestTimeout,
+		HealthTimeout:   config.HealthTimeout,
+		PreloadTimeout:  config.PreloadTimeout,
+		MaxTokens:       config.MaxTokens,
+		MaxPreloadIDs:   config.MaxLoadedContracts,
+		MaxRequestBytes: int64(config.MaxBodyBytes),
+	}
+	var client *sidecar.Client
+	if config.Clients != nil {
+		client = config.Clients(clientConfig)
+	}
+	if client == nil {
+		client = sidecar.NewClient(clientConfig)
+	}
 	return &Supervisor{
 		config: config,
-		client: sidecar.NewClient(sidecar.ClientConfig{
-			MaxConcurrency:  config.MaxConcurrency,
-			MaxConnections:  config.MaxConnections,
-			SocketPath:      config.SocketPath,
-			RequestTimeout:  config.RequestTimeout,
-			HealthTimeout:   config.HealthTimeout,
-			PreloadTimeout:  config.PreloadTimeout,
-			MaxTokens:       config.MaxTokens,
-			MaxPreloadIDs:   config.MaxLoadedContracts,
-			MaxRequestBytes: int64(config.MaxBodyBytes),
-		}),
+		client: client,
 		status: SupervisorStatus{Enabled: config.Enabled},
 	}
 }

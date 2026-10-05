@@ -13,7 +13,9 @@ import (
 const MaxAttemptBytes uint64 = 64 << 20
 
 // AttemptBudget is the logical-byte ledger of one generation's retained attempt
-// records. The receipt controller serializes it under its existing mutex.
+// records. The receipt controller serializes it under its existing mutex. The
+// tracker stores only a total that fits the limit, after any terminal grace it
+// reclaimed, and zero when the generation's records are cleared.
 type AttemptBudget struct{ bytes, maxBytes uint64 }
 
 func NewAttemptBudget(maxBytes uint64) *AttemptBudget {
@@ -23,6 +25,28 @@ func NewAttemptBudget(maxBytes uint64) *AttemptBudget {
 func (b *AttemptBudget) Bytes() uint64      { return b.bytes }
 func (b *AttemptBudget) MaxBytes() uint64   { return b.maxBytes }
 func (b *AttemptBudget) Store(bytes uint64) { b.bytes = bytes }
+
+// replacementTotal is the total once an incumbent's stored charge (zero for a
+// new record) is exchanged for charge, and whether it fits; it commits nothing.
+// An incumbent charge above the total or an overflowing sum never fits and
+// reports zero. A total above the limit is reported but does not fit.
+func (b *AttemptBudget) replacementTotal(old, charge uint64) (total uint64, fits bool) {
+	if old > b.bytes {
+		return 0, false
+	}
+	total, valid := CheckedCacheAttemptAdd(b.bytes-old, charge)
+	return total, valid && total <= b.maxBytes
+}
+
+// refund releases one stored charge. A charge above the total means the ledger
+// is inconsistent; it saturates so that it never grants new cache admission.
+func (b *AttemptBudget) refund(charge uint64) {
+	if charge > b.bytes {
+		b.bytes = ^uint64(0)
+		return
+	}
+	b.bytes -= charge
+}
 
 // The memory tier's block geometry applies whenever that tier is usable.
 func cacheAttemptBlockSize[P comparable](attempt Attempt[P]) uint32 {
@@ -71,11 +95,8 @@ func CacheAttemptCharge[P comparable](nonce string, attempt Attempt[P]) (uint64,
 		if !cachepolicy.Anchor(boundary, blockSize) || boundary.TokenCount > attempt.ExpectedPrompt.TokenCount {
 			return 0, false
 		}
-		hashes, valid := CheckedCacheAttemptMultiply(2, uint64(len(boundary.ChainHash)))
-		if !valid {
-			return 0, false
-		}
-		charge, ok = CheckedCacheAttemptAdd(charge, hashes)
+		// The boundary slice and the frozen claims share one detached hash.
+		charge, ok = CheckedCacheAttemptAdd(charge, uint64(len(boundary.ChainHash)))
 		if !ok {
 			return 0, false
 		}
@@ -119,7 +140,7 @@ func CheckedCacheAttemptMultiply(a, b uint64) (uint64, bool) {
 	return a * b, true
 }
 
-// Called only after checked budget admission, while the receipt controller's
+// Called after checked per-record admission, while the receipt controller's
 // mutex is held. Nil ExpectedBoundaries asks us to derive them. Supplied claims
 // must agree exactly. No caller-owned strings, boundary slices or claims are
 // retained by the tracker.

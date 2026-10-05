@@ -113,7 +113,8 @@ sequenceDiagram
 Before serializing and re-sealing an inference request, the shared
 `parseInferencePrelude` (`coordinator/api/inference/prelude_parser.go`) runs
 `Parser.Parse`, which invokes `stripProviderCallerIdentity` to remove only
-caller-supplied top-level `user` and generic `metadata`
+caller-supplied top-level `user`, generic `metadata`, `safety_identifier` and
+caller `prompt_cache_key`
 (`coordinator/internal/inference/prelude/request_prelude.go`,
 `coordinator/internal/inference/prelude/provider_body_privacy.go`).
 Direct, queued and retried requests use that prepared body. The original input
@@ -123,7 +124,10 @@ substituted back into the provider payload.
 Nested fields, prompt text, tool/schema content, media and generation controls
 remain unchanged. `metadata_details` is a distinct coordinator opt-in, and
 coordinator-authored cache scopes and receipt controls retain their existing
-account-bound derivation. Body-size-derived estimates and activation sampling
+account-bound derivation. The coordinator may append its own protocol-0 cache-bust
+key after sanitization. Cache scope is a stable account/model pseudonym visible
+to the provider, so it permits linkage within that scope; it does not isolate
+individual end users sharing one authenticated account. Body-size-derived estimates and activation sampling
 can change when unnecessary bytes are removed; authenticated account ownership
 and prompt-bearing content do not change.
 

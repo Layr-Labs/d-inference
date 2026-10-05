@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 The public HTTP surface of the coordinator, derived from its composed route bindings under `coordinator/api/`, including the `/v1/` catch-all. Every route is listed below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -31,8 +31,8 @@ models. This uses `Provider.ServingModelsLocked` in
 
 ## Provider-bound caller fields
 
-The coordinator accepts top-level `user` and generic `metadata` on the four
-inference endpoints but removes them from provider-bound bodies before encryption.
+The coordinator accepts top-level `user`, generic `metadata`, `safety_identifier`
+and caller `prompt_cache_key` on the four inference endpoints but removes them from provider-bound bodies before encryption.
 The shared `parseInferencePrelude` (`coordinator/api/inference/prelude_parser.go`)
 runs `Parser.Parse`, which calls `stripProviderCallerIdentity`
 (`coordinator/internal/inference/prelude/request_prelude.go`,
@@ -498,6 +498,9 @@ are advertised provider/model pairs, not unique models or guaranteed cache hits.
 | `lifecycle.fenced_capabilities` | Currently fenced provider/model/tier capabilities | `coordinator/registry/cache_proof_fence.go` (`sweepFencesLocked`) |
 | `lifecycle.demand_entries` | Entries currently in the observed-demand index | `coordinator/registry/cache_demand.go` (`stats`) |
 | `lifecycle.demand_cap_evictions` | Demand entries evicted by the cap inside their TTL; a growing count means repeated prefixes are being reported as novel | Same |
+| `lifecycle.attempt_bytes` | Logical bytes of retained cache-attempt records, against the 64 MiB attempt budget | `coordinator/registry/cache_routing.go` (`CacheRoutingLifecycleStatus`); `coordinator/internal/registry/cachetracker/attempt_pressure.go` (`AttemptLifecycle`) |
+| `lifecycle.attempt_budget_refused` | Attempts dispatched without a cache scope because the byte budget refused their record: live records fill it, reclaiming at most 64 of the earliest-expiring completed attempts' grace records would not make room, or the record alone exceeds the budget. Monotonic within the current tracker generation | `coordinator/internal/registry/cachetracker/cache_receipts_kernel.go` (`StoreAttemptLocked`) |
+| `lifecycle.attempt_grace_reclaimed` | Completed attempts' records reclaimed inside their two-minute terminal grace to admit another; each forfeits only a late write-behind READY. Monotonic within the current tracker generation | `coordinator/internal/registry/cachetracker/attempt_pressure.go` (`reclaimTerminalGraceLocked`, `terminalBudgetVictimsLocked`) |
 
 The persistence field names are unchanged. Routing reads remain in memory;
 write-behind, restore and overflow guarantees are defined in
@@ -516,6 +519,10 @@ The fence fields have Prometheus gauges `exact_cache_fence{event}`
 (`event` ∈ `applied`, `expired`) and `exact_cache_fenced_capabilities`, and
 Datadog gauges `exact_cache.fence` tagged `event:applied|expired` and
 `exact_cache.fenced_capabilities` (same file).
+The attempt fields have Prometheus gauges `exact_cache_attempt_bytes`,
+`exact_cache_attempt_budget_refused` and `exact_cache_attempt_grace_reclaimed`,
+and Datadog gauges `exact_cache.attempt_bytes`, `exact_cache.attempt_budget_refused`
+and `exact_cache.attempt_grace_reclaimed` (same file).
 The existing `prefix_cache_statuses` state/reason aggregates retain their SSD
 meaning; resident routing uses the separate memory capability and bounded holder
 receipts described in [cache-aware routing](../architecture/cache-aware-routing.md).
@@ -713,7 +720,7 @@ Requests are decoded into a generic JSON object with `json.Number` preserved (`p
 | `response_format` | Passed through to the provider without coordinator validation |
 | `reasoning`, `reasoning_effort` | Applied per model policy by `ApplyResolvedModelReasoningPolicy` (`coordinator/api/inference/request/reasoning_request_policy.go`) |
 | `provider` and other routing hints | Removed by `StripProviderRoutingFields` (`coordinator/api/inference/request/request_introspection.go`) |
-| `user`, `metadata` (top level) | Accepted, then removed before the body is forwarded to a provider; see [provider-bound caller fields](#provider-bound-caller-fields) |
+| `user`, `metadata`, `safety_identifier`, `prompt_cache_key` (top level) | Accepted, then removed before the body is forwarded to a provider (the coordinator may add its own protocol-0 `prompt_cache_key` afterwards); see [provider-bound caller fields](#provider-bound-caller-fields) |
 | `image_url` parts with `http(s)` URLs | Fetched by the coordinator before dispatch (`Bridge.Resolve`, `coordinator/internal/inference/media/media_resolve.go`) |
 
 ### Chat Completions response (`ChatCompletionResponse`, `coordinator/api/types/types.go`)
@@ -790,6 +797,13 @@ cache-planning contract. That contract rejects media, including media in tool
 outputs; accepting a Responses image for inference does not establish exact
 coordinator cache-routing eligibility. Native model codec, media-size, context
 and tool-capability checks still apply.
+
+A Responses, Completions or Messages body that cannot be lowered for cache
+planning is still served on its own endpoint, without a cache plan. The
+coordinator counts that decision as `lowering_unsupported` in the cache-planning
+decision telemetry (`CachePlanner.EmitDecision`, called from
+`handleGenericInference` in `coordinator/api/inference/consumer.go`). The
+response shape, status and error codes do not change.
 
 Bodies are lowered into the chat pipeline (`coordinator/internal/promptcontract/endpoint/endpoint_lower_responses.go`) and the provider's chat output is raised back into `ResponsesResponse` (`coordinator/api/types/types.go`): `id` (`resp_…`), `object`, `created_at`, `status`, `error`, `incomplete_details.reason`, `instructions`, `max_output_tokens`, `model`, `output[]`, `parallel_tool_calls`, `temperature`, `tool_choice`, `tools`, `top_p`, `metadata`, `usage` (`input_tokens`, `input_tokens_details.cached_tokens`, `output_tokens`, `output_tokens_details.reasoning_tokens`), `se_signature`, `response_hash`. Streams use `event:`-typed frames from `response.created` / `response.in_progress` through the item deltas to `response.completed` (or `response.incomplete` when truncated) and carry **no** `data: [DONE]` (`NewResponsesStreamEmitter`, `coordinator/api/inference/response/responses_stream.go`).
 

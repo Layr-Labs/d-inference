@@ -45,6 +45,11 @@ verified, and its exact contract belongs to the acknowledged current preload set
 An unrelated artifact failure or pending download does not suppress a healthy,
 acknowledged contract (`CachePlanner.PlanResult`, `coordinator/internal/inference/routeplan/cache_planning.go`;
 `PreloadController.PlanningState`, `coordinator/internal/promptcontract/preload/selection.go`).
+Count-only prompt accounting is the exception to the routing-mode condition: for
+a text request on a verified, acknowledged contract it calls the same planning
+endpoint and discards the boundaries when the Registry declines with `off` or
+`ineligible`, though not when the request is sampled out or throttled
+(`promptwork.Plan`, `coordinator/api/promptwork/planner.go`).
 Any other state — including every failure listed below — is ordinary cold
 routing.
 
@@ -56,7 +61,7 @@ flowchart LR
     AC -- PreloadController --> PRE[Negotiate preload: active set]
     SUP[Supervisor] -- spawn, /health, /ready, restart circuit --> SC[promptsidecar on the Unix socket]
     PRE --> SC
-    REQ[inference request in cohort] -- planCacheRoute / Registry.PlanCacheRouteWithResult / Client.Plan --> SC
+    REQ[inference request in cohort] -- CachePlanner.PlanResult / Registry.PlanCacheRouteWithResult / Client.Plan --> SC
     SC -- contract id, token count, chain boundaries --> ROUTE[cache-aware routing]
     SC -. any failure .-> COLD[cold routing]
 ```
@@ -103,7 +108,7 @@ pools them (`newUnixTransport`, `coordinator/promptcontract/client.go`).
 Rust holds each connection permit for the entire HTTP connection, including
 idle keep-alive time (`coordinator/promptsidecar/src/server.rs`). The Go planning
 transport and active admission slots use the minimum of normalized worker
-capacity, `maxPendingPlans` and normalized total connections minus
+capacity, `MaxPendingPlans` and normalized total connections minus
 `ReservedControlConnections`. `NewClient` reserves two connections for health
 and two for control; separate pools alone cannot reserve server-side permits.
 Standalone clients use `DefaultMaxConcurrency` and `DefaultMaxConnections`
@@ -113,7 +118,7 @@ enabled configuration with fewer than five normalized total connections
 (`coordinator/promptcontract/config.go`); a directly constructed client with a
 positive inadequate total refuses planning without dialing. Neither worker
 count nor sidecar memory allowance is raised to create this headroom.
-`planAdmission` in
+`PlanAdmission` in
 `coordinator/internal/promptcontract/sidecar/plan_admission.go` bounds outstanding calls (active
 plus waiting) at 64 and their accounted input/envelope bytes at 64 MiB. It waits
 before JSON validation/serialization, so queued calls do not each allocate a
@@ -123,11 +128,17 @@ it is not a measurement of total process RSS.
 The request timeout begins at `Client.Plan` entry and includes admission,
 serialization and HTTP exchange; waiting never grants a fresh deadline.
 The API derives a planning-only child context from the original request receipt
-time and already-pinned first-content budget before invoking the Registry
-(`coordinator/internal/inference/routeplan/cache_planning.go`, `CachePlanner.PlanResult`). The effective bound is
-the earliest of that absolute deadline, the parent's deadline and the client
-timeout. Exempt/nonpositive budgets and missing receipt times preserve the
-existing passthrough behavior. Neither alias fallback nor queue admission resets
+time and already-pinned first-content budget before the planner runs
+(`promptwork.PlanningContext`, `coordinator/api/promptwork/planning.go`, called
+where `coordinator/api/inference/consumer.go` builds the request's plan memo).
+`CachePlanner.PlanResult` (`coordinator/internal/inference/routeplan/cache_planning.go`)
+applies the same bound again only when `CachePlanningInput.ReceivedAt` and
+`FirstContentBudget` are set, which production does not do. The effective bound is
+the earliest of that absolute deadline, the parent's deadline, the
+prompt-accounting bound (`promptwork.Account`,
+`coordinator/api/promptwork/accounting.go`) and the client
+timeout. Exempt/nonpositive budgets and missing receipt times add no deadline
+at this step. Neither alias fallback nor queue admission resets
 the clock; cancellation of this child never cancels the original inference
 context. Existing dispatch budget checks still decide whether a cold request
 has time left to be sent.
@@ -140,9 +151,15 @@ worker permit remains held until that task exits, and subsequent overload
 still fails cold. See [tests](../developer/test.md) for burst and lifecycle gates.
 
 The separate API planning-decision metrics also count missing components,
-artifact/preload readiness and generic lowering refusal before Registry entry.
-They do not change the existing Registry/sidecar metric populations or bypass
-the per-contract preload gate. A legacy `SidecarCalled` result records a Go client invocation,
+artifact/preload readiness and generic lowering refusal before Registry entry;
+the lowering refusal is recorded directly by `handleGenericInference`
+(`CachePlanner.EmitDecision`, `coordinator/api/inference/consumer.go`).
+They do not bypass the per-contract preload gate or change sidecar metrics. They
+add one sample to an existing Registry population: a media request for a
+verified, preload-acknowledged contract is counted once as `ineligible` in
+`exact_cache_plan_total`, because the planner is consulted to record its
+decision; the sidecar is not called and routing and billing are unaffected.
+A legacy `SidecarCalled` result records a Go client invocation,
 not proof of an admitted Unix-socket request or Rust execution. See
 [the exact populations and labels](../reference/telemetry-inventory.md#optional-cache-planning-decisions).
 

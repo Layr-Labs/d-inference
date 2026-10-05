@@ -130,7 +130,7 @@ func newCacheRoutingTrackerWithSettings(settings cachetracker.Settings, deps Cac
 	config := cachetracker.Config[*Provider]{
 		Settings: settings, Now: deps.Now, Generation: generation,
 		Holders: tracker.holders, Attempts: tracker.attempts,
-		HolderOrder: tracker.holderOrder, AttemptOrder: tracker.attemptOrder,
+		HolderOrder: tracker.holderOrder, AttemptOrder: tracker.attemptOrder, TerminalOrder: cacheindex.NewAttemptOrder(),
 		HolderProviders: tracker.holdersByProvider, AttemptProviders: tracker.attemptsByProvider,
 		Sequences: tracker.v2Sequences, Proofs: proofs, AttemptBudget: attemptBudget,
 	}

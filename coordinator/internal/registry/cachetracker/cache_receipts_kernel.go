@@ -14,19 +14,30 @@ func (t *Tracker[P]) StoreAttemptLocked(nonce string, attempt Attempt[P]) bool {
 	if !valid {
 		return false
 	}
-	t.SweepIfDueLocked(t.now())
+	now := t.now()
+	t.SweepIfDueLocked(now)
 	old := t.attempts.Lookup(nonce).AccountedBytes
-	if old > t.attemptBudget.Bytes() {
-		return false
-	}
-	total, valid := CheckedCacheAttemptAdd(t.attemptBudget.Bytes()-old, charge)
-	if !valid || total > t.attemptBudget.MaxBytes() {
+	total, fits := t.attemptBudget.replacementTotal(old, charge)
+	if !fits && (total == 0 || charge > t.attemptBudget.MaxBytes()) {
+		// Reclaiming cannot help an inconsistent or overflowing ledger, nor a
+		// record larger than the whole budget.
+		t.noteAttemptBudgetRefusalLocked()
 		return false
 	}
 	key, owned, valid := detachCacheAttempt(nonce, attempt)
 	if !valid || !t.generation.Active() {
 		return false
 	}
+	// The complete candidate is validated and detached before any terminal
+	// grace is given up for it.
+	if !fits {
+		total, fits = t.reclaimTerminalGraceLocked(now, nonce, total)
+		if !fits {
+			t.noteAttemptBudgetRefusalLocked()
+			return false
+		}
+	}
+	owned.Terminal = t.attempts.Lookup(nonce).Terminal
 	owned.AccountedBytes = charge // Never trust a caller-supplied charge.
 	t.attempts.Store(key, owned)
 	t.attemptBudget.Store(total)
@@ -38,6 +49,9 @@ func (t *Tracker[P]) StoreAttemptLocked(nonce string, attempt Attempt[P]) bool {
 		} else {
 			t.attemptOrder.Track(nonce, entry.Key(), attempt.ExpiresAt)
 		}
+		if t.terminalOrder.Load(nonce) != nil {
+			t.terminalOrder.Track(nonce, entry.Key(), attempt.ExpiresAt)
+		}
 		return true
 	}
 	entry := t.attemptOrder.Track(key, cacheindex.AttemptRef{Nonce: key, ProviderID: owned.ProviderID}, owned.ExpiresAt)
@@ -47,14 +61,10 @@ func (t *Tracker[P]) StoreAttemptLocked(nonce string, attempt Attempt[P]) bool {
 
 func (t *Tracker[P]) RemoveAttemptLocked(nonce string) {
 	if attempt, exists := t.attempts.Load(nonce); exists {
-		if attempt.AccountedBytes > t.attemptBudget.Bytes() {
-			// An inconsistent counter must not grant new cache admission.
-			t.attemptBudget.Store(^uint64(0))
-		} else {
-			t.attemptBudget.Store(t.attemptBudget.Bytes() - attempt.AccountedBytes)
-		}
+		t.attemptBudget.refund(attempt.AccountedBytes)
 	}
 	t.attempts.Delete(nonce)
+	t.terminalOrder.Remove(nonce)
 	if entry := t.attemptOrder.Remove(nonce); entry != nil {
 		t.UnindexAttemptLocked(entry)
 	}

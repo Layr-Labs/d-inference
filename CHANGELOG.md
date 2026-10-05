@@ -14,6 +14,10 @@
 
 - Keep a PostgreSQL debit uncommitted until its statement succeeds, preventing a timed-out row-lock wait from later becoming a charge. Lost commit acknowledgements remain uncertain and must not be blindly retried.
 
+## Unreleased — shared-host memory admission
+
+- Add opt-in `DARKBLOOM_MEMORY_AVAILABILITY=free-only` to exclude inactive pages from shared-host admission and KV headroom. Sampling failures fail closed in this mode. Preserve the default reclaimable-page policy and document what the memory reserve measures.
+
 ## Unreleased - verification concurrency
 
 - Keep a reconnected provider's verification job eligible after its old worker releases the claim. A delayed challenge callback no longer restores the stale running snapshot and postpones verification until claim expiry.

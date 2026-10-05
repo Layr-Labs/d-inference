@@ -273,6 +273,7 @@ public enum LaunchAgent: Sendable {
     static let inferencePassthroughEnvKeys = [
         EngineV2Factory.maxPartialPrefillsKey,
         PrefillDeadlineMode.environmentKey,
+        SystemMemory.availabilityEnvironmentKey,
         MiMoV26WiredResidency.environmentFlag,
         PrefixCachePolicy.mimoCompletePrefixEnvironmentFlag,
         EngineV2SlotFactory.mimoRectangularVerifyEnvironmentKey,
@@ -307,6 +308,13 @@ public enum LaunchAgent: Sendable {
             if let value = environment[key], !value.isEmpty {
                 out[key] = value
             }
+        }
+        // An explicitly empty/invalid memory policy fails toward free-only in
+        // foreground mode too. Persist its canonical value instead of dropping
+        // an empty value and silently restoring reclaim credit in the daemon.
+        if let value = environment[SystemMemory.availabilityEnvironmentKey] {
+            out[SystemMemory.availabilityEnvironmentKey] =
+                SystemMemory.AvailabilityPolicy.resolve(value).rawValue
         }
         return out
     }

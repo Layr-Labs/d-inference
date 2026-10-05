@@ -9,6 +9,11 @@
 
 - The 24 h and 7 d job counts in the earnings summary now exclude `base_reward` rows, matching the lifetime count; micro-USD sums still include them. The machine card stat that shows the reputation counter is labelled "Requests", and its low-success-rate warning and fix link say "requests" too. The earnings page hides "Avg per Job" until the response carries a numeric `work_usd`, labels the activity column "Source" with base rewards shown as "Base reward" and no token count, and no longer prints the inference-only count in its "latest payouts" caption.
 
+## Unreleased - provider email campaigns
+
+- Add the `provider-emails` operator command to preview provider software/macOS update audiences, sync owner groups to Resend, render and test notices, and create unsent broadcasts for review. Preserve unsubscribe preferences and remove owners from managed groups when their reported machines meet the target.
+- Serialize campaign reply-to addresses in the Resend broadcast API's array form while keeping the campaign configuration's single-address input.
+
 ## Unreleased - Autopilot inventory reporting
 
 - Add an admin-only connected Autopilot inventory report with exact per-model last-reported approval counts, deduplicated approval totals and a models-per-provider distribution. Distinguish unpaused, paused and stale connections without exposing provider identities or claiming fresh disk verification, residency or routing eligibility. The read does not depend on the operation ledger.

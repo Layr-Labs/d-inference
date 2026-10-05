@@ -217,6 +217,21 @@ The revision publisher accepts optional per-version HF repo, commit and path-pre
 artifacts. It also needs Python 3 and the AWS CLI; use the existing pinned tools.
 The [revision runbook](../operations/model-revisions.md) describes its invocation.
 
+## Nightly Linear workflow
+
+The [nightly Linear package](../../automations/nightly-linear/README.md) needs
+Git, Python 3, local Codex desktop, and the teammate's own Linear connection.
+The [one-time setup prompt](../../automations/nightly-linear/teammate-prompt.md)
+creates a dedicated managed clone and links its two skills into the user's skill
+directory. Personal configuration and recovery state stay outside that clone.
+Claude Code and Pi supply saved work histories; they need no plugin installation.
+
+Each trigger runs `automations/nightly-linear/refresh.py` (`refresh`) to fetch
+one revision of the shared skills and playbook before any Linear updates.
+The [test procedure](test.md#nightly-linear-package) covers the updater's failure
+and preservation guarantees. The package's CI workflow runs these offline tests;
+it does not schedule anyone's nightly task or require Linear credentials.
+
 ## SDK 27 release builds and caches
 
 All checked-in `d-inference` workflow jobs use Blacksmith runners. macOS build,

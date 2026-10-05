@@ -99,7 +99,7 @@ func (r *Registry) ReconcileAttestedRuntimeCapabilities(providerID string) error
 			provider.runtimeCapabilitiesReconciled = true
 		}
 		if changed {
-			provider.warmWorkCounters = nil
+			provider.warmWork.Reset()
 		}
 		provider.lastReconciledRuntimeCapabilities = append(
 			[]string(nil), provider.RuntimeCapabilities...)
@@ -291,13 +291,18 @@ func (r *Registry) providerMeetsModelRequirementsLocked(p *Provider, modelID str
 // capability gate. Unlike serving eligibility it does not require an existing
 // advertisement, so it is suitable for prefetch/desired targets.
 func (r *Registry) providerCanAcquireCatalogModelLocked(p *Provider, modelID string) bool {
+	return (&ProviderEligibility{registry: r}).canAcquireLocked(p, modelID)
+}
+
+func (e *ProviderEligibility) canAcquireLocked(p *Provider, modelID string) bool {
 	if !providerOrdinaryModelAllowedLocked(p, modelID) {
 		return false
 	}
-	return r.providerCanAcquireCatalogArtifactLocked(p, modelID)
+	return e.canAcquireArtifactLocked(p, modelID)
 }
 
-func (r *Registry) providerCanAcquireCatalogArtifactLocked(p *Provider, modelID string) bool {
+func (e *ProviderEligibility) canAcquireArtifactLocked(p *Provider, modelID string) bool {
+	r := e.registry
 	if r.modelCatalog != nil {
 		if _, ok := r.modelCatalog[modelID]; !ok {
 			return false
@@ -307,6 +312,11 @@ func (r *Registry) providerCanAcquireCatalogArtifactLocked(p *Provider, modelID 
 }
 
 func (r *Registry) providerModelAllowedByCatalogLocked(p *Provider, model protocol.ModelInfo) bool {
+	return (&ProviderEligibility{registry: r}).modelAllowedLocked(p, model)
+}
+
+func (e *ProviderEligibility) modelAllowedLocked(p *Provider, model protocol.ModelInfo) bool {
+	r := e.registry
 	return providerOrdinaryModelAllowedLocked(p, model.ID) && r.modelAllowedByCatalogLocked(model) &&
 		r.providerMeetsModelRequirementsLocked(p, model.ID)
 }

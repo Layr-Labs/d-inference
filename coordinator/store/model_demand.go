@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"sort"
 	"time"
 )
 
@@ -10,6 +9,7 @@ const ModelDemandRetention = 31 * 24 * time.Hour
 
 // Both privacy floors apply per model and UTC clock hour, for every window.
 const ModelDemandMinRequests = 20
+
 const ModelDemandMinConsumers = 3
 
 // PublicDemandScope is private ledger metadata. Only explicitly scoped new
@@ -60,14 +60,6 @@ func ModelDemandBucketSize(since, until time.Time) time.Duration {
 	return time.Hour
 }
 
-func emptyModelDemandSeries(since, until time.Time, width time.Duration) []ModelDemandBucket {
-	out := []ModelDemandBucket{}
-	for at := since; at.Before(until); at = at.Add(width) {
-		out = append(out, ModelDemandBucket{Timestamp: at})
-	}
-	return out
-}
-
 type ModelDemandSnapshot struct {
 	BucketSeconds       int64               `json:"bucket_seconds"`
 	CollectionStartedAt time.Time           `json:"collection_started_at"`
@@ -79,15 +71,7 @@ type ModelDemandStore interface {
 	PruneModelDemand(context.Context, time.Time, int) (int, error)
 }
 
-func validDemandOutcome(v string) bool {
-	switch v {
-	case "completed", "latency_rejected", "capacity_rejected", "timed_out", "failed", "cancelled", "unknown", "excluded":
-		return true
-	}
-	return false
-}
-
-func (c *DemandOutcomeCounts) add(outcome string, status int) {
+func (c *DemandOutcomeCounts) Add(outcome string, status int) {
 	c.Requests++
 	if status == 429 {
 		c.HTTP429++
@@ -110,7 +94,7 @@ func (c *DemandOutcomeCounts) add(outcome string, status int) {
 	}
 }
 
-func (c *DemandOutcomeCounts) merge(other *DemandOutcomeCounts) {
+func (c *DemandOutcomeCounts) Merge(other *DemandOutcomeCounts) {
 	c.Requests += other.Requests
 	c.Completed += other.Completed
 	c.CapacityRejected += other.CapacityRejected
@@ -120,22 +104,4 @@ func (c *DemandOutcomeCounts) merge(other *DemandOutcomeCounts) {
 	c.Cancelled += other.Cancelled
 	c.Unknown += other.Unknown
 	c.HTTP429 += other.HTTP429
-}
-
-// Summaries never include private residuals from suppressed hours.
-func summarizeModelDemand(out *ModelDemandSnapshot) {
-	for i := range out.Models {
-		model := &out.Models[i]
-		for j := range model.TimeSeries {
-			if counts := model.TimeSeries[j].Counts; counts != nil {
-				model.merge(counts)
-			}
-		}
-	}
-	sort.Slice(out.Models, func(i, j int) bool {
-		if out.Models[i].Requests != out.Models[j].Requests {
-			return out.Models[i].Requests > out.Models[j].Requests
-		}
-		return out.Models[i].Model < out.Models[j].Model
-	})
 }

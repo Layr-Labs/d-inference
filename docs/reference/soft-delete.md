@@ -11,14 +11,15 @@ will. Why the model exists and how it fits the schema is in
 
 ## Tables
 
-`coordinator/store/schema/migrations/00013_soft_delete_columns.sql` adds the
+`coordinator/store/postgres/schema/migrations/00013_soft_delete_columns.sql` adds the
 column; the Go field is `DeletedAt *time.Time` with `json:"-"`
-(`coordinator/store/interface.go`).
+(`coordinator/store/user_types.go`, `apikey_types.go`, `provider_types.go`,
+`device_auth_types.go`).
 
 | Table | Column | Go type with the field | Generated field (sqlc) |
 |---|---|---|---|
 | `users` | `deleted_at TIMESTAMPTZ` (nullable, no default) | `User` | — |
-| `api_keys` | `deleted_at TIMESTAMPTZ` (nullable, no default) | `APIKey` | `storedb.ApiKey.DeletedAt *time.Time` (`coordinator/store/storedb/models.go`) |
+| `api_keys` | `deleted_at TIMESTAMPTZ` (nullable, no default) | `APIKey` | `storedb.ApiKey.DeletedAt *time.Time` (`coordinator/store/postgres/storedb/models.go`) |
 | `providers` | `deleted_at TIMESTAMPTZ` (nullable, no default) | `ProviderRecord` | — |
 | `provider_tokens` | `deleted_at TIMESTAMPTZ` (nullable, no default) | `ProviderToken` | — |
 
@@ -28,51 +29,53 @@ in SQL. `MemoryStore` keeps the field on its records and checks it.
 ## Reads that hide a soft-deleted row
 
 Postgres filters `deleted_at IS NULL`; MemoryStore skips a record whose
-`DeletedAt` is not `nil`. `coordinator/store/soft_delete_reads_test.go` covers
-each row on both backends unless the row says Postgres only.
+`DeletedAt` is not `nil`. `coordinator/tests/store/postgres/soft_delete_reads_test.go`
+covers each PostgresStore read. No MemoryStore entry point sets `DeletedAt`
+yet, so the MemoryStore checks have no test until the erasure writer exists.
 
 ### `users`
 
 | Store method | PostgresStore | MemoryStore | Result for a soft-deleted user |
 |---|---|---|---|
-| `GetUserByAccountID` | `coordinator/store/postgres.go` | `coordinator/store/memory.go` | `ErrNotFound` |
-| `GetUserByPrivyID` | `coordinator/store/postgres.go` | `coordinator/store/memory.go` | `ErrNotFound` |
-| `GetUserByStripeAccount` | `coordinator/store/postgres.go` | `coordinator/store/memory.go` | not found |
-| `GetUserByEmail` | `coordinator/store/postgres.go` | `coordinator/store/memory.go` | not found |
-| `ClaimModelTokenPromotion` | `coordinator/store/model_token_promotions_postgres.go` | `coordinator/store/model_token_promotions_memory.go` | `ErrPromotionIneligible` |
-| `CreateUser` (Privy ID check) | `idx_users_privy_live` | `coordinator/store/memory.go` | The Privy ID is free; a new live user may take it |
+| `GetUserByAccountID` | `coordinator/store/postgres/users.go` | `coordinator/store/memory/users.go` | `ErrNotFound` |
+| `GetUserByPrivyID` | `coordinator/store/postgres/users.go` | `coordinator/store/memory/users.go` | `ErrNotFound` |
+| `GetUserByStripeAccount` | `coordinator/store/postgres/users.go` | `coordinator/store/memory/users.go` | not found |
+| `GetUserByEmail` | `coordinator/store/postgres/users.go` | `coordinator/store/memory/users.go` | not found |
+| `ClaimModelTokenPromotion` | `coordinator/store/postgres/model_token_promotions.go` | `coordinator/store/memory/model_token_promotions.go` | `ErrPromotionIneligible` |
+| `CreateUser` (Privy ID check) | `idx_users_privy_live` | `coordinator/store/memory/users.go` | The Privy ID is free; a new live user may take it |
 
 ### `api_keys`
 
-PostgresStore methods are in `coordinator/store/postgres_api_keys.go`; their
-SQL is in `coordinator/store/queries/api_keys.sql`.
+PostgresStore methods are in `coordinator/store/postgres/apikey.go`; their
+SQL is in `coordinator/store/postgres/queries/api_keys.sql`. MemoryStore
+methods are in `coordinator/store/memory/apikey.go`.
 
 | Store method | Query (PostgresStore) | MemoryStore | Result for a soft-deleted key |
 |---|---|---|---|
-| `GetKeyAccount` | `GetActiveKeyAccount` | `coordinator/store/memory.go` | `""` |
-| `AuthenticateKey` | `GetAPIKeyByHash` | `coordinator/store/memory.go` | error; the request is not authenticated |
-| `ListAPIKeys` | `ListAPIKeysByOwner` | `coordinator/store/memory.go` | omitted |
-| `GetAPIKeyByID` | `GetAPIKeyByID` | `coordinator/store/memory.go` | not found |
-| `UpdateAPIKey` | `UpdateAPIKey` (`UPDATE ... AND deleted_at IS NULL`) | `coordinator/store/memory.go` | `key not found`; nothing changes |
-| `RotateAPIKey` | `GetAPIKeyByIDForUpdate` | `coordinator/store/memory.go` | `key not found`; nothing changes |
+| `GetKeyAccount` | `GetActiveKeyAccount` | `coordinator/store/memory/apikey.go` | `""` |
+| `AuthenticateKey` | `GetAPIKeyByHash` | `coordinator/store/memory/apikey.go` | error; the request is not authenticated |
+| `ListAPIKeys` | `ListAPIKeysByOwner` | `coordinator/store/memory/apikey.go` | omitted |
+| `GetAPIKeyByID` | `GetAPIKeyByID` | `coordinator/store/memory/apikey.go` | not found |
+| `UpdateAPIKey` | `UpdateAPIKey` (`UPDATE ... AND deleted_at IS NULL`) | `coordinator/store/memory/apikey.go` | `key not found`; nothing changes |
+| `RotateAPIKey` | `GetAPIKeyByIDForUpdate` | `coordinator/store/memory/apikey.go` | `key not found`; nothing changes |
 
 ### `provider_tokens`
 
 | Store method | PostgresStore | MemoryStore | Result for a soft-deleted token |
 |---|---|---|---|
-| `GetProviderToken` | `coordinator/store/postgres.go` | `coordinator/store/memory.go` | `provider token not found` |
+| `GetProviderToken` | `coordinator/store/postgres/device_auth.go` | `coordinator/store/memory/device_auth.go` | `provider token not found` |
 
 ### `providers`
 
 | Store method | PostgresStore | MemoryStore | Result for a soft-deleted record |
 |---|---|---|---|
-| `GetProviderRecord` | `coordinator/store/postgres_provider_read.go` | `coordinator/store/memory.go` | not found |
-| `GetMDAChainBySerial` | `coordinator/store/postgres.go` | `coordinator/store/memory.go` | its chain is not used |
-| `ListProvidersByAccount` | `coordinator/store/postgres.go` | `coordinator/store/memory.go` | omitted |
-| `GetProviderForRestore` | `coordinator/store/provider_restore.go` | `coordinator/store/provider_restore.go` | not a restore candidate; an older live row can be |
-| `ResolveMachineContinuity` | `coordinator/store/postgres_machine_continuity.go` | `coordinator/store/memory_machine_continuity.go` | not continuity history |
-| `UsageFlowBuckets` (provider location) | `coordinator/store/postgres_analytics_flows.go` (`usageFlowBucketsSQL`) | `coordinator/store/memory.go` | its location is not used |
-| `BackfillMachineInventory` | `coordinator/store/machine_inventory_backfill.go` | — (Postgres only) | not backfilled |
+| `GetProviderRecord` | `coordinator/store/postgres/provider_read.go` | `coordinator/store/memory/providers.go` | not found |
+| `GetMDAChainBySerial` | `coordinator/store/postgres/providers.go` | `coordinator/store/memory/providers.go` | its chain is not used |
+| `ListProvidersByAccount` | `coordinator/store/postgres/providers.go` | `coordinator/store/memory/providers.go` | omitted |
+| `GetProviderForRestore` | `coordinator/store/postgres/provider_restore.go` | `coordinator/store/memory/provider_restore.go` | not a restore candidate; an older live row can be |
+| `ResolveMachineContinuity` | `coordinator/store/postgres/machine_continuity.go` | `coordinator/store/memory/machine_continuity.go` | not continuity history |
+| `UsageFlowBuckets` (provider location) | `coordinator/store/postgres/analytics_flows.go` (`usageFlowBucketsSQL`) | `coordinator/store/memory/analytics.go` | its location is not used |
+| `BackfillMachineInventory` | `coordinator/store/postgres/machine_inventory_backfill.go` | — (Postgres only) | not backfilled |
 
 ## Paths that do not filter
 
@@ -80,10 +83,10 @@ Writes and hard deletes act on a soft-deleted row as on any other row.
 
 | Table | Methods |
 |---|---|
-| `users` | `CreateUser` insert, `SetUserStripeAccount`, `SetUserRole`, `SetUserPlatformFeePercent` (`coordinator/store/postgres.go`) |
+| `users` | `CreateUser` insert, `SetUserStripeAccount`, `SetUserRole`, `SetUserPlatformFeePercent` (`coordinator/store/postgres/users.go`) |
 | `api_keys` | `CreateAPIKey` and `SeedKey` inserts (`InsertAPIKey`, `InsertAPIKeyIfAbsent`), `TouchAPIKey`, `RevokeKey` (`DeactivateAPIKeyByHash`), `RevokeAPIKeyByID` and the delete in `RotateAPIKey` (`DeleteAPIKeyByID`) |
-| `provider_tokens` | `CreateProviderToken`, `RevokeProviderToken` (`coordinator/store/postgres.go`) |
-| `providers` | `UpsertProvider`, `DeleteProvidersBySerial` (`coordinator/store/postgres.go`), `UpsertProviderWithReputation` (`coordinator/store/provider_record_write.go`) |
+| `provider_tokens` | `CreateProviderToken`, `RevokeProviderToken` (`coordinator/store/postgres/device_auth.go`) |
+| `providers` | `UpsertProvider`, `DeleteProvidersBySerial` (`coordinator/store/postgres/providers.go`), `UpsertProviderWithReputation` (`coordinator/store/postgres/provider_record_write.go`) |
 | other tables | `usage`, `provider_earnings`, `ledger_entries` and the other history tables have no `deleted_at`; `KeySpendSince` still counts a soft-deleted key's usage |
 | outside the store | `admin-ui` reads the read replica with its own SQL (`admin-ui/src/lib/queries/`) and does not filter `deleted_at` |
 
@@ -101,7 +104,7 @@ Writes and hard deletes act on a soft-deleted row as on any other row.
 | `idx_request_rejections_consumer_key_hash` | `request_rejections (consumer_key_hash)` | 12 | Erasure finds rows by hashed key |
 
 All are built `CONCURRENTLY` by `indexMigrations`
-(`coordinator/store/postgres_migration_indexes.go`). Only
+(`coordinator/store/postgres/migration_indexes.go`). Only
 `idx_users_privy_live` reads `deleted_at`. Version 17 also replaces the
 `referrals.referrer_code` foreign key with
 `referrals_referrer_code_cascade_fkey` (`ON UPDATE CASCADE`), so a referrer

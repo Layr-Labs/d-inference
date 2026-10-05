@@ -3,9 +3,28 @@
 ## Unreleased — coordinator schema migrations
 
 - Apply the coordinator's Postgres schema as numbered goose migrations instead of re-running every DDL statement at each boot. The first boot records the existing schema as version 1 without changing it; later boots apply only new versions. Migration statements stop waiting for a lock after 3 seconds and retry up to three times, and coordinators that start together take turns on an advisory lock.
-- Check in the schema as `coordinator/store/schema/schema.sql` and test that the migrations build exactly that schema. New schema changes go in a new numbered migration file.
+- Check in the schema as `coordinator/store/postgres/schema/schema.sql` and test that the migrations build exactly that schema. New schema changes go in a new numbered migration file.
 - Generate the coordinator's API-key queries with sqlc from that schema; `make sqlc-check` fails CI when the generated code or the schema file is stale. API-key behaviour does not change.
 - Prepare account erasure: add `deleted_at` to users, API keys, provider records and provider tokens, hide soft-deleted rows from every live read, let a Privy user sign up again after erasure, index the erase paths, and cascade referrer code changes to referrals. Nothing sets `deleted_at` yet. After this release runs, roll back only to coordinator images built with goose.
+
+## Unreleased - Autopilot inventory reporting
+
+- Add an admin-only connected Autopilot inventory report with exact per-model last-reported approval counts, deduplicated approval totals and a models-per-provider distribution. Distinguish unpaused, paused and stale connections without exposing provider identities or claiming fresh disk verification, residency or routing eligibility. The read does not depend on the operation ledger.
+
+## Unreleased — routing scan cost
+
+- Compact retained routing evidence, reuse bounded private reservation storage, borrow forecast inputs, project alternate-selection values once, and aggregate pending work once per provider snapshot. Public scan and quote lifetimes, selection policy, admission, retirement and billing behavior are preserved.
+
+- Reduce the per-request provider scan cost after the coordinator reorganization. Autopilot eligibility reads the clock only for a provider holding a matching control grant, candidate ranking reads the projected pool in place, and candidate storage fills one allocation size class. Routing outcomes are unchanged.
+
+## Unreleased — canceled PostgreSQL debits
+
+- Keep a PostgreSQL debit uncommitted until its statement succeeds, preventing a timed-out row-lock wait from later becoming a charge. Lost commit acknowledgements remain uncertain and must not be blindly retried.
+
+## Unreleased - verification concurrency
+
+- Keep a reconnected provider's verification job eligible after its old worker releases the claim. A delayed challenge callback no longer restores the stale running snapshot and postpones verification until claim expiry.
+- Read one synchronized trust-level snapshot for registration metrics and telemetry while verification updates run concurrently.
 
 ## Unreleased — leaderboard availability
 

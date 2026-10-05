@@ -30,27 +30,27 @@ in production is the [schema migration runbook](../operations/schema-migration.m
 
    | Change | Kind | Example in the repo |
    |---|---|---|
-   | Add a table, a nullable column, or a column with a constant default; drop a constraint; add a constraint `NOT VALID` | SQL file, one transaction (the default) | `coordinator/store/schema/migrations/00015_users_privy_drop_unique_constraint.sql` |
-   | Several `ALTER TABLE`s on busy tables that must not hold their locks together | SQL file with `-- +goose NO TRANSACTION` | `coordinator/store/schema/migrations/00013_soft_delete_columns.sql` |
-   | `VALIDATE CONSTRAINT` after a `NOT VALID` add | SQL file with `-- +goose NO TRANSACTION` | `coordinator/store/schema/migrations/00017_referrals_referrer_code_cascade.sql` |
-   | `DROP INDEX CONCURRENTLY` | SQL file with `-- +goose NO TRANSACTION` and `SET lock_timeout = '1min'` | `coordinator/store/schema/migrations/00016_users_privy_drop_old_index.sql` |
-   | Create an index on a table that has rows in production | Go migration in `indexMigrations` | Versions 6 to 12 and 14 (`coordinator/store/postgres_migration_indexes.go`) |
+   | Add a table, a nullable column, or a column with a constant default; drop a constraint; add a constraint `NOT VALID` | SQL file, one transaction (the default) | `coordinator/store/postgres/schema/migrations/00015_users_privy_drop_unique_constraint.sql` |
+   | Several `ALTER TABLE`s on busy tables that must not hold their locks together | SQL file with `-- +goose NO TRANSACTION` | `coordinator/store/postgres/schema/migrations/00013_soft_delete_columns.sql` |
+   | `VALIDATE CONSTRAINT` after a `NOT VALID` add | SQL file with `-- +goose NO TRANSACTION` | `coordinator/store/postgres/schema/migrations/00017_referrals_referrer_code_cascade.sql` |
+   | `DROP INDEX CONCURRENTLY` | SQL file with `-- +goose NO TRANSACTION` and `SET lock_timeout = '1min'` | `coordinator/store/postgres/schema/migrations/00016_users_privy_drop_old_index.sql` |
+   | Create an index on a table that has rows in production | Go migration in `indexMigrations` | Versions 6 to 12 and 14 (`coordinator/store/postgres/migration_indexes.go`) |
    | A step that must read data first, check a precondition, or check its own result | Go migration | `checkRetiredBackfills` (version 2) |
    | Rename or drop a column, or tighten a constraint | Two or more releases; see [expand and contract](#change-a-column-in-two-releases-expand-and-contract) | — |
    | Fix rows that a writer keeps producing | Not a migration: fix the writer | — |
-   | A cleanup that needs a long lock | Manual SQL under `coordinator/store/migrations/`, applied under an approved operation | `coordinator/store/migrations/dedupe_provider_earnings.sql` |
+   | A cleanup that needs a long lock | Manual SQL under `coordinator/store/postgres/migrations/`, applied under an approved operation | `coordinator/store/postgres/migrations/dedupe_provider_earnings.sql` |
 
 2. **Pick the version.** Use one more than the highest version in
-   `coordinator/store/schema/migrations/`, in `goMigrations`
-   (`coordinator/store/postgres_migrations.go`) and in `indexMigrations`
-   (`coordinator/store/postgres_migration_indexes.go`). SQL files and Go
+   `coordinator/store/postgres/schema/migrations/`, in `goMigrations`
+   (`coordinator/store/postgres/migrations.go`) and in `indexMigrations`
+   (`coordinator/store/postgres/migration_indexes.go`). SQL files and Go
    migrations share one sequence. If a branch that merges before yours takes the same
    number, renumber yours before it merges.
 
 3. **Write the migration.** Follow the part for your kind.
 
    *SQL file, one transaction.* Create
-   `coordinator/store/schema/migrations/<NNNNN>_<short_name>.sql`, where
+   `coordinator/store/postgres/schema/migrations/<NNNNN>_<short_name>.sql`, where
    `<NNNNN>` is the version with leading zeros:
 
    ```sql
@@ -85,7 +85,7 @@ in production is the [schema migration runbook](../operations/schema-migration.m
 
    *Concurrent index.* Do not put `CREATE INDEX CONCURRENTLY` in an SQL file;
    `TestSQLMigrationsDoNotBuildIndexesConcurrently` fails. Add the index to
-   `indexMigrations` (`coordinator/store/postgres_migration_indexes.go`)
+   `indexMigrations` (`coordinator/store/postgres/migration_indexes.go`)
    instead:
 
    ```go
@@ -119,40 +119,41 @@ in production is the [schema migration runbook](../operations/schema-migration.m
    docker exec dinf-store-pg pg_dump -U postgres --schema-only --no-owner --no-privileges \
      --exclude-table=goose_db_version schema_dump \
      | grep -v '^\\restrict \|^\\unrestrict \|^-- Dumped from database version\|^-- Dumped by pg_dump version' \
-     > coordinator/store/schema/schema.sql
+     > coordinator/store/postgres/schema/schema.sql
    docker exec dinf-store-pg dropdb -U postgres schema_dump
    ```
 
    The `--migrate-only` run logs one `postgres migration` line per version
    with `"result":"applied"`, then `coordinator migrations complete`. Use the
    `pg_dump` inside the container, so that its major version matches
-   production (17). Review `git diff coordinator/store/schema/schema.sql`: it
+   production (17). Review `git diff coordinator/store/postgres/schema/schema.sql`: it
    must show only your change.
 
-6. **Regenerate the sqlc code** if a query in `coordinator/store/queries/`
+6. **Regenerate the sqlc code** if a query in `coordinator/store/postgres/queries/`
    reads the changed table: `make sqlc-generate`
    ([Write store queries with sqlc](sqlc.md)).
 
 7. **Update the rest of the store.** Make `MemoryStore`
-   (`coordinator/store/memory.go`) match, and update the docs that describe
+   (`coordinator/store/memory/`) match, and update the docs that describe
    the changed tables ([storage](../architecture/storage.md)).
 
 ## Verify
 
 ```bash
-go test ./coordinator/store -count=1 \
+go test ./coordinator/tests/store/postgres -count=1 \
   -run 'TestMigrations|TestConcurrent|TestMigrateRetries|TestSQLMigrations|TestIndexMigration'
 ```
 
 | Test | Fails when |
 |---|---|
 | `TestMigrationsBuildCheckedInSchema` | `schema.sql` differs from what the migrations build |
-| `TestMigrationsUpgradeLegacyDatabase` | Versions 1 to 5 change the frozen pre-goose schema (`coordinator/store/testdata/schema_pre_goose.sql`), or all versions do not reach `schema.sql` from it |
-| `TestConcurrentMigrationsApplyOnce` | Two runs at once apply a version twice |
+| `TestMigrationsUpgradeLegacyDatabase` | Versions 1 to 5 change the frozen pre-goose schema (`coordinator/tests/store/postgres/testdata/schema_pre_goose.sql`), or all versions do not reach `schema.sql` from it |
+| `TestConcurrentMigrationsApplyOnce` | Two runs at once apply a version twice, or a run changes the schema while another session holds the goose advisory lock |
 | `TestSQLMigrationsDoNotBuildIndexesConcurrently` | An SQL file contains `CREATE [UNIQUE] INDEX CONCURRENTLY` |
 | `TestConcurrentIndexMigrationWaitsForOlderSnapshot`, `TestIndexMigrationRebuildsInvalidLeftover`, `TestIndexMigrationFailureIsNotRecorded` | An index migration gives up behind an older snapshot, keeps an invalid leftover, or records a failed build |
 
-Do not regenerate `coordinator/store/testdata/schema_pre_goose.sql`; it is the
+Do not regenerate
+`coordinator/tests/store/postgres/testdata/schema_pre_goose.sql`; it is the
 schema of the last pre-goose boot.
 
 Then run the store tests for the tables you changed, on both backends. CI
@@ -221,24 +222,26 @@ Legend: blue = release, grey = the image a rollback starts.
    [pre-goose fallback rule](#destructive-changes-and-the-pre-goose-fallback)
    first.
 3. Add `DeletedAt *time.Time` with the tag `json:"-"` to the store type in
-   `coordinator/store/interface.go`.
+   its `coordinator/store/*_types.go` file.
 4. Add `AND deleted_at IS NULL` to every read that returns a live row: the
-   hand-written SQL in `coordinator/store/` and the queries in
-   `coordinator/store/queries/`. Find them with:
+   hand-written SQL in `coordinator/store/postgres/` and the queries in
+   `coordinator/store/postgres/queries/`. Find them with:
 
    ```bash
-   grep -n -E "(FROM|JOIN)\s+example\b" coordinator/store/*.go coordinator/store/queries/*.sql
+   grep -n -E "(FROM|JOIN)\s+example\b" coordinator/store/postgres/*.go coordinator/store/postgres/queries/*.sql
    ```
 
-   Make each `MemoryStore` read skip a record whose `DeletedAt` is not `nil`.
+   Make each `MemoryStore` read (`coordinator/store/memory/`) skip a record
+   whose `DeletedAt` is not `nil`.
    Leave inserts, hard deletes and maintenance writes unfiltered. Filter an
    update only when it must not change a soft-deleted row, as `UpdateAPIKey`
    does.
 5. If `CachedStore` (`coordinator/store/cached.go`) caches the table, the
    writer that sets `deleted_at` must invalidate the cache.
 6. Regenerate `schema.sql` (step 5 above) and run `make sqlc-generate`.
-7. Add the table to `softDelete` in `coordinator/store/soft_delete_reads_test.go`
-   and a test that checks every filtered read on both backends.
+7. Add the table to `softDelete` in
+   `coordinator/tests/store/postgres/soft_delete_reads_test.go` and a test
+   that checks every filtered read.
 8. Add the table and its reads to the [soft-delete reference](../reference/soft-delete.md).
 
 ## Destructive changes and the pre-goose fallback

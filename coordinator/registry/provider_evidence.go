@@ -50,7 +50,7 @@ type ApplicationEvidence struct {
 func (p *Provider) SetAttested(attested bool, trust TrustLevel) {
 	p.mu.Lock()
 	if p.Attested != attested || p.TrustLevel != trust {
-		p.warmWorkCounters = nil
+		p.warmWork.Reset()
 	}
 	p.Attested = attested
 	p.TrustLevel = trust
@@ -175,7 +175,7 @@ func (p *Provider) GrantApplicationEvidenceIfNotUntrusted(evidence ApplicationEv
 	// that gap must not replay its work; a continuously eligible renewal keeps
 	// the baseline. Validation above leaves failed grants unchanged.
 	if r != nil && !r.providerLivenessGateLocked(p, r.MinTrustLevel, false, time.Now()) {
-		p.warmWorkCounters = nil
+		p.warmWork.Reset()
 	}
 	p.applicationEvidenceGeneration++
 	evidence.EvidenceGeneration = p.applicationEvidenceGeneration
@@ -199,7 +199,7 @@ func (p *Provider) ApplicationEvidenceSnapshot() (ApplicationEvidence, bool) {
 func (p *Provider) ClearApplicationEvidence() {
 	p.mu.Lock()
 	if p.ApplicationEvidence.EvidenceGeneration != 0 || len(p.RuntimeCapabilities) != 0 {
-		p.warmWorkCounters = nil
+		p.warmWork.Reset()
 	}
 	p.ApplicationEvidence = ApplicationEvidence{}
 	p.RuntimeCapabilities = nil
@@ -355,7 +355,7 @@ func (p *Provider) SetChallengeVerifiedSIP(v bool) {
 func (p *Provider) SetCodeAttested(v bool) {
 	p.mu.Lock()
 	if !v && (p.CodeAttested || p.FreshCodeAttested || len(p.RuntimeCapabilities) != 0) {
-		p.warmWorkCounters = nil
+		p.warmWork.Reset()
 	}
 	p.CodeAttested = v
 	if !v {

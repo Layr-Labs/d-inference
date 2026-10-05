@@ -201,6 +201,7 @@ public enum ProviderMessage: Sendable, Equatable {
 
     public struct Register: Sendable, Equatable {
         public var modelAutopilot: ModelAutopilotSnapshot?
+        public var autopilotInventory: [ModelInfo]?
         public var hardware: HardwareInfo
         public var models: [ModelInfo]
         public var backend: String
@@ -260,9 +261,11 @@ public enum ProviderMessage: Sendable, Equatable {
             toolConstraintProtocol: Int? = nil,
             toolConstraintModels: [String]? = nil,
             appAttestProtocol: Int? = nil,
-            modelAutopilot: ModelAutopilotSnapshot? = nil
+            modelAutopilot: ModelAutopilotSnapshot? = nil,
+            autopilotInventory: [ModelInfo]? = nil
         ) {
             self.modelAutopilot = modelAutopilot
+            self.autopilotInventory = autopilotInventory
             self.hardware = hardware
             self.models = models
             self.backend = backend
@@ -905,6 +908,7 @@ extension ProviderMessage: Codable {
         case toolConstraintProtocol = "tool_constraint_protocol"
         case toolConstraintModels = "tool_constraint_models"
         case modelAutopilot = "model_autopilot"
+        case autopilotInventory = "autopilot_inventory"
         // Heartbeat
         case status
         case activeModel = "active_model"
@@ -990,6 +994,7 @@ extension ProviderMessage: Codable {
         case .register(let r):
             try container.encode(TypeValue.register, forKey: .type)
             try container.encodeIfPresent(r.modelAutopilot, forKey: .modelAutopilot)
+            try container.encodeIfPresent(r.autopilotInventory, forKey: .autopilotInventory)
             try container.encode(r.hardware, forKey: .hardware)
             try container.encode(r.models, forKey: .models)
             try container.encode(r.backend, forKey: .backend)
@@ -1294,7 +1299,8 @@ extension ProviderMessage: Codable {
                 toolConstraintModels: try container.decodeIfPresent(
                     [String].self, forKey: .toolConstraintModels),
                 appAttestProtocol: try container.decodeIfPresent(Int.self, forKey: .appAttestProtocol),
-                modelAutopilot: try container.decodeIfPresent(ModelAutopilotSnapshot.self, forKey: .modelAutopilot)
+                modelAutopilot: try container.decodeIfPresent(ModelAutopilotSnapshot.self, forKey: .modelAutopilot),
+                autopilotInventory: try container.decodeIfPresent([ModelInfo].self, forKey: .autopilotInventory)
             ))
 
         case .heartbeat:

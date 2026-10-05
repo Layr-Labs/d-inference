@@ -152,6 +152,7 @@ public struct CoordinatorClientConfig: Sendable {
     public let url: String
     public let hardware: HardwareInfo
     public let models: [ModelInfo]
+    public let autopilotInventory: [ModelInfo]
     public let backendName: String
     public let heartbeatInterval: TimeInterval
     public let publicKey: String?
@@ -195,11 +196,13 @@ public struct CoordinatorClientConfig: Sendable {
         privateOnly: Bool = false,
         apnsDeviceToken: String? = nil,
         apnsEnvironment: String? = nil,
-        idleUnloadMins: UInt64? = nil
+        idleUnloadMins: UInt64? = nil,
+        autopilotInventory: [ModelInfo] = []
     ) {
         self.url = url
         self.hardware = hardware
         self.models = models
+        self.autopilotInventory = autopilotInventory
         self.backendName = backendName
         self.heartbeatInterval = heartbeatInterval
         self.publicKey = publicKey

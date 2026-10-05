@@ -26,6 +26,8 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/env"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/queuedrain"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/queuewait"
 )
 
 // ErrQueueFull is returned when the queue for a model has reached maxSize.
@@ -57,25 +59,19 @@ var ErrQueueToolConstraintUnavailable = errors.New(
 // RoutingDecision.DrainTrigger for the system-profiler routing record. Closed
 // vocabulary — foldDrainTrigger maps anything else to DrainTriggerUnknown.
 const (
-	DrainTriggerHeartbeat  = "heartbeat"  // Registry.Heartbeat (a heartbeat may make a slot routable)
-	DrainTriggerIdle       = "idle"       // SetProviderIdle (a provider finished a job)
-	DrainTriggerChallenge  = "challenge"  // RecordChallengeSuccess / DrainQueuedRequestsForProvider
-	DrainTriggerLoad       = "load"       // load_model success (DrainQueuedRequestsForModel)
-	DrainTriggerDisconnect = "disconnect" // Disconnect (re-run so unservable waiters fail fast)
-	DrainTriggerKick       = "kick"       // cold-dispatch kick from the api layer
-	DrainTriggerUnknown    = "unknown"    // legacy caller that has not been migrated
+	DrainTriggerHeartbeat  = queuedrain.TriggerHeartbeat  // Registry.Heartbeat (a heartbeat may make a slot routable)
+	DrainTriggerIdle       = queuedrain.TriggerIdle       // SetProviderIdle (a provider finished a job)
+	DrainTriggerChallenge  = queuedrain.TriggerChallenge  // RecordChallengeSuccess / DrainQueuedRequestsForProvider
+	DrainTriggerLoad       = queuedrain.TriggerLoad       // load_model success (DrainQueuedRequestsForModel)
+	DrainTriggerDisconnect = queuedrain.TriggerDisconnect // Disconnect (re-run so unservable waiters fail fast)
+	DrainTriggerKick       = queuedrain.TriggerKick       // cold-dispatch kick from the api layer
+	DrainTriggerUnknown    = queuedrain.TriggerUnknown    // legacy caller that has not been migrated
 )
 
 // foldDrainTrigger returns reason if it is one of the bounded DrainTrigger*
 // values, else DrainTriggerUnknown. Constant strings only — no allocation.
 func foldDrainTrigger(reason string) string {
-	switch reason {
-	case DrainTriggerHeartbeat, DrainTriggerIdle, DrainTriggerChallenge, DrainTriggerLoad,
-		DrainTriggerDisconnect, DrainTriggerKick:
-		return reason
-	default:
-		return DrainTriggerUnknown
-	}
+	return queuedrain.FoldTrigger(reason)
 }
 
 // QueuedRequest represents a request waiting for a provider.
@@ -100,12 +96,7 @@ type QueuedRequest struct {
 	doneOnce     sync.Once
 
 	assignmentMu sync.Mutex
-	assignment   *queuedProviderAssignment
-
-	// beforeAssignmentSend is a deterministic test seam for cancellation at
-	// the exact reserve-to-waiter ownership boundary. Production requests leave
-	// it nil.
-	beforeAssignmentSend func()
+	assignment   *ProviderAssignment
 
 	// Decision captures the cost breakdown of the routing decision that
 	// dispatched (or terminally failed) this queued request. Populated by
@@ -124,11 +115,6 @@ type QueuedRequest struct {
 	FailureReason error
 }
 
-type queuedProviderAssignment struct {
-	provider *Provider
-	cleanup  func()
-}
-
 func (r *QueuedRequest) init() {
 	if r.ResponseCh == nil {
 		r.ResponseCh = make(chan *Provider, 1)
@@ -138,7 +124,10 @@ func (r *QueuedRequest) init() {
 	}
 }
 
-func (r *QueuedRequest) markDone() {
+// Cancel ends the waiter's interest and releases any reservation whose ownership
+// has not transferred to the dispatch caller. It does not remove the queue entry;
+// queue mutations discard canceled entries and callers may also use Remove.
+func (r *QueuedRequest) Cancel() {
 	r.doneOnce.Do(func() {
 		r.init()
 		close(r.DoneCh)
@@ -151,62 +140,13 @@ func (r *QueuedRequest) Done() <-chan struct{} {
 	return r.DoneCh
 }
 
-// offerAssignment publishes a scheduler-owned reservation. The scheduler keeps
-// cleanup ownership until WaitForProviderContext explicitly accepts the offer.
-// A waiter that already canceled rejects the offer before it can be published.
-func (r *QueuedRequest) offerAssignment(provider *Provider, cleanup func()) bool {
-	r.init()
-	r.assignmentMu.Lock()
-	defer r.assignmentMu.Unlock()
-	select {
-	case <-r.DoneCh:
-		return false
-	default:
-	}
-	if r.assignment != nil {
-		return false
-	}
-	r.assignment = &queuedProviderAssignment{
-		provider: provider,
-		cleanup:  cleanup,
-	}
-	return true
-}
-
-// acceptAssignment is the waiter acknowledgement that transfers reservation
-// cleanup ownership from the scheduler to the dispatch caller.
-func (r *QueuedRequest) acceptAssignment(provider *Provider) bool {
-	r.assignmentMu.Lock()
-	defer r.assignmentMu.Unlock()
-	if r.assignment == nil || r.assignment.provider != provider {
-		return false
-	}
-	r.assignment = nil
-	return true
-}
-
-// rejectAssignment releases a scheduler-owned reservation exactly once. It is
-// called by every cancellation/timeout path and may race offerAssignment.
-func (r *QueuedRequest) rejectAssignment() {
-	var cleanup func()
-	r.assignmentMu.Lock()
-	if r.assignment != nil {
-		cleanup = r.assignment.cleanup
-		r.assignment = nil
-	}
-	r.assignmentMu.Unlock()
-	if cleanup != nil {
-		cleanup()
-	}
-}
-
 // failWithReason terminally rejects the waiter with a specific cause. If the
 // waiter already gave up (timeout/cancel), the buffered nil send is a no-op and
 // the reason is never read.
 func (r *QueuedRequest) failWithReason(reason error) {
 	r.init()
 	r.FailureReason = reason
-	r.markDone()
+	r.Cancel()
 	select {
 	case r.ResponseCh <- nil:
 	default:
@@ -239,10 +179,11 @@ func drainRejectionTTFTTerminal(pr *PendingRequest, decision RoutingDecision) bo
 
 // RequestQueue manages per-model queues for requests awaiting providers.
 type RequestQueue struct {
-	mu      sync.Mutex
-	queues  map[string][]*QueuedRequest // model -> queue
-	maxSize int                         // max queue size per model
-	maxWait time.Duration               // max time a request waits
+	mu        sync.Mutex
+	queues    map[string][]*QueuedRequest // model -> queue
+	maxSize   int                         // max queue size per model
+	maxWait   time.Duration               // max time a request waits
+	waitClock queuewait.Clock
 }
 
 // Default queue limits (see NewRequestQueueFromEnv for the sizing rationale).
@@ -252,12 +193,16 @@ const (
 )
 
 // NewRequestQueue creates a new RequestQueue with the given limits.
-func NewRequestQueue(maxSize int, maxWait time.Duration) *RequestQueue {
-	return &RequestQueue{
+func NewRequestQueue(maxSize int, maxWait time.Duration, clocks ...queuewait.Clock) *RequestQueue {
+	q := &RequestQueue{
 		queues:  make(map[string][]*QueuedRequest),
 		maxSize: maxSize,
 		maxWait: maxWait,
 	}
+	if len(clocks) > 0 {
+		q.waitClock = clocks[0]
+	}
+	return q
 }
 
 // NewRequestQueueFromEnv creates a RequestQueue sized from the environment:
@@ -272,7 +217,7 @@ func NewRequestQueue(maxSize int, maxWait time.Duration) *RequestQueue {
 //     (Go duration string, e.g. "45s").
 //
 // Non-positive or malformed values fall back to the defaults.
-func NewRequestQueueFromEnv() *RequestQueue {
+func NewRequestQueueFromEnv(clocks ...queuewait.Clock) *RequestQueue {
 	depth := env.EnvInt(env.EnvPrefix+"_QUEUE_MAX_DEPTH", defaultQueueMaxDepth)
 	if depth < 1 {
 		depth = defaultQueueMaxDepth
@@ -281,7 +226,7 @@ func NewRequestQueueFromEnv() *RequestQueue {
 	if wait <= 0 {
 		wait = defaultQueueMaxWait
 	}
-	return NewRequestQueue(depth, wait)
+	return NewRequestQueue(depth, wait, clocks...)
 }
 
 // Enqueue adds a request to the queue for the given model.
@@ -311,24 +256,28 @@ func (q *RequestQueue) Enqueue(req *QueuedRequest) error {
 // expires, or the context is cancelled.
 func (q *RequestQueue) WaitForProviderContext(ctx context.Context, req *QueuedRequest) (*Provider, error) {
 	req.init()
-	timer := time.NewTimer(q.maxWait)
+	clock := q.waitClock
+	if clock == nil {
+		clock = queuewait.WallClock{}
+	}
+	timer := clock.NewTimer(q.maxWait)
 	defer timer.Stop()
 
 	select {
 	case p := <-req.ResponseCh:
 		if p == nil {
-			req.markDone()
+			req.Cancel()
 			if req.FailureReason != nil {
 				return nil, req.FailureReason
 			}
 			return nil, ErrQueueTimeout
 		}
 		if err := ctx.Err(); err != nil {
-			req.markDone()
+			req.Cancel()
 			return nil, err
 		}
 		if !req.EnqueuedAt.IsZero() && time.Since(req.EnqueuedAt) >= q.maxWait {
-			req.markDone()
+			req.Cancel()
 			return nil, ErrQueueTimeout
 		}
 		if !req.acceptAssignment(p) {
@@ -337,15 +286,15 @@ func (q *RequestQueue) WaitForProviderContext(ctx context.Context, req *QueuedRe
 			}
 			return nil, ErrQueueTimeout
 		}
-		req.markDone()
+		req.Cancel()
 		return p, nil
-	case <-timer.C:
+	case <-timer.Done():
 		// Remove the request from the queue
-		req.markDone()
+		req.Cancel()
 		q.Remove(req.RequestID, req.Model)
 		return nil, ErrQueueTimeout
 	case <-ctx.Done():
-		req.markDone()
+		req.Cancel()
 		q.Remove(req.RequestID, req.Model)
 		return nil, ctx.Err()
 	}
@@ -383,8 +332,13 @@ func (q *RequestQueue) PopNextFresh(model string) *QueuedRequest {
 		if len(queue) == 0 {
 			delete(q.queues, model)
 		}
+		select {
+		case <-req.DoneCh:
+			continue
+		default:
+		}
 		if now.Sub(req.EnqueuedAt) > q.maxWait {
-			req.markDone()
+			req.Cancel()
 			select {
 			case req.ResponseCh <- nil:
 			default:
@@ -403,6 +357,13 @@ func (q *RequestQueue) RequeueFront(req *QueuedRequest) {
 
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	// Cancellation removes the waiter under this same lock. Check here so a
+	// skipped waiter cannot return after cancellation's Remove missed it.
+	select {
+	case <-req.DoneCh:
+		return
+	default:
+	}
 	queue := q.queues[req.Model]
 	queue = append([]*QueuedRequest{req}, queue...)
 	q.queues[req.Model] = queue
@@ -586,7 +547,7 @@ func (q *RequestQueue) FailQueuedRequestsForModel(model string, preferOwnerEligi
 				continue
 			}
 		}
-		req.markDone()
+		req.Cancel()
 		select {
 		case req.ResponseCh <- nil:
 			failed++
@@ -641,9 +602,14 @@ func (q *RequestQueue) cleanStaleLocked(model string) {
 	now := time.Now()
 	var fresh []*QueuedRequest
 	for _, req := range queue {
+		select {
+		case <-req.DoneCh:
+			continue
+		default:
+		}
 		if now.Sub(req.EnqueuedAt) > q.maxWait {
 			// Close the response channel to signal timeout
-			req.markDone()
+			req.Cancel()
 			select {
 			case req.ResponseCh <- nil:
 			default:

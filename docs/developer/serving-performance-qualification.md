@@ -1,6 +1,6 @@
 # Qualify a serving performance profile
 
-> Last updated: 2026-09-29
+> Last updated: 2026-10-03
 
 This procedure prepares an exact model/runtime/hardware profile for code review.
 It never installs a profile or changes a running provider. The deadline catalog
@@ -24,7 +24,7 @@ the original receipt, projection and review files:
 
 ```bash
 export DARKBLOOM_QUALIFICATION_EVIDENCE_ROOT=/absolute/path/to/evidence
-go test ./coordinator/api/promptwork -run TestReviewedPromptCatalog -count=1
+go test ./coordinator/tests/api/promptwork -run TestReviewedPromptCatalog -count=1
 python3 -m unittest discover -s scripts/serving_performance -t scripts -p 'test_*.py'
 ```
 
@@ -362,7 +362,7 @@ Project that file through the coordinator's real estimator and shape extractor:
 cd coordinator
 DARKBLOOM_PROMPT_COUNT_CORPUS=/tmp/corpus-bodies.jsonl \
   DARKBLOOM_PROMPT_COUNT_OUTPUT=/tmp/corpus-shapes.jsonl \
-  go test ./api -run '^TestPromptWorkQualificationCorpus$' -count=1
+  go test ./tests/api/... -run '^TestPromptWorkQualificationCorpus$' -count=1
 ```
 
 Run `ServingPromptCountQualificationTests.collectTemplateCounts` with

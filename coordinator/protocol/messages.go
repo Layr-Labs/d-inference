@@ -21,6 +21,8 @@ package protocol
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/eigeninference/d-inference/coordinator/internal/wire"
 )
 
 // NOTE: json.RawMessage is used for the Attestation field to preserve
@@ -35,7 +37,7 @@ const (
 	TypeProviderDrainAck           = "provider_drain_ack"
 	TypeInferenceAccepted          = "inference_accepted"
 	TypeServiceReservationReleased = "service_reservation_released"
-	TypeInferenceResponseChunk     = "inference_response_chunk"
+	TypeInferenceResponseChunk     = wire.TypeInferenceResponseChunk
 	TypeInferenceComplete          = "inference_complete"
 	TypeInferenceError             = "inference_error"
 	TypeAttestationResponse        = "attestation_response"
@@ -239,6 +241,7 @@ type RegisterMessage struct {
 	Type                        string                             `json:"type"`
 	Hardware                    Hardware                           `json:"hardware"`
 	Models                      []ModelInfo                        `json:"models"`
+	AutopilotInventory          []ModelInfo                        `json:"autopilot_inventory,omitempty"`
 	Backend                     string                             `json:"backend"`
 	RuntimeCapabilities         []string                           `json:"runtime_capabilities,omitempty"`      // connection-scoped hardware/runtime capabilities
 	Version                     string                             `json:"version,omitempty"`                   // provider binary version (e.g. "0.2.31")
@@ -539,12 +542,7 @@ type InferenceAcceptedMessage struct {
 // InferenceResponseChunkMessage carries a single SSE chunk from the provider.
 // When E2E encryption is active, Data is empty and EncryptedData contains
 // the encrypted chunk.
-type InferenceResponseChunkMessage struct {
-	Type          string            `json:"type"`
-	RequestID     string            `json:"request_id"`
-	Data          string            `json:"data,omitempty"`
-	EncryptedData *EncryptedPayload `json:"encrypted_data,omitempty"`
-}
+type InferenceResponseChunkMessage = wire.InferenceResponseChunkMessage
 
 // UsageInfo carries token usage information.
 type UsageInfo struct {
@@ -792,10 +790,7 @@ type InferenceRequestMessage struct {
 }
 
 // EncryptedPayload carries a NaCl Box encrypted message.
-type EncryptedPayload struct {
-	EphemeralPublicKey string `json:"ephemeral_public_key"` // sender's ephemeral X25519 public key (base64)
-	Ciphertext         string `json:"ciphertext"`           // nonce || encrypted data (base64)
-}
+type EncryptedPayload = wire.EncryptedPayload
 
 // CancelMessage tells a provider to cancel an in-flight request.
 type CancelMessage struct {
@@ -1060,7 +1055,7 @@ func DecodeProviderMessage(data []byte, pm *ProviderMessage) error {
 // UnmarshalJSON reads the "type" field first, then unmarshals the full object
 // into the appropriate concrete struct.
 //
-// Fast path: scanTopLevelString reads "type" with a cheap byte walk so each
+// Fast path: wire.ScanTopLevelString reads "type" with a cheap byte walk so each
 // frame is json.Unmarshal'ed exactly once. Previously every frame — including
 // one per streamed token chunk — was parsed twice (envelope pass just to read
 // "type", then the concrete struct). If the scanner is unsure (escapes,
@@ -1068,16 +1063,16 @@ func DecodeProviderMessage(data []byte, pm *ProviderMessage) error {
 // envelope decode, preserving the original error behavior.
 func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 	// Fast path for the per-token chunk frame: a hand-written single-pass
-	// decoder (chunk_scan.go) that never calls encoding/json. It bails on any
+	// decoder (wire.ScanChunkFrame) that never calls encoding/json. It bails on any
 	// shape it is not certain about, in which case the frame takes the
 	// generic path below exactly as before.
-	if msg, ok := scanChunkFrame(data); ok {
+	if msg, ok := wire.ScanChunkFrame(data); ok {
 		pm.Type = TypeInferenceResponseChunk
 		pm.Payload = msg
 		return nil
 	}
 
-	msgType, ok := scanTopLevelString(data, "type")
+	msgType, ok := wire.ScanTopLevelString(data, "type")
 	if !ok {
 		var envelope struct {
 			Type string `json:"type"`

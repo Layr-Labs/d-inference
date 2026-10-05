@@ -43,7 +43,7 @@ export function Machines({
       />
       <div className={styles.content}>
         {local && <OperationFeed backend={backend} inline />}
-        {backend.cloud?.error && <Notice>{backend.cloud.error}</Notice>}
+        {backend.cloud?.error && route === 'machines' && <Notice>{backend.cloud.error}</Notice>}
         <div className={styles.breadcrumb}>
           <span>My Macs</span>
           <span>/</span>

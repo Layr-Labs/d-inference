@@ -47,13 +47,18 @@ export function StartServing({
   done: () => void;
 }) {
   const [mode, setMode] = useState<ContributionMode>('network');
-  const [pinned, setPinned] = useState<string[]>([]);
+  const [pinned, setPinned] = useState<string[]>(() => {
+    if (!snapshot.capabilities || snapshot.capabilities.includes('autopilot')) return [];
+    const model = startingModel(snapshot);
+    return model ? [model.id] : [];
+  });
   const [open, setOpen] = useState(false);
   const starting = startingModel(snapshot);
   const serving = useStartServing(backend, done, () =>
     setPinned((current) => (current.length || !starting ? current : [starting.id])),
   );
-  const method = methodFor(mode, serving.rejected);
+  const manualOnly = !!snapshot.capabilities && !snapshot.capabilities.includes('autopilot');
+  const method = methodFor(mode, serving.rejected || manualOnly);
   const text = copy[method];
   const empty = !startModels(snapshot, method, pinned).length;
   const tooLarge = pinnedMemory(snapshot, pinned).exceeds;

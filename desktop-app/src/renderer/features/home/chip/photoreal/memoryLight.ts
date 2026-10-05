@@ -1,3 +1,4 @@
+import { modelColor, crossMemory } from '../memoryStyle';
 import { inset, type Rect } from '../geometry';
 import type { MemoryPackage } from '../layout';
 import { rgba } from '../palette';
@@ -77,22 +78,19 @@ export function paintMemory(
   const { emissive, kit, scene, glow } = built,
     power = frame.workload.power,
     dark = scene.palette.dark,
-    bus = interfaceLevel(frame) * power,
-    otherAlpha = dark ? 0.1 : 0.08;
+    bus = interfaceLevel(frame) * power;
   let cells: CellLight[] = [];
   for (const light of emissive.memory) {
     const n = light.pkg.cells.length;
     if (cells.length !== n)
       cells = Array.from({ length: n }, (_, i) => memoryCell(i / n, 1 / n, scene.memory, frame));
     drawSprite(ctx, light.traces, bus * 0.3);
-    const resident = cells.find((cell) => cell.kind === 'weights')?.weights ?? 0;
-    drawSprite(ctx, light.weights, resident * power * (dark ? 0.4 : 0.36), light.x, light.y);
     paintKv(ctx, light, cells, kit, power * (dark ? 0.95 : 0.9));
     cells.forEach((cell, i) => {
-      if (cell.other > 0.01) {
-        ctx.globalAlpha = 1;
-        ctx.fillStyle = rgba(glow.neutral, cell.other * otherAlpha);
-        const r = light.pkg.cells[i];
+      const r = light.pkg.cells[i];
+      if (cell.other > 0.01) crossMemory(ctx, r, glow.neutral, cell.other);
+      if (cell.kind === 'weights') {
+        ctx.fillStyle = rgba(modelColor(cell.model), cell.weights * (dark ? 0.65 : 0.55));
         ctx.fillRect(r.x, r.y, r.w, r.h);
       }
       if (cell.sweep < 0.02) return;

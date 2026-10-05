@@ -61,7 +61,7 @@ struct DesktopAction: Codable, Sendable, Equatable {
     guard UUID(uuidString: id) != nil else { throw ValidationError("Invalid request ID") }
     let known = [
       "start", "switch", "stop", "restart", "download", "remove", "settings", "link", "unlink",
-      "update", "diagnose", "cancel", "cooling",
+      "update", "diagnose", "cancel", "cooling", "account-signin", "account-signout",
     ]
     guard known.contains(action) else { throw ValidationError("Unknown action") }
     if ["start", "switch"].contains(action) {
@@ -83,7 +83,7 @@ struct DesktopAction: Codable, Sendable, Equatable {
       try schedule.validate()
     }
     if action == "cooling" {
-      guard enabled != nil, (30...100).contains(speed ?? 70), (40...90).contains(temperature ?? 50)
+      guard enabled != nil, (60...90).contains(speed ?? 70), (40...90).contains(temperature ?? 50)
       else { throw ValidationError("Invalid cooling policy") }
     }
   }

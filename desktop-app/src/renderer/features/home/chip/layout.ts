@@ -1,4 +1,4 @@
-import type { ChipAnatomy, ChipTier } from './anatomy';
+import type { ChipAnatomy } from './anatomy';
 import { canonicalDie, type BlockKind, type DieCluster, type TileKind } from './dieLayout';
 import {
   center,
@@ -75,11 +75,9 @@ export interface ChipLayout {
   phy: PhySegment[];
   memory: MemoryPackage[];
   traces: Trace[];
-  io: { side: Side; path: Point[] };
   dispatch: Point;
 }
 
-const CACHE_BANKS: Record<ChipTier, number> = { base: 4, pro: 6, max: 8, ultra: 8 };
 const distance = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
 const rectDistance = (r: Rect, p: Point) =>
   Math.hypot(Math.max(r.x - p.x, 0, p.x - r.x - r.w), Math.max(r.y - p.y, 0, p.y - r.y - r.h));
@@ -141,8 +139,6 @@ export function chipLayout(
         clusters: clusters.filter((cluster) => cluster.die === index),
         gpuGroups: groupsOf(index),
         gpuSlots,
-        neural: share(anatomy.neuralCores, anatomy.dies, index),
-        cacheBanks: CACHE_BANKS[anatomy.tier],
       },
       frame.w,
       frame.h,
@@ -183,8 +179,6 @@ export function chipLayout(
     };
   });
 
-  const io = blocks.find((block) => block.kind === 'io' && block.die === 0)!,
-    ioSide = orientSide('bottom', dies[0].orientation);
   return {
     width,
     height,
@@ -205,34 +199,6 @@ export function chipLayout(
     phy,
     memory,
     traces,
-    io: { side: ioSide, path: ioPath(io, substrate, ioSide) },
     dispatch,
   };
-}
-
-/** Straight run from the substrate edge on `side` into the die's I/O block. */
-function ioPath(io: Rect, substrate: Rect, side: Side): Point[] {
-  const middle = center(io);
-  switch (side) {
-    case 'bottom':
-      return [
-        { x: middle.x, y: substrate.y + substrate.h },
-        { x: middle.x, y: io.y + io.h },
-      ];
-    case 'top':
-      return [
-        { x: middle.x, y: substrate.y },
-        { x: middle.x, y: io.y },
-      ];
-    case 'left':
-      return [
-        { x: substrate.x, y: middle.y },
-        { x: io.x, y: middle.y },
-      ];
-    case 'right':
-      return [
-        { x: substrate.x + substrate.w, y: middle.y },
-        { x: io.x + io.w, y: middle.y },
-      ];
-  }
 }

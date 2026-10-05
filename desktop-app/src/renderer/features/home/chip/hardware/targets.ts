@@ -58,15 +58,15 @@ export function hardwareTargets(
   sample: HardwareSample,
   anatomy: ChipAnatomy,
   peakPowerW: number,
+  providerMemoryGb: number | null = null,
 ): HardwareTargets {
   const { gpu, ane, memory } = sample,
     running = sample.provider.running;
   const cpu = sample.cpu.load.map(fraction),
     busy = fraction(gpu.utilization),
     share = running ? fraction(gpu.provider_share) : 0;
-  const darkbloomGb = running
-      ? Math.max(known(gpu.memory_in_use_gb) ? gpu.memory_in_use_gb : 0, 0)
-      : 0,
+  // Driver GPU memory is whole-device, not attributable to this provider.
+  const darkbloomGb = running ? providerMemoryGb : 0,
     usedGb = known(memory.used_gb) ? memory.used_gb : null;
   const aneLevel =
     known(ane.active) || known(ane.bandwidth_gbps)
@@ -89,7 +89,7 @@ export function hardwareTargets(
     trafficEstimated: sample.capabilities.memory_bandwidth === 'estimated',
     ane: aneLevel,
     other:
-      usedGb === null || anatomy.memoryGb <= 0
+      usedGb === null || darkbloomGb === null || anatomy.memoryGb <= 0
         ? null
         : clamp((usedGb - darkbloomGb) / anatomy.memoryGb),
     phase: hardwarePhase(sample),

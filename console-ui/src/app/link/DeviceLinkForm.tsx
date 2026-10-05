@@ -6,7 +6,7 @@ import { trackEvent } from "@/lib/google-analytics";
 
 type LinkStatus = "idle" | "submitting" | "success" | "error";
 
-export function DeviceLinkForm() {
+export function DeviceLinkForm({ account = false }: { account?: boolean }) {
   const { ready, authenticated, login, getAccessToken, user } = useAuthContext();
   const [code, setCode] = useState("");
   const [status, setStatus] = useState<LinkStatus>("idle");
@@ -41,7 +41,7 @@ export function DeviceLinkForm() {
             "Content-Type": "application/json",
             Authorization: `Bearer ${token}`,
           },
-          body: JSON.stringify({ user_code: code.trim().toUpperCase() }),
+          body: JSON.stringify({ user_code: code.trim().toUpperCase(), purpose: account ? "desktop_account" : "provider" }),
         });
 
         const data = await res.json();
@@ -71,7 +71,7 @@ export function DeviceLinkForm() {
         setStatus("error");
       }
     },
-    [code, getAccessToken]
+    [code, getAccessToken, account]
   );
 
   // Format input as XXXX-XXXX
@@ -112,13 +112,12 @@ export function DeviceLinkForm() {
           </svg>
         </div>
         <h2 className="text-2xl font-semibold text-ink mb-2">
-          Device Linked!
+          {account ? "Signed In!" : "Device Linked!"}
         </h2>
         <p className="text-text-secondary">
-          Your provider is now connected to your account. Earnings will be
-          credited automatically.
+          {account ? "Return to the desktop app to view your account." : "Your provider is now connected to your account. Earnings will be credited automatically."}
         </p>
-        <p className="text-text-tertiary text-sm mt-4">Return to your terminal to finish starting the provider.</p>
+        {!account && <p className="text-text-tertiary text-sm mt-4">Return to your terminal to finish starting the provider.</p>}
         <a href="/providers" className="mt-6 inline-flex min-h-11 items-center rounded-lg bg-accent-brand px-5 text-sm font-medium text-white dark:text-bg-primary">Open your provider workspace</a>
       </div>
     );
@@ -129,7 +128,7 @@ export function DeviceLinkForm() {
     return (
       <div className="bg-bg-white rounded-2xl border border-border-dim shadow-md p-8 text-center">
         <p className="text-text-secondary mb-6">
-          Sign in to your Darkbloom account to link your device.
+          {account ? "Sign in to view your Macs and earnings." : "Sign in to your Darkbloom account to link your device."}
         </p>
         <button
           onClick={() => {
@@ -163,7 +162,7 @@ export function DeviceLinkForm() {
             htmlFor="device-code"
             className="block text-sm font-semibold text-ink mb-2"
           >
-            Enter the code shown in your terminal
+            {account ? "Enter the code shown in the desktop app" : "Enter the code shown in your terminal"}
           </label>
           <input
             id="device-code"
@@ -194,17 +193,17 @@ export function DeviceLinkForm() {
                      hover:opacity-90
                      transition-all disabled:opacity-40 disabled:cursor-not-allowed"
         >
-          {status === "submitting" ? "Linking..." : "Link Device"}
+          {status === "submitting" ? "Authorizing..." : account ? "Authorize Desktop" : "Link Device"}
         </button>
       </form>
 
-      <div className="mt-6 text-xs text-text-tertiary text-center">
+      {!account && <div className="mt-6 text-xs text-text-tertiary text-center">
         Run{" "}
         <code className="bg-bg-tertiary px-1.5 py-0.5 rounded font-mono text-coral border border-border-dim">
           darkbloom login
         </code>{" "}
         on your Mac to get a code.
-      </div>
+      </div>}
     </div>
   );
 }

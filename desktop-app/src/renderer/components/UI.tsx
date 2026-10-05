@@ -96,7 +96,13 @@ export function OperationFeed({
   backend: BackendState;
   inline?: boolean;
 }) {
-  const [dismissed, setDismissed] = useState('');
+  const [dismissed, setDismissed] = useState(() => {
+    try {
+      return localStorage.getItem('darkbloom.dismissed-operation') ?? '';
+    } catch {
+      return '';
+    }
+  });
   const operation = backend.state?.operations[0];
   if (!operation || operation.id === dismissed) return null;
   return (
@@ -136,7 +142,14 @@ export function OperationFeed({
         <button
           className="icon-button"
           aria-label="Dismiss operation"
-          onClick={() => setDismissed(operation.id)}
+          onClick={() => {
+            try {
+              localStorage.setItem('darkbloom.dismissed-operation', operation.id);
+            } catch {
+              /* Storage may be disabled. */
+            }
+            setDismissed(operation.id);
+          }}
         >
           <X size={14} />
         </button>

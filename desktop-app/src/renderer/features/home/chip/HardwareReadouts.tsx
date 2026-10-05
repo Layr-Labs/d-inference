@@ -1,5 +1,5 @@
 import type { HardwareReadout } from './hardware/readouts';
-import styles from './chip.module.css';
+import styles from './hardwareReadouts.module.css';
 
 export const WHOLE_GPU_NOTE = 'macOS reports GPU busy for the whole GPU, not per core.';
 
@@ -18,6 +18,10 @@ export function HardwareReadouts({ readout }: { readout: HardwareReadout }) {
           </dd>
         </div>
         <div>
+          <dt>CPU busy</dt>
+          <dd>{readout.cpu}</dd>
+        </div>
+        <div>
           <dt>GPU power</dt>
           <dd>{readout.power}</dd>
         </div>
@@ -25,19 +29,7 @@ export function HardwareReadouts({ readout }: { readout: HardwareReadout }) {
           <dt>GPU clock</dt>
           <dd>{readout.clock}</dd>
         </div>
-        <div>
-          <dt>Memory traffic</dt>
-          <dd>
-            {readout.memory}
-            {readout.memoryEstimated && <small className={styles.badge}>Estimated</small>}
-          </dd>
-        </div>
-        <div>
-          <dt>CPU busy</dt>
-          <dd>{readout.cpu}</dd>
-        </div>
       </dl>
-      <p className={styles.note}>{WHOLE_GPU_NOTE}</p>
     </div>
   );
 }

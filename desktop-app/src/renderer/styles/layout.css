@@ -146,7 +146,7 @@
   padding: 0 40px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   font-size: 11px;
   color: var(--muted);
   -webkit-app-region: drag;
@@ -257,4 +257,26 @@
   .page-content.home-page {
     padding: 18px 26px 14px;
   }
+}
+
+.account-control {
+  padding: 0 12px 8px;
+}
+.account-control button {
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 6px 0;
+  font-size: 12px;
+}
+.account-control button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.account-control strong {
+  display: block;
+  font-family: monospace;
+  letter-spacing: 0.08em;
+}
+.account-control div button {
+  margin-right: 12px;
 }

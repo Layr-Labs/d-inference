@@ -8,11 +8,6 @@
   font-size: 22px;
   letter-spacing: -0.5px;
 }
-.heading p {
-  margin-top: 8px;
-  font-size: 12px;
-  color: var(--muted);
-}
 .earnings {
   padding: 24px;
   border-radius: 12px;
@@ -71,7 +66,7 @@
   margin-top: 16px;
 }
 .emptyChart {
-  padding: 24px 0;
+  padding: 8px 0;
 }
 .listHeading {
   margin-bottom: 18px;

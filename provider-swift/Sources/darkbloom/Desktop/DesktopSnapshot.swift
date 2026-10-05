@@ -11,14 +11,7 @@ extension DesktopBackend {
       localModels = loaded.hardware.map { ModelScanner.scanAllModels(hardwareInfo: $0) } ?? []
       localAt = now
     }
-    if now.timeIntervalSince(catalogAt) > 120 {
-      catalogAt = now
-      do {
-        catalog = try await ModelCatalogClient(coordinatorURL: loaded.config.coordinator.url)
-          .fetchCatalog(typeFilter: nil)
-        catalogError = nil
-      } catch { catalogError = "Model catalog unavailable. Downloaded models remain available." }
-    }
+    refreshCatalogIfNeeded(coordinator: loaded.config.coordinator.url, now: now)
     let daemon = DaemonStateFile.read()
     let current = daemon?.processIdentity?.isCurrent() == true
     let fresh = current && daemon?.isStale(now: now.timeIntervalSince1970) == false
@@ -78,6 +71,18 @@ extension DesktopBackend {
         ]))
       samples = Array(samples.suffix(1440))
     }
+    let promptTokens = fresh ? daemon?.stats.promptTokensProcessed : nil
+    let promptCount: JSONValue = promptTokens.map { JSONValue.string(String($0)) } ?? .null
+    var activity: [String: JSONValue] = [
+      "models": Self.modelActivity(daemon?.capacity, fresh: fresh, now: now.timeIntervalSince1970),
+      "sampled_at": .number(fresh ? daemon?.capacity?.activityObservedAt : nil),
+      "requests": fresh ? .string(String(requestCount)) : .null,
+      "tokens": fresh ? .string(String(tokens)) : .null,
+      "prompt_tokens": promptCount,
+      "usage_gaps": fresh ? .string(String(daemon?.stats.usageGaps ?? 0)) : .null,
+      "started_at": .number(fresh ? daemon?.startedAt : nil), "samples": .array(samples),
+    ]
+    activity.merge(sessionUsage(daemon: daemon, fresh: fresh, now: now)) { _, usage in usage }
     let total = Double(loaded.hardware?.memoryGb ?? 0)
     let machine: JSONValue = .dict([
       "id": .string("this-mac"), "name": .string(loaded.config.provider.name),
@@ -90,8 +95,11 @@ extension DesktopBackend {
       "protocol": .int(1), "version": .string(ProviderCore.version),
       "installation_id": .string(instance),
       "observed_at": .number(now.timeIntervalSince1970),
+      "resource_revision": .string(String(Int(now.timeIntervalSince1970 / 30))),
       "linked": .bool(AuthTokenStore.load() != nil),
-      "account_revision": .string(accountSession.observe(AuthTokenStore.load())),
+      "account_revision": .string(accountSession.observe("\(loaded.config.coordinator.url)\n\(accountReadToken() ?? "")")),
+      "account": accountStatus(),
+      "capabilities": .array(["account-signin", "account-signout", "request-history"].map(DV.string)),
       "state": .string(phase),
       "readiness": .string(
         fresh
@@ -106,13 +114,7 @@ extension DesktopBackend {
         "cache_gb": .number(fresh ? daemon?.capacity?.gpuMemoryCacheGb : nil),
         "free_for_load_gb": .number(fresh ? daemon?.capacity?.freeForLoadGb : nil),
       ]),
-      "activity": .dict([
-        "models": Self.modelActivity(daemon?.capacity, fresh: fresh, now: now.timeIntervalSince1970),
-        "sampled_at": .number(fresh ? daemon?.capacity?.activityObservedAt : nil),
-        "requests": fresh ? .string(String(requestCount)) : .null,
-        "tokens": fresh ? .string(String(tokens)) : .null,
-        "started_at": .number(fresh ? daemon?.startedAt : nil), "samples": .array(samples),
-      ]),
+      "activity": .dict(activity),
       "settings": .dict([
         "revision": .string(DesktopStorage.revision(loaded.configPath)),
         "name": .string(loaded.config.provider.name),

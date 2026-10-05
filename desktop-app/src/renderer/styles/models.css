@@ -186,3 +186,17 @@
 .warning-text {
   color: var(--warning);
 }
+
+.model-earnings-order {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 0 0 12px;
+}
+.model-earned {
+  margin-left: auto;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+}

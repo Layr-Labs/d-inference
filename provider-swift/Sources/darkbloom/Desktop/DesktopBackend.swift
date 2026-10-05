@@ -20,11 +20,21 @@ actor DesktopBackend {
   var catalog: [CatalogModel] = []
   var catalogError: String?
   var catalogAt = Date.distantPast
+  var catalogTask: Task<Void, Never>?
+  var resourceGeneration = 0
+  var resourceFailures: [String: (attempts: Int, retryAt: Date)] = [:]
+  var resourceCache: [String: DesktopResourceCache] = [:]
+  var resourceTasks: [String: Task<JSONValue, Error>] = [:]
   var localAt = Date.distantPast
   var localModels: [ModelInfo] = []
   var link: JSONValue = .null
   var samples: [JSONValue] = []
   var sampleSession: Double?
+  var accountEarningsCache: (key: String, at: Date, value: JSONValue)?
+  var accountEarningsTask: (key: String, task: Task<JSONValue, Error>)?
+  var usageArchive = DesktopUsageArchive()
+  var usageReadAt = Date.distantPast
+  var usageRead: Task<Void, Never>?
   var accountSession = DesktopAccountSession()
   /// Shared `fan status` read; `coolingReadAt` is nil while it is in flight.
   var coolingRead: Task<JSONValue, Never>?
@@ -66,7 +76,7 @@ actor DesktopBackend {
     }
     let operation = DesktopOperation(
       id: request.id, action: request.action, started_at: Date().timeIntervalSince1970,
-      cancellable: ["download", "diagnose", "link"].contains(request.action))
+      cancellable: ["download", "diagnose", "link", "account-signin"].contains(request.action))
     requests[request.id] = request
     operations.insert(operation, at: 0)
     operations = Array(operations.prefix(32))
@@ -101,6 +111,8 @@ actor DesktopBackend {
         complete(
           request.id, code: 0,
           message: "Settings saved. Restart the provider to apply runtime changes.")
+      } else if ["account-signin", "account-signout"].contains(request.action) {
+        try await executeAccountAction(request)
       } else if request.action == "link" {
         guard AuthTokenStore.load() == nil else {
           throw ValidationError("This Mac is already linked")
@@ -144,7 +156,7 @@ actor DesktopBackend {
         }
       }
     } catch {
-      if request.action == "link" { link = .null }
+      if ["link", "account-signin"].contains(request.action) { link = .null }
       complete(request.id, code: 1, message: String(describing: error))
     }
   }
@@ -190,7 +202,7 @@ actor DesktopBackend {
     }
   }
 
-  private func setLink(_ id: String, _ value: JSONValue) {
+  func setLink(_ id: String, _ value: JSONValue) {
     guard !cancellationRequested.contains(id),
       operations.contains(where: { $0.id == id && $0.state == "running" })
     else { return }
@@ -202,7 +214,7 @@ actor DesktopBackend {
     else { return }
     operations[index].message = String(output.suffix(8000))
   }
-  private func complete(_ id: String, code: Int32, message: String) {
+  func complete(_ id: String, code: Int32, message: String) {
     guard let index = operations.firstIndex(where: { $0.id == id }),
       operations[index].state == "running"
     else { return }

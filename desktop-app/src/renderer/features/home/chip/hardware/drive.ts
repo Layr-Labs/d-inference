@@ -8,9 +8,9 @@ export interface Eased {
   value: number;
   known: number;
 }
-/** Measured load eased for drawing, crossfading with the simulation by `weight`. */
+/** Measured load eased for drawing, with `weight` easing the initial connection. */
 export interface HardwareLight {
-  /** 0 while the simulation drives the chip, 1 while fresh measurements do. */
+  /** 0 without measurements, 1 while fresh measurements drive the chip. */
   weight: number;
   /** By logical CPU id. */
   cpu: Eased[];
@@ -59,11 +59,7 @@ const pulseRate = (tokensPerSecond: number, traffic: number) =>
     ? clamp(0.6 + 0.9 * Math.log2(1 + tokensPerSecond / 25), 0.6, 4)
     : 0.6 + 1.2 * traffic;
 
-/**
- * Eases measured targets between samples and overlays them on the simulated frame: GPU, memory
- * traffic and CPU come from the hardware, while requests, the KV cache and the prefill/decode
- * split stay provider-derived. Without fresh targets it fades back to the simulation.
- */
+/** Eases fresh measurements. Only explicit synthetic preview frames get illustrative motion. */
 export function createHardwareDrive() {
   const light: HardwareLight = {
     weight: 0,
@@ -84,6 +80,11 @@ export function createHardwareDrive() {
 
   return {
     step(elapsed: number, w: WorkloadFrame, targets: HardwareTargets | null): LitFrame {
+      const liveOnly = w.mode !== 'synthetic';
+      if (liveOnly && !targets) {
+        light.weight = 0;
+        return { workload: w, hardware: null };
+      }
       const k = 1 - Math.exp(-Math.max(0, elapsed) / TAU),
         phase = targets ? resolvePhase(w.phase, w.mode, targets.phase, targets.serving) : w.phase;
       light.weight += ((targets ? 1 : 0) - light.weight) * k;
@@ -99,6 +100,7 @@ export function createHardwareDrive() {
         ease(light.ane, targets.ane, k);
         ease(light.other, targets.other, k);
       }
+      if (liveOnly) return { workload: w, hardware: light };
       const mix = MIX[phase];
       if (mix !== undefined) light.prefillMix += (mix - light.prefillMix) * k;
       light.wave += elapsed * (0.25 + 1.5 * light.clock.value);
@@ -116,7 +118,11 @@ export function createHardwareDrive() {
           power: lerp(w.power, 1, weight),
           prefill: lerp(w.prefill, darkbloom * light.prefillMix, known),
           decode: lerp(w.decode, darkbloom * (1 - light.prefillMix), known),
-          memoryRead: measured(w.memoryRead, light.traffic),
+          memoryRead:
+            targets?.traffic === null
+              ? lerp(w.memoryRead, 0, weight)
+              : measured(w.memoryRead, light.traffic),
+          kvWrite: targets?.traffic === null ? lerp(w.kvWrite, 0, weight) : w.kvWrite,
           cpu: measured(w.cpu, light.cpuBusy),
           stepPhase: weight >= 0.5 ? pulse : w.stepPhase,
         },

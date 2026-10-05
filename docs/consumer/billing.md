@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-05
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -277,3 +277,12 @@ as a new withdrawal.
 The bank panel and self-service migration state are implemented by
 `console-ui/src/components/payouts/StripePayoutsCard.tsx` and
 `coordinator/api/global_payouts_status.go` (`maybeGlobalStatus`).
+
+## View earnings from the desktop app
+
+Choose **Sign in** in the desktop app and authorize the displayed code in the
+browser. Account views use a separate read-only session. Signing out leaves
+provider linkage and serving intact. Sign in again when the session expires.
+See the [desktop account contract](../reference/api-contracts.md#desktop-account-sessions)
+for accepted reads and the [desktop CLI reference](../provider/cli-reference.md)
+for terminal access.

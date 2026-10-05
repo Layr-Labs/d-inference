@@ -24,8 +24,9 @@ extension DesktopBackend {
   }
 
   static func readCooling(executable: URL?) async -> JSONValue {
+    let signed = executable ?? (try? DesktopFanRuntime.resolve())
     guard
-      let (code, output) = try? await DesktopWorker(executable: executable).run(
+      let (code, output) = try? await DesktopWorker(executable: signed ?? executable).run(
         ["fan", "status", "--json"], timeout: 15),
       code == 0, let data = output.data(using: .utf8),
       let status = try? JSONDecoder().decode(JSONValue.self, from: data)
@@ -47,7 +48,12 @@ extension DesktopBackend {
     }
     return .dict([
       "supported": diagnostic.field("supported"),
-      "mode": status.field("helper").field("mode").text.map(DV.string) ?? .string("automatic"),
+      "control_available": .bool(signed != nil),
+      "speed": status.field("helper").field("speedPercent"),
+      "threshold": status.field("helper").field("triggerTemperatureC"),
+      "mode": status.field("helper").field("mode").text.map(DV.string)
+        ?? .string(status.field("helperError").text == nil ? "automatic" : "unavailable"),
+      "error": status.field("helperError"),
       "temperature": .number(temperatures.max()), "fans": .array(fans),
     ])
   }

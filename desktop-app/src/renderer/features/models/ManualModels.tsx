@@ -7,6 +7,8 @@ import type { NativeModel } from '../../../shared/contracts';
 import { ModelGlyph } from './ModelGlyph';
 import { matchesQuery, ModelToolbar } from './ModelToolbar';
 import { RemoveModelDialog } from './RemoveModelDialog';
+import { ModelEarningsAmount } from './ModelEarnings';
+import type { ModelEarnings } from './earnings';
 
 const filters = [
   { id: 'all', label: 'All' },
@@ -20,10 +22,16 @@ export function ManualModels({
   backend,
   embedded,
   note,
+  ranked,
+  earnings,
+  order,
 }: {
   backend: BackendState;
   embedded: boolean;
   note?: ReactNode;
+  ranked: NativeModel[];
+  earnings: ModelEarnings;
+  order: ReactNode;
 }) {
   const state = backend.state!;
   const [query, setQuery] = useState('');
@@ -34,12 +42,12 @@ export function ManualModels({
     selection || state.models.filter((model) => model.serving).map((model) => model.id);
   const models = useMemo(
     () =>
-      state.models.filter(
+      ranked.filter(
         (model) =>
           matchesQuery(model, query) &&
           (filter === 'all' || (filter === 'downloaded' ? model.downloaded : model.serving)),
       ),
-    [state.models, filter, query],
+    [ranked, filter, query],
   );
   const running = state.state === 'running';
   const toggle = (id: string) =>
@@ -89,6 +97,7 @@ export function ManualModels({
         query={query}
         onQuery={setQuery}
       />
+      {order}
       {models.length ? (
         <div className="model-list">
           {models.map((model) => (
@@ -124,6 +133,7 @@ export function ManualModels({
                 </details>
                 {model.reason && <small className="warning-text">{model.reason}</small>}
               </div>
+              <ModelEarningsAmount model={model.id} earnings={earnings} />
               <div className="model-actions">
                 {model.downloaded ? (
                   <>

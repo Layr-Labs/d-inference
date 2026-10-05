@@ -17,61 +17,42 @@ extension DesktopBackend {
       guard let endpoint = LocalEndpoint.readLiveInfo() else { return .null }
       return .dict(["key": .string(endpoint.apiKey)])
     }
+    if name == "request-history" { return try await requestHistory() }
     if name == "cooling" { return await cooling() }
-    let paths = [
-      "cloud": "/v1/provider/desktop", "network": "/v1/stats", "leaderboard": "/v1/leaderboard",
-      "release": "/v1/releases/latest", "release-history": "/v1/releases/desktop",
-      "insights-week": "/v1/provider/desktop/insights",
-      "insights-month": "/v1/provider/desktop/insights",
-    ]
+    let base = coordinatorHTTPBase(try configuration().config.coordinator.url)
+    let token = (name == "cloud" || name.hasPrefix("insights-")) ? accountReadToken() : nil
+    if name == "cloud", token == nil {
+      return .dict(["linked": .bool(false), "observed_at": .number(Date().timeIntervalSince1970), "machines": .array([])])
+    }
+    if name.hasPrefix("insights-"), token == nil {
+      throw HTTPError(.unauthorized, message: "Sign in to view account earnings")
+    }
+    return try await cachedResource(name, base: base, token: token, ttl: name.hasPrefix("release") ? 3600 : 30)
+  }
+
+  func readRemoteResource(_ name: String, base: String, token: String?) async throws -> JSONValue {
+    if name == "cloud", let token {
+      if token.hasPrefix("darkbloom-at-") { return try await accountCloud(base: base, token: token) }
+      return try DesktopAccountEarnings(try await accountEarnings(base: base, token: token), localKeys: Set(usageArchive.providerKeys.keys)).cloud()
+    }
+    if name.hasPrefix("insights-"), let token {
+      let window = name == "insights-week" ? "7d" : "30d"
+      if !token.hasPrefix("darkbloom-at-") {
+        return try DesktopAccountEarnings(try await accountEarnings(base: base, token: token), localKeys: Set(usageArchive.providerKeys.keys)).insights(window)
+      }
+      let value = try await Self.readUsageJSON(base: base, path: "/v1/provider/account-earnings", token: token, query: [URLQueryItem(name: "window", value: window)])
+      if value.field("window").text == window { return Self.localizeInsights(value, providerID: usageArchive.localProviderID) }
+      // Older coordinators ignore window: preserve truthful partial-history coverage.
+      return try DesktopAccountEarnings(try await accountEarnings(base: base, token: token), localKeys: Set(usageArchive.providerKeys.keys)).insights(window)
+    }
+    let paths = ["network": "/v1/stats", "leaderboard": "/v1/leaderboard", "release": "/v1/releases/latest", "release-history": "/v1/releases/latest", "owned-providers": "/v1/me/providers", "summary": "/v1/me/summary", "legacy-roster": "/v1/providers/attestation"]
     guard let path = paths[name] else { throw HTTPError(.notFound, message: "Unknown resource") }
-    let config = try configuration().config
-    let privateResource = name == "cloud" || name.hasPrefix("insights-")
-    let accountToken = privateResource ? AuthTokenStore.load() : nil
-    if name.hasPrefix("insights-"), accountToken == nil {
-      throw HTTPError(.unauthorized, message: "Link your account to view earnings")
+    if name == "release-history" {
+      let latest = try await cachedResource("release", base: base, token: nil, ttl: 3600)
+      return .dict(["history": .array([.dict(["version": latest.field("version"), "published_at": latest.field("published_at"), "notes": latest.field("notes"), "active": .bool(true)])])])
     }
-    if name == "cloud", accountToken == nil {
-      return .dict([
-        "linked": .bool(false), "observed_at": .number(Date().timeIntervalSince1970),
-        "machines": .array([]),
-      ])
-    }
-    let base = config.coordinator.url.replacingOccurrences(of: "wss://", with: "https://")
-      .replacingOccurrences(of: "ws://", with: "http://")
-    guard var components = URLComponents(string: base) else { throw URLError(.badURL) }
-    components.path = path
-    components.query = nil
-    components.fragment = nil
-    if name == "leaderboard" {
-      components.queryItems = [
-        URLQueryItem(name: "metric", value: "earnings"),
-        URLQueryItem(name: "window", value: "24h"),
-      ]
-    }
-    if name.hasPrefix("insights-") {
-      components.queryItems = [URLQueryItem(name: "window", value: name == "insights-week" ? "7d" : "30d")]
-    }
-    guard let url = components.url else { throw URLError(.badURL) }
-    var request = URLRequest(url: url)
-    request.timeoutInterval = 15
-    if privateResource, let token = accountToken {
-      request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-    }
-    if name == "cloud", let identity = DaemonStateFile.read()?.attestationPublicKey {
-      request.setValue(identity, forHTTPHeaderField: "X-Darkbloom-Device-Identity")
-    }
-    let (data, response) = try await URLSession.shared.data(for: request)
-    if privateResource, AuthTokenStore.load() != accountToken {
-      throw HTTPError(.unauthorized, message: "Account changed; refresh to continue")
-    }
-    guard let http = response as? HTTPURLResponse, http.statusCode == 200, data.count <= 4_000_000
-    else {
-      throw URLError(.badServerResponse)
-    }
-    guard let value = try? JSONDecoder().decode(JSONValue.self, from: data) else {
-      throw URLError(.cannotParseResponse)
-    }
+    let query = name == "leaderboard" ? [URLQueryItem(name: "metric", value: "earnings"), URLQueryItem(name: "window", value: "24h")] : []
+    let value = try await Self.readUsageJSON(base: base, path: path, token: token, query: query)
     if name == "network" {
       return .dict([
         "total_tokens": Self.integerText(value.field("total_tokens")),
@@ -98,15 +79,6 @@ extension DesktopBackend {
         "version": value.field("version"), "published_at": value.field("created_at"),
         "notes": value.field("changelog"),
       ])
-    }
-    if name == "cloud", case .object(let pairs) = value {
-      let machines = value.field("machines").values
-      var fields = Dictionary(uniqueKeysWithValues: pairs)
-      fields["machines"] = .array(machines.filter { $0.field("is_this_mac").flag != true })
-      fields["local_earnings_micro_usd"] =
-        machines.first { $0.field("is_this_mac").flag == true }?.field("earnings_micro_usd")
-        ?? .null
-      return .dict(fields)
     }
     return value
   }

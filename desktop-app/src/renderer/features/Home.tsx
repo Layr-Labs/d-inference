@@ -1,9 +1,9 @@
-import { ArrowUpRight, Pause, Play } from 'lucide-react';
+import { Pause, Play } from 'lucide-react';
 import type { BackendState } from '../useBackend';
 import { api, isPreview } from '../useBackend';
 import type { Route } from '../../shared/contracts';
-import { count } from '../format';
 import { Button, Header } from '../components/UI';
+import { ContributionMetrics } from './home/ContributionMetrics';
 import { ChipStage } from './home/chip/ChipStage';
 import { FleetSummary } from './home/FleetSummary';
 import { NetworkMilestone } from './home/NetworkMilestone';
@@ -24,7 +24,6 @@ export function Home({
     <div className={styles.dashboard}>
       <Header
         title="Your contribution"
-        description="Your Mac. Part of something bigger."
         action={
           <Button
             disabled={backend.busy}
@@ -36,18 +35,7 @@ export function Home({
         }
       />
       <NetworkMilestone network={backend.network} />
-      <section className={styles.contribution}>
-        <div className={styles.shared}>
-          <span>Tokens shared this session</span>
-          <strong>{count(state.activity.tokens)}</strong>
-          <small>
-            {count(state.activity.requests)} requests served{' '}
-            <button onClick={() => navigate('analysis')}>
-              Explore Stats <ArrowUpRight size={12} />
-            </button>
-          </small>
-        </div>
-      </section>
+      <ContributionMetrics activity={state.activity} explore={() => navigate('analysis')} />
       <div className={styles.activity}>
         <ChipStage state={state} preview={isPreview} />
       </div>
@@ -56,17 +44,18 @@ export function Home({
         openMachine={openMachine}
         onEarnings={() => navigate('earnings')}
       />
-      <footer className={styles.footer}>
-        <span>{isPreview ? 'Simulated activity' : state.readiness}</span>
-        {!state.linked && (
-          <button onClick={() => void backend.act({ action: 'link' })}>Link account</button>
-        )}
-        {state.link && (
-          <button onClick={() => void api?.openExternal('link')}>
-            Link code: {state.link.code}
-          </button>
-        )}
-      </footer>
+      {(!state.linked || state.link) && (
+        <footer className={styles.footer}>
+          {!state.linked && (
+            <button onClick={() => void backend.act({ action: 'link' })}>Link account</button>
+          )}
+          {state.link && (
+            <button onClick={() => void api?.openExternal('link')}>
+              Link code: {state.link.code}
+            </button>
+          )}
+        </footer>
+      )}
     </div>
   );
 }

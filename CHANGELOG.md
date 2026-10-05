@@ -7,6 +7,14 @@
 
 ## Unreleased — macOS desktop app
 
+- Keep Electron on the same `darkbloom` CLI backend. Swift owns coordinator requests, shared resource caches, browser account sign-in and sign-out, and catalog refresh independent of local snapshots. Add a separate read-only dashboard session with bounded expiry; provider credentials and serving stay independent. Reuse existing account/fleet and ledger APIs, including full 7/30-day aggregates through the existing earnings route. Refresh visible pages from the native clock, and use streamed operation progress with a polling fallback.
+
+- Reorganize the Home chip panel into a larger diagram and a hardware/memory sidebar, with prominent GPU/CPU measurements and individually labeled model footprints. Move live status to the header and stack sections at narrow widths. Retry only the specific transient fan-ownership firmware restore failure through the verified signed CLI; preserve permanent hardware errors and distinguish canceled authorization.
+
+- Populate this Mac’s Stats and Activity from verified existing settlement records, including exact input/output tokens, session earnings and model totals. Hide unavailable Home activity readouts; retain a seven-day earnings axis with explicit gaps for missing history. Use the verified signed installed runtime for fan status and cooling authorization, reflect its active policy, and restrict controls to the supported 60–90% range.
+
+- Populate desktop account earnings, daily charts and model rankings by aggregating the existing account-earnings response when desktop-specific analytics are unavailable. Preserve authoritative lifetime totals, deduplicate settlements, separate base rewards, and label truncated history as recent rather than a complete week or month.
+
 - Replace the desktop preview's step diagram with a continuous particle scene: incoming requests gather around orbiting model cores, then spread into token trails. Preserve pause, reduced-motion, inactive-provider, and off-screen behavior; keep illustrative motion separate from native activity.
 
 - Replace Analysis with Stats and add a visual-first traffic preview with animated request stages, model traffic shares, an inspectable traffic curve, and milestones. Keep illustrative metrics confined to development preview; live mode uses existing native observations until richer APIs are added.

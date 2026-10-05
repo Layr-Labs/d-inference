@@ -11,10 +11,12 @@ export function FleetMacs({
   machines,
   localID,
   onOpen,
+  recent = false,
 }: {
   machines: Machine[];
   localID: string;
   onOpen: (id: string) => void;
+  recent?: boolean;
 }) {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState('all');
@@ -54,7 +56,7 @@ export function FleetMacs({
           <span>Mac</span>
           <span>Status</span>
           <span>Models</span>
-          <span>Usage earnings · 7d</span>
+          <span>Usage earnings · {recent ? 'Recent' : '7d'}</span>
         </div>
         {visible.map((machine) => (
           <button
@@ -81,7 +83,7 @@ export function FleetMacs({
           </button>
         ))}
       </div>
-      {!visible.length && <Empty title="No matching Macs">Try another name or filter.</Empty>}
+      {!visible.length && <Empty title="No matching Macs" />}
     </section>
   );
 }

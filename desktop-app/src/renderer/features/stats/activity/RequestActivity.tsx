@@ -12,8 +12,16 @@ import styles from './activity.module.css';
 
 const PAGE = 25;
 
-export function RequestActivity({ models }: { models: NativeModel[] }) {
-  const { history, loading, failed, refresh } = useRequestHistory();
+export function RequestActivity({
+  models,
+  scope,
+  revision,
+}: {
+  models: NativeModel[];
+  scope?: string;
+  revision?: string;
+}) {
+  const { history, loading, failed, refresh } = useRequestHistory(scope, revision);
   const [filter, setFilter] = useState<RequestFilter>({ model: 'all', outcome: 'all' });
   const [shown, setShown] = useState(PAGE);
   const titleID = useId();
@@ -32,7 +40,7 @@ export function RequestActivity({ models }: { models: NativeModel[] }) {
         <div>
           <h2 id={titleID}>Requests served</h2>
           <p>
-            Every request this Mac has served
+            Recorded requests from this Mac
             {history?.since ? ` since ${clockTime(history.since, history.observed_at)}` : ''}.
           </p>
         </div>

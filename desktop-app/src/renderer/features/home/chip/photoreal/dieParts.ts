@@ -66,12 +66,6 @@ function sramArray(tile: Rect): Part[] {
   ];
 }
 
-function neuralCore(tile: Rect): Part[] {
-  const { body, gap } = frame(tile, 0.08, 0.05),
-    [mac, buffer] = along(body, [0.74, 0.26], gap);
-  return [as('mac')(mac), as('cache')(buffer)];
-}
-
 export function tileParts(tile: Tile): Part[] {
   switch (tile.kind) {
     case 'gpu':
@@ -80,29 +74,12 @@ export function tileParts(tile: Tile): Part[] {
     case 'performance':
     case 'efficiency':
       return cpuCore(tile, tile.kind === 'efficiency');
-    case 'neural':
-      return neuralCore(tile);
     default:
       return sramArray(tile);
   }
 }
 
 const blockSeed = (block: Block) => block.x * 0.137 + block.y * 0.291 + block.die * 5.3;
-
-/** Engines without counted tiles: a few strips of SRAM buffers and control logic. */
-export function engineParts(block: Block): Part[] {
-  const { body, gap } = frame(block, 0.08, 0.05),
-    seed = blockSeed(block);
-  const strips = along(
-    body,
-    [0, 1, 2].map((i) => 0.6 + noise(seed + i)),
-    gap,
-  );
-  return strips.flatMap((strip, i) => {
-    const [a, b] = across(strip, [0.5 + 0.35 * noise(seed + i * 3.1), 0.5], gap);
-    return [as(noise(seed + i * 5.7) > 0.4 ? 'cache' : 'logic')(a), as('logic')(b)];
-  });
-}
 
 /** The label band of a block (its widest margin outside the body), or null when unbanded. */
 function bandOf(block: Block): Rect | null {

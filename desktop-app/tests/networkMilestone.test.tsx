@@ -50,11 +50,11 @@ it('shows live production totals, the day’s tokens and the next proposed miles
   render(<NetworkMilestone network={networkFromStats(stats)} />);
   const region = strip();
   expect(within(region).getByText('659.1B')).toBeVisible();
-  expect(within(region).getByText('tokens processed by the network')).toBeVisible();
+  expect(within(region).getByText('Network tokens')).toBeVisible();
   expect(within(region).getByText('+14.6B')).toBeVisible();
   expect(within(region).getByText('1,137')).toBeVisible();
   expect(within(region).getByText('Next milestone 1T')).toBeVisible();
-  expect(within(region).getByText('Proposed')).toBeVisible();
+  expect(within(region).getByTitle('Proposed network milestone')).toBeVisible();
   expect(within(region).getByText('Live')).toBeVisible();
   expect(within(region).getByRole('progressbar')).toHaveAttribute('aria-valuenow', '66');
   expect(within(region).getByRole('progressbar')).toHaveAttribute(
@@ -77,7 +77,7 @@ it('keeps the last known totals while reconnecting', () => {
     error: 'Network statistics are unavailable.',
   };
   render(<NetworkMilestone network={network} />);
-  expect(within(strip()).getByText('Last known, reconnecting')).toBeVisible();
+  expect(within(strip()).getByText('Reconnecting')).toBeVisible();
   expect(within(strip()).getByText('659.1B')).toBeVisible();
   expect(cellsOn()).toBe(16);
 });
@@ -85,12 +85,10 @@ it('keeps the last known totals while reconnecting', () => {
 it('says when statistics are unavailable or still connecting, without inventing numbers', () => {
   const { rerender } = render(<NetworkMilestone network={undefined} />);
   expect(within(strip()).getByText('Connecting')).toBeVisible();
-  expect(within(strip()).getByText('Connecting to public network statistics')).toBeVisible();
+  expect(within(strip()).getByText('Network tokens')).toBeVisible();
   rerender(<NetworkMilestone network={{ error: 'Network statistics are unavailable.' }} />);
   expect(within(strip()).getByText('Unavailable')).toBeVisible();
-  expect(
-    within(strip()).getByText('Statistics unavailable. Retrying automatically.'),
-  ).toBeVisible();
+  expect(within(strip()).getByText('Network tokens')).toBeVisible();
   expect(screen.queryByText('Macs connected')).not.toBeInTheDocument();
   expect(within(strip()).getByText('Next milestone')).toBeVisible();
   expect(within(strip()).getByRole('progressbar')).not.toHaveAttribute('aria-valuenow');
@@ -105,7 +103,7 @@ it('leads Home with the network milestone and drops the duplicated collective bl
       openMachine={vi.fn()}
     />,
   );
-  const session = screen.getByText('Tokens shared this session');
+  const session = screen.getByText('Tokens processed this session');
   expect(strip().compareDocumentPosition(session) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(screen.getByRole('heading', { name: 'Your contribution' })).toBeVisible();
   expect(screen.queryByText('Macs powering the network')).not.toBeInTheDocument();

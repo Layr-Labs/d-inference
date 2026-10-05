@@ -20,6 +20,8 @@ extension DesktopBackend {
       configPath: previous.configPath, configFileExists: exists,
       config: config, hardware: previous.hardware, hardwareError: previous.hardwareError)
     if config.coordinator.url != previous.config.coordinator.url {
+      catalogTask?.cancel(); catalogTask = nil
+      clearAccountResources()
       catalog = []
       catalogAt = .distantPast
     }

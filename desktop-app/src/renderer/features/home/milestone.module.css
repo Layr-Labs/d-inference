@@ -53,10 +53,6 @@
   font-size: 11px;
   color: var(--text-secondary);
 }
-.goalLabel small {
-  font-size: 10px;
-  color: var(--muted);
-}
 .cells {
   display: grid;
   grid-template-columns: repeat(24, 1fr);

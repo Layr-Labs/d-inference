@@ -576,6 +576,10 @@ func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 // for the authenticated provider account.
 // Cached for 20s per account — dashboard polls this frequently.
 func (s *Server) handleAccountEarnings(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("window") != "" {
+		s.handleDesktopInsights(w, r)
+		return
+	}
 	accountID := s.resolveAccountID(r)
 
 	limit := 50

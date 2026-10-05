@@ -4,12 +4,15 @@ import type { DesktopAPI, Snapshot } from '../../../../shared/contracts';
 import { useHardwareLoad } from '../../../hardware/useHardwareLoad';
 import { useReducedMotion } from '../../../useReducedMotion';
 import { ChipCanvas } from './ChipCanvas';
+import { ChipStatus } from './ChipStatus';
 import { ChipReadouts } from './ChipReadouts';
 import { hardwareReadout } from './hardware/readouts';
 import { useChipPalette } from './hooks/useChipPalette';
 import { useChipWorkload } from './hooks/useChipWorkload';
 import { useHardwareFeed } from './hooks/useHardwareFeed';
 import { usePoliteSummary } from './hooks/usePoliteSummary';
+import { MemoryLegend } from './MemoryLegend';
+import { providerMemory, otherMemory } from './memoryUsage';
 import { loadedModels, memoryMap } from './memoryMap';
 import { css, type ChipPalette } from './palette';
 import { PhaseLegend } from './PhaseLegend';
@@ -30,7 +33,7 @@ const paletteVars = (palette: ChipPalette) =>
 
 /**
  * Home hero: this Mac's chip drawn as an anatomy, lit by its measured load while the hardware
- * stream is fresh and by the simulated inference workload otherwise. `source` defaults to the
+ * stream is fresh. Missing measurements stay inactive. `source` defaults to the
  * desktop bridge.
  */
 export function ChipStage({
@@ -56,18 +59,24 @@ export function ChipStage({
   const loaded = loadedModels(state.models),
     loadedKey = loaded.map((model) => `${model.id}:${model.gb}:${model.name}`).join('|');
   // Keyed by content: every snapshot is a fresh object, but the map only changes with the models.
-  const memory = useMemo(() => memoryMap(anatomy.memoryGb, loaded), [anatomy.memoryGb, loadedKey]);
+  const providerGb = providerMemory(state);
+  const mappedGb = providerGb === null ? null : Math.round(providerGb * 4) / 4;
+  const memory = useMemo(
+    () => memoryMap(anatomy.memoryGb, loaded, mappedGb),
+    [anatomy.memoryGb, loadedKey, mappedGb],
+  );
   const [variant, setVariant] = useState<ChipVariant>(readVariant);
   const [paused, setPaused] = useState(false);
   const reduced = useReducedMotion(),
     palette = useChipPalette();
-  const { feed, live } = useHardwareFeed(load, anatomy);
+  const { feed, live } = useHardwareFeed(load, anatomy, providerGb);
   const { advance, stats, reading, powered } = useChipWorkload({
     state,
     preview,
     anatomy,
     memory,
     hardware: feed,
+    providerGb,
   });
   const readout = hardwareReadout(load.sample, live);
   const text = stageText({
@@ -97,10 +106,19 @@ export function ChipStage({
           <h2>{anatomy.name}</h2>
           <p>
             <span>{text.memoryLine}</span>
-            <span>{text.modelsLine}</span>
+            {anatomy.source === 'topology' && (
+              <>
+                <span>
+                  {anatomy.superCores + anatomy.performanceCores + anatomy.efficiencyCores} CPU
+                  cores
+                </span>
+                <span>{anatomy.gpuCores} GPU cores</span>
+              </>
+            )}
           </p>
         </div>
         <div className={styles.controls}>
+          <ChipStatus mode={text.mode} live={text.measured} />
           {preview && <VariantSwitch value={variant} onChange={choose} />}
           <button
             className={styles.iconButton}
@@ -111,16 +129,7 @@ export function ChipStage({
           </button>
         </div>
       </header>
-      <div className={styles.body}>
-        <ChipReadouts
-          mode={text.mode}
-          live={text.measured}
-          hardware={anatomy.source === 'topology' ? readout : null}
-          phase={stats.phase}
-          tokensPerSecond={text.tokensPerSecond}
-          running={text.running}
-          waiting={text.waiting}
-        />
+      <div className={styles.body} data-live-only={!preview}>
         <ChipCanvas
           variant={variant}
           anatomy={anatomy}
@@ -130,15 +139,32 @@ export function ChipStage({
           motion={!reduced}
           advance={advance}
         />
-        <PhaseLegend
-          levels={{
-            prefill: stats.prefill,
-            decode: stats.decode,
-            kv: stats.kv,
-            traffic: stats.traffic,
-            neural: stats.neural,
-          }}
-        />
+        <aside className={styles.details} aria-label="Chip measurements and memory">
+          <ChipReadouts
+            showMode={false}
+            mode={text.mode}
+            live={text.measured}
+            hardware={anatomy.source === 'topology' ? readout : null}
+            phase={preview ? stats.phase : null}
+            tokensPerSecond={text.tokensPerSecond}
+            running={text.running}
+            waiting={text.waiting}
+          />
+          <MemoryLegend
+            memory={memory}
+            providerGb={providerGb}
+            otherGb={live ? otherMemory(load.sample?.memory.used_gb, providerGb) : null}
+          />
+          {preview && (
+            <PhaseLegend
+              levels={{
+                prefill: stats.prefill,
+                decode: stats.decode,
+                kv: stats.kv,
+              }}
+            />
+          )}
+        </aside>
       </div>
       <p className={styles.srOnly} aria-live="polite">
         {summary}

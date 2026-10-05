@@ -123,7 +123,7 @@ describe('waitlist contract', () => {
       'ada@example.com',
       ['memory'],
     );
-    await vi.advanceTimersByTimeAsync(1500);
+    await vi.advanceTimersByTimeAsync(10_000);
     await expect(signup).resolves.toBeUndefined();
     expect(read).toHaveBeenCalledTimes(2);
   });

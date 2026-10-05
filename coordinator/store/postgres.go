@@ -3421,6 +3421,19 @@ func (s *PostgresStore) ApproveDeviceCode(deviceCode, accountID string) error {
 	return nil
 }
 
+func (s *PostgresStore) ConsumeDeviceCode(code string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tag, err := s.pool.Exec(ctx, `UPDATE device_codes SET status = 'consumed' WHERE device_code = $1 AND status = 'approved' AND expires_at > NOW()`, code)
+	if err != nil {
+		return fmt.Errorf("store: consume device grant: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return errors.New("device grant unavailable")
+	}
+	return nil
+}
+
 func (s *PostgresStore) DeleteExpiredDeviceCodes() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

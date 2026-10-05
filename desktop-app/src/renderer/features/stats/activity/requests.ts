@@ -6,6 +6,7 @@ export interface RequestFilter {
   outcome: Outcome | 'all';
 }
 export const outcomes: Record<Outcome, string> = {
+  settled: 'Settled',
   completed: 'Completed',
   cancelled: 'Cancelled',
   failed: 'Failed',
@@ -22,12 +23,14 @@ function parseRecord(value: unknown): RequestRecord {
   const earnings = optional(record.earnings_micro_usd);
   if (
     typeof record.id !== 'string' ||
-    !finite(record.started_at) ||
+    !(finite(record.started_at) || finite(record.settled_at) || finite(record.completed_at)) ||
+    (record.started_at !== undefined && !finite(record.started_at)) ||
+    (record.completed_at !== undefined && !finite(record.completed_at)) ||
+    (record.settled_at !== undefined && !finite(record.settled_at)) ||
     typeof record.model !== 'string' ||
     !tokenCount(record.input_tokens) ||
     !tokenCount(record.output_tokens) ||
-    !finite(record.duration_ms) ||
-    record.duration_ms < 0 ||
+    (record.duration_ms !== undefined && (!finite(record.duration_ms) || record.duration_ms < 0)) ||
     typeof record.outcome !== 'string' ||
     !Object.hasOwn(outcomes, record.outcome) ||
     (earnings !== undefined && (typeof earnings !== 'string' || !/^\d+$/.test(earnings)))
@@ -35,11 +38,13 @@ function parseRecord(value: unknown): RequestRecord {
     throw new Error('Invalid request record');
   return {
     id: record.id,
-    started_at: record.started_at,
+    ...(record.started_at !== undefined ? { started_at: record.started_at as number } : {}),
+    ...(record.settled_at !== undefined ? { settled_at: record.settled_at as number } : {}),
+    ...(record.completed_at !== undefined ? { completed_at: record.completed_at as number } : {}),
     model: record.model,
     input_tokens: record.input_tokens,
     output_tokens: record.output_tokens,
-    duration_ms: record.duration_ms,
+    duration_ms: record.duration_ms as number | undefined,
     outcome: record.outcome as Outcome,
     earnings_micro_usd: earnings,
   };
@@ -58,7 +63,7 @@ export function parseRequestHistory(value: unknown): RequestHistory {
   return {
     observed_at: data.observed_at,
     since,
-    records: data.records.map(parseRecord).sort((a, b) => b.started_at - a.started_at),
+    records: data.records.map(parseRecord).sort((a, b) => requestTime(b) - requestTime(a)),
   };
 }
 
@@ -72,8 +77,13 @@ export const filterRequests = (records: RequestRecord[], { model, outcome }: Req
 export const requestModels = (records: RequestRecord[]) =>
   [...new Set(records.map((record) => record.model))].sort();
 
+export const requestTime = (record: RequestRecord) =>
+  record.settled_at ?? record.completed_at ?? record.started_at!;
+
 export const tokensPerSecond = ({ output_tokens, duration_ms }: RequestRecord) =>
-  output_tokens > 0 && duration_ms > 0 ? output_tokens / (duration_ms / 1000) : undefined;
+  output_tokens > 0 && duration_ms !== undefined && duration_ms > 0
+    ? output_tokens / (duration_ms / 1000)
+    : undefined;
 
 export function duration(ms: number) {
   if (ms < 1000) return `${Math.round(ms)} ms`;

@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
+import type { ModelEarnings } from './earnings';
 import { Check, SlidersHorizontal } from 'lucide-react';
 import type { NativeModel } from '../../../shared/contracts';
 import { Button, Empty, Header, Notice } from '../../components/UI';
@@ -18,10 +19,16 @@ export function AutopilotModels({
   backend,
   actions,
   embedded,
+  models,
+  earnings,
+  order,
 }: {
   backend: BackendState;
   actions: ModelActions;
   embedded: boolean;
+  models: NativeModel[];
+  earnings: ModelEarnings;
+  order: ReactNode;
 }) {
   const state = backend.state!;
   const status = state.autopilot!;
@@ -29,7 +36,7 @@ export function AutopilotModels({
   const [filter, setFilter] = useState<PoolFilter>('all');
   const [remove, setRemove] = useState<NativeModel>();
   const [confirm, setConfirm] = useState<AutopilotChange>();
-  const rows = state.models.map((model) => {
+  const rows = models.map((model) => {
     const download = runningDownload(state, model.id, actions.downloads);
     return { model, download, state: poolState(model, status, !!download) };
   });
@@ -77,12 +84,14 @@ export function AutopilotModels({
         query={query}
         onQuery={setQuery}
       />
+      {order}
       {shown.length ? (
         <div className="model-list">
           {shown.map((row) => (
             <PoolRow
               key={row.model.id}
               model={row.model}
+              earnings={earnings}
               state={row.state}
               download={row.download}
               working={actions.working[row.model.id]}

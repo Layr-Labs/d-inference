@@ -2403,6 +2403,17 @@ func (s *MemoryStore) ApproveDeviceCode(deviceCode, accountID string) error {
 	return nil
 }
 
+func (s *MemoryStore) ConsumeDeviceCode(code string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	dc := s.deviceCodesByCode[code]
+	if dc == nil || dc.Status != "approved" || !time.Now().Before(dc.ExpiresAt) {
+		return errors.New("device grant unavailable")
+	}
+	dc.Status = "consumed"
+	return nil
+}
+
 func (s *MemoryStore) DeleteExpiredDeviceCodes() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -12,6 +12,8 @@ import type {
   Route,
   Snapshot,
 } from '../shared/contracts';
+import { submitAction } from './actions';
+import { pageResources } from './data/pageResources';
 import { previewAPI } from './preview';
 import { parseReleaseHistory } from './features/updates/version';
 import { parseLeaderboard } from './features/leaderboard/data';
@@ -36,7 +38,23 @@ export function useBackend(route: Route = 'home', machine: MachineSelection = nu
   const [leaderError, setLeaderError] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const accountGeneration = useRef(0);
+  const accountRevision = useRef<string | undefined>(undefined);
+  const observeState = useCallback((snapshot: Snapshot) => {
+    if (
+      accountRevision.current !== undefined &&
+      snapshot.account_revision !== accountRevision.current
+    ) {
+      accountGeneration.current++;
+      setCloud(undefined);
+    }
+    accountRevision.current = snapshot.account_revision;
+    setState(snapshot);
+  }, []);
   const coolingVisible = useRef(showsCooling(route, machine));
+  coolingVisible.current = showsCooling(route, machine);
+  const visibleResources = useRef(pageResources(route));
+  visibleResources.current = pageResources(route);
   const readCooling = useCallback(async () => {
     if (!api) return;
     await api
@@ -51,51 +69,92 @@ export function useBackend(route: Route = 'home', machine: MachineSelection = nu
         }),
       );
   }, []);
+  const refreshVisible = useCallback(
+    async (includeCooling = true) => {
+      if (!api) return;
+      const generation = accountGeneration.current;
+      const accept =
+        <T>(setter: (value: T) => void) =>
+        (value: T) => {
+          if (generation === accountGeneration.current) setter(value);
+        };
+      await Promise.allSettled([
+        ...(visibleResources.current.includes('cloud')
+          ? [
+              api
+                .read<CloudData>('cloud')
+                .then(accept(setCloud))
+                .catch(() => {
+                  if (generation !== accountGeneration.current) return;
+                  setCloud((previous) => ({
+                    linked: previous?.linked || false,
+                    observed_at: previous?.observed_at || 0,
+                    machines: previous?.machines || [],
+                    ...previous,
+                    error: previous?.observed_at
+                      ? 'Account data unavailable. Last update: ' +
+                        new Date(previous.observed_at * 1000).toLocaleTimeString([], {
+                          hour: 'numeric',
+                          minute: '2-digit',
+                        })
+                      : 'Account data unavailable.',
+                  }));
+                }),
+            ]
+          : []),
+        ...(visibleResources.current.includes('network')
+          ? [
+              api
+                .read<NetworkData>('network')
+                .then(setNetwork)
+                .catch(() =>
+                  setNetwork((previous) => ({
+                    ...previous,
+                    error: 'Network statistics are unavailable.',
+                  })),
+                ),
+            ]
+          : []),
+        ...(includeCooling && coolingVisible.current ? [readCooling()] : []),
+        ...(visibleResources.current.includes('release')
+          ? [
+              api
+                .read<ReleaseData>('release')
+                .then(setRelease)
+                .catch(() => setRelease({ error: 'Release information is unavailable.' })),
+            ]
+          : []),
+        ...(visibleResources.current.includes('release-history')
+          ? [
+              api
+                .read<ReleaseHistory>('release-history')
+                .then((value) => setReleaseHistory(parseReleaseHistory(value)))
+                .catch(() =>
+                  setReleaseHistory({
+                    history: [],
+                    error: 'Release history and support policy are unavailable.',
+                  }),
+                ),
+            ]
+          : []),
+        ...(visibleResources.current.includes('leaderboard')
+          ? [
+              api
+                .read<unknown>('leaderboard')
+                .then((data) => {
+                  setLeaders(parseLeaderboard(data));
+                  setLeaderError('');
+                })
+                .catch(() => setLeaderError('Rankings could not refresh.')),
+            ]
+          : []),
+      ]);
+    },
+    [readCooling],
+  );
   const refresh = useCallback(async () => {
-    if (!api) return;
-    await Promise.allSettled([
-      api.read<Snapshot>('state').then(setState),
-      api
-        .read<CloudData>('cloud')
-        .then(setCloud)
-        .catch(() =>
-          setCloud((previous) => ({
-            linked: previous?.linked || false,
-            observed_at: previous?.observed_at || 0,
-            machines: previous?.machines || [],
-            ...previous,
-            error: 'Account data is unavailable. Showing the last observation.',
-          })),
-        ),
-      api
-        .read<NetworkData>('network')
-        .then(setNetwork)
-        .catch(() =>
-          setNetwork((previous) => ({ ...previous, error: 'Network statistics are unavailable.' })),
-        ),
-      ...(coolingVisible.current ? [readCooling()] : []),
-      api
-        .read<ReleaseData>('release')
-        .then(setRelease)
-        .catch(() => setRelease({ error: 'Release information is unavailable.' })),
-      api
-        .read<ReleaseHistory>('release-history')
-        .then((value) => setReleaseHistory(parseReleaseHistory(value)))
-        .catch(() =>
-          setReleaseHistory({
-            history: [],
-            error: 'Release history and support policy are unavailable.',
-          }),
-        ),
-      api
-        .read<unknown>('leaderboard')
-        .then((data) => {
-          setLeaders(parseLeaderboard(data));
-          setLeaderError('');
-        })
-        .catch(() => setLeaderError('Rankings could not refresh.')),
-    ]);
-  }, [readCooling]);
+    await Promise.allSettled([api?.read<Snapshot>('state').then(observeState), refreshVisible()]);
+  }, [refreshVisible, observeState]);
   useEffect(() => {
     if (!api) {
       setStatus({
@@ -105,7 +164,7 @@ export function useBackend(route: Route = 'home', machine: MachineSelection = nu
       return;
     }
     api.status().then(setStatus);
-    const offState = api.onState(setState);
+    const offState = api.onState(observeState);
     const offStatus = api.onStatus(setStatus);
     return () => {
       offState();
@@ -115,11 +174,14 @@ export function useBackend(route: Route = 'home', machine: MachineSelection = nu
   useEffect(() => {
     if (status.state !== 'ready') return;
     void refresh();
-    const timer = setInterval(() => {
-      if (!document.hidden) void refresh();
-    }, 30_000);
-    return () => clearInterval(timer);
   }, [status.state, refresh]);
+  useEffect(() => {
+    if (status.state === 'ready') void refreshVisible(false);
+  }, [route, refreshVisible]);
+  useEffect(() => {
+    if (status.state !== 'ready' || document.hidden || !state?.resource_revision) return;
+    void refreshVisible();
+  }, [state?.resource_revision, state?.account_revision]);
   const coolingShown = showsCooling(route, machine);
   useEffect(() => {
     coolingVisible.current = coolingShown;
@@ -134,25 +196,16 @@ export function useBackend(route: Route = 'home', machine: MachineSelection = nu
       setBusy(true);
       setError('');
       try {
-        const operation = await api.act(action);
         if (wait) {
-          const deadline = Date.now() + 40 * 60_000;
-          while (Date.now() < deadline) {
-            const latest = await api.read<Snapshot>('state');
-            setState(latest);
-            const current = latest.operations.find((item) => item.id === operation.id);
-            if (current && current.state !== 'running') {
-              if (current.state !== 'succeeded') throw new Error(current.message);
-              await refresh();
-              return true;
-            }
-            await new Promise((resolve) => setTimeout(resolve, 750));
-          }
-          throw new Error(
-            'The operation is taking longer than expected. Check its status before retrying.',
-          );
+          await submitAction(api, action, {
+            timeoutMs: 40 * 60_000,
+            timeout:
+              'The operation is taking longer than expected. Check its status before retrying.',
+          });
+        } else {
+          await api.act(action);
         }
-        await refresh();
+        await refreshVisible();
         return true;
       } catch (error) {
         setError(error instanceof Error ? error.message : 'The action failed');
@@ -161,7 +214,7 @@ export function useBackend(route: Route = 'home', machine: MachineSelection = nu
         setBusy(false);
       }
     },
-    [refresh],
+    [refreshVisible],
   );
   return {
     status,

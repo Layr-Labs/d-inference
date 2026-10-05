@@ -39,7 +39,11 @@ export function Stats({
         {view === 'performance' ? (
           <Performance backend={backend} />
         ) : (
-          <RequestActivity models={backend.state!.models} />
+          <RequestActivity
+            revision={backend.state!.resource_revision}
+            models={backend.state!.models}
+            scope={`${backend.state!.installation_id}:${backend.state!.account_revision ?? 'legacy'}`}
+          />
         )}
       </TabPanel>
     </div>

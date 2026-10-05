@@ -1,4 +1,4 @@
-import type { ActivitySample, Snapshot } from '../../../shared/contracts';
+import type { ActivitySample, Snapshot, RequestRecord } from '../../../shared/contracts';
 export interface TrafficPoint {
   at: number;
   requests: number;
@@ -42,6 +42,30 @@ export function observedTraffic(state: Snapshot): TrafficPoint[] {
       },
     ];
   });
+}
+/** Settlement times are reported by the API; no start time or decode speed is inferred. */
+export function recordedTraffic(records: RequestRecord[]): TrafficPoint[] {
+  const interval = 1800;
+  const buckets = new Map<number, TrafficPoint>();
+  for (const record of records) {
+    const time = record.settled_at ?? record.started_at!;
+    const at = Math.floor(time / interval) * interval;
+    const point = buckets.get(at) ?? { at, requests: 0, tokens: 0, input: 0 };
+    point.requests++;
+    point.tokens += record.output_tokens;
+    point.input! += record.input_tokens;
+    buckets.set(at, point);
+  }
+  if (!buckets.size) return [];
+  const times = [...buckets.keys()];
+  const first = Math.min(...times),
+    last = Math.max(...times);
+  const points: TrafficPoint[] = [];
+  // Bound the view if a future runtime returns a longer journal.
+  for (let at = Math.max(first, last - interval * 47); at <= last; at += interval) {
+    points.push(buckets.get(at) ?? { at, requests: 0, tokens: 0, input: 0 });
+  }
+  return points;
 }
 export function activityFresh(state: Snapshot, now: number) {
   return (

@@ -35,12 +35,14 @@ class Catalog(http.server.BaseHTTPRequestHandler):
             pass
 
     def do_GET(self):
-        if self.path == "/v1/releases/desktop":
+        self.server.reads.append(self.path)
+        assert self.path not in ("/v1/releases/desktop", "/v1/provider/desktop"), "obsolete dashboard request"
+        if self.path == "/v1/releases/latest":
             assert self.headers.get("Authorization") is None
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(b'{"minimum_provider_version":"0.9.15","history":[{"version":"0.9.16","active":true,"notes":"Faster recovery","published_at":"2026-10-02T00:00:00Z"}]}')
+            self.wfile.write(b'{"version":"0.9.16","active":true,"changelog":"Faster recovery","created_at":"2026-10-02T00:00:00Z"}')
             return
         if self.path in ("/v1/stats", "/v1/leaderboard?metric=earnings&window=24h"):
             assert self.headers.get("Authorization") is None
@@ -54,14 +56,13 @@ class Catalog(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps(payload).encode())
             return
-        if self.path.startswith("/v1/provider/desktop/insights?window="):
-            assert self.headers.get("Authorization") == "Bearer fixture-provider-token"
+        if self.path == "/v1/provider/account-earnings?limit=1000":
+            assert self.headers.get("Authorization") in ("Bearer fixture-provider-token", "Bearer fixture-provider-token-2")
             if self.server.hold_insights:
                 self.server.insights_started.set()
                 self.server.insights_release.wait(10)
-            window = self.path.split("window=")[1]
-            assert window in ("7d", "30d")
-            body = json.dumps({"window": window, "lifetime": {"completion_tokens": "9007199254740993"}}).encode()
+            body = json.dumps({"account_id":"fixture", "total_micro_usd":0, "count":1, "available_balance_micro_usd":0,
+                "earnings":[{"id":1,"provider_key":"fixture-key","provider_id":"fixture-mac","model":"fixture-model","amount_micro_usd":0,"prompt_tokens":0,"completion_tokens":9007199254740993,"created_at":"2026-10-05T00:00:00Z"}]}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -71,6 +72,12 @@ class Catalog(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(b'{"models":[]}')
+
+    def do_DELETE(self):
+        assert self.path == "/v1/device/token"
+        assert self.headers.get("Authorization", "").startswith("Bearer darkbloom-at-")
+        self.send_response(204)
+        self.end_headers()
 
     def log_message(self, *_):
         pass
@@ -116,6 +123,7 @@ def main():
     parser.add_argument("--hold", action="store_true", help="Keep the isolated API available for a manual Electron bridge check")
     args = parser.parse_args()
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Catalog)
+    server.reads = []
     server.link_started = threading.Event()
     server.link_release = threading.Event()
     server.hold_insights = False
@@ -174,8 +182,10 @@ idle_timeout_mins = 60
                 assert code == 200 and snapshot["machine"]["name"] == "Desktop fixture", snapshot
                 assert snapshot["state"] == "stopped" and not snapshot["linked"]
                 code, release_history = request("release-history")
-                assert code == 200 and release_history["minimum_provider_version"] == "0.9.15", release_history
+                assert code == 200 and "minimum_provider_version" not in release_history, release_history
                 assert release_history["history"][0]["notes"] == "Faster recovery", release_history
+                assert request("release")[1]["version"] == "0.9.16"
+                assert server.reads.count("/v1/releases/latest") == 1, server.reads
                 code, network = request("network")
                 assert code == 200 and network["total_tokens"] == "9007199254740993", network
                 assert network["provider_regions"][0]["region"] == "Tokyo", network
@@ -194,6 +204,7 @@ idle_timeout_mins = 60
                     code, insights = request(resource)
                     assert code == 200 and insights["window"] == window, insights
                     assert insights["lifetime"]["completion_tokens"] == "9007199254740993"
+                (root / "auth").write_text("fixture-provider-token-2")
                 server.hold_insights = True
                 inflight_result = []
                 inflight = threading.Thread(target=lambda: inflight_result.append(request("insights-week")))
@@ -206,6 +217,25 @@ idle_timeout_mins = 60
                 server.hold_insights = False
                 assert request()[1]["account_revision"] != linked_snapshot["account_revision"]
                 assert request("insights-week")[0] == 401
+                # Native dashboard sign-out must leave provider linkage intact.
+                (root / "auth").write_text("fixture-provider-token")
+                base = f"http://127.0.0.1:{server.server_port}"
+                account_file = root / "desktop" / ("account-" + hashlib.sha256(base.encode()).hexdigest() + ".json")
+                account_file.write_text(json.dumps({"base":base,"token":"darkbloom-at-" + "a" * 64,"expiresAt":time.time()+86400-978307200}))
+                account_file.chmod(0o600)
+                assert request()[1]["account"]["signed_in"] is True
+                code, signout = request("actions", {"id":str(uuid.uuid4()),"action":"account-signout"})
+                assert code == 202, signout
+                for _ in range(40):
+                    snapshot = request()[1]
+                    if snapshot["operations"][0]["state"] != "running": break
+                    time.sleep(.1)
+                assert snapshot["operations"][0]["state"] == "succeeded", snapshot
+                assert snapshot["linked"] and not snapshot["account"]["signed_in"], snapshot
+                assert (root / "auth").read_text() == "fixture-provider-token"
+                assert not account_file.exists()
+                assert request("insights-week")[0] == 401
+                (root / "auth").unlink()
                 code, rejected = request("actions", {"id": str(uuid.uuid4()), "action": "start", "models": ["--force"]})
                 assert code == 400 and rejected["error"] == "Invalid model ID", rejected
                 code, malformed = request("actions", {"action": "start"})

@@ -89,12 +89,14 @@ private struct DeviceCodeResponse: Decodable, Sendable {
     let verification_uri: String
     let expires_in: Int
     let interval: Int
+    let purpose: String?
 }
 
 /// Response from POST /v1/device/token
 private struct DeviceTokenResponse: Decodable, Sendable {
     let status: String?
     let token: String?
+    let purpose: String?
     let error: TokenError?
 
     struct TokenError: Decodable, Sendable {
@@ -158,10 +160,11 @@ public func coordinatorHTTPBase(_ wsURL: String) -> String {
 public func performDeviceCodeLogin(
     coordinatorURL: String,
     onDisplayCode: @Sendable (String, String, Int) -> Void,
-    onPollTick: (@Sendable () -> Void)? = nil
+    onPollTick: (@Sendable () -> Void)? = nil,
+    purpose: String? = nil
 ) async throws -> String {
     // Check if already logged in.
-    if let existingToken = AuthTokenStore.load() {
+    if purpose == nil, let existingToken = AuthTokenStore.load() {
         let prefix = String(existingToken.prefix(min(20, existingToken.count)))
         throw DeviceAuthError.alreadyLoggedIn(tokenPrefix: prefix)
     }
@@ -173,6 +176,11 @@ public func performDeviceCodeLogin(
     var codeRequest = URLRequest(url: codeURL)
     codeRequest.httpMethod = "POST"
     codeRequest.timeoutInterval = 10
+    if let purpose {
+      guard purpose == "desktop_account" else { throw DeviceAuthError.invalidResponse("unsupported authorization purpose") }
+      codeRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+      codeRequest.httpBody = try JSONSerialization.data(withJSONObject: ["purpose": purpose])
+    }
 
     let codeData: Data
     let codeResponse: URLResponse
@@ -197,6 +205,9 @@ public func performDeviceCodeLogin(
         throw DeviceAuthError.invalidResponse("could not decode device code response: \(error)")
     }
 
+    if let purpose, dc.purpose != purpose {
+      throw DeviceAuthError.authorizationFailed("This coordinator does not support desktop account sign-in yet.")
+    }
     // Display the code to the user.
     onDisplayCode(dc.user_code, dc.verification_uri, dc.expires_in)
 
@@ -253,7 +264,9 @@ public func performDeviceCodeLogin(
             guard let token = tokenResp.token, !token.isEmpty else {
                 throw DeviceAuthError.invalidResponse("authorized but no token in response")
             }
-            try AuthTokenStore.save(token)
+            if let purpose {
+              guard tokenResp.purpose == purpose, token.hasPrefix("darkbloom-at-") else { throw DeviceAuthError.invalidResponse("wrong account token scope") }
+            } else { try AuthTokenStore.save(token) }
             return token
 
         default:

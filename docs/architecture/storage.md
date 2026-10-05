@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-05
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -415,3 +415,15 @@ An unchanged decision can age outside the admin endpoint's recent-events window
 while the current tick summary remains fresh. Proposals are not dispatched
 commands, residency changes or live capacity evidence; see the
 [API contract](../reference/api-contracts.md#experimental-model-autopilot).
+
+## Desktop account grants
+
+The existing `device_codes` and `provider_tokens` tables also store desktop
+account grants. A purpose prefix binds the opaque grant to dashboard consent;
+`ConsumeDeviceCode` atomically moves an approved, unexpired grant to `consumed`.
+The token's distinct prefix, label, and creation time enforce read-only scope and
+30-day expiry before cached data is returned. Provider tokens retain their
+existing behavior; no table or column migration is introduced
+(`coordinator/store/memory.go`, `ConsumeDeviceCode`;
+`coordinator/store/postgres.go`, `ConsumeDeviceCode`;
+`coordinator/api/desktop_account_auth.go`, `desktopAccountToken`).

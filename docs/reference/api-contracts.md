@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-05
 
 The complete public HTTP surface of the coordinator, derived from the 120 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -277,11 +277,39 @@ as inference budgets.
 
 Lifecycle semantics: [`../consumer/authentication.md`](../consumer/authentication.md).
 
-### Device-code flow (3)
+### Desktop account sessions
+
+`POST /v1/device/code` accepts optional `{"purpose":"desktop_account"}`;
+normal provider login remains the default. The response echoes the purpose and
+uses `/link?purpose=desktop_account`. Approval must send the matching purpose:
+provider consent cannot authorize dashboard access. The server encodes purpose
+in the opaque device code; no schema migration is required (`handleDeviceCode`,
+`handleDeviceApprove` in `coordinator/api/device_auth.go`).
+
+A desktop grant exchanges once for a `darkbloom-at-` read-only token at
+`POST /v1/device/token`, with `expires_in=2592000`. Concurrent exchanges consume
+the approved grant atomically; only one token is returned. Tokens are stored as
+hashes in the existing token store and expire 30 days after issuance. Only
+`GET /v1/me/providers`, `GET /v1/me/summary`, and
+`GET /v1/provider/account-earnings` accept this scope. Inference, payments,
+provider registration, device approval, and account mutations reject it.
+`DELETE /v1/device/token` revokes only this dashboard session and returns `204`;
+invalid/revoked/expired credentials return `401` (`desktopAccountToken`,
+`requireAccountRead`, `revokeDesktopAccountToken` in
+`coordinator/api/desktop_account_auth.go`). Existing Privy and provider-token
+access retains its prior scope.
+
+`GET /v1/provider/account-earnings?window=7d|30d` returns the existing exact
+insights shape, aggregated over the full calendar window rather than the recent
+row limit. Invalid windows return `400`. Omitting `window` preserves the existing
+ledger response and `limit` behavior (`handleAccountEarnings`, `handleDesktopInsights`).
+
+### Device-code flow (4)
 
 | Method | Path | Handler | Auth | Limiter | Notes |
 |---|---|---|---|---|---|
 | POST | `/v1/device/code` | `handleDeviceCode` (`coordinator/api/device_auth.go`) | `—` | — | 200 `{device_code, user_code, verification_uri, expires_in, interval}` |
+| DELETE | `/v1/device/token` | `revokeDesktopAccountToken` (`coordinator/api/desktop_account_auth.go`) | desktop account | — | 204; dashboard session only |
 | POST | `/v1/device/token` | `handleDeviceToken` (`coordinator/api/device_auth.go`) | `—` | — | Body `{"device_code"}` (400 `invalid_request` if missing). 200 `{status: "authorization_pending"}` until approved; 200 `{status: "authorized", token, account_id}` once approved; 404 `invalid_grant`; 410 `expired_token` |
 | POST | `/v1/device/approve` | `handleDeviceApprove` (`coordinator/api/device_auth.go`) | `privy` | `fin` | Body `{"user_code"}`. 404 `invalid_code`, 409 `already_used`, 410 `expired_code` |
 

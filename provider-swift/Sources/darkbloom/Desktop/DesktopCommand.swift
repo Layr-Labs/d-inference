@@ -10,7 +10,7 @@ struct Desktop: AsyncParsableCommand {
     abstract: "Serve the authenticated desktop control API.",
     subcommands: [
       Serve.self, Ensure.self, StartLocal.self, ConfigureCooling.self, StopLocal.self,
-      RestartLocal.self,
+      RestartLocal.self, Login.self, Logout.self,
     ])
 
   struct Serve: AsyncParsableCommand {
@@ -94,23 +94,15 @@ struct Desktop: AsyncParsableCommand {
     @Option var speed: Int = 70
     @Option var temperature: Int = 50
     mutating func run() async throws {
-      guard (30...100).contains(speed), (40...90).contains(temperature) else {
+      guard (60...90).contains(speed), (40...90).contains(temperature) else {
         throw ValidationError("Invalid fan policy")
       }
-      let executable = try FanServiceManager().currentExecutableURL()
-      // Verify the existing provisioned CLI/helper before asking macOS for administrator authorization.
-      _ = try FanServiceManager().bundledHelperURL()
+      let executable = try DesktopFanRuntime.resolve()
       let command =
         "/usr/bin/env SUDO_UID=\(getuid()) SUDO_GID=\(getgid()) \(Self.quote(executable.path)) fan \(enabled ? "enable --speed \(speed) --temperature \(temperature)" : "disable")"
       let script = "do shell script \(Self.appleString(command)) with administrator privileges"
-      let process = Process()
-      process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-      process.arguments = ["-e", script]
-      try process.run()
-      process.waitUntilExit()
-      guard process.terminationStatus == 0 else {
-        throw ValidationError("Cooling authorization cancelled or failed")
-      }
+      let output = try await DesktopCoolingAuthorization.perform(script: script)
+      if !output.isEmpty { print(output.trimmingCharacters(in: .whitespacesAndNewlines)) }
     }
     static func quote(_ value: String) -> String {
       "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"

@@ -16,9 +16,9 @@ export interface ChipScene {
   dpr: number;
 }
 export interface RenderFrame {
-  /** The simulation with measured load already overlaid where it is live. */
+  /** Live allocations and counts, or an explicit synthetic preview. */
   workload: WorkloadFrame;
-  /** Eased measurements for parts the workload cannot express, or null while simulated. */
+  /** Fresh eased hardware measurements, or null when unavailable. */
   hardware: HardwareLight | null;
   /** False under prefers-reduced-motion: draw steady levels, no sweeps, pulses or shimmer. */
   motion: boolean;

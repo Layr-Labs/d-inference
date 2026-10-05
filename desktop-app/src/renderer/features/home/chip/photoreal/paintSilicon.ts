@@ -3,7 +3,7 @@ import type { Block, Tile } from '../layout';
 import { css, mix, rgba } from '../palette';
 import { noise } from '../random';
 import { longAxis, snap, texture, type Brush } from './brush';
-import { bandParts, engineParts, tileParts, type Part, type PartRole } from './dieParts';
+import { bandParts, tileParts, type Part, type PartRole } from './dieParts';
 import type { Silicon } from './materials';
 import type { Textures } from './textures';
 
@@ -56,8 +56,8 @@ export function paintTile(brush: Brush, tile: Tile) {
   texture(brush, tile, tex.logic, 0.3);
   for (const part of tileParts(tile)) paintPart(brush, part, anchor);
   const variation = (noise(tile.x * 0.173 + tile.y * 0.311 + tile.die * 7.7) - 0.5) * 0.07;
-  // Binned cores and the idle Neural Engine read slightly darker than powered logic.
-  const dim = tile.filler ? 0.22 : tile.kind === 'neural' ? 0.1 : 0;
+  // Binned cores read slightly darker than powered logic.
+  const dim = tile.filler ? 0.22 : 0;
   shade(brush, tile, variation - dim);
   outline(brush, tile, 'rgba(0,0,0,0.3)');
 }
@@ -65,11 +65,6 @@ export function paintTile(brush: Brush, tile: Tile) {
 export function paintBlock(brush: Brush, block: Block) {
   if (block.kind === 'interface') return paintPhy(brush, block);
   for (const part of bandParts(block)) paintPart(brush, part);
-  if (block.kind === 'media' || block.kind === 'display' || block.kind === 'io') {
-    for (const part of engineParts(block)) paintPart(brush, part);
-    outline(brush, block, 'rgba(0,0,0,0.4)');
-    return;
-  }
   shade(brush, block.body, -0.1);
 }
 

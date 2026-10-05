@@ -79,6 +79,9 @@ export interface Snapshot {
   installation_id: string;
   linked: boolean;
   account_revision?: string;
+  resource_revision?: string;
+  capabilities?: string[];
+  account?: { signed_in: boolean; expires_at?: number; legacy_data?: boolean };
   state: 'stopped' | 'starting' | 'running' | 'draining' | 'stale';
   readiness: string;
   machine: Machine;
@@ -88,6 +91,20 @@ export interface Snapshot {
   activity: {
     requests?: string;
     tokens?: string;
+    /** All prompt tokens, including cached input; output already includes reasoning. */
+    prompt_tokens?: string | null;
+    usage_gaps?: string | null;
+    processed_tokens?: string | null;
+    processed_input_tokens?: string | null;
+    processed_output_tokens?: string | null;
+    cached_input_tokens?: string | null;
+    reasoning_tokens?: string | null;
+    counted_requests?: string | null;
+    pending_usage_requests?: string | null;
+    usage_source?: 'local' | 'settled-history';
+    usage_observed_at?: number;
+    /** Settled earnings for this provider session only, when the server supplies them. */
+    earnings_micro_usd?: string | null;
     started_at?: number;
     samples: ActivitySample[];
     sampled_at?: number;
@@ -123,9 +140,14 @@ export interface CloudData {
   observed_at: number;
   lifetime_micro_usd?: string;
   week_micro_usd?: string;
+  /** False when the returned records cover only part of the requested week. */
+  earnings_complete?: boolean;
+  earnings_since?: number;
+  settled_records?: string;
   balance_micro_usd?: string;
   machines: Machine[];
   local_earnings_micro_usd?: string;
+  minimum_provider_version?: string;
   // This Mac's settled earnings including base rewards: all time, and the rolling past 24 hours.
   local_lifetime_micro_usd?: string;
   local_day_micro_usd?: string;
@@ -134,12 +156,14 @@ export interface CloudData {
 // Request metadata only: history never carries prompt or response content.
 export interface RequestRecord {
   id: string;
-  started_at: number;
+  started_at?: number;
+  settled_at?: number;
+  completed_at?: number;
   model: string;
   input_tokens: number;
   output_tokens: number;
-  duration_ms: number;
-  outcome: 'completed' | 'cancelled' | 'failed';
+  duration_ms?: number;
+  outcome: 'completed' | 'cancelled' | 'failed' | 'settled';
   // Omitted until the request settles.
   earnings_micro_usd?: string;
 }
@@ -162,6 +186,9 @@ export interface CoolingData {
   mode: string;
   temperature?: number;
   fans: { name: string; rpm: number; max_rpm: number }[];
+  control_available?: boolean;
+  speed?: number;
+  threshold?: number;
   error?: string;
 }
 export interface ReleaseData {
@@ -185,7 +212,17 @@ export interface Leader {
 }
 export type Action =
   | { action: 'start' | 'switch'; models: string[]; local?: boolean; endpoint?: boolean }
-  | { action: 'stop' | 'restart' | 'update' | 'diagnose' | 'link' | 'unlink' }
+  | {
+      action:
+        | 'stop'
+        | 'restart'
+        | 'update'
+        | 'diagnose'
+        | 'link'
+        | 'unlink'
+        | 'account-signin'
+        | 'account-signout';
+    }
   | { action: 'download' | 'remove'; model: string }
   | { action: 'cancel'; operation: string }
   | {

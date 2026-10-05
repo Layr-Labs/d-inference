@@ -5,6 +5,7 @@ import type { LitFrame } from '../hardware/drive';
 import type { MemoryMap } from '../memoryMap';
 import { hashString } from '../random';
 import { createWorkloadEngine } from '../workload/engine';
+import { measuredFrame } from '../workload/measured';
 import { providerUp, readLive, type LiveReading, type LiveSample } from '../workload/live';
 import { IDLE_INPUTS, type WorkloadInputs, type WorkloadPhase } from '../workload/types';
 import type { HardwareFeed } from './useHardwareFeed';
@@ -39,36 +40,37 @@ const summarize = ({ workload: frame, hardware }: LitFrame): ChipStats => ({
 const sameStats = (a: ChipStats, b: ChipStats) =>
   (Object.keys(a) as (keyof ChipStats)[]).every((key) => a[key] === b[key]);
 
-/**
- * Owns the workload engine: synthetic arrivals in preview, otherwise targets read from runtime
- * snapshots. `advance` steps it from the frame loop and overlays the measured hardware; stats
- * refresh a few times a second.
- */
+/** Drives live allocation/count frames and hardware measurements; simulations exist only in preview. */
 export function useChipWorkload({
   state,
   preview,
   anatomy,
   memory,
   hardware,
+  providerGb,
 }: {
   state: Snapshot;
   preview: boolean;
   anatomy: ChipAnatomy;
   memory: MemoryMap;
   hardware: HardwareFeed;
+  providerGb: number | null;
 }) {
   const modelIds = useMemo(() => memory.models.map((model) => model.id), [memory]);
   const engine = useMemo(
     () =>
-      createWorkloadEngine({
-        seed: hashString(`${anatomy.name}:${preview ? 'preview' : 'live'}`),
-        anatomy,
-        models: modelIds.length,
-        warmup: preview ? PREVIEW_WARMUP : 0,
-      }),
+      preview
+        ? createWorkloadEngine({
+            seed: hashString(`${anatomy.name}:preview`),
+            anatomy,
+            models: modelIds.length,
+            warmup: PREVIEW_WARMUP,
+          })
+        : null,
     [anatomy, modelIds.length, preview],
   );
   const sample = useRef<LiveSample | null>(null);
+  const liveReading = useRef<LiveReading>({ inputs: IDLE_INPUTS, sample: null, fresh: false });
   const [reading, setReading] = useState<LiveReading>({
     inputs: IDLE_INPUTS,
     sample: null,
@@ -82,6 +84,7 @@ export function useChipWorkload({
   useEffect(() => {
     const next = readLive(state, modelIds, sample.current, Date.now() / 1000);
     sample.current = next.sample;
+    liveReading.current = next;
     setReading(next);
   }, [state, modelIds, clock]);
 
@@ -93,7 +96,12 @@ export function useChipWorkload({
       : reading.inputs;
   }, [preview, powered, reading]);
 
-  const [stats, setStats] = useState(() => summarize({ workload: engine.frame, hardware: null }));
+  const [stats, setStats] = useState(() =>
+    summarize({
+      workload: engine?.frame ?? measuredFrame(reading, memory, providerGb),
+      hardware: null,
+    }),
+  );
   const sinceStats = useRef(0);
   const advance = useCallback(
     (elapsed: number) => {
@@ -102,7 +110,9 @@ export function useChipWorkload({
       const idle = preview && measured && !measured.serving && inputs.current.mode === 'synthetic';
       const lit = hardware.drive.step(
         elapsed,
-        engine.step(elapsed, idle ? PREVIEW_IDLE : inputs.current),
+        preview
+          ? engine!.step(elapsed, idle ? PREVIEW_IDLE : inputs.current)
+          : measuredFrame(liveReading.current, memory, providerGb),
         measured,
       );
       sinceStats.current += elapsed;
@@ -113,7 +123,7 @@ export function useChipWorkload({
       }
       return lit;
     },
-    [engine, hardware, preview],
+    [engine, hardware, preview, memory, providerGb],
   );
   return { advance, stats, reading, powered };
 }

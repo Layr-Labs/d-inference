@@ -3,6 +3,8 @@ import type { NativeModel, Operation } from '../../../shared/contracts';
 import { Button } from '../../components/UI';
 import { modelFacts } from '../../models/facts';
 import { ModelGlyph } from './ModelGlyph';
+import { ModelEarningsAmount } from './ModelEarnings';
+import type { ModelEarnings } from './earnings';
 import { poolLabels, type PoolState } from './pool';
 import styles from './autopilot.module.css';
 
@@ -28,6 +30,7 @@ function Progress({ operation }: { operation?: Operation }) {
 
 export function PoolRow({
   model,
+  earnings,
   state,
   download,
   working,
@@ -39,6 +42,7 @@ export function PoolRow({
   onRemove,
 }: {
   model: NativeModel;
+  earnings: ModelEarnings;
   state: PoolState;
   download?: Operation;
   working?: string;
@@ -68,6 +72,7 @@ export function PoolRow({
         </small>
         {pinned && <small className={styles.hint}>Unpin it to remove it from this Mac.</small>}
       </div>
+      <ModelEarningsAmount model={model.id} earnings={earnings} />
       <div className="model-actions">
         {working && state !== 'downloading' ? (
           <span className={styles.working} role="status">

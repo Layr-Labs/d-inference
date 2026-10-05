@@ -12,6 +12,9 @@ import os
 public final class AtomicProviderStats: Sendable {
     private let _requestsServed = ManagedAtomic<UInt64>(0)
     private let _tokensGenerated = ManagedAtomic<UInt64>(0)
+    private let _promptTokensProcessed = ManagedAtomic<UInt64>(0)
+    private let _cachedInputTokens = ManagedAtomic<UInt64>(0)
+    private let _reasoningTokens = ManagedAtomic<UInt64>(0)
     private let _cancellationsReceived = ManagedAtomic<UInt64>(0)
     private let _cancellationsBeforeOutput = ManagedAtomic<UInt64>(0)
     private let _cancellationsPartialComplete = ManagedAtomic<UInt64>(0)
@@ -116,6 +119,18 @@ public final class AtomicProviderStats: Sendable {
     public func incrementRequestsServed() {
         _requestsServed.add(1)
     }
+
+    /// Includes cached prompt tokens; output usage already contains reasoning.
+    public var promptTokensProcessed: UInt64 { _promptTokensProcessed.load() }
+
+    public func addPromptTokensProcessed(_ count: UInt64) {
+        _promptTokensProcessed.add(count)
+    }
+
+    public var cachedInputTokens: UInt64 { _cachedInputTokens.load() }
+    public var reasoningTokens: UInt64 { _reasoningTokens.load() }
+    public func addCachedInputTokens(_ count: UInt64) { _cachedInputTokens.add(count) }
+    public func addReasoningTokens(_ count: UInt64) { _reasoningTokens.add(count) }
 
     public func addTokensGenerated(_ count: UInt64) {
         _tokensGenerated.add(count)

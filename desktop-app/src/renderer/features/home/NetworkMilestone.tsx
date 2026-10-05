@@ -7,7 +7,7 @@ const CELLS = 24;
 const STATUS_LABEL = {
   connecting: 'Connecting',
   live: 'Live',
-  stale: 'Last known, reconnecting',
+  stale: 'Reconnecting',
   unavailable: 'Unavailable',
 };
 
@@ -19,14 +19,8 @@ export function NetworkMilestone({ network }: { network?: NetworkData }) {
   return (
     <section className={styles.strip} aria-label="Collective network progress">
       <div className={styles.total}>
-        <strong>{total === undefined ? 'Network progress' : compact(total)}</strong>
-        <span>
-          {total !== undefined
-            ? 'tokens processed by the network'
-            : status === 'connecting'
-              ? 'Connecting to public network statistics'
-              : 'Statistics unavailable. Retrying automatically.'}
-        </span>
+        <strong>{total === undefined ? '—' : compact(total)}</strong>
+        <span>Network tokens</span>
       </div>
       {total !== undefined && (
         <dl className={styles.facts}>
@@ -43,9 +37,8 @@ export function NetworkMilestone({ network }: { network?: NetworkData }) {
         </dl>
       )}
       <div className={styles.goal}>
-        <div className={styles.goalLabel}>
+        <div className={styles.goalLabel} title="Proposed network milestone">
           <span>{milestone ? `Next milestone ${compact(milestone.next)}` : 'Next milestone'}</span>
-          <small>Proposed</small>
         </div>
         <div
           className={styles.cells}

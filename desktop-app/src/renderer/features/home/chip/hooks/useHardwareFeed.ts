@@ -15,7 +15,11 @@ export interface HardwareFeed {
  * without re-rendering per frame. Measurements drive the chip only while they are fresh and
  * the drawing is this Mac's reported topology.
  */
-export function useHardwareFeed(load: HardwareLoadState, anatomy: ChipAnatomy) {
+export function useHardwareFeed(
+  load: HardwareLoadState,
+  anatomy: ChipAnatomy,
+  providerGb: number | null = null,
+) {
   const live = anatomy.source === 'topology' && load.fresh && load.sample !== null;
   const targets = useRef<HardwareTargets | null>(null),
     peak = useRef(0);
@@ -25,8 +29,8 @@ export function useHardwareFeed(load: HardwareLoadState, anatomy: ChipAnatomy) {
       return;
     }
     peak.current = sessionPeakPower(peak.current, load.sample, anatomy);
-    targets.current = hardwareTargets(load.sample, anatomy, peak.current);
-  }, [live, load.sample, anatomy]);
+    targets.current = hardwareTargets(load.sample, anatomy, peak.current, providerGb);
+  }, [live, load.sample, anatomy, providerGb]);
   const feed = useMemo<HardwareFeed>(
     () => ({ current: () => targets.current, drive: createHardwareDrive() }),
     [],

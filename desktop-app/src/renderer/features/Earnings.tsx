@@ -21,14 +21,16 @@ export function Earnings({ backend }: { backend: BackendState }) {
     const rows = [
       'date_utc,inference_micro_usd,base_reward_micro_usd,settled_requests,input_tokens,output_tokens',
       ...data.days.map((d) =>
-        [
-          d.id,
-          d.work_micro_usd,
-          d.base_reward_micro_usd,
-          d.jobs,
-          d.prompt_tokens,
-          d.completion_tokens,
-        ].join(','),
+        d.available === false
+          ? `${d.id},,,,,`
+          : [
+              d.id,
+              d.work_micro_usd,
+              d.base_reward_micro_usd,
+              d.jobs,
+              d.prompt_tokens,
+              d.completion_tokens,
+            ].join(','),
       ),
     ];
     try {
@@ -79,7 +81,15 @@ export function Earnings({ backend }: { backend: BackendState }) {
           )}
           <div className={styles.metrics}>
             <div>
-              <span>Earned in this period</span>
+              <span
+                title={
+                  !data.history_complete
+                    ? `Recorded history since ${new Date(data.since).toLocaleString()}`
+                    : undefined
+                }
+              >
+                {data.history_complete ? 'Earned in this period' : 'Recorded earnings'}
+              </span>
               <strong>{money(earned(data.totals))}</strong>
               <small>
                 {money(data.totals.work_micro_usd)} inference +{' '}
@@ -119,9 +129,11 @@ export function Earnings({ backend }: { backend: BackendState }) {
               {copied ? <Check size={14} /> : <Copy size={14} />} {copied ? 'Copied' : 'Copy CSV'}
             </button>
           </div>
-          <EarningsTimeline days={data.days} metric={metric} />
+          <EarningsTimeline days={data.days} metric={metric} partial={!data.history_complete} />
           <EarningsBreakdown data={data} metric={metric} />
-          <TokenMilestones tokens={data.lifetime.completion_tokens} />
+          {data.lifetime.completion_tokens !== null && (
+            <TokenMilestones tokens={data.lifetime.completion_tokens} />
+          )}
           <p className={styles.note}>
             Settled through {new Date(data.as_of).toLocaleString()}. Calendar days are UTC; today is
             partial. Balances and withdrawals remain in the console.

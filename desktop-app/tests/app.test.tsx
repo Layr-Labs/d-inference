@@ -113,9 +113,7 @@ describe('desktop operator journeys', () => {
     const row = screen.getByRole('heading', { name: 'Qwen 3.6 35B A3B' }).closest('article')!;
     expect(within(row).getByText('Not downloaded')).toBeVisible();
     fireEvent.click(within(row).getByRole('button', { name: /Download/ }));
-    expect(
-      await within(row).findByRole('progressbar', { name: 'Download progress' }),
-    ).toBeVisible();
+    await within(row).findByRole('progressbar', { name: 'Download progress' });
     expect(await within(row).findByText('In pool', {}, { timeout: 10_000 })).toBeVisible();
   });
   it('does not overwrite a concurrent CLI settings change with a stale draft', async () => {

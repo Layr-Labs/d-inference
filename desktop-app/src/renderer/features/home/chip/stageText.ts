@@ -9,12 +9,18 @@ import { providerUp, type LiveReading } from './workload/live';
 
 const MODELS_SHOWN = 2;
 
-/** What drives the drawing: fresh measurements from this Mac, or the simulation. */
-function modeText(provider: Snapshot['state'], measured: boolean) {
+/** What drives the drawing: fresh measurements from this Mac, or an explicit development preview. */
+function modeText(
+  provider: Snapshot['state'],
+  measured: boolean,
+  preview: boolean,
+  fresh: boolean,
+) {
   if (measured) return 'Live from this Mac';
   if (provider === 'stopped') return 'Provider stopped';
   if (provider === 'starting') return 'Provider starting';
-  return 'Simulated activity';
+  if (preview) return 'Simulated activity';
+  return fresh ? 'Live from this Mac' : 'Waiting for live activity';
 }
 
 /**
@@ -53,15 +59,15 @@ export function stageText({
   const machine = measured ? ` GPU ${measured.gpu} busy.` : '';
   const summary = !powered
     ? `${anatomy.name}: provider ${provider === 'starting' ? 'starting' : 'stopped'}.${machine}`
-    : `${anatomy.name}: ${PHASE_TEXT[stats.phase].toLowerCase()}. ${
+    : `${anatomy.name}: ${preview ? PHASE_TEXT[stats.phase].toLowerCase() : 'live activity'}. ${
         running === null
-          ? 'Waiting for current activity.'
+          ? ''
           : `${running} in progress, ${waiting} waiting, about ${
               Math.round((tokensPerSecond ?? 0) / 10) * 10
             } tokens per second.`
       }${machine}`;
   return {
-    mode: modeText(provider, measured !== null),
+    mode: modeText(provider, measured !== null, preview, reading.fresh),
     measured: measured !== null,
     current: shown,
     tokensPerSecond,

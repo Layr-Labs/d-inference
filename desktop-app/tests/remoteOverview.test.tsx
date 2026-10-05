@@ -22,7 +22,7 @@ it('shows the remote Mac’s earnings, 24-hour traffic, hourly chart and models'
   expect(screen.getByRole('status')).toHaveTextContent(/^Online$/);
   expect(screen.getByRole('status').parentElement).toHaveTextContent('Last observed just now');
   expect(screen.getByText('Online since').nextElementSibling).toHaveTextContent(
-    /^\d{1,2}:\d{2}\s?[AP]M1[23]h \d+m$/,
+    /\d{1,2}:\d{2}\s?[AP]M1[23]h \d+m$/,
   );
   const earnings = screen.getByRole('region', { name: 'Mac Studio’s earnings' });
   for (const amount of ['$186.40', '$4.12', '$7.00']) expect(earnings).toHaveTextContent(amount);

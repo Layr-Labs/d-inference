@@ -217,6 +217,7 @@ public actor ProviderLoop {
     internal let signer: (any AttestationSigner)?
     internal let attestationBuilder: AttestationBuilder?
     internal let stats: AtomicProviderStats
+    internal let usageHistory = ProviderUsageHistory()
     internal let state: ProviderState
     internal let cancellationRegistry: InferenceCancellationRegistry
     internal let kvBudget: GlobalKVCacheBudget

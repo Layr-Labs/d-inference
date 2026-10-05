@@ -555,3 +555,8 @@
   color: var(--accent-brand);
   background: var(--bg-secondary);
 }
+
+.barButton[data-unavailable='true'] {
+  background: repeating-linear-gradient(135deg, transparent 0 5px, var(--line) 5px 6px);
+  opacity: 0.45;
+}

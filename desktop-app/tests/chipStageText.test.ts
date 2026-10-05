@@ -57,7 +57,7 @@ describe('stage text', () => {
   it('prints live snapshot numbers only while they are current', () => {
     expect(
       stageText({ ...base, preview: false, provider: 'draining', reading: reading(true) }),
-    ).toMatchObject({ mode: 'Simulated activity', tokensPerSecond: 333, running: 7, waiting: 2 });
+    ).toMatchObject({ mode: 'Live from this Mac', tokensPerSecond: 333, running: 7, waiting: 2 });
     const waiting = stageText({
       ...base,
       preview: false,
@@ -65,16 +65,16 @@ describe('stage text', () => {
       reading: reading(false),
     });
     expect(waiting).toMatchObject({
-      mode: 'Simulated activity',
+      mode: 'Waiting for live activity',
       current: false,
       tokensPerSecond: null,
       running: null,
       waiting: null,
     });
-    expect(waiting.summary).toContain('Waiting for current activity.');
+    expect(waiting.summary).not.toContain('Waiting for current activity.');
     expect(
       stageText({ ...base, preview: false, provider: 'stale', reading: reading(false) }),
-    ).toMatchObject({ mode: 'Simulated activity', running: null });
+    ).toMatchObject({ mode: 'Waiting for live activity', running: null });
   });
 
   it('says the chip is live from this Mac while fresh measurements drive it', () => {

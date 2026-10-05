@@ -1,9 +1,7 @@
 import type { Action, DesktopAPI, Operation, Snapshot } from '../shared/contracts';
 
-const pollMs = 750;
-
-// The runtime answers an action with an operation that may still be running, so it counts
-// only once that operation has succeeded.
+// Subscribe before submitting, so a fast terminal event cannot race registration.
+// Poll only after the state stream has been silent for ten seconds.
 export async function submitAction(
   api: DesktopAPI,
   action: Action,
@@ -13,16 +11,50 @@ export async function submitAction(
     onSubmitted,
   }: { timeoutMs: number; timeout: string; onSubmitted?: (operation: Operation) => void },
 ) {
-  let operation: Operation | undefined = await api.act(action);
-  onSubmitted?.(operation);
+  let operation: Operation | undefined;
+  let latest: Snapshot | undefined;
+  let observedAt = Date.now();
+  let wake: (() => void) | undefined;
+  const streamed = typeof api.onState === 'function';
+  const off =
+    api.onState?.((snapshot) => {
+      latest = snapshot;
+      observedAt = Date.now();
+      wake?.();
+    }) ?? (() => {});
   const deadline = Date.now() + timeoutMs;
-  while (operation?.state === 'running') {
-    if (Date.now() > deadline) throw new Error(timeout);
-    await new Promise((resolve) => setTimeout(resolve, pollMs));
-    const id: string = operation.id;
-    operation = (await api.read<Snapshot>('state')).operations.find((item) => item.id === id);
+  try {
+    operation = await api.act(action);
+    onSubmitted?.(operation);
+    const id = operation.id;
+    while (operation.state === 'running') {
+      operation = latest?.operations.find((item) => item.id === id) ?? operation;
+      if (operation.state !== 'running') break;
+      if (Date.now() >= deadline) throw new Error(timeout);
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(
+          () => {
+            wake = undefined;
+            resolve();
+          },
+          Math.min(5000, deadline - Date.now()),
+        );
+        wake = () => {
+          clearTimeout(timer);
+          wake = undefined;
+          resolve();
+        };
+      });
+      if (!streamed || Date.now() - observedAt >= 10_000) {
+        latest = await api.read<Snapshot>('state');
+        observedAt = Date.now();
+      }
+    }
+    if (operation.state !== 'succeeded') throw new Error(operation.message || 'Operation failed');
+  } finally {
+    off();
+    wake = undefined;
   }
-  if (operation?.state !== 'succeeded') throw new Error(operation?.message || '');
 }
 
 // Electron prefixes errors that cross IPC; a runtime without the action rejects it by name.

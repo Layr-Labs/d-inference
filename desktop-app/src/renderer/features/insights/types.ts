@@ -9,17 +9,20 @@ export interface InsightAmounts {
 }
 export interface InsightSlice extends InsightAmounts {
   id: string;
+  available?: boolean;
+  complete?: boolean;
 }
 export interface ProviderInsights {
   account_id: string;
   window: '7d' | '30d';
+  history_complete: boolean;
   since: string;
   as_of: string;
   lifetime: {
     count: bigint;
     total_micro_usd: bigint;
-    prompt_tokens: bigint;
-    completion_tokens: bigint;
+    prompt_tokens: bigint | null;
+    completion_tokens: bigint | null;
   };
   totals: InsightAmounts;
   days: InsightSlice[];
@@ -45,6 +48,7 @@ export function parseInsights(value: any): ProviderInsights {
     !value ||
     typeof value.account_id !== 'string' ||
     !['7d', '30d'].includes(value.window) ||
+    (value.history_complete !== undefined && typeof value.history_complete !== 'boolean') ||
     !Number.isFinite(Date.parse(value.as_of))
   )
     throw new Error('Invalid earnings snapshot');
@@ -52,19 +56,30 @@ export function parseInsights(value: any): ProviderInsights {
     if (!Array.isArray(data)) throw new Error('Invalid earnings breakdown');
     return data.map((row) => {
       if (typeof row.id !== 'string') throw new Error('Invalid earnings row');
-      return { id: row.id, ...amounts(row) };
+      if (
+        [row.available, row.complete].some(
+          (flag) => flag !== undefined && typeof flag !== 'boolean',
+        )
+      )
+        throw new Error('Invalid earnings coverage');
+      return { id: row.id, ...amounts(row), available: row.available, complete: row.complete };
     });
   };
   return {
     account_id: value.account_id,
     window: value.window,
+    history_complete: value.history_complete !== false,
     since: value.since,
     as_of: value.as_of,
     lifetime: {
       count: integer(value.lifetime.count),
       total_micro_usd: integer(value.lifetime.total_micro_usd),
-      prompt_tokens: integer(value.lifetime.prompt_tokens),
-      completion_tokens: integer(value.lifetime.completion_tokens),
+      prompt_tokens:
+        value.lifetime.prompt_tokens === null ? null : integer(value.lifetime.prompt_tokens),
+      completion_tokens:
+        value.lifetime.completion_tokens === null
+          ? null
+          : integer(value.lifetime.completion_tokens),
     },
     totals: amounts(value.totals),
     days: rows(value.days),

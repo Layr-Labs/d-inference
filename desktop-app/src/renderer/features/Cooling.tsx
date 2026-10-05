@@ -36,7 +36,7 @@ export function Cooling({
         </div>
         {fans.length > 0 && <FanCards fans={fans} />}
       </div>
-      {cooling?.supported ? (
+      {cooling?.supported && cooling.control_available !== false ? (
         <CoolingControls backend={backend} />
       ) : (
         <Empty title="Automatic cooling">

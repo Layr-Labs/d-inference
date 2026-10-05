@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Box, ChevronRight, Home as HomeIcon, Monitor, Trophy, Zap } from 'lucide-react';
+import { Box, Home as HomeIcon, Monitor, Trophy, Zap } from 'lucide-react';
 import type { Route } from '../shared/contracts';
 import { api, isPreview, useBackend } from './useBackend';
 import { Home } from './features/Home';
@@ -12,6 +12,7 @@ import { Onboarding } from './components/Onboarding';
 import { onboardingScenario } from './previewEligibility';
 import { Earnings } from './features/Earnings';
 import { Appearance } from './components/Appearance';
+import { AccountControl } from './components/AccountControl';
 import { SocialLinks } from './components/SocialLinks';
 const navigation = [
   { id: 'home', label: 'Home', icon: HomeIcon },
@@ -40,15 +41,6 @@ export default function App() {
     setOnboarding(false);
   };
   useEffect(() => api?.onNavigate(navigate), [navigate]);
-  const title = [
-    ...navigation,
-    { id: 'settings', label: 'Settings' },
-    { id: 'models', label: 'Models' },
-    { id: 'studio', label: 'Studio' },
-    { id: 'analysis', label: 'Stats' },
-    { id: 'earnings', label: 'Earnings' },
-    { id: 'cooling', label: 'Cooling' },
-  ].find((item) => item.id === route)?.label;
   if (!backend.state || onboarding)
     return (
       <>
@@ -85,7 +77,8 @@ export default function App() {
         </nav>
         <div className="sidebar-bottom">
           <SocialLinks />
-          <button className="local-profile" onClick={() => setOnboarding(true)}>
+          <AccountControl backend={backend} />
+          <button className="local-profile" onClick={() => navigate('settings')}>
             <div className="profile-icon">
               <Monitor size={17} />
             </div>
@@ -101,9 +94,6 @@ export default function App() {
       </aside>
       <div className="workspace">
         <header className="topbar">
-          <span>
-            Workspace <ChevronRight size={12} /> <strong>{title}</strong>
-          </span>
           <span>
             {isPreview && <b className="preview-label">Development preview</b>}
             <Appearance />

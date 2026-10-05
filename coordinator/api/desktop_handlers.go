@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -56,7 +57,7 @@ func (s *Server) requireDesktopProviderToken(next http.HandlerFunc) http.Handler
 	return func(w http.ResponseWriter, r *http.Request) {
 		setOutcomeStage(r, "auth")
 		token, err := s.store.GetProviderToken(extractBearerToken(r))
-		if err != nil || token == nil || !token.Active || token.AccountID == "" {
+		if err != nil || token == nil || !token.Active || token.AccountID == "" || strings.HasPrefix(extractBearerToken(r), desktopAccountTokenPrefix) {
 			writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "a linked provider token is required"))
 			return
 		}

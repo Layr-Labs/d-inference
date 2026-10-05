@@ -3,6 +3,8 @@ package promptcontract
 import (
 	"log/slog"
 	"time"
+
+	process "github.com/eigeninference/d-inference/coordinator/internal/promptcontract/process"
 )
 
 func (s *Supervisor) noteChildStarted(rssBytes uint64) uint64 {
@@ -55,9 +57,9 @@ func (s *Supervisor) setStopped() {
 }
 
 func (s *Supervisor) noteRestart(reason, detail, stderr string) {
-	reason = boundedSupervisorText(reason, maxSupervisorReasonBytes)
-	detail = boundedSupervisorText(detail, maxSupervisorReasonBytes)
-	stderr = boundedSupervisorText(stderr, s.config.StderrMaxBytes)
+	reason = process.BoundedSupervisorText(reason, process.MaxSupervisorReasonBytes)
+	detail = process.BoundedSupervisorText(detail, process.MaxSupervisorReasonBytes)
+	stderr = process.BoundedSupervisorText(stderr, s.config.StderrMaxBytes)
 	s.mu.Lock()
 	s.status.Restarts++
 	s.lastRestartReason = reason

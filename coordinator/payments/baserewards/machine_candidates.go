@@ -7,7 +7,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/hardware"
+	rewardpolicy "github.com/eigeninference/d-inference/coordinator/internal/payments/rewardpolicy"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -52,7 +52,7 @@ func (e *Engine) buildCandidatesWithBindings(ctx context.Context, start, end tim
 		if !rewardSnapshotEligible(p) {
 			continue
 		}
-		mem, known := rewardMemoryGB(p)
+		mem, known := rewardpolicy.RewardMemoryGB(p)
 		if !known {
 			continue
 		}
@@ -74,7 +74,7 @@ func (e *Engine) buildCandidatesWithBindings(ctx context.Context, start, end tim
 		}
 		g := groups[key]
 		if g == nil {
-			g = &machineRewardGroup{candidate: candidate{c: Candidate{ProviderKey: key, AccountID: account, MemGB: mem}, machineID: machine}, model: p.HardwareModel}
+			g = &machineRewardGroup{candidate: candidate{c: rewardpolicy.Candidate{ProviderKey: key, AccountID: account, MemGB: mem}, machineID: machine}, model: p.HardwareModel}
 			groups[key] = g
 		}
 		// Concurrent credentials cannot manufacture two floors or select the
@@ -106,7 +106,7 @@ func (e *Engine) buildCandidatesWithBindings(ctx context.Context, start, end tim
 		copy.ProviderKey = key
 		normalized = append(normalized, copy)
 	}
-	uptime := e.uptimeByProviderKey(normalized, start, end)
+	uptime := rewardpolicy.UptimeByProviderKey(normalized, start, end, time.Duration(e.cfg.GraceSeconds)*time.Second)
 	result := make([]candidate, 0, len(groups))
 	for _, g := range groups {
 		if g.invalid || uptime[g.c.ProviderKey] < e.cfg.MinUptimeFrac {
@@ -188,17 +188,6 @@ func rewardSnapshotEligible(p registry.ProviderSnapshot) bool {
 		p.MemoryPressure < 0.8 && p.ThermalState != "critical"
 }
 
-func rewardMemoryGB(p registry.ProviderSnapshot) (int, bool) {
-	capGB, known := hardware.ModelMaxMemoryGB(p.HardwareModel)
-	if !known || p.MemoryGB <= 0 {
-		return 0, false
-	}
-	if capGB > 0 {
-		return min(p.MemoryGB, capGB), true
-	}
-	return p.MemoryGB, true
-}
-
 func compactRewardKeys(keys []string) []string {
 	slices.Sort(keys)
 	keys = slices.Compact(keys)
@@ -243,7 +232,7 @@ func (e *Engine) candidateSessionAuthorized(c candidate, session string) bool {
 		if !ok || !rewardSnapshotEligible(p) || p.ProviderKey != original.ProviderKey || p.AccountID != original.AccountID || p.MachineID != original.MachineID || p.HardwareModel != original.HardwareModel {
 			return false
 		}
-		mem, known := rewardMemoryGB(p)
+		mem, known := rewardpolicy.RewardMemoryGB(p)
 		return known && mem >= c.c.MemGB
 	}
 	return false

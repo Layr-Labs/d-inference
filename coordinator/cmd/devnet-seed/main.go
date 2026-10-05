@@ -16,6 +16,7 @@ import (
 	"syscall"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
+	postgresstore "github.com/eigeninference/d-inference/coordinator/store/postgres"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -95,7 +96,7 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 	if err := requireEmptyDatabase(ctx, dsn); err != nil {
 		return err
 	}
-	st, err := store.NewPostgres(ctx, store.Config{DatabaseURL: dsn})
+	st, err := postgresstore.NewPostgres(ctx, store.Config{DatabaseURL: dsn})
 	if err != nil {
 		return err
 	}

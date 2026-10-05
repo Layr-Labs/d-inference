@@ -27,8 +27,8 @@ func (r *Registry) QuickFirstContentCapacityForRequest(model string, pr *Pending
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	_, scan := r.selectBestCandidateLockedFull(model, query)
-	candidateCount, capacityRejections, modelTooLarge = scan.candidateCount, scan.capacityRejections, scan.tooLargeRejections
-	for _, c := range scan.pool {
+	candidateCount, capacityRejections, modelTooLarge = scan.CandidateCount, scan.CapacityRejections, scan.ModelTooLargeRejections
+	for _, c := range scan.Candidates {
 		if c.firstContent.Status == FirstContentUnknown {
 			return candidateCount, capacityRejections, modelTooLarge, 0, false
 		}

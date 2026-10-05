@@ -1,0 +1,43 @@
+package postgres
+
+import (
+	"context"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/store"
+)
+
+const usageRecordColumns = `provider_id, consumer_key_hash, model, public_model, prompt_tokens,
+	cached_tokens, completion_tokens, created_at, request_id, cost_micro_usd, request_location`
+
+// UsageRecords returns the most recent 10000 records, newest first.
+func (s *PostgresStore) UsageRecords() []store.UsageRecord {
+	return s.readUsageRecords(`SELECT ` + usageRecordColumns + ` FROM usage ORDER BY created_at DESC LIMIT 10000`)
+}
+
+// readUsageRecords preserves the historical read contract: query failures
+// return nil, individual scan failures are skipped, and a successful empty
+// query returns a non-nil slice. It does not reinterpret terminal rows.Err().
+func (s *PostgresStore) readUsageRecords(query string, args ...any) []store.UsageRecord {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	records := make([]store.UsageRecord, 0)
+	for rows.Next() {
+		var r store.UsageRecord
+		var locationRaw []byte
+		if err := rows.Scan(&r.ProviderID, &r.ConsumerKey, &r.Model, &r.PublicModel,
+			&r.PromptTokens, &r.CachedTokens, &r.CompletionTokens, &r.Timestamp, &r.RequestID,
+			&r.CostMicroUSD, &locationRaw); err != nil {
+			continue
+		}
+		r.CreatedAt = r.Timestamp
+		r.RequestLocation = unmarshalProviderLocation(locationRaw)
+		records = append(records, r)
+	}
+	return records
+}

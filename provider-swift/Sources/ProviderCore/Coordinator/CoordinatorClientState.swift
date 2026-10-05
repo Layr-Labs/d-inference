@@ -186,6 +186,7 @@ public final class ProviderState: @unchecked Sendable {
     private var _currentModelHash: String? = nil
     private var _backendCapacity: BackendCapacity? = nil
     private var _modelAutopilot: ModelAutopilotSnapshot? = nil
+    private var _autopilotInventory: [ModelInfo]? = nil
     private var _capacityModelAutopilot: ModelAutopilotSnapshot? = nil
     private var _prefixCacheV2Sources: [String: any DurablePrefixCacheEvidenceSource] = [:]
     private var _prefixCacheMemorySources: [String: ResidentPrefixCacheEvidence] = [:]
@@ -223,6 +224,11 @@ public final class ProviderState: @unchecked Sendable {
     public var currentModelHash: String? {
         get { lock.withLock { _currentModelHash } }
         set { lock.withLock { _currentModelHash = newValue } }
+    }
+
+    var autopilotInventory: [ModelInfo]? {
+        get { lock.withLock { _autopilotInventory } }
+        set { lock.withLock { _autopilotInventory = newValue } }
     }
 
     public var modelAutopilot: ModelAutopilotSnapshot? {

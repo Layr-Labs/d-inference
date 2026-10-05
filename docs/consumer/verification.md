@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-09-28
+> Last updated: 2026-10-02
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -65,7 +65,7 @@ curl https://api.darkbloom.dev/v1/providers/attestation
 ```
 
 `GET /v1/providers/attestation` needs no authentication and returns
-`{"providers": [...]}` (`handleProviderAttestation`, `coordinator/api/provider.go`).
+`{"providers": [...]}` (`HandleProviderAttestation`, `coordinator/api/provider/trust/status.go`).
 Private-only connections are excluded before the response enters its shared
 cache; their owners still see them through authenticated `GET /v1/me/providers`.
 Each entry carries:
@@ -134,8 +134,8 @@ independent paths and their shared final handoff checks.
 ## Per-response signals
 
 Once a provider has been committed to your request, the coordinator writes
-these headers (`writeCommittedProviderHeaders`,
-`coordinator/api/response_metadata.go`):
+these headers (`WriteCommittedProviderHeaders`,
+`coordinator/api/inference/response/response_metadata.go`):
 
 | Header | Value |
 |---|---|

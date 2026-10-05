@@ -243,8 +243,8 @@ extension Start {
     /// terminal picker, downloads any missing models, and returns the
     /// selected model IDs. The last three parameters default to the live
     /// network session and terminal; tests pass a stub session and input.
-    /// With `isInteractive` nil, the terminal check runs after the catalog
-    /// fetch, at the same point as before.
+    /// With `isInteractive` nil, the picker checks whether stdin is a
+    /// terminal after the catalog fetch.
     internal func interactiveCatalogPicker(
         snapshot: RuntimeSnapshot,
         config: ProviderConfig,

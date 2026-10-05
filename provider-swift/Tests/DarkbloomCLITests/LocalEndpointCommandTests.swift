@@ -9,14 +9,6 @@ import Testing
 // up process-wide logging, and the child reads a discovery folder that only it
 // points at through DARKBLOOM_LOCAL_DIR.
 
-/// Creates a private temporary folder in the child process.
-private func makeTemporaryDirectory(_ label: String) throws -> URL {
-    let directory = FileManager.default.temporaryDirectory
-        .appendingPathComponent("\(label)-\(UUID().uuidString)", isDirectory: true)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    return directory
-}
-
 private func text(_ bytes: [UInt8]?) -> String {
     String(decoding: bytes ?? [], as: UTF8.self)
 }
@@ -28,7 +20,9 @@ struct LocalEndpointCommandTests {
         let result = await #expect(
             processExitsWith: .success, observing: [\.standardOutputContent, \.standardErrorContent]
         ) {
-            let directory = try makeTemporaryDirectory("local-endpoint")
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("local-endpoint-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             setenv("DARKBLOOM_LOCAL_DIR", directory.path, 1)
 
             func run(_ arguments: [String]) async throws -> Bool {

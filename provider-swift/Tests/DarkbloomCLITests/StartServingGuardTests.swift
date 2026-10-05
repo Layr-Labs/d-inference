@@ -18,27 +18,15 @@ private func fixtureHardware(memoryGb: UInt64) -> HardwareInfo {
         gpuCores: 40, memoryBandwidthGbs: 546)
 }
 
-private func fixtureSnapshot(
-    models: [ModelInfo],
-    hardware: HardwareInfo? = nil,
-    configPath: URL = FileManager.default.temporaryDirectory
-        .appendingPathComponent("start-guard-\(UUID().uuidString).toml")
-) -> RuntimeSnapshot {
+private func fixtureSnapshot(models: [ModelInfo], hardware: HardwareInfo? = nil) -> RuntimeSnapshot {
     RuntimeSnapshot(
-        configPath: configPath,
+        configPath: FileManager.default.temporaryDirectory
+            .appendingPathComponent("start-guard-\(UUID().uuidString).toml"),
         configFileExists: false,
         config: ProviderConfig(provider: ProviderSettings(name: "start-guard-fixture")),
         hardware: hardware,
         hardwareError: nil,
         models: models)
-}
-
-/// Creates a private temporary folder in the child process.
-private func makeTemporaryDirectory(_ label: String) throws -> URL {
-    let directory = FileManager.default.temporaryDirectory
-        .appendingPathComponent("\(label)-\(UUID().uuidString)", isDirectory: true)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    return directory
 }
 
 /// Exits the child with the command's exit code, or 0 when it returned.
@@ -88,7 +76,9 @@ struct StartServingGuardTests {
         let result = await #expect(
             processExitsWith: .failure, observing: [\.standardOutputContent, \.standardErrorContent]
         ) {
-            let directory = try makeTemporaryDirectory("start-idle")
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("start-idle-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             var config = ProviderConfig(provider: ProviderSettings(name: "start-idle-fixture"))
             config.backend.modelCacheDirectory = directory.appendingPathComponent("hub").path
             let configPath = directory.appendingPathComponent("provider.toml")

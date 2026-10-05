@@ -53,6 +53,18 @@ private final class PickerCatalogURLProtocol: URLProtocol, @unchecked Sendable {
     override func stopLoading() {}
 }
 
+private func catalogModel(
+    _ id: String,
+    displayName: String? = nil,
+    sizeGb: Double = 4,
+    minRamGb: Int? = nil,
+    metadata: [String: JSONValue]? = nil
+) -> CatalogModel {
+    CatalogModel(
+        id: id, s3Name: id, displayName: displayName ?? id, sizeGb: sizeGb,
+        minRamGb: minRamGb, metadata: metadata)
+}
+
 /// The catalog picker flow before any download: fetch, filter, size the
 /// rows for this Mac, and resolve the non-terminal answer. The snapshot has
 /// no hardware, so nothing on disk is scanned and the 16 GB default applies.
@@ -83,18 +95,6 @@ struct CatalogPickerFlowTests {
             session.invalidateAndCancel()
             PickerCatalogURLProtocol.forget(host: host)
         }
-    }
-
-    private func model(
-        _ id: String,
-        displayName: String? = nil,
-        sizeGb: Double,
-        minRamGb: Int? = nil,
-        metadata: [String: JSONValue]? = nil
-    ) -> CatalogModel {
-        CatalogModel(
-            id: id, s3Name: id, displayName: displayName ?? id, sizeGb: sizeGb,
-            minRamGb: minRamGb, metadata: metadata)
     }
 
     private var snapshot: RuntimeSnapshot {
@@ -145,7 +145,7 @@ struct CatalogPickerFlowTests {
 
     @Test("the picker asks the coordinator for text models with aliases")
     func requestsTextCatalogWithAliases() async throws {
-        let fixture = try Fixture(models: [model("org/small", sizeGb: 4)])
+        let fixture = try Fixture(models: [catalogModel("org/small", sizeGb: 4)])
         defer { fixture.tearDown() }
 
         let result = try await pick(fixture, answers: [""])
@@ -178,10 +178,10 @@ struct CatalogPickerFlowTests {
     @Test("a catalog with only hidden rows stops start")
     func onlyHiddenRowsExits() async throws {
         let fixture = try Fixture(models: [
-            model("org/hidden", sizeGb: 4, metadata: ["hidden_from_picker": .bool(true)]),
-            model("org/standalone", sizeGb: 4, metadata: ["hide_standalone": .bool(true)]),
-            model("org/old", displayName: "Old Rollback Build", sizeGb: 4),
-            model("gemma-4-26b-8bit", sizeGb: 4),
+            catalogModel("org/hidden", sizeGb: 4, metadata: ["hidden_from_picker": .bool(true)]),
+            catalogModel("org/standalone", sizeGb: 4, metadata: ["hide_standalone": .bool(true)]),
+            catalogModel("org/old", displayName: "Old Rollback Build", sizeGb: 4),
+            catalogModel("gemma-4-26b-8bit", sizeGb: 4),
         ])
         defer { fixture.tearDown() }
         await expectExitFailure(fixture)
@@ -190,8 +190,8 @@ struct CatalogPickerFlowTests {
     @Test("no row is offered when every model needs more RAM than this Mac has")
     func nothingFitsExits() async throws {
         let fixture = try Fixture(models: [
-            model("org/large-a", sizeGb: 20, minRamGb: 64),
-            model("org/large-b", sizeGb: 30, minRamGb: 32),
+            catalogModel("org/large-a", sizeGb: 20, minRamGb: 64),
+            catalogModel("org/large-b", sizeGb: 30, minRamGb: 32),
         ])
         defer { fixture.tearDown() }
         await expectExitFailure(fixture)
@@ -200,8 +200,8 @@ struct CatalogPickerFlowTests {
     @Test("an empty answer and end of input both cancel without a selection")
     func emptyAnswerAndEndOfInputCancel() async throws {
         let fixture = try Fixture(models: [
-            model("org/small", sizeGb: 4, minRamGb: 8),
-            model("org/too-big", sizeGb: 14),
+            catalogModel("org/small", sizeGb: 4, minRamGb: 8),
+            catalogModel("org/too-big", sizeGb: 14),
         ])
         defer { fixture.tearDown() }
 
@@ -216,7 +216,7 @@ struct CatalogPickerFlowTests {
 
     @Test("an out-of-range number stops start")
     func outOfRangeAnswerExits() async throws {
-        let fixture = try Fixture(models: [model("org/small", sizeGb: 4)])
+        let fixture = try Fixture(models: [catalogModel("org/small", sizeGb: 4)])
         defer { fixture.tearDown() }
         await expectExitFailure(fixture, answers: ["9"])
     }
@@ -227,8 +227,8 @@ struct CatalogPickerFlowTests {
         // download is budgeted at its size x 1.2 in GiB (about 15.6 GiB);
         // the 16 GB budget is 7.5 GiB.
         let fixture = try Fixture(models: [
-            model("org/small", sizeGb: 4),
-            model("org/too-big", sizeGb: 14),
+            catalogModel("org/small", sizeGb: 4),
+            catalogModel("org/too-big", sizeGb: 14),
         ])
         defer { fixture.tearDown() }
         await expectExitFailure(fixture, answers: ["1"])
@@ -236,7 +236,7 @@ struct CatalogPickerFlowTests {
 
     @Test("'all' stops start when no row fits")
     func allWithNothingFittingExits() async throws {
-        let fixture = try Fixture(models: [model("org/too-big", sizeGb: 14)])
+        let fixture = try Fixture(models: [catalogModel("org/too-big", sizeGb: 14)])
         defer { fixture.tearDown() }
         await expectExitFailure(fixture, answers: ["all"])
     }
@@ -245,15 +245,6 @@ struct CatalogPickerFlowTests {
 /// Pure catalog-row rules that run before the picker shows anything.
 @Suite("Start picker catalog rows")
 struct PickerCatalogRowTests {
-    private func model(
-        _ id: String,
-        displayName: String? = nil,
-        sizeGb: Double = 4,
-        metadata: [String: JSONValue]? = nil
-    ) -> CatalogModel {
-        CatalogModel(id: id, s3Name: id, displayName: displayName ?? id, sizeGb: sizeGb, metadata: metadata)
-    }
-
     private func alias(
         displayName: String,
         desired: String,
@@ -276,11 +267,11 @@ struct PickerCatalogRowTests {
     @Test("without aliases, hidden, standalone-only and rollback rows are dropped")
     func hiddenRowsDropped() {
         let result = rows([
-            model("org/visible", displayName: "Visible"),
-            model("org/hidden", metadata: ["hidden_from_picker": .bool(true)]),
-            model("org/standalone", metadata: ["hide_standalone": .bool(true)]),
-            model("org/flag-false", displayName: "Flag False", metadata: ["hidden_from_picker": .bool(false)]),
-            model("org/rollback", displayName: "Model (ROLLBACK)"),
+            catalogModel("org/visible", displayName: "Visible"),
+            catalogModel("org/hidden", metadata: ["hidden_from_picker": .bool(true)]),
+            catalogModel("org/standalone", metadata: ["hide_standalone": .bool(true)]),
+            catalogModel("org/flag-false", displayName: "Flag False", metadata: ["hidden_from_picker": .bool(false)]),
+            catalogModel("org/rollback", displayName: "Model (ROLLBACK)"),
         ])
         #expect(result.map(\.model.id) == ["org/visible", "org/flag-false"])
         #expect(result.map(\.displayName) == ["Visible", "Flag False"])
@@ -289,9 +280,9 @@ struct PickerCatalogRowTests {
     @Test("with the Gemma QAT build listed, it takes the public name and hides the older builds")
     func gemmaQATReplacesPublicBuild() {
         let result = rows([
-            model("gemma-4-26b", displayName: "Gemma 4 26B (bf16)"),
-            model("gemma-4-26b-qat-4bit", displayName: "Gemma 4 26B QAT"),
-            model("gemma-4-26b-8bit", displayName: "Gemma 4 26B 8-bit"),
+            catalogModel("gemma-4-26b", displayName: "Gemma 4 26B (bf16)"),
+            catalogModel("gemma-4-26b-qat-4bit", displayName: "Gemma 4 26B QAT"),
+            catalogModel("gemma-4-26b-8bit", displayName: "Gemma 4 26B 8-bit"),
         ])
         #expect(result.map(\.model.id) == ["gemma-4-26b-qat-4bit"])
         #expect(result.map(\.displayName) == ["Gemma 4 26B"])
@@ -300,8 +291,8 @@ struct PickerCatalogRowTests {
     @Test("without the Gemma QAT build, only the rollback build is hidden")
     func gemmaWithoutQATKeepsPublicBuild() {
         let result = rows([
-            model("gemma-4-26b", displayName: "Gemma 4 26B (bf16)"),
-            model("gemma-4-26b-8bit", displayName: "Gemma 4 26B 8-bit"),
+            catalogModel("gemma-4-26b", displayName: "Gemma 4 26B (bf16)"),
+            catalogModel("gemma-4-26b-8bit", displayName: "Gemma 4 26B 8-bit"),
         ])
         #expect(result.map(\.model.id) == ["gemma-4-26b"])
         #expect(result.map(\.displayName) == ["Gemma 4 26B (bf16)"])
@@ -311,11 +302,11 @@ struct PickerCatalogRowTests {
     func aliasHidesRetiredAndPreviousBuilds() throws {
         let result = rows(
             [
-                model("org/v3", displayName: "v3"),
-                model("org/v2", displayName: "v2"),
-                model("org/v1", displayName: "v1"),
-                model("org/other", displayName: "Other"),
-                model("org/secret", displayName: "Secret", metadata: ["hidden_from_picker": .bool(true)]),
+                catalogModel("org/v3", displayName: "v3"),
+                catalogModel("org/v2", displayName: "v2"),
+                catalogModel("org/v1", displayName: "v1"),
+                catalogModel("org/other", displayName: "Other"),
+                catalogModel("org/secret", displayName: "Secret", metadata: ["hidden_from_picker": .bool(true)]),
             ],
             aliases: [try alias(displayName: "Family", desired: "org/v3", previous: "org/v2", retired: ["org/v1"])])
 
@@ -326,7 +317,7 @@ struct PickerCatalogRowTests {
     @Test("an alias whose builds are not in the catalog adds no row")
     func aliasWithoutListedBuilds() throws {
         let catalog = Start.evaluateEligiblePickerCatalog(
-            models: [model("org/plain", displayName: "Plain")],
+            models: [catalogModel("org/plain", displayName: "Plain")],
             aliases: [try alias(displayName: "Ghost", desired: "org/missing")],
             runtimeCapabilities: [])
         #expect(catalog.sourceHasAliases)
@@ -354,7 +345,7 @@ struct PickerCatalogRowTests {
     func fallbackRejectionMessages() {
         func entry(_ id: String, _ name: String, _ size: Double) -> Start.PickerEntry {
             Start.PickerEntry(
-                id: id, catalogModel: model(id, sizeGb: size), displayName: name,
+                id: id, catalogModel: catalogModel(id, sizeGb: size), displayName: name,
                 sizeGb: size, minRamGb: nil, downloaded: false)
         }
         let small = entry("org/small", "Small", 4)

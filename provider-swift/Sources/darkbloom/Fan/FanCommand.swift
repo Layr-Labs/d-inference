@@ -73,11 +73,14 @@ extension Fan {
             Self.print(report)
         }
 
-        static func diagnosticReport() -> FanDiagnosticReport {
+        static func diagnosticReport(
+            makeBackend: () throws -> any SMCBackend = { try AppleSMCBackend() },
+            brandString: String? = nil
+        ) -> FanDiagnosticReport {
             do {
-                let backend = try AppleSMCBackend()
+                let backend = try makeBackend()
                 let reader = FanHardwareReader(backend: backend)
-                let inventory = try reader.discover()
+                let inventory = try reader.discover(brandString: brandString)
                 let fans = try reader.fanReadings(in: inventory)
                 let temperatures = try reader.gpuTemperatures(in: inventory)
                 return FanDiagnosticReport(
@@ -101,41 +104,48 @@ extension Fan {
         }
 
         static func print(_ report: FanStatusReport) {
-            Swift.print("Darkbloom fan control (experimental)")
-            Swift.print("Installed: \(report.installed ? "yes" : "no")")
-            Swift.print("Service: \(report.loaded ? "running" : "stopped")")
+            for line in lines(report) {
+                Swift.print(line)
+            }
+        }
+
+        static func lines(_ report: FanStatusReport) -> [String] {
+            var output: [String] = []
+            output.append("Darkbloom fan control (experimental)")
+            output.append("Installed: \(report.installed ? "yes" : "no")")
+            output.append("Service: \(report.loaded ? "running" : "stopped")")
             if let helper = report.helper {
-                Swift.print("Mode: \(helper.mode.rawValue)")
-                Swift.print("Provider active: \(helper.providerActive ? "yes" : "no")")
-                Swift.print(
+                output.append("Mode: \(helper.mode.rawValue)")
+                output.append("Provider active: \(helper.providerActive ? "yes" : "no")")
+                output.append(
                     "Policy: \(format(helper.speedPercent))% at \(format(helper.triggerTemperatureC)) C "
                         + "(release below \(format(helper.releaseTemperatureC)) C)"
                 )
                 if let temperature = helper.gpuTemperatureC {
-                    Swift.print("GPU: \(format(temperature)) C")
+                    output.append("GPU: \(format(temperature)) C")
                 }
                 if let error = helper.lastError {
-                    Swift.print("Last error: \(error)")
+                    output.append("Last error: \(error)")
                 }
             } else {
-                Swift.print(
+                output.append(
                     report.loaded
                         ? "Mode: unknown (helper status unavailable)"
                         : "Mode: macOS automatic"
                 )
                 if let helperError = report.helperError {
-                    Swift.print("Helper error: \(helperError)")
+                    output.append("Helper error: \(helperError)")
                 }
             }
 
-            Swift.print("Hardware: \(report.diagnostic.chip)")
+            output.append("Hardware: \(report.diagnostic.chip)")
             if let error = report.diagnostic.error {
-                Swift.print("Compatibility: unavailable (\(error))")
+                output.append("Compatibility: unavailable (\(error))")
             } else {
-                Swift.print("Compatibility: \(report.diagnostic.supported ? "supported" : "unsupported")")
+                output.append("Compatibility: \(report.diagnostic.supported ? "supported" : "unsupported")")
             }
             for fan in report.diagnostic.fans {
-                Swift.print(
+                output.append(
                     "  Fan \(fan.index): actual \(rpm(fan.actualRPM)), target \(rpm(fan.targetRPM)), "
                         + "range \(rpm(fan.minimumRPM))-\(rpm(fan.maximumRPM)), \(fan.mode ?? "unknown")"
                 )
@@ -144,11 +154,12 @@ extension Fan {
                 let sensors = report.diagnostic.gpuTemperatures.map {
                     "\($0.key)=\(format($0.celsius)) C"
                 }.joined(separator: ", ")
-                Swift.print("GPU sensors: \(sensors)")
+                output.append("GPU sensors: \(sensors)")
             }
             if !report.installed {
-                Swift.print("Enable with: sudo darkbloom fan enable")
+                output.append("Enable with: sudo darkbloom fan enable")
             }
+            return output
         }
 
         private static func rpm(_ value: Double?) -> String {

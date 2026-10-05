@@ -4,6 +4,7 @@ import (
 	trustapi "github.com/eigeninference/d-inference/coordinator/api/provider/trust"
 	attestservice "github.com/eigeninference/d-inference/coordinator/appattest/service"
 	"github.com/eigeninference/d-inference/coordinator/env"
+	"github.com/eigeninference/d-inference/coordinator/internal/inference/responselimit"
 	"github.com/eigeninference/d-inference/coordinator/internal/provider/journal"
 	"github.com/eigeninference/d-inference/coordinator/mediafetch"
 	"os"
@@ -14,6 +15,10 @@ import (
 // ServerConfig holds coordinator HTTP server and URL configuration applied
 // when NewServer constructs an instance.
 type ServerConfig struct {
+	// Non-positive values retain the safe defaults; limits cannot be disabled.
+	NonStreamingResponseMaxBytes  int
+	NonStreamingResponseMaxChunks int
+
 	AppAttestShadow     AppAttestShadowConfig
 	Port                string
 	ConsoleURL          string
@@ -60,6 +65,9 @@ type BaseRewardsConfig struct {
 // ReadServerConfig reads server configuration from environment variables.
 func ReadServerConfig() ServerConfig {
 	return ServerConfig{
+		NonStreamingResponseMaxBytes:  env.EnvInt(env.EnvPrefix+"_NONSTREAM_RESPONSE_MAX_BYTES", responselimit.DefaultMaxBytes),
+		NonStreamingResponseMaxChunks: env.EnvInt(env.EnvPrefix+"_NONSTREAM_RESPONSE_MAX_CHUNKS", responselimit.DefaultMaxChunks),
+
 		AppAttestShadow:         attestservice.ConfigFromEnvironment(),
 		Port:                    env.EnvOr(env.EnvPrefix+"_PORT", "8080"),
 		ConsoleURL:              os.Getenv(env.EnvPrefix + "_CONSOLE_URL"),

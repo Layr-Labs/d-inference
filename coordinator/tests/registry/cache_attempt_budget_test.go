@@ -68,7 +68,7 @@ func budgetTestAttempt() indexKernelAttempt {
 func expectedBudgetCharge(nonce string, a indexKernelAttempt) uint64 {
 	value := uint64(2048 + 128 + 96*len(a.Plan.Boundaries))
 	for _, anchor := range a.Plan.Boundaries {
-		value += 2 * uint64(len(anchor.ChainHash))
+		value += uint64(len(anchor.ChainHash)) // slice and claims share one owned immutable clone
 	}
 	for _, scalar := range []string{nonce, a.RequestID, a.ProviderID, a.Model, a.Plan.AffinityKey(),
 		a.Plan.ModelAggregateHash, a.Plan.PromptContractID, a.Plan.CacheScope, a.ExpectedPrompt.ChainHash} {

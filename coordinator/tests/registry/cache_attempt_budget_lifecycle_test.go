@@ -415,7 +415,7 @@ func TestCacheAttemptBudgetConcurrentPrepareRefuseSweepAndReconfigure(t *testing
 	check := func() {
 		gate.Lock()
 		defer gate.Unlock()
-		if _, _, err := budgetLifecycleInvariant(old); err != nil {
+		if _, _, err := budgetLifecycleInvariant(old.config); err != nil {
 			errors <- err
 		}
 	}
@@ -458,6 +458,12 @@ func TestCacheAttemptBudgetConcurrentPrepareRefuseSweepAndReconfigure(t *testing
 		second = append(second, prepare(request))
 	}
 	second = append(second,
+		func() {
+			for _, request := range requests[:count] {
+				operate(func() { r.MarkCacheAttemptTerminal(request) })
+				check()
+			}
+		},
 		func() {
 			// The retained maintainer sweeps under the tracker's own mutex.
 			operate(func() { old.maintenance.StateCounts(time.Now().Add(3 * time.Hour)) })

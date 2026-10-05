@@ -201,6 +201,14 @@ type CacheRoutingLifecycleStatus struct {
 	FencesApplied      uint64            `json:"fences_applied"`
 	FencesExpired      uint64            `json:"fences_expired"`
 	FencedCapabilities int               `json:"fenced_capabilities"`
+	// AttemptBytes is the logical byte total of retained attempt records.
+	// AttemptBudgetRefused counts attempts the byte budget refused after any
+	// terminal-grace reclaim; AttemptGraceReclaimed counts terminal records
+	// reclaimed to admit another. Both are monotonic within the current
+	// tracker generation and reset when cache routing is reconfigured.
+	AttemptBytes          uint64 `json:"attempt_bytes"`
+	AttemptBudgetRefused  uint64 `json:"attempt_budget_refused"`
+	AttemptGraceReclaimed uint64 `json:"attempt_grace_reclaimed"`
 	// DemandEntries is what the observed-demand index holds now, including
 	// expired entries its bounded sweep has not reached. DemandCapEvictions
 	// counts entries the cap removed inside their TTL; while it grows, the
@@ -231,6 +239,7 @@ func (r *Registry) CacheRoutingLifecycleStatus() CacheRoutingLifecycleStatus {
 	// agree within one scrape.
 	fenced := tracker.sweepFencesLocked(tracker.now())
 	fencesApplied, fencesExpired := tracker.proofs.Counts()
+	attempts := tracker.core.AttemptLifecycle()
 	return CacheRoutingLifecycleStatus{
 		SSDLookups: receipts.SSDLookups, SSDHits: receipts.SSDHits,
 		SSDMisses: receipts.SSDMisses, SSDDonations: receipts.SSDDonations,
@@ -238,7 +247,9 @@ func (r *Registry) CacheRoutingLifecycleStatus() CacheRoutingLifecycleStatus {
 		DonationOutcomes: receipts.DonationOutcomes,
 		FencesApplied:    fencesApplied, FencesExpired: fencesExpired,
 		FencedCapabilities: fenced,
-		DemandEntries:      demandEntries, DemandCapEvictions: demandCapEvictions,
+		AttemptBytes:       attempts.Bytes, AttemptBudgetRefused: attempts.BudgetRefused,
+		AttemptGraceReclaimed: attempts.GraceReclaimed,
+		DemandEntries:         demandEntries, DemandCapEvictions: demandCapEvictions,
 		Persistence: persister.Status(),
 	}
 }

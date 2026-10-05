@@ -17,13 +17,26 @@ func (t *Tracker[P]) StoreAttemptLocked(nonce string, attempt Attempt[P]) bool {
 	t.SweepIfDueLocked(t.now())
 	old := t.attempts.Lookup(nonce).AccountedBytes
 	total, fits := t.attemptBudget.replacementTotal(old, charge)
-	if !fits {
+	if !fits && (total == 0 || charge > t.attemptBudget.MaxBytes()) {
+		// Reclaiming cannot help an inconsistent or overflowing ledger, nor a
+		// record larger than the whole budget.
+		t.noteAttemptBudgetRefusalLocked()
 		return false
 	}
 	key, owned, valid := detachCacheAttempt(nonce, attempt)
 	if !valid || !t.generation.Active() {
 		return false
 	}
+	// The complete candidate is validated and detached before any terminal
+	// grace is given up for it.
+	if !fits {
+		total, fits = t.reclaimTerminalGraceLocked(nonce, total)
+		if !fits {
+			t.noteAttemptBudgetRefusalLocked()
+			return false
+		}
+	}
+	owned.Terminal = t.attempts.Lookup(nonce).Terminal
 	owned.AccountedBytes = charge // Never trust a caller-supplied charge.
 	t.attempts.Store(key, owned)
 	t.attemptBudget.Store(total)
@@ -34,6 +47,9 @@ func (t *Tracker[P]) StoreAttemptLocked(nonce string, attempt Attempt[P]) bool {
 			t.IndexAttemptLocked(entry)
 		} else {
 			t.attemptOrder.Track(nonce, entry.Key(), attempt.ExpiresAt)
+		}
+		if t.terminalOrder.Load(nonce) != nil {
+			t.terminalOrder.Track(nonce, entry.Key(), attempt.ExpiresAt)
 		}
 		return true
 	}
@@ -47,6 +63,7 @@ func (t *Tracker[P]) RemoveAttemptLocked(nonce string) {
 		t.attemptBudget.refund(attempt.AccountedBytes)
 	}
 	t.attempts.Delete(nonce)
+	t.terminalOrder.Remove(nonce)
 	if entry := t.attemptOrder.Remove(nonce); entry != nil {
 		t.UnindexAttemptLocked(entry)
 	}

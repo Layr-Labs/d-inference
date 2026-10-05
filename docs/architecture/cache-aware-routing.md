@@ -364,35 +364,65 @@ evidence (`coordinator/registry/cache_receipts.go`).
 The tracker admits at most `cacheRoutingMaxAttemptBytes` (67,108,864) logical
 bytes of attempt records in addition to its unchanged 50,000-record count cap.
 `CacheAttemptCharge` in `coordinator/internal/registry/cachetracker/attempt_budget.go` charges
-`2048 + 96*N + 2*sum(boundary hash byte lengths) + 128 + scalar byte lengths`;
+`2048 + 96*N + sum(boundary hash byte lengths) + 128 + scalar byte lengths`;
 the `AttemptBudget` ledger in that file holds the admitted total and its limit.
-`N` counts input boundaries; both boundary representations are charged, even if
-their detached strings share storage. Scalars include nonce, request/provider/
-model identities, every plan string, expected-prompt hash and all string fields
-of both tier capabilities. The 128-byte allowance prepays both future READY hashes.
+`N` counts input boundaries. The boundary slice and the frozen boundary claims
+share one detached immutable hash string per boundary. Scalars include nonce,
+request/provider/model identities, every plan string, expected-prompt hash and
+all string fields of both tier capabilities. The 128-byte allowance prepays both
+future READY hashes.
 
 `StoreAttemptLocked` (`coordinator/internal/registry/cachetracker/cache_receipts_kernel.go`)
-validates the charge and budget before cloning retained
-strings and the boundary slice and deriving its own boundary claims. Checked replacement accounting preserves an
-incumbent on refusal; each removal refunds its stored charge exactly once.
+validates the charge, clones retained strings and the boundary slice and derives
+its own boundary claims before reclaiming any incumbent. Checked replacement
+accounting excludes the replaced nonce and preserves an incumbent on refusal.
+On byte pressure, a separate terminal-only expiry order (`TerminalOrder`, built
+for each generation in `coordinator/registry/cache_tracker_controller.go`)
+offers at most 64 of its earliest-expiring records
+(`terminalBudgetVictimsLocked` in
+`coordinator/internal/registry/cachetracker/attempt_pressure.go`, walking
+`Order.Earliest` in `coordinator/internal/registry/cacheindex/order.go` without
+mutating it). Only completed attempts' optional late-receipt grace is eligible;
+live attempt authority is not reclaimed by this byte-pressure policy. Records
+are removed only when their complete refund admits the candidate; otherwise no
+grace evidence is discarded and the attempt is refused. A record larger than
+the whole budget is refused without reclaiming anything. The existing count-cap
+policy still evicts its oldest record and can include live records; this change
+does not claim otherwise. Every removal refunds the stored charge exactly once
+and removes the record from both expiry orders.
+
 `PreparePrefixCacheV2Attempt` publishes an owner only after successful insertion
 and uses the admitted detached scope. Refusal returns ordinary cold inference,
 without receipt metadata, cache participation or discarded TTFT calibration.
-The existing count/expiry race can remove a successfully inserted record before
-owner publication; publication is not a promise of continuing map retention.
+A reclaimed nonce cannot later recreate a holder through READY. The existing
+count/expiry race can remove a successfully inserted record before owner
+publication; publication is not a promise of continuing map retention.
 
-The two-hour in-flight lifetime, two-minute terminal grace, sweep cadence,
-generation revocation and final dispatch authorization are unchanged. Terminal
-state retains the record's full charge during its late-receipt grace; retiring
-the tracker revokes it before clearing the counter. Validated READY updates clone
-only their prepaid retained hash (`ApplyReadyV2`,
+The in-flight lifetime remains two hours. The first terminal marking
+(`MarkAttemptTerminal`, `coordinator/internal/registry/cachetracker/lifecycle.go`)
+starts a maximum two-minute late-receipt grace; repeated terminal callbacks do
+not extend it, and byte pressure may shorten it. Terminal records retain their
+full charge until removal. Generation retirement revokes the tracker before
+clearing both expiry orders and the counter. Validated READY updates clone only
+their prepaid retained hash (`ApplyReadyV2`,
 `coordinator/internal/registry/cachetracker/receipt_ready.go`).
+
+The aggregate status and metric gauges expose `attempt_bytes`,
+`attempt_budget_refused`, and `attempt_grace_reclaimed` (Prometheus prefix
+`exact_cache_`; Datadog prefix `exact_cache.`), read through
+`Tracker.AttemptLifecycle` into `CacheRoutingLifecycleStatus`
+(`coordinator/registry/cache_routing.go`). The latter two are monotonic within
+the current tracker generation and reset on reconfiguration. They contain no
+account, prompt, nonce or provider labels. Refusal is an admission outcome, not
+a cache hit-rate denominator.
 
 This is a logical bound on tracked records, not a process RSS or OOM guarantee.
 Request plans, published owners/snapshots, provider and holder state, map capacity,
-temporary replacement allocations and garbage-collection timing have separate
-lifetimes. The budget neither changes encrypted SSD retention nor grants cache
-credit without the existing authenticated receipt and owner checks.
+temporary candidate/replacement allocations and garbage-collection timing have
+separate lifetimes. All-live occupancy can still exhaust the global budget;
+terminal reclamation is not per-tenant fairness or a production sizing result.
+The budget neither changes encrypted SSD retention nor grants cache credit
+without the existing authenticated receipt and owner checks.
 
 ### Persistence across restarts
 
@@ -659,7 +689,8 @@ tags only.
 `GET /v1/cache/status` (`HandleExactCacheStatus`,
 `coordinator/api/inference/exact_cache_status.go`) exposes only aggregate rollout state:
 activation and lifecycle counters (including `fences_applied`,
-`fences_expired` and `fenced_capabilities`); sidecar enabled/running/ready, child
+`fences_expired`, `fenced_capabilities`, `attempt_bytes`,
+`attempt_budget_refused` and `attempt_grace_reclaimed`); sidecar enabled/running/ready, child
 generation, categorical restart reason, failure streak, timeouts/overloads/RSS,
 cold/warm contract loads, and planner outcomes; preload generation/counts;
 prompt artifact ready/pending/failed counts; protocol 0/1/2 provider counts;

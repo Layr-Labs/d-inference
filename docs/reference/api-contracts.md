@@ -498,6 +498,9 @@ are advertised provider/model pairs, not unique models or guaranteed cache hits.
 | `lifecycle.fenced_capabilities` | Currently fenced provider/model/tier capabilities | `coordinator/registry/cache_proof_fence.go` (`sweepFencesLocked`) |
 | `lifecycle.demand_entries` | Entries currently in the observed-demand index | `coordinator/registry/cache_demand.go` (`stats`) |
 | `lifecycle.demand_cap_evictions` | Demand entries evicted by the cap inside their TTL; a growing count means repeated prefixes are being reported as novel | Same |
+| `lifecycle.attempt_bytes` | Logical bytes of retained cache-attempt records, against the 64 MiB attempt budget | `coordinator/registry/cache_routing.go` (`CacheRoutingLifecycleStatus`); `coordinator/internal/registry/cachetracker/attempt_pressure.go` (`AttemptLifecycle`) |
+| `lifecycle.attempt_budget_refused` | Attempts dispatched without a cache scope because the byte budget refused their record: live records fill it, reclaiming at most 64 of the earliest-expiring completed attempts' grace records would not make room, or the record alone exceeds the budget. Monotonic within the current tracker generation | `coordinator/internal/registry/cachetracker/cache_receipts_kernel.go` (`StoreAttemptLocked`) |
+| `lifecycle.attempt_grace_reclaimed` | Completed attempts' records reclaimed inside their two-minute terminal grace to admit another; each forfeits only a late write-behind READY. Monotonic within the current tracker generation | `coordinator/internal/registry/cachetracker/attempt_pressure.go` (`reclaimTerminalGraceLocked`, `terminalBudgetVictimsLocked`) |
 
 The persistence field names are unchanged. Routing reads remain in memory;
 write-behind, restore and overflow guarantees are defined in
@@ -516,6 +519,10 @@ The fence fields have Prometheus gauges `exact_cache_fence{event}`
 (`event` ∈ `applied`, `expired`) and `exact_cache_fenced_capabilities`, and
 Datadog gauges `exact_cache.fence` tagged `event:applied|expired` and
 `exact_cache.fenced_capabilities` (same file).
+The attempt fields have Prometheus gauges `exact_cache_attempt_bytes`,
+`exact_cache_attempt_budget_refused` and `exact_cache_attempt_grace_reclaimed`,
+and Datadog gauges `exact_cache.attempt_bytes`, `exact_cache.attempt_budget_refused`
+and `exact_cache.attempt_grace_reclaimed` (same file).
 The existing `prefix_cache_statuses` state/reason aggregates retain their SSD
 meaning; resident routing uses the separate memory capability and bounded holder
 receipts described in [cache-aware routing](../architecture/cache-aware-routing.md).

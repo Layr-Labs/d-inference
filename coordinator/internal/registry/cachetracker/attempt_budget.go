@@ -14,8 +14,8 @@ const MaxAttemptBytes uint64 = 64 << 20
 
 // AttemptBudget is the logical-byte ledger of one generation's retained attempt
 // records. The receipt controller serializes it under its existing mutex. The
-// tracker stores only a total that replacementTotal found to fit, and zero when
-// the generation's records are cleared.
+// tracker stores only a total that fits the limit, after any terminal grace it
+// reclaimed, and zero when the generation's records are cleared.
 type AttemptBudget struct{ bytes, maxBytes uint64 }
 
 func NewAttemptBudget(maxBytes uint64) *AttemptBudget {
@@ -95,11 +95,8 @@ func CacheAttemptCharge[P comparable](nonce string, attempt Attempt[P]) (uint64,
 		if !cachepolicy.Anchor(boundary, blockSize) || boundary.TokenCount > attempt.ExpectedPrompt.TokenCount {
 			return 0, false
 		}
-		hashes, valid := CheckedCacheAttemptMultiply(2, uint64(len(boundary.ChainHash)))
-		if !valid {
-			return 0, false
-		}
-		charge, ok = CheckedCacheAttemptAdd(charge, hashes)
+		// The boundary slice and the frozen claims share one detached hash.
+		charge, ok = CheckedCacheAttemptAdd(charge, uint64(len(boundary.ChainHash)))
 		if !ok {
 			return 0, false
 		}
@@ -143,7 +140,7 @@ func CheckedCacheAttemptMultiply(a, b uint64) (uint64, bool) {
 	return a * b, true
 }
 
-// Called only after checked budget admission, while the receipt controller's
+// Called after checked per-record admission, while the receipt controller's
 // mutex is held. Nil ExpectedBoundaries asks us to derive them. Supplied claims
 // must agree exactly. No caller-owned strings, boundary slices or claims are
 // retained by the tracker.

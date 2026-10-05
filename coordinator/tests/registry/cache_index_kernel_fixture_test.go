@@ -40,7 +40,7 @@ func newCacheIndexKernelFixture(settings cachetracker.Settings, configure ...fun
 		Settings: settings, Generation: generation,
 		Holders:     cacheindex.NewHolders[indexKernelHolder](),
 		Attempts:    cacheindex.NewRecords[string, indexKernelAttempt](),
-		HolderOrder: cacheindex.NewHolderOrder(), AttemptOrder: cacheindex.NewAttemptOrder(),
+		HolderOrder: cacheindex.NewHolderOrder(), AttemptOrder: cacheindex.NewAttemptOrder(), TerminalOrder: cacheindex.NewAttemptOrder(),
 		HolderProviders:  cacheindex.NewProviderIndex[*cacheindex.Entry[cacheindex.HolderRef]](),
 		AttemptProviders: cacheindex.NewProviderIndex[*cacheindex.Entry[cacheindex.AttemptRef]](),
 		Sequences:        cacheindex.NewRecords[cachetracker.SequenceKey, uint64](),

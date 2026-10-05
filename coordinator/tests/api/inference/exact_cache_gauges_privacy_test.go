@@ -75,6 +75,9 @@ func TestExactCacheDatadogGaugesAreAggregateAndPrivacySafe(t *testing.T) {
 		"exact_cache.donation_outcome",
 		"exact_cache.fence",
 		"exact_cache.fenced_capabilities",
+		"exact_cache.attempt_bytes",
+		"exact_cache.attempt_budget_refused",
+		"exact_cache.attempt_grace_reclaimed",
 		"exact_cache.demand_entries",
 		"exact_cache.demand_cap_evictions",
 	} {

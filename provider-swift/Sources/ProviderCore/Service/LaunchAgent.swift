@@ -18,14 +18,14 @@ public enum LaunchAgent: Sendable {
 
     /// Path to the launchd plist: ~/Library/LaunchAgents/io.darkbloom.provider.plist
     public static func plistPath() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
+        LaunchctlControl.homeDirectory()
             .appendingPathComponent("Library/LaunchAgents")
             .appendingPathComponent("\(label).plist")
     }
 
     /// Path to the provider log file: ~/.darkbloom/provider.log
     public static func logPath() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
+        LaunchctlControl.homeDirectory()
             .appendingPathComponent(".darkbloom/provider.log")
     }
 
@@ -94,7 +94,6 @@ public enum LaunchAgent: Sendable {
         // If already loaded, unload first so we pick up plist changes.
         if isLoaded() {
             try unloadService()
-            Thread.sleep(forTimeInterval: 0.5)
         }
 
         try writePlist(
@@ -442,8 +441,9 @@ public enum LaunchAgent: Sendable {
             ["bootstrap", LaunchctlControl.guiDomain(), path.path], captureStderr: true)
         if !bootstrap.succeeded {
             let stderr = bootstrap.stderr
-            // Error 37 = "already loaded" -- not a real failure.
-            if !stderr.contains("37:") && !stderr.contains("already loaded") {
+            // Operation-in-progress (37) is not confirmation of a loaded job.
+            // Retain only launchctl's explicit already-loaded compatibility.
+            if !stderr.contains("already loaded") {
                 throw LaunchAgentError.bootstrapFailed(stderr.trimmingCharacters(in: .whitespacesAndNewlines))
             }
         }
@@ -475,6 +475,47 @@ public enum LaunchAgent: Sendable {
                 throw LaunchAgentError.bootoutFailed(stderr.trimmingCharacters(in: .whitespacesAndNewlines))
             }
         }
+        try waitForServiceRemoval(label: serviceLabel)
+    }
+
+    /// A successful bootout asks launchd to remove the job; the label can remain
+    /// registered while its previous process exits. Confirm absence before a
+    /// caller writes a replacement plist or bootstraps it.
+    ///
+    /// This bounds polling, including time spent in returning print calls. The
+    /// shared process runner has no subprocess timeout, so a hung launchctl can
+    /// still outlast this polling budget.
+    private static func waitForServiceRemoval(label serviceLabel: String) throws {
+        let started = LaunchctlControl.uptime()
+        let deadline = started + 10
+        let missingService = "could not find service \"\(serviceLabel)\"".lowercased()
+        for probe in 0...100 {
+            let result = try LaunchctlControl.runThrowing(
+                ["print", LaunchctlControl.target(label: serviceLabel)], captureStderr: true)
+            if !result.succeeded {
+                let stderr = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                // Missing-service print can exit 113, not just bootout's 3.
+                // A quoted whole label prevents matching a different service.
+                let confirmsAbsence = stderr.lowercased().split(whereSeparator: \.isNewline).contains { line in
+                    let diagnostic = line.trimmingCharacters(in: .whitespaces)
+                    return diagnostic == missingService || diagnostic.hasPrefix(missingService + " in domain")
+                }
+                guard confirmsAbsence else {
+                    throw LaunchAgentError.bootoutFailed(
+                        "could not confirm service removal (launchctl print exit \(result.status)): \(stderr)")
+                }
+                return
+            }
+            let now = LaunchctlControl.uptime()
+            guard now < deadline, probe < 100 else { break }
+            // Schedule against the monotonic origin, so command duration counts
+            // against the budget and floating-point sleep sums do not drift.
+            let nextProbe = min(deadline, started + Double(probe + 1) * 0.1)
+            let delay = max(0, nextProbe - now)
+            if delay > 0 { LaunchctlControl.sleep(forTimeInterval: delay) }
+        }
+        throw LaunchAgentError.bootoutFailed(
+            "service removal was not confirmed within 10 seconds; no replacement was started")
     }
 
     /// Resolve the current executable path. Falls back to ~/.darkbloom/bin/darkbloom.

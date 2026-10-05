@@ -19,6 +19,11 @@
 - Keep a reconnected provider's verification job eligible after its old worker releases the claim. A delayed challenge callback no longer restores the stale running snapshot and postpones verification until claim expiry.
 - Read one synchronized trust-level snapshot for registration metrics and telemetry while verification updates run concurrently.
 
+## Unreleased — provider service replacement
+
+- Wait for launchd to confirm removal of the previous provider service before installing or starting its replacement. Preserve stop/uninstall intent and report failed or timed-out removal without starting another service.
+- Treat bootstrap operation-in-progress errors as failures instead of reporting a successful start.
+
 ## Unreleased — leaderboard availability
 
 - Add a concurrent BRIN time index for recent provider-earnings rankings, enable range autosummarization, and keep planner statistics current. Return an uncached 503 when ranking queries fail instead of showing and caching an empty leaderboard.

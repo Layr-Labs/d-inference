@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased - nightly Linear workflow
+
+- Package one-time Codex setup and a nightly playbook that reconciles work from Codex, Claude Code, and Pi with each teammate's Linear. Reuse existing issues and route unclassified deliverables to Others.
+- Fetch shared skills from the configured repo branch on every trigger while keeping personal settings and recovery state local. Include offline updater tests; teammate installation and live automation remain separate rollout steps.
+
 ## Unreleased — stale cache allowlist entries
 
 - Report cache-routing allowlist entries that a model revision has left behind. Publishing new weights or a new template under the same model ID changes the artifact tuple, so the model silently lost cache routing and its cache hits fell to zero until an operator appended the new tuple. `GET /v1/cache/status` now counts such models as `artifact_allowlist.stale_models`, with matching Prometheus and Datadog gauges, and the coordinator log names each live tuple once. Routing behaviour and the allowlist's exact-match rule are unchanged.

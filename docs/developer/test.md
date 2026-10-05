@@ -2,6 +2,27 @@
 
 > Last updated: 2026-10-05
 
+## Nightly Linear package
+
+Run from the repository root:
+
+```bash
+python3 -B -m unittest discover -s automations/nightly-linear/tests -p 'test_*.py'
+```
+
+`automations/nightly-linear/tests/test_refresh.py` (`RefreshTests`) exercises the
+same updater command used by the launcher against temporary local Git repos.
+It checks fetching one consistent revision, repeat runs, real package loading,
+document links, and preservation after dirty or divergent checkouts, wrong
+origins, unmanaged clones, failed fetches, or missing required skills.
+The tests make no GitHub or Linear requests. The scoped
+`.github/workflows/nightly-linear-package.yml` runs the same command.
+
+Live onboarding, connector permissions, unattended execution, and duplicate-free
+Linear updates require the teammate pilot described in the
+[package rollout procedure](../../automations/nightly-linear/README.md#verification-and-rollout).
+Offline updater tests do not verify those outcomes.
+
 ## Reservation storage and scan benchmarks
 
 Registry regression tests in `coordinator/tests/registry/candidate_storage_test.go`

@@ -27,6 +27,12 @@ func TestScanPoolCandidatesAreIndependentValues(t *testing.T) {
 	registered := make(map[string]*production.Provider)
 	for i := 0; i < 3*candidatearena.ChunkSize+5; i++ {
 		p := makeSchedulerProvider(t, reg, fmt.Sprintf("p-%03d", i), model, 50+float64(i%9))
+		p.Mu().Lock()
+		p.Hardware.ChipFamily = fmt.Sprintf("family-%03d", i)
+		if i%2 == 0 {
+			p.BackendCapacity.Slots[0].State = "idle"
+		}
+		p.Mu().Unlock()
 		registered[p.ID] = p
 	}
 	scan := func() production.CandidateScan {
@@ -53,17 +59,30 @@ func TestScanPoolCandidatesAreIndependentValues(t *testing.T) {
 		}
 		providers[c.ProviderID] = struct{}{}
 	}
-	costs := make(map[*production.Candidate]float64, len(first.Candidates))
+	quotes := make(map[*production.Candidate]production.PlanEntry, len(first.Candidates))
 	for _, c := range first.Candidates {
-		costs[c] = c.Quote().CostMs
+		quote := c.Quote()
+		p := registered[c.ProviderID]
+		p.Mu().Lock()
+		if quote.ChipFamily != p.Hardware.ChipFamily || quote.SlotState != p.BackendCapacity.Slots[0].State || !quote.ModelLoaded {
+			p.Mu().Unlock()
+			t.Fatalf("retained quote mixes another provider's evaluation: %+v", quote)
+		}
+		quotes[c] = quote
+		// Both the next scan's scratch snapshot and live provider data change.
+		// The original scan owns all of its quote values after either change.
+		p.Hardware.ChipFamily = "changed-family"
+		p.BackendCapacity.Slots[0].State = "running"
+		p.BackendCapacity.Slots[0].ObservedDecodeTPS *= 2
+		p.Mu().Unlock()
 	}
 	second := scan()
 	if len(second.Candidates) != len(first.Candidates) {
 		t.Fatalf("second scan pool size = %d, want %d", len(second.Candidates), len(first.Candidates))
 	}
 	for _, c := range first.Candidates {
-		if c.Quote().CostMs != costs[c] {
-			t.Fatal("a second scan mutated the first scan's retained candidates")
+		if got := c.Quote(); got != quotes[c] {
+			t.Fatalf("a second scan mutated the first scan's retained quote: got %+v, want %+v", got, quotes[c])
 		}
 	}
 }

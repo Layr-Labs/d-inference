@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -192,6 +192,15 @@ existing lock-scoped revalidation and debit algorithm in
 preparation must `Close`. Quote evidence stays separate from admission in the
 embedded `QuotePlan` (`coordinator/registry/quote_plan.go`); its immutable
 `CandidateBinding` never bypasses commit-time session checks.
+
+Private reservations own an exclusive storage borrower through scan, commit and
+detached result projection (`coordinator/registry/reservation_storage.go`). Public
+scans and decorated preparations keep ordinary GC-owned chunks. The arena retains
+compact `candidateSnapshot` values; full admission/forecast snapshots stay in
+transient evaluation storage. `pending_snapshot.go` assembles scalar pending work
+once under `Provider.mu`, and `capacityvalue.ServiceReport` borrows validation
+only within that same critical section. Neither adds persistent provider state or
+an independent admission authority. See [routing scan cost](../routing.md#scan-cost-per-candidate).
 
 Live membership has one `ProviderDirectory`
 (`coordinator/registry/provider_directory.go`, `Load`, `Store`, `Delete`), bound

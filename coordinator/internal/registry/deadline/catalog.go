@@ -46,10 +46,16 @@ type Identity struct {
 }
 
 func (c *Catalog) Qualified(identity Identity, model string) *Profile {
+	return c.qualified(&identity, model)
+}
+
+// qualified borrows immutable identity evidence for the current provider snapshot.
+func (c *Catalog) qualified(identity *Identity, model string) *Profile {
 	if c == nil || !NominalPosture(identity.Capacity, identity.Metrics) {
 		return nil
 	}
-	for _, slot := range identity.Capacity.Slots {
+	for i := range identity.Capacity.Slots {
+		slot := &identity.Capacity.Slots[i]
 		if slot.Model != model || slot.DeadlineProfile == nil || slot.KVBackend == nil {
 			continue
 		}
@@ -66,7 +72,8 @@ func (c *Catalog) Qualified(identity Identity, model string) *Profile {
 			!sameOptionalInt(profile.MinimumNominalStabilityMS, ref.MinimumNominalStabilityMS) || profile.PowerMode != ref.PowerMode {
 			return nil
 		}
-		for _, info := range identity.Models {
+		for i := range identity.Models {
+			info := &identity.Models[i]
 			if info.ID == model && info.WeightHash == profile.ArtifactSHA256 {
 				return profile
 			}

@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 The public HTTP surface of the coordinator, derived from its composed route bindings under `coordinator/api/`, including the `/v1/` catch-all. Every route is listed below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -523,6 +523,7 @@ are advertised provider/model pairs, not unique models or guaranteed cache hits.
 |---|---|---|
 | `artifact_allowlist.configured` | Whether the optional exact-artifact list is configured; `false` is unrestricted, `true` plus zero count denies all participation | `coordinator/api/inference/exact_cache_status.go` (`ExactCacheArtifactAllowlistStatus`) |
 | `artifact_allowlist.count` | Number of configured exact tuples; never returns their model IDs or hashes | Same |
+| `artifact_allowlist.stale_models` | While routing is `on`, the number of catalog models that the list names only under a superseded weight hash or prompt contract. Each stays out of cache routing until its live tuple is appended; the coordinator log names that tuple once | `coordinator/api/inference/exact_cache_allowlist_staleness.go` (`missingAllowlistEntries`); `coordinator/internal/registry/cachepolicy/artifacts.go` (`ArtifactAllowlist.StaleFor`) |
 | `providers.v2_ready_models` | Ready durable SSD capabilities; preserves the existing meaning | `coordinator/registry/cache_status.go` (`PrefixCacheProtocolStatus`) |
 | `providers.memory_ready_models` | Ready resident capabilities, counted separately from SSD readiness | `coordinator/registry/cache_status.go` (`PrefixCacheProtocolStatus`) |
 | `lifecycle.fences_applied` | Proof-fence windows opened or escalated | `coordinator/registry/cache_routing.go` (`CacheRoutingLifecycleStatus`); `coordinator/registry/cache_proof_fence.go` (`rejectCapability`) |
@@ -545,9 +546,10 @@ write-behind, restore and overflow guarantees are defined in
 [cache persistence](../architecture/cache-aware-routing.md#persistence-across-restarts).
 
 The artifact-list fields have Prometheus gauges
-`exact_cache_artifact_allowlist_configured`, `exact_cache_artifact_allowlist_count`
-and Datadog gauges `exact_cache.artifact_allowlist.configured`,
-`exact_cache.artifact_allowlist.count`; mode `off` remains authoritative
+`exact_cache_artifact_allowlist_configured`, `exact_cache_artifact_allowlist_count`,
+`exact_cache_artifact_allowlist_stale_models` and Datadog gauges
+`exact_cache.artifact_allowlist.configured`, `exact_cache.artifact_allowlist.count`,
+`exact_cache.artifact_allowlist.stale_models`; mode `off` remains authoritative
 (`coordinator/api/inference/exact_cache_metrics.go`).
 
 The additive resident count has Prometheus gauge

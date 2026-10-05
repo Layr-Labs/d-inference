@@ -84,12 +84,19 @@ Mac with the test checkpoints cached.
 
 The registry's `TestCacheAttemptBudget*` tests cover logical byte charging,
 checked arithmetic, exact-edge admission, immutable replacement/refunds and
-detached tracker storage. `TestCacheAttemptTrackedHashBytesStayWithinLogicalBudget`
+detached tracker storage. `TestCacheAttemptBudgetReclaimsFinishedRecordsBeforeRefusing`
+and `TestCacheAttemptBudgetRefusesWhenInFlightRecordsFillIt` check that a full
+budget gives a new request the earliest-expiring finished record's bytes but
+never an in-flight record's, and the status counters. The
+`TestCacheAttemptPressure*` controls and `TestIndependentTerminalGracePressure`
+exercise terminal-only reclamation, live-budget refusal, the 64-record work
+bound, terminal idempotence, late-READY rejection, immutable charges and both
+expiry orders. `TestCacheAttemptTrackedHashBytesStayWithinLogicalBudget`
 uses 137 attempts with 3,906 valid boundaries each to distinguish byte-bounded
 admission from the old count-only tracker; it allocates no model or million-token
 prompt. Run these with `go test -race ./coordinator/tests/registry -run
-'^TestCacheAttempt(Budget|TrackedHash|Nonce)' -count=1`, together with the
-existing cache preparation, ownership,
+'^(TestCacheAttempt(Budget|TrackedHash|Nonce|Pressure)|TestIndependentTerminalGracePressure)' -count=1`,
+together with the existing cache preparation, ownership,
 capability-generation and accepted-write cutoff regressions. Byte refusal must
 remain nil-error cold inference, with no cache metadata or calibration exclusion.
 These are logical state/ownership tests, not physical-memory measurements,

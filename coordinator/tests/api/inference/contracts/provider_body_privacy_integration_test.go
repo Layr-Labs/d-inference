@@ -302,7 +302,7 @@ func TestProviderBodyPrivacyDirectEncrypted(t *testing.T) {
 	} {
 		for _, stream := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/stream=%t", endpoint.name, stream), func(t *testing.T) {
-				body := fmt.Sprintf(`{"model":%q,%s,"stream":%t,"user":"synthetic-customer","metadata":{"app":"synthetic-app","conversation_id":"synthetic-ticket"},"temperature":0.10000000000000001}`, model, endpoint.fields, stream)
+				body := fmt.Sprintf(`{"model":%q,%s,"stream":%t,"safety_identifier":"synthetic-safety","prompt_cache_key":"synthetic-caller-key","user":"synthetic-customer","metadata":{"app":"synthetic-app","conversation_id":"synthetic-ticket"},"temperature":0.10000000000000001}`, model, endpoint.fields, stream)
 				body = strings.ReplaceAll(body, "hello", fmt.Sprintf("privacy-%s-%t", endpoint.name, stream))
 				before := fp.dispatchCount()
 				got := postPrivacyAndCapture(t, ctx, ts, fp, endpoint.path, "test-key", body)
@@ -313,6 +313,8 @@ func TestProviderBodyPrivacyDirectEncrypted(t *testing.T) {
 				want := forwardOracle(t, body, func(p map[string]any) {
 					delete(p, "user")
 					delete(p, "metadata")
+					delete(p, "safety_identifier")
+					delete(p, "prompt_cache_key")
 				})
 				if endpoint.kind != promptcontract.EndpointChatCompletions {
 					var err error
@@ -334,12 +336,14 @@ func TestProviderBodyPrivacyAliasFallback(t *testing.T) {
 				harness := newRuntimeDefaultsAliasHarness(t,
 					map[string]any{"reasoning_parser": "desired-reasoning", "tool_call_parser": "desired-tools"},
 					map[string]any{"reasoning_parser": "previous-reasoning", "tool_call_parser": "previous-tools"})
-				body := fmt.Sprintf(`{"model":%q,%s,"stream":%t,"user":"synthetic-customer","metadata":{"conversation_id":"synthetic-ticket"}}`, runtimeDefaultsAlias, endpoint.fields, stream)
+				body := fmt.Sprintf(`{"model":%q,%s,"stream":%t,"safety_identifier":"synthetic-safety","prompt_cache_key":"synthetic-caller-key","user":"synthetic-customer","metadata":{"conversation_id":"synthetic-ticket"}}`, runtimeDefaultsAlias, endpoint.fields, stream)
 				got := postPrivacyAndCapture(t, harness.ctx, harness.server, harness.providers[0], endpoint.path, "test-key", body)
 				assertCallerIdentityAbsent(t, got)
 				want := forwardOracle(t, body, func(p map[string]any) {
 					delete(p, "user")
 					delete(p, "metadata")
+					delete(p, "safety_identifier")
+					delete(p, "prompt_cache_key")
 					p["model"] = runtimeDefaultsPreviousModel
 					p["reasoning_parser"] = "previous-reasoning"
 					p["tool_call_parser"] = "previous-tools"

@@ -68,7 +68,7 @@ func budgetTestAttempt() indexKernelAttempt {
 func expectedBudgetCharge(nonce string, a indexKernelAttempt) uint64 {
 	value := uint64(2048 + 128 + 96*len(a.Plan.Boundaries))
 	for _, anchor := range a.Plan.Boundaries {
-		value += 2 * uint64(len(anchor.ChainHash))
+		value += uint64(len(anchor.ChainHash)) // slice and claims share one owned immutable clone
 	}
 	for _, scalar := range []string{nonce, a.RequestID, a.ProviderID, a.Model, a.Plan.AffinityKey(),
 		a.Plan.ModelAggregateHash, a.Plan.PromptContractID, a.Plan.CacheScope, a.ExpectedPrompt.ChainHash} {
@@ -149,6 +149,32 @@ func TestCacheAttemptBudgetExactEdgeReplacementAndRefund(t *testing.T) {
 	tracker.config.AttemptBudget.Store(^uint64(0) - 1)
 	if tracker.StoreAttemptLocked("first", a) {
 		t.Fatal("total accounting overflow accepted")
+	}
+}
+
+// A stored charge above the ledger total can only come from a broken
+// invariant. Planted in the actual directory under an unlimited limit, it must
+// neither admit a replacement nor, once refunded, leave room for any record.
+func TestCacheAttemptBudgetInconsistentLedgerGrantsNoAdmission(t *testing.T) {
+	a := budgetTestAttempt()
+	charge := expectedBudgetCharge("first", a)
+	tracker := budgetTestKernel(^uint64(0))
+	attempts, ledger := tracker.config.Attempts, tracker.config.AttemptBudget
+	if !tracker.StoreAttemptLocked("first", a) || ledger.Bytes() != charge {
+		t.Fatal("positive admission control failed")
+	}
+	inconsistent := attempts.Lookup("first")
+	inconsistent.AccountedBytes = ^uint64(0)
+	attempts.Store("first", inconsistent)
+	if tracker.StoreAttemptLocked("first", a) || ledger.Bytes() != charge {
+		t.Fatal("replacement of an incumbent charged above the ledger total was admitted")
+	}
+	tracker.RemoveAttemptLocked("first")
+	if ledger.Bytes() != ^uint64(0) || attempts.Len() != 0 {
+		t.Fatalf("inconsistent refund left ledger=%d records=%d, want saturation and no record", ledger.Bytes(), attempts.Len())
+	}
+	if tracker.StoreAttemptLocked("later", a) || attempts.Len() != 0 {
+		t.Fatal("saturated ledger admitted a record")
 	}
 }
 

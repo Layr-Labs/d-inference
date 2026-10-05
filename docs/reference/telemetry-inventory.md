@@ -175,6 +175,17 @@ collapse to `unknown`. No account, provider, request, cache scope, nonce, weight
 hash or prompt-derived identity is attached. Existing `exact_cache.*` metrics
 and the public cache status retain their aggregate-only contract.
 
+The retained cache-attempt ledger adds three aggregate gauges, each mirroring a
+`lifecycle` field of `/v1/cache/status` (`coordinator/api/inference/exact_cache_metrics.go`):
+`exact_cache_attempt_bytes` / Datadog `exact_cache.attempt_bytes` (logical bytes held
+against the 64 MiB budget), `exact_cache_attempt_budget_refused` /
+`exact_cache.attempt_budget_refused` (dispatches sent without a cache scope because
+the byte budget had no room for their record even counting up to 64 finished
+requests' records, or the record alone exceeds it) and
+`exact_cache_attempt_grace_reclaimed` / `exact_cache.attempt_grace_reclaimed`
+(finished requests' records reclaimed inside their terminal grace). They carry no
+labels; see [attempt-record memory accounting](../architecture/cache-aware-routing.md#attempt-record-memory-accounting).
+
 | Suffix | Labels besides `model` | Population / interpretation |
 |---|---|---|
 | `planning_decision` | `reason` | Same post-preflight population and closed reasons as the aggregate planning-decision metric. The existing catalog-bounded model label is captured once at helper entry, not taken from the caller alias. |

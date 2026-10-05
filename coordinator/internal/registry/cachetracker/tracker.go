@@ -21,6 +21,7 @@ type Config[P comparable] struct {
 	Attempts         *cacheindex.Records[string, Attempt[P]]
 	HolderOrder      *cacheindex.Order[cacheindex.HolderRef, cacheindex.HolderRef]
 	AttemptOrder     *cacheindex.Order[cacheindex.AttemptRef, string]
+	TerminalOrder    *cacheindex.Order[cacheindex.AttemptRef, string]
 	HolderProviders  *cacheindex.ProviderIndex[*cacheindex.Entry[cacheindex.HolderRef]]
 	AttemptProviders *cacheindex.ProviderIndex[*cacheindex.Entry[cacheindex.AttemptRef]]
 	Sequences        *cacheindex.Records[SequenceKey, uint64]
@@ -44,11 +45,13 @@ type Tracker[P comparable] struct {
 	attempts                                     *cacheindex.Records[string, Attempt[P]]
 	holderOrder                                  *cacheindex.Order[cacheindex.HolderRef, cacheindex.HolderRef]
 	attemptOrder                                 *cacheindex.Order[cacheindex.AttemptRef, string]
+	terminalOrder                                *cacheindex.Order[cacheindex.AttemptRef, string]
 	holdersByProvider                            *cacheindex.ProviderIndex[*cacheindex.Entry[cacheindex.HolderRef]]
 	attemptsByProvider                           *cacheindex.ProviderIndex[*cacheindex.Entry[cacheindex.AttemptRef]]
 	v2Sequences                                  *cacheindex.Records[SequenceKey, uint64]
 	proofs                                       *Proofs
 	attemptBudget                                *AttemptBudget
+	attemptBudgetRefused, attemptGraceReclaimed  uint64
 	holderAdded                                  uint64
 	holderRemoved                                map[string]uint64
 	ssdLookups, ssdHits, ssdMisses, ssdDonations uint64
@@ -91,7 +94,7 @@ func New[P comparable](config Config[P]) *Tracker[P] {
 	return &Tracker[P]{generation: config.Generation, ttl: config.TTL,
 		maxHolders: config.MaxHolders, maxEntries: config.MaxEntries, maxAttempts: config.MaxAttempts,
 		clock: config.Now, holders: config.Holders, attempts: config.Attempts,
-		holderOrder: config.HolderOrder, attemptOrder: config.AttemptOrder,
+		holderOrder: config.HolderOrder, attemptOrder: config.AttemptOrder, terminalOrder: config.TerminalOrder,
 		holdersByProvider: config.HolderProviders, attemptsByProvider: config.AttemptProviders,
 		v2Sequences: config.Sequences, proofs: config.Proofs, attemptBudget: config.AttemptBudget,
 		holderRemoved: make(map[string]uint64), donationOutcomes: make(map[string]uint64)}

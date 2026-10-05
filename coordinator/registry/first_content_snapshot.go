@@ -1,24 +1,29 @@
 package registry
 
-import "time"
+import (
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/capacityvalue"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/forecast"
+)
 
 // fillFirstContentSnapshot is part of the ordinary snapshot lock, never an
 // additional provider read. Whole-Mac service work uses bounded expected output
 // demand, not maximum-token memory commitments. Reported/local work overlap is
 // reconciled per model with max, so one request is not charged twice.
-func (r *Registry) fillFirstContentSnapshot(s *routingSnapshot, p *Provider, now time.Time) {
+func (r *Registry) fillFirstContentSnapshot(s *routingSnapshot, p *Provider, now time.Time, pendingWork []forecast.PendingWork, report capacityvalue.ServiceReport) {
 	s.capacityAcceptedAt, s.capacitySeq = p.CapacityAcceptedAt, p.capacitySeq
-	s.transportMs, s.conservativeTransportMs, s.transportAgeMs = transportForecast(p.transport, now)
+	s.transportMs, s.conservativeTransportMs, s.transportAgeMs = p.transport.Forecast(now)
 	s.capacityAgeMs, s.performanceAgeMs = -1, -1
 	s.contendedPerformanceAgeMs = -1
 	s.promptWorkArtifactHash, s.promptWorkContractID = providerPromptWorkIdentityLocked(p, s.model)
 	if !p.CapacityAcceptedAt.IsZero() {
 		s.capacityAgeMs = heartbeatAgeMs(now, p.CapacityAcceptedAt)
 	}
-	if sample, ok := p.firstContentMeasurements[s.model]; ok && !sample.observedAfter.IsZero() && !sample.decodeObservedAfter.IsZero() {
-		s.performanceAgeMs = max(heartbeatAgeMs(now, sample.observedAfter), heartbeatAgeMs(now, sample.decodeObservedAfter))
+	if sample, ok := p.firstContentMeasurements.Lookup(s.model); ok && !sample.ObservedAfter.IsZero() && !sample.DecodeObservedAfter.IsZero() {
+		s.performanceAgeMs = max(heartbeatAgeMs(now, sample.ObservedAfter), heartbeatAgeMs(now, sample.DecodeObservedAfter))
 	}
-	s.evidenceGapAgeMs = firstContentEvidenceGapAgeMs(s, p.registeredAt, now)
+	s.evidenceGapAgeMs = firstContentEvidenceGapAgeMs(s, p.connectionOrigin, now)
 	capacity := p.BackendCapacity
 	if capacity == nil {
 		return
@@ -26,31 +31,16 @@ func (r *Registry) fillFirstContentSnapshot(s *routingSnapshot, p *Provider, now
 	// Idle slot counters do not prove retirement: service leases can outlive
 	// consumer terminals, and model loading can start before a slot appears.
 	// Legacy providers may omit service fields; their slot evidence still applies.
-	s.wholeMacBusy = len(p.serviceRetirementShadows) > 0 ||
+	s.wholeMacBusy = p.serviceRetirement.Account(nil).Retiring > 0 ||
 		(capacity.WholeMacServiceUsed != nil && *capacity.WholeMacServiceUsed != 0) ||
 		len(capacity.WholeMacServiceReservations) > 0 ||
 		(capacity.LoadTransitionActive != nil && *capacity.LoadTransitionActive)
-	fillCalibratedWorkSnapshot(s, p, now)
-	s.wholeMacWorkKnown = len(capacity.Slots) > 0
+	fillCalibratedWorkSnapshot(s, p, now, report)
+	builder := forecast.NewWorkBuilder(s.model, capacity, p.CapacityAcceptedAt, s.decodeTPS, s.prefillTPS, s.wholeMacBusy)
 	for i := range capacity.Slots {
 		slot := &capacity.Slots[i]
 		t := slot.Telemetry
 		known := t != nil && t.QueuedPrefillTokens != nil && t.PartialPrefillRows != nil
-		busy := slot.NumRunning > 0 || slot.NumWaiting > 0 || slot.EvalInFlightMs > 0 ||
-			slot.IdleClearInFlightMs > 0 || slot.WedgeSuspected
-		if t != nil {
-			busy = busy || (t.QueuedPrefillTokens != nil && *t.QueuedPrefillTokens > 0) ||
-				(t.PartialPrefillRows != nil && *t.PartialPrefillRows > 0)
-		}
-		// An unrelated idle_shutdown slot has evicted its weights and does not
-		// compete for execution. Its missing telemetry is not missing evidence
-		// about active work. Positive activity signals override that state, and
-		// local reservations are still accounted below even for dormant slots.
-		dormant := slot.Model != s.model && slot.State == "idle_shutdown" && !busy
-		if !dormant {
-			s.wholeMacWorkKnown = s.wholeMacWorkKnown && known
-			s.wholeMacBusy = s.wholeMacBusy || busy || !slotStateModelLoaded(slot.State)
-		}
 		if slot.Model == s.model {
 			s.prefillWorkloadRates = snapshotPrefillWorkloadRates(slot.PerformanceMeasurements, p.CapacityAcceptedAt)
 			s.modelLoadMs = float64(slot.ModelLoadTimeMS)
@@ -68,82 +58,30 @@ func (r *Registry) fillFirstContentSnapshot(s *routingSnapshot, p *Provider, now
 				}
 				s.isolatedPrefillInitialized = t.EWMAInitialized != nil && *t.EWMAInitialized
 				if measurements := slot.PerformanceMeasurements; measurements != nil {
-					s.isolatedPrefillInitialized = validPerformanceObservation(measurements.IsolatedPrefill)
+					s.isolatedPrefillInitialized = capacityvalue.ValidPerformanceObservation(measurements.IsolatedPrefill)
 					if s.isolatedPrefillInitialized {
 						s.isolatedPrefillTPS = measurements.IsolatedPrefill.TokensPerSecond
 					}
 				}
 			}
 		}
-		// The ordinary snapshot already resolved registration/hardware defaults.
-		// Read this canonical slot directly instead of walking/copying all slots
-		// again for every co-resident model.
-		decode, prefill := s.decodeTPS, s.prefillTPS
-		if slot.ObservedDecodeTPS > 0 {
-			decode = slot.ObservedDecodeTPS
+		builder.BeginSlot(i)
+		for _, pending := range pendingWork {
+			builder.Pending(pending)
 		}
-		if slot.ObservedPrefillTPS > 0 {
-			prefill = slot.ObservedPrefillTPS
-		}
-		decode, prefill = max(1, decode), max(1, prefill)
-		reported := float64(max(0, slot.NumRunning)+max(0, slot.NumWaiting)) * defaultRequestedMaxTokens / decode * 1000
-		if t != nil && t.QueuedPrefillTokens != nil {
-			reported += float64(max(0, *t.QueuedPrefillTokens)) / prefill * 1000
-		}
-		local, unreported := 0.0, 0.0
-		localCount, unreportedCount := 0, 0
-		for _, pending := range p.pendingReqs {
-			if pending.Model == slot.Model {
-				work := firstContentPendingServiceMs(pending, decode, prefill)
-				if !p.CapacityAcceptedAt.IsZero() && !pending.reservedAt.Before(p.CapacityAcceptedAt) {
-					// Work reserved after this capacity frame cannot already be in
-					// its counters. Reconcile overlap, then add known new work.
-					unreported += work
-					unreportedCount++
-				} else {
-					local += work
-					localCount++
-				}
-			}
-		}
-		if slot.Model != s.model {
-			s.otherModelOccupancy += max(localCount, int(max(0, slot.NumRunning)+max(0, slot.NumWaiting))) + unreportedCount
-		}
-		s.wholeMacServiceMs += max(reported, local) + unreported
+		builder.EndSlot()
 	}
-	// Reservations for a cold/unreported model still consume this Mac's work.
-	for _, pending := range p.pendingReqs {
-		present := false
-		for i := range capacity.Slots {
-			if capacity.Slots[i].Model == pending.Model {
-				present = true
-				break
-			}
-		}
-		if !present {
-			s.wholeMacServiceMs += firstContentPendingServiceMs(pending, max(1, s.decodeTPS), max(1, s.prefillTPS))
-			if pending.Model != s.model {
-				s.otherModelOccupancy++
-			}
-		}
-		// Exact GPU progress of local reservations is not known, even when the
-		// latest idle heartbeat has not reflected them yet.
-		s.wholeMacBusy = true
+	for _, pending := range pendingWork {
+		builder.UnreportedPending(pending)
 	}
+	work := builder.Finish()
+	s.wholeMacWorkKnown, s.wholeMacBusy = work.WholeMacKnown, work.WholeMacBusy
+	s.otherModelOccupancy += work.OtherModelOccupancy
+	s.wholeMacServiceMs += work.ServiceMS
 }
 
-func firstContentPendingServiceMs(pr *PendingRequest, decode, prefill float64) float64 {
-	output := defaultRequestedMaxTokens
-	if pr.RequestedMaxTokens > 0 {
-		output = min(output, pr.RequestedMaxTokens)
-	}
-	work := float64(output) / decode * 1000
-	if !pr.ContentCommittedSafe() {
-		prompt := float64(max(0, pr.EstimatedPromptTokens))
-		if pr.reservedPrefillKnown {
-			prompt = pr.reservedPrefillTokens
-		}
-		work += prompt/prefill*1000 + pr.reservedPrefillRestoreMs
-	}
-	return work
+func firstContentPendingWork(pr *PendingRequest) forecast.PendingWork {
+	return forecast.PendingWork{Model: pr.Model, ReservedAt: pr.reservedAt, RequestedMaxTokens: pr.RequestedMaxTokens,
+		EstimatedPromptTokens: pr.EstimatedPromptTokens, ContentCommitted: pr.ContentCommittedSafe(),
+		ReservedPrefillKnown: pr.reservedPrefillKnown, ReservedPrefillTokens: pr.reservedPrefillTokens, ReservedPrefillRestoreMS: pr.reservedPrefillRestoreMs}
 }

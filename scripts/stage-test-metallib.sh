@@ -13,14 +13,16 @@ staging_file=""
 trap 'test -z "$staging_file" || rm -f "$staging_file"' EXIT
 trap 'exit 143' HUP INT TERM
 found=0
-for bundle in "$bin_directory"/*PackageTests.xctest; do
+# Native SwiftPM writes one <Package>PackageTests.xctest; Swift Build writes one
+# <Target>.xctest per test target. cp -c clones on APFS and copies elsewhere.
+for bundle in "$bin_directory"/*.xctest; do
     [ -d "$bundle" ] || continue
     for destination in "$bundle/Contents/MacOS/mlx.metallib" \
         "$bundle/Contents/Resources/mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib"; do
         directory=$(dirname "$destination")
         mkdir -p "$directory"
         staging_file=$(mktemp "$directory/.mlx-metallib.XXXXXX")
-        cp "$bin_directory/mlx.metallib" "$staging_file"
+        cp -c "$bin_directory/mlx.metallib" "$staging_file"
         cmp -s "$bin_directory/mlx.metallib" "$staging_file"
         mv -f "$staging_file" "$destination"
         staging_file=""

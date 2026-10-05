@@ -46,7 +46,7 @@ struct DeadlineDecisionProfileTests {
             .deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent("coordinator/protocol/testdata/deadline_unbounded_reasons.json")
+            .appendingPathComponent("coordinator/tests/protocol/testdata/deadline_unbounded_reasons.json")
         struct Fixture: Decodable { let reasons: [String] }
         let fixture = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: fixtureURL))
         #expect(DeadlineUnboundedReason.allCases.map(\.rawValue) == fixture.reasons)

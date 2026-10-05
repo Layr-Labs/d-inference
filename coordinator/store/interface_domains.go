@@ -1,13 +1,7 @@
 package store
 
-// Domain sub-interfaces composed into Store (see interface.go).
-//
-// Store was a ~150-method god-interface that forced parallel memory.go /
-// postgres.go implementations and gave callers no way to depend on a narrow
-// slice of the persistence surface. It is split here into cohesive,
-// single-domain sub-interfaces; Store embeds all of them, so the full method
-// set — and both implementations — are unchanged. The split is purely
-// organizational: every method keeps its exact signature and semantics.
+// Domain sub-interfaces are composed into Store (see interface.go), allowing
+// callers to depend on a narrow persistence contract without choosing a backend.
 
 import (
 	"context"

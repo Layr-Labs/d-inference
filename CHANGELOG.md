@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased - cache-routing stale evidence
+
+- Revalidate copied cache-routing hints after an accepted miss or shorter hit removes their holder, so a prepared reservation cannot retain the removed endpoint's prefill credit. Preserve unaffected endpoint and other-provider evidence, persistent cache epochs, physical admission and billing.
+
 ## Unreleased - nightly Linear workflow
 
 - Package one-time Codex setup and a nightly playbook that reconciles work from Codex, Claude Code, and Pi with each teammate's Linear. Reuse existing issues and route unclassified deliverables to Others.

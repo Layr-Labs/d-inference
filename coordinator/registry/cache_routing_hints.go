@@ -141,6 +141,7 @@ func CacheHintsForMatches(plan CachePlan, matches []cacheRoutingMatch,
 		// the provider does not accept a coordinator-selected endpoint today.
 		out[holder.ProviderID] = cacheRoutingHint{
 			generation:         plan.Provenance(),
+			evidence:           holder.Evidence,
 			ExpiresAt:          holder.ExpiresAt,
 			PrefillTokensSaved: holder.Anchor.TokenCount - holder.RequiredRecomputeTokens,
 			CachedTokens:       holder.Anchor.TokenCount,
@@ -155,10 +156,11 @@ func CacheHintsForMatches(plan CachePlan, matches []cacheRoutingMatch,
 	return out
 }
 
-// CurrentForProviderLocked fences configuration, capability changes and quarantine after the
+// CurrentForProviderLocked fences holder loss, configuration, capability changes and quarantine after the
 // unlocked holder query. Both scan and reservation hold provider.mu here.
 func (hint CacheRoutingHint) CurrentForProviderLocked(provider *Provider, model string) bool {
 	if provider == nil || hint.Provider != provider ||
+		!hint.evidence.Current() ||
 		hint.generation == nil || !hint.generation.Active() {
 		return false
 	}

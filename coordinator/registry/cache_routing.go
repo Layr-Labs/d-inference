@@ -109,6 +109,7 @@ type cacheV2ProviderModelKey = cachetracker.FenceKey
 // remains private and is revalidated when the scheduler applies its credit.
 type CacheRoutingHint struct {
 	generation cacheattempt.Gate
+	evidence   *cachetracker.HolderEvidence
 	ExpiresAt  time.Time
 	// Frozen at holder lookup; pricing never re-reads the clock at reservation.
 	EvidenceWeight     float64

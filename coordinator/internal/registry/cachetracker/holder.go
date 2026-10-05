@@ -1,10 +1,19 @@
 package cachetracker
 
 import (
+	"sync/atomic"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
+
+// HolderEvidence follows one indexed receipt record into copied routing hints.
+// Revocation is read without taking the tracker lock under the provider lock.
+type HolderEvidence struct {
+	revoked atomic.Bool
+}
+
+func (e *HolderEvidence) Current() bool { return e != nil && !e.revoked.Load() }
 
 // Measurement is immutable lookup evidence. A Ready refresh may share it with
 // the same holder, but cannot renew its expiry or change its capability binding.
@@ -39,6 +48,7 @@ type Holder[P comparable] struct {
 	RequiredRecomputeTokens int
 	StageMs                 float64
 	Measurement             *Measurement
+	Evidence                *HolderEvidence
 	UpdatedAt               time.Time
 	ExpiresAt               time.Time
 }

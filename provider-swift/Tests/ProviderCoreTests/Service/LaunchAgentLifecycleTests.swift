@@ -193,11 +193,7 @@ struct LaunchAgentLifecycleTests {
             do {
                 try LaunchAgent.installAndStart(coordinatorURL: "ws://127.0.0.1:1/ws/provider")
                 Issue.record("expected bootstrapFailed")
-            } catch let error as LaunchAgentError {
-                guard case .bootstrapFailed(let detail) = error else {
-                    Issue.record("expected bootstrapFailed, got \(error)")
-                    return
-                }
+            } catch LaunchAgentError.bootstrapFailed(let detail) {
                 #expect(detail == "Bootstrap failed: 5: Input/output error")
             }
         }
@@ -213,11 +209,7 @@ struct LaunchAgentLifecycleTests {
             do {
                 try LaunchAgent.installAndStart(coordinatorURL: "ws://127.0.0.1:1/ws/provider")
                 Issue.record("expected kickstartFailed")
-            } catch let error as LaunchAgentError {
-                guard case .kickstartFailed(let detail) = error else {
-                    Issue.record("expected kickstartFailed, got \(error)")
-                    return
-                }
+            } catch LaunchAgentError.kickstartFailed(let detail) {
                 #expect(detail == "kickstart refused")
             }
         }
@@ -232,11 +224,7 @@ struct LaunchAgentLifecycleTests {
             do {
                 try LaunchAgent.installAndStart(coordinatorURL: "ws://127.0.0.1:1/ws/provider")
                 Issue.record("expected kickstartFailed")
-            } catch let error as LaunchAgentError {
-                guard case .kickstartFailed(let detail) = error else {
-                    Issue.record("expected kickstartFailed, got \(error)")
-                    return
-                }
+            } catch LaunchAgentError.kickstartFailed(let detail) {
                 #expect(detail.hasPrefix("could not run launchctl kickstart:"))
             }
         }
@@ -276,11 +264,7 @@ struct LaunchAgentLifecycleTests {
             do {
                 try LaunchAgent.stop()
                 Issue.record("expected disableFailed")
-            } catch let error as LaunchAgentError {
-                guard case .disableFailed(let detail) = error else {
-                    Issue.record("expected disableFailed, got \(error)")
-                    return
-                }
+            } catch LaunchAgentError.disableFailed(let detail) {
                 #expect(detail == "not permitted")
             }
         }
@@ -307,11 +291,7 @@ struct LaunchAgentLifecycleTests {
             do {
                 try LaunchAgent.stop()
                 Issue.record("expected bootoutFailed")
-            } catch let error as LaunchAgentError {
-                guard case .bootoutFailed(let detail) = error else {
-                    Issue.record("expected bootoutFailed, got \(error)")
-                    return
-                }
+            } catch LaunchAgentError.bootoutFailed(let detail) {
                 #expect(detail == "Boot-out failed: 150: Operation not permitted")
             }
         }
@@ -356,11 +336,7 @@ struct LaunchAgentLifecycleTests {
             do {
                 try LaunchAgent.restart()
                 Issue.record("expected kickstartFailed")
-            } catch let error as LaunchAgentError {
-                guard case .kickstartFailed(let detail) = error else {
-                    Issue.record("expected kickstartFailed, got \(error)")
-                    return
-                }
+            } catch LaunchAgentError.kickstartFailed(let detail) {
                 #expect(detail == "enable refused")
             }
         }
@@ -376,11 +352,7 @@ struct LaunchAgentLifecycleTests {
             do {
                 try LaunchAgent.restart()
                 Issue.record("expected kickstartFailed")
-            } catch let error as LaunchAgentError {
-                guard case .kickstartFailed(let detail) = error else {
-                    Issue.record("expected kickstartFailed, got \(error)")
-                    return
-                }
+            } catch LaunchAgentError.kickstartFailed(let detail) {
                 #expect(detail == "Could not kickstart service: 1: Operation not permitted")
             }
         }
@@ -405,12 +377,7 @@ struct LaunchAgentLifecycleTests {
             do {
                 try LaunchAgent.restart()
                 Issue.record("expected notInstalled")
-            } catch let error as LaunchAgentError {
-                guard case .notInstalled = error else {
-                    Issue.record("expected notInstalled, got \(error)")
-                    return
-                }
-            }
+            } catch LaunchAgentError.notInstalled {}
         }
         #expect(launchctl.verbs == ["print"])
     }
@@ -424,12 +391,7 @@ struct LaunchAgentLifecycleTests {
             do {
                 try LaunchAgent.restartAfterDrain()
                 Issue.record("expected notInstalled")
-            } catch let error as LaunchAgentError {
-                guard case .notInstalled = error else {
-                    Issue.record("expected notInstalled, got \(error)")
-                    return
-                }
-            }
+            } catch LaunchAgentError.notInstalled {}
         }
         #expect(launchctl.recorded.isEmpty)
     }

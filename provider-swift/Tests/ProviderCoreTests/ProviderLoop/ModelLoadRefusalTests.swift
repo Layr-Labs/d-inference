@@ -96,7 +96,7 @@ struct ModelLoadRefusalTests {
 
         let load = Task { try await loop.ensureModelLoaded(modelId: id) }
         let parked = await modelLoadingWaitUntil { await loop.modelLoadingUnloadWaiterCount(id) == 1 }
-        #expect(parked)
+        try #require(parked)
 
         let stub = makeInertStubBridge(modelId: id)
         await loop.modelLoadingInstallSlot(id, bridge: stub.bridge)
@@ -117,7 +117,7 @@ struct ModelLoadRefusalTests {
 
         let load = Task { try await loop.ensureModelLoaded(modelId: id) }
         let parked = await modelLoadingWaitUntil { await loop.modelLoadingUnloadWaiterCount(id) == 1 }
-        #expect(parked)
+        try #require(parked)
 
         await loop.beginShutdownForTesting()
         await loop.modelLoadingFinishUnloading(id)
@@ -138,7 +138,7 @@ struct ModelLoadRefusalTests {
 
         let load = Task { try await loop.ensureModelLoaded(modelId: id) }
         let parked = await modelLoadingWaitUntil { await loop.modelLoadingLoadingWaiterCount(id) == 1 }
-        #expect(parked)
+        try #require(parked)
 
         let stub = makeInertStubBridge(modelId: id)
         await loop.modelLoadingInstallSlot(id, bridge: stub.bridge)
@@ -160,7 +160,7 @@ struct ModelLoadRefusalTests {
 
         let load = Task { try await loop.ensureModelLoaded(modelId: id) }
         let parked = await modelLoadingWaitUntil { await loop.modelLoadingLoadingWaiterCount(id) == 1 }
-        #expect(parked)
+        try #require(parked)
 
         await loop.modelLoadingClearLoading(id)
         await loop.modelLoadingResumeLoadingWaiters(id, failure: "first load failed")
@@ -184,7 +184,7 @@ struct ModelLoadRefusalTests {
 
         let load = Task { try await loop.ensureModelLoaded(modelId: id) }
         let parked = await modelLoadingWaitUntil { await loop.modelLoadingLoadingWaiterCount(id) == 1 }
-        #expect(parked)
+        try #require(parked)
 
         await loop.beginShutdownForTesting()
         await loop.modelLoadingResumeLoadingWaiters(id)
@@ -202,7 +202,7 @@ struct ModelLoadRefusalTests {
 
         let load = Task { try await loop.ensureModelLoaded(modelId: id) }
         let parked = await modelLoadingWaitUntil { await loop.modelLoadingLoadingWaiterCount(id) == 1 }
-        #expect(parked)
+        try #require(parked)
 
         await loop.markRetiringForTesting(id)
         let stub = makeInertStubBridge(modelId: id)
@@ -230,7 +230,7 @@ struct ModelLoadRefusalTests {
 
         let load = Task { try await loop.ensureModelLoaded(modelId: id) }
         let parked = await modelLoadingWaitUntil { await loop.modelLoadingLoadingWaiterCount(id) == 1 }
-        #expect(parked)
+        try #require(parked)
 
         await loop.modelLoadingClearLoading(id)
         await loop.modelLoadingResumeLoadingWaiters(id)
@@ -256,7 +256,7 @@ struct ModelLoadRefusalTests {
 
         let load = Task { try await loop.ensureModelLoaded(modelId: id, revisionDirectory: directory) }
         let parked = await modelLoadingWaitUntil { await loop.modelLoadingLoadGateWaiterCount() == 1 }
-        #expect(parked)
+        try #require(parked)
 
         let stub = makeInertStubBridge(modelId: id)
         await loop.modelLoadingInstallSlot(id, bridge: stub.bridge)
@@ -283,7 +283,7 @@ struct ModelLoadRefusalTests {
 
         let load = Task { try await loop.ensureModelLoaded(modelId: id, revisionDirectory: directory) }
         let parked = await modelLoadingWaitUntil { await loop.modelLoadingLoadGateWaiterCount() == 1 }
-        #expect(parked)
+        try #require(parked)
 
         await loop.beginShutdownForTesting()
         await loop.releaseLoadGateWaiters()

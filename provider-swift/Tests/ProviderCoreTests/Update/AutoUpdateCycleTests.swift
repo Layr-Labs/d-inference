@@ -72,6 +72,22 @@ private func startMock(
     return (mock, baseURL)
 }
 
+/// Run one cycle against the fixture install and the mock at `baseURL`, with
+/// the injected launchd baseline. Each test supplies its own restart.
+private func runAutoUpdateCycle(
+    _ loop: ProviderLoop,
+    fixture: UpdateRecoveryFixture,
+    baseURL: URL,
+    restart: @escaping @Sendable () throws -> Void
+) async -> AutoUpdateController.Outcome {
+    await loop.performAutoUpdateCheck(
+        coordinatorURL: baseURL.absoluteString,
+        updater: fixture.updater(baseURL: baseURL),
+        launchSnapshot: { injectedBaseline },
+        restart: restart
+    )
+}
+
 // MARK: - Tests
 
 @Suite("Auto-update cycle", .serialized)
@@ -88,12 +104,8 @@ struct AutoUpdateCycleTests {
 
         let loop = try makeAutoUpdateLoop()
         let restarts = RecoveryRestartCounter()
-        let outcome = await loop.performAutoUpdateCheck(
-            coordinatorURL: baseURL.absoluteString,
-            updater: fixture.updater(baseURL: baseURL),
-            launchSnapshot: { injectedBaseline },
-            restart: { _ = restarts.increment() }
-        )
+        let outcome = await runAutoUpdateCycle(
+            loop, fixture: fixture, baseURL: baseURL, restart: { _ = restarts.increment() })
 
         #expect(outcome == .upToDate)
         #expect(restarts.value == 0)
@@ -117,12 +129,8 @@ struct AutoUpdateCycleTests {
         defer { Task { await mock.shutdown() } }
 
         let loop = try makeAutoUpdateLoop()
-        let outcome = await loop.performAutoUpdateCheck(
-            coordinatorURL: baseURL.absoluteString,
-            updater: fixture.updater(baseURL: baseURL),
-            launchSnapshot: { injectedBaseline },
-            restart: {}
-        )
+        let outcome = await runAutoUpdateCycle(
+            loop, fixture: fixture, baseURL: baseURL, restart: {})
 
         guard case .checkFailed(let reason) = outcome else {
             Issue.record("expected checkFailed, got \(outcome)")
@@ -153,12 +161,8 @@ struct AutoUpdateCycleTests {
         defer { Task { await mock.shutdown() } }
 
         let loop = try makeAutoUpdateLoop()
-        let outcome = await loop.performAutoUpdateCheck(
-            coordinatorURL: baseURL.absoluteString,
-            updater: fixture.updater(baseURL: baseURL),
-            launchSnapshot: { injectedBaseline },
-            restart: {}
-        )
+        let outcome = await runAutoUpdateCycle(
+            loop, fixture: fixture, baseURL: baseURL, restart: {})
 
         #expect(outcome == .quarantined(fixture.newVersion))
         #expect(await loop.updatePhase == .idle)
@@ -176,12 +180,8 @@ struct AutoUpdateCycleTests {
         defer { Task { await mock.shutdown() } }
 
         let loop = try makeAutoUpdateLoop()
-        let outcome = await loop.performAutoUpdateCheck(
-            coordinatorURL: baseURL.absoluteString,
-            updater: fixture.updater(baseURL: baseURL),
-            launchSnapshot: { injectedBaseline },
-            restart: {}
-        )
+        let outcome = await runAutoUpdateCycle(
+            loop, fixture: fixture, baseURL: baseURL, restart: {})
 
         guard case .stageFailed(let reason) = outcome else {
             Issue.record("expected stageFailed, got \(outcome)")
@@ -205,12 +205,8 @@ struct AutoUpdateCycleTests {
 
         let loop = try makeAutoUpdateLoop()
         let restarts = RecoveryRestartCounter()
-        let outcome = await loop.performAutoUpdateCheck(
-            coordinatorURL: baseURL.absoluteString,
-            updater: fixture.updater(baseURL: baseURL),
-            launchSnapshot: { injectedBaseline },
-            restart: { _ = restarts.increment() }
-        )
+        let outcome = await runAutoUpdateCycle(
+            loop, fixture: fixture, baseURL: baseURL, restart: { _ = restarts.increment() })
 
         #expect(outcome == .restarted(from: "1.0.0", to: "2.0.0", drained: true))
         #expect(restarts.value == 1)
@@ -237,12 +233,8 @@ struct AutoUpdateCycleTests {
         defer { Task { await mock.shutdown() } }
 
         let loop = try makeAutoUpdateLoop()
-        let first = await loop.performAutoUpdateCheck(
-            coordinatorURL: baseURL.absoluteString,
-            updater: fixture.updater(baseURL: baseURL),
-            launchSnapshot: { injectedBaseline },
-            restart: { throw InjectedRestartFailure() }
-        )
+        let first = await runAutoUpdateCycle(
+            loop, fixture: fixture, baseURL: baseURL, restart: { throw InjectedRestartFailure() })
 
         guard case .restartFailed(let reason) = first else {
             Issue.record("expected restartFailed, got \(first)")
@@ -259,12 +251,8 @@ struct AutoUpdateCycleTests {
         // The binary on disk is already v2 while this process is v1: the
         // next tick drains and restarts without a new download.
         let restarts = RecoveryRestartCounter()
-        let second = await loop.performAutoUpdateCheck(
-            coordinatorURL: baseURL.absoluteString,
-            updater: fixture.updater(baseURL: baseURL),
-            launchSnapshot: { injectedBaseline },
-            restart: { _ = restarts.increment() }
-        )
+        let second = await runAutoUpdateCycle(
+            loop, fixture: fixture, baseURL: baseURL, restart: { _ = restarts.increment() })
 
         #expect(second == .restarted(from: "1.0.0", to: "2.0.0", drained: true))
         #expect(restarts.value == 1)
@@ -285,12 +273,8 @@ struct AutoUpdateCycleTests {
 
         let loop = try makeAutoUpdateLoop()
         let restarts = RecoveryRestartCounter()
-        let outcome = await loop.performAutoUpdateCheck(
-            coordinatorURL: baseURL.absoluteString,
-            updater: fixture.updater(baseURL: baseURL),
-            launchSnapshot: { injectedBaseline },
-            restart: { _ = restarts.increment() }
-        )
+        let outcome = await runAutoUpdateCycle(
+            loop, fixture: fixture, baseURL: baseURL, restart: { _ = restarts.increment() })
 
         #expect(outcome == .alreadyRunning)
         #expect(restarts.value == 0)

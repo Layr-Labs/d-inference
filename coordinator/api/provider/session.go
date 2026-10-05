@@ -15,6 +15,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
+	"github.com/eigeninference/d-inference/coordinator/store"
 	"nhooyr.io/websocket"
 )
 
@@ -198,17 +199,27 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 			// only this validated account may select either cohort.
 			authenticatedAccountID, authenticatedTokenLabel := "", ""
 			accountResolved := false
-			resolveAccount := func() {
-				accountResolved = true
+			resolveAccount := func() bool {
 				pt, err := s.store.GetProviderToken(regMsg.AuthToken)
+				if err != nil && !errors.Is(err, store.ErrProviderTokenInvalid) {
+					// Retry on a new connection, before an unavailable account can
+					// permanently select the wrong authorization cohort.
+					s.logger.Warn("provider token lookup unavailable", "provider_id", providerID)
+					_ = conn.Close(websocket.StatusTryAgainLater, "provider state temporarily unavailable")
+					return false
+				}
+				accountResolved = true
 				if err != nil || pt == nil || !pt.Active {
-					s.logger.Warn("provider auth token invalid", "provider_id", providerID, "error", err)
+					s.logger.Warn("provider auth token invalid", "provider_id", providerID)
 				} else {
 					authenticatedAccountID, authenticatedTokenLabel = pt.AccountID, pt.Label
 				}
+				return true
 			}
 			if regMsg.AuthToken != "" && (s.trust.LegacyMDM.Initialized() || s.trust.AppAttestFeature().NeedsIdentityAccount(regMsg)) {
-				resolveAccount()
+				if !resolveAccount() {
+					return
+				}
 			}
 			provider = s.registry.Register(providerID, conn, regMsg)
 			if s.providerSocketsClosing() {
@@ -267,7 +278,9 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 			// post-restoration lookup. Never reroll either cohort through a
 			// second store read; frozen-policy sessions also clear stale linkage.
 			if regMsg.AuthToken != "" && !accountResolved {
-				resolveAccount()
+				if !resolveAccount() {
+					return
+				}
 			}
 			if s.trust.LegacyMDM.Initialized() || authenticatedAccountID != "" {
 				provider.Mu().Lock()

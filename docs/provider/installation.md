@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -111,16 +111,14 @@ The script performs these actions in order (`scripts/install.sh`; failures exit
 7. **Step 4/5 — verification setup.** `configure_device_verification` uses the
    local `sw_vers` major version. On macOS 27 or later it skips profile checks,
    download and System Settings, and directs the user to login/start/status for
-   App Attest approval. Older macOS retains legacy enrollment and prints the
-   upgrade option and upcoming MDM deactivation notice. If `profiles status
-   -type enrollment` reports no management, the script posts `{}` to
-   `$COORD_URL/v1/enroll`, saves the profile under
-   `${TMPDIR:-/tmp}/Darkbloom-Enroll.XXXXXX/`, and opens System Settings for
-   approval. Existing management is preserved without claiming it is Darkbloom
-   verification. Unknown OS versions download no profile and direct users to
-   `darkbloom enroll`. Under the upcoming frozen policy, the installer's
-   unauthenticated request cannot download a profile. Run `darkbloom login`
-   with the existing linked account, then `darkbloom enroll`; on older macOS,
+   App Attest approval. Older macOS only reads `profiles status -type enrollment`,
+   preserves existing management without claiming Darkbloom verification, and
+   prints the upgrade and temporary legacy notices. The installer never posts
+   an anonymous enrollment request, downloads a profile or opens profile setup.
+   After installation, run `darkbloom login` with the existing linked account,
+   then `darkbloom enroll`; only eligible grandfathered identities may re-enroll.
+   Unknown OS versions receive the same login/enroll guidance to select their
+   verification path without downloading a profile. On older macOS,
    the CLI checks frozen account/key eligibility even when a Darkbloom profile
    is already installed, and does not reinstall that profile on success.
    Setup choice grants no serving authorization; see the

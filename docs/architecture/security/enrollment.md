@@ -1,6 +1,6 @@
 # MDM enrollment
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 How a provider Mac joins Darkbloom's MDM so the coordinator can ask Apple's
 management subsystem, rather than the provider binary, whether SIP and Secure
@@ -18,6 +18,12 @@ provide an unsupported-OS fallback.
 
 ## Context
 
+The installer does not request or install a legacy profile. It defers eligible
+reenrollment to `darkbloom login` with the existing account followed by
+`darkbloom enroll`, whose authenticated SE-key proof is checked by the coordinator.
+Existing local management is preserved, not treated as proof of eligibility
+(`scripts/install.sh`, `configure_device_verification`).
+
 The `hardware` trust level ([`attestation.md`](./attestation.md#trust-levels))
 is granted only from an MDM `SecurityInfo` report. That report is produced by
 `mdmclient`, signed with the device's MDM identity certificate, and delivered
@@ -30,8 +36,8 @@ and removable by the operator at any time.
 
 ### Frozen legacy authorization cohort
 
-The upcoming policy freezes a durable cohort on the first upgraded coordinator
-startup, **after revocation replay**. Membership binds the authenticated account,
+The upcoming policy freezes a durable cohort on the first upgraded production
+coordinator startup, **after revocation replay**. Membership binds the authenticated account,
 Secure Enclave public key and serial of a device already successfully
 MDM-verified before the freeze. It is not a list of every MicroMDM enrollment,
 every saved `hardware` label, or every account that owns a provider. Subsequent
@@ -62,6 +68,12 @@ full rollout before freezing; invalid configuration fails startup before the
 freeze. The [deployment prerequisites](../../operations/coordinator-deploy.md#frozen-legacy-mdm-cutover-prerequisites)
 own the required settings. New identities also require App Attest on owner
 self/prefer routes; lowering the legacy trust floor cannot bypass that gate.
+
+The [deployment classification](../../reference/configuration.md#deployment-environment)
+defaults to production. Explicit development or actual opted-in memory-store
+fallback skips the startup freeze; neither telemetry tags nor the App Attest
+proof environment select that exception. A later production startup freezes
+then-current eligible membership.
 
 ```mermaid
 sequenceDiagram

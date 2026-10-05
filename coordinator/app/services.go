@@ -172,7 +172,7 @@ func configureBillingAndTrust(ctx context.Context, cfg config.AppConfig, srv *ap
 		)
 		os.Exit(1)
 	}
-	if err := srv.Trust().InitializeLegacyMDMPolicy(ctx); err != nil {
+	if err := startup.InitializeLegacyMDMPolicy(ctx, cfg, srv.Trust()); err != nil {
 		logger.Error("refusing to start: legacy MDM cohort initialization failed", "error", err)
 		os.Exit(1)
 	}

@@ -3,6 +3,9 @@ package legacymdm_test
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +14,49 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
+
+type enrollmentTokenFailureStore struct {
+	store.Store
+	err error
+}
+
+func (s *enrollmentTokenFailureStore) Unwrap() store.Store { return s.Store }
+
+func (s *enrollmentTokenFailureStore) GetProviderToken(token string) (*store.ProviderToken, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.Store.GetProviderToken(token)
+}
+
+func TestEnrollmentTokenLookupFailureClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		err    error
+		status int
+	}{
+		{"missing token", nil, http.StatusUnauthorized},
+		{"wrapped invalid token", fmt.Errorf("private detail: %w", store.ErrProviderTokenInvalid), http.StatusUnauthorized},
+		{"store unavailable", fmt.Errorf("private database credentials"), http.StatusServiceUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := &enrollmentTokenFailureStore{Store: memory.NewMemory(store.Config{}), err: tc.err}
+			policy := legacymdm.New(st)
+			if err := policy.Initialize(context.Background(), attestservice.Config{ServingEnabled: true, Environment: "production", RolloutPercent: 100}); err != nil {
+				t.Fatal(err)
+			}
+			r := httptest.NewRequest(http.MethodPost, "/enroll", nil)
+			r.Header.Set("Authorization", "Bearer secret-token")
+			w := httptest.NewRecorder()
+			if policy.AuthorizeEnrollment(w, r, legacymdm.EnrollmentProof{}) || w.Code != tc.status {
+				t.Fatalf("authorization status=%d, want %d", w.Code, tc.status)
+			}
+			if strings.Contains(w.Body.String(), "private") || strings.Contains(w.Body.String(), "secret-token") {
+				t.Fatalf("authorization leaked store/token details: %q", w.Body.String())
+			}
+		})
+	}
+}
 
 func seedMachine(t *testing.T, st *memory.MemoryStore, account, key, serial string) {
 	t.Helper()

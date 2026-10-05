@@ -61,6 +61,9 @@
 - Require macOS 27 or later and current qualified App Attest authorization for base rewards for every provider, old or new, including machines with both MDM and App Attest evidence. The OS claim must belong to that same authorization; missing, malformed or older versions fail closed. Legacy MDM-only machines remain eligible for grandfathered serving but not base rewards. Existing economics guards and inference/work earnings remain unchanged, with no retroactive reward clawback.
 - Check authenticated frozen account/key eligibility in `darkbloom enroll` even when a legacy profile is already installed; a successful check preserves that profile without reinstallation. Clarify that new providers need macOS 27 or later and current qualified App Attest, not an OS-only grant; consumers have no macOS 27 requirement.
 - Update the enrollment HTTP integration fixture to verify a linked test token and canonical P-256 proof instead of expecting anonymous profile downloads.
+- Keep the production cutover fail-closed while allowing explicit development and actual opted-in memory-store startup without freezing a cohort; deployment classification defaults to production and does not use telemetry tags.
+- Retry transient provider-token store failures instead of misclassifying credentials: WebSocket registration closes with retryable 1013 and enrollment returns 503. Invalid or revoked credentials remain unauthorized.
+- Stop anonymous installer profile requests; defer eligible legacy reenrollment until after installation through account login and the signed CLI eligibility check. Existing management is preserved, and new-provider macOS 27+/qualified App Attest guidance remains explicit.
 
 ## Unreleased - native queued cancellation retirement
 

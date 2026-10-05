@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -40,7 +42,7 @@ func seedLegacyMDMRegistration(t *testing.T, st *memory.MemoryStore, key, serial
 	}
 }
 
-func newLegacyMDMRegistrationServer(t *testing.T, st *memory.MemoryStore, reg *registry.Registry) *api.Server {
+func newLegacyMDMRegistrationServer(t *testing.T, st store.Store, reg *registry.Registry) *api.Server {
 	t.Helper()
 	srv := api.NewServer(reg, st, api.ServerConfig{AppAttestShadow: api.AppAttestShadowConfig{
 		ServingEnabled: true, Environment: "production", RolloutPercent: 100,
@@ -50,6 +52,20 @@ func newLegacyMDMRegistrationServer(t *testing.T, st *memory.MemoryStore, reg *r
 		t.Fatal(err)
 	}
 	return srv
+}
+
+type registrationTokenFailureStore struct {
+	store.Store
+	reads atomic.Int32
+}
+
+func (s *registrationTokenFailureStore) Unwrap() store.Store { return s.Store }
+
+func (s *registrationTokenFailureStore) GetProviderToken(token string) (*store.ProviderToken, error) {
+	if s.reads.Add(1) == 1 {
+		return nil, errors.New("private token lookup failure: " + token)
+	}
+	return s.Store.GetProviderToken(token)
 }
 
 func TestLegacyMDMIdentityCandidateCannotFallBackForNewIdentity(t *testing.T) {
@@ -142,7 +158,8 @@ func TestLegacyMDMWebSocketRegistrationRequiresAppAttestForOwnerServing(t *testi
 			if err := st.CreateProviderToken(&store.ProviderToken{TokenHash: fmt.Sprintf("%x", tokenHash), AccountID: tokenAccount, Active: tc.active}); err != nil {
 				t.Fatal(err)
 			}
-			srv := newLegacyMDMRegistrationServer(t, st, reg)
+			failing := &registrationTokenFailureStore{Store: st}
+			srv := newLegacyMDMRegistrationServer(t, failing, reg)
 			srv.SetSkipChallenge(true)
 			signed := oldAttestation
 			if !tc.oldKey {
@@ -169,6 +186,29 @@ func TestLegacyMDMWebSocketRegistrationRequiresAppAttestForOwnerServing(t *testi
 			if err := conn.Write(ctx, websocket.MessageText, body); err != nil {
 				t.Fatal(err)
 			}
+			if tc.token != "" {
+				_, _, err := conn.Read(ctx)
+				if websocket.CloseStatus(err) != websocket.StatusTryAgainLater || strings.Contains(err.Error(), tc.token) || strings.Contains(err.Error(), "private token lookup") {
+					t.Fatalf("transient token lookup did not close safely for retry: %v", err)
+				}
+				if ids := reg.ProviderIDs(); len(ids) != 0 {
+					t.Fatalf("transient token lookup registered providers before account classification: %v", ids)
+				}
+				if failing.reads.Load() != 1 {
+					t.Fatal("failed connection retried token lookup")
+				}
+				records, err := st.ListProvidersByAccount(ctx, "old-account")
+				if err != nil || len(records) != 1 || records[0].ID != "historical-session" {
+					t.Fatalf("failed registration changed persisted providers: %+v, %v", records, err)
+				}
+				conn, _, err = websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/ws/provider", nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := conn.Write(ctx, websocket.MessageText, body); err != nil {
+					t.Fatal(err)
+				}
+			}
 			// desired_models follows runtime reconciliation; readiness set below cannot be overwritten by registration.
 			for {
 				_, data, err := conn.Read(ctx)
@@ -186,6 +226,9 @@ func TestLegacyMDMWebSocketRegistrationRequiresAppAttestForOwnerServing(t *testi
 				}
 			}
 			ids := reg.ProviderIDs()
+			if tc.token != "" && failing.reads.Load() != 2 {
+				t.Fatal("reconnected registration must resolve token exactly once")
+			}
 			if len(ids) != 1 {
 				t.Fatalf("registered provider count=%d, want 1", len(ids))
 			}

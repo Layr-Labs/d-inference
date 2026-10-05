@@ -1,6 +1,6 @@
 # Deploy the coordinator (production)
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 Runbook for swapping the production coordinator container on the GCE VM
 `darkbloom-coordinator` to a Cloud-Build image of a reviewed `master` commit,
@@ -166,7 +166,7 @@ sudo sh -c 'umask 077; awk -F= '\''$1 ~ /^EIGENINFERENCE_CACHE_ROUTING_/ || $1 =
 ### Frozen legacy MDM cutover prerequisites
 
 For the upcoming frozen legacy MDM policy, schema preparation is **not** the
-cohort freeze. The first upgraded ordinary startup calls
+cohort freeze. The first upgraded production startup calls
 `Owner.InitializeLegacyMDMPolicy` (`coordinator/api/provider/trust/owner.go`),
 wired in `configureBillingAndTrust` (`coordinator/app/services.go`), after revocation
 replay and before accepting providers. `FreezeLegacyMDMCohort`
@@ -177,6 +177,15 @@ review historical evidence completeness: lost or hashless records may be
 conservatively excluded, while retained hardware snapshots plus authenticated
 inventory can supplement them. Do not repair omissions by clearing the freeze
 or manually adding newly enrolled identities.
+
+`EIGENINFERENCE_DEPLOYMENT_ENVIRONMENT` defaults to `production`; unknown values
+fail startup. Only explicit `development` or actual opted-in memory-store fallback
+skips this cutover (`coordinator/internal/startup/legacy_mdm.go`,
+`InitializeLegacyMDMPolicy`). Setting `EIGENINFERENCE_ALLOW_MEMORY_STORE=true`
+does not exempt a configured Postgres database. Neither `DD_ENV` nor the App
+Attest proof environment selects this policy. Do not change the production
+classification to bypass prerequisites; [dev setup](dev-environment.md) uses a
+separate database and explicit development configuration.
 
 Before starting the upgraded binary, explicitly approve and configure production
 App Attest serving: `EIGENINFERENCE_APP_ATTEST_SERVING=true`,

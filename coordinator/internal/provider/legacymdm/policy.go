@@ -3,6 +3,7 @@ package legacymdm
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -104,6 +105,10 @@ func (s *Policy) AuthorizeEnrollment(w http.ResponseWriter, r *http.Request, pro
 		return false
 	}
 	credential, err := s.store.GetProviderToken(token)
+	if err != nil && !errors.Is(err, store.ErrProviderTokenInvalid) {
+		http.Error(w, "provider credentials temporarily unavailable", http.StatusServiceUnavailable)
+		return false
+	}
 	if err != nil || credential == nil || !credential.Active || credential.AccountID == "" {
 		http.Error(w, "invalid provider credentials", http.StatusUnauthorized)
 		return false

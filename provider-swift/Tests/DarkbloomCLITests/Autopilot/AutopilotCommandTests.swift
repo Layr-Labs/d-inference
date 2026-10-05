@@ -86,6 +86,8 @@ extension AutopilotCommandTests {
     @Test func statusDistinguishesEnrollmentFromLiveActivation() {
         #expect(Autopilot.Status.phaseDescription("shadow") == "shadow (not activated; no automatic model changes)")
         #expect(Autopilot.Status.phaseDescription("waiting").contains("not activated"))
+        #expect(Autopilot.Status.phaseDescription("waiting_inventory").contains("inventory refresh"))
+        #expect(Autopilot.Status.phaseDescription("waiting_inventory").contains("not activated"))
         #expect(Autopilot.Status.phaseDescription("active") == "active")
         #expect(Autopilot.Status.phaseDescription("recovering") == "recovering")
         #expect(Autopilot.Status.phaseDescription(nil) == "daemon not reporting")

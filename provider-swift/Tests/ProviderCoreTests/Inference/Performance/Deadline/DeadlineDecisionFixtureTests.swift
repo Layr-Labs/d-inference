@@ -32,7 +32,7 @@ private struct DeadlineDecisionFixture {
         guard parent != root else { throw CocoaError(.fileNoSuchFile) }
         root = parent
     }
-    let data = try Data(contentsOf: root.appendingPathComponent("coordinator/protocol/testdata/calibrated_deadline_decisions.json"))
+    let data = try Data(contentsOf: root.appendingPathComponent("coordinator/tests/protocol/testdata/calibrated_deadline_decisions.json"))
     // The calibration uses explicit canonical wire keys; the case inputs use
     // ordinary snake-case conversion, independently of the release schema.
     let container = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/api"
+	"github.com/eigeninference/d-inference/coordinator/api/inference"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/e2e/testbed"
 )
@@ -27,8 +27,8 @@ type connectedCase struct {
 	RequestDateUTC     string                      `json:"request_date_utc"`
 	HTTP               connectedStream             `json:"http"`
 	Wire               []testbed.ProviderWireEvent `json:"wire"`
-	Before             api.ExactCacheStatus        `json:"before"`
-	After              api.ExactCacheStatus        `json:"after"`
+	Before             inference.ExactCacheStatus  `json:"before"`
+	After              inference.ExactCacheStatus  `json:"after"`
 	SlotsBefore        []connectedSlot             `json:"slots_before"`
 	SlotsAfter         []connectedSlot             `json:"slots_after"`
 }

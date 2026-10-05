@@ -1,11 +1,6 @@
 package registry
 
-import (
-	"sync"
-	"sync/atomic"
-
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-)
+import "github.com/eigeninference/d-inference/coordinator/internal/registry/modelindex"
 
 // model_index.go — the per-model provider index.
 //
@@ -43,88 +38,37 @@ import (
 // providerModelIndex maps advertised model id → session id → provider. The
 // zero value is ready to use (test registries are built as bare literals).
 type providerModelIndex struct {
-	mu      sync.RWMutex
-	byModel map[string]map[string]*Provider
+	defaultIndex modelindex.Index[*Provider]
+	configured   *modelindex.Index[*Provider]
+}
+
+// ModelCandidates supplies advertised session identities to request scans. The
+// registry always rechecks live membership before accessing provider state.
+type ModelCandidates interface {
+	AppendProviders(model string, dst []*Provider) []*Provider
+}
+
+func (r *Registry) newModelMembership(id string) *modelindex.Membership {
+	if r.modelMembershipFactory != nil {
+		return r.modelMembershipFactory(id)
+	}
+	return &modelindex.Membership{}
+}
+
+func (ix *providerModelIndex) owner() *modelindex.Index[*Provider] {
+	if ix.configured != nil {
+		return ix.configured
+	}
+	return &ix.defaultIndex
 }
 
 // sync brings the index in line with p.Models (or removes p entirely once it
 // is detached). Caller holds p.mu. Allocation-free when nothing changed.
 func (ix *providerModelIndex) sync(p *Provider) {
-	var want []string
-	if !p.modelIndexDetached {
-		if modelIndexIDsMatch(p.modelIndexIDs, p.Models) {
-			return
-		}
-		want = make([]string, 0, len(p.Models))
-		for _, m := range p.Models {
-			want = append(want, m.ID)
-		}
-	} else if len(p.modelIndexIDs) == 0 {
-		return
+	if p.modelMembership == nil {
+		p.modelMembership = &modelindex.Membership{}
 	}
-	ix.mu.Lock()
-	for _, id := range p.modelIndexIDs {
-		if set := ix.byModel[id]; set != nil && set[p.ID] == p {
-			delete(set, p.ID)
-			if len(set) == 0 {
-				delete(ix.byModel, id)
-			}
-		}
-	}
-	if len(want) > 0 {
-		if ix.byModel == nil {
-			ix.byModel = make(map[string]map[string]*Provider)
-		}
-		for _, id := range want {
-			set := ix.byModel[id]
-			if set == nil {
-				set = make(map[string]*Provider)
-				ix.byModel[id] = set
-			}
-			set[p.ID] = p
-		}
-	}
-	ix.mu.Unlock()
-	p.modelIndexIDs = want
-}
-
-// providersFor appends every indexed provider for model to buf (in map
-// order, i.e. randomized like the former range over r.providers) and returns
-// it. The copy is what lets callers take p.mu afterwards without holding ix.mu.
-func (ix *providerModelIndex) providersFor(model string, buf []*Provider) []*Provider {
-	ix.mu.RLock()
-	defer ix.mu.RUnlock()
-	set := ix.byModel[model]
-	if cap(buf)-len(buf) < len(set) {
-		grown := make([]*Provider, len(buf), len(buf)+len(set))
-		copy(grown, buf)
-		buf = grown
-	}
-	for _, p := range set {
-		buf = append(buf, p)
-	}
-	return buf
-}
-
-// count reports how many providers are indexed for model (tests, sizing).
-func (ix *providerModelIndex) count(model string) int {
-	ix.mu.RLock()
-	defer ix.mu.RUnlock()
-	return len(ix.byModel[model])
-}
-
-// modelIndexIDsMatch reports whether the indexed id list equals the model
-// list's ids, element for element (order-sensitive: a reorder simply resyncs).
-func modelIndexIDsMatch(ids []string, models []protocol.ModelInfo) bool {
-	if len(ids) != len(models) {
-		return false
-	}
-	for i := range ids {
-		if ids[i] != models[i].ID {
-			return false
-		}
-	}
-	return true
+	ix.owner().Sync(p.ID, p, p.modelMembership, p.Models)
 }
 
 // syncModelIndexLocked re-syncs this provider's index entries from p.Models.
@@ -141,8 +85,10 @@ func (p *Provider) syncModelIndexLocked() {
 // detachModelIndexLocked removes the provider from the index for good: after
 // this, sync can only ever remove. Called by Disconnect. Caller holds p.mu.
 func (p *Provider) detachModelIndexLocked(r *Registry) {
-	p.modelIndexDetached = true
-	r.modelIndex.sync(p)
+	if p.modelMembership == nil {
+		p.modelMembership = &modelindex.Membership{}
+	}
+	r.modelIndex.owner().Detach(p.ID, p, p.modelMembership)
 }
 
 // providersForModelLocked returns the live providers advertising model — the
@@ -159,7 +105,11 @@ func (r *Registry) providersForModelLocked(model string) []*Provider {
 		}
 		return out
 	}
-	providers := r.modelIndex.providersFor(model, nil)
+	source := r.modelCandidates
+	if source == nil {
+		source = r.modelIndex.owner()
+	}
+	providers := source.AppendProviders(model, nil)
 	live := providers[:0]
 	for _, p := range providers {
 		if r.providers[p.ID] == p {
@@ -172,28 +122,11 @@ func (r *Registry) providersForModelLocked(model string) []*Provider {
 // modelProviderInc increments the provider count for a model. Must be called
 // with r.mu held.
 func (r *Registry) modelProviderInc(model string) {
-	r.modelProvidersMu.Lock()
-	c, ok := r.modelProviders[model]
-	if !ok {
-		c = &atomic.Int64{}
-		r.modelProviders[model] = c
-	}
-	r.modelProvidersMu.Unlock()
-	c.Add(1)
+	r.modelCounts.Add(model)
 }
 
 // modelProviderDec decrements the provider count for a model. Must be called
 // with r.mu held.
 func (r *Registry) modelProviderDec(model string) {
-	r.modelProvidersMu.Lock()
-	c, ok := r.modelProviders[model]
-	r.modelProvidersMu.Unlock()
-	if ok {
-		v := c.Add(-1)
-		if v <= 0 {
-			r.modelProvidersMu.Lock()
-			delete(r.modelProviders, model)
-			r.modelProvidersMu.Unlock()
-		}
-	}
+	r.modelCounts.Remove(model)
 }

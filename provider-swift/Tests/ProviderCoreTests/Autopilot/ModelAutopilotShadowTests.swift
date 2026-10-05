@@ -48,7 +48,9 @@ struct ModelAutopilotShadowTests {
     func ordinaryIdleAndLoadDrivenBehaviorIsPreserved(mode: String) async throws {
         let root = try stateDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let loop = try await autopilotTestLoop(enabled: mode != "ordinary", activeControl: false)
+        let loop = try await autopilotTestLoop(enabled: mode != "ordinary",
+            models: [ModelInfo(id: "uncached", modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1)],
+            activeControl: false)
         await loop.setDaemonStateFileForTesting(root.appendingPathComponent("daemon.json"))
         await loop.startIdleMonitor()
         if mode == "shadow" { await loop.handleAutopilotControl(control(observeOnly: true)) }

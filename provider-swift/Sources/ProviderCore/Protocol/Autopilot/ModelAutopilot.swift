@@ -1,9 +1,9 @@
 import Foundation
 
-/// Protocol 2 is cached-only. Absent snapshot means no consent; neither an empty
+/// Protocol 3 separates cached planning inventory from ordinary serving models. Absent snapshot means no consent; neither an empty
 /// enabled_models allowlist nor an advertised build implies opt-in.
 public struct ModelAutopilotSnapshot: Codable, Sendable, Equatable {
-    public var protocolVersion: Int = 2
+    public var protocolVersion: Int = 3
     public var active: Bool = false
     public var observeOnly: Bool = false
     public var paused: Bool = false

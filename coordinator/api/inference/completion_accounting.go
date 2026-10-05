@@ -74,16 +74,15 @@ func (s *Owner) completionAccounting(pr *registry.PendingRequest, providerID str
 					CostMicroUSD:     totalCost,
 					RequestLocation:  location,
 				}
+				s.accountingWrites.RLock()
 				saferun.Go(s.logger, "recordUsage", func() {
+					defer s.accountingWrites.RUnlock()
 					s.store.RecordUsage(usageRow)
 				})
 			}
 
-			// Distribute the referral share of the collected consumer fee.
+			// Referral rewards are funded separately during consumer settlement.
 			platformFee := payments.PlatformFeeWithPercent(totalCost, feePercent)
-			if platformFee > 0 && s.billing != nil && s.billing.Referral() != nil {
-				platformFee = s.billing.Referral().DistributeReferralReward(consumerKey, platformFee, requestID)
-			}
 
 			// Record platform fee.
 			if platformFee > 0 {

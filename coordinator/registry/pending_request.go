@@ -22,6 +22,9 @@ type ProviderChunk struct {
 // PendingRequest is a channel-based handle for an in-flight inference request.
 type PendingRequest struct {
 	RequestID string
+	// NonStreamingResponseBudget is installed before dispatch and accounts decrypted
+	// chunks before any queue or response accumulator retains them. Nil means streaming.
+	NonStreamingResponseBudget *ResponseBudget
 	// Attempt is the zero-based dispatch attempt number that produced this
 	// pending request. It lets outcome telemetry correlate the final result
 	// with the routing decision record for the same attempt.

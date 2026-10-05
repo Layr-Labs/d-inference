@@ -15,9 +15,11 @@ import Foundation
 /// request is then sized dynamically at runtime by the live token budget +
 /// `GlobalKVCacheBudget`, which (since the unified-cap rework) strictly rejects
 /// any request whose KV would push past the 90% unified-memory cap — net of the
-/// activation reserve and clamped to real OS-free memory — so this looser load
-/// gate cannot cause an OOM (worst case: a loaded model that serves a single
-/// request at a time).
+/// activation reserve and clamped to the selected OS memory-availability policy.
+/// This is admission accounting, not a guarantee against OS memory pressure:
+/// foreign allocations can race the sample, and inactive pages credited by the
+/// default policy may require compression. Shared hosts can select free-only
+/// sampling through `SystemMemory`.
 public enum ModelLoadAdmission {
     /// Default headroom (GB) reserved above the weights at load time. Derived
     /// from `UnifiedMemoryCap.loadHeadroomBytes()` (activation reserve + minimum

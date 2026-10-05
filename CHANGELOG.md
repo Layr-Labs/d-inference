@@ -12,6 +12,10 @@
 - Refresh database-backed network totals every 5 minutes with a 15-minute stale-success ceiling and cache successful network series for 5 minutes. Preserve shared top-200 leaderboard caching, failure cooldowns and the 30-second stats refresh.
 - Reconcile aligned usage buckets across public series and reject reused BigQuery external tables whose manifest, configuration or schema differs from the verified publication.
 - Replace the earlier telemetry-only retirement proposal with a 14-day completed-detail target covering telemetry and accounting. Keep active state and financial replay fences operational; continuous capture, broad reader migration and source retirement remain unimplemented and disabled.
+## Unreleased - provider test coverage
+
+- Report Swift product, CLI and benchmark coverage separately in CI, merging isolated test-process profiles without replacing test failures with coverage results.
+- Expand provider and standalone lifecycle, tiny-model loading, CLI/service/fan, SSD-cache and benchmark harness regressions with temporary state and scripted host boundaries. Keep real tiny-model execution distinct from full-checkpoint quality and performance qualification.
 
 ## Unreleased - provider email campaigns
 

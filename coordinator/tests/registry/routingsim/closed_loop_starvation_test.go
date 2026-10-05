@@ -1,31 +1,29 @@
-package routingsim
+package routingsim_test
 
 import (
 	"fmt"
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/forecast"
 )
 
-// explorationPolicyBound is the longest time an idle, loaded provider may go
-// without usable evidence before routing must let it compete for work again.
-// The value mirrors firstContentEvidenceExplorationAfter from #1254 (5
-// minutes). This package tests the public registry API and cannot read that
-// unexported constant, so a change to it must be copied here. It is a policy
-// number, not a measured optimum, and the maintainers own it.
-const explorationPolicyBound = 5 * time.Minute
-
-// noStarvationBound adds the time for one request to the policy bound. A
-// provider that is admitted at the bound competes with idle peers, and one
-// request time covers that competition.
+// noStarvationBound adds the time for one request to
+// forecast.EvidenceExplorationAfter (#1254), the longest time an idle, loaded
+// provider may go without usable evidence before routing lets it compete for
+// work again. That constant is a policy number, not a measured optimum, and
+// the maintainers own it. A provider that is admitted at the bound competes
+// with idle peers, and one request time covers that competition.
 //
 // This bound asserts a proposed policy, not the behavior of #1243 or #1254.
 // #1254 admits a provider to the pool at the bound but does not promise that
-// it is selected. #1243 keeps an old decode rate for 30 minutes on purpose.
-// The proposed policy goes beyond both: an explored provider is costed at the
-// fleet median for prefill and decode from the bound, and it is selected
-// within the bound plus one request. The maintainers own this policy.
-const noStarvationBound = explorationPolicyBound + loopRequestServiceTime
+// it is selected. #1243, which is not merged, keeps an old decode rate for 30
+// minutes on purpose. The proposed policy goes beyond both: an explored
+// provider is costed at the fleet median for prefill and decode from the
+// bound, and it is selected within the bound plus one request. The
+// maintainers own this policy.
+const noStarvationBound = forecast.EvidenceExplorationAfter + loopRequestServiceTime
 
 // loopDuration is the length of every arrival stream.
 const loopDuration = 2 * time.Hour

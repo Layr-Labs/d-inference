@@ -932,19 +932,20 @@ traffic before deploy. It has no binary; it is driven from tests.
 - `report.go` — `Summarize` buckets results by prompt length and
   `EstimatedCliff` finds the prompt size where acceptance collapses.
 
-The closed-loop tests feed each routing result back into fleet state
-(`closed_loop_sim_test.go`, `closed_loop_starvation_test.go`). The provider
-that `ReserveProviderEx` selects serves the request, releases it with
-`RemovePending` and `SetProviderIdle`, and reports a changed measurement
-through `Registry.Heartbeat`. Idle providers send unchanged heartbeats every
-5 s. Each scenario runs on the legacy EWMA path and on the explicit
+The closed-loop tests in `coordinator/tests/registry/routingsim/`
+(`closed_loop_sim_test.go`, `closed_loop_starvation_test.go`) feed each
+routing result back into fleet state. The provider that `ReserveProviderEx`
+selects serves the request, releases it with `RemovePending` and
+`SetProviderIdle`, and reports a changed measurement through
+`Registry.Heartbeat`. Idle providers send unchanged heartbeats every 5 s. Each
+scenario runs on the legacy EWMA path and on the explicit
 `performance_measurements` path. The tests run under `testing/synctest`, so
-two simulated hours of arrivals take less than one second. They check that
-every idle, loaded provider is selected within 5 minutes plus one request
-time while requests arrive, and they report the share of the busiest
-provider. The 5-minute bound is the bound proposed in #1238 and #1254. It is
-a proposed policy that the maintainers own, and the routing code does not
-meet it yet: some of these tests fail.
+two simulated hours of arrivals take about one second. They check that every
+idle, loaded provider is selected within
+`forecast.EvidenceExplorationAfter` (5 minutes, #1254) plus one request time
+while requests arrive, and they report the share of the busiest provider.
+That bound is a proposed policy that the maintainers own (#1238), and the
+routing code does not meet it yet: some of these tests fail.
 
 Run it with the package tests, for example
 `go test ./coordinator/tests/registry/routingsim/...` (`TestRoutingSimCalibration`

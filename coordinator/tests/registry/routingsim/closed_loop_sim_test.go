@@ -1,4 +1,4 @@
-package routingsim
+package routingsim_test
 
 import (
 	"container/heap"
@@ -14,6 +14,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/registry/routingsim"
 )
 
 // The closed-loop simulation feeds routing results back into fleet state. A
@@ -46,6 +47,10 @@ const (
 	loopArrivalInterval    = 2 * time.Second
 	loopRequestsInFlight   = 20
 	loopRequestServiceTime = loopRequestsInFlight*loopArrivalInterval - 500*time.Millisecond
+
+	// loopProviderPublicKey is a valid base64 X25519 key, so the provider
+	// passes the private-text gate. The simulation never encrypts with it.
+	loopProviderPublicKey = "fX6XYH7p2hmM3ogeXaAsY+p8M6UKD1df/LJUN9Nj9Nw="
 
 	loopPromptTokens    = 1000
 	loopMaxOutputTokens = 2048
@@ -333,14 +338,49 @@ func (lp *loopProvider) noteWait(now, from time.Time) {
 	}
 }
 
+// registerLoopProvider registers one provider on the routingsim default
+// hardware and grants the attestation state that routing requires. The Swift
+// provider registers without benchmark decode_tps or prefill_tps
+// (CoordinatorClientCodec.encodeRegistration), so the message has neither.
+// Challenge freshness comes from RecordChallengeSuccess in join.
+func registerLoopProvider(reg *registry.Registry, id string) *registry.Provider {
+	hw := routingsim.DefaultHardwareSpec()
+	p := reg.Register(id, nil, &protocol.RegisterMessage{
+		Type: protocol.TypeRegister,
+		Hardware: protocol.Hardware{
+			MachineModel:       "Mac15,8",
+			ChipName:           hw.ChipName,
+			ChipFamily:         hw.ChipFamily,
+			ChipTier:           hw.ChipTier,
+			MemoryGB:           hw.MemoryGB,
+			MemoryAvailableGB:  float64(hw.MemoryGB),
+			MemoryBandwidthGBs: hw.MemoryBandwidthGBs,
+			CPUCores:           protocol.CPUCores{Total: 16, Performance: 12, Efficiency: 4},
+			GPUCores:           hw.GPUCores,
+		},
+		Models:                  []protocol.ModelInfo{{ID: loopModel, ModelType: "chat", Quantization: "4bit"}},
+		Backend:                 registry.BackendMLXSwift,
+		PublicKey:               loopProviderPublicKey,
+		EncryptedResponseChunks: true,
+		PrivacyCapabilities: &protocol.PrivacyCapabilities{
+			TextBackendInprocess: true,
+			TextProxyDisabled:    true,
+			SIPEnabled:           true,
+			AntiDebugEnabled:     true,
+			CoreDumpsDisabled:    true,
+			EnvScrubbed:          true,
+		},
+	})
+	p.Mu().Lock()
+	p.TrustLevel = registry.TrustHardware
+	p.RuntimeVerified = true
+	p.RuntimeManifestChecked = true
+	p.Mu().Unlock()
+	return p
+}
+
 func (s *loopSim) join(lp *loopProvider) {
-	// The Swift provider registers without benchmark decode_tps or
-	// prefill_tps (CoordinatorClientCodec.encodeRegistration), so the
-	// simulated provider does not send them either.
-	hw := DefaultHardwareSpec()
-	p := s.reg.Register(lp.spec.id, nil, simRegisterMessage(hw, simModelInfos([]string{loopModel}), 0))
-	armSimProvider(p)
-	lp.provider = p
+	lp.provider = registerLoopProvider(s.reg, lp.spec.id)
 	lp.joined = true
 	lp.idleSince = time.Now()
 	s.reg.RecordChallengeSuccess(lp.spec.id)
@@ -404,7 +444,7 @@ func (s *loopSim) arrive() {
 		Model:                 loopModel,
 		EstimatedPromptTokens: loopPromptTokens,
 		RequestedMaxTokens:    loopMaxOutputTokens,
-		FirstContentDeadline:  now.Add(TTFTDeadline(loopModel, loopPromptTokens)),
+		FirstContentDeadline:  now.Add(routingsim.TTFTDeadline(loopModel, loopPromptTokens)),
 	}
 	p, decision := s.reg.ReserveProviderEx(loopModel, pr)
 	var chosen *loopProvider
@@ -496,7 +536,7 @@ func (s *loopSim) heartbeat(lp *loopProvider) {
 		SystemMetrics: protocol.SystemMetrics{MemoryPressure: 0.1, CPUUsage: 0.1, ThermalState: "nominal"},
 		BackendCapacity: &protocol.BackendCapacity{
 			CapacitySeq:   lp.seq,
-			TotalMemoryGB: float64(DefaultHardwareSpec().MemoryGB),
+			TotalMemoryGB: float64(routingsim.DefaultHardwareSpec().MemoryGB),
 			Slots:         []protocol.BackendSlotCapacity{slot},
 		},
 	}

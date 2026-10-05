@@ -259,6 +259,8 @@ func privacyPlanningBody(t *testing.T, model, endpoint string, stream bool, call
 	}
 	body["user"] = caller
 	body["metadata"] = map[string]any{"conversation_id": "must-not-forward", "account_id": caller}
+	body["safety_identifier"] = "must-not-forward-safety-identifier"
+	body["prompt_cache_key"] = "must-not-forward-cache-key"
 	body["cache_control"] = map[string]any{"type": "ephemeral", "metadata": map[string]any{"user": "nested-cache-value"}}
 	encoded, err := json.Marshal(body)
 	if err != nil {
@@ -279,7 +281,9 @@ func privacyPlanningBodyError(body []byte) error {
 	if err := json.Unmarshal(body, &object); err != nil {
 		return err
 	}
-	for _, key := range []string{"user", "metadata"} {
+	// A coordinator-authored prompt_cache_key may be appended after sanitization;
+	// the caller's own value is caught by the must-not-forward check below.
+	for _, key := range []string{"user", "metadata", "safety_identifier"} {
 		if _, exists := object[key]; exists {
 			return fmt.Errorf("caller identity field %s reached planning/provider", key)
 		}

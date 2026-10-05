@@ -9,8 +9,8 @@ import Darwin
 
 enum LaunchctlControl {
 
-    // Runner and home seams follow the approach in upstream PR #1296.
-    // Nil defaults preserve normal launchctl and home-directory behavior.
+    // Task-local overrides isolate lifecycle tests from real launchd services.
+    // Nil defaults preserve normal process, home-directory and timing behavior.
     @TaskLocal static var runnerForTesting: (@Sendable ([String]) throws -> Output)?
     @TaskLocal static var homeDirectoryForTesting: URL?
     @TaskLocal static var uptimeForTesting: (@Sendable () -> TimeInterval)?

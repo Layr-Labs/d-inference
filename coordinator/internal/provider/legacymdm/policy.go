@@ -42,6 +42,25 @@ func (s *Policy) Initialize(ctx context.Context, cfg attestservice.Config) error
 	if !ok {
 		return fmt.Errorf("store does not support the frozen legacy MDM cohort")
 	}
+	// Drain the eligible historical backlog before the first snapshot, retaining
+	// the backfill's endpoint checks and filters. Later aliases never expand it.
+	if backfill, ok := store.As[store.MachineInventoryBackfillStore](s.store); ok {
+		for {
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("backfill legacy MDM inventory: %w", err)
+			}
+			n, err := backfill.BackfillMachineInventory(ctx, 100)
+			if err != nil {
+				return fmt.Errorf("backfill legacy MDM inventory: %w", err)
+			}
+			if n == 0 {
+				break
+			}
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("freeze legacy MDM cohort: %w", err)
+	}
 	machines, err := st.FreezeLegacyMDMCohort(ctx)
 	if err != nil {
 		return fmt.Errorf("freeze legacy MDM cohort: %w", err)

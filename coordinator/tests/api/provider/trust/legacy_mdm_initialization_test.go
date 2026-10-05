@@ -50,6 +50,10 @@ func TestLegacyMDMInitializationBoundsFreezeContext(t *testing.T) {
 				if !errors.Is(err, context.Canceled) {
 					t.Fatalf("initialization error=%v, want cancellation", err)
 				}
+				if st.freezeContext != nil {
+					t.Fatal("cancelled initialization reached the durable freeze")
+				}
+				return
 			} else if err != nil {
 				t.Fatal(err)
 			}

@@ -171,12 +171,23 @@ cohort freeze. The first upgraded production startup calls
 wired in `configureBillingAndTrust` (`coordinator/app/services.go`), after revocation
 replay and before accepting providers. `FreezeLegacyMDMCohort`
 (`coordinator/store/legacy_mdm_cohort.go`) records a durable cutoff and
-authenticated account/key/serial cohort; later restarts reuse it, even if empty.
+stored account/key/serial cohort; later restarts reuse it, even if empty.
 New accounts/devices/associations must not enlarge it. Before approving cutover,
 review historical evidence completeness: lost or hashless records may be
-conservatively excluded, while retained hardware snapshots plus authenticated
+conservatively excluded, while retained hardware snapshots plus account-scoped historical
 inventory can supplement them. Do not repair omissions by clearing the freeze
 or manually adding newly enrolled identities.
+
+Startup synchronously drains eligible historical inventory through
+`Policy.Initialize` (`coordinator/internal/provider/legacymdm/policy.go`) in
+100-row `BackfillMachineInventory` batches before freezing, within the existing
+30-second initialization deadline, including on restarts. If the drain errors,
+is cancelled or exceeds the deadline, startup fails without creating a new
+freeze marker; retry after resolving the failure, not
+by bypassing the drain. A zero batch does not recover recent/open sessions or
+missing durable evidence. Historical bindings retain their existing stored-account
+and endpoint-key semantics, not proof of fresh historical token authentication;
+see the [evidence limits](../architecture/security/enrollment.md#frozen-legacy-authorization-cohort).
 
 `EIGENINFERENCE_DEPLOYMENT_ENVIRONMENT` defaults to `production`; unknown values
 fail startup. Only explicit `development` or actual opted-in memory-store fallback

@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 How to check provider verification and retain legacy `hardware` trust where
 eligible. New providers require macOS 27 or later and current qualified App
@@ -83,15 +83,20 @@ older-macOS machine or existing local enrollment.
 ## Existing machines and upgrade notices
 
 Under the upcoming [frozen legacy policy](../architecture/security/enrollment.md#frozen-legacy-authorization-cohort), only already successfully MDM-verified
-devices whose authenticated account, SE key and serial enter the durable cohort
-continue through legacy verification. The first upgraded coordinator startup
-freezes it after revocation replay; restart, a new account, a new device or a new
+devices whose stored account, SE key and serial enter the durable cohort
+continue through legacy verification. The first upgraded production coordinator
+startup drains eligible historical inventory after revocation replay before
+freezing; restart, a new account, a new device or a new
 account association does not reopen eligibility. Reenrollment requires the
 existing key under its frozen account and the [authenticated signed enrollment
 request](../reference/api-contracts.md#legacy-mdm-enrollment-proof). Preserve your
 key and account; a replacement identity must use qualified App Attest, with no
 unsupported-OS fallback. Lost or hashless historical evidence may conservatively
 omit a device; a previous local profile alone does not establish eligibility.
+Current verification still requires the validated account, same frozen SE key
+and prior successful MDM evidence. See the
+[historical evidence and backfill limits](../architecture/security/enrollment.md#frozen-legacy-authorization-cohort);
+recent/open sessions or incomplete history are not guaranteed to be recovered.
 `darkbloom enroll` checks the authenticated signed request with the coordinator
 even when a Darkbloom profile is already installed. Only a successful eligibility
 check returns "Already enrolled", without saving or reinstalling a profile;

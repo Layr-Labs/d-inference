@@ -37,7 +37,7 @@ and removable by the operator at any time.
 ### Frozen legacy authorization cohort
 
 The upcoming policy freezes a durable cohort on the first upgraded production
-coordinator startup, **after revocation replay**. Membership binds the authenticated account,
+coordinator startup, **after revocation replay**. Membership binds the stored account,
 Secure Enclave public key and serial of a device already successfully
 MDM-verified before the freeze. It is not a list of every MicroMDM enrollment,
 every saved `hardware` label, or every account that owns a provider. Subsequent
@@ -49,9 +49,13 @@ and current qualified
 qualification and runtime checks still apply, without an unsupported-OS fallback.
 
 Durable historical evidence can conservatively omit lost or hashless historical
-records. Retained hardware snapshots together with authenticated inventory may
-supplement that evidence; neither unauthenticated association nor an enrollment
-alone establishes membership. A grace period has **not** been chosen and no
+records. Retained hardware snapshots together with account-scoped historical
+inventory may supplement that evidence. Those historical bindings use the stored
+provider account and valid endpoint-bound SE key; they do not independently prove
+that each historical alias was established with a freshly validated account token.
+Every current grant or enrollment still requires the currently validated account,
+the same frozen SE key and prior successful MDM evidence. An enrollment alone
+does not establish membership. A grace period has **not** been chosen and no
 cohort expiry is implemented. Membership is a prerequisite, not a permanent trust
 grant: revocation, posture, freshness and code-identity checks remain in force.
 
@@ -59,6 +63,17 @@ The implementation entry points for this upcoming change are
 `Policy.Initialize`, `Policy.RegistrationAllowed` and `Policy.ProviderAllowed` in
 `coordinator/internal/provider/legacymdm/policy.go`, and the `FreezeLegacyMDMCohort` operation on
 `LegacyMDMCohortStore` in `coordinator/store/legacy_mdm_cohort.go`.
+Before calling `FreezeLegacyMDMCohort`, initialization synchronously drains the
+existing `BackfillMachineInventory` capability, when supported, in batches of 100
+until it returns zero. This runs within the existing 30-second context supplied by
+`trust.Owner.InitializeLegacyMDMPolicy` (`coordinator/api/provider/trust/owner.go`).
+The context is checked before each batch and before freezing; backfill failure,
+cancellation or deadline expiry before freezing leaves no new freeze marker.
+Restarts also drain inventory but reload the existing frozen cohort. Zero means the eligible
+closed historical backlog is drained, not that all machines are recoverable:
+recent/open sessions or insufficient durable evidence remain excluded. The
+backfill's filters, evidence and alias rules are unchanged, and aliases added
+after a cohort is frozen cannot widen it.
 The policy gate applies at registration identity recovery, scheduler submission,
 live MDM verification, late callbacks and cached trust reuse. A saved grant or an
 already outstanding command cannot authorize a nonmember.

@@ -1,12 +1,67 @@
 package store_test
 
 import (
+	"fmt"
 	"math"
 	"sync"
 	"testing"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
+
+func TestModelTokenReferralEligibilityAndTerminalReplay(t *testing.T) {
+	for _, eligible := range []bool{false, true} {
+		for _, withEarning := range []bool{false, true} {
+			t.Run(fmt.Sprintf("eligible=%v/earning=%v", eligible, withEarning), func(t *testing.T) {
+				for name, s := range storeBackends(t) {
+					t.Run(name, func(t *testing.T) {
+						b, _ := promotionFixture(t, s, 10)
+						seedConsumerReferral(t, s, "consumer", "referrer")
+						if err := s.Credit("consumer", 100, store.LedgerDeposit, "seed"); err != nil {
+							t.Fatal(err)
+						}
+						r, err := b.ReserveModelTokens("eligibility", "consumer", "not-registered/model", 50, tokenPrice(50))
+						if err != nil {
+							t.Fatal(err)
+						}
+						var earning *store.ModelTokenEarning
+						if withEarning {
+							earning = &store.ModelTokenEarning{ProviderEarning: store.ProviderEarning{AccountID: "provider", JobID: r.ID, AmountMicroUSD: 50}}
+						}
+						result, err := b.SettleModelTokenReservation(r.ID, 50, tokenPrice(50), earning, eligible)
+						if err != nil || !result.Applied || result.Reservation.ConsumerCostMicroUSD != 40 || result.Reservation.SponsoredMicroUSD != 10 {
+							t.Fatalf("settle=%+v err=%v", result, err)
+						}
+						// A changed policy cannot alter a previously persisted settlement.
+						replay, err := b.SettleModelTokenReservation(r.ID, 50, tokenPrice(50), earning, !eligible)
+						if err != nil || replay.Applied || replay.Reservation != result.Reservation {
+							t.Fatalf("replay=%+v err=%v", replay, err)
+						}
+						wantPayout := int64(0)
+						if withEarning {
+							wantPayout = 50
+						}
+						if s.GetBalance("consumer") != 60 || s.GetWithdrawableBalance("provider") != wantPayout {
+							t.Fatal("referral eligibility changed billing or provider earnings")
+						}
+						grants, err := b.ListModelTokenGrants("consumer")
+						if err != nil || len(grants) != 1 || grants[0].UsedTokens != 10 || grants[0].ReservedTokens != 0 {
+							t.Fatalf("grants=%+v err=%v", grants, err)
+						}
+						wantSpend, wantReward := int64(0), int64(0)
+						if eligible {
+							wantSpend, wantReward = 40, 2
+						}
+						stats, err := s.GetReferralStats("referrer")
+						if err != nil || stats.TotalReferredSpendMicroUSD != wantSpend || stats.TotalRewardsMicroUSD != wantReward || s.GetWithdrawableBalance("referrer") != wantReward {
+							t.Fatalf("stats=%+v err=%v", stats, err)
+						}
+					})
+				}
+			})
+		}
+	}
+}
 
 func TestModelTokenReferralPaidPortionAndReplay(t *testing.T) {
 	for _, tc := range []struct {
@@ -38,7 +93,7 @@ func TestModelTokenReferralPaidPortionAndReplay(t *testing.T) {
 						wg.Add(1)
 						go func() {
 							defer wg.Done()
-							if _, err := b.SettleModelTokenReservation(r.ID, tc.tokens, tokenPrice(tc.tokens), earning); err != nil {
+							if _, err := b.SettleModelTokenReservation(r.ID, tc.tokens, tokenPrice(tc.tokens), earning, true); err != nil {
 								t.Error(err)
 							}
 						}()
@@ -75,11 +130,11 @@ func TestModelTokenReferralRollbackAndLateAttribution(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err = b.SettleModelTokenReservation(r.ID, 50, tokenPrice(50), nil); err != nil {
+			if _, err = b.SettleModelTokenReservation(r.ID, 50, tokenPrice(50), nil, true); err != nil {
 				t.Fatal(err)
 			}
 			seedConsumerReferral(t, s, "consumer", "referrer")
-			if _, err = b.SettleModelTokenReservation(r.ID, 50, tokenPrice(50), nil); err != nil {
+			if _, err = b.SettleModelTokenReservation(r.ID, 50, tokenPrice(50), nil, true); err != nil {
 				t.Fatal(err)
 			}
 			if s.GetBalance("referrer") != 0 {
@@ -93,7 +148,7 @@ func TestModelTokenReferralRollbackAndLateAttribution(t *testing.T) {
 				t.Fatal(err)
 			}
 			earning := &store.ModelTokenEarning{ProviderEarning: store.ProviderEarning{AccountID: "provider", JobID: r.ID, AmountMicroUSD: 30}}
-			if _, err = b.SettleModelTokenReservation(r.ID, 30, tokenPrice(30), earning); err == nil {
+			if _, err = b.SettleModelTokenReservation(r.ID, 30, tokenPrice(30), earning, true); err == nil {
 				t.Fatal("overflow accepted")
 			}
 			if s.GetBalance("consumer") != 20 || s.GetBalance("provider") != 0 {
@@ -102,7 +157,7 @@ func TestModelTokenReferralRollbackAndLateAttribution(t *testing.T) {
 			if err = s.Debit("referrer", math.MaxInt64, store.LedgerCharge, "clear"); err != nil {
 				t.Fatal(err)
 			}
-			if _, err = b.SettleModelTokenReservation(r.ID, 30, tokenPrice(30), earning); err != nil {
+			if _, err = b.SettleModelTokenReservation(r.ID, 30, tokenPrice(30), earning, true); err != nil {
 				t.Fatal(err)
 			}
 			if s.GetBalance("consumer") != 30 || s.GetBalance("provider") != 30 || s.GetWithdrawableBalance("referrer") != 1 {

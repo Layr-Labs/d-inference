@@ -24,12 +24,12 @@ type promotionSettlementFaultStore struct {
 	calls        atomic.Int64
 }
 
-func (s *promotionSettlementFaultStore) SettleModelTokenReservation(id string, actual int64, quote store.ModelTokenQuote, earning *store.ModelTokenEarning) (store.ModelTokenSettlement, error) {
+func (s *promotionSettlementFaultStore) SettleModelTokenReservation(id string, actual int64, quote store.ModelTokenQuote, earning *store.ModelTokenEarning, referralEligible bool) (store.ModelTokenSettlement, error) {
 	first := s.calls.Add(1) == 1
 	if first && s.beforeCommit {
 		return store.ModelTokenSettlement{}, errors.New("temporary settlement outage")
 	}
-	result, err := s.ModelTokenPromotionStore.SettleModelTokenReservation(id, actual, quote, earning)
+	result, err := s.ModelTokenPromotionStore.SettleModelTokenReservation(id, actual, quote, earning, referralEligible)
 	if first && err == nil {
 		return store.ModelTokenSettlement{}, errors.New("lost commit acknowledgement")
 	}
@@ -52,12 +52,20 @@ func promotionCompletionRequest(s *reservationFixture, reservation *store.ModelT
 }
 
 func TestModelTokenPromotionReconciliationResumesAccountingOnce(t *testing.T) {
-	for _, beforeCommit := range []bool{false, true} {
+	for _, tc := range []struct {
+		beforeCommit bool
+		route        string
+	}{
+		{false, "public"}, {true, "public"},
+		{false, "selected"}, {true, "selected"},
+		{true, "self"}, {true, "prefer"}, {true, "free_self"}, {true, "owned"}, {true, "owned_paid"},
+	} {
+		beforeCommit := tc.beforeCommit
 		name := "lost_commit_acknowledgement"
 		if beforeCommit {
 			name = "temporary_failure_before_commit"
 		}
-		t.Run(name, func(t *testing.T) {
+		t.Run(tc.route+"/"+name, func(t *testing.T) {
 			s, st, r := promotionTestServer(t, 100)
 			if err := st.SetModelPrice(store.ModelPrice{AccountID: "platform", Model: promoTestModel, InputPrice: 1_000_000, OutputPrice: 2_000_000}); err != nil {
 				t.Fatal(err)
@@ -75,20 +83,53 @@ func TestModelTokenPromotionReconciliationResumesAccountingOnce(t *testing.T) {
 			if err := s.billing.Referral().Apply("promotion-user", "PROMO"); err != nil {
 				t.Fatal(err)
 			}
+			if tc.route == "owned_paid" {
+				// Exhaust the grant so an unflagged owned-provider request remains
+				// paid even though it still settles through the promotion contract.
+				quote := func(int64) (int64, int64, error) { return 100, 0, nil }
+				exhausted, err := st.ReserveModelTokens("exhaust-grant", "promotion-user", promoTestModel, 100, quote)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := st.SettleModelTokenReservation(exhausted.ID, 100, quote, nil, false); err != nil {
+					t.Fatal(err)
+				}
+			}
 			w := httptest.NewRecorder()
 			_, _, handled := s.reservations.Reserve(w, r, nil, reservations.Params{Model: promoTestModel, PublicModel: promoTestModel, BillingPromptTokens: 120, RequestedMaxTokens: 300})
 			if handled {
 				t.Fatal(w.Body)
 			}
 			provider, pr := promotionCompletionRequest(s, promotions.Reservation(r), "reconcile-accounting")
+			switch tc.route {
+			case "selected":
+				pr.AllowedProviderSerials = []string{"selected-machine"}
+			case "self":
+				pr.SelfRouteOnly = true
+			case "prefer":
+				pr.PreferOwner = true
+			case "free_self":
+				pr.FreeSelfRoute = true
+			case "owned", "owned_paid":
+				provider.Mu().Lock()
+				provider.AccountID = "promotion-user"
+				provider.Mu().Unlock()
+			}
 			s.fault.useSettlement(&promotionSettlementFaultStore{Store: st, ModelTokenPromotionStore: st, beforeCommit: beforeCommit})
 			s.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{RequestID: pr.RequestID, Usage: protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 200}})
+			// A retry must retain exclusion after the live request is cleaned up.
+			pr.AllowedProviderSerials = nil
+			pr.SelfRouteOnly, pr.PreferOwner, pr.FreeSelfRoute = false, false, false
 			if len(s.ledger.Usage("promotion-user")) != 0 || st.GetBalance("platform") != 0 {
 				t.Fatal("accounting ran before reconciliation")
 			}
 			// Referral rewards now commit with the consumer charge, even when
 			// the acknowledgement needed for downstream accounting is lost.
-			initialReward := int64(20)
+			var reward, eligibleSpend int64
+			if tc.route == "public" {
+				reward, eligibleSpend = 20, 400
+			}
+			initialReward := reward
 			if beforeCommit {
 				initialReward = 0
 			}
@@ -118,30 +159,49 @@ func TestModelTokenPromotionReconciliationResumesAccountingOnce(t *testing.T) {
 			if pending, _ := s.promotions.RetrySettlement(pr.ModelTokenReservationID); pending {
 				t.Fatal("settlement remained queued")
 			}
+			charged, payout, platform, usedTokens := int64(400), int64(400), int64(80), int64(100)
+			if tc.route == "owned" {
+				// Promotions already settle owned execution free and preserve grants.
+				charged, payout, platform, usedTokens = 0, 0, 0, 0
+			} else if tc.route == "owned_paid" {
+				charged, payout, platform = 500, 400, 100
+			}
 			usage := s.ledger.Usage("promotion-user")
-			if len(usage) != 1 || usage[0].CostMicroUSD != 400 || usage[0].Model != "promotion-public-model" {
+			if len(usage) != 1 || usage[0].CostMicroUSD != charged || usage[0].Model != "promotion-public-model" {
 				t.Fatalf("session usage: %+v", usage)
 			}
 			deadline := time.Now().Add(2 * time.Second)
-			for len(st.UsageRecords()) == 0 && time.Now().Before(deadline) {
+			for tc.route != "owned" && len(st.UsageRecords()) == 0 && time.Now().Before(deadline) {
 				time.Sleep(time.Millisecond)
 			}
 			rows := st.UsageRecords()
-			if len(rows) != 1 || rows[0].CostMicroUSD != 400 || rows[0].KeyID != pr.KeyID || rows[0].PublicModel != "promotion-public-model" {
+			if tc.route == "owned" && len(rows) != 0 {
+				t.Fatalf("owned execution leaked public usage: %+v", rows)
+			}
+			if tc.route != "owned" && (len(rows) != 1 || rows[0].CostMicroUSD != charged || rows[0].KeyID != pr.KeyID || rows[0].PublicModel != "promotion-public-model") {
 				t.Fatalf("persistent usage: %+v", rows)
 			}
-			if spent := st.KeySpendSince(pr.KeyID, time.Time{}); spent != 400 {
+			if spent := st.KeySpendSince(pr.KeyID, time.Time{}); spent != charged {
 				t.Fatalf("key spend=%d", spent)
 			}
 			// Gross 500, consumer 400; provider 80% of gross, fee 20% of
 			// collected spend, and a separately funded 5% referral reward.
-			for account, want := range map[string]int64{"promotion-user": 600, "paid-provider": 400, "referrer": 20, "platform": 80} {
+			consumerBalance, publicProviderBalance := 1000-charged, payout
+			if tc.route == "owned_paid" {
+				consumerBalance += payout
+				publicProviderBalance = 0
+			}
+			for account, want := range map[string]int64{"promotion-user": consumerBalance, "paid-provider": publicProviderBalance, "referrer": reward, "platform": platform} {
 				if got := st.GetBalance(account); got != want {
 					t.Errorf("%s balance=%d want=%d", account, got, want)
 				}
 			}
+			stats, err := s.billing.Referral().Stats("referrer")
+			if err != nil || stats.TotalReferredSpendMicroUSD != eligibleSpend || stats.TotalRewardsMicroUSD != reward {
+				t.Fatalf("referral stats=%+v err=%v", stats, err)
+			}
 			grants, _ := st.ListModelTokenGrants("promotion-user")
-			if grants[0].UsedTokens != 100 || grants[0].ReservedTokens != 0 {
+			if grants[0].UsedTokens != usedTokens || grants[0].ReservedTokens != 0 {
 				t.Fatal(grants)
 			}
 		})

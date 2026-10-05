@@ -148,8 +148,13 @@ to their reservations (`coordinator/api/inference/key_policy.go` `checkKeySpendC
 Visit **Open Sales Program** in the console to register a code, copy your share link,
 apply a referrer's code, and check rewards. Follow
 [Share a referral code and withdraw rewards](referrals.md) for the full flow.
-Referral rewards are earned balance and use the withdrawal steps below; the
-reward basis is defined in
+Referral rewards are earned balance and use the withdrawal steps below.
+Execution on your own machines, explicit self-routing, and routing to selected
+machines are not eligible, even when the request is paid; owner-preferred routing
+remains ineligible when it falls back
+to the paid fleet. These exclusions also apply to the paid portion of promotion
+requests. Billing, provider payouts, and grant use do not change. The reward
+basis and eligibility rules are defined in
 [pricing formulas](../reference/pricing-model.md#formulas).
 
 A `referral_code` on a Checkout session (step 1) still applies after a successful

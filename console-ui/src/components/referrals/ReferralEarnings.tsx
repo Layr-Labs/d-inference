@@ -39,7 +39,7 @@ export function ReferralEarnings({ stats }: { stats: ReferralStats }) {
           <div><dt className="text-xs text-text-secondary">Referred token spend</dt><dd className="mt-2 break-all text-xl tabular-nums">${stats.total_referred_spend_usd}</dd></div>
           <div><dt className="text-xs text-text-secondary">Lifetime referral rewards</dt><dd className="mt-2 break-all text-xl tabular-nums">${stats.total_rewards_usd}</dd></div>
         </dl>
-        <p className="mt-5 text-xs leading-relaxed text-text-tertiary">Totals include billed token usage after the referral was applied. Rewards become withdrawable earnings; your account balance may also include other earnings.</p>
+        <p className="mt-5 text-xs leading-relaxed text-text-tertiary">Totals include eligible billed token usage after the referral was applied, subject to the exclusions above. Rewards become withdrawable earnings; your account balance may also include other earnings.</p>
         <Link href="/billing" className="mt-4 inline-flex min-h-10 items-center text-sm font-medium text-accent-brand hover:underline">Manage withdrawals →</Link>
       </section>
     </>

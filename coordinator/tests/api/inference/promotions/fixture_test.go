@@ -50,11 +50,11 @@ func (s *promotionStore) useSettlement(backend store.ModelTokenPromotionStore) {
 	s.mu.Unlock()
 }
 
-func (s *promotionStore) SettleModelTokenReservation(id string, actual int64, quote store.ModelTokenQuote, earning *store.ModelTokenEarning) (store.ModelTokenSettlement, error) {
+func (s *promotionStore) SettleModelTokenReservation(id string, actual int64, quote store.ModelTokenQuote, earning *store.ModelTokenEarning, referralEligible bool) (store.ModelTokenSettlement, error) {
 	s.mu.Lock()
 	backend := s.settlement
 	s.mu.Unlock()
-	return backend.SettleModelTokenReservation(id, actual, quote, earning)
+	return backend.SettleModelTokenReservation(id, actual, quote, earning, referralEligible)
 }
 
 func (s *promotionStore) RenewModelTokenReservations(ids []string, at time.Time) error {

@@ -42,7 +42,7 @@ func (s *PostgresStore) releaseModelTokenBefore(id string, before time.Time) (bo
 	return true, tx.Commit(ctx)
 }
 
-func (s *PostgresStore) SettleModelTokenReservation(id string, actual int64, quote store.ModelTokenQuote, earning *store.ModelTokenEarning) (store.ModelTokenSettlement, error) {
+func (s *PostgresStore) SettleModelTokenReservation(id string, actual int64, quote store.ModelTokenQuote, earning *store.ModelTokenEarning, referralEligible bool) (store.ModelTokenSettlement, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	tx, err := s.pool.Begin(ctx)
@@ -67,9 +67,12 @@ func (s *PostgresStore) SettleModelTokenReservation(id string, actual int64, quo
 	if _, err = tx.Exec(ctx, `UPDATE model_token_grants SET reserved_tokens=reserved_tokens-$3,used_tokens=used_tokens+$4 WHERE account_id=$1 AND model_id=$2`, r.AccountID, r.ModelID, r.FreeTokens, next.UsedTokens); err != nil {
 		return store.ModelTokenSettlement{}, err
 	}
-	referrer, err := settlementReferrer(ctx, tx, r.AccountID)
-	if err != nil {
-		return store.ModelTokenSettlement{}, err
+	referrer := ""
+	if referralEligible {
+		referrer, err = settlementReferrer(ctx, tx, r.AccountID)
+		if err != nil {
+			return store.ModelTokenSettlement{}, err
+		}
 	}
 	accounts := []string{r.AccountID}
 	if earning != nil {
@@ -103,7 +106,7 @@ func (s *PostgresStore) SettleModelTokenReservation(id string, actual int64, quo
 			}
 		}
 	}
-	if err = recordPromotionReferral(ctx, tx, next, referrer); err != nil {
+	if err = recordPromotionReferral(ctx, tx, next, referrer, referralEligible); err != nil {
 		return store.ModelTokenSettlement{}, err
 	}
 	if err = savePromotionReservation(ctx, tx, next); err != nil {

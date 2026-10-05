@@ -45,9 +45,13 @@ func TestConsumerSettlementRecoveryRestoresProviderAndUsage(t *testing.T) {
 	for _, mode := range []struct {
 		name                  string
 		afterCommit, shutdown bool
+		route                 string
 	}{
-		{"before_commit", false, false}, {"after_commit", true, false},
-		{"shutdown_before_commit", false, true}, {"shutdown_after_commit", true, true},
+		{"before_commit", false, false, ""}, {"after_commit", true, false, ""},
+		{"shutdown_before_commit", false, true, ""}, {"shutdown_after_commit", true, true, ""},
+		{"selected_before_commit", false, false, "selected"}, {"selected_after_commit", true, false, "selected"},
+		{"self_paid_fallback", false, false, "self"}, {"prefer_paid_fallback", false, false, "prefer"},
+		{"free_self_paid_fallback", false, false, "free_self"}, {"public_owned_provider", false, false, "owned"},
 	} {
 		t.Run(mode.name, func(t *testing.T) {
 			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -83,9 +87,23 @@ func TestConsumerSettlementRecoveryRestoresProviderAndUsage(t *testing.T) {
 			provider := srv.registry.Register("recovery-provider-key", nil, &protocol.RegisterMessage{Models: []protocol.ModelInfo{{ID: model, ModelType: "chat"}}})
 			provider.Mu().Lock()
 			provider.AccountID = account
+			if mode.route == "owned" {
+				provider.AccountID = consumer
+			}
 			provider.Mu().Unlock()
 			request := func() *registry.PendingRequest {
-				return &registry.PendingRequest{RequestID: "recovery-job", ConsumerKey: consumer, Model: model, ReservedMicroUSD: reserved, ChunkCh: make(chan registry.ProviderChunk, 1), CompleteCh: make(chan protocol.UsageInfo, 1), ErrorCh: make(chan protocol.InferenceErrorMessage, 1)}
+				pr := &registry.PendingRequest{RequestID: "recovery-job", ConsumerKey: consumer, Model: model, ReservedMicroUSD: reserved, ChunkCh: make(chan registry.ProviderChunk, 1), CompleteCh: make(chan protocol.UsageInfo, 1), ErrorCh: make(chan protocol.InferenceErrorMessage, 1)}
+				switch mode.route {
+				case "selected":
+					pr.AllowedProviderSerials = []string{"selected-machine"}
+				case "self":
+					pr.SelfRouteOnly = true
+				case "prefer":
+					pr.PreferOwner = true
+				case "free_self":
+					pr.FreeSelfRoute = true
+				}
+				return pr
 			}
 			pr := request()
 			provider.AddPending(pr)
@@ -103,6 +121,9 @@ func TestConsumerSettlementRecoveryRestoresProviderAndUsage(t *testing.T) {
 			if mem.GetWithdrawableBalance(account) != 0 || len(mem.UsageByConsumer(consumer)) != 0 {
 				t.Fatal("accounting ran before settlement recovered")
 			}
+			// Reconciliation must use captured eligibility, not mutable routing state.
+			pr.AllowedProviderSerials = nil
+			pr.SelfRouteOnly, pr.PreferOwner, pr.FreeSelfRoute = false, false, false
 			if mode.shutdown {
 				srv.Close()
 				if len(backend.usage) != 1 {
@@ -129,13 +150,27 @@ func TestConsumerSettlementRecoveryRestoresProviderAndUsage(t *testing.T) {
 			// the downstream non-idempotent credits recovered by maintenance.
 			provider.AddPending(request())
 			srv.HandleCompleteAt(provider.ID, provider, terminal, time.Now())
-			if got := mem.GetBalance(consumer); got != 1_000_000-cost {
+			consumerBalance := int64(1_000_000) - cost
+			payoutAccount := account
+			if mode.route == "owned" {
+				consumerBalance += payments.ProviderPayoutWithPercent(cost, &fee)
+				payoutAccount = consumer
+			}
+			if got := mem.GetBalance(consumer); got != consumerBalance {
 				t.Fatalf("consumer balance=%d", got)
 			}
-			if got := mem.GetWithdrawableBalance(referrer); got != cost*store.ConsumerReferralPercent/100 {
+			var reward, eligibleSpend int64
+			if mode.route == "" {
+				reward, eligibleSpend = cost*store.ConsumerReferralPercent/100, cost
+			}
+			if got := mem.GetWithdrawableBalance(referrer); got != reward {
 				t.Fatalf("referral reward=%d", got)
 			}
-			if got := mem.GetWithdrawableBalance(account); got != payments.ProviderPayoutWithPercent(cost, &fee) {
+			stats, err := srv.billing.Referral().Stats(referrer)
+			if err != nil || stats.TotalReferredSpendMicroUSD != eligibleSpend || stats.TotalRewardsMicroUSD != reward {
+				t.Fatalf("referral stats=%+v err=%v", stats, err)
+			}
+			if got := mem.GetWithdrawableBalance(payoutAccount); got != payments.ProviderPayoutWithPercent(cost, &fee) {
 				t.Fatalf("provider payout=%d", got)
 			}
 			if got := mem.GetBalance("platform"); got != payments.PlatformFeeWithPercent(cost, &fee) {

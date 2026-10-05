@@ -24,7 +24,10 @@ describe("referral page", () => {
 
   it("explains 5% of token spend and offers login without fetching account data", () => {
     mocks.auth.authenticated = false; render(<ReferralPage />);
-    expect(screen.getByText(/5% of their token spend/)).toBeInTheDocument();
+    expect(screen.getByText(/5% of their eligible token spend/)).toBeInTheDocument();
+    expect(screen.getByText(/Requests executed on the consumer's own machines are not eligible for referral rewards, even through normal routing/)).toBeInTheDocument();
+    expect(screen.getByText(/Self-routing and prefer-my-machine requests \(including paid network fallback\) are also excluded/)).toBeInTheDocument();
+    expect(screen.getByText(/Requests restricted to selected machines remain excluded; public selected-machine routing is no longer supported/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Sign in to get your link" }));
     expect(mocks.auth.login).toHaveBeenCalledOnce(); expect(mocks.info).not.toHaveBeenCalled();
   });

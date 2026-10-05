@@ -8,7 +8,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-func (s *Owner) settleCompletedConsumer(pr *registry.PendingRequest, cost int64, feePercent *int64, freeSelfRoute bool, complete func(int64)) (bool, int64, int64) {
+func (s *Owner) settleCompletedConsumer(pr *registry.PendingRequest, cost int64, feePercent *int64, referralEnabled bool, complete func(int64)) (bool, int64, int64) {
 	reserved := pr.ReservedMicroUSD
 	if pr.ServiceReservation {
 		reserved = 0 // service reservations hold capacity without debiting cash
@@ -16,7 +16,7 @@ func (s *Owner) settleCompletedConsumer(pr *registry.PendingRequest, cost int64,
 	in := store.ConsumerChargeSettlement{
 		AccountID: pr.ConsumerKey, JobID: pr.RequestID,
 		ReservedMicroUSD: reserved, CostMicroUSD: cost,
-		ReferralEnabled: s.billing != nil && s.billing.Referral() != nil && !freeSelfRoute,
+		ReferralEnabled: referralEnabled,
 	}
 	// Snapshot accounting and hold values retained by reconciliation.
 	model, service := pr.Model, pr.ServiceReservation

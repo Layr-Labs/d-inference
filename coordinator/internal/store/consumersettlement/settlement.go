@@ -53,14 +53,17 @@ func Cost(in store.ConsumerChargeSettlement, balance int64) (int64, bool) {
 
 // PromotionRecord records only the paid portion. Promotion settlement already
 // owns the consumer debit and provider credit; its terminal state fences retries.
-func PromotionRecord(r store.ModelTokenReservation, referrer string) Record {
+func PromotionRecord(r store.ModelTokenReservation, referrer string, referralEligible bool) Record {
+	if !referralEligible {
+		referrer = ""
+	}
 	reward := int64(0)
 	if referrer != "" {
 		reward = r.ConsumerCostMicroUSD / (100 / store.ConsumerReferralPercent)
 	}
 	return Record{
 		Input: store.ConsumerChargeSettlement{AccountID: r.AccountID, JobID: "promotion:" + r.ID,
-			ReservedMicroUSD: r.ReservedMicroUSD, CostMicroUSD: r.ConsumerCostMicroUSD, ReferralEnabled: true},
+			ReservedMicroUSD: r.ReservedMicroUSD, CostMicroUSD: r.ConsumerCostMicroUSD, ReferralEnabled: referralEligible},
 		Result:   store.ConsumerChargeResult{CollectedMicroUSD: r.ConsumerCostMicroUSD, ReferralRewardMicroUSD: reward, Applied: true},
 		Referrer: referrer,
 	}

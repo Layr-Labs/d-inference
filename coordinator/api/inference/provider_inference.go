@@ -598,6 +598,14 @@ func (s *Owner) HandleCompleteAt(
 		// log, settle as paid against the reservation.
 	}
 
+	provider.Mu().Lock()
+	servingAccount := provider.AccountID
+	provider.Mu().Unlock()
+	// Referral incentives are for unrestricted network demand, even when an
+	// explicit owner-routing request falls back to paid public capacity.
+	referralEnabled := s.billing != nil && s.billing.Referral() != nil &&
+		!freeSelfRoute && !pr.FreeSelfRoute && !pr.SelfRouteOnly && !pr.PreferOwner &&
+		len(pr.AllowedProviderSerials) == 0 && (servingAccount == "" || servingAccount != pr.ConsumerKey)
 	recordAccounting := s.completionAccounting(pr, providerID, msg.Usage, feePercent, freeSelfRoute)
 	completeFinancials := s.completionFinancials(pr, provider, msg.Usage, feePercent, freeSelfRoute, recordAccounting)
 	var billingFinalized bool
@@ -609,12 +617,12 @@ func (s *Owner) HandleCompleteAt(
 	// with the settlement here.
 	if pr.ModelTokenReservationID != "" {
 		var promotionErr error
-		billingFinalized, totalCost, providerPayout, promotionErr = s.settleModelTokenPromotion(pr, provider, msg.Usage, rates, feePercent, freeSelfRoute, recordAccounting)
+		billingFinalized, totalCost, providerPayout, promotionErr = s.settleModelTokenPromotion(pr, provider, msg.Usage, rates, feePercent, freeSelfRoute, referralEnabled, recordAccounting)
 		if promotionErr != nil {
 			s.logger.Error("promotion settlement failed", "request_id", msg.RequestID, "reservation_id", pr.ModelTokenReservationID, "error", promotionErr)
 		}
 	} else {
-		billingFinalized, totalCost, providerPayout = s.settleCompletedConsumer(pr, totalCost, feePercent, freeSelfRoute, completeFinancials)
+		billingFinalized, totalCost, providerPayout = s.settleCompletedConsumer(pr, totalCost, feePercent, referralEnabled, completeFinancials)
 	}
 
 	if billingFinalized {

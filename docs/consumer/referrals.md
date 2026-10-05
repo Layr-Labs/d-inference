@@ -30,11 +30,16 @@ collected inference spend; the exact rate, units, and rounding are in
    accounts cannot refer themselves or replace an existing referrer. Attribution
    has no expiry.
 4. Return to **Open Sales Program** to inspect the referred-consumer count, eligible
-   token spend, and lifetime rewards. Only usage settled with an attached referrer qualifies.
+   token spend, and lifetime rewards. Usage must settle with an attached referrer
+   and meet the [eligibility rules](../reference/pricing-model.md#formulas).
+   Requests served by the consumer's own machines, explicit self-routing, and
+   selected-machine routing do not earn rewards or count toward eligible spend,
+   including owner-preferred requests that fall back to the paid fleet. The same
+   exclusions apply to the paid portion of promotion requests.
    Free requests, refunded reservations, and money that was not collected do
    not generate rewards. Rewards are funded by Darkbloom and do not change the
    consumer's price or the serving provider's earnings. Spent invite and admin
-   credits also qualify because they use the same spendable balance.
+   credits can also qualify because they use the same spendable balance.
 5. Open **Billing** to withdraw your available earned balance using the
    [withdrawal steps](billing.md#9-withdraw-international-earnings). Referral rewards
    join other earnings in the same balance. Lifetime rewards stay visible even
@@ -100,6 +105,7 @@ see [Billing](billing.md#6-referral-codes).
 | Account already has a referrer | The code shown in Open Sales Program | Keep the existing attribution; it cannot be reassigned. |
 | Cannot refer yourself | You opened your own share link | Share the link with another consumer account. |
 | No reward after a deposit | Deposits fund usage; they are not usage | Check again after eligible paid inference settles. |
+| Paid request did not count toward referral spend | Execution on the consumer's own machine, explicit self-routing, owner-preferred routing, or selected machines | These cases are ineligible, even on paid fallback; billing, provider payouts, and promotion grant use remain unchanged. |
 | No reward for an earlier request | Attribution time and actual collected cost | Already-settled requests are not backfilled; free and uncollected usage do not qualify. |
 | Referral link did not attach | Sign-in and existing attribution | Finish sign-in, then check Open Sales Program and apply the code there if needed. |
 | Wrong saved link | The pending code in Open Sales Program | Select **Remove saved code**, then enter the intended code before it is applied. |

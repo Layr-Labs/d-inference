@@ -8,12 +8,12 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-func (s *MemoryStore) preparePromotionReferralLocked(r store.ModelTokenReservation, earning *store.ProviderEarning) (consumersettlement.Record, error) {
+func (s *MemoryStore) preparePromotionReferralLocked(r store.ModelTokenReservation, earning *store.ProviderEarning, referralEligible bool) (consumersettlement.Record, error) {
 	referrer := ""
-	if ref := s.referrersByCode[s.referrals[r.AccountID]]; ref != nil && ref.AccountID != r.AccountID {
+	if ref := s.referrersByCode[s.referrals[r.AccountID]]; referralEligible && ref != nil && ref.AccountID != r.AccountID {
 		referrer = ref.AccountID
 	}
-	record := consumersettlement.PromotionRecord(r, referrer)
+	record := consumersettlement.PromotionRecord(r, referrer, referralEligible)
 	if _, exists := s.consumerSettlements[record.Input.JobID]; exists {
 		return record, errors.New("store: promotion referral settlement already exists")
 	}

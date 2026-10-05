@@ -183,6 +183,13 @@ func TestConsumerSettlementAttributionIsNotRetroactive(t *testing.T) {
 			if s.GetBalance(referrer) != 0 {
 				t.Fatal("disabled referral paid")
 			}
+			stats, err = s.GetReferralStats(referrer)
+			if err != nil || stats.TotalReferredSpendMicroUSD != 0 || stats.TotalRewardsMicroUSD != 0 {
+				t.Fatalf("disabled referral counted toward stats: %+v err=%v", stats, err)
+			}
+			if s.GetBalance(consumer) != 200 {
+				t.Fatal("disabled referral changed the consumer charge")
+			}
 		})
 	}
 }

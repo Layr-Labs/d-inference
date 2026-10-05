@@ -101,7 +101,7 @@ func TestPostgresConsumerAndPromotionSettlementMissingReferrerBalance(t *testing
 
 	promotionDone := make(chan error, 1)
 	go func() {
-		_, err := promotions.SettleModelTokenReservation(r.ID, 50, tokenPrice(50), nil)
+		_, err := promotions.SettleModelTokenReservation(r.ID, 50, tokenPrice(50), nil, true)
 		promotionDone <- err
 	}()
 	// Observe either promotion completion (correct ordering) or its wait for
@@ -153,7 +153,7 @@ func TestPostgresConsumerAndPromotionSettlementMissingReferrerBalance(t *testing
 	if result, err := ordinary.FinalizeConsumerCharge(input); err != nil || result.Applied {
 		t.Fatalf("ordinary replay=%+v err=%v", result, err)
 	}
-	if result, err := promotions.SettleModelTokenReservation(r.ID, 50, tokenPrice(50), nil); err != nil || result.Applied {
+	if result, err := promotions.SettleModelTokenReservation(r.ID, 50, tokenPrice(50), nil, true); err != nil || result.Applied {
 		t.Fatalf("promotion replay=%+v err=%v", result, err)
 	}
 }

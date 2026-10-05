@@ -24,7 +24,7 @@ export function ReferralApply({ referredBy }: { referredBy: string }) {
     <section className="py-7">
       <h2 className="text-lg font-medium text-text-primary">Who introduced you?</h2>
       {applied ? <>
-        <p role="status" className="mt-3 text-sm text-text-secondary">Referred by {applied}. They earn rewards on your billed token usage at no extra cost to you.</p>
+        <p role="status" className="mt-3 text-sm text-text-secondary">Referred by {applied}. They earn rewards on your eligible billed token usage at no extra cost to you.</p>
         {savedCode && savedCode !== applied && <div className="mt-3 text-sm text-text-secondary">
           <p>The saved code {savedCode} cannot replace your existing referrer.</p>
           <button type="button" onClick={attribution.dismiss} disabled={busy} className="min-h-10 text-accent-brand hover:underline">Remove saved code</button>

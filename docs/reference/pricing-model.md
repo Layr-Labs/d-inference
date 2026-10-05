@@ -76,8 +76,10 @@ applying those codes remains supported. New registration uses ASCII code rules.
 
 ## Formulas
 
-For token-promotion requests, referral rewards use only
-`ModelTokenReservation.ConsumerCostMicroUSD`; `SponsoredMicroUSD` is excluded
+For eligible token-promotion requests, referral rewards use only
+`ModelTokenReservation.ConsumerCostMicroUSD`; `SponsoredMicroUSD` is excluded.
+The routing exclusions below also exclude the paid portion from rewards and
+eligible-spend totals
 (`coordinator/internal/store/consumersettlement/settlement.go`, `PromotionRecord`).
 
 | Quantity | Formula | Citation |
@@ -96,12 +98,17 @@ For token-promotion requests, referral rewards use only
 | Settlement refund | `reserved − totalCost` when positive; `refund` entry referenced by `<request_id>` | `HandleCompleteAt` |
 | Whole-reservation refund | `reserved`; `refund` entry `reservation_refund:<request_id>` | `coordinator/api/inference/consumer.go` (`refundReservedBalance`) |
 | Platform fee | `totalCost × resolveFeePercent(user.PlatformFeePercent) / 100`; override clamped to `[0, 100]`, else `platformFeePercent` | `coordinator/payments/pricing.go` (`PlatformFeeWithPercent`, `resolveFeePercent`) |
-| Referral reward | `collectedMicroUSD / (100 / ConsumerReferralPercent)` = `floor(collectedMicroUSD / 20)`; additive Darkbloom-funded withdrawable credit, rounded down per request | `coordinator/store/postgres/consumer_settlement.go`, `coordinator/store/memory/consumer_settlement.go` (`FinalizeConsumerCharge`) |
-| Referral basis | Actual collected token charge after reservation clamp/refund/debit handling; zero for free or uncollected usage; attribution is captured at settlement, with no historical backfill | `coordinator/internal/store/consumersettlement/settlement.go` (`Cost`); `coordinator/store/postgres/consumer_settlement.go` (`FinalizeConsumerCharge`) |
+| Referral reward | For eligible usage, `collectedMicroUSD / (100 / ConsumerReferralPercent)` = `floor(collectedMicroUSD / 20)`; additive Darkbloom-funded withdrawable credit, rounded down per request | `coordinator/store/postgres/consumer_settlement.go`, `coordinator/store/memory/consumer_settlement.go` (`FinalizeConsumerCharge`) |
+| Referral basis | Actual collected token charge after reservation clamp/refund/debit handling; zero for free, uncollected, or routing-excluded usage; attribution is captured at settlement, with no historical backfill | `coordinator/internal/store/consumersettlement/settlement.go` (`Cost`); `coordinator/store/postgres/consumer_settlement.go` (`FinalizeConsumerCharge`) |
+| Referral routing exclusions | Execution by the consumer's own provider, or `SelfRouteOnly`, `FreeSelfRoute`, `PreferOwner`, or nonempty `AllowedProviderSerials`, excludes rewards and eligible-spend totals. Owner-preferred paid fallback is still excluded. Consumer billing, provider payouts, and promotion grant use are unchanged. | `coordinator/api/inference/provider_inference.go` (`HandleCompleteAt`, `referralEnabled`) |
 | Provider payout | `totalCost − platformFee` | `coordinator/payments/pricing.go` (`ProviderPayoutWithPercent`) |
 | Withdrawal fee | `0` (standard); `max(gross × InstantFeeBps / 10_000, InstantFeeMinMicroUSD)` (instant) | `coordinator/billing/stripe_connect.go` (`FeeForMethodMicroUSD`) |
 | Withdrawal net | `gross − fee`, transferred as `microUSDToCents(net)`; must be ≥ 1 cent | `coordinator/api/billing/payouts/stripe_withdraw.go` (`HandleStripeWithdraw`) |
 | Key spend | `Σ usage.cost_micro_usd` for the key since `KeySpendWindowStart(limit_reset, now)`; request rejected when `spend + additional > LimitMicroUSD` | `coordinator/store/postgres/` (`KeySpendSince`); `coordinator/api/inference/key_policy.go` (`checkKeySpendCap`) |
+
+`AllowedProviderSerials` is a retained internal restriction, not a public
+machine-selection field. Public `provider_serial` and `provider_serials` inputs
+are stripped (`coordinator/api/inference/consumer.go`, `StripProviderRoutingFields`).
 
 ## Ledger entry types
 

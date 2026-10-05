@@ -43,12 +43,15 @@ func (r *Registry) pruneWarmPoolWorkBaselinesLocked() {
 // existing provider walk, after installing the new authorization state.
 func (r *Registry) pruneWarmPoolWorkBaselineLocked(p *Provider, now time.Time) {
 	if !r.providerLivenessGateLocked(p, r.MinTrustLevel, false, now) {
-		p.warmWorkCounters = nil
+		p.warmWork.Reset()
 		return
 	}
-	for model := range p.warmWorkCounters {
-		if !r.providerServesRoutableModelLocked(p, model, false) {
-			delete(p.warmWorkCounters, model)
-		}
+	if p.warmWork.Count() == 0 {
+		return
 	}
+	eligible := make(map[string]bool, len(p.Models))
+	for _, model := range p.Models {
+		eligible[model.ID] = r.providerServesRoutableModelLocked(p, model.ID, false)
+	}
+	p.warmWork.Prune(eligible)
 }

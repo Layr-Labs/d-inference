@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	logformat "github.com/eigeninference/d-inference/coordinator/internal/datadog/logformat"
 )
 
 // LogsEnabled reports whether the Logs API is configured (DD_API_KEY set).
@@ -26,7 +28,7 @@ func (c *Client) SendLog(ctx context.Context, entry TelemetryLogEntry, extraTags
 		DDSource: entry.Source,
 		DDTags:   strings.Join(tags, ","),
 		Service:  "d-inference-coordinator",
-		Status:   mapSeverityToStatus(entry.Severity),
+		Status:   logformat.Status(entry.Severity),
 		Message:  entry.Message,
 		Attrs:    entry.Fields,
 	}

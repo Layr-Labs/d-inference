@@ -1,0 +1,299 @@
+package registry_test
+
+import (
+	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+
+	production "github.com/eigeninference/d-inference/coordinator/registry"
+)
+
+// QuickCapacityCheck must mirror the routing path's per-provider gates: for a
+// tools request it must exclude (a) a pair in the shape-keyed inference-error
+// cooldown for the tools shape and (b) a trait-ineligible (render-broken)
+// provider. Without this the preflight reports phantom capacity that routing
+// then refuses, queueing the request to a misleading 429.
+func TestQuickCapacityCheckExcludesShapeCooledAndTraitIneligible(t *testing.T) {
+	reg := production.New(testLogger())
+	model := "preflight-tools-model"
+	toolTraits := production.RequestTraits{HasTools: true}
+
+	// Render verdict nil unless stated.
+	cooled := makeSchedulerProvider(t, reg, "cooled", model, 100)
+	renderBroken := makeSchedulerProvider(t, reg, "render-broken", model, 100)
+	healthy := makeSchedulerProvider(t, reg, "healthy", model, 100)
+	setProviderVersion(cooled, "0.6.5")
+	setProviderVersion(renderBroken, "0.6.5")
+	setProviderVersion(healthy, "0.6.5")
+	renderBroken.Mu().Lock()
+	renderBroken.Models[0].TemplateRenderOK = boolPtr(false)
+	renderBroken.Mu().Unlock()
+
+	// Quarantine the "cooled" provider for the TOOLS shape only.
+	reg.RecordInferenceError(cooled.ID, model, 500, "tools")
+	if !reg.RecordInferenceError(cooled.ID, model, 500, "tools") {
+		t.Fatal("two tools strikes should trip the tools cooldown")
+	}
+
+	// For a TOOLS request, only the healthy provider is a candidate.
+	candidates, rejections, tooLarge := reg.QuickCapacityCheck(model, 100, 128, toolTraits)
+	if candidates != 1 || rejections != 0 || tooLarge != 0 {
+		t.Fatalf("tools QuickCapacityCheck = (cand=%d rej=%d tooLarge=%d), want 1/0/0 (only healthy)", candidates, rejections, tooLarge)
+	}
+
+	// For a BASE request, the tools cooldown does not apply, so the cooled and
+	// healthy providers both qualify — but render-broken is still excluded for
+	// every shape.
+	baseCandidates, baseRej, _ := reg.QuickCapacityCheck(model, 100, 128, production.RequestTraits{})
+	if baseCandidates != 2 || baseRej != 0 {
+		t.Fatalf("base QuickCapacityCheck = (cand=%d rej=%d), want 2/0 (render-broken excluded; tools cooldown inactive)", baseCandidates, baseRej)
+	}
+}
+
+// Render-broken must fence a NON-tool request too: a crashing chat template
+// breaks every request shape, so a base request must skip the render-broken
+// provider and only the healthy one remains a candidate.
+func TestQuickCapacityCheckExcludesRenderBrokenForBaseRequest(t *testing.T) {
+	reg := production.New(testLogger())
+	model := "preflight-render-broken-base"
+	broken := makeSchedulerProvider(t, reg, "render-broken", model, 100)
+	healthy := makeSchedulerProvider(t, reg, "healthy", model, 100)
+	broken.Mu().Lock()
+	broken.Models[0].TemplateRenderOK = boolPtr(false)
+	broken.Mu().Unlock()
+	healthy.Mu().Lock()
+	healthy.Models[0].TemplateRenderOK = boolPtr(true)
+	healthy.Mu().Unlock()
+
+	candidates, rejections, _ := reg.QuickCapacityCheck(model, 100, 128, production.RequestTraits{})
+	if candidates != 1 || rejections != 0 {
+		t.Fatalf("base QuickCapacityCheck = (cand=%d rej=%d), want 1/0 (render-broken fenced for base too)", candidates, rejections)
+	}
+}
+
+// Scheduler integration: a render-broken provider must be excluded from a
+// NON-tool ReserveProviderEx too — the routing path, not just the preflight,
+// fences every shape.
+func TestReserveProviderExSkipsRenderBrokenForBaseRequest(t *testing.T) {
+	reg := production.New(testLogger())
+	model := "render-broken-base-route"
+	broken := makeSchedulerProvider(t, reg, "render-broken", model, 200)
+	healthy := makeSchedulerProvider(t, reg, "healthy", model, 50)
+	broken.Mu().Lock()
+	broken.Models[0].TemplateRenderOK = boolPtr(false)
+	broken.Mu().Unlock()
+	healthy.Mu().Lock()
+	healthy.Models[0].TemplateRenderOK = boolPtr(true)
+	healthy.Mu().Unlock()
+
+	plain := &production.PendingRequest{RequestID: "r-plain", Model: model, RequestedMaxTokens: 128}
+	selected, decision := reg.ReserveProviderEx(model, plain)
+	if selected == nil || selected.ID != healthy.ID {
+		t.Fatalf("plain request selected %v, want %q (render-broken excluded for all shapes)", selected, healthy.ID)
+	}
+	if decision.CandidateCount != 1 {
+		t.Fatalf("CandidateCount=%d, want 1 (render-broken fenced for base too)", decision.CandidateCount)
+	}
+}
+
+// QuickCapacityCheck must honor allowedSerials: a capable-but-not-allowed
+// provider does not satisfy the preflight for a constrained request.
+func TestQuickCapacityCheckHonorsAllowedSerials(t *testing.T) {
+	reg := production.New(testLogger())
+	model := "preflight-allowed-serial"
+	allowed := makeSchedulerProvider(t, reg, "allowed", model, 100)
+	other := makeSchedulerProvider(t, reg, "other", model, 100)
+	setSchedulerProviderSerial(allowed, "ALLOWED-SERIAL")
+	setSchedulerProviderSerial(other, "OTHER-SERIAL")
+
+	// Unconstrained: both qualify.
+	if c, _, _ := reg.QuickCapacityCheck(model, 100, 128, production.RequestTraits{}); c != 2 {
+		t.Fatalf("unconstrained candidates=%d, want 2", c)
+	}
+	// Constrained to ALLOWED-SERIAL: only that provider qualifies.
+	if c, _, _ := reg.QuickCapacityCheck(model, 100, 128, production.RequestTraits{}, "ALLOWED-SERIAL"); c != 1 {
+		t.Fatalf("constrained candidates=%d, want 1 (only the allowed serial)", c)
+	}
+	// Constrained to a serial nobody has: zero candidates.
+	if c, _, _ := reg.QuickCapacityCheck(model, 100, 128, production.RequestTraits{}, "MISSING-SERIAL"); c != 0 {
+		t.Fatalf("missing-serial candidates=%d, want 0", c)
+	}
+}
+
+// HasToolCapableProviderForModel and HasVisionProviderForModel must honor
+// allowedSerials: a capable provider whose serial is not in the allowed set
+// does NOT satisfy the check, so a constrained request is not falsely reported
+// as serviceable by an unrelated public provider.
+func TestCapabilityChecksHonorAllowedSerials(t *testing.T) {
+	reg := production.New(testLogger())
+	model := "capability-allowed-serial"
+
+	// One tool-capable + vision-capable provider, serial NOT in the allowlist.
+	capable := makeSchedulerProvider(t, reg, "capable-not-allowed", model, 100)
+	setProviderVersion(capable, "0.6.5")
+	setSchedulerProviderSerial(capable, "CAPABLE-SERIAL")
+	capable.Mu().Lock()
+	capable.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit", IsVision: true}}
+	capable.Mu().Unlock()
+
+	// Unconstrained: both capabilities satisfied.
+	if !reg.HasToolCapableProviderForModel(model) {
+		t.Fatal("unconstrained: expected a tool-capable provider")
+	}
+	if !reg.HasVisionProviderForModel(model) {
+		t.Fatal("unconstrained: expected a vision-capable provider")
+	}
+
+	// Constrained to a serial the capable provider does NOT have: neither check
+	// may be satisfied by it.
+	if reg.HasToolCapableProviderForModel(model, "ALLOWED-ONLY") {
+		t.Fatal("a tool-capable but not-allowed provider must not satisfy a constrained tools check")
+	}
+	if reg.HasVisionProviderForModel(model, "ALLOWED-ONLY") {
+		t.Fatal("a vision-capable but not-allowed provider must not satisfy a constrained vision check")
+	}
+
+	// Constrained to the capable provider's own serial: both checks pass again.
+	if !reg.HasToolCapableProviderForModel(model, "CAPABLE-SERIAL") {
+		t.Fatal("constrained to its own serial, the capable provider must satisfy the tools check")
+	}
+	if !reg.HasVisionProviderForModel(model, "CAPABLE-SERIAL") {
+		t.Fatal("constrained to its own serial, the capable provider must satisfy the vision check")
+	}
+}
+
+func TestQuickCapacityCheckForRequestRequiresVision(t *testing.T) {
+	reg := production.New(testLogger())
+	model := "vision-preflight-model"
+	textOnly := makeSchedulerProvider(t, reg, "text-only", model, 100)
+	textOnly.Mu().Lock()
+	textOnly.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit", IsVision: false}}
+	textOnly.Mu().Unlock()
+
+	if candidates, rejections, tooLarge := reg.QuickCapacityCheckForRequest(model, 100, 128, production.RequestTraits{}, true); candidates != 0 || rejections != 0 || tooLarge != 0 {
+		t.Fatalf("vision preflight with text-only provider = (%d,%d,%d), want 0/0/0", candidates, rejections, tooLarge)
+	}
+
+	vision := makeSchedulerProvider(t, reg, "vision", model, 100)
+	vision.Mu().Lock()
+	vision.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit", IsVision: true}}
+	vision.Mu().Unlock()
+
+	if candidates, _, _ := reg.QuickCapacityCheckForRequest(model, 100, 128, production.RequestTraits{}, true); candidates != 1 {
+		t.Fatalf("vision preflight candidates=%d, want 1", candidates)
+	}
+}
+
+func TestQwen3VL30BVisionRoutingExcludesM5(t *testing.T) {
+	const targetModel = "qwen3-vl-30b-a3b-instruct"
+
+	tests := []struct {
+		name                 string
+		model                string
+		chipFamily           string
+		requiresVision       bool
+		wantCandidates       int
+		wantVisionRejections int
+	}{
+		{
+			name:                 "target M5 visual rejected",
+			model:                targetModel,
+			chipFamily:           "M5",
+			requiresVision:       true,
+			wantVisionRejections: 1,
+		},
+		{
+			name:           "target M5 text eligible",
+			model:          targetModel,
+			chipFamily:     "M5",
+			wantCandidates: 1,
+		},
+		{
+			name:           "target M4 visual eligible",
+			model:          targetModel,
+			chipFamily:     "M4",
+			requiresVision: true,
+			wantCandidates: 1,
+		},
+		{
+			name:           "lookalike M5 visual eligible",
+			model:          targetModel + "-lookalike",
+			chipFamily:     "M5",
+			requiresVision: true,
+			wantCandidates: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := production.New(testLogger())
+			provider := makeSchedulerProvider(t, reg, "provider", tt.model, 100)
+			provider.Mu().Lock()
+			provider.Models[0].IsVision = true
+			provider.Hardware.ChipFamily = tt.chipFamily
+			provider.Mu().Unlock()
+
+			candidates, capacityRejections, tooLarge := reg.QuickCapacityCheckForRequest(
+				tt.model, 100, 128, production.RequestTraits{}, tt.requiresVision,
+			)
+			if candidates != tt.wantCandidates || capacityRejections != 0 || tooLarge != 0 {
+				t.Errorf(
+					"QuickCapacityCheckForRequest = (cand=%d cap=%d tooLarge=%d), want (%d,0,0)",
+					candidates, capacityRejections, tooLarge, tt.wantCandidates,
+				)
+			}
+
+			request := &production.PendingRequest{
+				RequestID:             "request",
+				Model:                 tt.model,
+				EstimatedPromptTokens: 100,
+				RequestedMaxTokens:    128,
+				RequiresVision:        tt.requiresVision,
+			}
+			selected, decision := reg.ReserveProviderEx(tt.model, request)
+			if selected != nil {
+				defer func() {
+					selected.RemovePending(request.RequestID)
+					reg.SetProviderIdle(selected.ID)
+				}()
+			}
+
+			if tt.wantCandidates == 0 {
+				if selected != nil {
+					t.Errorf("ReserveProviderEx selected %q, want nil", selected.ID)
+				}
+			} else if selected == nil || selected.ID != provider.ID {
+				t.Errorf("ReserveProviderEx selected %v, want %q", selected, provider.ID)
+			}
+			if decision.CandidateCount != tt.wantCandidates {
+				t.Errorf("CandidateCount=%d, want %d", decision.CandidateCount, tt.wantCandidates)
+			}
+			if decision.VisionRejections != tt.wantVisionRejections ||
+				decision.CapacityRejections != 0 ||
+				decision.ModelTooLargeRejections != 0 ||
+				decision.TTFTRejections != 0 {
+				t.Errorf(
+					"rejections = (vision=%d cap=%d tooLarge=%d ttft=%d), want (%d,0,0,0)",
+					decision.VisionRejections,
+					decision.CapacityRejections,
+					decision.ModelTooLargeRejections,
+					decision.TTFTRejections,
+					tt.wantVisionRejections,
+				)
+			}
+		})
+	}
+}
+
+func TestQuickCapacityCheckExcludesCriticalThermal(t *testing.T) {
+	reg := production.New(testLogger())
+	model := "critical-thermal-preflight"
+	p := makeSchedulerProvider(t, reg, "hot", model, 100)
+	p.Mu().Lock()
+	p.SystemMetrics.ThermalState = "critical"
+	p.Mu().Unlock()
+
+	if candidates, rejections, tooLarge := reg.QuickCapacityCheckForRequest(model, 100, 128, production.RequestTraits{}, false); candidates != 0 || rejections != 0 || tooLarge != 0 {
+		t.Fatalf("critical thermal preflight = (%d,%d,%d), want 0/0/0", candidates, rejections, tooLarge)
+	}
+}

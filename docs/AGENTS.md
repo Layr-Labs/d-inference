@@ -171,12 +171,14 @@ and tests both historical-link handling and date-preserving, idempotent stamping
 | Coordinator env var or config default | `reference/configuration.md`; `operations/coordinator-deploy.md` if prod sets it |
 | Provider CLI command, flag, env var | `provider/cli-reference.md`; `reference/configuration.md` |
 | Routing / admission / scheduling constant or gate | `architecture/routing.md` or `architecture/scheduling.md` |
+| Cache-routing evidence, generation fences, restoration or persistence | `architecture/cache-aware-routing.md`; retain the routing, protocol and ownership rows for those surfaces too |
 | Experimental model Autopilot policy, rollout or enrollment (`coordinator/registry/autopilot*`, `coordinator/api/autopilot*`, provider runtime/CLI `Autopilot/`) | `architecture/model-autopilot.md`, `operations/model-autopilot.md`; apply the configuration, CLI, protocol and API rows for those surfaces too |
 | Trust level, attestation, enrollment, encryption | `architecture/security/*.md`; `provider/attestation.md`; `consumer/verification.md`; `threat-model.yaml` |
 | Pricing, ledger, payouts, referral | `architecture/billing.md`, `reference/pricing-model.md`, `consumer/billing.md` |
 | Store schema / migration | `architecture/schema-lifecycle.md` (versions, kinds, locks); `architecture/storage.md` (tables); `operations/schema-migration.md` if the change affects the production procedure or rollback rules |
 | A read or write of a soft-delete table (`users`, `api_keys`, `providers`, `provider_tokens`) | `reference/soft-delete.md` |
-| sqlc config, query file or generated type (`coordinator/store/sqlc.yaml`, `coordinator/store/queries/`) | `reference/sqlc-type-mapping.md` for a new type or override; `developer/sqlc.md` for a workflow or convention change |
+| sqlc config, query file or generated type (`coordinator/store/postgres/sqlc.yaml`, `coordinator/store/postgres/queries/`) | `reference/sqlc-type-mapping.md` for a new type or override; `developer/sqlc.md` for a workflow or convention change |
+| Coordinator package ownership, application assembly, or backend boundaries | `developer/navigation.md`, `architecture/components/coordinator.md`; retain the relevant API, configuration, storage, and telemetry rows for behavioral surfaces |
 | Provider version bump (`ProviderCore.version` ↔ `LatestProviderVersion`) | `operations/provider-release.md`; `CHANGELOG.md` |
 | Build, test, CI, or script | `developer/build.md`, `developer/test.md`; `operations/` runbook that invokes it |
 | New model family or engine capability | `architecture/inference.md`, `consumer/models.md`, `provider/hardware-requirements.md` |
@@ -187,6 +189,15 @@ CI encodes the high-confidence part of this matrix in
 against each pull-request diff before the ordinary documentation lint. Keep the
 matrix and machine-readable rules aligned when adding a documentation-sensitive
 surface.
+
+Coordinator source-to-doc mappings apply to the production-consumed components
+under `coordinator/internal/` as well as their API/service adapters. A component
+move must preserve the original behavior-specific mapping; ownership documentation
+does not substitute for API, protocol, configuration, telemetry, trust or billing
+documentation. Go tests are isolated under `coordinator/tests/`; moving test
+files or shared fixtures also requires checking selectors, source-relative fixture
+consumers and the build/test guides. Keep local migration handoff checklists out
+of the published documentation; they are not architectural completion evidence.
 
 ## 8. Adding, moving, retiring pages
 

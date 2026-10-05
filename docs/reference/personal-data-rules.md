@@ -9,25 +9,27 @@ procedure is the [runbook](../operations/account-erasure.md).
 
 ## Rule actions
 
-The closed set of actions a rule applies (`piiAction`,
-`coordinator/store/erasure_rules.go`). The plan and the summary show `update`
-or `delete_row` per rule (`piiRule.action`).
+The closed set of actions a rule applies (`Action`,
+`coordinator/internal/store/erasure/rules.go`). The plan and the summary show
+`update` or `delete_row` per rule (`Rule.action`).
 
 | Action | Name in the table below | What the scrub writes |
 |---|---|---|
 | `set_empty` | empty | `''` |
 | `set_null` | NULL | `NULL` |
 | `set_empty_json` | `{}` | `'{}'` in a `NOT NULL` JSON column or key |
-| `set_unique_random` | unique random | A new value per account: `erased:<uuid>` (Privy ID) or `erased-<uuid>` (referrer code) (`erasedValue`) |
-| `set_unique_random` on a wallet rule | random per wallet | One `erased-<uuid>` per wallet address, the same in every row and table that holds it (`walletReplacement`) |
+| `set_unique_random` | unique random | A new value per account: `erased:<uuid>` (Privy ID) or `erased-<uuid>` (referrer code) (`erasedValue`, drawn in `NewKeys`) |
+| `set_unique_random` on a wallet rule | random per wallet | One `erased-<uuid>` per wallet address, the same in every row and table that holds it (`WalletReplacement`) |
 | `rewrite` | fixed value | A constant that drops the personal part |
 | `tombstone` | tombstone | The row stays with every personal field cleared |
 | `delete_row` | delete row | `DELETE` |
 
 ## Rule table
 
-`erasureRules` in scrub order. Every statement is a sqlc query in
-`coordinator/store/queries/erasure.sql`; the count query has the same
+`erasure.Rules` (`coordinator/internal/store/erasure/rules.go`) in scrub
+order. The Postgres statements of each rule are in `erasureStatements`
+(`coordinator/store/postgres/erasure_rules.go`). Every statement is a sqlc
+query in `coordinator/store/postgres/queries/erasure.sql`; the count query has the same
 predicate as the apply query. "Unshared" means no other account uses the key
 ([shared keys](../architecture/account-erasure.md#shared-machines-and-shared-keys)).
 
@@ -45,13 +47,13 @@ predicate as the apply query. "Unshared" means no other account uses the key
 | 10 | `code_attestations` | `code_attestations` | delete row (`apns_token` is a device push token) | same as 8 | `CountCodeAttestationsRows` / `DeleteCodeAttestationsRows` |
 | 11 | `code_attest_push_budgets` | `code_attest_push_budgets` | delete row | same as 8 | `CountCodeAttestPushBudgetsRows` / `DeleteCodeAttestPushBudgetsRows` |
 | 12 | `machine_aliases_account` | `darkbloom_machine_aliases` | delete row | `kind` `app_attest` or `legacy_se`, `scope` = account ID | `CountAccountMachineAliasesRows` / `DeleteAccountMachineAliasesRows` |
-| 13 | `machine_aliases_mda_serial` | `darkbloom_machine_aliases` | delete row | `kind` `mda_serial`, `scope` `''`, `digest` = SHA-256 of `mda_serial\x00<serial>` for the account's serials (`mdaSerialDigest`), machine not used by another account | `CountMDASerialAliasesRows` / `DeleteMDASerialAliasesRows` |
+| 13 | `machine_aliases_mda_serial` | `darkbloom_machine_aliases` | delete row | `kind` `mda_serial`, `scope` `''`, `digest` = SHA-256 of `mda_serial\x00<serial>` for the account's serials (`MDASerialDigest`), machine not used by another account | `CountMDASerialAliasesRows` / `DeleteMDASerialAliasesRows` |
 | 14 | `app_attest_evidence_blobs` | `app_attest_evidence_blobs` | delete row | `evidence_id` of evidence whose `session_id` is one of the account's provider IDs | `CountAppAttestEvidenceBlobsRows` / `DeleteAppAttestEvidenceBlobsRows` |
 | 15 | `app_attest_evidence` | `app_attest_evidence` | `context`: `{}` | `session_id` in the account's provider IDs | `CountAppAttestEvidenceRows` / `ScrubAppAttestEvidenceRows` |
 | 16 | `app_attest_receipt_jobs` | `app_attest_receipt_jobs` | delete row | `key_id` in the account's unshared App Attest key IDs | `CountAppAttestReceiptJobsRows` / `DeleteAppAttestReceiptJobsRows` |
 | 17 | `app_attest_receipt_blobs` | `app_attest_receipt_blobs` | delete row | `receipt_id` of receipts with those key IDs | `CountAppAttestReceiptBlobsRows` / `DeleteAppAttestReceiptBlobsRows` |
 | 18 | `app_attest_receipts` | `app_attest_receipts` | `context`: `{}` | `key_id` in those key IDs | `CountAppAttestReceiptsRows` / `ScrubAppAttestReceiptsRows` |
-| 19 | `usage_request_location` | `usage` | `request_location`: NULL | `consumer_key_hash` = SHA-256 hex of the account ID (`hashKey`), rows with a location | `CountUsageLocationRows` / `ScrubUsageLocationRows` |
+| 19 | `usage_request_location` | `usage` | `request_location`: NULL | `consumer_key_hash` = SHA-256 hex of the account ID (`store.HashKey`), rows with a location | `CountUsageLocationRows` / `ScrubUsageLocationRows` |
 | 20 | `inference_routes_consumer_region` | `inference_routes` | `consumer_region`: NULL | `consumer_key_hash`, as 19 | `CountConsumerRegionRows` / `ScrubConsumerRegionRows` |
 | 21 | `inference_routes_provider_region` | `inference_routes` | `provider_region`: NULL | `provider_id` in the account's provider IDs | `CountProviderRegionRows` / `ScrubProviderRegionRows` |
 | 22 | `referrers` | `referrers` | `code`: unique random; `referrals.referrer_code` follows through `ON UPDATE CASCADE` | `account_id` | `CountReferrersRow` / `ScrubReferrersRow` |
@@ -75,21 +77,21 @@ Notes:
   `payments` and `provider_payouts` have no account column, so the admin names
   the addresses in the plan and confirm calls.
 - `MemoryStore` maps every rule name to a function in `memoryErasureRules`
-  (`coordinator/store/erasure_memory_rules.go`). It has no `payments` or
+  (`coordinator/store/memory/erasure_rules.go`). It has no `payments` or
   `provider_payouts` tables, so rules 30 to 32 are `memoryNoTable` there.
 - Before the rules, `forfeitBalance` sets `balances.balance_micro_usd` and
   `withdrawable_micro_usd` to 0 and writes one `erasure_forfeit` ledger entry
-  (`coordinator/store/erasure_postgres.go`).
+  (`coordinator/store/postgres/erasure.go`).
 
 ## Retained data
 
 The scrub keeps these on purpose. The marker tests allow only
 `erasure_outbox.external_id` to hold a seeded marker after a scrub
-(`erasureMarkerAllowList`, `coordinator/store/erasure_marker_test.go`).
+(`erasureMarkerAllowList`, `coordinator/tests/store/postgres/erasure_marker_test.go`).
 
 | Data | Reason | Code |
 |---|---|---|
-| IDs: account, provider, machine, request, key and session IDs; Secure Enclave and App Attest public keys | Not personal data alone; ledger, earnings and audit rows need them | `coordinator/store/erasure_rules.go` (file comment) |
+| IDs: account, provider, machine, request, key and session IDs; Secure Enclave and App Attest public keys | Not personal data alone; ledger, earnings and audit rows need them | `coordinator/internal/store/erasure/rules.go` (file comment) |
 | Ledger entries, balances, provider earnings, floor draws, usage token counts | Financial records. The forfeit is an `erasure_forfeit` entry, so the ledger sums to the zero balance | `forfeitBalance` |
 | `stripe_withdrawals` transfer and payout IDs and amounts; `global_payout_withdrawals` amount, status, country and payment ID | Financial records of the platform's own payments; the connected account, recipient, payout method and request are cleared | rules 28, 29 |
 | `darkbloom_machine_sessions` and machine observations | Chip, OS version and IDs; no serial or key. The marker test searches them | `TestErasureMarkerPostgres` |
@@ -109,10 +111,10 @@ The plan and the applied summary list the three shared kinds in `retained`
 
 ## Outbox targets
 
-`ErasureTarget` (`coordinator/store/erasure.go`). The scrub writes the rows
-(`erasureKeys.outboxRows`, `coordinator/store/erasure_keys.go`) with `state`
+`ErasureTarget` (`coordinator/store/erasure_types.go`). The scrub writes the rows
+(`Keys.OutboxRows`, `coordinator/internal/store/erasure/keys.go`) with `state`
 `pending` and `next_at` = the scrub time; the worker in
-`coordinator/api/erasure_outbox.go` delivers them
+`coordinator/api/accounts/erasure/outbox.go` delivers them
 ([outbox delivery](../architecture/account-erasure.md#outbox-delivery)).
 
 | `target` | One row per | `external_id` holds | Calls (key) |
@@ -131,7 +133,7 @@ Stripe cannot find (`InsertManualErasureOutbox`, `attempts` 1).
 
 ### `erasure_requests`
 
-`coordinator/store/schema/migrations/00018_erasure_tables.sql`.
+`coordinator/store/postgres/schema/migrations/00018_erasure_tables.sql`.
 
 | Column | Type | Meaning |
 |---|---|---|
@@ -142,9 +144,9 @@ Stripe cannot find (`InsertManualErasureOutbox`, `attempts` 1).
 | `reason` | `TEXT` | Free text from the confirm call; kept |
 | `state` | `TEXT` | `planned`, `pending`, `erased`, `canceled` (`CHECK`) |
 | `plan` | `JSONB` | `ErasureSummary`: `planned` and `applied` counts |
-| `confirm_token_hash` | `TEXT` | SHA-256 of `erasure-confirm-v1:<token>`; cleared at confirm |
+| `confirm_token_hash` | `TEXT` | SHA-256 of `erasure-confirm-v1:<token>` (`TokenHash`); cleared at confirm |
 | `confirm_expires_at` | `TIMESTAMPTZ` | Token expiry; cleared at confirm |
-| `wallet_hash` | `TEXT` | SHA-256 of the normalized wallet list (`erasureWalletHash`) |
+| `wallet_hash` | `TEXT` | SHA-256 of the normalized wallet list (`WalletHash`) |
 | `wallet_addresses` | `TEXT[]` | The wallet list, stored at confirm, cleared by the scrub or a cancel |
 | `requested_at`, `scrub_after`, `erased_at`, `canceled_at` | `TIMESTAMPTZ` | Step times |
 | `lease_until` | `TIMESTAMPTZ` | Grace-loop lease |
@@ -178,14 +180,14 @@ triggers).
 | `stripe_job_generation` | `INTEGER` | Part of the job's idempotency key; goes up when a new job must be made |
 
 The last four columns come from
-`coordinator/store/schema/migrations/00022_erasure_outbox_stripe_job.sql`.
+`coordinator/store/postgres/schema/migrations/00022_erasure_outbox_stripe_job.sql`.
 
 Indexes: `erasure_outbox_request` (`request_id`), `erasure_outbox_due`
 (`next_at` where `pending`).
 
 ### `erasure_refused_credits`
 
-`coordinator/store/schema/migrations/00021_erasure_refuse_credits.sql`.
+`coordinator/store/postgres/schema/migrations/00021_erasure_refuse_credits.sql`.
 
 | Column | Type | Meaning |
 |---|---|---|
@@ -209,7 +211,7 @@ first.
 
 ### Indexes from Go migrations
 
-`coordinator/store/postgres_migration_indexes.go` (`indexMigrations`), built
+`coordinator/store/postgres/migration_indexes.go` (`indexMigrations`), built
 `CONCURRENTLY`.
 
 | Version | Index | Used by |
@@ -221,32 +223,32 @@ first.
 
 | Name | Value | Code | Effect |
 |---|---|---|---|
-| `EIGENINFERENCE_ERASURE_GRACE` | Go duration ≥ 0; default `720h` (`defaultErasureGrace = 30 * 24 * time.Hour`) | `coordinator/api/erasure_loop.go` (`erasureGraceFromEnv`) | Time from the soft delete to `scrub_after`. An invalid or negative value logs a warning and uses the default. Listed in [configuration](configuration.md) |
-| `erasureConfirmTTL` | `15 * time.Minute` | `coordinator/api/erasure_handlers.go` | Life of a plan's confirm token |
-| `stripePayoutBounceWindow` | `30 * 24 * time.Hour` | `coordinator/store/erasure.go` | A Stripe withdrawal `paid` within this window still counts as open (the bounce window) |
-| `globalPayoutReconcileWindow` | `90 * 24 * time.Hour` | `coordinator/store/erasure.go` | A Global Payout `posted` within this window still counts as open |
-| `erasureScrubInterval` | `time.Hour` | `coordinator/api/erasure_loop.go` | Grace-loop period; the loop also runs once at start |
-| `erasureScrubLease` | `time.Hour` | `coordinator/api/erasure_loop.go` | Lease on a due request; a failed scrub runs again after it |
-| `erasureScrubBatch` | `20` | `coordinator/api/erasure_loop.go` | Requests per loop pass |
-| `erasureTimeout` | `2 * time.Minute` | `coordinator/store/erasure_postgres.go` | Bound on one erasure transaction |
-| `ErasureCheckoutBatch` | `10` | `coordinator/store/erasure.go` | Checkout Session IDs per `checkout_sessions` row (`MaxRedactionObjects` is also 10) |
-| `erasureOutboxInterval` | `time.Minute` | `coordinator/api/erasure_outbox.go` | Outbox worker period; it also runs once at start |
-| `erasureOutboxLease` | `10 * time.Minute` | `coordinator/api/erasure_outbox.go` | Lease on a due outbox row |
-| `erasureOutboxBatch` | `20` | `coordinator/api/erasure_outbox.go` | Outbox rows per pass |
-| `erasureOutboxMaxAttempts` | `8` | `coordinator/api/erasure_outbox.go` | The eighth failed delivery moves the row to `manual_action` |
-| `erasureOutboxBaseBackoff` | `time.Minute` | `coordinator/api/erasure_outbox.go` | First retry delay; doubles each attempt (1, 2, 4 … 64 minutes) |
-| `erasureOutboxMaxBackoff` | `6 * time.Hour` | `coordinator/api/erasure_outbox.go` | Retry delay cap; not reached with 8 attempts |
-| `erasureRedactionPoll` | `5 * time.Minute` | `coordinator/api/erasure_outbox.go` | How often a running redaction job is read |
-| `erasureRedactionWait` | `7 * 24 * time.Hour` | `coordinator/api/erasure_outbox.go` | Wait after a job failed because its transactions are under 90 days old (the 90-day rule) |
-| `erasureRedactionDeadline` | `105 * 24 * time.Hour` | `coordinator/api/erasure_outbox.go` | End of those waits, counted from the row's `created_at` |
-| `erasureRedactionStuck` | `31 * 24 * time.Hour` | `coordinator/api/erasure_outbox.go` | A job in one non-terminal status longer than this goes to `manual_action` (the 31-day rule; Stripe says a job can take up to 30 days) |
-| `erasureLogTag` | `"erasure_log:true"` | `coordinator/api/erasure_outbox.go` | Datadog tag of the erasure record |
+| `EIGENINFERENCE_ERASURE_GRACE` | Go duration ≥ 0; default `720h` (`defaultGrace = 30 * 24 * time.Hour`) | `coordinator/api/accounts/erasure/loop.go` (`graceFromEnv`) | Time from the soft delete to `scrub_after`. An invalid or negative value logs a warning and uses the default. Listed in [configuration](configuration.md) |
+| `erasureConfirmTTL` | `15 * time.Minute` | `coordinator/api/accounts/erasure/handlers.go` | Life of a plan's confirm token |
+| `StripePayoutBounceWindow` | `30 * 24 * time.Hour` | `coordinator/internal/store/erasure/confirm.go` | A Stripe withdrawal `paid` within this window still counts as open (the bounce window) |
+| `GlobalPayoutReconcileWindow` | `90 * 24 * time.Hour` | `coordinator/internal/store/erasure/confirm.go` | A Global Payout `posted` within this window still counts as open |
+| `erasureScrubInterval` | `time.Hour` | `coordinator/api/accounts/erasure/loop.go` | Grace-loop period; the loop also runs once at start |
+| `erasureScrubLease` | `time.Hour` | `coordinator/api/accounts/erasure/loop.go` | Lease on a due request; a failed scrub runs again after it |
+| `erasureScrubBatch` | `20` | `coordinator/api/accounts/erasure/loop.go` | Requests per loop pass |
+| `erasureTimeout` | `2 * time.Minute` | `coordinator/store/postgres/erasure.go` | Bound on one erasure transaction |
+| `ErasureCheckoutBatch` | `10` | `coordinator/store/erasure_types.go` | Checkout Session IDs per `checkout_sessions` row (`MaxRedactionObjects` is also 10) |
+| `erasureOutboxInterval` | `time.Minute` | `coordinator/api/accounts/erasure/outbox.go` | Outbox worker period; it also runs once at start |
+| `erasureOutboxLease` | `10 * time.Minute` | `coordinator/api/accounts/erasure/outbox.go` | Lease on a due outbox row |
+| `erasureOutboxBatch` | `20` | `coordinator/api/accounts/erasure/outbox.go` | Outbox rows per pass |
+| `erasureOutboxMaxAttempts` | `8` | `coordinator/api/accounts/erasure/outbox.go` | The eighth failed delivery moves the row to `manual_action` |
+| `erasureOutboxBaseBackoff` | `time.Minute` | `coordinator/api/accounts/erasure/outbox.go` | First retry delay; doubles each attempt (1, 2, 4 … 64 minutes) |
+| `erasureOutboxMaxBackoff` | `6 * time.Hour` | `coordinator/api/accounts/erasure/outbox.go` | Retry delay cap; not reached with 8 attempts |
+| `erasureRedactionPoll` | `5 * time.Minute` | `coordinator/api/accounts/erasure/outbox_redaction.go` | How often a running redaction job is read |
+| `erasureRedactionWait` | `7 * 24 * time.Hour` | `coordinator/api/accounts/erasure/outbox_redaction.go` | Wait after a job failed because its transactions are under 90 days old (the 90-day rule) |
+| `erasureRedactionDeadline` | `105 * 24 * time.Hour` | `coordinator/api/accounts/erasure/outbox_redaction.go` | End of those waits, counted from the row's `created_at` |
+| `erasureRedactionStuck` | `31 * 24 * time.Hour` | `coordinator/api/accounts/erasure/outbox_redaction.go` | A job in one non-terminal status longer than this goes to `manual_action` (the 31-day rule; Stripe says a job can take up to 30 days) |
+| `erasureLogTag` | `"erasure_log:true"` | `coordinator/api/accounts/erasure/outbox.go` | Datadog tag of the erasure record |
 
 Open withdrawals (`CountOpenStripeWithdrawals`, `CountOpenGlobalPayouts`):
 a Stripe withdrawal in `pending` or `transferred`, `paid` within the bounce
 window, or `failed` and waiting for a confirmed-rejection refund
 (`StripeConfirmedRejectionPrefix`); a Global Payout in `pending` or
-`processing`, or `posted` within `globalPayoutReconcileWindow`.
+`processing`, or `posted` within `GlobalPayoutReconcileWindow`.
 
 ## Related
 

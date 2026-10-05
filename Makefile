@@ -32,14 +32,14 @@ coordinator: coordinator-test coordinator-build ## Test + build coordinator
 # sqlc v1.31.1 needs Go 1.26, newer than go.mod, so it runs pinned through
 # `go run` instead of a go.mod tool directive.
 SQLC := go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
-SQLC_CONFIG := coordinator/store/sqlc.yaml
+SQLC_CONFIG := coordinator/store/postgres/sqlc.yaml
 
-sqlc-generate: ## Regenerate coordinator/store/storedb from coordinator/store/queries
+sqlc-generate: ## Regenerate coordinator/store/postgres/storedb from coordinator/store/postgres/queries
 	$(SQLC) generate -f $(SQLC_CONFIG)
 
-sqlc-check: ## Fail if storedb or coordinator/store/schema/schema.sql is stale (needs DATABASE_URL)
+sqlc-check: ## Fail if storedb or coordinator/store/postgres/schema/schema.sql is stale (needs DATABASE_URL)
 	@test -n "$$DATABASE_URL" || { echo "sqlc-check: set DATABASE_URL to a disposable Postgres server"; exit 1; }
-	go test ./coordinator/store -run '^TestMigrationsBuildCheckedInSchema$$' -count=1 -v
+	go test ./coordinator/tests/store/postgres -run '^TestMigrationsBuildCheckedInSchema$$' -count=1 -v
 	$(SQLC) diff -f $(SQLC_CONFIG)
 
 # ---- Prompt-contract sidecar (Rust) ---------------------------------------

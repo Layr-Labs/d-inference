@@ -13,7 +13,9 @@ func (t RequestTraits) AutopilotRequirements(vision bool) autopilot.Requirements
 	}
 }
 
-func requestTraitsForAutopilot(r autopilot.Requirements) RequestTraits {
+// RequestTraitsForAutopilot converts aggregate eligibility requirements into
+// routing traits without introducing request-specific output or retry policy.
+func RequestTraitsForAutopilot(r autopilot.Requirements) RequestTraits {
 	return RequestTraits{
 		HasTools: r.HasTools, RequiresToolConstraint: r.RequiresToolConstraint,
 		RequiresNativeMediaTools: r.RequiresNativeMediaTools,

@@ -1344,10 +1344,10 @@ CPU-only check runs in the Release Integrity job; it is not GPU qualification.
 
 ```bash
 make provider-test
-# = cd provider-swift && swift build --build-tests
-#   ./scripts/fetch-metallib.sh <bin-path>            (build mlx.metallib from libs/mlx-swift source)
-#   cp mlx.metallib into every <bin-path>/*PackageTests.xctest/Contents/MacOS/
-#   cd provider-swift && swift test --skip-build
+# = python3 scripts/test-stage-test-metallib.py
+#   cd provider-swift && swift build --build-tests
+#   ./scripts/stage-test-metallib.sh <bin-path>   (build mlx.metallib from libs/mlx-swift source; copy it into every <bin-path>/*.xctest bundle)
+#   cd provider-swift && ../scripts/run-provider-tests.sh
 ```
 
 `PagedKernelPreflightTests.noisyChildCannotDeadlock` runs an owned failing child
@@ -1435,8 +1435,7 @@ cd libs/mlx-swift-lm
 swift package unedit --force mlx-swift >/dev/null 2>&1 || true
 swift package edit --path ../mlx-swift mlx-swift      # use the local mlx-swift, not the remote branch
 swift build --build-tests
-../../scripts/fetch-metallib.sh "$PWD/.build/debug"            # stage mlx.metallib beside the nested test runner
-for b in .build/debug/*PackageTests.xctest; do cp .build/debug/mlx.metallib "$b/Contents/MacOS/"; done
+../../scripts/stage-test-metallib.sh "$(swift build --show-bin-path)"   # stage mlx.metallib into every nested test bundle
 for suite in CBv2PagedSafetyTests CBv2PrefixCacheHasherTests CBv2PagedEligibilityTests \
              CBv2PagedBackendTests CBv2PagedKernelTests CBv2KVSharingParityTests; do
   ../../scripts/run-nested-suite.sh "$suite"

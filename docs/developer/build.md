@@ -845,7 +845,7 @@ local stub servers; its default observation mode sends only public GETs.
 | `prompt-sidecar-build` | `cargo build --locked --release --bin promptsidecar` |
 | `prompt-sidecar` | format + check + test + build |
 | `provider-build` | `swift build` + `scripts/fetch-metallib.sh <bin-path>` |
-| `provider-test` | `swift build --build-tests`, stage `mlx.metallib` into the bin dir and every `*PackageTests.xctest/Contents/MacOS`, then `swift test --skip-build` |
+| `provider-test` | `swift build --build-tests`, stage `mlx.metallib` into the bin dir and every `*.xctest` test bundle, then `swift test --skip-build` |
 | `provider` | `provider-build` + `provider-test` |
 | `benchmark-wrapper-test` | Python unittest discovery for `gemma_contbatch/tests` and `serving_performance` from `scripts/` |
 | `benchmark-gemma-contbatch` | `python3 scripts/benchmark-gemma-contbatch.py $(GEMMA_BENCHMARK_ARGS)` (needs GPU + weights) |
@@ -948,8 +948,12 @@ Provider Tests also runs `python3 scripts/test-profile-inventory-auth.py` on mac
 
 After `swift build --build-tests`, run `scripts/stage-test-metallib.sh` with the
 package's `swift build --show-bin-path` directory. The helper builds or verifies
-the matching MLX library and stages it beside each test executable and in the
-nested resource bundle used by native checkpoint identity tests. `make provider-test`
+the matching MLX library. Then it copies the library into every `*.xctest`
+bundle in that directory: beside the test executable and in the nested resource
+bundle that native checkpoint identity tests use. The native build system makes
+one `<Package>PackageTests.xctest`. CI uses the native build system through
+`scripts/provider-release-swift.sh`. A local Swift 6.4 `swift build` uses Swift
+Build, which makes one `<Target>.xctest` for each test target. `make provider-test`
 and the provider/nested CI jobs invoke this helper. A missing test runner or
 failed source verification is an error; an existing library is always replaced.
 See [the live-test setup](test.md) for the pinned DiffusionGemma artifact and

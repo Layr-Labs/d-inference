@@ -106,7 +106,7 @@ It checks 720 plans against warm exact references through 64K tokens with the
 unchanged one-second timeout. It does not load model weights or measure SSD hits.
 See [the diagnostic report](../reports/2026-09-24-cache-planner-admission.md) for evidence and limits.
 `TestDiagnosticCacheEpochFanout` exercises coordinator-wide holder withdrawal
-for one model epoch (`go test ./registry -run TestDiagnosticCacheEpochFanout`
+for one model epoch (`go test ./tests/registry -run TestDiagnosticCacheEpochFanout`
 from `coordinator`; repeat with `-race`).
 `SSDCheckpointPublicationCPUTests` binds tiny CPU tensors and checks
 native encrypted-store publication preservation plus successful survivor restoration.

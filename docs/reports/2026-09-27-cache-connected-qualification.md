@@ -74,14 +74,14 @@ not a stronger erasure guarantee or a retention-policy change. See
 
 ## Cold-write cost and remaining release limits
 
-Cold donation remains measurable: Bonsai total53.98s with SSD versus31.26s OFF;
-cold tool32.72s versus19.50s. Gemma donor total12.07s versus3.96s OFF. Publication
+Cold donation remains measurable: Bonsai total 53.98s with SSD versus 31.26s OFF;
+cold tool 32.72s versus 19.50s. Gemma donor total 12.07s versus 3.96s OFF. Publication
 and retirement remain awaited. No early terminal, uncharged aggregate buffer,
 weaker encryption, lower write reserve or altered durability was introduced.
 
 A separate bounded 64MiB framing diagnostic passed ten controls and four
 byte-identical cells. A vector writer showed no internal-volume benefit and
-about21% lower whole-cell time on the external volume in one fixed-order run.
+about 21% lower whole-cell time on the external volume in one fixed-order run.
 It is not included: repeated native benefit and production failure-contract
 qualification are absent. Storage placement must accompany cold-write numbers.
 

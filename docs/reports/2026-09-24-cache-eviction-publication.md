@@ -182,6 +182,11 @@ go test ./registry -run TestDiagnosticCacheEpochFanout -count=1 -v
 go test -race ./registry -run TestDiagnosticCacheEpochFanout -count=1
 ```
 
+> **Layout note (2026-10-05).** The commands above are as run at the source
+> trees this report records. Coordinator Go tests have since moved under
+> `coordinator/tests/`, so `./registry` no longer selects this witness; its
+> current selector is in [test commands](../developer/test.md).
+
 For the tiny native CPU witness, use the repository Swift test build and
 source-bound MLX resources described in [test commands](../developer/test.md),
 then select `SSDCheckpointPublicationCPUTests` with Swift Testing.

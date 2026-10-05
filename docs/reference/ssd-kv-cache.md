@@ -105,6 +105,23 @@ and MTP codec. No public header field exposes those token boundaries
 | Disk compatibility | Verified model/template, binary, loaded metallib, OS and numerical/MTP settings, plus actual native dtype and storage geometry | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+CheckpointIdentity.swift`, `CompleteCheckpointStorageIdentity.swift` |
 | Numerical environment identity | Process and slot values whose keys start with `MLX_`, `DARKBLOOM_CBV2_`, `DARKBLOOM_QWEN_`, `DARKBLOOM_MTP_`, `DARKBLOOM_GPTOSS_` or `DARKBLOOM_GEMMA4_`; native `mimo_v2` additionally binds its `DARKBLOOM_MIMO_` controls. Changing an included optimization or rollback setting selects a different disk namespace | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+CheckpointIdentity.swift` (`completeCheckpointIdentity`) |
 
+| Complete layout | Payload | Loaded gate |
+|---|---|---|
+| `native-contiguous-full-recurrent-v1` | Native full KV, recurrent state and optional typed MTP history | Owning full-attention rows, supported native types and complete recurrent codec |
+| `native-paged-full-recurrent-v1` | Same complete recurrent state, imported into independent segmented pages | Same codec plus resolved segmented paging and observed native types |
+| `native-paged-historical-attention-v2` | Owning full rows and exact historical window contents, with absolute positions and borrower map | Loaded historical capability, resolved segmented paging, exact ordered attention map; assistant absent or stateless |
+
+Layout constants and validation live in `CompleteCheckpointContract.swift` and
+`HistoricalAttentionLayout.swift`; provider selection is
+`EngineV2SlotFactory+CompletePrefixCache.swift` (`completeCheckpointStorage`).
+Historical windows capture the last `min(M, W)` tokens at boundary M and restore
+with base `max(0, M - W)`. Window copies finish before successor writes. Ordinary
+attention snapshots and their optional unused window sidecar remain separate.
+
+Validation artifacts, source scopes and model-measurement limits are linked from
+[the cache architecture](../architecture/prefix-cache.md#streamed-complete-checkpoints).
+Earlier resident-cache measurements do not establish SSD latency or restart reuse.
+
 ### Bounded shorter complete-checkpoint fallback
 
 These rules apply to complete AR and native-block imports, not attention-block
@@ -129,23 +146,6 @@ error after materialization must re-establish that boundary;
 generic MLX errors are not substitutes for this evidence. The successful shorter
 file still requires full authenticated metadata, manifest, payload and EOF, then
 ordinary native adoption. A staged endpoint alone is not a hit or saved usage.
-
-| Complete layout | Payload | Loaded gate |
-|---|---|---|
-| `native-contiguous-full-recurrent-v1` | Native full KV, recurrent state and optional typed MTP history | Owning full-attention rows, supported native types and complete recurrent codec |
-| `native-paged-full-recurrent-v1` | Same complete recurrent state, imported into independent segmented pages | Same codec plus resolved segmented paging and observed native types |
-| `native-paged-historical-attention-v2` | Owning full rows and exact historical window contents, with absolute positions and borrower map | Loaded historical capability, resolved segmented paging, exact ordered attention map; assistant absent or stateless |
-
-Layout constants and validation live in `CompleteCheckpointContract.swift` and
-`HistoricalAttentionLayout.swift`; provider selection is
-`EngineV2SlotFactory+CompletePrefixCache.swift` (`completeCheckpointStorage`).
-Historical windows capture the last `min(M, W)` tokens at boundary M and restore
-with base `max(0, M - W)`. Window copies finish before successor writes. Ordinary
-attention snapshots and their optional unused window sidecar remain separate.
-
-Validation artifacts, source scopes and model-measurement limits are linked from
-[the cache architecture](../architecture/prefix-cache.md#streamed-complete-checkpoints).
-Earlier resident-cache measurements do not establish SSD latency or restart reuse.
 
 ## Identity binding
 

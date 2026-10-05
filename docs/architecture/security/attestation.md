@@ -1,6 +1,6 @@
 # Provider attestation
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 The evidence checks behind legacy MDM/APNs verification and qualified App
 Attest authorization. The [provider trust overview](provider-trust.md) owns the
@@ -60,6 +60,12 @@ so store work between aggregation stages cannot mix connection generations. See
 for cache bounds and unknown-field behavior. No raw Apple certificate or receipt
 is added to public/owner presentation; detailed archive access remains on its
 existing authorized operations path.
+
+Inventory capture also records the coordinator's immutable connection creation
+time (`Session.Capture` in `coordinator/internal/appattest/inventory/session.go`).
+This [registration-order metadata](../storage.md#inventory-registration-timestamps)
+supports operator-reviewed email audiences; it is not Apple evidence and does
+not change identity association, trust, authorization or attestation freshness.
 
 ## Context
 

@@ -26,6 +26,14 @@ extension ProviderLoop {
         }
     }
 
+    /// True when the target cannot be published after its victims retire:
+    /// not in the inventory, no weight hash, a recorded failed self-test, or
+    /// mid-retirement. Checked before any victim is unloaded.
+    func autopilotTargetUnavailable(_ target: String) -> Bool {
+        guard let model = autopilotInventoryModels[target], model.weightHash?.isEmpty == false else { return true }
+        return failedSelfTestHashes[target] != nil || retiringModels.contains(target)
+    }
+
     func autopilotTargetReserve(_ target: String) -> UInt64 {
         UnifiedMemoryCap.resolvedActivationReserveBytes(
             modelIDs: Array(advertisedModels.keys) + Array(modelSlots.keys)
@@ -52,8 +60,7 @@ extension ProviderLoop {
     /// survivors, pin the reserve across suspension, raise, then advertise.
     func prepareAutopilotTarget(_ command: ModelAutopilotCommand) async throws {
         guard let target = command.loadModelId, advertisedModels[target] == nil else { return }
-        guard let model = autopilotInventoryModels[target], model.weightHash?.isEmpty == false,
-            failedSelfTestHashes[target] == nil, !retiringModels.contains(target) else {
+        guard !autopilotTargetUnavailable(target), let model = autopilotInventoryModels[target] else {
             throw InferenceError.modelLoadFailed("model_not_cached")
         }
         await acquireResliceGate()

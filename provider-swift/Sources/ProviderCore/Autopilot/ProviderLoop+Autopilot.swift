@@ -132,6 +132,7 @@ extension ProviderLoop {
             autopilotLeaseUntil[$0].map { ContinuousClock.now < $0 } ?? false
         }) { return "active_lease" }
         if let target = command.loadModelId {
+            if advertisedModels[target] == nil, autopilotTargetUnavailable(target) { return "model_not_cached" }
             guard autopilotModelInfo(target) != nil,
                   ModelScanner.resolveLocalPath(modelID: target) != nil else { return "model_not_cached" }
             guard ModelRuntimeRequirements.isEligible(modelID: target,

@@ -137,7 +137,7 @@ After those unchanged rollout gates, planning admission waits within its
 existing deadline instead of oversubscribing the sidecar's worker pool.
 Count/byte bounds and explicit server-connection headroom for independent
 health/control pools are enforced by `NewClient`,
-`planAdmission` and `Client.Plan` (`coordinator/internal/promptcontract/sidecar/plan_admission.go`,
+`PlanAdmission` and `Client.Plan` (`coordinator/internal/promptcontract/sidecar/plan_admission.go`,
 `coordinator/internal/promptcontract/sidecar/client.go`); see
 [the sidecar mechanism](prompt-contract-sidecar.md#process-and-lifecycle).
 Successful planning is an opportunity for reuse, not proof that a provider

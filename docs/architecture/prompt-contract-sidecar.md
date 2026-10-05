@@ -103,7 +103,7 @@ pools them (`newUnixTransport`, `coordinator/promptcontract/client.go`).
 Rust holds each connection permit for the entire HTTP connection, including
 idle keep-alive time (`coordinator/promptsidecar/src/server.rs`). The Go planning
 transport and active admission slots use the minimum of normalized worker
-capacity, `maxPendingPlans` and normalized total connections minus
+capacity, `MaxPendingPlans` and normalized total connections minus
 `ReservedControlConnections`. `NewClient` reserves two connections for health
 and two for control; separate pools alone cannot reserve server-side permits.
 Standalone clients use `DefaultMaxConcurrency` and `DefaultMaxConnections`
@@ -113,7 +113,7 @@ enabled configuration with fewer than five normalized total connections
 (`coordinator/promptcontract/config.go`); a directly constructed client with a
 positive inadequate total refuses planning without dialing. Neither worker
 count nor sidecar memory allowance is raised to create this headroom.
-`planAdmission` in
+`PlanAdmission` in
 `coordinator/internal/promptcontract/sidecar/plan_admission.go` bounds outstanding calls (active
 plus waiting) at 64 and their accounted input/envelope bytes at 64 MiB. It waits
 before JSON validation/serialization, so queued calls do not each allocate a

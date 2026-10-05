@@ -94,9 +94,21 @@ capability-generation and accepted-write cutoff regressions. Byte refusal must
 remain nil-error cold inference, with no cache metadata or calibration exclusion.
 These are logical state/ownership tests, not physical-memory measurements,
 native SSD hit-rate benchmarks or hosted certification.
-Run `go test -race ./tests/promptcontract ./tests/registry`
+`TestPlanningClientTracksConfiguredWorkers`, `TestPlanAdmission*`,
+`TestPlannerBurstWaitsForWorkersWithoutBlockingHealth` and
+`TestQueuedPlanCancellationNeverReachesSidecar` check configured capacity,
+bounded pending bytes/counts, exact 40-request bursts, health/control isolation,
+cancellation, deadlines and recovery. Run `go test -race ./tests/promptcontract ./tests/registry`
 from `coordinator`. `TestDiagnosticFortyQPSPlanningCeiling` retains the unchanged
 registry rate ceiling as a diagnostic, not an SSD hit-rate benchmark.
+
+Run `TestPlanningConnectionBudget`,
+`TestControlReconnectsDuringPlanningSaturation` and
+`TestReviewControlTrafficAtConfiguredWorkerCapacity` to cover lifetime connection
+headroom, nondefault worker/connection limits, fresh and reconnected health/control
+traffic under saturation, invalid-budget refusal and admission refunds. These
+use the actual Go HTTP transports and a synthetic Unix listener mirroring the
+Rust connection semaphore; they do not replace the real-sidecar opt-in below.
 
 `TestPlannerRealSidecarAdmission` is an additional CPU-only opt-in: set
 `DARKBLOOM_TEST_PROMPT_SIDECAR` to a source-bound local release binary and
@@ -1254,6 +1266,15 @@ controller close. Run them under the race detector from the repository root:
 go test -race ./coordinator/tests/promptcontract -run '^TestPreload' -count=1
 ```
 
+`TestPreloadRealSidecarRuntimeAndMixedVersions` and
+`TestPreloadRealSidecarGenerationAndCanceledResponseDrain` are opt-in real Unix
+HTTP tests in `coordinator/tests/promptcontract/preload_real_sidecar_test.go`. Without
+explicit actual binary bindings they skip; unit-test success is not their
+execution evidence. They provision tiny hash-verified local tokenizer fixtures,
+run real supervised Rust children, and use actual preload/health/ready/metrics/
+plan responses. Only artifact downloads are fixture-local. A held control call
+or response does not fabricate readiness.
+
 Before running the real pairing, bind each candidate and legacy **service**
 executable to its compiler-artifact and source receipt. The artifact must be the
 `promptsidecar` bin target, not a libtest executable; a role environment label
@@ -1273,6 +1294,16 @@ Darwin does not supply the Linux parent-death guarantee. The fixture itself
 checks binary hashes before/after use, closes its real children and checks
 socket disappearance. No production credentials, signing, downloads, provider
 service or model weights are required.
+
+```bash
+go test -race ./coordinator/tests/promptcontract -run '^TestPreloadRealSidecar' -count=1 -timeout=3m
+```
+
+The pairing distinguishes strict degraded reports from usable runtime subsets,
+checks old/new role behavior, catalog replacement and actual child restart.
+Its held-response cancellation case proves that Go cannot publish a canceled
+real response after Rust loaded it; it does **not** prove cancellation of a
+blocking Rust loader. That ownership gate belongs to the Rust tests below.
 
 `TestCachePlanningRealSidecarHealthyMemberHTTP`
 (`coordinator/tests/api/inference/cache_planning_partial_real_test.go`) extends the existing API

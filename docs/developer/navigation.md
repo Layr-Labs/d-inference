@@ -67,7 +67,7 @@ components for the specific invariant:
 | Routing scan candidate storage | `coordinator/internal/registry/candidatearena/` (`Arena`, `Storage`, `ChunkSize`); private ownership in `coordinator/registry/reservation_storage.go`, compact retained evidence in `coordinator/registry/candidate_snapshot.go`; chunk size and retained public lifetimes are guarded by `coordinator/tests/registry/candidate_arena_test.go`, `candidate_storage_test.go` and `reservation_storage_test.go` |
 | Cache generations, memory history, shared records and SQL helpers | `coordinator/internal/store/` |
 | Sidecar identity, protocol, artifacts, catalog/preload and endpoint lowering | `coordinator/internal/promptcontract/` |
-| Sidecar planning admission and per-contract preload readiness | `coordinator/internal/promptcontract/sidecar/plan_admission.go` (`planAdmission`), `coordinator/internal/promptcontract/sidecar/client.go` (`NewClient`, `Client.Plan`); `coordinator/internal/promptcontract/preload/controller.go` (`PreloadController.ReadyFor`, `Reconcile`) |
+| Sidecar planning admission and per-contract preload readiness | `coordinator/internal/promptcontract/sidecar/plan_admission.go` (`PlanAdmission`), `coordinator/internal/promptcontract/sidecar/client.go` (`NewClient`, `Client.Plan`); `coordinator/internal/promptcontract/preload/controller.go` (`PreloadController.ReadyFor`, `Reconcile`) |
 | Remote media policy, read budgets and reference grouping | `coordinator/internal/mediafetch/` |
 | Frame scanning and decoding | `coordinator/internal/wire/` |
 

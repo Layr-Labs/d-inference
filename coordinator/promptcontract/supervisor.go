@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"strconv"
@@ -44,6 +45,13 @@ type SupervisorConfig struct {
 	MaxLoadedContracts     int
 	MaxTokens              int
 	MemoryLimitMiB         int
+	// PlanAdmissions and Transports are forwarded to the supervisor's client;
+	// see sidecar.ClientConfig.
+	PlanAdmissions func(workers int) *sidecar.PlanAdmission
+	Transports     func(pool sidecar.Pool, transport *http.Transport) http.RoundTripper
+	// Clients builds the supervisor's sidecar client from its effective
+	// configuration. Nil, or a nil result, uses sidecar.NewClient.
+	Clients func(sidecar.ClientConfig) *sidecar.Client
 }
 
 type SupervisorStatus struct {
@@ -74,19 +82,29 @@ type Supervisor struct {
 
 func NewSupervisor(config SupervisorConfig) *Supervisor {
 	applySupervisorDefaults(&config)
+	clientConfig := sidecar.ClientConfig{
+		MaxConcurrency:  config.MaxConcurrency,
+		MaxConnections:  config.MaxConnections,
+		SocketPath:      config.SocketPath,
+		RequestTimeout:  config.RequestTimeout,
+		HealthTimeout:   config.HealthTimeout,
+		PreloadTimeout:  config.PreloadTimeout,
+		MaxTokens:       config.MaxTokens,
+		MaxPreloadIDs:   config.MaxLoadedContracts,
+		MaxRequestBytes: int64(config.MaxBodyBytes),
+		PlanAdmissions:  config.PlanAdmissions,
+		Transports:      config.Transports,
+	}
+	var client *sidecar.Client
+	if config.Clients != nil {
+		client = config.Clients(clientConfig)
+	}
+	if client == nil {
+		client = sidecar.NewClient(clientConfig)
+	}
 	return &Supervisor{
 		config: config,
-		client: sidecar.NewClient(sidecar.ClientConfig{
-			MaxConcurrency:  config.MaxConcurrency,
-			MaxConnections:  config.MaxConnections,
-			SocketPath:      config.SocketPath,
-			RequestTimeout:  config.RequestTimeout,
-			HealthTimeout:   config.HealthTimeout,
-			PreloadTimeout:  config.PreloadTimeout,
-			MaxTokens:       config.MaxTokens,
-			MaxPreloadIDs:   config.MaxLoadedContracts,
-			MaxRequestBytes: int64(config.MaxBodyBytes),
-		}),
+		client: client,
 		status: SupervisorStatus{Enabled: config.Enabled},
 	}
 }

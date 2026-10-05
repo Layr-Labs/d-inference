@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 The public HTTP surface of the coordinator, derived from its composed route bindings under `coordinator/api/`, including the `/v1/` catch-all. Every route is listed below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -797,6 +797,13 @@ cache-planning contract. That contract rejects media, including media in tool
 outputs; accepting a Responses image for inference does not establish exact
 coordinator cache-routing eligibility. Native model codec, media-size, context
 and tool-capability checks still apply.
+
+A Responses, Completions or Messages body that cannot be lowered for cache
+planning is still served on its own endpoint, without a cache plan. The
+coordinator counts that decision as `lowering_unsupported` in the cache-planning
+decision telemetry (`CachePlanner.EmitDecision`, called from
+`handleGenericInference` in `coordinator/api/inference/consumer.go`). The
+response shape, status and error codes do not change.
 
 Bodies are lowered into the chat pipeline (`coordinator/internal/promptcontract/endpoint/endpoint_lower_responses.go`) and the provider's chat output is raised back into `ResponsesResponse` (`coordinator/api/types/types.go`): `id` (`resp_…`), `object`, `created_at`, `status`, `error`, `incomplete_details.reason`, `instructions`, `max_output_tokens`, `model`, `output[]`, `parallel_tool_calls`, `temperature`, `tool_choice`, `tools`, `top_p`, `metadata`, `usage` (`input_tokens`, `input_tokens_details.cached_tokens`, `output_tokens`, `output_tokens_details.reasoning_tokens`), `se_signature`, `response_hash`. Streams use `event:`-typed frames from `response.created` / `response.in_progress` through the item deltas to `response.completed` (or `response.incomplete` when truncated) and carry **no** `data: [DONE]` (`NewResponsesStreamEmitter`, `coordinator/api/inference/response/responses_stream.go`).
 

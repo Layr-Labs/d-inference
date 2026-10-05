@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-05
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -48,7 +48,7 @@ The remaining epoch allocation commits as one transaction in `coordinator/paymen
 | Platform price writers | `PUT /v1/admin/pricing` (`coordinator/api/billing/` `HandleAdminPricing`) and model registration, which requires positive `input_price`/`output_price` and writes them as the platform row (`coordinator/api/catalog/` `HandleRegisterModel` → `SetModelPrice`). Both accept an optional `cache_read_price` in `[0, input_price]` (`coordinator/api/modelprice/price.go` `modelprice.Input.Validate`); a cache read priced above the uncached rate is rejected, not clamped. |
 | Provider custom price | `PUT /v1/pricing` / `DELETE /v1/pricing` for the caller's own account; Privy users only (`coordinator/api/billing/pricing.go` `HandleSetPricing`, `HandleDeletePricing`). Validation is `> 0` plus the `cache_read_price` bound; there is no floor or ceiling relative to the platform price. |
 | Resolution at settlement | provider custom → platform → `DefaultInputPricePerMillion` / `DefaultOutputPricePerMillion` (`coordinator/api/inference/provider_inference.go` `HandleCompleteAt`). Service consumers skip the first step. `payments.RatesFor` turns the winning row into `Rates{Input, Output, CacheRead}`; an unset `cache_read_price` derives as `DefaultCacheReadPrice(input)` = input less `DefaultCacheReadDiscountPercent` (50%). The reservation uses the same order with the provider chosen at dispatch (`coordinator/api/inference/consumer.go` `providerReservationCost`, `reservationCost`). |
-| Cost | `Rates.Cost` bills `(promptTokens − cachedTokens) × in / 1M + cachedTokens × cacheRead / 1M + completionTokens × out / 1M`, flooring non-zero usage at 1 µUSD (service traffic); `Rates.CostWithMinimum` applies `minimumChargeMicroUSD` instead (`coordinator/payments/pricing.go`). Cached tokens: invariant 5. |
+| Cost | `Rates.Cost` bills `(promptTokens − cachedTokens) × in / 1M + cachedTokens × cacheRead / 1M + completionTokens × out / 1M`, flooring non-zero usage at 1 µUSD (service traffic); `Rates.CostWithMinimum` applies `minimumChargeMicroUSD` instead (`coordinator/payments/pricing.go`). Cached tokens: invariant 5. A request that gets no cache plan (for example an endpoint body that cannot be lowered for planning) is dispatched without a cache scope, so it reports no cached tokens and its whole prompt is billed at the input price; a planning decision never changes price resolution or the reservation. |
 | Public read | `GET /v1/pricing` returns the `platform` rows plus the fallback defaults, each with its effective `cache_read_price` (`HandleGetPricing`, `ModelPriceQuote`; shape `types.PricingResponse`); the OpenRouter model feed renders the same `Rates` as USD-per-token strings — `prompt`, `completion`, `input_cache_read` — via `coordinator/payments/pricing.go` `FormatPerTokenUSD` (`coordinator/api/catalog/openrouter_models.go` `buildModelPricing`). |
 
 ### Request lifecycle

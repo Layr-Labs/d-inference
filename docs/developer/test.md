@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 ## Reservation storage and scan benchmarks
 
@@ -111,7 +111,7 @@ registry rate ceiling as a diagnostic, not an SSD hit-rate benchmark.
 
 Run `TestPlanningConnectionBudget`,
 `TestControlReconnectsDuringPlanningSaturation` and
-`TestReviewControlTrafficAtConfiguredWorkerCapacity` to cover lifetime connection
+`TestControlTrafficAtConfiguredWorkerCapacity` to cover lifetime connection
 headroom, nondefault worker/connection limits, fresh and reconnected health/control
 traffic under saturation, invalid-budget refusal and admission refunds. These
 use the actual Go HTTP transports and a synthetic Unix listener mirroring the

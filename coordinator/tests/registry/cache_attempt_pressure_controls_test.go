@@ -25,6 +25,24 @@ func pressureTestCharge(t *testing.T, nonce string, a indexKernelAttempt) uint64
 	return charge
 }
 
+// fullTerminalKernel fills a ledger exactly with 65 equal terminal records, one
+// more than an admission under byte pressure may examine. It returns the
+// tracker, the record and its charge.
+func fullTerminalKernel(t *testing.T) (*receiptKernelFixture, indexKernelAttempt, uint64) {
+	t.Helper()
+	a := budgetTestAttempt()
+	charge := pressureTestCharge(t, "n000", a)
+	tr := budgetTestKernel(65 * charge)
+	for i := 0; i < 65; i++ {
+		nonce := fmt.Sprintf("n%03d", i)
+		if !tr.StoreAttemptLocked(nonce, a) {
+			t.Fatal("setup")
+		}
+		tr.MarkAttemptTerminal(nonce, a.CreatedAt.Add(time.Second))
+	}
+	return tr, a, charge
+}
+
 func TestCacheAttemptPressureRefusalDoesNotDiscardTerminalEvidence(t *testing.T) {
 	for _, invalid := range []string{"oversized", "duplicate", "all-live"} {
 		t.Run(invalid, func(t *testing.T) {
@@ -63,17 +81,7 @@ func TestCacheAttemptPressureRefusalDoesNotDiscardTerminalEvidence(t *testing.T)
 // terminal record by one twice its size asks it for one record other than the
 // one being replaced.
 func TestCacheAttemptPressureWorkBoundAndTerminalIdempotence(t *testing.T) {
-	a := budgetTestAttempt()
-	charge := pressureTestCharge(t, "n000", a)
-	// The 65 equal records fill the ledger exactly.
-	tr := budgetTestKernel(65 * charge)
-	for i := 0; i < 65; i++ {
-		nonce := fmt.Sprintf("n%03d", i)
-		if !tr.StoreAttemptLocked(nonce, a) {
-			t.Fatal("setup")
-		}
-		tr.MarkAttemptTerminal(nonce, a.CreatedAt.Add(time.Second))
-	}
+	tr, a, charge := fullTerminalKernel(t)
 	attempts, terminal := tr.config.Attempts, tr.config.TerminalOrder
 	before := attempts.Lookup("n000").ExpiresAt
 	tr.MarkAttemptTerminal("n000", a.CreatedAt.Add(2*time.Second))
@@ -105,10 +113,7 @@ func TestCacheAttemptPressureReclaimedLateReadyCannotRecreateHolder(t *testing.T
 	r.ForgetCacheAttempt(measured)
 	// Use a smaller valid candidate so pressure has one deterministic victim.
 	a := budgetTestAttempt()
-	charge, ok := cachetracker.CacheAttemptCharge("next", a)
-	if !ok {
-		t.Fatal("charge")
-	}
+	charge := pressureTestCharge(t, "next", a)
 	r.setMaxBytes(max(limit, charge))
 	if err := r.ConfigureCacheRouting(generationTestConfig(production.CacheRoutingOn)); err != nil {
 		t.Fatal(err)
@@ -130,16 +135,7 @@ func TestCacheAttemptPressureReclaimedLateReadyCannotRecreateHolder(t *testing.T
 }
 
 func TestCacheAttemptPressureInsertionHonorsWorkBound(t *testing.T) {
-	a := budgetTestAttempt()
-	charge := pressureTestCharge(t, "n000", a)
-	tr := budgetTestKernel(65 * charge)
-	for i := 0; i < 65; i++ {
-		nonce := fmt.Sprintf("n%03d", i)
-		if !tr.StoreAttemptLocked(nonce, a) {
-			t.Fatal("setup")
-		}
-		tr.MarkAttemptTerminal(nonce, a.CreatedAt.Add(time.Second))
-	}
+	tr, a, charge := fullTerminalKernel(t)
 	a.Plan.CacheScope += strings.Repeat("x", int(64*charge))
 	stored := tr.StoreAttemptLocked("next", a)
 	lifecycle := tr.AttemptLifecycle()

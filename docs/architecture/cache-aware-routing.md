@@ -374,8 +374,9 @@ future READY hashes.
 
 `StoreAttemptLocked` (`coordinator/internal/registry/cachetracker/cache_receipts_kernel.go`)
 validates the charge, clones retained strings and the boundary slice and derives
-its own boundary claims before reclaiming any incumbent. Checked replacement
-accounting excludes the replaced nonce and preserves an incumbent on refusal.
+its own boundary claims before reclaiming any terminal record. Checked
+replacement accounting subtracts the incumbent's stored charge; reclaiming never
+selects the nonce being replaced, and a refusal preserves the incumbent.
 On byte pressure, a separate terminal-only expiry order (`TerminalOrder`, built
 for each generation in `coordinator/registry/cache_tracker_controller.go`)
 offers at most 64 of its earliest-expiring records
@@ -387,9 +388,9 @@ live attempt authority is not reclaimed by this byte-pressure policy. Records
 are removed only when their complete refund admits the candidate; otherwise no
 grace evidence is discarded and the attempt is refused. A record larger than
 the whole budget is refused without reclaiming anything. The existing count-cap
-policy still evicts its oldest record and can include live records; this change
-does not claim otherwise. Every removal refunds the stored charge exactly once
-and removes the record from both expiry orders.
+policy still evicts the record that expires first, which can be a live record;
+this change does not claim otherwise. Every removal refunds the stored charge
+exactly once and removes the record from both expiry orders.
 
 `PreparePrefixCacheV2Attempt` publishes an owner only after successful insertion
 and uses the admitted detached scope. Refusal returns ordinary cold inference,

@@ -202,9 +202,10 @@ type CacheRoutingLifecycleStatus struct {
 	FencesExpired      uint64            `json:"fences_expired"`
 	FencedCapabilities int               `json:"fenced_capabilities"`
 	// AttemptBytes is the logical byte total of retained attempt records.
-	// AttemptBudgetRefused counts attempts the byte budget refused after any
-	// terminal-grace reclaim; AttemptGraceReclaimed counts terminal records
-	// reclaimed to admit another. Both are monotonic within the current
+	// AttemptBudgetRefused counts attempts the byte budget refused because
+	// reclaiming terminal grace could not make room or the record alone exceeds
+	// the budget; AttemptGraceReclaimed counts terminal records reclaimed to
+	// admit another. Both are monotonic within the current
 	// tracker generation and reset when cache routing is reconfigured.
 	AttemptBytes          uint64 `json:"attempt_bytes"`
 	AttemptBudgetRefused  uint64 `json:"attempt_budget_refused"`

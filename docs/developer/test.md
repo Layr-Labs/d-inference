@@ -1690,6 +1690,23 @@ the integration fixtures and does not reproduce qualification. This uses an
 actual tokenizer sidecar and encrypted synthetic provider, not a native model
 or signed provider. Keep the real-model gates separate.
 
+`TestCachePlanningFollowsSameIDModelRevision`
+(`coordinator/tests/api/inference/cache_planning_model_revision_test.go`) publishes
+a revision of one catalog model under its own model ID beside an unchanged model,
+through the model store, catalog sync, artifact provisioner, a supervised sidecar
+stand-in and the preload controller with its registry projection. The unchanged
+model must plan in every state. The revised model is `artifact_pending` while its
+files download, then `ineligible` with `artifact_allowlist.stale_models` at 1
+while the allowlist names only its previous tuple, and plans again under its new
+prompt contract once the live tuple is appended. It needs no sidecar binary:
+
+```bash
+go test -race ./coordinator/tests/api/inference -run '^TestCachePlanningFollowsSameIDModelRevision$' -count=1
+```
+
+The stand-in implements only the sidecar's transport, so this is a planning and
+eligibility test, not a rendering, provider or cache-hit test.
+
 `TestGenericPreparationHTTPBaseline` checks five nonstreaming Completions/Messages
 shapes: small text, history and Messages history with tools. It independently
 decrypts the provider body and checks lowering, model/defaults and response

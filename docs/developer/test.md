@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 ## Reservation storage and scan benchmarks
 
@@ -31,6 +31,23 @@ observations; neither is production inference latency. See
 [the October 4 measurement record](../reports/2026-10-04-registry-scan-optimization.md).
 
 ## Component CI routing
+
+CI and Integration Tests stop superseded PR runs without cancelling independent
+default-branch pushes. Routing regressions pin both concurrency policies.
+Cancellation is not a passing test result or an intentional component skip.
+
+The ordinary provider `Run Swift tests` step invokes the unchanged
+`scripts/run-provider-tests.sh` through `scripts/run-provider-test-watchdog.py`.
+After 480 seconds it captures process diagnostics; at 900 seconds it terminates
+owned test processes and exits 124. A 20-minute outer step timeout allows time
+for diagnostics and cleanup. Failure does not suppress later isolated native
+gates; cancellation does. Non-cancelled attempts upload the transcript, result
+and available stack samples as `provider-test-diagnostics` for seven days.
+Run `python3 scripts/test-provider-test-watchdog.py` for real subprocess exit,
+deadline and cancellation regressions. `scripts/test-provider-ci-workflow.py`
+pins the watchdog wiring; `scripts/test-integration-ci-workflow.py` checks cache
+wiring while retaining all E2E gates, and `scripts/test-provider-ci-cache.py`
+checks integration/provider/release cache isolation and compatibility boundaries.
 
 Run `python3 scripts/test-ci-component-paths.py` for offline component-routing
 regressions. It creates real temporary Git repositories to check PR merge-base

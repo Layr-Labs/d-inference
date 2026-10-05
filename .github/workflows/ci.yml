@@ -5,6 +5,11 @@ on:
     branches: [master, main]
   pull_request:
 
+# Only revisions of the same PR supersede each other; pushes stay independent.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   changes:
     uses: ./.github/workflows/component-changes.yml
@@ -31,6 +36,7 @@ jobs:
           python3 scripts/test-stage-test-metallib.py
           python3 scripts/test-provider-ci-cache.py
           python3 scripts/test-provider-ci-workflow.py
+          python3 scripts/test-integration-ci-workflow.py
           python3 scripts/test-ci-component-paths.py
           python3 scripts/test-app-attest-entitlements.py
           ./scripts/sync-install-embed.sh check
@@ -262,13 +268,27 @@ jobs:
           python3 scripts/prepare-mimo-provider-fixtures.py --output "$RUNNER_TEMP/mimo-provider-fixtures" --github-env "$GITHUB_ENV"
           python3 scripts/prepare-mimo-provider-fixtures.py --output "$RUNNER_TEMP/mimo-prefix-fixtures" --asymmetric
       - name: Run Swift tests
+        id: provider-unit-tests
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-prompt-fixtures.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
+        timeout-minutes: 20
         env:
           MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS: '1'
         working-directory: provider-swift
         # Reuse the built bundle and matched metallib. The exact allocator
         # suite runs in its own process even if the general suite fails.
-        run: ../scripts/run-provider-tests.sh
+        run: |
+          python3 ../scripts/run-provider-test-watchdog.py \
+            --output-dir "$RUNNER_TEMP/provider-test-diagnostics" \
+            --diagnostic-after-seconds 480 --timeout-seconds 900 \
+            -- ../scripts/run-provider-tests.sh
+      - name: Upload provider test diagnostics
+        if: ${{ !cancelled() && steps.provider-unit-tests.outcome != 'skipped' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: provider-test-diagnostics
+          path: ${{ runner.temp }}/provider-test-diagnostics
+          if-no-files-found: warn
+          retention-days: 7
       - name: Run isolated native MiMo startup gates
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
         working-directory: provider-swift

@@ -1,10 +1,27 @@
 # Build
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the
 operator’s live status or recovery evidence (`scripts/run-provider-tests.sh`).
+
+CI and Integration Tests cancel an older run only when a newer revision of the
+same pull request starts in that workflow. Concurrency groups include the
+workflow and event names; non-PR runs use a unique run ID, so default-branch pushes
+remain independent. Provider unit, SDK, parity and integration jobs remain
+parallel, without a shared-build dependency between workflows.
+
+Integration Tests reuse their own compatible Swift debug and Rust build caches
+through `scripts/provider-ci-cache.py` (`keys --lane integration`). The restore
+prefix binds the lane, toolchain, SDK, OS, checkout path, dependency pins and build
+recipe; the exact key also binds the source commit. Restored source timestamps
+are checked by content, cached runtime resources are discarded, and Swift and
+sidecar build commands still execute. Metal uses an exact source/toolchain key
+shared with compatible provider lanes, followed by the existing source-matched
+validation and staging. Cache misses build normally; caches never skip E2E tests
+or enter the separate release-build namespace. Compare cache transfer plus build
+time and whole-job runtime on real runners before claiming a saving.
 
 Pull-request CI selects expensive component jobs through
 `scripts/ci-component-paths.py`, called by `.github/workflows/component-changes.yml`.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -146,15 +147,30 @@ func TestExchangeWorkerObservesDisconnectAndMissingReady(t *testing.T) {
 	t.Run("cancelled before first challenge", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			h := startExchange(t, exchangeOptions{})
-			// The worker is blocked on its onboarding jitter or, with zero
-			// jitter, already sent prepare and waits for ready.
+			// Cancel only once the worker is durably blocked. A context that is
+			// already done when runAttempt starts races its zero-jitter timer,
+			// and the select may then send on the cancelled context.
 			synctest.Wait()
+			// The random onboarding jitter decides where the worker blocks: on
+			// the jitter timer, or (zero jitter) waiting for ready after it sent
+			// prepare. Each position has exactly one disconnect outcome.
+			want := "prepare:disconnected"
+			if slices.Contains(h.events.outcomes(), "prepare:attempted") {
+				if frame := h.read(t); frame.Action != "prepare" {
+					t.Fatalf("first frame %+v, want prepare", frame)
+				}
+				want = "ready:disconnected"
+			}
 			h.cancel()
 			synctest.Wait()
 			got := h.events.outcomes()
-			last := got[len(got)-1]
-			if last != "prepare:disconnected" && last != "ready:disconnected" || slices.Contains(got, "ready:reported_supported") {
-				t.Fatalf("events %v", got)
+			if len(got) == 0 || got[len(got)-1] != want {
+				t.Fatalf("events %v, want last %s", got, want)
+			}
+			for _, outcome := range got {
+				if strings.HasPrefix(outcome, "attest:") || strings.HasPrefix(outcome, "assert:") || outcome == "ready:reported_supported" {
+					t.Fatalf("cancelled exchange reached %s: %v", outcome, got)
+				}
 			}
 		})
 	})

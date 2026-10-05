@@ -30,12 +30,18 @@ private actor MiMoWiringStartGate {
 final class MiMoV26WiredResidencyTests: XCTestCase {
     private let gib: UInt64 = 1 << 30
 
-    func testOffDefaultAndReserveCeilings() {
-        XCTAssertFalse(MiMoV26WiredResidency.isEnabled(environment: [:]))
-        XCTAssertFalse(MiMoV26WiredResidency.isEnabled(environment: [
-            MiMoV26WiredResidency.environmentFlag: "true"]))
+    func testOnDefaultRollbackValuesAndReserveCeilings() {
+        // Standing residency is the default; only explicit rollback values
+        // restore per-command-buffer residency.
+        XCTAssertTrue(MiMoV26WiredResidency.isEnabled(environment: [:]))
         XCTAssertTrue(MiMoV26WiredResidency.isEnabled(environment: [
             MiMoV26WiredResidency.environmentFlag: "1"]))
+        XCTAssertTrue(MiMoV26WiredResidency.isEnabled(environment: [
+            MiMoV26WiredResidency.environmentFlag: "true"]))
+        for rollback in ["0", "false", "no", "off", " OFF ", "False"] {
+            XCTAssertFalse(MiMoV26WiredResidency.isEnabled(environment: [
+                MiMoV26WiredResidency.environmentFlag: rollback]), rollback)
+        }
         typealias Bounds = MiMoV26WiredResidency.Bounds
         XCTAssertEqual(Bounds(physicalBytes: 256 * gib, recommendedBytes: 243 * gib,
                               loadCapBytes: 240 * gib).safeCeiling,

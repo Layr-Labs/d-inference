@@ -98,7 +98,11 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
             case .snapshot: .ssd
             case nil: nil
             }
-            _prefixCacheHitTokens = matched
+            // Client-facing `cached_tokens` (standalone server usage and the
+            // provider SSE splice) means prompt tokens actually reused. A
+            // matched checkpoint whose adoption failed or was skipped reused
+            // nothing; the resolved lookup below reports it the same way.
+            _prefixCacheHitTokens = engineOutcome == .hit ? matched : 0
             _prefixCachePrefillTokensSaved = saved
             if _cacheDisabled { return nil }
             let unresolvedTier: PrefixCacheTier =

@@ -373,7 +373,7 @@ extension StandaloneServer {
             newcomer: .init(modelId: modelID, fp16KVBytesPerToken: sizing.fp16KVBytesPerToken,
                 maxContextLength: sizing.maxContextLength),
             fleetKVBudgetBytes: fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes))
-        guard EngineV2KVSizing.resliceMeetsServiceabilityFloor(targets, fixedCarveBytes: [:]) else {
+        guard Self.resliceKeepsSlotsServiceable(targets, existing: existing) else {
             EngineV2Factory.emitRefusalTelemetry(modelId: modelID, reason: .resliceFloor,
                 error: nil, emitTelemetry: v2TestHooks?.emitTelemetry)
             throw StandaloneServerError.capacityUnavailable("Native load would violate the shared KV serviceability floor")

@@ -149,12 +149,15 @@ enum MiMoV26OrdinaryServingPolicy {
             guard rate == 24000, segment == audioPatch.segmentSize else {
                 throw MiMoV26ServingLoadError.metadata
             }
-            // Ordinary encoded transport currently accepts mono24k PCM16/F32
-            // WAV; the minimum stored sample width is two bytes. Actual decode
-            // and the selected codec independently validate format/geometry.
+            // PCM8 is one stored byte/sample. Keep input samples (all channels)
+            // and worst-case 8 kHz -> 24 kHz expansion independently bounded.
+            // These are refusal ceilings; the native plan prices actual geometry.
             let samples = min(Int(Int32.max), workingElements,
-                try multiply(ingest.maximumPartBytes / 2, maximumMedia))
-            let melFrames = try add(samples / hop, maximumMedia)
+                try multiply(ingest.maximumPartBytes, maximumMedia))
+            let resampleRatio = try ceil(rate, by: MiMoV26EncodedAudioDecoder.minimumSampleRate)
+            let resampledSamples = min(Int(Int32.max), workingElements,
+                try add(multiply(samples, resampleRatio), maximumMedia))
+            let melFrames = try add(resampledSamples / hop, maximumMedia)
             let segments = try add(ceil(melFrames, by: segment), maximumMedia)
             let paddedMel = try multiply(segments, segment)
             let reduction = try multiply(stride, pool)
@@ -162,8 +165,10 @@ enum MiMoV26OrdinaryServingPolicy {
             guard samples > 0, fft <= Int(Int32.max), reduction > 0 else {
                 throw MiMoV26ServingLoadError.metadata
             }
-            audioLimits = .init(maximumClips: maximumMedia, maximumChannels: 1, maximumSampleRate: rate,
-                maximumInputSamples: samples, maximumResampledSamples: samples,
+            audioLimits = .init(maximumClips: maximumMedia,
+                maximumChannels: MiMoV26EncodedAudioDecoder.maximumChannels,
+                maximumSampleRate: MiMoV26EncodedAudioDecoder.maximumSampleRate,
+                maximumInputSamples: samples, maximumResampledSamples: resampledSamples,
                 maximumResampleCoefficients: singleBufferElements,
                 maximumMelFrames: melFrames, maximumSegments: segments,
                 maximumPaddedMelFrames: paddedMel, maximumWorkingElements: workingElements,

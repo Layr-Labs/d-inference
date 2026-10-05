@@ -36,6 +36,10 @@ const (
 // per-failure-code allowlist that does not include it.
 const InferenceErrorReasonProviderRestart = "provider_restart"
 
+// InferenceErrorReasonMediaMemoryUnavailable describes this request's media
+// preparation reservation. It does not invalidate the provider's text/KV budget.
+const InferenceErrorReasonMediaMemoryUnavailable = "media_memory_unavailable"
+
 // IsProviderDisconnect reports whether the cause marks a coordinator-synthetic
 // disconnect flush of either flavor (abrupt or graceful restart) — the
 // classification every "provider disconnected" presentation path keys on.

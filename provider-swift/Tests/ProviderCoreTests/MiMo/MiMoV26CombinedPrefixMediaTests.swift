@@ -81,7 +81,7 @@ final class MiMoV26CombinedPrefixMediaTests: XCTestCase {
             isVLM: false, modelDirectory: root, container: container, specDecPreparation: intent)
         let bundle = try await EngineV2SlotFactory.makeProductionBundle(modelId: modelID, modelType: "mimo_v2",
             isVLM: false, modelDirectory: root, container: container, tokenizer: tokenizer,
-            sizing: sizing, kvBytesCapacity: 64 << 20, maxConcurrentRequests: 1,
+            sizing: sizing, kvBytesCapacity: 2 << 30, maxConcurrentRequests: 1,
             kvBudget: budget, kvBackendConfig: "contiguous", weightHash: weightHash, specDecPreparation: intent,
             preparedModel: prepared, environment: environment, startServingTelemetry: false)
         let owned = await bundle.bridge.ownedEngine

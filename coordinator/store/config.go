@@ -3,6 +3,7 @@ package store
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/env"
 )
@@ -18,6 +19,8 @@ type Config struct {
 	DatabaseURL      string
 	AllowMemoryStore bool
 	AdminKey         string // bootstrap admin API key
+	// Now supplies the clock for memory-backed account creation. Nil uses time.Now.
+	Now func() time.Time `json:"-"`
 }
 
 // Check validates invariants: a database URL is required unless the operator

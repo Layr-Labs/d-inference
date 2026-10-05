@@ -6,14 +6,14 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"sync"
 	"syscall"
 	"time"
-)
 
-const maxSupervisorReasonBytes = 512
+	process "github.com/eigeninference/d-inference/coordinator/internal/promptcontract/process"
+	sidecar "github.com/eigeninference/d-inference/coordinator/internal/promptcontract/sidecar"
+)
 
 type SupervisorConfig struct {
 	Enabled                bool
@@ -62,7 +62,7 @@ type SupervisorStatus struct {
 
 type Supervisor struct {
 	config SupervisorConfig
-	client *Client
+	client *sidecar.Client
 
 	mu                sync.RWMutex
 	status            SupervisorStatus
@@ -76,7 +76,7 @@ func NewSupervisor(config SupervisorConfig) *Supervisor {
 	applySupervisorDefaults(&config)
 	return &Supervisor{
 		config: config,
-		client: NewClient(ClientConfig{
+		client: sidecar.NewClient(sidecar.ClientConfig{
 			MaxConcurrency:  config.MaxConcurrency,
 			MaxConnections:  config.MaxConnections,
 			SocketPath:      config.SocketPath,
@@ -91,7 +91,7 @@ func NewSupervisor(config SupervisorConfig) *Supervisor {
 	}
 }
 
-func (s *Supervisor) Client() *Client {
+func (s *Supervisor) Client() *sidecar.Client {
 	if s == nil {
 		return nil
 	}
@@ -145,7 +145,7 @@ func (s *Supervisor) run(ctx context.Context) {
 	for ctx.Err() == nil {
 		if delay := s.restartCircuitDelay(time.Now(), &restartTimes); delay > 0 {
 			s.setRestartSuppressed(time.Now().Add(delay))
-			if !sleepContext(ctx, delay) {
+			if !process.SleepContext(ctx, delay) {
 				break
 			}
 			continue
@@ -160,11 +160,11 @@ func (s *Supervisor) run(ctx context.Context) {
 		if stable {
 			backoff = s.config.RestartBackoffMin
 		} else if ran {
-			backoff = nextBackoff(backoff, s.config.RestartBackoffMax)
+			backoff = process.NextBackoff(backoff, s.config.RestartBackoffMax)
 		} else {
-			backoff = nextBackoff(backoff, s.config.RestartBackoffMax)
+			backoff = process.NextBackoff(backoff, s.config.RestartBackoffMax)
 		}
-		if !sleepContext(ctx, backoff) {
+		if !process.SleepContext(ctx, backoff) {
 			break
 		}
 	}
@@ -175,10 +175,10 @@ func (s *Supervisor) run(ctx context.Context) {
 // started and ever answered liveness. Readiness degradation alone never ends
 // the child; it only closes the cache-routing gate.
 func (s *Supervisor) runChild(ctx context.Context) (string, string, string, bool, bool) {
-	if err := prepareSocketDirectory(s.config.SocketPath); err != nil {
+	if err := process.PrepareSocketDirectory(s.config.SocketPath); err != nil {
 		return "socket_error", err.Error(), "", false, false
 	}
-	stderr := newTailBuffer(s.config.StderrMaxBytes)
+	stderr := process.NewTailBuffer(s.config.StderrMaxBytes)
 	cmd := exec.Command(s.config.BinaryPath, s.arguments()...)
 	cmd.Stdin = nil
 	cmd.Stdout = io.Discard
@@ -186,13 +186,13 @@ func (s *Supervisor) runChild(ctx context.Context) (string, string, string, bool
 	if err := cmd.Start(); err != nil {
 		return "start_error", err.Error(), stderr.String(), false, false
 	}
-	generation := s.noteChildStarted(processRSSBytes(cmd.Process.Pid))
+	generation := s.noteChildStarted(process.ProcessRSSBytes(cmd.Process.Pid))
 	waited := make(chan error, 1)
 	go func() { waited <- cmd.Wait() }()
 	ticker := time.NewTicker(s.config.HealthInterval)
 	defer ticker.Stop()
 	startup := time.NewTimer(s.config.StartupTimeout)
-	defer stopTimer(startup)
+	defer process.StopTimer(startup)
 	live := false
 	consecutiveFailures := 0
 	for {
@@ -201,7 +201,7 @@ func (s *Supervisor) runChild(ctx context.Context) (string, string, string, bool
 			s.terminate(cmd, waited)
 			return "shutdown", "", stderr.String(), true, live
 		case err := <-waited:
-			detail := childExitReason(err, cmd.ProcessState)
+			detail := process.ChildExitReason(err, cmd.ProcessState)
 			s.setChildStopped(generation)
 			return "child_exit", detail, stderr.String(), true, live
 		case <-startup.C:
@@ -211,8 +211,8 @@ func (s *Supervisor) runChild(ctx context.Context) (string, string, string, bool
 				return "startup_timeout", "liveness startup deadline exceeded", stderr.String(), true, false
 			}
 		case <-ticker.C:
-			rss := processRSSBytes(cmd.Process.Pid)
-			if exceedsRSSLimit(rss, s.config.MemoryLimitMiB) {
+			rss := process.ProcessRSSBytes(cmd.Process.Pid)
+			if process.ExceedsRSSLimit(rss, s.config.MemoryLimitMiB) {
 				s.setRuntimeState(generation, true, false, rss, consecutiveFailures)
 				s.terminate(cmd, waited)
 				s.setChildStopped(generation)
@@ -232,7 +232,7 @@ func (s *Supervisor) runChild(ctx context.Context) (string, string, string, bool
 			}
 			if !live {
 				live = true
-				stopTimer(startup)
+				process.StopTimer(startup)
 			}
 			consecutiveFailures = 0
 			ready, err := s.client.Ready(ctx)
@@ -242,20 +242,6 @@ func (s *Supervisor) runChild(ctx context.Context) (string, string, string, bool
 			s.setRuntimeState(generation, true, ready, rss, 0)
 		}
 	}
-}
-
-func prepareSocketDirectory(socketPath string) error {
-	directory := filepath.Dir(socketPath)
-	opened, err := secureOpenAbsoluteDirectory(directory, true, 0o700)
-	if err != nil {
-		return err
-	}
-	defer opened.Close()
-	info, err := opened.Stat()
-	if err != nil || !info.IsDir() {
-		return ErrInvalidConfig
-	}
-	return opened.Chmod(0o700)
 }
 
 func (s *Supervisor) arguments() []string {

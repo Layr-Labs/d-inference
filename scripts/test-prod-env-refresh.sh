@@ -193,8 +193,8 @@ headroom_keys="EIGENINFERENCE_WARM_POOL_HEADROOM
 EIGENINFERENCE_WARM_POOL_HEADROOM_MAX_PROVIDERS
 EIGENINFERENCE_WARM_POOL_HEADROOM_LOAD_WINDOWS"
 predating="$ENV_DIR/predating-host.env"
-awk -v keys="$headroom_keys" '
-    BEGIN { n = split(keys, a, "\n"); for (i = 1; i <= n; i++) drop[a[i]] = 1 }
+PAYOUT_TEST_HEADROOM_KEYS="$headroom_keys" awk '
+    BEGIN { n = split(ENVIRON["PAYOUT_TEST_HEADROOM_KEYS"], a, "\n"); for (i = 1; i <= n; i++) drop[a[i]] = 1 }
     { k = $0; sub(/=.*/, "", k); if (!(k in drop)) print }
 ' "$ENV_FILE" > "$predating"
 chmod 0600 "$predating"
@@ -225,5 +225,14 @@ then
     exit 1
 fi
 [ ! -e "$marker" ]
+
+
+# An enabled cutover cannot lose its dedicated credentials, even when paused.
+cutover_missing="$ENV_DIR/cutover-missing.env"
+awk -F= '$1 != "EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ONLY" && $1 != "EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED"' "$ENV_FILE" > "$cutover_missing"
+printf 'EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ONLY=true\nEIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED=false\n' >> "$cutover_missing"
+expect_refresh_failure "cutover without dedicated key" "$cutover_missing" "Global Payouts cutover requires EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_SECRET_KEY"
+printf 'EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_SECRET_KEY=rk_dedicated_do_not_print\n' >> "$cutover_missing"
+SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$cutover_missing" REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --check >/dev/null
 
 echo "production env refresh tests passed"

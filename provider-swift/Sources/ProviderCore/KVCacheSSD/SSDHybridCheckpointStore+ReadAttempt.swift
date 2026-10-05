@@ -164,7 +164,7 @@ extension SSDHybridCheckpointStore {
                 if !usesProcessMemoryOwner { lease.release() }
             })
         } catch CBv2KVError.capacityExhausted {
-            // Pinned SDK 6f3d171: both AR and native-block plans throw this
+            // Both AR and native-block import plans throw this
             // typed refusal at Admission/native reservation BEFORE allocating.
             // MLX evaluation/materialization failures have different types and
             // must not inherit retry authority merely from an allocation error.

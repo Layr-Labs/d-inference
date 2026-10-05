@@ -20,16 +20,16 @@ final class ModelArtifactWriteLease: @unchecked Sendable {
         return fd
     }
 
-    /// Removal is synchronous and must not block an actor behind a potentially
-    /// long download. Refuse it while the same model has an active writer.
-    static func acquireIfAvailable(modelID: String) throws -> ModelArtifactWriteLease {
+    /// User-facing removal and verification must not wait behind a potentially
+    /// long download or a staged revision holding its lease during rollout jitter.
+    static func acquireIfAvailable(modelID: String, operation: String = "removal") throws -> ModelArtifactWriteLease {
         let fd = try openDescriptor(modelID: modelID)
         do {
             while flock(fd, LOCK_EX | LOCK_NB) != 0 {
                 if errno == EINTR { continue }
                 if errno == EWOULDBLOCK {
                     throw ModelCatalogError.downloadFailed(
-                        "\(modelID) is being downloaded or updated; retry removal after it finishes")
+                        "\(modelID) is being downloaded, updated or verified by another process; retry \(operation) after it finishes")
                 }
                 throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
             }

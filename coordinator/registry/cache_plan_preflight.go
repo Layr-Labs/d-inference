@@ -3,6 +3,8 @@ package registry
 import (
 	"strings"
 
+	cacheactivation "github.com/eigeninference/d-inference/coordinator/internal/registry/cacheactivation"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/cachepolicy"
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 )
 
@@ -10,7 +12,7 @@ type cachePlanAuthority struct {
 	mode           string
 	tracker        *cacheRoutingTracker
 	keys           cacheRouteKeys
-	activation     *cacheActivationGate
+	activation     *cacheactivation.Gate
 	artifacts      cacheArtifactAllowlist
 	catalog        CatalogEntry
 	catalogPresent bool
@@ -41,7 +43,7 @@ func cachePlanInputIneligible(clientPresent bool, input CachePlanInput) bool {
 }
 
 func cachePlanAuthorityRejection(state cachePlanAuthority, input CachePlanInput) CachePlanOutcome {
-	if state.mode != CacheRoutingOn || state.tracker == nil || state.tracker.generation.revoked.Load() {
+	if state.mode != CacheRoutingOn || state.tracker == nil || !state.tracker.generation.Active() {
 		return CachePlanOff
 	}
 	aggregate := strings.ToLower(strings.TrimSpace(state.catalog.WeightHash))
@@ -49,7 +51,8 @@ func cachePlanAuthorityRejection(state cachePlanAuthority, input CachePlanInput)
 		!validLowerHex256(aggregate) || aggregate != input.ModelAggregateSHA256 {
 		return CachePlanIneligible
 	}
-	if !state.artifacts.allows(input) || len(state.keys.scope) == 0 {
+	if !state.artifacts.Allows(cachepolicy.Artifact{ModelID: input.Model, ModelAggregateSHA256: input.ModelAggregateSHA256, PromptContractID: input.PromptContractID}) ||
+		len(state.keys.scope) == 0 {
 		return CachePlanIneligible
 	}
 	return ""

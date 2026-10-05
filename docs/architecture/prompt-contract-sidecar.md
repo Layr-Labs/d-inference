@@ -1,6 +1,6 @@
 # Prompt-contract sidecar
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-04
 
 The Go `LowerResponsesInferenceBody` serving adapter preserves ordered inline
 media; it does not broaden this sidecar's text-only cache-planning contract.
@@ -43,8 +43,8 @@ The inference path consults the sidecar only when routing mode is `on`, the
 request is inside the operational rollout cohort, its model's artifacts are
 verified, and its exact contract belongs to the acknowledged current preload set.
 An unrelated artifact failure or pending download does not suppress a healthy,
-acknowledged contract (`planCacheRoute`, `coordinator/api/cache_planning.go`;
-`PreloadController.PlanningState`, `coordinator/promptcontract/preload_selection.go`).
+acknowledged contract (`CachePlanner.PlanResult`, `coordinator/internal/inference/routeplan/cache_planning.go`;
+`PreloadController.PlanningState`, `coordinator/internal/promptcontract/preload/selection.go`).
 Any other state — including every failure listed below — is ordinary cold
 routing.
 
@@ -104,17 +104,17 @@ Rust holds each connection permit for the entire HTTP connection, including
 idle keep-alive time (`coordinator/promptsidecar/src/server.rs`). The Go planning
 transport and active admission slots use the minimum of normalized worker
 capacity, `maxPendingPlans` and normalized total connections minus
-`reservedControlConnections`. `NewClient` reserves two connections for health
+`ReservedControlConnections`. `NewClient` reserves two connections for health
 and two for control; separate pools alone cannot reserve server-side permits.
 Standalone clients use `DefaultMaxConcurrency` and `DefaultMaxConnections`
 when those limits are unspecified (`ClientConfig`,
-`coordinator/promptcontract/client.go`). `SupervisorConfig.Check` rejects an
+`coordinator/internal/promptcontract/sidecar/client.go`). `SupervisorConfig.Check` rejects an
 enabled configuration with fewer than five normalized total connections
 (`coordinator/promptcontract/config.go`); a directly constructed client with a
 positive inadequate total refuses planning without dialing. Neither worker
 count nor sidecar memory allowance is raised to create this headroom.
 `planAdmission` in
-`coordinator/promptcontract/plan_admission.go` bounds outstanding calls (active
+`coordinator/internal/promptcontract/sidecar/plan_admission.go` bounds outstanding calls (active
 plus waiting) at 64 and their accounted input/envelope bytes at 64 MiB. It waits
 before JSON validation/serialization, so queued calls do not each allocate a
 second request body. Envelope accounting includes JSON HTML/Unicode escaping;
@@ -124,7 +124,7 @@ The request timeout begins at `Client.Plan` entry and includes admission,
 serialization and HTTP exchange; waiting never grants a fresh deadline.
 The API derives a planning-only child context from the original request receipt
 time and already-pinned first-content budget before invoking the Registry
-(`coordinator/api/cache_planning.go`, `planCacheRoute`). The effective bound is
+(`coordinator/internal/inference/routeplan/cache_planning.go`, `CachePlanner.PlanResult`). The effective bound is
 the earliest of that absolute deadline, the parent's deadline and the client
 timeout. Exempt/nonpositive budgets and missing receipt times preserve the
 existing passthrough behavior. Neither alias fallback nor queue admission resets
@@ -204,10 +204,10 @@ responses and controller close fence stale publication. Failed/partial batches
 increment `Failures`, full successful batches increment `Runs`, and acknowledged
 warm/cold members contribute their returned counts; Rust preload counters remain
 batch counters (`PreloadController.finishAttemptLocked`, `prepareAttempt`,
-`coordinator/promptcontract/preload_controller.go`). A rejected HTTP 409 consumes
+`coordinator/internal/promptcontract/preload/controller.go`). A rejected HTTP 409 consumes
 only its matching live lease, without failure backoff or success publication
 (`preloadActiveSet.retireConflict`,
-`coordinator/promptcontract/preload_active_set_conflict.go`).
+`coordinator/internal/promptcontract/preload/active_set_conflict.go`).
 A fresh or stale artifact root alone never grants planning eligibility.
 
 ### Bounded tokenizer preload selection
@@ -219,8 +219,8 @@ capacity, only recent authenticated, final-resolved, currently eligible model/
 aggregate/contract demand can enter the selected set. Shared contracts consume one
 slot. Demand retains only detached exact artifact tuples and monotonic times, not
 accounts, request IDs, bodies, prompts or provider identities
-(`PreloadController.NoteDemand`, `coordinator/promptcontract/preload_selection.go`;
-`cachePreloadIdentity`, `coordinator/api/cache_preload_selection.go`).
+(`PreloadController.NoteDemand`, `coordinator/internal/promptcontract/preload/selection.go`;
+`CachePlanner.cachePreloadIdentity`, `coordinator/internal/inference/routeplan/cache_preload_selection.go`).
 
 The pure selector bounds tuples at `preloadActiveSetMaxTuples = 128`, expires
 demand after `preloadDemandExpiry = 5 * time.Minute`, gives admitted members
@@ -230,7 +230,7 @@ waiting demand wins; public model availability only breaks otherwise equal fresh
 waits. Failed members requeue under the existing retry deadline instead of
 monopolizing a slot. Safety revocation is immediate and is not delayed by minimum
 residence or the replacement interval (`preloadActiveSet`,
-`coordinator/promptcontract/preload_active_set.go`).
+`coordinator/internal/promptcontract/preload/active_set.go`).
 
 The controller serializes detached authority capture through policy application,
 samples its monotonic clock inside the policy lock, and releases those locks
@@ -238,8 +238,8 @@ before preload/readiness/metrics I/O. Background reconciliation refreshes bounde
 public-availability advice; request paths recheck exact Registry eligibility but
 do not scan `Registry.ListModels`. Stale advice changes ordering only, never
 authorization (`selectionInput`, `reconcileSelectionLocked`,
-`coordinator/promptcontract/preload_selection.go`; `cachePreloadSelection`,
-`coordinator/api/cache_preload_selection.go`).
+`coordinator/internal/promptcontract/preload/selection.go`; `cachePreloadSelection`,
+`coordinator/api/inference/cache_preload_selection.go`).
 
 Completed native tokenizer acknowledgement is separate from current routing
 participation. An admissibility-only change can preserve a completed acknowledgement
@@ -298,18 +298,20 @@ Five provider-side transformations that precede every template are mirrored in
    context once, after all other steps (`sorted_object_keys`). The planner
    never relies on wire order. Today the shared prelude re-serializes every
    provider body from the decoded map, which sorts keys
-   (`coordinator/api/inference_preprocess.go`, `parseInferencePrelude`,
-   `forwardBody.current`), but that follows from the prelude stamping the
-   request date, not from a contract: `forwardBody` forwards the caller's
+   (`coordinator/api/inference/inference_preprocess.go`, `parseInferencePrelude`,
+   `ForwardBody.Current`), but that follows from the prelude stamping the
+   request date, not from a contract: `ForwardBody` forwards the caller's
    bytes verbatim whenever nothing is dirty, and JSON carried inside strings,
    such as tool-call `arguments`, is never re-serialized. The sort is
    therefore load-bearing.
 2. **Tool-call arguments.** Decoded `arguments` take the value bridge's
    shape: sorted members and integral JSON doubles as integers, because
    `Jinja.Value(any:)` matches `Int` before `Double` (`provider_bridged_value`).
-3. **Tool definitions.** A tool's `function` object keeps only `name`,
-   `description` and `parameters`, because `OpenAITool.toolSpec()` renders
-   nothing else (`typed_function_definition`).
+3. **Tool definitions.** A tool's `function` object keeps `name`,
+   `description` and `parameters`, plus optional `strict` for Nemotron
+   (`typed_function_definition`). `ChatTemplateFixes.normalizeToolMetadata`
+   removes that SDK metadata for other families in both text and native media
+   inputs. It preserves the media producer's existing schema/history handling.
 4. **Harmony framing.** Assistant `content` and `reasoning_content` lose raw
    Harmony channel framing for every model family
    (`strip_harmony_channel_framing`, the mirror of `sanitizeJinjaMessages`).
@@ -403,8 +405,8 @@ the provider contract, relax receipt checks or clear existing fences.
 
 The semantic versions (`CurrentVersions`) are:
 
-- normalization: `darkbloom-request-normalization-v6` (retains prior model policies and extends the native Qwen4 text prompt and reasoning-effort policy to the exact registry ID)
-- renderer: `swift-jinja-request-date-compatible-v3`
+- normalization: `darkbloom-request-normalization-v8` (retains v7 model policies, including native MiMo history/null handling, and preserves typed function-level `strict` only for Nemotron)
+- renderer: `swift-jinja-request-date-compatible-v4` (Nemotron-scoped Transformers-compatible scalar/JSON filters)
 - tokenizer: `huggingface-tokenizer-json-v1`
 - block hash: `PromptContractIdentity.blockHashVersion`, stated in
   [`prefix-cache.md#block-hashing`](prefix-cache.md#block-hashing)
@@ -443,21 +445,37 @@ them to a different value. The context/error vectors mirror
 `Qwen4SupportPolicy.validateReasoningContext` and
 `MultiModelBatchSchedulerEngine.templateAdditionalContext`.
 
-A v3/v4/v5 provider and v6 coordinator (or the reverse) cannot earn cache credit or
-affinity from the other's contract: `coordinator/registry/cache_tiers.go`
+A provider and coordinator using different normalization or renderer identities
+cannot earn cache credit or affinity from the other's contract:
+`coordinator/registry/cache_tiers.go`
 (`capabilityMatchesPlan`) requires identical IDs while ordinary serving remains
 available. Before an authorized rollout, regenerate prompt artifacts/preloaded
 contracts and any configured exact artifact allowlist using the new identity;
-do not relabel old cache objects as v6. Renderer, tokenizer and block-hash
-versions are unchanged. No deployment or allowlist mutation follows merely
+do not relabel old cache objects as v8. Tokenizer and block-hash versions are
+unchanged. No deployment or allowlist mutation follows merely
 from building this private candidate.
 
 The new registry ID additionally requires a compatible provider version for
 all inference, not merely cache credit; see the
 [registry-ID gate](routing.md#native-model-capacity-and-registry-identity).
-The version transition preserves existing models' template inputs and token
-arrays while regenerating contract-dependent hashes. It is not a change to
-model weights or a new floating-point baseline.
+The v8 transition preserves non-Nemotron template inputs and token arrays while
+regenerating contract-dependent hashes. The checked-in production corpus has
+no Nemotron model; its identity-only transformation cannot establish Nemotron
+prompt parity. Nemotron's reference corpus separately verifies the changed
+tool metadata and filter bytes. Model weights and floating-point behavior are
+unchanged.
+
+Nemotron's Rust filters mirror the provider's `String(Double)` spelling rather
+than Rust's decimal display or serde's exponent spelling. The normalizer applies
+the SDK's Int-before-Double conversion to Nemotron tool values before rendering;
+numeric enum/default/minimum fields therefore produce identical token counts
+and cache blocks. Decimal/exponent tool values at or above the `2^53` exact
+integer boundary stay cold: serde's Double may already have lost a digit that
+Swift's typed Int decoder preserves. Plain signed integer spellings remain
+eligible. The shared 526-value finite-number oracle exercises both
+Swift and Rust filters, and the pinned reference/edge corpora exercise the real
+provider tokenizer and Rust planner. See the
+[Nemotron parity gate](../developer/test.md#9-prompt-contract-parity-fixtures-and-vectors).
 
 The artifact loader records the pinned `swift-transformers` precedence:
 `chat_template.jinja`, then `chat_template.json`, then the tokenizer-config
@@ -470,7 +488,7 @@ same production gate; their hashes still remain part of artifact identity.
 ### Block-chain encoding
 
 For block index `i`, the engine, Go package (`BlockHash`,
-`coordinator/promptcontract/blockhash.go`) and Rust sidecar (`block_hash`,
+`coordinator/internal/promptcontract/identity/blockhash.go`) and Rust sidecar (`block_hash`,
 `coordinator/promptsidecar/src/hash.rs`) compute:
 
 ```text
@@ -576,6 +594,29 @@ values remain booleans through `ParserUtilities.asSendable` in
 
 ### Parity fixtures and measured latency
 
+For `model_type=nemotron_h`, the provider and sidecar instead use the pinned
+Nemotron template's Transformers-compatible default scalar and JSON filters.
+`provider-swift/Sources/ProviderCoreFoundation/NemotronTemplateFilters.swift`
+and `coordinator/promptsidecar/src/render/nemotron.rs` preserve Unicode and
+use comma-space/colon-space JSON separators. The Swift writer bounds nesting
+at 128 and output at 16 MiB; unsupported filter options fail closed.
+`NemotronTemplateFilterBinding` binds only the `string` filter to a private
+name because Swift Jinja shares filter and type-test names. It leaves
+`is string` tests intact. Model artifact templates are not modified.
+
+The SDK preserves optional boolean `strict` (including false); provider and
+sidecar normalization retain it only for Nemotron. Unknown function fields
+are still outside the typed SDK contract. This is not a general arbitrary-JSON
+or every-template parity guarantee. The fixture corpus verifies the pinned
+template's supported request shapes; it does not certify model tool-selection
+quality.
+
+The normalization-v8/renderer-v4 identity change affects all model families,
+including those with unchanged prompt bytes. Existing checkpoints remain separated by prompt
+identity and start cold. Coordinator/sidecar contracts and artifact allowlists
+must be regenerated with the provider rollout; rollback restores the prior
+provider/coordinator versions together, never relabeling old cache entries.
+
 `fixtures/prompt-contract/v1` is shared by Rust, Go, and Swift tests:
 `contract_vectors.json` and `block_hash_vectors.json` hold the contract and
 block-hash vectors; `corpus.json` contains complete requests for tools, null
@@ -623,13 +664,13 @@ gate.
    (`compute`).
 3. **Three implementations, one chain.** Go, Rust and the Swift provider
    produce byte-identical chain hashes and boundaries for the shared vectors —
-   `coordinator/promptcontract/blockhash.go` (`BlockHash`,
+   `coordinator/internal/promptcontract/identity/blockhash.go` (`BlockHash`,
    `LastCompleteBoundary`), `coordinator/promptsidecar/src/hash.rs`
    (`chain_hashes`), `fixtures/prompt-contract/v1`,
    `scripts/verify-prompt-parity.sh`.
 4. **Cache planning requires current exact eligibility and native acknowledgement
    for the catalog, child, configured capacity and selected verified set** —
-   `coordinator/promptcontract/preload_selection.go` (`PreloadController.PlanningState`),
+   `coordinator/internal/promptcontract/preload/selection.go` (`PreloadController.PlanningState`),
    `coordinator/registry/cache_route_keys.go` (`PlanCacheRouteWithResult`).
 5. **The sidecar never downloads and never follows a symlink**; it loads only
    a coordinator-published, re-verified contract directory —
@@ -655,27 +696,27 @@ gate.
 
 | Symptom | Cause | Where |
 |---|---|---|
-| Every request routes cold although routing mode is `on` | Sidecar disabled, not live or not ready; the model's contract has not preloaded in this child generation; the plan timed out or failed validation | `client.go` (`PlanFailCold`, `validatePlan`), `preload_selection.go` (`PlanningState`) |
+| Every request routes cold although routing mode is `on` | Sidecar disabled, not live or not ready; the model's contract has not preloaded in this child generation; the plan timed out or failed validation | `client.go` (`PlanFailCold`, `validatePlan`), `preload/selection.go` (`PlanningState`) |
 | Child restarts repeatedly, then stops being restarted | Consecutive health failures reached the threshold; the restart circuit opened and suppresses restarts for the cooldown | `supervisor_status.go` (`restartCircuitDelay`, `setRestartSuppressed`) |
 | Contract provisioned but never planning-eligible | Artifact root reached through a symlink (for example `/data`), or an artifact failed size or hash re-verification | `artifacts.rs` (`load`), `artifact_cache.go` (`verifyPublished`) |
 | Fixed planning failure for one model on every request | Unsupported template clock use or missing request date; body over `EIGENINFERENCE_PROMPT_SIDECAR_MAX_BODY_BYTES`; rendered prompt over `_MAX_TOKENS` | `render.rs` (`RenderError::DynamicTime`), `server/handler.rs` (body limit), `planner.rs` (`PlanError::TooManyTokens`) |
 | Preload rejected | Active set larger than `EIGENINFERENCE_PROMPT_SIDECAR_MAX_LOADED_CONTRACTS` | `preload.rs` (`validate_contracts`) |
-| Controller reports `capacity_deferred` | Verified contracts exceed capacity and some are not selected; current eligible demand, residence and retry order determine replacement | `preload_active_set.go` (`reason`, `reconcile`) |
+| Controller reports `capacity_deferred` | Verified contracts exceed capacity and some are not selected; current eligible demand, residence and retry order determine replacement | `preload/active_set.go` (`reason`, `reconcile`) |
 | `verify-prompt-parity.sh` fails | Regenerated vectors differ from `production_vectors.json`; a manifest, artifact or corpus case is missing; an unrecognised template incompatibility — no fabricated token IDs are accepted | `scripts/verify-prompt-parity.sh`, `prompt-fixtures.rs` (`require_model_manifests`, `require_case_ids`) |
 
 ## Code map
 
 | Concern | File / symbol |
 |---|---|
-| Supervisor: spawn, probes, restart circuit, shutdown | `coordinator/promptcontract/supervisor.go`, `coordinator/promptcontract/supervisor_status.go`, `coordinator/promptcontract/supervisor_process.go`, `coordinator/promptcontract/supervisor_defaults.go` |
+| Supervisor: spawn, probes, restart circuit, shutdown | `coordinator/promptcontract/supervisor.go`, `coordinator/promptcontract/supervisor_status.go`, `coordinator/internal/promptcontract/process/supervisor_process.go`, `coordinator/promptcontract/supervisor_defaults.go` |
 | Configuration and startup checks | `coordinator/promptcontract/config.go` (`ReadSupervisorConfig`, `Check`) |
 | Go client: plan, fail-cold, preload, metrics | `coordinator/promptcontract/client.go` (`Plan`, `PlanFailCold`), `coordinator/promptcontract/client_control.go` (`Ready`, `Preload`, `Metrics`) |
 | Artifact provisioning and verified publication | `coordinator/promptcontract/provisioner.go`, `coordinator/promptcontract/artifact_cache.go` |
-| Descriptor-relative artifact paths | `coordinator/promptcontract/secure_files_unix.go` (`walkSecureDirectories`): absolute and root-relative path validation share descriptor traversal, optional directory creation, `O_NOFOLLOW` checks and ownership cleanup |
-| Go per-contract publication and identity fences | `coordinator/promptcontract/preload_controller.go` (`prepareAttempt`, `finishAttemptLocked`), `coordinator/promptcontract/preload_selection.go` (`PlanningState`, `ReadyFor`, `reconcileSelectionLocked`) |
-| Bounded demand and preload selection | `coordinator/promptcontract/preload_active_set.go` (`preloadActiveSet`), `coordinator/registry/cache_preload_identity.go` (`CachePreloadIdentities`), `coordinator/api/cache_preload_selection.go` (`cachePreloadSelection`) |
+| Descriptor-relative artifact paths | `coordinator/internal/promptcontract/artifacts/secure_files_unix.go` (`walkSecureDirectories`): absolute and root-relative path validation share descriptor traversal, optional directory creation, `O_NOFOLLOW` checks and ownership cleanup |
+| Go per-contract publication and identity fences | `coordinator/internal/promptcontract/preload/controller.go` (`prepareAttempt`, `finishAttemptLocked`), `coordinator/internal/promptcontract/preload/selection.go` (`PlanningState`, `ReadyFor`, `reconcileSelectionLocked`) |
+| Bounded demand and preload selection | `coordinator/internal/promptcontract/preload/active_set.go` (`preloadActiveSet`), `coordinator/registry/cache_preload_identity.go` (`CachePreloadIdentities`), `coordinator/api/inference/cache_preload_selection.go` (`cachePreloadSelection`) |
 | Rust managed membership and preload ownership | `coordinator/promptsidecar/src/planner/readiness.rs` (`PreloadOperation`), `coordinator/promptsidecar/src/planner/preloading.rs` (`preload_contracts`) |
-| Contract identity and block chain (Go) | `coordinator/promptcontract/contract.go`, `coordinator/promptcontract/blockhash.go` |
+| Contract identity and block chain (Go) | `coordinator/promptcontract/contract.go`, `coordinator/internal/promptcontract/identity/blockhash.go` |
 | Sidecar process, socket server, routes | `coordinator/promptsidecar/src/main.rs`, `coordinator/promptsidecar/src/server.rs`, `coordinator/promptsidecar/src/server/handler.rs` |
 | Bounded HTTP JSON decoding | `coordinator/promptsidecar/src/server/handler.rs` (`decode_request`): plan and preload share declared/streamed body bounds, read deadline and JSON decoding; each operation retains its own malformed-request message and worker timeout policy |
 | Planner, contract LRU, artifact loading | `coordinator/promptsidecar/src/planner.rs`, `coordinator/promptsidecar/src/artifact_cache.rs`, `coordinator/promptsidecar/src/artifacts.rs` |
@@ -693,3 +734,13 @@ gate.
 - [`../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md) — the DBK3 blocks the chain addresses
 - [`../reference/configuration.md#prompt-sidecar-and-media-fetch`](../reference/configuration.md#prompt-sidecar-and-media-fetch) — every `EIGENINFERENCE_PROMPT_SIDECAR_*` variable and default
 - [`../developer/test.md#9-prompt-contract-parity-fixtures-and-vectors`](../developer/test.md#9-prompt-contract-parity-fixtures-and-vectors) — regenerating vectors and running the parity gate
+
+### MiMo thinking alias
+
+For exact `mimo_v2`, `coordinator/promptsidecar/src/mimo_v26.rs`
+(`additional_context`) accepts Boolean `chat_template_kwargs.thinking` as a
+fallback alias for `enable_thinking`. Nested `reasoning.enabled`, top-level
+`enable_thinking`, and kwargs `enable_thinking` retain precedence. Every
+supplied alias is type checked. The provider mirrors this in
+`MiMoV26RawControlEvidence` and `MiMoV26TemplateFix`; existing valid requests
+retain identical normalized content and contract identity.

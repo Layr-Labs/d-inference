@@ -141,6 +141,10 @@ def publish(args):
         or (existing.labels or {}).get("archive_coverage") != "plan_windows_v2"
     ):
         raise ArchiveError("existing catalog identity mismatch")
+    if tuple((f.name, f.field_type, f.mode) for f in existing.schema) != tuple(
+        (f.name, f.field_type, f.mode) for f in CATALOG_SCHEMA
+    ):
+        raise ArchiveError("existing catalog schema mismatch")
     if not existing.num_rows:
         client.load_table_from_json(
             entries,
@@ -151,6 +155,28 @@ def publish(args):
         ).result(timeout=120)
     elif existing.num_rows != len(entries):
         raise ArchiveError("existing catalog row count mismatch")
+    # Metadata is mutable, so verify the rows even on a retry or after loading.
+    # Bound both scan cost and returned rows; bypass cached query results.
+    rows = client.query(
+        f"SELECT * FROM `{catalog_id}` LIMIT {len(entries) + 1}",
+        job_config=bigquery.QueryJobConfig(
+            maximum_bytes_billed=64 * 1024**2, use_query_cache=False
+        ),
+    ).result(timeout=120)
+    actual_entries = []
+    for row in rows:
+        entry = dict(row.items())
+        for field in ("observed_at", "window_start", "window_end"):
+            if entry[field] is not None:
+                entry[field] = entry[field].isoformat()
+        actual_entries.append(entry)
+    if len(actual_entries) != len(entries):
+        raise ArchiveError("existing catalog row count mismatch")
+    actual_digest = hashlib.sha256(
+        json_bytes({"coverage_format": 2, "entries": merge_coverage(actual_entries)})
+    ).hexdigest()
+    if actual_digest != digest:
+        raise ArchiveError("existing catalog content mismatch")
     published = []
     with tempfile.TemporaryDirectory(prefix="archive-catalog-") as scratch:
         for table in TABLES:

@@ -21,8 +21,13 @@ database-wide snapshot or a record of future updates.
 - Human approval for the specific Cloud Run deployment, service account and
   limited IAM grants below, as required by repository `AGENTS.md`.
 - A reviewed Linux/amd64 image of `scripts/telemetry_archive/Dockerfile`.
-- Existing STANDARD bucket `darkbloom-mainnet-telemetry-archive` in us-east4,
-  with enforced private uniform access and no lifecycle rules.
+- An existing STANDARD bucket in us-east4 with enforced private uniform access
+  and no lifecycle rules. The legacy `darkbloom-mainnet-telemetry-archive` now
+  has a noncurrent-version lifecycle rule and fails this worker's bucket guard;
+  do not weaken the guard or run the historical commands below unchanged. The
+  [cloud baseline](../reports/2026-10-05-history-storage-baseline.md) records this
+  mismatch; use the separately qualified [history destination](telemetry-history.md)
+  for new plans. Any bucket-policy change requires separate approval.
 - Existing read-replica access secret and Cloud SQL connection name. The
   measured configuration used secret `darkbloom-kydo-read-replica-access`
   version **2** and `darkbloom-mainnet:us-east4:d-inference-prod-pg17-ro`.

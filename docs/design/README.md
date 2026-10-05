@@ -73,4 +73,5 @@ as-built facts into `architecture/` and change only the status line. See
 
 | Record | Status | Date | One line |
 |---|---|---|---|
-| [archive-analytics-retention.md](archive-analytics-retention.md) | In progress | 2026-09-26 | Copy-first archive, five-minute public analytics snapshots and gated 14-day detail retirement |
+| [operational-history-retention.md](operational-history-retention.md) | In progress | 2026-10-05 | Fourteen-day completed detail, full durable history, async queries and gated retirement across telemetry and accounting |
+| [archive-analytics-retention.md](archive-analytics-retention.md) | Superseded | 2026-09-26 | Earlier telemetry-only retirement scope, replaced by the operational/history boundary |

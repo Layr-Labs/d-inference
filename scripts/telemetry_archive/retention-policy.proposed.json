@@ -1,18 +1,22 @@
 {
-  "version": 1,
+  "version": 2,
   "status": "proposed_not_runtime_configuration",
   "deletion_enabled": false,
   "public_analytics_refresh_seconds": 300,
   "public_analytics_max_source_age_seconds": 600,
   "public_analytics_max_result_age_seconds": 900,
   "retirement": {
-    "target_hot_detail_days": 30,
+    "target_hot_detail_days": 14,
+    "eligibility": "completed_non_operational_detail_only_after_all_gates",
     "table_allowlist": [
       "request_profiles", "request_outcomes", "fleet_snapshots",
-      "inference_routes", "request_rejections"
-    ],
-    "excluded_pending_separate_financial_decision": [
+      "inference_routes", "request_rejections",
       "usage", "provider_earnings", "ledger_entries", "provider_floor_draws"
+    ],
+    "capture_extensions_required": [
+      "closed_provider_and_machine_sessions", "machine_observations",
+      "model_demand_history", "autopilot_events", "provider_log_reports",
+      "completed_attestation_evidence_and_receipts", "completed_payment_audit_history"
     ],
     "required_gates": [
       "historical_plan_summaries_and_catalogs_reconciled",
@@ -20,14 +24,20 @@
       "all_inserts_updates_and_late_commits_through_retirement_boundary_archived",
       "source_row_versions_match_verified_archive_under_delete_transaction",
       "financial_idempotency_survives_removal_of_detail",
+      "transactional_monthly_and_lifetime_key_spend_counters_migrated",
       "all_serving_readers_migrated_or_bounded",
+      "private_history_and_direct_admin_sql_readers_migrated",
       "rollups_shadow_compared_and_history_queries_restore_tested",
       "unresolved_workflows_excluded",
+      "archive_access_immutability_and_erasure_policy_qualified",
+      "existing_unacknowledged_pruning_replaced_or_paused_with_approval",
       "specific_production_enablement_approval"
     ],
     "permanent_hot_state": [
       "current_balances", "withdrawable_balances", "active_payment_workflows",
-      "settlement_and_refund_idempotency", "earnings_and_usage_totals"
+      "settlement_and_refund_idempotency", "earnings_and_usage_totals",
+      "key_spend_counters", "migration_and_recovery_markers",
+      "active_identity_configuration_and_security_state"
     ],
     "archive_expiration": null
   }

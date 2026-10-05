@@ -6,6 +6,7 @@ import time
 from .accounting import validate_totals
 from .artifact import json_bytes
 from .backfill_plan import children, identity, window_key, windows
+from .journal import catalog_objects
 from .model import ArchiveError
 from .windows import end_boundary
 
@@ -40,8 +41,10 @@ class Runner:
         self.deadline = monotonic() + max_seconds
         self.max_new_windows, self.started_windows = max_new_windows, 0
 
-    def budget(self):
-        if self.monotonic() >= self.deadline or self.started_windows >= self.max_new_windows:
+    def budget(self, *, new_window=False):
+        if self.monotonic() >= self.deadline or (
+            new_window and self.started_windows >= self.max_new_windows
+        ):
             raise BackfillIncomplete("execution budget reached; rerun the same plan to resume")
 
     def validate_state(self, state, window):
@@ -55,12 +58,14 @@ class Runner:
             raise ArchiveError("checkpoint identity or status mismatch")
 
     def visit(self, window):
+        self.budget()
         key = "windows/" + window_key(window)
         state = self.journal.get(key)
+        self.budget()
         if state is None:
-            self.budget()
+            self.budget(new_window=True)
             self.ready()
-            self.budget()
+            self.budget(new_window=True)
             self.started_windows += 1
             state = {
                 "plan_id": self.plan["plan_id"],
@@ -85,8 +90,10 @@ class Runner:
                 {"event": "checkpoint", "window": identity(window), "status": state["status"]}
             )
         self.validate_state(state, window)
+        self.budget()
         if state["status"] == "complete":
             self.saved_check(state["result"])
+            self.budget()
             yield state
         else:
             left, right = children(window)
@@ -123,6 +130,7 @@ class Runner:
                 digest.update(json_bytes(state))
                 leaves += 1
         for table, entries in files.items():
+            self.budget()
             catalog = {
                 "plan_id": self.plan["plan_id"],
                 "table": table,
@@ -135,9 +143,11 @@ class Runner:
                 ),
                 "files": [entries[k] for k in sorted(entries)],
             }
-            key = "catalogs/" + table
-            if self.journal.put(key, catalog) != catalog:
-                raise ArchiveError("existing file catalog differs from verified coverage")
+            for key, value in catalog_objects(catalog):
+                self.budget()
+                if self.journal.put(key, value) != value:
+                    raise ArchiveError("existing file catalog differs from verified coverage")
+                self.budget()
         summary = {
             "plan_id": self.plan["plan_id"],
             "complete": True,
@@ -147,6 +157,8 @@ class Runner:
             "windows": leaves,
             "checkpoint_sha256": digest.hexdigest(),
         }
+        self.budget()
         if self.journal.put("summary", summary) != summary:
             raise ArchiveError("existing summary differs from the completed checkpoint coverage")
+        self.budget()
         return summary

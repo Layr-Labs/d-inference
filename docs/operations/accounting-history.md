@@ -126,8 +126,9 @@ Only a verified `complete=true` summary and matching catalogs establish that
 the frozen plan finished. Summaries include exact accounting totals. Distinct
 tables and chunks have separate source snapshots: there is no database-wide
 point-in-time consistency guarantee. ID gaps and a captured maximum ID do not
-rule out later commits below that ID. Explicit refresh ranges are required for
-late commits or updates; this exporter is not a change-data-capture system.
+rule out later commits below that ID. Use a new `prepare-plan --capture-generation`
+identity to recapture the same ranges for late commits or updates; an unchanged
+plan resumes its saved observation. This exporter is not a change-data-capture system.
 
 All receipts remain `retention_eligible=false`. Archival completion never
 authorizes source retirement; billing readers and settlement deduplication
@@ -135,8 +136,10 @@ must be redesigned and separately qualified before that phase.
 
 ## Prepare analytics and source retention
 
-Follow the [next-stage design](../design/archive-analytics-retention.md) for
-reader dependencies, five-minute public snapshots and retention gates.
+Follow the [operational/history design](../design/operational-history-retention.md)
+for the 14-day completed-detail target, including accounting, reader dependencies
+and retention gates. Financial history is in scope, but existing transactional
+replay records and counters remain necessary until their replacements are qualified.
 Compile a catalog-pinned query with `telemetry-archive analytics-preview`;
 add `--execute` to query BigQuery with a scan cap. See the
 [command reference](../../scripts/telemetry_archive/README.md#preview-future-analytics-reads).
@@ -156,3 +159,4 @@ coordinator rollback is required because this workflow performs no such writes.
 - [Telemetry history](telemetry-history.md)
 - [Exporter commands and limits](../../scripts/telemetry_archive/README.md)
 - [Billing architecture](../architecture/billing.md)
+- [Read-only cloud baseline and accounting IAM gap](../reports/2026-10-05-history-storage-baseline.md)

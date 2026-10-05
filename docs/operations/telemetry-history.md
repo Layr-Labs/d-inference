@@ -97,9 +97,11 @@ primary's current position. The approved <30-second gate remains mandatory.
    observation time. Raw versioned external tables remain available for
    examining the individual copies. These are latest *archived* observations,
    not a claim of zero-lag replication or a globally consistent database view.
-6. Freeze new copy plans to catch up and refresh mutable intervals. Publishing
-   another plan adds coverage without discarding earlier verified files.
-   A prior completion checkpoint does not refresh itself or capture updates.
+6. Freeze new copy plans to catch up and refresh mutable intervals. For an
+   explicit recapture, run `prepare-plan` with a new `--capture-generation`
+   identifier; unchanged ranges and generation intentionally resume the same
+   checkpoints. Publishing another plan adds coverage without discarding earlier
+   verified files. A prior completion checkpoint does not capture updates.
 
 ## Verification
 
@@ -131,3 +133,5 @@ catalog generation. No coordinator rollout or source-database rollback is needed
 - [Finite cloud backfills](telemetry-backfill.md)
 - [Worker commands](../../scripts/telemetry_archive/README.md)
 - [Telemetry inventory](../reference/telemetry-inventory.md)
+- [Operational storage and durable history plan](../design/operational-history-retention.md)
+- [Read-only cloud baseline](../reports/2026-10-05-history-storage-baseline.md)

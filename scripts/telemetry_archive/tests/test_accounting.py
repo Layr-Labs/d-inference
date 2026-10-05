@@ -120,8 +120,12 @@ def test_bigquery_verifies_money_without_float_conversion(accounting_artifact):
         verify_query(client, published)
 
 
-def test_id_plan_split_resume_and_financial_summary():
-    plan = make_plan([{"table": "ledger_entries", "id_start": 1, "id_end": 200002}])
+@pytest.mark.parametrize("generation", [None, "manual-recapture"])
+def test_id_plan_split_resume_and_financial_summary(generation):
+    plan = make_plan(
+        [{"table": "ledger_entries", "id_start": 1, "id_end": 200002}],
+        capture_generation=generation,
+    )
     chunks = list(windows(plan))
     assert [(w.start, w.end) for w in chunks] == [(1, 100001), (100001, 200001), (200001, 200002)]
     left, right = children(chunks[-2])

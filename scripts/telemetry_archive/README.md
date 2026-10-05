@@ -129,10 +129,26 @@ Rerun the same plan ID to resume. Saved data/manifest generations are checked
 before skipping completed work. Persistent split decisions prevent overlapping
 parent/child snapshots from entering the same completed coverage.
 
+To observe the same ranges again after late commits or updates, prepare a plan
+with a new explicit `--capture-generation`, for example `refresh-2026-10-05`.
+The generation participates in plan identity; the same ranges/generation resume
+the same checkpoints. Omitting it preserves existing version 1/2 plan identities.
+This is manual recapture, not continuous change-data capture.
+
 Only after every planned window is verified does the runner write
 `backfills/v1/PLAN_ID/summary.json` and per-table `catalogs/TABLE.json` files.
 The catalogs name the exact non-overlapping data files and generations; earlier
 pilots and alternative snapshots are excluded. No source retention is involved.
+
+Small completion catalogs retain their original inline `files` shape. Catalogs
+that exceed the 2 MiB control-object limit instead use `format_version: 2`,
+`file_count` and `shards`; each shard reference has a journal-relative `key`,
+`file_count` and `sha256`. Read and verify those bounded shards to enumerate
+files. Summaries are unchanged; publication continues to verify checkpoint
+trees, so it does not depend on the completion catalog's representation.
+The elapsed run budget also applies while replaying saved checkpoints and
+finalizing catalogs; the new-window limit does not prevent finalizing a plan
+that completed exactly that many new windows.
 
 For a colocated Cloud Run Job, use its managed Cloud SQL socket and mount the
 existing read-replica access JSON as a secret. Set `ARCHIVE_ACCESS_FILE` to the
@@ -196,6 +212,8 @@ reconciliation; they are not automatically distinct business rows.
 Reusing a versioned BigQuery external table requires its manifest URI, external
 configuration and inferred archive schema to match before any stable alias or
 coverage pointer switches. A mismatched existing table stops publication.
+Newly loaded and reused coverage catalogs are also read back: their exact schema,
+physical row count and normalized coverage digest must match before publication.
 
 The catalog digest includes a format-version domain and tables carry the label
 `archive_coverage=plan_windows_v2`. Existing pinned workers keep their prior behavior.
@@ -231,7 +249,23 @@ BigQuery job before retrying. Financial sums serialize as exact decimal strings,
 not floating-point JSON numbers. Preview files contain private account IDs and
 must not be served publicly.
 
-The [next-stage design](../../docs/design/archive-analytics-retention.md) and
+The [operational/history design](../../docs/design/operational-history-retention.md) and
 `retention-policy.proposed.json` record the approved 5-minute public refresh
-target and proposed disabled 30-day telemetry source-retention policy. The policy file is
-not runtime configuration. Existing receipts cannot enable deletion.
+target and disabled 14-day completed-detail retention policy across telemetry
+and accounting. The policy file is not runtime configuration. Existing receipts
+cannot enable deletion; active state, financial fences and necessary transactional
+counters remain operational. Continuous capture, broader table adapters, reader
+migration and retirement remain separate qualification stages.
+
+## Custom asynchronous queries
+
+`query-submit` validates and submits an operator-authored SELECT over declared
+`archive_<table>` CTEs pinned to one coverage-format-2 catalog. `query-status`
+polls without waiting for running work and pages successful temporary results;
+`query-cancel` requests cancellation of a tool-owned job. Explicit `archive-query-`
+job IDs make retries idempotent. The commands never mutate source data or switch
+published archive aliases. They are not an untrusted-user SQL sandbox.
+
+See [historical query operations](../../docs/operations/history-queries.md) for
+the SELECT example, command flags, access controls, limits and failure behavior.
+No live deployment or query execution is implied by installing this CLI.

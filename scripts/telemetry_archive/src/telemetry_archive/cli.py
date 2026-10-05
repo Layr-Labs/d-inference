@@ -6,7 +6,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import cloud
+from . import async_query, cloud
 from .analytics_preview import preview
 from .analytics_sql import METRICS, QUERIES, WINDOWS
 from .artifact import capture, read_artifact
@@ -55,6 +55,9 @@ def parser():
     )
     plan.add_argument("--ranges", type=Path, required=True)
     plan.add_argument("--output", type=Path, required=True)
+    plan.add_argument(
+        "--capture-generation", help="new identity for explicitly recapturing a range"
+    )
     publish = commands.add_parser("upload-plan", help="publish a verified immutable backfill plan")
     publish.add_argument("--file", type=Path, required=True)
     publish.add_argument("--bucket", required=True)
@@ -79,18 +82,37 @@ def parser():
     analytics.add_argument("--limit", type=int, default=50)
     analytics.add_argument("--maximum-bytes-billed", type=int, default=1024**3)
     analytics.add_argument("--execute", action="store_true")
+    submit = commands.add_parser("query-submit", help="submit a bounded custom archive SELECT")
+    submit.add_argument("--dataset", required=True)
+    submit.add_argument("--catalog", required=True)
+    submit.add_argument("--tables", nargs="+", choices=TABLES, required=True)
+    submit.add_argument("--sql-file", type=Path, required=True)
+    submit.add_argument("--job-id", required=True)
+    submit.add_argument("--maximum-bytes-billed", type=int, default=1024**3)
+    status = commands.add_parser("query-status", help="poll an archive query and page its results")
+    status.add_argument("--job-id", required=True)
+    status.add_argument("--max-results", type=int, default=100)
+    status.add_argument("--page-token")
+    cancel = commands.add_parser("query-cancel", help="request cancellation of an archive query")
+    cancel.add_argument("--job-id", required=True)
     sync = commands.add_parser(
         "sync-analytics-snapshot", help="stage a qualified GCS snapshot atomically"
     )
     sync.add_argument("--bucket", required=True)
     sync.add_argument("--output", type=Path, required=True)
-    for command in (send, remote, publish, run, catalog, analytics, sync):
+    for command in (send, remote, publish, run, catalog, analytics, submit, status, cancel, sync):
         command.add_argument("--project", required=True)
         command.add_argument("--location", default="us-east4")
     return root
 
 
 def execute(args):
+    if args.command == "query-submit":
+        return async_query.submit(args)
+    if args.command == "query-status":
+        return async_query.status(args)
+    if args.command == "query-cancel":
+        return async_query.cancel(args)
     if args.command == "sync-analytics-snapshot":
         return sync_snapshot(args)
     if args.command == "analytics-preview":
@@ -98,7 +120,9 @@ def execute(args):
     if args.command == "publish-catalog":
         return publish_catalog(args)
     if args.command == "prepare-plan":
-        plan = make_plan(json.loads(args.ranges.read_text()))
+        plan = make_plan(
+            json.loads(args.ranges.read_text()), capture_generation=args.capture_generation
+        )
         with args.output.open("x") as stream:
             json.dump(plan, stream, sort_keys=True, indent=2)
         return plan

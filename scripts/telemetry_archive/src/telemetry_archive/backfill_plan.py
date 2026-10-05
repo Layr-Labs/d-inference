@@ -1,6 +1,7 @@
 """Frozen, finite telemetry ranges and deterministic non-overlapping windows."""
 
 import hashlib
+import re
 from datetime import timedelta
 
 from .artifact import json_bytes
@@ -10,7 +11,14 @@ from .tables import ACCOUNTING_FIELDS
 from .windows import IDWindow, identity, validate_id_bounds
 
 
-def make_plan(ranges: list[dict]) -> dict:
+def make_plan(ranges: list[dict], capture_generation: str | None = None) -> dict:
+    if capture_generation is not None and (
+        not isinstance(capture_generation, str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", capture_generation)
+    ):
+        raise ArchiveError(
+            "capture generation must be 1-64 safe alphanumeric, '_' or '-' characters"
+        )
     if not 1 <= len(ranges) <= len(TABLES):
         raise ArchiveError("a backfill plan needs explicitly allowed history ranges")
     clean = []
@@ -34,12 +42,14 @@ def make_plan(ranges: list[dict]) -> dict:
     if len({"id_start" in r for r in clean}) != 1:
         raise ArchiveError("a plan cannot mix timestamp and primary-key ranges")
     plan = {"version": 2 if "id_start" in clean[0] else 1, "copy_only": True, "ranges": clean}
+    if capture_generation is not None:
+        plan.update(version=3, capture_generation=capture_generation)
     plan["plan_id"] = hashlib.sha256(json_bytes(plan)).hexdigest()
     return plan
 
 
 def validate_plan(plan: dict) -> None:
-    if make_plan(plan["ranges"]) != plan:
+    if make_plan(plan["ranges"], plan.get("capture_generation")) != plan:
         raise ArchiveError("invalid backfill plan or plan checksum")
 
 

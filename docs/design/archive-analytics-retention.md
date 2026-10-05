@@ -2,7 +2,7 @@
 
 > Last updated: 2026-09-29
 
-Status: In progress · 2026-09-26. Archive copying, SQL previews, private snapshot sync and the opt-in coordinator snapshot reader exist. A qualified snapshot producer, continuous capture, native analytical rollups, product activation and archive-aware source deletion remain incomplete. This design prepares the stage after the [copy-only archive](../operations/accounting-history.md).
+Status: Superseded by [Fourteen-day operational storage and durable history](operational-history-retention.md) - 2026-10-05. The new decision includes historical accounting detail while retaining operational state and financial correctness records; source retirement remains disabled.
 
 ## Decision
 

@@ -13,6 +13,7 @@ shapes under [`../reference/README.md`](../reference/README.md).
 |---|---|
 | [telemetry-history.md](telemetry-history.md) | Copy and verify retained telemetry into queryable history before coordinator changes |
 | [accounting-history.md](accounting-history.md) | Copy exact accounting history into isolated storage and query it with BigQuery |
+| [history-queries.md](history-queries.md) | Submit, poll, page and cancel bounded custom queries over pinned historical catalogs |
 | [analytics-snapshots.md](analytics-snapshots.md) | Serve qualified public analytics snapshots without history scans |
 | [telemetry-archive.md](telemetry-archive.md) | Capture and verify bounded Parquet snapshots |
 | [telemetry-backfill.md](telemetry-backfill.md) | Run resumable, finite copy-only backfills |

@@ -139,5 +139,5 @@ history before attempting that rollback.
 ## Related
 
 - [Accounting archive](accounting-history.md)
-- [Next-stage retention and capture design](../design/archive-analytics-retention.md)
+- [Operational storage, capture and retention design](../design/operational-history-retention.md)
 - [Coordinator deployment](coordinator-deploy.md)

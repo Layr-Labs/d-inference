@@ -163,6 +163,8 @@ func (p *Primary) Run(in PrimaryRequest) (result PrimaryResult) {
 
 		result.RequestID = uuid.New().String()
 		queuePR := &registry.PendingRequest{
+			NonStreamingResponseBudget: s.responseLimits.NewBudget(d.Stream),
+
 			RequestID: result.RequestID, Attempt: d.Attempt, Model: d.Model, PublicModel: d.PublicModel,
 			ConsumerKey: d.ConsumerKey, KeyID: access.KeyIDFromContext(d.Request.Context()),
 			KeyLimitMicroUSD: access.KeyLimitMicroFromContext(d.Request.Context()), KeyLimitReset: access.KeyLimitResetFromContext(d.Request.Context()),

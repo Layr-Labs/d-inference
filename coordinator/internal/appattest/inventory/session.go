@@ -74,6 +74,7 @@ func (x *Session) Capture(disconnected bool) {
 	x.mu.Unlock()
 	o.At, o.Disconnected = time.Now().UTC(), disconnected
 	p := x.deps.Provider
+	o.RegisteredAt = p.RegisteredAt().UTC()
 	p.Mu().Lock()
 	o.LegacyTrust, o.LegacyCode, o.LegacyMDA = string(p.TrustLevel), p.CodeAttested, p.MDAVerified
 	if a := p.AttestationResult; a != nil && a.Valid && a.EncryptionPublicKey == p.PublicKey {

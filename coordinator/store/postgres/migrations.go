@@ -212,6 +212,9 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_referrals_code ON referrals(referrer_code)`,
 
+		consumerSettlementSchema,
+		`CREATE INDEX IF NOT EXISTS idx_consumer_settlements_referrer ON consumer_charge_settlements(referrer_account) WHERE referrer_account <> ''`,
+
 		// Billing sessions table
 		`CREATE TABLE IF NOT EXISTS billing_sessions (
 			id TEXT PRIMARY KEY,
@@ -1029,6 +1032,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 	migrations = append(migrations, appAttestShadowDDL, machineInventoryDDL, appAttestArchiveDDL, appAttestEnrollmentDDL, appAttestReceiptDDL)
 	migrations = append(migrations, appAttestRevocationDDL, appAttestBuildDDL, appAttestKeyRotationDDL, modelTokenPromotionDDL)
 	migrations = append(migrations, cacheRoutingHoldersDDL, cachemigrations.BackfillColumnsDDL, cachemigrations.DropChainHashDDL, cacheRoutingHoldersExpiryIndexDDL, cacheRoutingHoldersUpdatedIndexDDL, cacheRoutingDemandDDL, cacheRoutingDemandSeenIndexDDL, cacheRoutingMetaDDL)
+	migrations = append(migrations, smallModelsInterestDDL)
 	for i, m := range migrations {
 		started := time.Now()
 		_, err := s.pool.Exec(ctx, m)

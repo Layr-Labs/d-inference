@@ -129,8 +129,9 @@ func TestCachePreloadDemandExcludesCanceledExpiredAndMediaRefusals(t *testing.T)
 		t.Fatal("actual verified identity missing")
 	}
 	identity := verified[0]
-	// This test preserves D48's original outcomes; refusal probing itself is
-	// side-effect-free. Demand never carries account/body fields into selection.
+	// This test preserves the planning fixture's original outcomes; refusal
+	// probing itself is side-effect-free. Demand never carries account/body
+	// fields into selection.
 	input := f.input()
 	input.HasMedia = true
 	before := s.registry.CacheRoutingActivationStatus()

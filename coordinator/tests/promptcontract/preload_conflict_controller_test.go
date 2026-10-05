@@ -14,8 +14,8 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/internal/promptcontract/sidecar"
 )
 
-// This control also compiles on the original D64 controller: HTTP 409 did not
-// accept a Rust replacement and must not become a failed-tokenizer/backoff event.
+// HTTP 409 did not accept a Rust replacement and must not become a
+// failed-tokenizer/backoff event.
 func TestPreloadControllerConflictDoesNotBecomeFailedRuntimeLoad(t *testing.T) {
 	id := strings.Repeat("a", 64)
 	ready := sidecar.PreloadReport{ContinuityVersion: 1, Status: "ready", Ready: true, Requested: 1, Warm: 1,

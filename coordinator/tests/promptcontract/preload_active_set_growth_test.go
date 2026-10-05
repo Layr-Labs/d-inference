@@ -8,10 +8,10 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/internal/promptcontract/preload"
 )
 
-// D64 scopes failure backoff to the exact requested set. An unchanged partial
+// Failure backoff is scoped to the exact requested set. An unchanged partial
 // A/B batch must wait, but newly verified C must not inherit that batch's wait.
-// This is an independent expected-behavior oracle for the prepared policy,
-// not permission to drop B, change capacity, refresh generations or waive D64.
+// This is an independent expected-behavior oracle for the prepared policy, not
+// permission to drop B, change capacity, refresh generations or waive that scope.
 func TestPreloadActiveSetVerifiedGrowthBypassesPriorSetBackoff(t *testing.T) {
 	policy := preload.NewPreloadActiveSet()
 	original := activeSetInput(2, 3)

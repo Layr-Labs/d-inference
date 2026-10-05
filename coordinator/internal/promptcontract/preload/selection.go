@@ -148,7 +148,7 @@ func (c *PreloadController) NoteDemand(identity PreloadDemandIdentity) bool {
 	return false
 }
 
-// ReadyFor retains its standalone D64 meaning: a completed, current native
+// ReadyFor retains its standalone meaning: a completed, current native
 // tokenizer acknowledgement. Actual API planning uses PlanningState plus the
 // authoritative Registry gate; missing selection callbacks grant no authority.
 func (c *PreloadController) ReadyFor(promptContractID string) bool {

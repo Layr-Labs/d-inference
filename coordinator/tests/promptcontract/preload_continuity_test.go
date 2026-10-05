@@ -1,9 +1,5 @@
 package promptcontract_test
 
-// A negotiated retry of a failing member preserves the already acknowledged
-// healthy member. The public-stack baseline of this fixture is retained in the
-// private review packet as a failing negative control.
-
 import (
 	"context"
 	"encoding/json"
@@ -18,7 +14,9 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/internal/promptcontract/sidecar"
 )
 
-func TestIndependentRetryPreservesHealthyContract(t *testing.T) {
+// A negotiated retry of a failing member keeps the already acknowledged healthy
+// member ready while the retry is in flight.
+func TestPreloadContinuityKeepsHealthyContractReadyDuringRetry(t *testing.T) {
 	healthy, broken := strings.Repeat("a", 64), strings.Repeat("b", 64)
 	release := make(chan struct{})
 	entered := make(chan struct{}, 4)
@@ -36,10 +34,9 @@ func TestIndependentRetryPreservesHealthyContract(t *testing.T) {
 				entered <- struct{}{}
 				<-release // a slow retry of the same set (e.g. the broken member timing out)
 			}
-			_ = json.NewEncoder(w).Encode(struct {
-				sidecar.PreloadReport
-				ContinuityVersion uint32 `json:"continuity_version"`
-			}{readinessReport(request.IDs, broken), 1})
+			report := readinessReport(request.IDs, broken)
+			report.ContinuityVersion = 1
+			_ = json.NewEncoder(w).Encode(report)
 		default:
 			http.NotFound(w, r)
 		}
@@ -79,6 +76,6 @@ func TestIndependentRetryPreservesHealthyContract(t *testing.T) {
 	<-done
 	t.Logf("preloads=%d healthy admitted during retry=%v, after retry=%v", preloads.Load(), healthyDuringRetry, controller.ReadyFor(healthy))
 	if !healthyDuringRetry {
-		t.Errorf("REVIEW FINDING: a retry for a failing member closed the already-acknowledged healthy contract for the whole retry")
+		t.Error("a retry for a failing member closed the already-acknowledged healthy contract for the whole retry")
 	}
 }

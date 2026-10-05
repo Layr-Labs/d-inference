@@ -225,9 +225,9 @@ func TestPreloadVerifiedSetGrowthBypassesOldBackoff(t *testing.T) {
 	}
 }
 
-// The original b8eba688 controller-capacity oracle remains the old-source
-// control. Overflow selection intentionally no longer submits all nine IDs;
-// Client's direct pre-HTTP nine-ID rejection below remains unchanged.
+// The pre-selection controller-capacity oracle remains the old-source control.
+// Overflow selection intentionally no longer submits all nine IDs; Client's
+// direct pre-HTTP nine-ID rejection below remains unchanged.
 func TestPreloadOverflowSelectionAndEmptySetsCloseBeforePolling(t *testing.T) {
 	a := strings.Repeat("a", 64)
 	f := newReadinessControllerFixture(t, func(_ context.Context, _ int64, ids []string) sidecar.PreloadReport { return readinessReport(ids, "") })

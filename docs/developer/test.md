@@ -1358,13 +1358,13 @@ legacy fallback and fail-closed negotiated downgrade
 `TestPreloadStaleProtocolFailureWithdrawsSameChildAuthority`,
 `coordinator/tests/promptcontract/preload_negotiation_test.go`) and a held retry
 that keeps the acknowledged healthy member admitted
-(`TestIndependentRetryPreservesHealthyContract`,
-`coordinator/tests/promptcontract/preload_continuity_test.go`). The last name
-does not match the `^TestPreload` filter above, so select all three explicitly:
+(`TestPreloadContinuityKeepsHealthyContractReadyDuringRetry`,
+`coordinator/tests/promptcontract/preload_continuity_test.go`). The `^TestPreload`
+filter above runs all three once; repeat them alone with:
 
 ```bash
 go test -race ./coordinator/tests/promptcontract -count=3 -run \
-  '^(TestIndependentRetryPreservesHealthyContract|TestPreloadContinuityNegotiationNeverSilentlyDowngrades|TestPreloadStaleProtocolFailureWithdrawsSameChildAuthority)$'
+  '^(TestPreloadContinuityKeepsHealthyContractReadyDuringRetry|TestPreloadContinuityNegotiationNeverSilentlyDowngrades|TestPreloadStaleProtocolFailureWithdrawsSameChildAuthority)$'
 ```
 
 Rust planner controls hold actual blocking loaders and plan references through

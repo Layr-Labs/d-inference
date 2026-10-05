@@ -258,7 +258,6 @@ func (c *PreloadController) prepareAttempt() (PreloadSelectionLease, uint64, boo
 	if !c.retainPublicationLocked(key) {
 		c.clearPublicationLocked("preload in progress")
 	}
-	c.fullyLoaded = false
 	return lease, c.inflight, false
 }
 
@@ -303,9 +302,10 @@ func (c *PreloadController) finishAttemptLocked(
 	}
 	c.inflight = 0
 	key, current := c.reconcileSelectionLocked(latest)
-	// Loss of the negotiated guarantee belongs to this child, even when the
-	// selection changed while its response was in flight. A stale success may
-	// not publish; a same-child protocol failure must still withdraw authority.
+	// Loss of the negotiated guarantee belongs to this child, whether this
+	// attempt is still current or the selection changed while its response was
+	// in flight. A stale success may not publish; a same-child protocol failure
+	// must still withdraw authority.
 	if lease.Key.ChildGeneration == child.ChildGeneration && isContinuityLoss(err) {
 		c.clearPublicationLocked("continuity protocol unavailable")
 	}
@@ -340,9 +340,6 @@ func (c *PreloadController) finishAttemptLocked(
 	}
 	if err != nil {
 		successful = nil
-		if isContinuityLoss(err) {
-			c.clearPublicationLocked("continuity protocol unavailable")
-		}
 	}
 	backoff := c.failureBackoff
 	if backoff == 0 {

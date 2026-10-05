@@ -125,10 +125,13 @@ func TestPreloadCaptureApplyCannotRegressNewerObservedAuthority(t *testing.T) {
 				}
 			}()
 			<-newStarted
+			// The probing clock holds each policy sample for preloadLockHeldWindow
+			// and a reconcile takes four, so an overtaking caller needs more than
+			// four of those windows to finish.
 			select {
 			case <-newDone:
 				t.Error("newer authority overtook a captured-but-unapplied predecessor")
-			case <-time.After(100 * time.Millisecond):
+			case <-time.After(10 * preloadLockHeldWindow):
 			}
 			open()
 			for _, done := range []chan struct{}{oldDone, newDone} {

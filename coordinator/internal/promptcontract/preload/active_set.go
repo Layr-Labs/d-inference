@@ -235,7 +235,7 @@ func (p *PreloadActiveSet) Reconcile(now time.Duration, input PreloadSelectionIn
 	}
 	var desired []string
 	if len(all) <= input.Capacity {
-		desired = all // Preserve D64 full-V behavior, not a pruned catalog.
+		desired = all // Within capacity: the full verified set, never a pruned catalog.
 	} else {
 		for _, id := range before.Desired {
 			member, exists := p.members[id]

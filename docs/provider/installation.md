@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-04
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -13,6 +13,11 @@ is updated afterwards, and how to remove everything. For operators; at the end
   `.macOS(.v14)`); the installer checks only `uname` = `Darwin` and `uname -m` =
   `arm64` and prints the macOS version without gating on it. Sizing (RAM, disk,
   which models fit) is in [hardware requirements](./hardware-requirements.md).
+- New network providers require macOS 27 or later and current qualified App
+  Attest authorization, not just a successful install or OS upgrade. Only the
+  [frozen legacy identities](../architecture/security/enrollment.md#frozen-legacy-authorization-cohort)
+  may temporarily use legacy verification; an existing local MDM profile does
+  not establish eligibility.
 - Outbound HTTPS to the coordinator (`https://api.darkbloom.dev`).
 - No `sudo`. The script writes to `~/.darkbloom`, appends one `PATH` line to
   `~/.zshrc` (or `~/.bashrc`), and tries — best effort, no prompt — to link
@@ -113,7 +118,12 @@ The script performs these actions in order (`scripts/install.sh`; failures exit
    `${TMPDIR:-/tmp}/Darkbloom-Enroll.XXXXXX/`, and opens System Settings for
    approval. Existing management is preserved without claiming it is Darkbloom
    verification. Unknown OS versions download no profile and direct users to
-   `darkbloom enroll`. Setup choice grants no serving authorization; see the
+   `darkbloom enroll`. Under the upcoming frozen policy, the installer's
+   unauthenticated request cannot download a profile. Run `darkbloom login`
+   with the existing linked account, then `darkbloom enroll`; on older macOS,
+   the CLI checks frozen account/key eligibility even when a Darkbloom profile
+   is already installed, and does not reinstall that profile on success.
+   Setup choice grants no serving authorization; see the
    [authorization contract](../reference/provider-authorization.md).
 8. **Step 5/5 — catalog.** `GET $COORD_URL/v1/models/catalog?type=text`;
    interactive runs print up to 20 entries. Nothing is downloaded.

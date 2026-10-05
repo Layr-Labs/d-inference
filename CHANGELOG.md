@@ -26,6 +26,12 @@
 - Require a linked provider Bearer token and fresh signed SE-key proof for `/v1/enroll`; reenrollment is limited to the existing key under its frozen account. New identities require qualified App Attest, with no unsupported-OS fallback. Generic copied profiles can still enroll directly in MicroMDM; the restriction guarantees coordinator MDM authorization, not prevention of that direct enrollment.
 - Require App Attest for noncohort owner self/prefer routing as well as public serving. Validate enabled production App Attest serving with full rollout before the startup freeze; invalid configuration fails closed without freezing membership.
 - Require current qualified App Attest authorization for base rewards, including machines with both MDM and App Attest evidence; legacy MDM-only machines remain eligible for grandfathered serving but not base rewards. Existing economics guards and inference/work earnings remain unchanged, with no retroactive reward clawback.
+- Check authenticated frozen account/key eligibility in `darkbloom enroll` even when a legacy profile is already installed; a successful check preserves that profile without reinstallation. Clarify that new providers need macOS 27 or later and current qualified App Attest, not an OS-only grant; consumers have no macOS 27 requirement.
+- Update the enrollment HTTP integration fixture to verify a linked test token and canonical P-256 proof instead of expecting anonymous profile downloads.
+
+## Unreleased - native queued cancellation retirement
+
+- Fix a pre-existing SDK race exposed during prefill-deadline validation: concurrent cancellation could remove a queued native request without retiring it, leaving its reservation charged. Use one cancellation decision for retirement and queue removal; retain exactly-once completion and reservation release after retirement.
 
 ## Unreleased — provider 0.9.16
 

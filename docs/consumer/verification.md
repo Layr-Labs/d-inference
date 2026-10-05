@@ -16,6 +16,12 @@ Local profile-inventory authentication during `darkbloom unenroll` only identifi
 
 Under the upcoming [frozen legacy MDM policy](../architecture/security/enrollment.md#frozen-legacy-authorization-cohort), legacy MDM authorization is restricted to already successfully verified devices with a durable frozen authenticated account/key/serial association. New accounts, devices and associations cannot join it after the first upgraded startup, and restarts do not reopen it. Membership alone is not verification: current posture, freshness, revocation and code-identity gates still apply. New identities require qualified App Attest; unsupported OS versions do not create a legacy fallback. No grace period has been chosen and no cohort expiry is implemented.
 
+New providers require macOS 27 or later and current qualified App Attest
+authorization; consumers do not need macOS 27 to use the API or console.
+The provider CLI checks frozen eligibility with an authenticated signed request
+even when a legacy profile is already installed. Its "Already enrolled" result
+does not establish current serving authorization or publish the enrollment proof.
+
 A generic profile remains copyable, and direct SCEP/check-in can enroll another Mac in MicroMDM without passing the coordinator's profile-download checks. That enrollment is not coordinator MDM authorization or consumer verification; see the [copied-profile boundary](../architecture/security/enrollment.md#copied-profile-boundary).
 
 Provider troubleshooting diagnostics do not establish consumer verification.

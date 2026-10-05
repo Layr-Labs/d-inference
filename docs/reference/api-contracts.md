@@ -402,6 +402,15 @@ for authenticated reenrollment, not provider credentials (`coordinator/api/provi
 `HandleEnroll`). Cohort and copied-profile limits are defined in
 [MDM enrollment](../architecture/security/enrollment.md#frozen-legacy-authorization-cohort).
 
+On older macOS, `EnrollmentService.enroll` in
+`provider-swift/Sources/ProviderCore/Auth/Enrollment.swift` uses this same
+authenticated endpoint before returning
+"Already enrolled" for an existing local Darkbloom profile. A successful response
+in that case is not saved or installed again, and a failed eligibility check
+cannot become success merely because a profile exists. This is an eligibility
+check, not a current serving grant. New providers require macOS 27 or later and
+current qualified App Attest; an OS version alone grants neither serving nor enrollment.
+
 | Input or outcome | Contract | Enforcement |
 |---|---|---|
 | `Authorization` | Exact `Bearer <token>` prefix with an active linked provider token; its account must be the frozen account for this key | `coordinator/internal/provider/legacymdm/policy.go` (`Policy.AuthorizeEnrollment`) |
@@ -410,7 +419,7 @@ for authenticated reenrollment, not provider credentials (`coordinator/api/provi
 | `signature` | Standard-base64 ASN.1 DER ECDSA P-256 signature over SHA-256 of the canonical transcript below | `coordinator/attestation/attestation.go` (`VerifyChallengeSignature`) |
 | Success | `200` MDM `.mobileconfig` response, not a trust grant or provider token | `coordinator/api/provider/trust/enroll.go` (`HandleEnroll`) |
 | Credential failure | `401` for missing, invalid, inactive or unlinked credentials, including token lookup failure | `coordinator/internal/provider/legacymdm/policy.go` (`Policy.AuthorizeEnrollment`) |
-| Proof or membership failure | `403` for a nonmember, out-of-window timestamp or invalid signature | `coordinator/internal/provider/legacymdm/policy.go` (`Policy.AuthorizeEnrollment`) |
+| Proof or membership failure | `403` for a nonmember, out-of-window timestamp or invalid signature. Nonmembers receive macOS 27+/qualified App Attest guidance and the legacy base-reward restriction; a frozen account/key with an out-of-window proof receives clock/retry guidance instead | `coordinator/internal/provider/legacymdm/policy.go` (`Policy.AuthorizeEnrollment`) |
 
 The JSON body contains `se_public_key`, `timestamp` and `signature`. The canonical
 transcript uses LF separators and no trailing newline; `\n` below denotes one

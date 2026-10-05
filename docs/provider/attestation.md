@@ -2,8 +2,11 @@
 
 > Last updated: 2026-10-04
 
-How to take a provider Mac from `self_signed` to `hardware` trust and keep it
-there, so the coordinator routes public inference to it. For operators; the
+How to check provider verification and retain legacy `hardware` trust where
+eligible. New providers require macOS 27 or later and current qualified App
+Attest authorization; a `hardware` label is not required for that path. Only
+the frozen linked account/SE-key/previously MDM-verified device cohort may
+temporarily use legacy verification. For operators; the
 mechanism — what each layer proves, the grant and loss conditions, the routing
 gate, and the code map — is in
 [`../architecture/security/attestation.md`](../architecture/security/attestation.md)
@@ -89,7 +92,11 @@ request](../reference/api-contracts.md#legacy-mdm-enrollment-proof). Preserve yo
 key and account; a replacement identity must use qualified App Attest, with no
 unsupported-OS fallback. Lost or hashless historical evidence may conservatively
 omit a device; a previous local profile alone does not establish eligibility.
-No grace period has been chosen and no expiry is implemented.
+`darkbloom enroll` checks the authenticated signed request with the coordinator
+even when a Darkbloom profile is already installed. Only a successful eligibility
+check returns "Already enrolled", without saving or reinstalling a profile;
+this is not a fresh serving grant. No grace period has been chosen and no expiry
+is implemented.
 
 Grandfathered legacy MDM-only serving does not qualify your Mac for base rewards.
 Base rewards require current qualified App Attest authorization, including when

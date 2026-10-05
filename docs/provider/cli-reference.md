@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-04
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -59,7 +59,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `benchmark` | Inference benchmarks and harnesses | ✓ | `BenchmarkCommand.swift` (`Benchmark`) |
 | `update` | Self-update | ✓ | `UpdateCommand.swift` (`Update`) |
 | `verify` | `doctor --strict` | ✓ | `VerifyCommand.swift` (`Verify`) |
-| `enroll` | Fetch and open the MDM enrollment profile | ✓ | `EnrollCommand.swift` (`Enroll`) |
+| `enroll` | Show App Attest setup guidance or check frozen legacy eligibility before profile setup | ✓ | `EnrollCommand.swift` (`Enroll`) |
 | `unenroll` | Choose full exit or MDM removal with App Attest | | `UnenrollCommand.swift` (`Unenroll`) |
 | `logs` | Unified logs for subsystem `dev.darkbloom.provider` | | `LogsCommand.swift` (`Logs`) |
 | `report` | Upload recent unified logs to the coordinator | ✓ | `ReportCommand.swift` (`Report`) |
@@ -440,8 +440,14 @@ See [installation → Update](./installation.md#update).
 
 `EnrollmentService.enroll` in `provider-swift/Sources/ProviderCore/Auth/Enrollment.swift`
 returns App Attest setup guidance on macOS 27 or later before checking profiles,
-contacting the enrollment endpoint or opening Settings. Older macOS retains the
-legacy profile flow. `ProviderOnboardingPolicy` in
+contacting the enrollment endpoint or opening Settings. This guidance asks the
+operator to verify current status; it is not an App Attest grant. Older macOS
+uses the legacy profile flow only for eligible frozen identities. The linked
+provider token and fresh SE-key proof must pass `POST /v1/enroll` even when a
+local Darkbloom profile exists. Only then does the CLI return "Already enrolled",
+without saving or reinstalling the profile. New identities require macOS 27 or
+later and qualified App Attest, not a copied profile or OS-only grant.
+`ProviderOnboardingPolicy` in
 `provider-swift/Sources/ProviderCore/Auth/ProviderOnboardingPolicy.swift` owns the
 OS choice and the upgrade/upcoming MDM deactivation notice. The OS choice never
 grants serving authorization or removes an existing profile.
@@ -1156,7 +1162,8 @@ darkbloom logout
 
 ## `darkbloom enroll`
 
-Request and install the Darkbloom MDM / device-attestation profile.
+Show App Attest setup guidance or check frozen legacy eligibility before MDM
+profile setup; see the [enrollment behavior](#darkbloom-enroll--darkbloom-unenroll).
 
 ```bash
 darkbloom enroll [--coordinator <url>] [--no-open]

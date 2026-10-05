@@ -136,6 +136,18 @@ func TestEnrollmentRequiresBoundFreshMachineProof(t *testing.T) {
 				if bytes.Contains(responseBody, []byte("com.apple.mdm")) || resp.Header.Get("Content-Disposition") != "" {
 					t.Fatal("denied request received an enrollment profile")
 				}
+				switch tc.name {
+				case "wrong account", "new key with copied serial", "missing proof":
+					for _, guidance := range []string{"macOS 27 or later", "qualified App Attest", "previously linked, successfully verified", "does not qualify for base rewards"} {
+						if !strings.Contains(string(responseBody), guidance) {
+							t.Fatalf("ineligible provider missing guidance %q: %s", guidance, responseBody)
+						}
+					}
+				case "expired proof", "future proof":
+					if !bytes.Contains(responseBody, []byte("clock and retry")) || bytes.Contains(responseBody, []byte("macOS 27")) {
+						t.Fatalf("grandfathered machine with clock skew received incorrect eligibility advice: %s", responseBody)
+					}
+				}
 				return
 			}
 			if resp.Header.Get("Content-Type") != "application/x-apple-aspen-config" || resp.Header.Get("Content-Disposition") != `attachment; filename="Darkbloom-Enroll.mobileconfig"` {

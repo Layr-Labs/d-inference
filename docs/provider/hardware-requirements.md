@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-04
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -11,6 +11,12 @@ once in [`../architecture/hardware-support.md`](../architecture/hardware-support
 and are not repeated here.
 
 ## Minimum requirements
+
+New network providers require macOS 27 or later and current qualified App Attest
+authorization. The binary build floor below is not network eligibility. Only
+the [frozen legacy cohort](../architecture/security/enrollment.md#frozen-legacy-authorization-cohort)
+may temporarily retain legacy serving; an old OS or installed profile cannot
+create membership. These are provider requirements, not consumer requirements.
 
 Native DiffusionGemma retains its vision tower and applies the existing per-frame
 allocation checks and shared process budget; enabling media discovery does not

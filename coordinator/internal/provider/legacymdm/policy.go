@@ -109,10 +109,14 @@ func (s *Policy) AuthorizeEnrollment(w http.ResponseWriter, r *http.Request, pro
 		return false
 	}
 	_, eligible := policy.machines[identity{credential.AccountID, proof.SEPublicKey}]
+	if !eligible {
+		http.Error(w, "New providers require macOS 27 or later and qualified App Attest verification to join the network. Legacy MDM is restricted to previously linked, successfully verified machines and does not qualify for base rewards.", http.StatusForbidden)
+		return false
+	}
 	issuedAt := time.Unix(proof.Timestamp, 0)
 	now := time.Now()
-	if !eligible || issuedAt.Before(now.Add(-5*time.Minute)) || issuedAt.After(now.Add(5*time.Minute)) {
-		http.Error(w, "MDM is restricted to previously verified machines; use App Attest", http.StatusForbidden)
+	if issuedAt.Before(now.Add(-5*time.Minute)) || issuedAt.After(now.Add(5*time.Minute)) {
+		http.Error(w, "Enrollment proof is outside the five-minute validity window. Check this Mac's clock and retry.", http.StatusForbidden)
 		return false
 	}
 	tokenHash := sha256.Sum256([]byte(token))

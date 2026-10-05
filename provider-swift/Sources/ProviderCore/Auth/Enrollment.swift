@@ -11,8 +11,9 @@
 ///      so the user can click Install.
 ///
 /// The whole flow is idempotent: if `checkMDMEnrollment()` reports this Mac
-/// is already enrolled in DARKBLOOM's MDM we short-circuit; enrollment in a
-/// foreign MDM is an error (macOS allows one MDM per device). Unenrollment
+/// is already enrolled in DARKBLOOM's MDM we validate eligibility but skip
+/// installation; enrollment in a foreign MDM is an error (macOS allows one
+/// MDM per device). Unenrollment
 /// cannot be done programmatically (Apple requires the user to remove the
 /// profile via System Settings), so unenroll just opens the profiles pane
 /// and optionally cleans up local state.
@@ -25,6 +26,7 @@ import Security
 
 public enum EnrollmentError: Error, CustomStringConvertible, Sendable {
     case linkedCredentialsRequired
+    case existingIdentityRequired(String)
     case coordinatorRequestFailed(String)
     case coordinatorReturnedHTTP(Int, body: String)
     case profileWriteFailed(String)
@@ -33,7 +35,13 @@ public enum EnrollmentError: Error, CustomStringConvertible, Sendable {
     public var description: String {
         switch self {
         case .linkedCredentialsRequired:
-            return "MDM enrollment requires an existing linked account. Run 'darkbloom login' first."
+            return "New providers require macOS 27 or later and coordinator-qualified App Attest. "
+                + "Legacy MDM is only for grandfathered account/key pairs. "
+                + "Run 'darkbloom login' with the existing linked account to check eligibility."
+        case .existingIdentityRequired(let detail):
+            return "New providers require macOS 27 or later and coordinator-qualified App Attest. "
+                + "Legacy MDM requires the grandfathered account's original Secure Enclave key; "
+                + "no replacement key was created. Existing identity unavailable: \(detail)"
         case .coordinatorRequestFailed(let detail):
             return "Failed to reach coordinator: \(detail)"
         case .coordinatorReturnedHTTP(let status, let body):
@@ -62,8 +70,26 @@ public enum EnrollmentResult: Sendable {
 /// Stateless: callers pass the coordinator HTTP base URL. The service
 /// downloads a profile and opens System Settings only on older macOS.
 public struct EnrollmentService: Sendable {
+    private let checkEnrollment: @Sendable (String) -> MDMEnrollmentState
+    private let loadToken: @Sendable () -> String?
+    private let loadSigner: @Sendable () throws -> any AttestationSigner
+    private let profileDirectory: URL
 
-    public init() {}
+    public init() {
+        self.init(checkEnrollment: { checkMDMEnrollment(coordinatorURL: $0) })
+    }
+
+    init(
+        checkEnrollment: @escaping @Sendable (String) -> MDMEnrollmentState,
+        loadToken: @escaping @Sendable () -> String? = { AuthTokenStore.load() },
+        loadSigner: @escaping @Sendable () throws -> any AttestationSigner = { try EnrollmentPersistentSigner() },
+        profileDirectory: URL = FileManager.default.temporaryDirectory
+    ) {
+        self.checkEnrollment = checkEnrollment
+        self.loadToken = loadToken
+        self.loadSigner = loadSigner
+        self.profileDirectory = profileDirectory
+    }
 
     /// Request a per-device enrollment profile and (on macOS) open the
     /// System Settings pane so the user can install it.
@@ -86,19 +112,17 @@ public struct EnrollmentService: Sendable {
         if ProviderOnboardingPolicy.usesAppAttest(macOSMajorVersion: macOSMajorVersion) {
             return .appAttest
         }
-        switch checkMDMEnrollment(coordinatorURL: coordinatorURL) {
+        let alreadyEnrolled: Bool
+        switch checkEnrollment(coordinatorURL) {
         case .enrolledDarkbloom:
-            return .mdm(
-                profilePath: URL(fileURLWithPath: "/dev/null"),
-                alreadyEnrolled: true
-            )
+            alreadyEnrolled = true
         case .enrolledOtherMDM(let serverURL):
             throw EnrollmentError.managedByOtherMDM(serverURL: serverURL)
         case .notEnrolled, .checkFailed:
             // checkFailed proceeds too: a redundant profile download is
             // idempotent/harmless, while refusing here would block enrollment
             // on machines where the profiles tool is transiently unavailable.
-            break
+            alreadyEnrolled = false
         }
 
         let baseURL = coordinatorHTTPBase(coordinatorURL)
@@ -106,7 +130,8 @@ public struct EnrollmentService: Sendable {
             throw EnrollmentError.coordinatorRequestFailed("invalid URL: \(baseURL)/v1/enroll")
         }
 
-        let request = try Self.profileRequest(endpoint: endpoint)
+        let request = try Self.profileRequest(
+            endpoint: endpoint, loadToken: loadToken, loadSigner: loadSigner)
 
         let data: Data
         let response: URLResponse
@@ -116,12 +141,21 @@ public struct EnrollmentService: Sendable {
             throw EnrollmentError.coordinatorRequestFailed(error.localizedDescription)
         }
 
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+        guard let http = response as? HTTPURLResponse else {
+            throw EnrollmentError.coordinatorRequestFailed("expected an HTTP eligibility response")
+        }
+        if !(200..<300).contains(http.statusCode) {
             let body = String(data: data, encoding: .utf8) ?? ""
             throw EnrollmentError.coordinatorReturnedHTTP(http.statusCode, body: body)
         }
 
-        let profilePath = URL(fileURLWithPath: NSTemporaryDirectory())
+        // A local profile can be copied or linked to a different account. Only
+        // the authenticated coordinator response proves legacy eligibility.
+        if alreadyEnrolled {
+            return .mdm(profilePath: URL(fileURLWithPath: "/dev/null"), alreadyEnrolled: true)
+        }
+
+        let profilePath = profileDirectory
             .appendingPathComponent("Darkbloom-Enroll-\(UUID().uuidString).mobileconfig")
         do {
             try data.write(to: profilePath, options: .atomic)
@@ -157,7 +191,12 @@ public struct EnrollmentService: Sendable {
         guard let token = loadToken(), !token.isEmpty else {
             throw EnrollmentError.linkedCredentialsRequired
         }
-        let signer = try loadSigner()
+        let signer: any AttestationSigner
+        do {
+            signer = try loadSigner()
+        } catch {
+            throw EnrollmentError.existingIdentityRequired(String(describing: error))
+        }
         let publicKey = signer.publicKeyBase64
         let tokenHash = SHA256.hash(data: Data(token.utf8))
             .map { String(format: "%02x", $0) }.joined()

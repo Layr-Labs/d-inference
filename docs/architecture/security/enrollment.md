@@ -37,7 +37,8 @@ MDM-verified before the freeze. It is not a list of every MicroMDM enrollment,
 every saved `hardware` label, or every account that owns a provider. Subsequent
 restarts reuse the frozen cohort, even when empty; new accounts, devices, keys and new
 account/device associations cannot expand it. Reenrollment requires the
-existing key under its frozen account. A new identity must use qualified
+existing key under its frozen account. A new identity requires macOS 27 or later
+and current qualified
 [App Attest authorization](../../reference/provider-authorization.md); existing
 qualification and runtime checks still apply, without an unsupported-OS fallback.
 
@@ -70,10 +71,11 @@ sequenceDiagram
     participant M as MicroMDM (127.0.0.1:9002)
     participant D as macOS (mdmclient)
 
-    O->>O: profiles status -type enrollment<br/>(already in Darkbloom MDM → stop, other MDM → refuse)
+    O->>O: profiles status -type enrollment<br/>(other MDM → refuse; Darkbloom profile alone is not eligibility)
     O->>K: POST /v1/enroll (linked provider Bearer token + signed SE-key proof)
     K->>K: Verify fresh proof and existing key under frozen account
     K-->>O: application/x-apple-aspen-config<br/>Darkbloom-Enroll.mobileconfig: SCEP + MDM payloads<br/>PayloadIdentifier io.darkbloom.enroll · AccessRights 1041<br/>CMS-signed when PROFILE_SIGNING_P12_* is set
+    Note over O,D: If Darkbloom profile already exists, return Already enrolled without saving or reinstalling; otherwise continue below
     O->>D: open the .mobileconfig → System Settings → Profiles → operator clicks Install
     D->>X: SCEP GetCACert / PKIOperation (RSA 2048, challenge "micromdm")
     X->>M: reverse proxy
@@ -132,9 +134,14 @@ identity to the frozen cohort or authorize its legacy serving path.
 (`provider-swift/Sources/darkbloom/EnrollCommand.swift`) calls
 `EnrollmentService.enroll` (`provider-swift/Sources/ProviderCore/Auth/Enrollment.swift`):
 
+On macOS 27 or later, the command returns App Attest setup guidance before
+profile inspection or endpoint access. Guidance asks the operator to verify
+current status; neither the OS version nor this result grants authorization.
+On older macOS:
+
 1. `profiles status -type enrollment` (`checkMDMEnrollment`,
    `provider-swift/Sources/ProviderCore/Security/MDMEnrollment.swift`).
-   `enrolledDarkbloom` → print "Already enrolled" and stop;
+   `enrolledDarkbloom` → continue to the authenticated eligibility check;
    `enrolledOtherMDM` → `EnrollmentError.managedByOtherMDM`; `notEnrolled` or
    `checkFailed` → continue (a redundant download is idempotent).
 2. For an existing frozen identity, `POST <https base>/v1/enroll` with
@@ -142,7 +149,12 @@ identity to the frozen cohort or authorize its legacy serving path.
    [signed proof](../../reference/api-contracts.md#legacy-mdm-enrollment-proof).
    A non-2xx → `coordinatorReturnedHTTP`. Clients using the old unauthenticated
    request cannot download a profile under the upcoming policy.
-3. Save to a temp `Darkbloom-Enroll-<uuid>.mobileconfig`; unless `--no-open`,
+   After success, an already installed Darkbloom profile returns "Already
+   enrolled" and stops without saving the response or opening Settings. This does not
+   establish current serving authorization; profile presence never bypasses
+   the account/key proof or cohort check.
+3. If no Darkbloom profile was detected, save to a temp
+   `Darkbloom-Enroll-<uuid>.mobileconfig`; unless `--no-open`,
    `open` the file (registers it with System Settings) and then `open
    x-apple.systempreferences:com.apple.Profiles-Settings.extension`.
 4. The operator clicks **Install** and authenticates. `mdmclient` performs
@@ -199,7 +211,7 @@ anything under the unrequested `AccessRights` bits.
 
 | Failure | Effect | Code |
 |---|---|---|
-| Mac already managed by another MDM | `darkbloom enroll` refuses (`managedByOtherMDM`); doctor reports "enrolled in another MDM … hardware trust unavailable on this Mac" | `provider-swift/Sources/ProviderCore/Auth/Enrollment.swift`; `provider-swift/Sources/darkbloom/DoctorCommand.swift` |
+| Mac already managed by another MDM | On older macOS, `darkbloom enroll` refuses (`managedByOtherMDM`); macOS 27 or later returns App Attest guidance without inspecting profiles. Doctor reports "enrolled in another MDM … hardware trust unavailable on this Mac" | `provider-swift/Sources/ProviderCore/Auth/Enrollment.swift`; `provider-swift/Sources/darkbloom/DoctorCommand.swift` |
 | Profile downloaded but never installed | MDM lookup returns `device-not-found`; provider stays `self_signed` and the scheduler retries | `coordinator/internal/provider/deviceverification/mdm_verification.go` (`VerifyProviderViaMDM`) |
 | Enrolled but SecurityInfo never arrives (asleep, APNs delivery, Apple throttling) | `securityinfo-timeout`; retried on the MDM scheduler cadence ([attestation, Layer 3](./attestation.md#layer-3--mdm-securityinfo-the-hardware-grant)); a late webhook grants only if current identity remains allowed | `coordinator/internal/provider/verification/scheduler.go`; `coordinator/api/provider/` (`ApplyLateSecurityInfo`) |
 | `EIGENINFERENCE_MDM_URL` unset | No MDM client, no scheduler; no provider can reach `hardware` | `coordinator/app/services.go` |

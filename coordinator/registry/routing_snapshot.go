@@ -1,39 +1,44 @@
 package registry
 
-import "time"
+import (
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/capacityvalue"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/forecast"
+	kvbudget "github.com/eigeninference/d-inference/coordinator/internal/registry/kvbudget"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/memorypolicy"
+)
 
 // fillRoutingSnapshotPLocked projects provider state for routing and public
 // capacity preflight. Caller holds r.mu (either mode) and p.mu and has already
 // applied its routing gates. It overwrites caller-owned storage, so reused
 // snapshots cannot retain slots or budgets from another model/provider.
 // Selection-only headroom and heartbeat-age fields are filled by its caller.
-func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider, model string, now time.Time) {
+func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider, model string, now time.Time, report capacityvalue.ServiceReport) {
 	*snap = routingSnapshot{}
-	snap.provider = p
-	snap.model = model
+	snap.CandidateBinding = BindCandidate(p, model)
 	snap.chipFamily = p.Hardware.ChipFamily
 	snap.slotState = "unknown"
 	snap.totalPending = p.pendingCount()
 	snap.systemMetrics = p.SystemMetrics
 	snap.decodeTPS = resolvedDecodeTPS(p)
 	snap.prefillTPS = resolvedPrefillTPS(p)
-	snap.totalMemoryGB = float64(p.Hardware.MemoryGB)
-	snap.modelSizeGB = r.modelSizeGBForFitLocked(p, model)
-	snap.estimatedOffloadedMemoryGB = advertisedOffloadedMemoryGBLocked(p, model, snap.modelSizeGB)
+	var footprint memorypolicy.Footprint
+	footprint.Resolve(p.Models, model, r.modelSizeGBForFitLocked(p, model), float64(p.Hardware.MemoryGB), p.BackendCapacity)
+	snap.totalMemoryGB = footprint.TotalMemoryGB
+	snap.modelSizeGB = footprint.ModelSizeGB
+	snap.estimatedOffloadedMemoryGB = footprint.EstimatedOffloadedMemoryGB
+	snap.gpuMemoryActiveGB = footprint.GPUMemoryActiveGB
+	snap.freeForLoadGB = footprint.FreeForLoadGB
 	snap.minRAMGb = r.catalogMinRAMGbLocked(model)
 
-	fillSnapshotPendingAndPool(snap, p, model)
-	fillFirstContentPending(snap, p, model)
+	var pendingBuffer [16]forecast.PendingWork
+	pendingWork := fillPendingSnapshot(snap, p, model, pendingBuffer[:0])
 	snap.firstContentPendingKnown = true
 
 	snap.hasBackendCapacity = p.BackendCapacity != nil
 
 	if p.BackendCapacity != nil {
-		snap.gpuMemoryActiveGB = p.BackendCapacity.GPUMemoryActiveGB
-		snap.freeForLoadGB = p.BackendCapacity.FreeForLoadGB
-		if p.BackendCapacity.TotalMemoryGB > 0 {
-			snap.totalMemoryGB = p.BackendCapacity.TotalMemoryGB
-		}
 		for _, slot := range p.BackendCapacity.Slots {
 			if slot.Model != model {
 				continue
@@ -47,7 +52,7 @@ func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider
 			snap.activeTokenBudgetUsed = slot.ActiveTokenBudgetUsed
 			snap.activeTokenBudgetMax = slot.ActiveTokenBudgetMax
 			snap.queuedTokenBudget = slot.QueuedTokenBudget
-			snap.kvBytesPerToken = clampKVBytesPerToken(slot.KVBytesPerToken)
+			snap.kvBytesPerToken = kvbudget.ClampRate(slot.KVBytesPerToken)
 			snap.stepsExecuted = slot.StepsExecuted
 			snap.admits = slot.Admits
 			snap.firstTokensEmitted = slot.FirstTokensEmitted
@@ -60,6 +65,7 @@ func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider
 		}
 	}
 	snap.modelLoaded = slotStateModelLoaded(snap.slotState)
+	snap.autopilotBlocked = providerAutopilotRoutingBlockedLocked(p, model)
 	snap.availableOnDisk = !snap.modelLoaded
 	snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
 
@@ -83,5 +89,5 @@ func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider
 	if !r.deadlineProfileApplicableLocked(p, snap.deadlineProfile, now) {
 		snap.deadlineProfile = nil
 	}
-	r.fillFirstContentSnapshot(snap, p, now)
+	r.fillFirstContentSnapshot(snap, p, now, pendingWork, report)
 }

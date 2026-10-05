@@ -24,8 +24,15 @@ permissions:
   pull-requests: write
 
 jobs:
+  changes:
+    uses: ./.github/workflows/component-changes.yml
+    permissions:
+      contents: read
+
   benchmark:
     name: E2E Benchmarks
+    needs: changes
+    if: ${{ needs.changes.outputs.benchmark == 'true' }}
     runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 45
     environment: benchmarks
@@ -62,9 +69,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Set up Homebrew
-        uses: Homebrew/actions/setup-homebrew@e99025eb970cfa124b8284a35463d87426917478
-        with:
-          stable: true
+        run: ./scripts/setup-macos-homebrew.sh
       - name: Install Postgres
         run: brew install postgresql@16
 

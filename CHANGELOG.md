@@ -1,5 +1,118 @@
 # Changelog
 
+## Unreleased - Autopilot inventory reporting
+
+- Add an admin-only connected Autopilot inventory report with exact per-model last-reported approval counts, deduplicated approval totals and a models-per-provider distribution. Distinguish unpaused, paused and stale connections without exposing provider identities or claiming fresh disk verification, residency or routing eligibility. The read does not depend on the operation ledger.
+
+## Unreleased — routing scan cost
+
+- Compact retained routing evidence, reuse bounded private reservation storage, borrow forecast inputs, project alternate-selection values once, and aggregate pending work once per provider snapshot. Public scan and quote lifetimes, selection policy, admission, retirement and billing behavior are preserved.
+
+- Reduce the per-request provider scan cost after the coordinator reorganization. Autopilot eligibility reads the clock only for a provider holding a matching control grant, candidate ranking reads the projected pool in place, and candidate storage fills one allocation size class. Routing outcomes are unchanged.
+
+## Unreleased — canceled PostgreSQL debits
+
+- Keep a PostgreSQL debit uncommitted until its statement succeeds, preventing a timed-out row-lock wait from later becoming a charge. Lost commit acknowledgements remain uncertain and must not be blindly retried.
+
+## Unreleased - verification concurrency
+
+- Keep a reconnected provider's verification job eligible after its old worker releases the claim. A delayed challenge callback no longer restores the stale running snapshot and postpones verification until claim expiry.
+- Read one synchronized trust-level snapshot for registration metrics and telemetry while verification updates run concurrently.
+
+## Unreleased — leaderboard availability
+
+- Add a concurrent BRIN time index for recent provider-earnings rankings, enable range autosummarization, and keep planner statistics current. Return an uncached 503 when ranking queries fail instead of showing and caching an empty leaderboard.
+- Share one top-200 ranking fill across caller limits and equivalent window aliases. Coalesce concurrent misses, pause failed fills for 10 seconds, and include the remaining retry delay in leaderboard 503 responses.
+
+## Unreleased — provider 0.9.17
+
+- Keep the normal startup selection and explicit `--model` override authoritative while Autopilot is waiting or observing in shadow. Cached planning inventory can no longer make ordinary routing load unselected models.
+- Separate cached candidates from serving advertisements in Autopilot protocol 3; retain full shadow planning and require an acknowledged live lease before additional models become loadable. Older coordinators keep the selected models serving without activating the new protocol.
+- Preserve normal selected-model successor updates independently of Autopilot inventory, and show the serving selection in My Macs instead of observational candidates.
+
+## Unreleased — provider 0.9.16
+
+- Offer the Autopilot yes/no choice on every normal interactive start, using the saved choice as default and retaining the normal startup model and memory selector, including explicit `--model` selection.
+
+- Fix enrolled providers appearing stopped, rejecting graceful stop/restart, and accumulating false failed-start rollbacks because their Autopilot snapshot could not be decoded. Preserve heartbeat readability for a watchdog still running 0.9.15 during upgrade.
+- Name each model during cached-inventory verification and report a busy model immediately instead of silently waiting behind a background revision update. Saved enrollment and the running provider remain intact when ordinary startup verification fails.
+
+## Unreleased — status page placeholder
+
+- Add a standalone static status-page placeholder: "The status page will return in the future." Publishing it requires a separate hosting change; the existing Instatus content is preserved.
+
+## Unreleased - provider availability wizard
+
+- Add `darkbloom start --schedule` for optional interactive background setup and `darkbloom schedule` for editing saved settings without starting or stopping the provider. Support saved windows, overnight/weekend presets, custom add/edit/remove, inspection, disabling and custom config paths.
+- Offer preloading at window opening or on-demand loading using the existing startup-preload setting, preserving model selections and idle policy. Reject invalid enabled schedules before serving, merge overlapping/adjacent windows, honor local-calendar DST boundaries and keep full-week availability connected continuously.
+
+## Unreleased — budgeted advisory PR review
+
+- Give PR authors Sonnet feedback before selective Opus/Sol 6.1 depth, reuse unchanged analysis, and debounce follow-up pushes. Show clean results, coverage, cost and saved historical findings in the advisory comment.
+- Reserve shared spending before every provider request; cap normal/deep attempts, PR/day, repository/day and the ten-PR pilot. Preserve partial findings and unknown-cost reservations after failures. Paid scanning defaults to disabled; maintainers can preconfigure activation before merge after state-writer and funding verification.
+- Keep findings citable across large diff fragments and publish a compact history link when the full report exceeds comment capacity.
+
+- Add a manual activation preflight that verifies signed state writes and provider funding without paid model calls or changes to the spending ledger. Support a repository-scoped App writer with short-lived tokens; keep private funding details out of public preflight logs.
+## Unreleased — self-service bank payout migration
+
+- Add an explicit Global Payouts cutover for all supported bank destinations. Existing Connect users complete their own bank setup; history, earned balances and legacy account references are retained. US bank setup uses local transfers.
+- Separate legacy Connect credentials and connected-account webhook verification from Checkout. Current and legacy Checkout events settle atomically without duplicate deposits.
+- Recover verified rejected-transfer refunds atomically, require exact Stripe payout evidence during cutover, and check financial-account funding plus fees before new payout debits. Add a bounded audit tool and explicit, operator-verified historical refund repair.
+
+## Unreleased — Nemotron parser and artifact defaults
+
+- Absorb stray `</think>` markers in Nemotron Lightning content without changing other native-channel families or interpreting markers inside tool arguments.
+- Apply Nemotron's artifact-declared sampling defaults only to omitted request fields; explicit values still win. Admit the hybrid8 and rollback concrete build IDs without changing the catalog or activating either build.
+
+## Unreleased — Nemotron prompt fidelity
+
+- Preserve function-level `strict` for Nemotron tool prompts and align the pinned Nemotron template's scalar/JSON filters with Transformers. Other model families retain their existing rendering and tool normalization. This repairs prompt fidelity, not all reasoning-off tool-selection failures in Q4.
+- Keep numeric Nemotron values identical between provider rendering and exact-cache planning, including exponent formatting and the SDK's integral-number conversion. Apply non-Nemotron `strict` stripping to native media tool inputs as well as text; pinned metadata-only parity gates cover the reference and numeric edge cases in CI.
+- Advance prompt normalization to v8 and renderer identity to v4 across provider and coordinator, retaining normalization v7 policies. This invalidates prompt-contract/cache identities for all families; regenerate sidecar contracts and allowlists together before rollout. No model weights, sampling defaults, tool-choice policy, or inference kernels change.
+
+## Unreleased — MiMo SSD prefix-cache hits reuse the prefix
+
+- Fix: every native MiMo V2.6 SSD prefix-cache hit was discarded. The bridge stages a checkpoint under a placeholder engine request ID and mints the real ID just before submit, and the SDK's native import check compared engine IDs, so each staged checkpoint was refused (`unsupportedConsumer`) and the request prefilled its whole prompt again. The pinned mlx-swift-lm binds a stage to its submission receipt instead. On a 256 GiB M3 Ultra, a repeated 6K-token prompt now reaches its first token in 4.5 s instead of 13.1 s, and a 12K-token prompt in 4.6 s instead of 27.3 s, with byte-identical output (MTP off and auto).
+- Report `prompt_tokens_details.cached_tokens` from the standalone server only when the engine actually reused the prefix. A matched checkpoint whose adoption failed or was skipped previously still reported its matched tokens. Coordinator usage already came from the resolved lookup and is unchanged.
+
+## Unreleased - experimental model Autopilot
+
+- Add default-off experimental Autopilot enrollment at provider startup. Yes or `--autopilot` skips the picker, discovers/verifies all eligible already-downloaded active network models, and records shadow consent without activation or downloads. Exclude arbitrary local/off-catalog, retired, ineligible and unverified builds; empty inventory fails before restarting. Preserve all saved serving, preload, idle and other preferences.
+- Default coordinator Autopilot to observation only. It records hypothetical plans without residency reservations, fences or commands; explicit `EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY=false` enables a separately approved live rollout. Preserve the enable switch and runtime admin pause.
+- Add Autopilot status, pause/resume, pins and disable; session-bound live control, selected-model boundaries, request-shape planning, retained load timings and durable operation records. Active control preserves files, local work and donor capacity.
+- Keep approved cached inventory static across ordinary restarts. Explicit `--autopilot`, `autopilot enable` or `autopilot models` refreshes verified eligible cached models without picker/downloads; `--all` remains network-gated and enrollment with `--model` requires opt-out. A later live rollout chooses cached models to improve utilization, not guaranteed earnings.
+- Deduplicate unchanged shadow proposals as first-write decision records, not a per-tick time series; the current summary stays fresh even when an unchanged decision ages out of recent history. Distinct state/session/revision decisions remain retained; live command IDs are unchanged.
+- Reject coordinator unload victims outside the approved cached inventory while preserving guarded local superseded-model cleanup. Filter invalid UTF-8 ID bounds before verification, then validate the normalized verified inventory count before saving consent or draining; invalid inventory cannot stop the existing daemon or install a replacement.
+- Preserve an enrolled provider's pause during ordinary start, `enable` and inventory refresh; resumption requires explicit `resume`. Validate saved inventory all-or-nothing before persistence/drain, including transient verification failures; only explicit refresh may prune excluded builds.
+- Apply current full Autopilot settings at each new scheduled window. Disabling between windows restores ordinary saved model selection even if unchanged; other runtime inputs remain frozen.
+- Queue pending-operation uncertainty before removing a disconnected provider, persisting outside registry/provider locks. Connection loss never implies rollback or a confirmed terminal resident set.
+
+## Unreleased — canceled queue waiters
+
+- Stop canceled waiters held by a scheduling pass from returning as queued demand and occupying slots needed by fresh requests. Drop completed entries during queue pop and stale cleanup while preserving live FIFO order, timeout notifications, and reservation cleanup.
+
+## Release candidate v0.9.15 — automatic MiMo calibration (not shipped)
+
+- Calibrate idle native MiMo engines after model loading and refresh stale phase evidence with uncached built-in prompts. Measure short and 4k text plus affordable batches within the existing concurrency cap; retain the production MTP and memory configuration.
+- Give customer requests priority across models: cancel calibration and wait for real native retirement before admission. Keep probe work out of served-request/token counters; publish actual phase measurements and optional peak-concurrency workload buckets through existing heartbeats.
+- Align `ProviderCore.version` and the coordinator latest-provider display fallback at `0.9.15`. Publication, signed-artifact qualification and coordinator rollout remain separate operations.
+
+## Unreleased — provider prefill evidence recovery
+
+- Let an idle native text provider renew expired isolated-prefill measurements through one short request under its original first-content deadline. Serialize the final idle check and native registration, then restore ordinary concurrency after prompt completion while retaining service and memory ownership until actual engine retirement. Back off failed or cache-only recovery; busy, loading, media and large requests retain predictive admission.
+- Reseed measured phase EWMAs after an evidence gap while preserving sample identity/counts. Unchanged heartbeats cannot manufacture current prefill evidence.
+
+## Unreleased — native media prefill observations
+
+- Retain native MiMo target-decoder prefill rates in dedicated numeric workload buckets, separated by computed suffix, context, reuse and overlap. Encoder preparation remains outside this timer. These observations support media calibration without mixing media into text rates or changing first-content deadlines.
+- Price prepared native media from fresh observations of the same engine and observed prompt range. Keep queued text at its own conservative rate. A single idle native request can gather missing evidence under the original deadline, retaining ownership through real retirement. Failed or ineligible attempts back off for two minutes; an eligible sample opens the next shape after retirement.
+- Pin the provider SDK to merged `mlx-swift-lm` main commit `e31a173` (#208) for native-media deadline evidence.
+- Keep deadline-rate evidence invalidated when native media fails during later retirement, even after successful preparation; preserve the qualified text policy's separate recovery requirements.
+
+## Unreleased — native media prompt accounting
+
+- Estimate concrete MiMo image/video/WAV prompt work from bounded media metadata and verified processor configuration. Reconcile fetched-media input quota and deadline token terms from the original request arrival; retain heuristic fallbacks and provider admission safeguards.
+
 ## Release candidate v0.9.14 — MiMo SSD prefix caching by default (not shipped)
 
 - Enable encrypted text-only COMPLETE-prefix SSD checkpoints by default for exact `mimo-v2.6-flash-mopd` and `EigenLabs/MiMo-V2.6-Flash-MOPD-MLX-4bit-mtp` identities. Keep verified artifact/runtime identity, tenant isolation, native ownership, memory admission, SSD limits and cold fallback.
@@ -29,6 +142,16 @@
 
 - Enable native MiMo standing wired residency by default. Without a standing residency set every command buffer must make the ~161 GiB weight payload resident again; on a 256 GiB M3 Ultra the driver kept unwiring it and single-stream decode measured ~0.4 tok/s (the request failed at 234 s), versus 37.8 tok/s with residency, identical requests and weights. The existing bounded ceiling still leaves max(16 GiB, 10%) of physical memory unwired and never grants load admission. `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY=0` (or `false`/`no`/`off`) restores the previous behavior and is now forwarded to the launchd provider job; the former opt-in value `1` remains valid.
 
+## Unreleased — exact rectangular MTP for native MiMo
+
+- Make exact rectangular verification the default MiMo MTP strategy. Rectangular verification scores all draft columns in one `[1, 1+k]` forward, but MLX's 2–7-row affine matmuls on M3-class GPUs use `qmv_wide`, whose reductions differ from one-row decode, so the bulk trunk was never output-identical. Scalar-dense rows (row-local router, serialized attention) with a new row-exact multi-row projection that keeps one-row `qmv_fast` arithmetic while streaming each weight once reproduce serial decode exactly. On a 256 GiB M3 Ultra, greedy MTP-on decode measured about 49 tok/s at short prompts and 46–48 tok/s at 4K prompts, against about 44.9 / 42.8 tok/s with MTP off and about 39 / 37.7 tok/s with serial MTP; 20K and 50K prompts decode at parity with MTP off. Greedy and reasoning outputs and audio responses were identical to MTP off. Media rows stay target-only, and a serving engine that cannot arm the scalar-dense scratch never drafts.
+- `DARKBLOOM_MIMO_RECTANGULAR_VERIFY=0` (or `false`/`no`/`off`) or `DARKBLOOM_MIMO_RECTANGULAR_SCALAR_DENSE=0` selects serial-target scoring; `DARKBLOOM_MIMO_ROW_EXACT_PROJECTION=0` keeps exact verification with one matmul per row. All three are forwarded to the launchd provider job. The native paged profile stays serial-target.
+
+## Unreleased — native MiMo decode kernels and adaptive MTP
+
+- Enable the native MiMo short-forward decode kernels by default: fused residual/RMS norms, distinct-expert MXFP4 decode and the FP32 router GEMV. Each matches the stock operation it replaces for its supported one-request 1–7-row shapes and falls back everywhere else. They were exact-`1` opt-ins that no LaunchAgent forwarded. On a 256 GiB M3 Ultra with MTP off, single-stream decode rose from 41.5–42.0 to 45.2–45.6 tok/s (short prompts) and from 40.4–40.7 to 42.8–43.4 tok/s (4K prompts), with greedy output identical on 8 short and 5K/9K-token prompts. `DARKBLOOM_MIMO_FUSED_DECODE_NORMS`, `DARKBLOOM_MIMO_DECODE_EXPERTS` and `DARKBLOOM_MIMO_DECODE_ROUTER_GEMV` accept `0`/`false`/`no`/`off` as rollbacks and are forwarded to the launchd provider job.
+- Keep native MiMo's adaptive MTP from launching serial-target draft rounds. Serial scoring evaluates every draft column with one ordinary target forward, so those rounds cannot outpace target-only decode; one process that locked onto depth-3 serial rounds decoded greedy requests at 25–27 tok/s. MTP stays on and active with live assistant history; explicit rectangular verification keeps its adaptive depth.
+
 ## Unreleased — first-content evidence exploration
 
 - Let an idle, loaded provider compete beside feasible peers after the 5-minute measurement-age threshold, using connection age when measurements are undated. This breaks the evidence-first exclusion of newly connected and long-idle providers without guaranteeing selection or measurement recovery. Hedge and fresh-feasible requests still require feasible evidence.
@@ -36,6 +159,8 @@
 
 ## Unreleased — CI and contributor workflow
 
+- Explicitly enable SSD caching for the exact-cache E2E development checkpoint and establish repeat demand before expecting a donation. The gate now requires exact cached output, account isolation and recovery to pass; CI no longer ignores its failure.
+- Set up Homebrew in the macOS integration and benchmark workflows with `scripts/setup-macos-homebrew.sh` instead of the `Homebrew/actions/setup-homebrew` action. The organization Actions policy does not allow that action, so both workflows stopped at startup. The script uses an installed `brew` or installs Homebrew from a pinned, checksum-verified installer.
 - Run provider unit, SDK and prompt-parity checks on independent workers with compatible build caches, retaining MiMo fixture preparation and isolated native gates.
 - Separate prerequisite-dependent MiMo qualification from ordinary provider tests, retaining required prepared-fixture checks and explicit qualification gaps. Normalize the rollback test's filesystem identity and synchronize the zombie-stream timing test with the initial cancellation.
 - Pin the production prompt fixture's EOF format during regeneration; parity still compares the complete corpus bytes and unchanged token/contract expectations.
@@ -112,6 +237,7 @@
 
 ## Unreleased — coordinator first-content routing
 
+- Read serving-slot metric attribution from the already-selected provider after dispatch, avoiding a redundant registry lock that could delay first content. Keep backup and terminal-fault attribution rules intact.
 - Rank eligible providers by cache-adjusted first-content forecasts by default, prefer credible deadline-feasible choices, and spread near-equal choices by whole-machine service work within a 100-ms band. Preserve physical prompt/output reservations and explicit owner routing.
 - Preserve valid prefill observations through 20,000 tokens/s. Track accepted capacity and observed performance freshness separately; missing or stale evidence stays unknown.
 - Revalidate reservations and retained alternatives against the original request deadline. After two predictive refusals, require fresh feasible evidence; bound quote fanout to two and launch at most one feasible backup.
@@ -198,6 +324,7 @@ Production ran exact prefix-cache routing at 100% and measured a 1.4–5.2% hit 
 - Confirm live model-switch success only after a same-session coordinator receipt proves routing resumed with refreshed capacity. Report a missing receipt as unconfirmed. Serialize autoupdate config changes with model-selection writes so toggling updates cannot restore stale hosted models.
 - Restore model prefetching before the switch readiness receipt can trigger a refreshed desired-build snapshot. Keep scheduled serving within its original window when model validation and hashing take time.
 - Preload selected models on every provider start, regardless of idle-memory policy, including standalone `--local` mode. Coordinator starts remain bounded by the startup timeout; local mode finishes preloading before listening. Slot and memory limits still apply.
+
 - Add explicit model-cache selection through `darkbloom models location`, with interactive confirmation, read-only `--check`, one-time `--from-env` import, and `--reset` to the legacy default. No beta flag, automatic restart, or weight movement.
 - Preserve existing providers' cache locations until an operator explicitly saves a path. Ambient Hugging Face/XDG variables never redirect runtime discovery, downloads, hashing, or removal; imported paths stay pinned when the environment changes.
 - Preserve filesystem traversal through symlinks and diagnose empty selected caches without mistaking incomplete download folders for models. See the [location command](docs/provider/cli-reference.md#darkbloom-models-location).

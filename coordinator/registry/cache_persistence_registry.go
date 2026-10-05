@@ -57,11 +57,16 @@ func (r *Registry) StartCacheRoutingPersistence(ctx context.Context) (CacheRouti
 	r.mu.RLock()
 	fingerprint := r.cacheRouteKeys.persistFingerprint
 	r.mu.RUnlock()
-	persister := cachepersist.New(st, r.logger, cachepersist.Options{
-		MaxPending: tracker.maxEntries, DemandTTL: tracker.ttl, Fingerprint: fingerprint,
+	newPersister := cachepersist.New
+	if r.cacheDependencies.Persisters != nil {
+		newPersister = r.cacheDependencies.Persisters
+	}
+	persister := newPersister(st, r.logger, cachepersist.Options{
+		MaxPending: tracker.settings.MaxEntries, DemandTTL: tracker.settings.TTL, Fingerprint: fingerprint,
 	})
 	tracker.mu.Lock()
 	tracker.persister = persister
+	tracker.core.AttachPersistence(persister)
 	tracker.mu.Unlock()
 	tracker.demand.setOnTouched(persister.MarkDemand)
 	done := make(chan struct{})
@@ -107,16 +112,11 @@ func (r *Registry) WaitCacheRoutingPersistence(ctx context.Context) bool {
 // are already connected (none at boot; tests, reconfigures and a retried
 // restore) bind their parked rows.
 func (r *Registry) restoreCacheRoutingState(ctx context.Context, persister *cachepersist.Persister, tracker *cacheRoutingTracker) error {
-	now := tracker.now()
-	restoreCtx, cancel := context.WithTimeout(ctx, cacheRoutingRestoreTimeout)
-	demand, err := persister.Restore(restoreCtx, now, tracker.ttl, tracker.maxEntries, tracker.demand.limit)
-	cancel()
-	if err != nil {
-		return err
+	restore := CacheRestoration{registry: r, persister: persister, tracker: tracker}
+	if r.cacheDependencies.Restorations != nil {
+		return r.cacheDependencies.Restorations(restore).Run(ctx)
 	}
-	persister.SeedDemandPersisted(tracker.demand.restore(demand, now))
-	r.bindRestoredHoldersForConnectedProviders()
-	return nil
+	return restore.Run(ctx)
 }
 
 // bindRestoredHolders binds parked rows for one provider's capabilities in
@@ -125,26 +125,17 @@ func (r *Registry) restoreCacheRoutingState(ctx context.Context, persister *cach
 // bindChunksWhileOwned at registration, on the heartbeat path and for every
 // connected provider after a (retried) restore.
 func (t *cacheRoutingTracker) bindRestoredHolders(provider *Provider, capabilities map[string]protocol.PrefixCacheV2Capability) (remaining bool) {
-	if t == nil || len(capabilities) == 0 {
+	if t == nil {
 		return false
 	}
 	// Heartbeats carry capabilities every few seconds; in the steady state
 	// nothing is parked, so check the leaf lock first and take tracker.mu
 	// only when there is something to bind.
-	t.mu.Lock()
-	p := t.persister
-	t.mu.Unlock()
-	if !p.HasPending() {
-		return false
-	}
 	// One chunk per call: the callers that own a large bucket (registration,
 	// a retried restore) loop, re-taking the registry read lock and
 	// re-checking session ownership around each chunk, so neither the
 	// tracker lock nor the registry lock is held across a whole rebuild.
-	t.mu.Lock()
-	remaining = t.bindPendingLocked(provider, capabilities, t.now())
-	t.mu.Unlock()
-	return remaining
+	return t.maintenance.BindChunk(provider, capabilities)
 }
 
 // bindRegisteredProvider runs at the end of Register: registration carries
@@ -305,7 +296,7 @@ func (r *Registry) runCacheRoutingPersistence(ctx context.Context, p *cachepersi
 			// safe to abort, and one in flight must not outlive the
 			// shutdown join.
 			pruneCtx, cancel := context.WithTimeout(ctx, time.Minute)
-			p.Prune(pruneCtx, tracker.now(), tracker.ttl)
+			p.Prune(pruneCtx, tracker.now(), tracker.settings.TTL)
 			cancel()
 		}
 	}

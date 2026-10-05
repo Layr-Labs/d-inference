@@ -1,11 +1,10 @@
 package payments
 
 import (
-	"math"
-	"math/bits"
 	"strconv"
 	"strings"
 
+	microusd "github.com/eigeninference/d-inference/coordinator/internal/payments/microusd"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -139,9 +138,9 @@ func (r Rates) Cost(u Usage) int64 {
 	cached := min(max(u.CachedTokens, 0), prompt)
 	completion := max(u.CompletionTokens, 0)
 
-	cost := saturatingAdd(
-		saturatingAdd(termCost(prompt-cached, r.Input), termCost(cached, r.CacheRead)),
-		termCost(completion, r.Output))
+	cost := microusd.Add(
+		microusd.Add(microusd.TermCost(prompt-cached, r.Input), microusd.TermCost(cached, r.CacheRead)),
+		microusd.TermCost(completion, r.Output))
 	if cost == 0 && (prompt > 0 || completion > 0) {
 		cost = 1
 	}
@@ -163,33 +162,6 @@ func CacheReadDiscount(cost func(Usage) int64, u Usage) int64 {
 	cold := u
 	cold.CachedTokens = 0
 	return max(cost(cold)-cost(u), 0)
-}
-
-// termCost is tokens × ratePerMillion / 1_000_000 floored to whole micro-USD,
-// 0 for a non-positive count or rate, saturating at math.MaxInt64 when the
-// product does not fit in 64 bits.
-func termCost(tokens int, ratePerMillion int64) int64 {
-	if tokens <= 0 || ratePerMillion <= 0 {
-		return 0
-	}
-	hi, lo := bits.Mul64(uint64(tokens), uint64(ratePerMillion))
-	if hi >= 1_000_000 {
-		// The quotient itself would not fit in 64 bits.
-		return math.MaxInt64
-	}
-	q, _ := bits.Div64(hi, lo, 1_000_000)
-	if q > math.MaxInt64 {
-		return math.MaxInt64
-	}
-	return int64(q)
-}
-
-// saturatingAdd adds two non-negative micro-USD amounts without wrapping.
-func saturatingAdd(a, b int64) int64 {
-	if a > math.MaxInt64-b {
-		return math.MaxInt64
-	}
-	return a + b
 }
 
 // DefaultPlatformFeePercent is the global platform routing fee applied when an

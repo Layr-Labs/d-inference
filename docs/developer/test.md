@@ -1698,7 +1698,10 @@ stand-in and the preload controller with its registry projection. The unchanged
 model must plan in every state. The revised model is `artifact_pending` while its
 files download, then `ineligible` with `artifact_allowlist.stale_models` at 1
 while the allowlist names only its previous tuple, and plans again under its new
-prompt contract once the live tuple is appended. It needs no sidecar binary:
+prompt contract once the live tuple is appended. Each catalog sync and each newly
+verified artifact withdraws every model's tokenizer acknowledgement until the
+sidecar acknowledges the next preload; the test waits for that before each planned
+or `ineligible` check and does not measure the pause. It needs no sidecar binary:
 
 ```bash
 go test -race ./coordinator/tests/api/inference -run '^TestCachePlanningFollowsSameIDModelRevision$' -count=1

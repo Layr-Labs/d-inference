@@ -27,11 +27,12 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
-// A model revised under its own ID gets a new aggregate hash and a new prompt
-// contract. Planning must follow the revision through the preload controller's
-// active set and the registry's allowlist projection without taking the other
-// catalog model with it: the other model plans in every state, and the revised
-// one plans again, under its new contract, only once the allowlist names it.
+// A model revised under its own ID gets a new aggregate hash and, when its
+// prompt files change as they do here, a new prompt contract. Planning must
+// follow the revision through the preload controller's active set and the
+// registry's allowlist projection without taking the other catalog model with
+// it: the other model plans in every state, and the revised one plans again,
+// under its new contract, only once the allowlist names it.
 //
 // Every catalog sync republishes all identities as pending, and a changed
 // verified set is acknowledged again only by a fresh preload, so each planned
@@ -60,7 +61,7 @@ func TestCachePlanningFollowsSameIDModelRevision(t *testing.T) {
 	close(downloaded)
 	t.Run("ready revision outside the allowlist is stale and unplanned", func(t *testing.T) {
 		// Verified and loaded, so only the allowlist still excludes it.
-		if !f.acknowledged(live) {
+		if !f.waitAcknowledged(live) {
 			t.Fatalf("revision tokenizer was not loaded: preload=%+v artifacts=%+v",
 				f.controller.Status(), f.srv.ExactCacheStatusSnapshot().PromptArtifacts)
 		}
@@ -253,9 +254,10 @@ func (f *modelRevisionFixture) plan(model string) registry.CachePlanResult {
 	})
 }
 
-// acknowledged waits for the running sidecar to have loaded the artifact's
-// tokenizer for the current catalog, which a planned request requires.
-func (f *modelRevisionFixture) acknowledged(artifact registry.CacheRoutingArtifact) bool {
+// waitAcknowledged waits for the running sidecar to have loaded the artifact's
+// tokenizer for the current catalog, which a planned request requires, and
+// reports whether it did.
+func (f *modelRevisionFixture) waitAcknowledged(artifact registry.CacheRoutingArtifact) bool {
 	return waitForCond(10*time.Second, func() bool { return f.controller.ReadyFor(artifact.PromptContractID) })
 }
 
@@ -263,7 +265,7 @@ func (f *modelRevisionFixture) acknowledged(artifact registry.CacheRoutingArtifa
 // through exactly one sidecar call, made under the artifact's prompt contract.
 func (f *modelRevisionFixture) expectPlanned(t *testing.T, artifact registry.CacheRoutingArtifact) {
 	t.Helper()
-	acknowledged := f.acknowledged(artifact)
+	acknowledged := f.waitAcknowledged(artifact)
 	before := f.sidecarState(t)
 	result := f.plan(artifact.ModelID)
 	after := f.sidecarState(t)
@@ -281,7 +283,7 @@ func (f *modelRevisionFixture) expectNotPlanned(t *testing.T, model string, reas
 	t.Helper()
 	decisionsBefore, before := f.srv.observation.Metrics().Snapshot(), f.sidecarState(t)
 	result := f.plan(model)
-	decided := planningDecisions(decisionsBefore, f.srv.observation.Metrics().Snapshot(), model)
+	decided := cachePlanningDecisionReasons(decisionsBefore, f.srv.observation.Metrics().Snapshot(), model)
 	after := f.sidecarState(t)
 	if result.Plan.CacheScope != "" || result.SidecarCalled || after.Plans != before.Plans ||
 		!slices.Equal(decided, []string{string(reason)}) {
@@ -291,9 +293,9 @@ func (f *modelRevisionFixture) expectNotPlanned(t *testing.T, model string, reas
 	}
 }
 
-// planningDecisions lists the reasons cache planning recorded for the model
-// between two metric snapshots.
-func planningDecisions(before, after observation.MetricsSnapshot, model string) []string {
+// cachePlanningDecisionReasons lists the reasons cache planning recorded for
+// the model between two metric snapshots.
+func cachePlanningDecisionReasons(before, after observation.MetricsSnapshot, model string) []string {
 	prefix := "cache_model_planning_decision_total{model=" + model + ",reason="
 	var reasons []string
 	for name, count := range after.Counters {

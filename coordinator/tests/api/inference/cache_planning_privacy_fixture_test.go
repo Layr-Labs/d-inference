@@ -47,7 +47,6 @@ type privacyPlanningHTTPResult struct {
 
 type privacyPlanningFixture struct {
 	ctx        context.Context
-	cancel     context.CancelFunc
 	reg        *registry.Registry
 	store      *memory.MemoryStore
 	server     *serverFixture
@@ -81,7 +80,7 @@ func newPrivacyPlanningFixture(t *testing.T, providers int) *privacyPlanningFixt
 		ServiceReservations: true, FirstContentSLAAccounts: []string{privacyPlanningAccountA, privacyPlanningAccountB},
 		FirstContentDeadlineBase: 3 * time.Second,
 	})
-	f := &privacyPlanningFixture{ctx: ctx, cancel: cancel, reg: reg, store: st, server: server,
+	f := &privacyPlanningFixture{ctx: ctx, reg: reg, store: st, server: server,
 		http: transport, keys: make(map[string]string), records: make(chan privacyPlanningDispatch, 16)}
 	t.Cleanup(func() {
 		cancel()

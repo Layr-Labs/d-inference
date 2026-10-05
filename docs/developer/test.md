@@ -82,7 +82,8 @@ the docs lint locally; CI runs a subset per pull request (see the CI workflow
 map: the Gemma benchmark-wrapper tests run only locally). The e2e suite needs an Apple Silicon
 Mac with the test checkpoints cached.
 
-Run `go test -race ./tests/promptcontract ./tests/registry`
+Run the prompt-contract and registry suites with
+`go test -race ./tests/promptcontract ./tests/registry`
 from `coordinator`. `TestDiagnosticFortyQPSPlanningCeiling` retains the unchanged
 registry rate ceiling as a diagnostic, not an SSD hit-rate benchmark.
 

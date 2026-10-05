@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Exercise staging layouts/failures without compiling or initializing Metal."""
 import pathlib
+import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -56,6 +58,24 @@ class StageTestMetallibTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         for relative in RUNTIME_LIBRARY_PATHS:
             self.assertEqual((bundle / relative).read_text(), "verified-by-fetch")
+
+    def test_copy_fallback_preserves_atomic_staging_when_clones_are_unavailable(self):
+        tools = self.root / "tools"
+        tools.mkdir()
+        copy = tools / "cp"
+        real_copy = shlex.quote(shutil.which("cp"))
+        copy.write_text('#!/bin/sh\n[ "$1" != "-c" ] || exit 1\n'
+                        f'exec {real_copy} "$@"\n')
+        copy.chmod(0o755)
+        bundle = self.bin / "ProviderCoreTests.xctest"
+        (bundle / "Contents/MacOS").mkdir(parents=True)
+        environment = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ["PATH"])
+        result = subprocess.run([str(self.stage), str(self.bin)], env=environment,
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for relative in RUNTIME_LIBRARY_PATHS:
+            self.assertEqual((bundle / relative).read_text(), "verified-by-fetch")
+        self.assertFalse(list(self.bin.rglob(".mlx-metallib.*")))
 
     def test_no_runner_cannot_be_reported_as_success(self):
         self.assertNotEqual(self.run_stage().returncode, 0)

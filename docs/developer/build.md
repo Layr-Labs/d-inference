@@ -22,6 +22,9 @@ shared with compatible provider lanes, followed by the existing source-matched
 validation and staging. Cache misses build normally; caches never skip E2E tests
 or enter the separate release-build namespace. Compare cache transfer plus build
 time and whole-job runtime on real runners before claiming a saving.
+The test-bundle staging helper prefers APFS clone copies, falling back to ordinary
+copies when unsupported, so its offline Linux tests exercise the same atomic
+copy, byte-comparison and rename path (`scripts/stage-test-metallib.sh`).
 
 Pull-request CI selects expensive component jobs through
 `scripts/ci-component-paths.py`, called by `.github/workflows/component-changes.yml`.

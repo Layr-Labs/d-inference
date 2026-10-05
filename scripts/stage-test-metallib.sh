@@ -14,7 +14,7 @@ trap 'test -z "$staging_file" || rm -f "$staging_file"' EXIT
 trap 'exit 143' HUP INT TERM
 found=0
 # Native SwiftPM writes one <Package>PackageTests.xctest; Swift Build writes one
-# <Target>.xctest per test target. cp -c clones on APFS and copies elsewhere.
+# <Target>.xctest per test target. Prefer APFS clones; GNU cp needs a plain copy.
 for bundle in "$bin_directory"/*.xctest; do
     [ -d "$bundle" ] || continue
     for destination in "$bundle/Contents/MacOS/mlx.metallib" \
@@ -22,7 +22,8 @@ for bundle in "$bin_directory"/*.xctest; do
         directory=$(dirname "$destination")
         mkdir -p "$directory"
         staging_file=$(mktemp "$directory/.mlx-metallib.XXXXXX")
-        cp -c "$bin_directory/mlx.metallib" "$staging_file"
+        cp -c "$bin_directory/mlx.metallib" "$staging_file" 2>/dev/null ||
+            cp "$bin_directory/mlx.metallib" "$staging_file"
         cmp -s "$bin_directory/mlx.metallib" "$staging_file"
         mv -f "$staging_file" "$destination"
         staging_file=""

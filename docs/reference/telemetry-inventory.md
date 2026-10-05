@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -142,6 +142,16 @@ model. Off-catalog/removed IDs, an unconfigured catalog and malformed labels
 collapse to `unknown`. No account, provider, request, cache scope, nonce, weight
 hash or prompt-derived identity is attached. Existing `exact_cache.*` metrics
 and the public cache status retain their aggregate-only contract.
+
+The retained cache-attempt ledger adds three aggregate gauges, each mirroring a
+`lifecycle` field of `/v1/cache/status` (`coordinator/api/inference/exact_cache_metrics.go`):
+`exact_cache_attempt_bytes` / Datadog `exact_cache.attempt_bytes` (logical bytes held
+against the 64 MiB budget), `exact_cache_attempt_budget_refused` /
+`exact_cache.attempt_budget_refused` (dispatches sent without a cache scope because
+the budget stayed full after reclaiming finished requests' records) and
+`exact_cache_attempt_grace_reclaimed` / `exact_cache.attempt_grace_reclaimed`
+(finished requests' records reclaimed inside their terminal grace). They carry no
+labels; see [attempt-record memory accounting](../architecture/cache-aware-routing.md#attempt-record-memory-accounting).
 
 | Suffix | Labels besides `model` | Population / interpretation |
 |---|---|---|

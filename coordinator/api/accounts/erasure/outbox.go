@@ -179,7 +179,7 @@ func (s *Owner) closeGlobalRecipient(ctx context.Context, id string) outboxOutco
 	switch {
 	case err == nil:
 		return outboxOutcome{kind: outboxDone}
-	case errors.As(err, &apiErr) && (apiErr.Status == 404 || apiErr.Code == "not_found"):
+	case errors.As(err, &apiErr) && (apiErr.Status == http.StatusNotFound || apiErr.Code == "not_found"):
 		return outboxOutcome{kind: outboxDone}
 	case errors.As(err, &apiErr) && apiErr.Definitive():
 		return outboxOutcome{kind: outboxManual, err: err.Error()}
@@ -191,22 +191,19 @@ func (s *Owner) closeGlobalRecipient(ctx context.Context, id string) outboxOutco
 // Datadog with the erasure_log tag, so a log archive keeps it through a
 // database restore. Without Datadog it goes to the process log.
 func (s *Owner) writeErasureLog(ctx context.Context, row store.ErasureOutboxWork) outboxOutcome {
-	fields := map[string]any{
-		"request_id": row.RequestID,
-		"account_id": row.AccountID,
-		"erased_at":  row.ErasedAt.UTC().Format(time.RFC3339Nano),
-	}
+	erasedAt := row.ErasedAt.UTC().Format(time.RFC3339Nano)
 	var dd *datadog.Client
 	if s.datadog != nil {
 		dd = s.datadog()
 	}
 	if !dd.LogsEnabled() {
 		s.logger.Info("erasure_log", "request_id", row.RequestID, "account_id", row.AccountID,
-			"erased_at", fields["erased_at"], "erasure_log", true)
+			"erased_at", erasedAt, "erasure_log", true)
 		return outboxOutcome{kind: outboxDone}
 	}
 	err := dd.SendLog(ctx, datadog.TelemetryLogEntry{
-		Source: "coordinator", Severity: "info", Kind: "erasure_log", Message: "account erased", Fields: fields,
+		Source: "coordinator", Severity: "info", Kind: "erasure_log", Message: "account erased",
+		Fields: map[string]any{"request_id": row.RequestID, "account_id": row.AccountID, "erased_at": erasedAt},
 	}, erasureLogTag)
 	if err != nil {
 		return outboxOutcome{kind: outboxRetry, err: err.Error()}
@@ -222,12 +219,4 @@ func stripeDefinitive(err error) bool {
 		return false
 	}
 	return billing.IsDefinitiveAPIErr(err)
-}
-
-func truncateErasureError(s string) string {
-	const limit = 1000
-	if len(s) <= limit {
-		return s
-	}
-	return s[:limit]
 }

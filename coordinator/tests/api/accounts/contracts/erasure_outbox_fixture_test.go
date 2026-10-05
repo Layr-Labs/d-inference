@@ -300,7 +300,7 @@ func (fx *outboxFixture) setRow(t *testing.T, it store.ErasureOutboxItem, edit f
 
 // pass starts the outbox loop, waits until its first pass has stored a
 // result for every row of the account that was due, and stops the loop. It
-// returns when the pass started.
+// returns the time read just before the loop started.
 func (fx *outboxFixture) pass(t *testing.T, account string) time.Time {
 	t.Helper()
 	start := time.Now().UTC()
@@ -320,9 +320,7 @@ func (fx *outboxFixture) pass(t *testing.T, account string) time.Time {
 	for {
 		delivered := 0
 		for _, it := range fx.items(t, account) {
-			before, ok := due[it.ID]
-			if ok && (it.State != store.ErasureOutboxPending || it.NextAt.After(start) ||
-				it.Attempts != before.Attempts || it.JobGeneration != before.JobGeneration) {
+			if before, ok := due[it.ID]; ok && resultStored(before, it, start) {
 				delivered++
 			}
 		}
@@ -334,6 +332,16 @@ func (fx *outboxFixture) pass(t *testing.T, account string) time.Time {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+}
+
+// resultStored reports whether the worker stored a result for a row that
+// was due at start. Every outcome changes one of these fields: done and
+// manual_action change the state, a retry counts an attempt, a poll or a
+// reschedule moves next_at past start, and a job that must be made again at
+// once (a gone job, a split batch) gets a new generation.
+func resultStored(before, after store.ErasureOutboxItem, start time.Time) bool {
+	return after.State != store.ErasureOutboxPending || after.NextAt.After(start) ||
+		after.Attempts != before.Attempts || after.JobGeneration != before.JobGeneration
 }
 
 func wantDone(t *testing.T, it store.ErasureOutboxItem) {

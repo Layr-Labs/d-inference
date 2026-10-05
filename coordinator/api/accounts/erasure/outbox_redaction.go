@@ -126,16 +126,16 @@ func splitMissingSessions(stripe *billing.StripeProcessor, row store.ErasureOutb
 // transactions are too recent, the batch waits and a new job is made later,
 // until erasureRedactionDeadline after the scrub.
 func failedRedactionJob(stripe *billing.StripeProcessor, row store.ErasureOutboxWork, jobID string, now time.Time) outboxOutcome {
-	verrs, err := stripe.RedactionValidationErrors(jobID)
+	validationErrs, err := stripe.RedactionValidationErrors(jobID)
 	if err != nil {
 		return redactionAPIOutcome(err, jobID, row.JobStatus)
 	}
-	if len(verrs) == 0 {
+	if len(validationErrs) == 0 {
 		return outboxOutcome{kind: outboxManual, err: "redaction job " + jobID + " failed without validation errors"}
 	}
 	tooRecent := true
-	messages := make([]string, 0, len(verrs))
-	for _, v := range verrs {
+	messages := make([]string, 0, len(validationErrs))
+	for _, v := range validationErrs {
 		tooRecent = tooRecent && v.Code == "invalid_state" && redactionTooRecent.MatchString(v.Message)
 		messages = append(messages, v.Code+": "+v.Message)
 	}
@@ -162,4 +162,13 @@ func redactionAPIOutcome(err error, jobID, jobStatus string) outboxOutcome {
 		out.kind = outboxManual
 	}
 	return out
+}
+
+// truncateErasureError bounds a Stripe error text stored as last_error.
+func truncateErasureError(s string) string {
+	const limit = 1000
+	if len(s) <= limit {
+		return s
+	}
+	return s[:limit]
 }

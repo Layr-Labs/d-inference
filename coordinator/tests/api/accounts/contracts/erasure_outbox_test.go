@@ -12,6 +12,8 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
+// The worker's retry and redaction policy (api/accounts/erasure), as the
+// tests expect it.
 const (
 	outboxBaseBackoff   = time.Minute
 	outboxMaxAttempts   = 8

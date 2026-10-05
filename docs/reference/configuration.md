@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-05
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -20,6 +20,15 @@ The provider creates an anonymous snapshot before binding the runtime metallib.
 | Variable | Default / accepted values | Consumer |
 |---|---|---|
 | `TMPDIR` | When absent, Foundation's temporary directory. When present, an absolute path without NUL bytes to an existing writable directory; invalid or inaccessible values fail snapshot creation without fallback. Read when creating the snapshot. | `provider-swift/Sources/ProviderCore/Security/BinaryHasher.swift` (`makeRuntimeMetallibSnapshot`) |
+
+Set `TMPDIR` in the environment of the process that serves inference. A shell
+export applies to `darkbloom start --foreground` and `darkbloom start --local`.
+For background `darkbloom start`, it applies to the invoking CLI's startup
+snapshot, but is not copied into the installed provider's launchd environment:
+`TMPDIR` is not in `LaunchAgent.passthroughEnvKeys`
+(`provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`,
+`passthroughEnvironment`). See [LaunchAgent environment passthrough](../provider/cli-reference.md#launchagent-environment-passthrough).
+This setting does not grant sandbox permissions or change snapshot binding checks.
 
 ## Provider drain deadline
 

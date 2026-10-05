@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-05
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -1351,6 +1351,11 @@ Pure-prefill stripes are unchanged. These variables are not forwarded to a Launc
 see the [scheduler environment reference](../reference/configuration.md#engine-and-scheduler).
 
 ## LaunchAgent environment passthrough
+
+For sandboxed foreground/local startup, `TMPDIR` selects the anonymous runtime
+metallib snapshot directory. It is not forwarded to the background provider;
+see [runtime metallib snapshots](../reference/configuration.md#runtime-metallib-snapshots)
+for accepted paths, failure behavior, and serving-process scope.
 
 The [MiMo candidate controls](../reference/configuration.md#native-mimo-v26-candidate)
 are process-scoped settings, not new CLI subcommands or release switches. Native

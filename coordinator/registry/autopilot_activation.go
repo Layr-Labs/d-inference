@@ -3,21 +3,18 @@ package registry
 import (
 	"context"
 	"encoding/json"
-	"slices"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/autopilotstate"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 func providerAutopilotConsentedLocked(p *Provider) bool {
-	s := p.ModelAutopilot
-	return s != nil && s.Protocol == protocol.ModelAutopilotProtocol && s.Enabled &&
-		s.CachedOnly && s.Revision != "" && len(s.Revision) <= 64 &&
-		len(s.SelectedModels) > 0 && len(s.SelectedModels) <= 256
+	return autopilotstate.Consented(p.ModelAutopilot)
 }
 
 func providerAutopilotAllowsLocked(p *Provider, model string) bool {
-	return providerAutopilotConsentedLocked(p) && slices.Contains(p.ModelAutopilot.SelectedModels, model)
+	return autopilotstate.Allows(p.ModelAutopilot, model)
 }
 
 // Pausing stops reservations immediately; accepted operations retain their
@@ -71,11 +68,7 @@ func (c *modelAutopilotController) refreshControlLeases(now time.Time) {
 			continue
 		}
 		d.p.mu.Lock()
-		if providerAutopilotConsentedLocked(d.p) && d.p.ModelAutopilot.Revision == d.message.Revision {
-			d.p.autopilotControlUntil = time.UnixMilli(d.message.ExpiresAtMS)
-			d.p.autopilotControlRevision = d.message.Revision
-			d.p.autopilotControlObserveOnly = d.message.ObserveOnly
-		}
+		d.p.autopilotState.AcceptControl(d.p.ModelAutopilot, d.message)
 		d.p.mu.Unlock()
 	}
 }

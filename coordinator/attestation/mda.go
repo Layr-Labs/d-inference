@@ -21,6 +21,8 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+
+	attestationwire "github.com/eigeninference/d-inference/coordinator/internal/attestation/wire"
 )
 
 // Apple MDA OID constants — device-attest OID set (100.8.13.*).
@@ -186,17 +188,17 @@ func VerifyMDADeviceAttestation(certChainDER [][]byte) (*MDAResult, error) {
 		switch {
 		// Device identity OIDs (100.8.9.*)
 		case ext.Id.Equal(OIDDeviceSerialNumber):
-			result.DeviceSerial = parseStringOID(ext.Value)
+			result.DeviceSerial = attestationwire.ParseStringOID(ext.Value)
 		case ext.Id.Equal(OIDDeviceUDID):
-			result.DeviceUDID = parseStringOID(ext.Value)
+			result.DeviceUDID = attestationwire.ParseStringOID(ext.Value)
 
 		// Device version OIDs (100.8.10.*)
 		case ext.Id.Equal(OIDOSVersion):
-			result.OSVersion = parseStringOID(ext.Value)
+			result.OSVersion = attestationwire.ParseStringOID(ext.Value)
 		case ext.Id.Equal(OIDSepOSVersion):
-			result.SepOSVersion = parseStringOID(ext.Value)
+			result.SepOSVersion = attestationwire.ParseStringOID(ext.Value)
 		case ext.Id.Equal(OIDLLBVersion):
-			result.LLBVersion = parseStringOID(ext.Value)
+			result.LLBVersion = attestationwire.ParseStringOID(ext.Value)
 
 		// Freshness (100.8.11.*)
 		case ext.Id.Equal(OIDFreshnessCode):
@@ -209,35 +211,13 @@ func VerifyMDADeviceAttestation(certChainDER [][]byte) (*MDAResult, error) {
 
 		// Device-attest OIDs (100.8.13.*) — may also be present
 		case ext.Id.Equal(OIDSIPStatus):
-			result.SIPEnabled = parseBoolOID(ext.Value)
+			result.SIPEnabled = attestationwire.ParseBoolOID(ext.Value)
 		case ext.Id.Equal(OIDSecureBootStatus):
-			result.SecureBootEnabled = parseBoolOID(ext.Value)
+			result.SecureBootEnabled = attestationwire.ParseBoolOID(ext.Value)
 		case ext.Id.Equal(OIDKextStatus):
-			result.ThirdPartyKexts = parseBoolOID(ext.Value)
+			result.ThirdPartyKexts = attestationwire.ParseBoolOID(ext.Value)
 		}
 	}
 
 	return result, nil
-}
-
-// parseBoolOID attempts to parse an ASN.1-encoded boolean from an extension value.
-func parseBoolOID(data []byte) bool {
-	var val bool
-	if _, err := asn1.Unmarshal(data, &val); err != nil {
-		if len(data) > 0 {
-			return data[len(data)-1] != 0
-		}
-		return false
-	}
-	return val
-}
-
-// parseStringOID attempts to parse an ASN.1-encoded UTF8String from an extension value.
-func parseStringOID(data []byte) string {
-	var val string
-	if _, err := asn1.Unmarshal(data, &val); err != nil {
-		// Fallback: try raw bytes as string.
-		return string(data)
-	}
-	return val
 }

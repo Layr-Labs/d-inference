@@ -107,7 +107,7 @@ flowchart TB
     CHAL -.-> HW
 ```
 
-Providers carry one of three trust levels, surfaced on provider-committed responses via the `X-Provider-Trust-Level` header (alongside `X-Provider-Attested`, `X-Provider-Encrypted`, `X-Provider-Chip`, and `X-Provider-Secure-Enclave`). Pre-commit validation and capacity errors have no selected provider and no provider headers. `POST /v1/chat/completions` can copy the committed header fields into a JSON `metadata` object when the caller sets `metadata_details: true` (or `X-Darkbloom-Metadata-Details: true`). The same object also includes region/country GeoIP of the serving provider (`metadata.location`; not a header; no city, coordinates, lookup source, or raw IPs). See [`dispatch.go:3371-3379`](coordinator/api/dispatch.go#L3371-L3379) and [`response_metadata.go:209-276`](coordinator/api/response_metadata.go#L209-L276).
+Providers carry one of three trust levels, surfaced on provider-committed responses via the `X-Provider-Trust-Level` header (alongside `X-Provider-Attested`, `X-Provider-Encrypted`, `X-Provider-Chip`, and `X-Provider-Secure-Enclave`). Pre-commit validation and capacity errors have no selected provider and no provider headers. `POST /v1/chat/completions` can copy the committed header fields into a JSON `metadata` object when the caller sets `metadata_details: true` (or `X-Darkbloom-Metadata-Details: true`). The same object also includes region/country GeoIP of the serving provider (`metadata.location`; not a header; no city, coordinates, lookup source, or raw IPs). See [`dispatch.go`](coordinator/api/inference/dispatch.go) (`commitFirstContent`) and [`response_metadata.go`](coordinator/api/inference/response/response_metadata.go) (`WriteCommittedProviderHeaders`).
 
 | Level | Verification |
 |-------|--------------|
@@ -229,6 +229,7 @@ Zero prerequisites and no `sudo`. The installer fetches the latest signed releas
 
 ```bash
 darkbloom start              # background launchd service (interactive model picker + memory policy)
+darkbloom start --schedule   # optional availability wizard before background startup
 darkbloom start --foreground # run attached to the terminal
 darkbloom idle keep-loaded   # keep models loaded while idle (instant responses); default frees after 60 min
 darkbloom login              # link your account (RFC 8628 device-code flow)
@@ -238,11 +239,18 @@ darkbloom doctor             # local diagnostics + coordinator's trust view
 
 [`docs/provider/quickstart.md`](docs/provider/quickstart.md) walks through the full flow.
 
+Ordinary `start` does not prompt for a schedule. Use `darkbloom schedule` to edit
+saved availability without starting or stopping the service,
+`darkbloom schedule --show` to inspect it, or `darkbloom schedule --disable` to turn scheduling off
+without deleting saved windows. See the [schedule CLI reference](docs/provider/cli-reference.md#darkbloom-schedule)
+for presets, loading choices, custom configuration paths and restart requirements.
+
 ### CLI reference
 
 | Command | Purpose |
 |---------|---------|
 | `start` | Start serving (launchd daemon, `--foreground`, or `--local`) |
+| `schedule` | Edit, show or disable saved weekly provider availability |
 | `stop` / `restart` | Stop (`--uninstall` removes the agent) / restart in place |
 | `status` | Hardware, config, schedule, and live daemon/trust state |
 | `doctor` / `verify` | Diagnostics (`verify` = strict, non-zero on any warning) |
@@ -309,6 +317,8 @@ Running a node also makes your **own** inference free.
 | Path | Language | Role |
 |------|----------|------|
 | `coordinator/` | Go | Control plane: OpenAI/Anthropic API, routing, attestation, billing, model registry |
+| `coordinator/internal/` | Go | Focused production components behind application and domain-owner contracts |
+| `coordinator/tests/` | Go | Separate mirrored test tree, HTTP/WS contract suites and isolated backend fixtures |
 | `provider-swift/` | Swift | `darkbloom` provider CLI for Apple Silicon (in-process MLX inference) |
 | `console-ui/` | Next.js 16 / React 19 | Web dashboard: chat, billing, models, provider verification |
 | `admin-ui/` | Next.js | Internal read-only operator dashboard over the Postgres read replica |
@@ -319,6 +329,10 @@ Running a node also makes your **own** inference free.
 | `docs/` | Markdown | How-tos, runbooks, reference, architecture, design records, dated reports — map in [`docs/README.md`](docs/README.md), rules in [`docs/AGENTS.md`](docs/AGENTS.md) |
 
 The coordinator and provider share WebSocket message types that must stay in sync (`coordinator/protocol/` ↔ `provider-swift/Sources/ProviderCore/Protocol/`).
+Coordinator assembly and package boundaries are mapped in
+[`docs/architecture/components/coordinator.md`](docs/architecture/components/coordinator.md);
+test selectors, fixture ownership and production coverage are in
+[`docs/developer/test.md`](docs/developer/test.md).
 
 ## Development
 

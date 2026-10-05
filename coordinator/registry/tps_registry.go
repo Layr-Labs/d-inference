@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"iter"
 	"sync"
 )
 
@@ -21,7 +22,7 @@ import (
 //
 // A third store, prefillSamples (RecordPrefill/PrefillMedian, tps_prefill.go),
 // holds isolated prefill rates. It uses the same ingest rule as samples and
-// feeds fleetMedianPrefillTPS.
+// prices explored providers (fillExplorationRates).
 //
 // Every read-side aggregate (medians, the cross-class solo aggregate) is
 // maintained on write and served as an O(1), allocation-free lookup — see
@@ -97,4 +98,27 @@ func (r *TPSRegistry) Median(model, chipFamily string) float64 {
 	median := r.medians[key]
 	r.mu.RUnlock()
 	return median
+}
+
+// SampleCount reports the retained observations for a model and chip family.
+// Like Median, it is a constant-time read and never exposes sample storage.
+func (r *TPSRegistry) SampleCount(model, chipFamily string) int {
+	r.mu.RLock()
+	count := len(r.samples[tpsKey{Model: model, ChipFamily: chipFamily}])
+	r.mu.RUnlock()
+	return count
+}
+
+// SampleCounts iterates retained observation counts without exposing storage.
+// Callbacks run under the read lock and must not mutate the registry.
+func (r *TPSRegistry) SampleCounts() iter.Seq2[tpsKey, int] {
+	return func(yield func(tpsKey, int) bool) {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+		for key, samples := range r.samples {
+			if !yield(key, len(samples)) {
+				return
+			}
+		}
+	}
 }

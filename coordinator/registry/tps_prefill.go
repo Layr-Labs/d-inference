@@ -1,6 +1,9 @@
 package registry
 
-import "github.com/eigeninference/d-inference/coordinator/protocol"
+import (
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/capacityvalue"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+)
 
 // tps_prefill.go is the isolated-prefill half of TPSRegistry. It keeps the
 // same 50-sample ring per model and chip family as the decode store, and the
@@ -10,7 +13,7 @@ import "github.com/eigeninference/d-inference/coordinator/protocol"
 
 // RecordPrefill adds an isolated prefill rate for the model and chip family.
 func (r *TPSRegistry) RecordPrefill(model, chipFamily string, tps float64) {
-	if !finitePositive(tps) || tps > maxPrefillTPS || model == "" {
+	if !capacityvalue.FinitePositive(tps) || tps > capacityvalue.MaxPrefillTPS || model == "" {
 		return
 	}
 	key := tpsKey{Model: model, ChipFamily: chipFamily}
@@ -47,13 +50,13 @@ func slotIsolatedPrefillTPS(slot *protocol.BackendSlotCapacity) (float64, bool) 
 		return 0, false
 	}
 	if m := slot.PerformanceMeasurements; m != nil {
-		if !validPerformanceObservation(m.IsolatedPrefill) {
+		if !capacityvalue.ValidPerformanceObservation(m.IsolatedPrefill) {
 			return 0, false
 		}
 		return m.IsolatedPrefill.TokensPerSecond, true
 	}
 	if t.EWMAInitialized == nil || !*t.EWMAInitialized || t.IsolatedPrefillTPS == nil ||
-		!finitePositive(*t.IsolatedPrefillTPS) || *t.IsolatedPrefillTPS > maxPrefillTPS {
+		!capacityvalue.FinitePositive(*t.IsolatedPrefillTPS) || *t.IsolatedPrefillTPS > capacityvalue.MaxPrefillTPS {
 		return 0, false
 	}
 	return *t.IsolatedPrefillTPS, true

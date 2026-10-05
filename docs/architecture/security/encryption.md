@@ -81,6 +81,7 @@ sequenceDiagram
 | Coordinator key | BIP39 mnemonic from `MNEMONIC` / `EIGENINFERENCE_MNEMONIC` ([configuration](../../reference/configuration.md#auth-admin-key-privy-release-key-sender-encryption)) → seed → HKDF-SHA256 with info `eigeninference-coordinator-e2e-v1` → X25519 private key; `kid` = first 16 hex chars of SHA-256(public key) | `coordinator/internal/e2e/coordinator_key.go` (`DeriveCoordinatorKey`, `CoordinatorKeyHKDFInfo`) |
 | Detection | `Content-Type: application/eigeninference-sealed+json` only (parameters ignored, case-insensitive); there is no marker header | `coordinator/api/inference/sender_encryption.go` (`SealedContentType`, `isSealedContentType`) |
 | Request envelope | `{kid, ephemeral_public_key, ciphertext}`; `ciphertext` = base64(24-byte nonce ‖ `box.Seal` output); body read capped at the [inference body limit](../../reference/api-contracts.md#limits-and-validation) | `coordinator/api/inference/sender_encryption.go` (`sealedRequestEnvelope`, `SealedTransport`) |
+| Console preflight | Checks the full plaintext UTF-8 size and a ciphertext-only base64 lower bound before key discovery. Near the limit, key discovery and sealing may be needed; the actual serialized envelope is checked before the chat POST. A size refusal retains the encryption setting and reports how to reduce the request. Server body and rewrite checks remain authoritative | `console-ui/src/lib/chat/request-budget.ts` (`assertChatRequestBudget`), `console-ui/src/lib/chat/stream.ts` (`prepareBody`, `streamChat`) |
 | Errors | `400 invalid_request_error` (body unreadable / over cap), `400 invalid_sealed_envelope`, `400 kid_mismatch`, `400 decryption_failed`, `503 encryption_unavailable` | `coordinator/api/inference/sender_encryption.go` (`SealedTransport`) |
 | Handoff | Plaintext is re-injected as `application/json` with `sealedCtxKey` on the request context; sealed requests refuse remote-media URL fetching (`isSealedRequest`) | `coordinator/api/inference/sender_encryption.go` (`SealedTransport`, `isSealedRequest`); `coordinator/api/inference/media_bridge.go` (`gateRemoteMediaPreDispatch`) delegates to `coordinator/internal/inference/media/media_resolve.go` (`Bridge.Gate`) |
 | Response | Sealed to the sender's `ephemeral_public_key` with the coordinator key. Non-streaming: body = `{kid, ciphertext}`. SSE: one sealed event per `\n\n` boundary, written as `data: <base64(nonce ‖ sealed event)>\n\n`. Headers `X-Eigen-Sealed: true`, `X-Eigen-Sealed-Kid: <kid>` | `coordinator/api/inference/sender_encryption.go` (`sealingResponseWriter`, `sealedResponseEnvelope`) |
@@ -113,7 +114,8 @@ sequenceDiagram
 Before serializing and re-sealing an inference request, the shared
 `parseInferencePrelude` (`coordinator/api/inference/prelude_parser.go`) runs
 `Parser.Parse`, which invokes `stripProviderCallerIdentity` to remove only
-caller-supplied top-level `user` and generic `metadata`
+caller-supplied top-level `user`, generic `metadata`, `safety_identifier` and
+caller `prompt_cache_key`
 (`coordinator/internal/inference/prelude/request_prelude.go`,
 `coordinator/internal/inference/prelude/provider_body_privacy.go`).
 Direct, queued and retried requests use that prepared body. The original input
@@ -123,7 +125,10 @@ substituted back into the provider payload.
 Nested fields, prompt text, tool/schema content, media and generation controls
 remain unchanged. `metadata_details` is a distinct coordinator opt-in, and
 coordinator-authored cache scopes and receipt controls retain their existing
-account-bound derivation. Body-size-derived estimates and activation sampling
+account-bound derivation. The coordinator may append its own protocol-0 cache-bust
+key after sanitization. Cache scope is a stable account/model pseudonym visible
+to the provider, so it permits linkage within that scope; it does not isolate
+individual end users sharing one authenticated account. Body-size-derived estimates and activation sampling
 can change when unnecessary bytes are removed; authenticated account ownership
 and prompt-bearing content do not change.
 
@@ -162,7 +167,7 @@ This table is the privacy statement. [`../../consumer/privacy-expectations.md`](
 | Explicitly avoided | Code |
 |---|---|
 | Prompt content is decrypted for routing "but never logs prompt content, then re-encrypts each request to the provider" | `coordinator/api/inference/consumer.go` (package comment) |
-| Provider inference errors are reduced to a closed vocabulary before logging or returning | `coordinator/internal/inference/failure/inference_error_sanitize.go` (`sanitizeProviderInferenceError`, `clientSafeInferenceErrorMessage`) |
+| Provider inference errors are reduced to a closed vocabulary before logging or returning. The coordinator-only `response_limit` terminal carries one fixed message and cannot be set from a provider frame | `coordinator/internal/inference/failure/inference_error_sanitize.go` (`SanitizeProviderError`, `ClientSafeMessage`, `NonStreamingResponseLimitError`) |
 | The coordinator has no client telemetry ingestion route (the retired `POST /v1/telemetry/events` is unregistered), because provider telemetry had free-form `message` / `stack` fields | `coordinator/api/routes.go` (`routes`); `coordinator/tests/api/operations/contracts/telemetry_e2e_test.go` (`TestTelemetryE2E_NoClientIngestionRoute`) |
 | Sealed requests never trigger remote-media fetching (no coordinator egress derived from sealed content) | `coordinator/api/inference/sender_encryption.go` (`isSealedRequest`) |
 | Session private key and memoized shared key are dropped at request end | `coordinator/internal/inference/chunkkeys/chunk_key_cache.go` (`Forget`) |

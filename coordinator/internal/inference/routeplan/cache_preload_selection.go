@@ -9,6 +9,21 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
+// PreloadPlanning is the preload controller surface cache planning consumes:
+// eligible demand in, native acknowledgement and current participation out.
+// Planning observes it once before commitment and once at commitment.
+type PreloadPlanning interface {
+	NoteDemand(promptcontract.PreloadDemandIdentity) bool
+	PlanningState(promptcontract.PreloadDemandIdentity) promptcontract.PreloadPlanningState
+}
+
+func (p CachePlanner) preloadPlanning() PreloadPlanning {
+	if p.PreloadPlanning != nil {
+		return p.PreloadPlanning
+	}
+	return p.Preloader
+}
+
 func (p CachePlanner) cachePreloadIdentity(model string, status promptcontract.ProvisionStatus) (promptcontract.PreloadDemandIdentity, bool) {
 	_, verified := p.Artifacts.VerifiedPreloadArtifacts()
 	for _, identity := range verified {
@@ -37,7 +52,7 @@ func (p CachePlanner) commitCachePlanning(
 	if !observed.Acknowledged {
 		return registry.CachePlanResult{}, false
 	}
-	current := p.Preloader.PlanningState(identity)
+	current := p.preloadPlanning().PlanningState(identity)
 	if !current.Acknowledged {
 		return registry.CachePlanResult{}, false
 	}

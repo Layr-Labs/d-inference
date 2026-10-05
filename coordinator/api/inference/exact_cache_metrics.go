@@ -28,6 +28,9 @@ func (s *Owner) RegisterExactCacheGauges() {
 	s.observation.Metrics().RegisterGauge("exact_cache_artifact_allowlist_count", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.ArtifactAllowlist.Count)
 	}))
+	s.observation.Metrics().RegisterGauge("exact_cache_artifact_allowlist_stale_models", gauge(func(s ExactCacheStatus) float64 {
+		return float64(s.ArtifactAllowlist.StaleModels)
+	}))
 	s.observation.Metrics().RegisterGauge("exact_cache_sidecar_enabled", gauge(func(s ExactCacheStatus) float64 {
 		return observation.BoolGauge(s.Sidecar.Enabled)
 	}))
@@ -261,6 +264,15 @@ func (s *Owner) RegisterExactCacheGauges() {
 	s.observation.Metrics().RegisterGauge("exact_cache_fenced_capabilities", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Lifecycle.FencedCapabilities)
 	}))
+	s.observation.Metrics().RegisterGauge("exact_cache_attempt_bytes", gauge(func(s ExactCacheStatus) float64 {
+		return float64(s.Lifecycle.AttemptBytes)
+	}))
+	s.observation.Metrics().RegisterGauge("exact_cache_attempt_budget_refused", gauge(func(s ExactCacheStatus) float64 {
+		return float64(s.Lifecycle.AttemptBudgetRefused)
+	}))
+	s.observation.Metrics().RegisterGauge("exact_cache_attempt_grace_reclaimed", gauge(func(s ExactCacheStatus) float64 {
+		return float64(s.Lifecycle.AttemptGraceReclaimed)
+	}))
 	s.observation.Metrics().RegisterGauge("exact_cache_demand_entries", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Lifecycle.DemandEntries)
 	}))
@@ -281,6 +293,7 @@ func (s *Owner) EmitExactCacheDDGauges() {
 	s.observation.Gauge("exact_cache.routing_mode", 1, []string{"mode:" + status.RoutingMode})
 	s.observation.Gauge("exact_cache.artifact_allowlist.configured", observation.BoolGauge(status.ArtifactAllowlist.Configured), nil)
 	s.observation.Gauge("exact_cache.artifact_allowlist.count", float64(status.ArtifactAllowlist.Count), nil)
+	s.observation.Gauge("exact_cache.artifact_allowlist.stale_models", float64(status.ArtifactAllowlist.StaleModels), nil)
 	s.observation.Gauge("exact_cache.activation.percent", status.Activation.Percent, nil)
 	s.observation.Gauge("exact_cache.activation.max_plan_qps", status.Activation.MaxPlanQPS, nil)
 	s.observation.Gauge("exact_cache.activation.total", float64(status.Activation.Evaluated), []string{"outcome:evaluated"})
@@ -372,6 +385,9 @@ func (s *Owner) EmitExactCacheDDGauges() {
 	s.observation.Gauge("exact_cache.fence", float64(status.Lifecycle.FencesApplied), []string{"event:applied"})
 	s.observation.Gauge("exact_cache.fence", float64(status.Lifecycle.FencesExpired), []string{"event:expired"})
 	s.observation.Gauge("exact_cache.fenced_capabilities", float64(status.Lifecycle.FencedCapabilities), nil)
+	s.observation.Gauge("exact_cache.attempt_bytes", float64(status.Lifecycle.AttemptBytes), nil)
+	s.observation.Gauge("exact_cache.attempt_budget_refused", float64(status.Lifecycle.AttemptBudgetRefused), nil)
+	s.observation.Gauge("exact_cache.attempt_grace_reclaimed", float64(status.Lifecycle.AttemptGraceReclaimed), nil)
 	s.observation.Gauge("exact_cache.demand_entries", float64(status.Lifecycle.DemandEntries), nil)
 	s.observation.Gauge("exact_cache.demand_cap_evictions", float64(status.Lifecycle.DemandCapEvictions), nil)
 }

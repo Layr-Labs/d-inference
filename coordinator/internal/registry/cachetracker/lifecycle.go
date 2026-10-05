@@ -9,13 +9,18 @@ import (
 
 const AttemptTTL = 2 * time.Minute
 
+// MarkAttemptTerminal starts an attempt's late-receipt grace once. A repeated
+// terminal call does not extend it.
 func (t *Tracker[P]) MarkAttemptTerminal(nonce string, now time.Time) {
-	if attempt, ok := t.ActiveAttemptLocked(nonce, now); ok {
-		// Through the store so the expiry heap moves with the new deadline.
+	if attempt, ok := t.ActiveAttemptLocked(nonce, now); ok && !attempt.Terminal {
+		// Re-store the admitted record under a detached key and give both
+		// expiry orders the first terminal deadline; its charge is unchanged.
+		attempt.Terminal = true
 		attempt.ExpiresAt = now.Add(AttemptTTL)
 		t.attempts.Store(strings.Clone(nonce), attempt)
 		if entry := t.attemptOrder.Load(nonce); entry != nil {
 			t.attemptOrder.Track(nonce, entry.Key(), attempt.ExpiresAt)
+			t.terminalOrder.Track(entry.Key().Nonce, entry.Key(), attempt.ExpiresAt)
 		}
 	}
 }

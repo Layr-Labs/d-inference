@@ -126,6 +126,38 @@ func (o *Order[K, ID]) Entries() iter.Seq2[int, *Entry[K]] {
 	}
 }
 
+// Earliest yields at most limit entries in expiry order without moving any.
+// It walks the heap's implicit tree from the root, each time taking the least
+// entry on the frontier of unvisited children, so its work is bounded by limit
+// (quadratically), not by the order's size. The order must not change while
+// the sequence is consumed.
+func (o *Order[K, ID]) Earliest(limit int) iter.Seq[*Entry[K]] {
+	return func(yield func(*Entry[K]) bool) {
+		if o.Len() == 0 {
+			return
+		}
+		frontier := []int{0}
+		for visited := 0; visited < limit && len(frontier) > 0; visited++ {
+			least := 0
+			for i := 1; i < len(frontier); i++ {
+				if o.heap.Less(frontier[i], frontier[least]) {
+					least = i
+				}
+			}
+			index := frontier[least]
+			frontier = append(frontier[:least], frontier[least+1:]...)
+			for _, child := range [...]int{2*index + 1, 2*index + 2} {
+				if child < o.Len() {
+					frontier = append(frontier, child)
+				}
+			}
+			if !yield(o.heap.entries[index]) {
+				return
+			}
+		}
+	}
+}
+
 // Reset releases backing storage, not just membership, on generation retirement.
 func (o *Order[K, ID]) Reset() {
 	o.heap.entries, o.byKey = nil, nil

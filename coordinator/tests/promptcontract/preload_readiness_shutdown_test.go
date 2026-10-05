@@ -13,7 +13,8 @@ import (
 )
 
 // heldPreloadClient holds the controller's call after the actual control
-// transport has returned, before the controller sees the result.
+// transport has returned, before the controller sees the result. The legacy
+// endpoint probe is not the owned preload under test and passes through unheld.
 type heldPreloadClient struct {
 	preload.Client
 	returned chan<- struct{}
@@ -21,8 +22,8 @@ type heldPreloadClient struct {
 	once     *sync.Once
 }
 
-func (c heldPreloadClient) Preload(ctx context.Context, contractIDs []string) (sidecar.PreloadReport, error) {
-	report, err := c.Client.Preload(ctx, contractIDs)
+func (c heldPreloadClient) PreloadContinuous(ctx context.Context, contractIDs []string, requireContinuity bool) (sidecar.PreloadReport, error) {
+	report, err := c.Client.PreloadContinuous(ctx, contractIDs, requireContinuity)
 	c.once.Do(func() { close(c.returned) })
 	<-c.release
 	return report, err

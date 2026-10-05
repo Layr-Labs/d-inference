@@ -8,9 +8,11 @@ import (
 )
 
 type Attempt[P comparable] struct {
-	// AccountedBytes is the charge the tracker stored at admission. A value
-	// supplied by a caller is never trusted.
+	// AccountedBytes is the charge the tracker stored at admission. Terminal is
+	// set once, when the tracker first marks the attempt terminal. Values
+	// supplied by a caller are never trusted.
 	AccountedBytes        uint64
+	Terminal              bool
 	RequestID             string
 	ProviderID            string
 	Provider              P

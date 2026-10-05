@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-05
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -47,6 +47,36 @@ no SQL migration.
 
 The additive `app_attest_build_qualifications` table stores immutable signed-artifact approval, test evidence and server-attributed operator/time, plus permanent revocation tombstones. `coordinator/store/postgres/app_attest_builds.go` (`SetQualifiedRelease`) locks the same row used for revocation and atomically checks the exact identity before writing the active release. `store.As[AppAttestBuildStore]` unwraps the store decorator; qualification reads are deliberately uncached there. Service snapshots have a separate bounded lifetime, and stored approval never restores a live serving lease. See the [qualification runbook](../operations/app-attest-build-qualification.md).
 
+## Inventory registration timestamps
+
+`MachineObservation.RegisteredAt` in `coordinator/store/machine_inventory.go`
+is additive JSON metadata, not a new SQL column. `Session.Capture` in
+`coordinator/internal/appattest/inventory/session.go` copies the registry
+connection's immutable creation time, even after an earlier capture failed.
+Both stores retain it through their existing observation serialization. A missing
+origin is omitted, never replaced with the capture time; historical rows are not
+backfilled with guessed registration dates.
+
+The read-only campaign selector (`coordinator/provideremail/postgres.go`,
+`ReadSnapshot`) ranks this timestamp before filtering owners or versions.
+For an undated legacy observation, `first_seen` is only an upper bound on
+registration time. If that bound could beat or tie the newest known registration,
+the whole machine is excluded and counted as `unknown_registration`. If a known
+registration is later than the bound, the legacy session cannot displace it.
+Tied newest timestamps, including values collapsed by PostgreSQL's timestamp
+precision, are also excluded rather than assigning ownership by session ID.
+Merged identities use the surviving machine's combined session history.
+See [campaign operations](../operations/provider-emails.md) for rollout and
+recipient review; these observations do not grant serving permission.
+
+## Hardware-interest persistence
+
+`SmallModelsInterestStore` (`coordinator/store/small_models_interest.go`) is composed into `Store`. The memory implementation retains one value per internal account ID under the existing store mutex. The Postgres implementation creates the additive `small_models_interest` table after `users`; its primary key references `users(account_id)` with cascading deletion. An atomic upsert replaces Mac type/chip/RAM, preserves `created_at`, and advances `updated_at` (`coordinator/store/postgres/small_models_interest.go`, `smallModelsInterestDDL`, `UpsertSmallModelsInterest`). Repeated requests cannot create duplicate account rows.
+
+Contact email remains in `users`: bounded admin pages join it when read, so a registration does not freeze a stale email copy. `CachedStore` forwards this new domain through its embedded `Store`; these writes do not mutate cached user records. Postgres records survive reconnects and migrations; memory records last only for that process (`coordinator/store/memory/small_models_interest.go`).
+
+The console stores only pending hardware details; only an explicit click on the current page arms automatic submission after sign-in. After reload, select hardware and click the registration action again; the calculator does not restore its selection from this marker. It ignores the former anonymous success markers and confirms against the authenticated account's server record. An intent already bound to account A cannot submit as account B; late responses cannot replace the current account or a newer write. Explicit cancellation disarms pending sign-in registration; it does not delete an already stored record (`console-ui/src/app/earn/useSmallModelsInterest.ts`, `useSmallModelsInterest`). The [HTTP contract](../reference/api-contracts.md#small-model-interest) defines acknowledgment and export limits. This feature collects opt-ins; it does not send email.
+
 ## Context
 
 The coordinator is a single Go process whose in-memory registry is rebuilt from
@@ -62,10 +92,11 @@ Keychain. Nothing prompt-derived is stored on either side.
 
 ### The store interface
 
-`Store` (`coordinator/store/interface.go`) is the union of thirteen embedded
+`Store` (`coordinator/store/interface.go`) is the union of fourteen embedded
 domain interfaces. Most are declared in `coordinator/store/interface_domains.go`;
-`RequestOutcomeStore` lives in `coordinator/store/request_outcomes.go`. Callers
-depend on the narrow slice they need; both implementations satisfy all thirteen.
+`RequestOutcomeStore` lives in `coordinator/store/request_outcomes.go` and
+`SmallModelsInterestStore` in `coordinator/store/small_models_interest.go`. Callers
+depend on the narrow slice they need; both implementations satisfy all fourteen.
 
 | Sub-interface | Owns |
 |---|---|
@@ -78,6 +109,7 @@ depend on the narrow slice they need; both implementations satisfy all thirteen.
 | `ModelRegistryStore` | The manifest-backed model catalog and the public aliases that resolve to concrete builds. |
 | `ReleaseStore` | Versioned provider binary releases and their hashes. |
 | `UserStore` | Privy-linked consumer accounts, role, platform-fee override and Stripe Connect payout fields. |
+| `SmallModelsInterestStore` | One Earn-page hardware-interest record per account: upsert, own readback and bounded admin pages joined to the current email; see [hardware-interest persistence](#hardware-interest-persistence). |
 | `DeviceAuthStore` | The RFC 8628-style device-code flow and the long-lived provider tokens it mints. |
 | `InviteStore` | Invite codes and redemptions. |
 | `ProviderEarningsStore` | Per-node earnings, payouts and the base-rewards settlement rows. |
@@ -244,13 +276,39 @@ Roughly forty tables; grouped by what would be lost if the family vanished.
 | Family | Tables | Notes |
 |---|---|---|
 | Identity and access | `api_keys`, `users`, `device_codes`, `provider_tokens`, `publishing_api_keys`, `invite_codes`, `invite_redemptions` | Keys are stored as hashes with a display prefix; `users` carries the Stripe Connect fields. |
-| Money | `balances`, `ledger_entries`, `billing_sessions`, `model_prices`, `referrers`, `referrals`, `stripe_withdrawals`, `global_payout_recipients`, `global_payout_withdrawals`, `provider_earnings`, `earnings_summary`, `provider_payouts`, `provider_floor_draws`, `payments` (legacy) | The ledger is append-only; `balances` is the materialised view of it. `model_prices.cache_read_price` is nullable: `NULL` means the row sets no cache-read rate and billing derives one from `input_price` (`payments.RatesFor`). Semantics in [`billing.md`](billing.md). |
+| Money | `balances`, `ledger_entries`, `billing_sessions`, `model_prices`, `referrers`, `referrals`, `consumer_charge_settlements`, `stripe_withdrawals`, `global_payout_recipients`, `global_payout_withdrawals`, `provider_earnings`, `earnings_summary`, `provider_payouts`, `provider_floor_draws`, `payments` (legacy) | The ledger is append-only; `balances` is the materialised view of it. `model_prices.cache_read_price` is nullable: `NULL` means the row sets no cache-read rate and billing derives one from `input_price` (`payments.RatesFor`). Semantics in [`billing.md`](billing.md). |
 | Public model demand | `model_demand_requests`, `model_demand_hourly`, `model_demand_collection` | One compact projection per scoped coordinator UUID, hourly counters updated atomically by trigger, and a persistent collection epoch; `coordinator/store/postgres/model_demand_migration.go`, `coordinator/store/postgres/model_demand.go`. |
 | Usage and routing telemetry | `usage`, `usage_totals`, `inference_routes`, `request_rejections`, `request_profiles`, `fleet_snapshots`, `request_outcomes` | Row per request, per dispatched attempt, per rejection, per profiled attempt, per fleet sample; `usage_totals` is a single-row counter seeded at boot by `checkRetiredBackfills` and incremented by `RecordUsage`. `usage.cached_tokens` (`INTEGER NOT NULL DEFAULT 0`) is the subset of `prompt_tokens` billed at the cache-read rate; rows written before the column existed read 0, which is what they were billed. It and `model_prices.cache_read_price` are added by plain `ALTER TABLE … ADD COLUMN IF NOT EXISTS` statements, not exception-swallowing `DO` blocks. Settlement reads and writes both columns, so if either cannot be added (a lock timeout, a missing privilege), startup fails rather than boot a coordinator that bills at the default rates and drops usage rows. |
 | Provider fleet and trust | `providers`, `provider_reputation`, `provider_sessions`, `provider_trust_reuse`, `provider_verification_jobs`, `code_attestations`, `code_attest_push_budgets`, `provider_log_reports` | Trust reuse and code attestations are durable. `code_attestations.continuous_coverage_until` is compare-and-updated only for the exact original proof tuple; it never refreshes `attested_at` or inserts proof. This allows bounded same-process resume after a redeploy; see [`security/attestation.md`](security/attestation.md). `provider_log_reports.serial_number` is kept empty by trigger. |
 | Models and releases | `model_registry`, `model_versions`, `model_version_files`, `model_active_versions`, `model_aliases`, `releases` | The catalog the registry syncs at boot; see [`model-registry.md`](model-registry.md). |
 | Cache routing state | `cache_routing_holders`, `cache_routing_demand`, `cache_routing_meta` | Write-behind copy of the registry's in-memory exact prefix-cache holder index and observed-demand index, so a restart does not start from an empty index (`coordinator/store/postgres/cacheroutingstate.go`, `coordinator/store/cacheroutingstate/records.go`, `coordinator/registry/cachepersist/persister.go`). Holders are keyed by boundary key plus the provider's cache epoch (a UUID the provider mints per model SSD root and persists), never by connection-scoped provider ID; rows name a boundary by its keyed identifier (the HMAC output under the route key; the key material itself is never stored) and token count, plus the Ready fallback and measured stage costs; the provider-confirmed chain hash is not stored, and no prompt content is. Rows are pruned in 10,000-row batches every five minutes under the active routing TTL (the effective expiry is the earlier of the stored one and `updated_at` plus the TTL, indexed on both columns), so a longer past TTL cannot leave rows in the table after they stopped loading; rows stamped more than a minute ahead of the pruning clock (a previous instance's skew) are removed too, at boot and on every prune, so a current receipt is never outranked by a quarantined future timestamp. `cache_routing_meta` records a non-secret fingerprint of the cache-key generation (HMAC of the master key over every key-derivation label, the block contract and a persistence generation, `deriveCacheKeys`); nothing is written before a boot has recorded it; a boot under a different master key finds rows whose keys can never match a request again and empties both tables with unconditional bounded deletes, recording the new generation last, instead of restoring them (`cachepersist.Restore`, `ResetCacheRoutingState`). Loads apply the current TTL to each row's expiry before ordering and capping. Losing the tables costs minutes of hit rate, nothing else. |
 | Bookkeeping | `schema_migrations` | Completion markers for one-shot data migrations. |
+
+### Consumer referral settlement
+
+`FinalizeConsumerCharge` adds a request-keyed settlement record in
+`consumer_charge_settlements` through `consumerSettlementSchema`
+(`coordinator/store/postgres/consumer_settlement.go`); the normal boot migration
+creates it. Each row stores input account/reservation/cost, collected cost,
+referral enablement, captured referrer account, reward, and collection outcome.
+It does not backfill historical usage or modify existing referral relationships.
+
+The Postgres implementation serializes a job with an advisory transaction lock,
+then locks the consumer and referrer balances in sorted account order. It commits
+the consumer debit/refund, withdrawable referral credit, and settlement row
+atomically. Exact replay returns the stored outcome with `Applied = false`;
+changed inputs fail (`coordinator/internal/store/consumersettlement/settlement.go`,
+`Replay`). This also prevents later attribution from rewriting
+a settled job. The memory implementation preserves the same behavior under one
+mutex (`coordinator/store/memory/consumer_settlement.go`).
+
+Token-promotion settlements also write this table, using
+`promotion:<reservation_id>` and only the collected paid portion. The record
+and reward share the promotion settlement transaction.
+
+These paths write balances, ledger and settlement records, not cached users or
+model-registry rows. Attribution uses `referrers` and `referrals`; the reward
+formula and funding model are in [Billing](billing.md#consumer-referral).
 
 ### Global Payouts state
 

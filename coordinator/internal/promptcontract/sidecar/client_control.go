@@ -10,7 +10,20 @@ import (
 	"net/http"
 )
 
-var ErrPreloadRejected = errors.New("prompt sidecar preload rejected")
+var (
+	ErrPreloadRejected = errors.New("prompt sidecar preload rejected")
+	// ErrContinuityUnsupported means the sidecar reported that it has no
+	// continuity endpoint. Only this error permits the replacing preload.
+	ErrContinuityUnsupported = errors.New("prompt sidecar continuity endpoint unsupported")
+	// ErrContinuityProtocol means a continuity response cannot be trusted: its
+	// marker, its report or its endpoint-absence body is missing or malformed.
+	ErrContinuityProtocol = errors.New("prompt sidecar continuity protocol invalid")
+)
+
+const (
+	replacingPreloadPath  = "/v1/preload" // Closes every member while the new set loads.
+	continuityPreloadPath = "/v2/preload" // Keeps acknowledged members of the new set usable.
+)
 
 // Ready checks readiness over the health-only connection pool. A 503 is an
 // expected not-ready result, not an overload and not a liveness failure. Runtime
@@ -44,6 +57,25 @@ func (c *Client) MaxPreloadIDs() int {
 // is returned unchanged to the caller. Its Ready field still means every
 // submitted member succeeded, not that the runtime has no usable subset.
 func (c *Client) Preload(ctx context.Context, contractIDs []string) (PreloadReport, error) {
+	return c.preloadAt(ctx, contractIDs, replacingPreloadPath)
+}
+
+// PreloadContinuous loads the same set through the continuity endpoint. Only a
+// sidecar that reports the endpoint absent is retried through Preload, and only
+// while requireContinuity is false: a negotiated child must never silently
+// downgrade to the destructive replacing preload.
+func (c *Client) PreloadContinuous(ctx context.Context, contractIDs []string, requireContinuity bool) (PreloadReport, error) {
+	report, err := c.preloadAt(ctx, contractIDs, continuityPreloadPath)
+	if errors.Is(err, ErrContinuityUnsupported) && !requireContinuity {
+		return c.Preload(ctx, contractIDs)
+	}
+	if err == nil && report.ContinuityVersion != 1 {
+		return PreloadReport{}, ErrContinuityProtocol
+	}
+	return report, err
+}
+
+func (c *Client) preloadAt(ctx context.Context, contractIDs []string, endpoint string) (PreloadReport, error) {
 	if c == nil || len(contractIDs) == 0 || len(contractIDs) > c.config.MaxPreloadIDs {
 		return PreloadReport{}, ErrPreloadRejected
 	}
@@ -66,7 +98,7 @@ func (c *Client) Preload(ctx context.Context, contractIDs []string) (PreloadRepo
 	requestContext, cancel := context.WithTimeout(ctx, c.config.PreloadTimeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(
-		requestContext, http.MethodPost, "http://promptsidecar/v1/preload", bytes.NewReader(body),
+		requestContext, http.MethodPost, "http://promptsidecar"+endpoint, bytes.NewReader(body),
 	)
 	if err != nil {
 		return PreloadReport{}, fmt.Errorf("%w: %v", ErrSidecarUnavailable, err)
@@ -80,19 +112,49 @@ func (c *Client) Preload(ctx context.Context, contractIDs []string) (PreloadRepo
 		return PreloadReport{}, fmt.Errorf("%w: %v", ErrSidecarUnavailable, err)
 	}
 	defer response.Body.Close()
+	continuity := endpoint == continuityPreloadPath
+	if continuity && response.StatusCode == http.StatusNotFound {
+		if continuityEndpointAbsent(response.Body) {
+			return PreloadReport{}, ErrContinuityUnsupported
+		}
+		return PreloadReport{}, ErrContinuityProtocol
+	}
 	if response.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
 		return PreloadReport{}, fmt.Errorf("%w: HTTP %d", ErrPreloadRejected, response.StatusCode)
 	}
 	var report PreloadReport
 	if err := decodeBoundedJSON(response.Body, c.config.MaxResponseBytes, &report); err != nil {
+		if continuity {
+			return PreloadReport{}, fmt.Errorf("%w: %w", ErrContinuityProtocol, err)
+		}
 		return PreloadReport{}, fmt.Errorf("%w: %v", ErrPreloadRejected, err)
 	}
 	if err := validatePreloadReport(contractIDs, report); err != nil {
+		if continuity {
+			return PreloadReport{}, fmt.Errorf("%w: %w", ErrContinuityProtocol, err)
+		}
 		return PreloadReport{}, err
 	}
 	c.storeMetrics(report.Metrics)
 	return report, nil
+}
+
+// continuityEndpointAbsent recognizes only the sidecar's own not_found error
+// and the Go standard library's default 404 body. Any other 404 is a protocol
+// failure, never grounds for the replacing fallback.
+func continuityEndpointAbsent(body io.Reader) bool {
+	raw, err := io.ReadAll(io.LimitReader(body, 4096))
+	if err != nil {
+		return false
+	}
+	var rejection struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	return (json.Unmarshal(raw, &rejection) == nil && rejection.Error.Code == "not_found") ||
+		string(raw) == "404 page not found\n"
 }
 
 // Metrics refreshes the cached bounded aggregate through the health pool. It

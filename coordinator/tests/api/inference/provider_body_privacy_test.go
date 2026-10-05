@@ -66,7 +66,12 @@ func assertCallerIdentityAbsent(t *testing.T, body []byte) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{"user", "metadata"} {
+	// Protocol-0 may append its coordinator-authored cache-bust key after
+	// sanitization. Exact body oracles distinguish it from caller input.
+	if parsed["prompt_cache_key"] == "synthetic-caller-key" {
+		t.Error("caller cache key forwarded")
+	}
+	for _, field := range []string{"user", "metadata", "safety_identifier"} {
 		if _, exists := parsed[field]; exists {
 			t.Errorf("provider-bound request retains top-level caller %q", field)
 		}
@@ -74,7 +79,7 @@ func assertCallerIdentityAbsent(t *testing.T, body []byte) {
 }
 
 // The original body remains available for the existing validation contract;
-// only the prepared provider body loses the two top-level identity fields.
+// only the prepared provider body loses the top-level identity and cache-routing fields.
 func TestProviderBodyPrivacyPrelude(t *testing.T) {
 	srv, _ := testServer(t)
 	const body = `{"model":"privacy-model","user":"synthetic-customer","metadata":{"conversation_id":"synthetic-ticket"},"messages":[{"role":"user","content":"Preserve literal user and metadata in this message.","metadata":{"user":"nested-message"}}],"max_tokens":16,"temperature":0.10000000000000001,"extension":{"user":"nested-extension","metadata":{"counter":9007199254740993}},"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object","properties":{"user":{"type":"string"},"metadata":{"type":"object","properties":{"counter":{"type":"integer"}}}}}}}],"cache_control":{"type":"ephemeral"},"metadata_details":true}`
@@ -104,6 +109,9 @@ func TestProviderBodyPrivacyFieldShapes(t *testing.T) {
 	const preserved = `"model":"privacy-model","messages":[{"role":"user","content":"literal user and metadata","metadata":{"user":"nested-message"}}],"max_tokens":16,"metadata_details":true,"cache_control":{"type":"ephemeral"},"extra":{"user":"nested","metadata":{"exact":9007199254740993,"decimal":0.10000000000000001}},"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object","properties":{"user":{"type":"string"},"metadata":{"type":"object","properties":{"key":{"type":"string"}}}}}}}]`
 	for _, fixture := range []struct{ name, fields string }{
 		{"absent", ""},
+		{"cache key", `,"prompt_cache_key":"caller-cache-key"`},
+		{"safety identifier", `,"safety_identifier":"caller-safety-id"`},
+		{"escaped new keys", `,"prompt_cache_\u006bey":"caller-cache-key","safety_\u0069dentifier":"caller-safety-id"`},
 		{"only user", `,"user":"synthetic-user"`},
 		{"only metadata", `,"metadata":{"conversation_id":"synthetic-conversation"}`},
 		{"null fields", `,"user":null,"metadata":null`},

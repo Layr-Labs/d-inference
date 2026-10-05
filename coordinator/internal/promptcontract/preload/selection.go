@@ -50,7 +50,7 @@ func (c *PreloadController) selectionInput(refreshAvailability bool) (catalog.Sn
 	child := c.supervisor.Status()
 	c.mu.RLock()
 	source := c.selectionSource
-	sameVerified := c.selection.key.CatalogGeneration == provisioned.Generation && slices.Equal(c.selection.key.Verified, verified)
+	sameVerified := c.selection.HoldsVerified(provisioned.Generation, verified)
 	c.mu.RUnlock()
 	if !sameVerified {
 		c.publicAvailable = nil
@@ -92,27 +92,31 @@ func (c *PreloadController) reconcileSelectionLocked(input PreloadSelectionInput
 	if c.closed {
 		return PreloadSelectionSnapshot{}, false
 	}
-	before := c.selection.snapshot()
-	retryKey, retryAt, failed := c.selection.batchRetryKey, c.selection.batchRetryAt, c.selection.failedResult
-	key, err := c.selection.reconcile(c.policyNow(), input)
+	// Reconciliation neither issues nor retires a lease, so the outstanding
+	// operation read here is still the policy's after it.
+	before := c.selection.State()
+	key, err := c.selection.Reconcile(c.policyNow(), input)
 	if err != nil {
 		c.invalidateLocked("invalid preload selection")
 		return key, false
 	}
-	if !before.equal(key) {
+	if c.continuityChild != 0 && c.continuityChild != key.ChildGeneration {
+		c.continuityChild = 0
+	}
+	if !before.Key.Equal(key) {
 		if !c.advanceOperationLocked() {
 			return key, false
 		}
-		if !c.published.nativeEqual(key) {
+		if !c.published.nativeEqual(key) && !c.retainPublicationLocked(key) {
 			c.clearPublicationLocked("preload identity changed")
 		}
-		if c.inflight == 0 && c.selection.inflight == nil && before.nativeEqual(key) && retryKey.equal(before) && retryAt > 0 && failed {
+		if c.inflight == 0 && before.InflightOperation == 0 && before.Key.nativeEqual(key) &&
+			before.BatchRetryKey.Equal(before.Key) && before.BatchRetryAt > 0 && before.FailedResult {
 			// A completed failed/partial native batch has not changed. Rekey
 			// its original deadline without resetting it or withdrawing A's
 			// completed acknowledgement. Real V/D/child/capacity changes still
 			// bypass the old batch delay; live full-K leases stay invalidated.
-			c.selection.batchRetryKey, c.selection.batchRetryAt = c.selection.snapshot(), retryAt
-			c.selection.failedResult = true
+			c.selection.CarryBatchRetry(before.BatchRetryAt)
 			c.retryIdentity = key
 		} else {
 			c.resetRetryLocked()
@@ -139,12 +143,12 @@ func (c *PreloadController) NoteDemand(identity PreloadDemandIdentity) bool {
 		return false
 	}
 	if c.selectionSource != nil && slices.Contains(key.Admissible, identity) {
-		return c.selection.noteDemand(c.policyNow(), identity)
+		return c.selection.NoteDemand(c.policyNow(), identity)
 	}
 	return false
 }
 
-// ReadyFor retains its standalone D64 meaning: a completed, current native
+// ReadyFor retains its standalone meaning: a completed, current native
 // tokenizer acknowledgement. Actual API planning uses PlanningState plus the
 // authoritative Registry gate; missing selection callbacks grant no authority.
 func (c *PreloadController) ReadyFor(promptContractID string) bool {
@@ -178,9 +182,13 @@ func (c *PreloadController) PlanningState(identity PreloadDemandIdentity) Preloa
 		Participating: acknowledged && c.selectionSource != nil && slices.Contains(key.Admissible, identity)}
 }
 
+// An attempt in flight closes acknowledgement only on a legacy child, whose
+// replacing preload closes every member. A negotiated child keeps the retained
+// members usable while it loads.
 func (c *PreloadController) nativeAcknowledgedLocked(id string, key PreloadSelectionSnapshot, child ChildStatus) bool {
 	_, included := c.contracts[id]
-	return !c.closed && c.inflight == 0 && c.status.Ready && included && c.published.nativeEqual(key) &&
+	return !c.closed && (c.inflight == 0 || c.continuityChild == key.ChildGeneration) &&
+		c.status.Ready && included && c.published.nativeEqual(key) &&
 		child.Running && child.Ready && key.ChildGeneration != 0 && len(key.Desired) > 0 &&
 		len(key.Desired) <= key.Capacity && slices.Contains(key.Desired, id)
 }
@@ -202,4 +210,24 @@ func preloadUnavailableReason(provisioned catalog.Snapshot, child ChildStatus, s
 		return "prompt artifact provisioning failed"
 	}
 	return "no verified prompt contracts"
+}
+
+// Re-key only completed resident acknowledgements within the same verified
+// catalog/child/capacity. Full in-flight completion still requires its exact key.
+func (c *PreloadController) retainPublicationLocked(key PreloadSelectionSnapshot) bool {
+	old := c.published
+	if c.continuityChild == 0 || c.continuityChild != key.ChildGeneration || old.ChildGeneration != key.ChildGeneration ||
+		old.CatalogGeneration != key.CatalogGeneration || old.Capacity != key.Capacity || !slices.Equal(old.Verified, key.Verified) {
+		return false
+	}
+	for id := range c.contracts {
+		if !slices.Contains(key.Desired, id) {
+			delete(c.contracts, id)
+		}
+	}
+	c.published = key
+	c.status.ContractCount = len(c.contracts)
+	c.status.Ready = len(c.contracts) > 0
+	c.fullyLoaded = false
+	return c.status.Ready
 }

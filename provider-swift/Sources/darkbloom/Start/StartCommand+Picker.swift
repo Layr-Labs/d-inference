@@ -241,14 +241,20 @@ extension Start {
 
     /// Fetches the model catalog from the coordinator, shows an interactive
     /// terminal picker, downloads any missing models, and returns the
-    /// selected model IDs.
+    /// selected model IDs. The last three parameters default to the live
+    /// network session and terminal; tests pass a stub session and input.
+    /// With `isInteractive` nil, the picker checks whether stdin is a
+    /// terminal after the catalog fetch.
     internal func interactiveCatalogPicker(
         snapshot: RuntimeSnapshot,
         config: ProviderConfig,
         coordinatorURL: String,
-        runtimeCapabilities: Set<ProviderRuntimeCapability>
+        runtimeCapabilities: Set<ProviderRuntimeCapability>,
+        urlSession: URLSession = .shared,
+        isInteractive: Bool? = nil,
+        readInput: () -> String? = { readLine() }
     ) async throws -> [String] {
-        let client = ModelCatalogClient(coordinatorURL: coordinatorURL)
+        let client = ModelCatalogClient(coordinatorURL: coordinatorURL, urlSession: urlSession)
 
         let catalogSnapshot: CatalogSnapshot
         do {
@@ -301,12 +307,13 @@ extension Start {
         }
 
         // Fall back to simple numbered picker if stdin is not a TTY.
-        guard isatty(STDIN_FILENO) != 0 else {
+        guard isInteractive ?? (isatty(STDIN_FILENO) != 0) else {
             return try await fallbackPicker(
                 entries: entries,
                 memoryGb: memoryGb,
                 client: client,
-                runtimeCapabilities: runtimeCapabilities)
+                runtimeCapabilities: runtimeCapabilities,
+                readInput: readInput)
         }
 
         // Run the interactive TUI picker.
@@ -360,7 +367,8 @@ extension Start {
         entries: [PickerEntry],
         memoryGb: Double,
         client: ModelCatalogClient,
-        runtimeCapabilities: Set<ProviderRuntimeCapability>
+        runtimeCapabilities: Set<ProviderRuntimeCapability>,
+        readInput: () -> String?
     ) async throws -> [String] {
         print()
         print("  Models (from coordinator catalog):")
@@ -385,7 +393,7 @@ extension Start {
         print("  Select models (comma-separated numbers, or 'all'): ", terminator: "")
 
         let selected: [PickerEntry]
-        switch Start.resolveFallbackSelection(input: readLine() ?? "", entries: entries, memoryGb: memoryGb) {
+        switch Start.resolveFallbackSelection(input: readInput() ?? "", entries: entries, memoryGb: memoryGb) {
         case .cancelled:
             return []
         case .rejected(let message):

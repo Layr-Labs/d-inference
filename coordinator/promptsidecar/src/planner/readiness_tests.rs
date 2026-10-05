@@ -547,3 +547,6 @@ async fn panicking_preload_worker_closes_once_and_releases_real_resources() {
     bounded(planner.plan(Fixture::request(&c))).await.unwrap();
     assert_eq!(planner.status().metrics.preloads.failed, 1);
 }
+
+#[path = "continuity_tests.rs"]
+mod continuity;

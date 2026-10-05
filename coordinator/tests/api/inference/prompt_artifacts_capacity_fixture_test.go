@@ -26,8 +26,9 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-// Uses only APIs present in b8eba688. Overlay both capacity fixture/oracle files
-// on that exact old Go tree for the red; a binary label is not source provenance.
+// Uses only public lifecycle APIs the pre-selection controller also has. Overlay
+// both capacity fixture/oracle files on that exact old Go tree for the red; a
+// binary label is not source provenance.
 type capacityActualRoundTrip func(*http.Request) (*http.Response, error)
 
 func (f capacityActualRoundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

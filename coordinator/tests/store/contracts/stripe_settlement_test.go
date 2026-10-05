@@ -177,3 +177,116 @@ func TestStripeRefundIgnoresCoordinatorClockAheadOfLedger(t *testing.T) {
 		})
 	}
 }
+
+func TestStripeRefundValidatesLedgerEvidence(t *testing.T) {
+	for name, s := range storeBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			repo, _ := store.As[store.StripeSettlementStore](s)
+			for _, scenario := range []string{"wrong-reference", "wrong-type", "extra-debit", "partial-refund", "other-account"} {
+				t.Run(scenario, func(t *testing.T) {
+					w := &store.StripeWithdrawal{ID: "wd-evidence-" + scenario, AccountID: "evidence-" + scenario, StripeAccountID: "acct_old", AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000, Method: "standard", Status: "pending", CreatedAt: time.Now().Add(time.Minute)}
+					ref := "stripe_withdraw:" + w.ID
+					debitRef, debitType := ref, store.LedgerStripePayout
+					if scenario == "wrong-reference" {
+						debitRef += "-other"
+					}
+					if scenario == "wrong-type" {
+						debitType = store.LedgerCharge
+					}
+					if err := s.CreditWithdrawable(w.AccountID, 10_000_000, store.LedgerPayout, "seed"); err != nil {
+						t.Fatal(err)
+					}
+					if err := s.CreateStripeWithdrawalWithDebit(w, debitType, debitRef); err != nil {
+						t.Fatal(err)
+					}
+					if err := repo.RecordStripeTransferRejection(w.ID, "rejected"); err != nil {
+						t.Fatal(err)
+					}
+					switch scenario {
+					case "extra-debit":
+						if err := s.Debit(w.AccountID, 1, store.LedgerStripePayout, ref); err != nil {
+							t.Fatal(err)
+						}
+					case "partial-refund":
+						if err := s.CreditWithdrawable(w.AccountID, 1, store.LedgerRefund, ref); err != nil {
+							t.Fatal(err)
+						}
+					case "other-account":
+						if err := s.CreditWithdrawable("unrelated-account", w.AmountMicroUSD, store.LedgerRefund, ref); err != nil {
+							t.Fatal(err)
+						}
+					}
+					beforeBalance, beforeWithdrawable := s.GetBalanceWithWithdrawable(w.AccountID)
+					applied, err := repo.RefundRejectedStripeWithdrawal(w.ID)
+					if scenario == "other-account" {
+						if err != nil || !applied {
+							t.Fatalf("other account's refund hid this refund: applied=%v err=%v", applied, err)
+						}
+						if b, wd := s.GetBalanceWithWithdrawable(w.AccountID); b != 10_000_000 || wd != b {
+							t.Fatalf("refund balances: %d/%d", b, wd)
+						}
+						return
+					}
+					if err != store.ErrPayoutConflict || applied {
+						t.Fatalf("invalid evidence accepted: applied=%v err=%v", applied, err)
+					}
+					if b, wd := s.GetBalanceWithWithdrawable(w.AccountID); b != beforeBalance || wd != beforeWithdrawable {
+						t.Fatalf("conflict changed balances: %d/%d", b, wd)
+					}
+					stored, err := s.GetStripeWithdrawal(w.ID)
+					if err != nil || stored.Refunded {
+						t.Fatalf("conflict marked refunded: %+v %v", stored, err)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestStripeRefundRacesLegacyCredit(t *testing.T) {
+	for name, s := range storeBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			repo, _ := store.As[store.StripeSettlementStore](s)
+			for i := range 8 {
+				id := "wd-legacy-race-" + string(rune('a'+i))
+				w := &store.StripeWithdrawal{ID: id, AccountID: id, StripeAccountID: "acct_old", AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000, Method: "standard", Status: "pending", CreatedAt: time.Now().Add(time.Minute)}
+				ref := "stripe_withdraw:" + id
+				if err := s.CreditWithdrawable(id, 10_000_000, store.LedgerPayout, "seed"); err != nil {
+					t.Fatal(err)
+				}
+				if err := s.CreateStripeWithdrawalWithDebit(w, store.LedgerStripePayout, ref); err != nil {
+					t.Fatal(err)
+				}
+				if err := repo.RecordStripeTransferRejection(id, "rejected"); err != nil {
+					t.Fatal(err)
+				}
+				start := make(chan struct{})
+				var wg sync.WaitGroup
+				wg.Add(2)
+				go func() {
+					defer wg.Done()
+					<-start
+					if _, err := s.CreditWithdrawableOnce(id, w.AmountMicroUSD, store.LedgerRefund, ref); err != nil {
+						t.Error(err)
+					}
+				}()
+				go func() {
+					defer wg.Done()
+					<-start
+					if _, err := repo.RefundRejectedStripeWithdrawal(id); err != nil {
+						t.Error(err)
+					}
+				}()
+				close(start)
+				wg.Wait()
+				if b, wd := s.GetBalanceWithWithdrawable(id); b != 10_000_000 || wd != b {
+					t.Fatalf("legacy race duplicated refund: %d/%d", b, wd)
+				}
+				stored, err := s.GetStripeWithdrawal(id)
+				if err != nil || !stored.Refunded {
+					t.Fatalf("legacy race left refund pending: %+v %v", stored, err)
+				}
+			}
+		})
+	}
+}

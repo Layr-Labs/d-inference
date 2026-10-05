@@ -489,6 +489,15 @@ flag together. A durable confirmed-rejection marker makes failed refund writes
 retryable; unverified old rows remain for operator review. These methods do not
 write cached user records.
 
+The refund aggregate matches all `refund` and `stripe_payout` rows by account
+and `stripe_withdraw:<id>` reference, not by the coordinator-stamped withdrawal
+time: ledger timestamps use the database clock. Startup builds the non-unique
+partial `idx_ledger_stripe_refund(account_id, reference)` index concurrently
+(`coordinator/store/postgres/migrations.go`, `migrate`), using
+`ensureConcurrentIndex` to require a valid index before readiness. This bounds
+the lookup without discarding old debits or legacy refunds. Interrupted builds
+fail readiness and require index repair; repeated startup retains a valid index.
+
 `RemoveGlobalRecipient` resets the row to a new empty generation instead of
 deleting it. The retained row fences routing to Global Payouts after unlink or
 country-policy rollback and invalidates old unconfirmed quotes. Historical

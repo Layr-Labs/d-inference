@@ -237,6 +237,15 @@ publication even if selection changed while the response was in flight. Stale
 success never grants a new acknowledgement. Child replacement clears negotiation.
 Transport failures retain only already acknowledged members within the same
 verified catalog, child and capacity; controller shutdown closes participation.
+Above capacity that retention lasts only until the next reconcile: the selection
+policy records every member of the failed attempt as failed and not retained, and
+then keeps a member selected only while it has demand inside the five-minute
+demand lifetime. A loaded contract with no recent request is therefore dropped
+and reloads on its next request, and while the transport keeps failing each
+replacement interval can trade a loaded member for a candidate that cannot load
+(`PreloadActiveSet.CompleteAttempt`, `PreloadActiveSet.Reconcile`,
+`coordinator/internal/promptcontract/preload/active_set.go`). Within capacity
+nothing is dropped.
 The design assumes the supervisor's single controller owns preload mutations
 (`Client.PreloadContinuous`, `coordinator/internal/promptcontract/sidecar/client_control.go`;
 `PreloadController.finishAttemptLocked`, `coordinator/internal/promptcontract/preload/controller.go`;

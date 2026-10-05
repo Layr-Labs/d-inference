@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — system tool output readers
+
+- Fix a hang in provider code that runs a system tool and reads its output, such as hardware detection for `darkbloom beta`, `autoupdate` and `models location`. When every Swift concurrency thread waited for a tool at the same time, the output readers got no thread, so the wait did not end. With a timeout, the call failed as timed out. Each output reader now has its own serial queue.
+
 ## Unreleased — stale cache allowlist entries
 
 - Report cache-routing allowlist entries that a model revision has left behind. Publishing new weights or a new template under the same model ID changes the artifact tuple, so the model silently lost cache routing and its cache hits fell to zero until an operator appended the new tuple. `GET /v1/cache/status` now counts such models as `artifact_allowlist.stale_models`, with matching Prometheus and Datadog gauges, and the coordinator log names each live tuple once. Routing behaviour and the allowlist's exact-match rule are unchanged.

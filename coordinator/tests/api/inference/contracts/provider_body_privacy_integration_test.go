@@ -336,7 +336,7 @@ func TestProviderBodyPrivacyAliasFallback(t *testing.T) {
 				harness := newRuntimeDefaultsAliasHarness(t,
 					map[string]any{"reasoning_parser": "desired-reasoning", "tool_call_parser": "desired-tools"},
 					map[string]any{"reasoning_parser": "previous-reasoning", "tool_call_parser": "previous-tools"})
-				body := fmt.Sprintf(`{"model":%q,%s,"stream":%t,"user":"synthetic-customer","metadata":{"conversation_id":"synthetic-ticket"}}`, runtimeDefaultsAlias, endpoint.fields, stream)
+				body := fmt.Sprintf(`{"model":%q,%s,"stream":%t,"safety_identifier":"synthetic-safety","prompt_cache_key":"synthetic-caller-key","user":"synthetic-customer","metadata":{"conversation_id":"synthetic-ticket"}}`, runtimeDefaultsAlias, endpoint.fields, stream)
 				got := postPrivacyAndCapture(t, harness.ctx, harness.server, harness.providers[0], endpoint.path, "test-key", body)
 				assertCallerIdentityAbsent(t, got)
 				want := forwardOracle(t, body, func(p map[string]any) {

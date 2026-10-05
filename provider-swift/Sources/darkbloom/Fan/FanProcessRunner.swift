@@ -12,10 +12,13 @@ struct FanProcessResult: Equatable {
 }
 
 enum FanProcessRunner {
+    /// The default time limit for one helper process, in seconds.
+    static let defaultTimeout: TimeInterval = 15
+
     static func run(
         _ executable: String,
         arguments: [String],
-        timeout: TimeInterval = 15
+        timeout: TimeInterval = defaultTimeout
     ) -> FanProcessResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)

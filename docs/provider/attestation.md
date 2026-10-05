@@ -99,8 +99,11 @@ this is not a fresh serving grant. No grace period has been chosen and no expiry
 is implemented.
 
 Grandfathered legacy MDM-only serving does not qualify your Mac for base rewards.
-Base rewards require current qualified App Attest authorization, including when
-the Mac also retains MDM evidence; existing economics guards still apply.
+Base rewards require macOS 27 or later and current qualified App Attest
+authorization for every provider, old or new, including when the Mac also
+retains MDM evidence. The OS claim must be bound to that same authorization;
+missing, malformed or older versions do not qualify. Existing economics guards
+still apply.
 Inference/work earnings are unchanged, with no retroactive clawback of rewards.
 See [billing](../consumer/billing.md) for the reward policy.
 

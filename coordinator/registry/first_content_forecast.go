@@ -58,8 +58,7 @@ type firstContentSnapshot struct {
 
 // estimateFirstContent runs after cache proof validation. It never changes
 // memory reservations, completion limits, ownership or physical eligibility.
-func (r *Registry) estimateFirstContent(c *routingCandidate, pr *PendingRequest, now time.Time) {
-	s := &c.snapshot
+func (r *Registry) estimateFirstContent(c *routingCandidate, s *routingSnapshot, pr *PendingRequest, now time.Time) {
 	cacheContractMatches := s.promptWorkContractID != "" &&
 		pr.CachePlan.ModelAggregateHash == s.promptWorkArtifactHash && pr.CachePlan.PromptContractID == s.promptWorkContractID
 	cacheQualified := cacheContractMatches && r.cacheRouting != nil && pr.CachePlan.Authenticates(r.cacheRouting.generation) &&
@@ -71,7 +70,8 @@ func (r *Registry) estimateFirstContent(c *routingCandidate, pr *PendingRequest,
 		forecast.CacheBenefit{Tokens: c.firstContentCachedTokens, Weight: c.firstContentCacheWeight,
 			RestoreMS: c.firstContentRestoreMs, ExpiresAt: c.firstContentCacheExpiresAt}.Apply(&request, now)
 	}
-	result := forecast.Evaluate(firstContentForecastEvidence(s, prompt), request, now)
+	evidence := firstContentForecastEvidence(s, prompt)
+	result := forecast.Evaluate(&evidence, request, now)
 	s.calibratedForecastQualified = result.Calibrated
 	c.firstContentEvidenceQualified = result.EvidenceQualified
 	c.firstContent = result.Estimate

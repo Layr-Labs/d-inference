@@ -97,7 +97,7 @@ func addMachineRewardProvider(t *testing.T, st *machineEngineStore, reg *registr
 	}
 	if !reg.GrantAppAttestServingAuthorization(p, registry.AppAttestServingAuthorization{
 		AccountID: account, MachineID: machine.ID, CredentialID: credential, ConnectionID: id, ProofSessionID: "proof-" + id,
-		Endpoint: endpoint, PolicyGeneration: 1, IssuedAt: now.Add(-time.Second), ValidUntil: now.Add(time.Minute), MachineModel: hw.MachineModel, MemoryGB: hw.MemoryGB,
+		Endpoint: endpoint, PolicyGeneration: 1, IssuedAt: now.Add(-time.Second), ValidUntil: now.Add(time.Minute), MachineModel: hw.MachineModel, MemoryGB: hw.MemoryGB, OSVersion: "27.0",
 	}) {
 		t.Fatal("cannot grant App Attest fixture")
 	}

@@ -130,6 +130,18 @@ waiting (`ProviderModelSelection.withReplacement`,
 Missing custom files are seeded from this invocation's resolved configuration,
 not from the separate canonical config file.
 
+After a successful provider `bootout`, the lifecycle waits for `launchctl print`
+to confirm that the exact service label is absent before replacing its plist or
+bootstrapping it. It polls at 100 ms intervals with a 10-second monotonic budget
+and at most 101 probes. Unknown or permission errors fail the operation; an
+unconfirmed removal leaves replacement unstarted. This also applies to stop,
+uninstall and restart after drain. The budget includes returning probe calls;
+the shared launchctl subprocess has no command timeout, so a hung subprocess
+can exceed that wall time. Bootstrap error 37 (operation in progress) is a
+failure, not confirmation that the replacement started.
+Source: `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`
+(`unloadService`, `waitForServiceRemoval`, `loadService`).
+
 `start --schedule` requires interactive stdin and stdout. Its confirmed draft
 stays in memory until model selection succeeds; cancellation or an empty/failed
 selection does not save the schedule or replace the running service
@@ -1326,7 +1338,7 @@ override `provider.toml` for one process, are in
 
 | Key | Default | Effect |
 |---|---|---|
-| `[provider] memory_reserve_gb` | `4` | Unified memory withheld from model admission |
+| `[provider] memory_reserve_gb` | `4` | GiB withheld from the selected OS-available/MLX load budget; the larger unified-cap reserve still applies. By default OS availability includes inactive pages, so this is not a free-page floor. Set process-start `DARKBLOOM_MEMORY_AVAILABILITY=free-only` for shared hosts; see [memory admission](../architecture/scheduling.md#shared-host-memory-admission). |
 | `[provider] auto_update` | `true` | Startup + periodic self-update |
 | `[provider] auto_restart` | `true` | Arm the watchdog LaunchAgent |
 | `[provider] update_jitter_seconds` | `300` | Max random delay before an automatic install or a network provider drains a model for a prepared MTP replacement; serving continues during the delay. `0` disables jitter; capped at `3600`. Standalone MTP upgrades skip this delay. Random staggering provides no fleet availability guarantee (`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `updateJitterSeconds`; `provider-swift/Sources/ProviderCore/Update/UpdateJitter.swift`, `delay`; `provider-swift/Sources/ProviderCore/ProviderLoop+MTPDrain.swift`, `waitBeforeMTPUpgradeDrain`) |

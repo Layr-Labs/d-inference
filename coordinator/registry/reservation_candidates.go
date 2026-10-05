@@ -19,6 +19,10 @@ func (p *ReservationPlanner) ScanCandidates(model string, pending *PendingReques
 // then narrows it by the request's soft preferences. The caller holds r.mu and
 // no provider lock. Candidate storage belongs to this scan, never to a provider.
 func (planner *ReservationPlanner) scanCandidatesLocked(model string, pr *PendingRequest, ignoreProviderBreaker bool, excludeIDs ...string) CandidateScan {
+	return planner.scanCandidatesLockedStorage(nil, model, pr, ignoreProviderBreaker, excludeIDs...)
+}
+
+func (planner *ReservationPlanner) scanCandidatesLockedStorage(storage *reservationCandidateStorage, model string, pr *PendingRequest, ignoreProviderBreaker bool, excludeIDs ...string) CandidateScan {
 	r := planner.registry
 	// Nil maps read as empty; only allocate when there is something to hold.
 	var excludeSet map[string]struct{}
@@ -44,11 +48,12 @@ func (planner *ReservationPlanner) scanCandidatesLocked(model string, pr *Pendin
 	// Copy index members before taking any provider lock.
 	providers := r.providersForModelLocked(model)
 	candidates := make([]*routingCandidate, 0, len(providers))
-	// Write each snapshot straight into its scan-owned arena slot.
-	var arena candidatearena.Arena[routingCandidate]
+	// Retain compact evidence; full evaluation storage stays on the stack.
+	arena := candidatearena.Arena[routingCandidate]{Storage: storage.forScan(len(providers))}
 	var scan candidateScan
 	scan.planOrderFactory = r.planOrderFactory
 	now := time.Now()
+	var snapshot routingSnapshot
 	for _, p := range providers {
 		scan.Scanned++
 		owned := providerOwnedBy(p, pr.OwnerAccountID)
@@ -69,7 +74,7 @@ func (planner *ReservationPlanner) scanCandidatesLocked(model string, pr *Pendin
 		// Relax trust only for the caller's own machine, never the public pool.
 		relaxTrust := owned && (pr.SelfRouteOnly || pr.PreferOwner)
 		c := arena.Next()
-		ok, gateReason := r.snapshotProviderIntoLockedEx(&c.snapshot, p, model, pr.Traits, relaxTrust, ignoreProviderBreaker, now)
+		ok, gateReason := r.snapshotProviderIntoLockedEx(&snapshot, p, model, pr.Traits, relaxTrust, ignoreProviderBreaker, now)
 		if !ok {
 			arena.Release(c)
 			scan.tallyGate(gateReason)
@@ -95,7 +100,7 @@ func (planner *ReservationPlanner) scanCandidatesLocked(model string, pr *Pendin
 				continue
 			}
 		}
-		reason, gateReason, ok := r.buildCandidateInto(c, pr, now)
+		reason, gateReason, ok := r.buildCandidateInto(c, &snapshot, pr, now)
 		if !ok {
 			arena.Release(c)
 			switch reason {
@@ -110,8 +115,8 @@ func (planner *ReservationPlanner) scanCandidatesLocked(model string, pr *Pendin
 			continue
 		}
 
-		r.applyCacheRoutingCost(p, model, pr, c)
-		r.estimateFirstContent(c, pr, now)
+		r.applyCacheRoutingCost(p, model, pr, c, &snapshot)
+		r.estimateFirstContent(c, &snapshot, pr, now)
 		bestTTFT := c.firstContent.ConservativeMs
 		if bestTTFT > 0 && (scan.BestTTFTMs == 0 || bestTTFT < scan.BestTTFTMs) {
 			scan.BestTTFTMs = bestTTFT
@@ -146,7 +151,7 @@ func (planner *ReservationPlanner) scanCandidatesLocked(model string, pr *Pendin
 	}
 	if pr.MinDecodeTPS > 0 {
 		pool = preferRoutingCandidates(pool, func(c *routingCandidate) bool {
-			return projectedPerRequestDecodeTPS(&c.snapshot) >= pr.MinDecodeTPS
+			return c.snapshot.projectedDecodeTPS(c.snapshot.backendRunning) >= pr.MinDecodeTPS
 		})
 	}
 

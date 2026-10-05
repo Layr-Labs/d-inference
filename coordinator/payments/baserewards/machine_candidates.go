@@ -171,7 +171,7 @@ func normalizeRewardBindings(bindings map[string]store.MachineRewardBinding) {
 
 func rewardSnapshotEligible(p registry.ProviderSnapshot) bool {
 	// Grandfathered MDM can authorize serving, but never a new base reward.
-	return p.ServingAuthorized && p.AppAttestAuthorized && p.Online && p.ModelLoaded && p.ProviderKey != "" &&
+	return p.ServingAuthorized && p.AppAttestAuthorized && rewardpolicy.OSVersionEligible(p.AppAttestOSVersion) && p.Online && p.ModelLoaded && p.ProviderKey != "" &&
 		p.MemoryPressure < 0.8 && p.ThermalState != "critical"
 }
 

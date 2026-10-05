@@ -1,6 +1,6 @@
 # Dev environment
 
-> Last updated: 2026-09-26
+> Last updated: 2026-10-04
 
 Runbook for the Darkbloom dev environment on Google Cloud (project
 `darkbloom-dev`): a GCE VM running the same coordinator container as production,
@@ -142,7 +142,7 @@ with no approval step.
   Cloud Build run re-runs `refresh-env.sh`) or on the VM run
   `sudo bash deploy/gcp/refresh-env.sh && sudo systemctl restart d-inference-coordinator`.
 - **Non-secret value** (`EIGENINFERENCE_MIN_TRUST`, `EIGENINFERENCE_ADMIN_EMAILS`,
-  `EIGENINFERENCE_REFERRAL_SHARE_PCT`, `EIGENINFERENCE_BASE_URL`, …): these are
+  `EIGENINFERENCE_BASE_URL`, …): these are
   literal lines in **both** `deploy/gcp/refresh-env.sh` and
   `deploy/gcp/vm-startup.sh` (the boot path). Edit both, merge, then redeploy
   with step 4's `gcloud builds submit` until the step 6 trigger exists. There is

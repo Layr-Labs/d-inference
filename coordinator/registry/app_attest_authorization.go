@@ -18,6 +18,8 @@ type AppAttestServingAuthorization struct {
 	// are not Apple-certified immutable hardware specifications.
 	MachineModel string
 	MemoryGB     int
+	// OSVersion is an assertion-authenticated app claim, not an Apple-certified OS measurement.
+	OSVersion string
 }
 
 const maxAppAttestServingLease = 15 * time.Minute

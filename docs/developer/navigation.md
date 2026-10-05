@@ -24,6 +24,7 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | Provider sessions and trust | `coordinator/api/provider/` and `provider/trust/`; terminal inference events return to the shared inference owner |
 | Catalog publication and release policy | `coordinator/api/catalog/` and `coordinator/api/releases/` |
 | Accounts, billing HTTP and payouts | `coordinator/api/accounts/`, `coordinator/api/billing/`, `billing/payouts/` |
+| Earn-page hardware interest: registration, own readback and admin export | `coordinator/api/accounts/small_models_interest.go`; contract in `coordinator/store/small_models_interest.go`, backends in `coordinator/store/memory/small_models_interest.go` and `coordinator/store/postgres/small_models_interest.go` |
 | Public projections and operational endpoints | `coordinator/api/reporting/` and `coordinator/api/operations/` |
 | Profiles, request outcomes and route sinks | `coordinator/api/observation/`; separate bounded queues retain their own loss/flush rules |
 | Prompt accounting and planning | `coordinator/api/promptwork/` and the inference owner |
@@ -32,6 +33,7 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | Autopilot admin HTTP contract | `coordinator/api/autopilot/`; parent API adapter supplies authorization and dependencies |
 | Autopilot demand, placement and donor coverage | `coordinator/registry/autopilot/`; the registry adapter owns live sessions, reservations and transport |
 | Accounting and durable state | `coordinator/billing/`, `coordinator/payments/`; contracts/decorator in `coordinator/store/`, implementations in `store/memory/` and `store/postgres/` |
+| Open Sales Program | `coordinator/api/billing/referrals.go` for account-scoped HTTP; `coordinator/billing/referral.go` for registration, attribution and stats; `coordinator/store/consumer_settlement.go` for the atomic charge contract |
 | Coordinator tests and fixtures | `coordinator/tests/` mirrors production owners; public API contracts use `tests/api/<domain>/contracts/`, shared helpers use `tests/internal/` |
 | Provider inference, downloads, security, local serving | `provider-swift/Sources/ProviderCore/`; entrypoints in `provider-swift/Sources/darkbloom/` |
 | Autopilot runtime and operator controls | `ProviderCore/Autopilot/`, `ProviderCore/Protocol/Autopilot/`, and `darkbloom/Autopilot/` under `provider-swift/Sources/`; startup is in `darkbloom/Start/` |
@@ -52,6 +54,7 @@ components for the specific invariant:
 |---|---|
 | Middleware, projections and reporting calculations | `coordinator/internal/api/` |
 | Media, provider-body memo/sealing, relay, cancellation, promotions/reservations and outcomes | `coordinator/internal/inference/` |
+| Uncertain consumer-charge settlement | `coordinator/internal/inference/consumercharge/settlement.go` (`Engine`); the inference owner supplies completion callbacks and `coordinator/app/services.go` runs maintenance |
 | Session/inventory/heartbeat, challenge, identity, MDM and trust authority | `coordinator/internal/provider/` |
 | Apple transcript, exchange/evidence/storage, recovery, qualification and authorization | `coordinator/internal/appattest/`; `coordinator/appattest/service/` binds the live session lifecycle and collaborators |
 | Independent route/profile/outcome pipelines | `coordinator/internal/observation/` |
@@ -61,8 +64,9 @@ components for the specific invariant:
 | Restore publication and pending service charges | `coordinator/registry/provider_persistence.go` (`ProviderPersistence`), `coordinator/registry/service_reservations.go` (`ServiceReservations`); both retain the provider's existing lock boundaries |
 | Cache restore, maintenance and capability publication | `coordinator/registry/cache_restoration.go`, `coordinator/registry/cache_maintenance.go`, `coordinator/registry/cache_snapshot.go`; factories in `coordinator/registry/cache_dependencies.go` retain the actual tracker/registry |
 | Autopilot session authority, bounded control and pending durable phases | `coordinator/internal/registry/autopilotstate/`, `autopilotcontrol/`, `autopilotledger/`; pure placement and demand contracts remain under `coordinator/registry/autopilot/` |
-| Routing scan candidate storage | `coordinator/internal/registry/candidatearena/arena.go` (`Arena`, `ChunkSize`); the chunk is sized against `Candidate` (`coordinator/registry/scheduler.go`) and guarded by `coordinator/tests/registry/candidate_arena_test.go` |
+| Routing scan candidate storage | `coordinator/internal/registry/candidatearena/` (`Arena`, `Storage`, `ChunkSize`); private ownership in `coordinator/registry/reservation_storage.go`, compact retained evidence in `coordinator/registry/candidate_snapshot.go`; chunk size and retained public lifetimes are guarded by `coordinator/tests/registry/candidate_arena_test.go`, `candidate_storage_test.go` and `reservation_storage_test.go` |
 | Cache generations, memory history, shared records and SQL helpers | `coordinator/internal/store/` |
+| Consumer referral accounting shared by both backends | `coordinator/internal/store/consumersettlement/settlement.go` owns validation, replay, collected-cost and promotion-record rules; `coordinator/store/memory/consumer_settlement.go` and `coordinator/store/postgres/consumer_settlement.go` own atomic writes |
 | Sidecar identity, protocol, artifacts, catalog/preload and endpoint lowering | `coordinator/internal/promptcontract/` |
 | Remote media policy, read budgets and reference grouping | `coordinator/internal/mediafetch/` |
 | Frame scanning and decoding | `coordinator/internal/wire/` |

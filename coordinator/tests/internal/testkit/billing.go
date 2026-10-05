@@ -23,7 +23,7 @@ func NewBilling(t *testing.T) (*Fixture, *payments.Ledger) {
 	f := New(t, api.ServerConfig{})
 	f.Server.SetChallengeInterval(200 * time.Millisecond)
 	ledger := payments.NewLedger(f.Store)
-	f.Server.SetBilling(billing.NewService(f.Store, ledger, slog.New(slog.DiscardHandler), billing.Config{MockMode: true, ReferralSharePercent: 20}))
+	f.Server.SetBilling(billing.NewService(f.Store, ledger, slog.New(slog.DiscardHandler), billing.Config{MockMode: true}))
 	if err := f.Store.Credit(store.LegacyAccountID("test-key"), 100_000_000, store.LedgerDeposit, "test-setup"); err != nil {
 		t.Fatal(err)
 	}

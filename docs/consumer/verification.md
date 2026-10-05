@@ -18,6 +18,13 @@ Under the upcoming [frozen legacy MDM policy](../architecture/security/enrollmen
 
 New providers require macOS 27 or later and current qualified App Attest
 authorization; consumers do not need macOS 27 to use the API or console.
+For [base rewards](../reference/pricing-model.md#base-rewards), every provider,
+old or new, needs macOS 27 or later and current qualified App Attest authorization.
+The OS claim is bound to that authorization by the App Attest assertion and
+qualified executable, not independently certified by Apple as an OS measurement.
+Unsigned registration or inventory OS fields cannot substitute for it. This
+reward-only requirement does not remove temporary frozen legacy serving or
+change completed-inference earnings.
 The provider CLI checks frozen eligibility with an authenticated signed request
 even when a legacy profile is already installed. Its "Already enrolled" result
 does not establish current serving authorization or publish the enrollment proof.

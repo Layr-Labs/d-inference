@@ -1,13 +1,41 @@
 # Changelog
 
+## Unreleased - Autopilot inventory reporting
+
+- Add an admin-only connected Autopilot inventory report with exact per-model last-reported approval counts, deduplicated approval totals and a models-per-provider distribution. Distinguish unpaused, paused and stale connections without exposing provider identities or claiming fresh disk verification, residency or routing eligibility. The read does not depend on the operation ledger.
+
+## Unreleased - Open Sales Program
+
+- Add an Open Sales Program page to register and share a code, apply a referrer, and track referred consumers and earned rewards. Preserve referral links through sign-in and invite redemption.
+- Reward referrers with 5% of their referred consumers' collected token spend as withdrawable earnings funded by Darkbloom. Consumer prices, provider earnings, and platform-fee credits remain unchanged.
+- Settle consumer charges and referral credits atomically per request, excluding free or uncollected usage and preventing duplicate rewards. Keep attribution immutable and prospective; retire the old platform-fee-share setting.
+- Include only the paid portion of token-promotion requests in referral earnings, atomically with promotion settlement.
+- Exclude execution on the consumer's own machines, explicit self-routing, and selected-machine routing from referral rewards and eligible-spend totals, including paid owner-preferred fallbacks. The same exclusions apply to the paid portion of promotion requests. Request billing, provider payouts, and promotion grant use are unchanged.
+- Require Privy sessions for referral mutations and retry uncertain settlement without releasing reserved service funds or repeating live-request accounting. Reconcile pending settlements during graceful shutdown.
+
 ## Unreleased — routing scan cost
 
+- Compact retained routing evidence, reuse bounded private reservation storage, borrow forecast inputs, project alternate-selection values once, and aggregate pending work once per provider snapshot. Public scan and quote lifetimes, selection policy, admission, retirement and billing behavior are preserved.
+
 - Reduce the per-request provider scan cost after the coordinator reorganization. Autopilot eligibility reads the clock only for a provider holding a matching control grant, candidate ranking reads the projected pool in place, and candidate storage fills one allocation size class. Routing outcomes are unchanged.
+
+## Unreleased — canceled PostgreSQL debits
+
+- Keep a PostgreSQL debit uncommitted until its statement succeeds, preventing a timed-out row-lock wait from later becoming a charge. Lost commit acknowledgements remain uncertain and must not be blindly retried.
+
+## Unreleased — shared-host memory admission
+
+- Add opt-in `DARKBLOOM_MEMORY_AVAILABILITY=free-only` to exclude inactive pages from shared-host admission and KV headroom. Sampling failures fail closed in this mode. Preserve the default reclaimable-page policy and document what the memory reserve measures.
 
 ## Unreleased - verification concurrency
 
 - Keep a reconnected provider's verification job eligible after its old worker releases the claim. A delayed challenge callback no longer restores the stale running snapshot and postpones verification until claim expiry.
 - Read one synchronized trust-level snapshot for registration metrics and telemetry while verification updates run concurrently.
+
+## Unreleased — provider service replacement
+
+- Wait for launchd to confirm removal of the previous provider service before installing or starting its replacement. Preserve stop/uninstall intent and report failed or timed-out removal without starting another service.
+- Treat bootstrap operation-in-progress errors as failures instead of reporting a successful start.
 
 ## Unreleased — leaderboard availability
 
@@ -25,7 +53,7 @@
 - Freeze a durable authenticated account/SE-key/serial cohort of already successfully MDM-verified devices on the first upgraded coordinator startup after revocation replay. Restarts preserve even an empty cohort; new accounts/devices and new associations cannot expand it. Gate identity recovery, scheduling, live/late MDM results and cached trust reuse. No grace period has been chosen and no expiry is implemented.
 - Require a linked provider Bearer token and fresh signed SE-key proof for `/v1/enroll`; reenrollment is limited to the existing key under its frozen account. New identities require qualified App Attest, with no unsupported-OS fallback. Generic copied profiles can still enroll directly in MicroMDM; the restriction guarantees coordinator MDM authorization, not prevention of that direct enrollment.
 - Require App Attest for noncohort owner self/prefer routing as well as public serving. Validate enabled production App Attest serving with full rollout before the startup freeze; invalid configuration fails closed without freezing membership.
-- Require current qualified App Attest authorization for base rewards, including machines with both MDM and App Attest evidence; legacy MDM-only machines remain eligible for grandfathered serving but not base rewards. Existing economics guards and inference/work earnings remain unchanged, with no retroactive reward clawback.
+- Require macOS 27 or later and current qualified App Attest authorization for base rewards for every provider, old or new, including machines with both MDM and App Attest evidence. The OS claim must belong to that same authorization; missing, malformed or older versions fail closed. Legacy MDM-only machines remain eligible for grandfathered serving but not base rewards. Existing economics guards and inference/work earnings remain unchanged, with no retroactive reward clawback.
 - Check authenticated frozen account/key eligibility in `darkbloom enroll` even when a legacy profile is already installed; a successful check preserves that profile without reinstallation. Clarify that new providers need macOS 27 or later and current qualified App Attest, not an OS-only grant; consumers have no macOS 27 requirement.
 - Update the enrollment HTTP integration fixture to verify a linked test token and canonical P-256 proof instead of expecting anonymous profile downloads.
 
@@ -90,6 +118,10 @@
 - Apply current full Autopilot settings at each new scheduled window. Disabling between windows restores ordinary saved model selection even if unchanged; other runtime inputs remain frozen.
 - Queue pending-operation uncertainty before removing a disconnected provider, persisting outside registry/provider locks. Connection loss never implies rollback or a confirmed terminal resident set.
 
+## Unreleased — console chat request budget
+
+- Refuse oversized chat requests locally with guidance to reduce images or conversation length. Check the full UTF-8 request and optional encrypted envelope before sending, retain the user's message and images, and apply the same check on retry. Existing per-file and image-count limits remain unchanged.
+
 ## Unreleased — canceled queue waiters
 
 - Stop canceled waiters held by a scheduling pass from returning as queued demand and occupying slots needed by fresh requests. Drop completed entries during queue pop and stale cleanup while preserving live FIFO order, timeout notifications, and reservation cleanup.
@@ -99,6 +131,11 @@
 - Calibrate idle native MiMo engines after model loading and refresh stale phase evidence with uncached built-in prompts. Measure short and 4k text plus affordable batches within the existing concurrency cap; retain the production MTP and memory configuration.
 - Give customer requests priority across models: cancel calibration and wait for real native retirement before admission. Keep probe work out of served-request/token counters; publish actual phase measurements and optional peak-concurrency workload buckets through existing heartbeats.
 - Align `ProviderCore.version` and the coordinator latest-provider display fallback at `0.9.15`. Publication, signed-artifact qualification and coordinator rollout remain separate operations.
+
+## Unreleased — durable hardware interest
+
+- Save Earn-page notification interest against the authenticated account before showing confirmation. Both notification buttons preserve pending hardware through sign-in, expose cancellation and retry, and recover confirmed status from the server after reload.
+- Add per-account memory/Postgres upserts and a bounded admin-only export joined to current email. Hardware updates replace the account's previous selection; legacy anonymous browser markers no longer claim registration. No email delivery is added.
 
 ## Unreleased — provider prefill evidence recovery
 
@@ -129,6 +166,10 @@
 - Match vision scratch to the selected fused Metal kernel and complete audio encoder/RVQ stages before reusing their workspace. Reserve actual audio tiles rather than charging a maximum tile and every layer simultaneously.
 - Report media-preparation memory refusals as `media_memory_unavailable`. Keep bounded failover while leaving text-capacity clamps, health breakers and reputation unchanged. Genuine native completion faults retain their existing quarantine behavior.
 - Add exact OpenRouter JPEG/MP4/MOV fixture coverage and media-refusal-to-text-serving regressions.
+
+## Unreleased — bounded non-streaming responses
+
+- Bound coordinator retention of non-streaming provider output by aggregate bytes and frame count, including empty frames and the first chunk. Oversized attempts are cancelled and fail with 502 before successful settlement; streaming behavior is unchanged.
 
 ## Release candidate v0.9.13 — MiMo memory admission (not shipped)
 

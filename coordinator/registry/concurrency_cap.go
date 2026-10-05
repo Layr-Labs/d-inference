@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/eigeninference/d-inference/coordinator/env"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/capacityvalue"
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/performance"
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/quality"
 )
@@ -298,6 +299,27 @@ func (r *Registry) effectiveMaxConcurrencyForModelRateLocked(p *Provider, model 
 // advertised as routable and upstream routers keep sending requests it 429s.
 // Caller holds r.mu and p.mu.
 func (r *Registry) hasConcurrencyHeadroomForModelCapResolvedLocked(p *Provider, model string) bool {
+	_, headroom := r.concurrencyHeadroomReportLocked(p, model)
+	return headroom
+}
+
+func (r *Registry) hasPendingConcurrencyHeadroomLocked(p *Provider, model string) bool {
 	return p.pendingLoadForModelLocked(model) < r.effectiveMaxConcurrencyForModelResolvedLocked(p, model) &&
-		p.pendingCount() < p.maxConcurrency() && p.hasWholeMacServiceHeadroomLocked(model)
+		p.pendingCount() < p.maxConcurrency()
+}
+
+// concurrencyHeadroomReportLocked leaves saturated providers on the cheap
+// count gates; a successful preflight lends its validation to deadline work.
+func (r *Registry) concurrencyHeadroomReportLocked(p *Provider, model string) (capacityvalue.ServiceReport, bool) {
+	if !r.hasPendingConcurrencyHeadroomLocked(p, model) {
+		return capacityvalue.ServiceReport{}, false
+	}
+	report := capacityvalue.NewServiceReport(p.BackendCapacity)
+	return report, p.serviceReservationsLocked().hasHeadroomWithReport(model, report)
+}
+
+// The routing snapshot has already validated this report for deadline work.
+// The same provider lock protects it through the admission check.
+func (r *Registry) hasConcurrencyHeadroomWithReportLocked(p *Provider, model string, report capacityvalue.ServiceReport) bool {
+	return r.hasPendingConcurrencyHeadroomLocked(p, model) && p.serviceReservationsLocked().hasHeadroomWithReport(model, report)
 }

@@ -25,6 +25,13 @@ Each CI workflow change exercises that workflow's lanes; changes to the shared
 detector exercise all callers. The existing push-only Swift cache job is unchanged.
 The separate release preparation workflow retains its existing triggers.
 
+Registry performance comparisons use the same pinned Go toolchain for both
+revisions. Build each `coordinator/tests/registry` test binary with `go test -c`
+before timing, then run the prebuilt binaries without concurrent compilation.
+The [reservation benchmark procedure](test.md#reservation-storage-and-scan-benchmarks)
+describes fixtures, interleaving and the distinction between local routing cost
+and production latency.
+
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
 source-matched `mlx.metallib`), and the console and marketing Next.js UIs.
@@ -75,6 +82,9 @@ owners. `go build ./coordinator/...` builds production code and ordinary
 adds checked shard discovery; coverage explicitly instruments the imported
 production packages, excluding all test helpers. See the
 [test-boundary map](test.md#2-coordinator-go) for focused commands.
+Routing snapshot-age regressions run against the ordinary coordinator build;
+the [test guide](test.md#2-coordinator-go) includes a race-enabled repetition
+command using the existing reservation-preparation fixture.
 
 Registry-ID support changes Swift provider policy and Rust prompt normalization
 together. Build the paired coordinator/sidecar/provider candidate; the v6
@@ -835,7 +845,7 @@ local stub servers; its default observation mode sends only public GETs.
 | `prompt-sidecar-build` | `cargo build --locked --release --bin promptsidecar` |
 | `prompt-sidecar` | format + check + test + build |
 | `provider-build` | `swift build` + `scripts/fetch-metallib.sh <bin-path>` |
-| `provider-test` | `swift build --build-tests`, stage `mlx.metallib` into the bin dir and every `*PackageTests.xctest/Contents/MacOS`, then `swift test --skip-build` |
+| `provider-test` | `swift build --build-tests`, stage `mlx.metallib` into the bin dir and every `*.xctest` test bundle, then `swift test --skip-build` |
 | `provider` | `provider-build` + `provider-test` |
 | `benchmark-wrapper-test` | Python unittest discovery for `gemma_contbatch/tests` and `serving_performance` from `scripts/` |
 | `benchmark-gemma-contbatch` | `python3 scripts/benchmark-gemma-contbatch.py $(GEMMA_BENCHMARK_ARGS)` (needs GPU + weights) |
@@ -938,10 +948,17 @@ Provider Tests also runs `python3 scripts/test-profile-inventory-auth.py` on mac
 
 After `swift build --build-tests`, run `scripts/stage-test-metallib.sh` with the
 package's `swift build --show-bin-path` directory. The helper builds or verifies
-the matching MLX library and stages it beside each test executable and in the
-nested resource bundle used by native checkpoint identity tests. `make provider-test`
+the matching MLX library. Then it copies the library into every `*.xctest`
+bundle in that directory: beside the test executable and in the nested resource
+bundle that native checkpoint identity tests use. The native build system makes
+one `<Package>PackageTests.xctest`. CI uses the native build system through
+`scripts/provider-release-swift.sh`. A local Swift 6.4 `swift build` uses Swift
+Build, which makes one `<Target>.xctest` for each test target. `make provider-test`
 and the provider/nested CI jobs invoke this helper. A missing test runner or
 failed source verification is an error; an existing library is always replaced.
+Staging prefers APFS clone copies and falls back to ordinary `cp` when cloning
+fails or is unsupported (including Linux). Copy or byte-verification failures
+leave the destination unchanged; verified copies replace it atomically.
 See [the live-test setup](test.md) for the pinned DiffusionGemma artifact and
 opt-in encrypted transport gate.
 

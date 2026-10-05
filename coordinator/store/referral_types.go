@@ -11,7 +11,8 @@ type Referrer struct {
 
 // ReferralStats provides aggregate metrics for a referral code.
 type ReferralStats struct {
-	Code                 string `json:"code"`
-	TotalReferred        int    `json:"total_referred"`
-	TotalRewardsMicroUSD int64  `json:"total_rewards_micro_usd"`
+	Code                       string `json:"code"`
+	TotalReferred              int    `json:"total_referred"`
+	TotalRewardsMicroUSD       int64  `json:"total_rewards_micro_usd"`
+	TotalReferredSpendMicroUSD int64  `json:"total_referred_spend_micro_usd"`
 }

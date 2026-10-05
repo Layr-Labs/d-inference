@@ -2,12 +2,58 @@ package baserewards_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
+
+func TestBaseRewardsRequireVerifiedMacOS27ForOldAndNewProviders(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		for _, version := range []string{"26.5", "27", "27.0", "28.1.2", "", "macOS 27", "27.x", "27.", "27.0.0.1", "+27", " 27", "27.0beta", "18446744073709551616", "27.18446744073709551616"} {
+			t.Run(fmt.Sprintf("legacy=%t/os=%s", legacy, version), func(t *testing.T) {
+				epoch, start, end, clock := closedEpoch()
+				st := &machineEngineStore{engineStore: newEngineStore()}
+				reg := registry.New(testLogger())
+				p, _ := addMachineRewardProvider(t, st, reg, "provider", "key", "account", "apple")
+				p.Mu().Lock()
+				p.AttestationResult = &attestation.VerificationResult{Valid: true, OSVersion: "27.0", HardwareModel: "Mac15,8", SerialNumber: "serial"}
+				if legacy {
+					p.Attested, p.ChallengeVerifiedSIP = true, true
+					p.TrustLevel = registry.TrustHardware
+				}
+				p.Mu().Unlock()
+				if !legacy {
+					p.RequireAppAttestServingAuthorization()
+				}
+				lease := p.GetAppAttestServingAuthorization()
+				lease.OSVersion = version
+				if !reg.GrantAppAttestServingAuthorization(p, lease) {
+					t.Fatal("reward OS must not change serving lease validity")
+				}
+				st.sessions = []store.ProviderSession{fullUptimeSession(p.ID, "key", "serial", "account", start, end)}
+				result, err := newTestEngine(st, reg, clock).SettleEpoch(context.Background(), epoch)
+				if err != nil {
+					t.Fatal(err)
+				}
+				allowed := version == "27" || version == "27.0" || version == "28.1.2"
+				if allowed {
+					if result.Settled != 1 || result.TotalDrawMicroUSD <= 0 {
+						t.Fatalf("valid OS denied rewards: %+v", result)
+					}
+				} else if result.Eligible != 0 || result.Settled != 0 || result.TotalDrawMicroUSD != 0 {
+					t.Fatalf("invalid verified OS earned rewards: %+v", result)
+				}
+				if legacy && !reg.ProviderLegacyServingAuthorized(p) {
+					t.Fatal("reward OS exclusion changed grandfathered serving")
+				}
+			})
+		}
+	}
+}
 
 func TestBaseRewardsRequireCurrentAppAttestDespiteLegacyServing(t *testing.T) {
 	for _, state := range []string{"legacy-only", "hybrid", "expired", "revoked", "unqualified", "expires-before-credit", "unqualified-before-credit", "expires-at-commit", "unqualified-at-commit"} {
@@ -28,6 +74,11 @@ func TestBaseRewardsRequireCurrentAppAttestDespiteLegacyServing(t *testing.T) {
 				t.Fatal("fixture must retain legacy serving authorization")
 			}
 			st.sessions = []store.ProviderSession{fullUptimeSession(p.ID, "key", "serial", "account", start, end)}
+			lease := p.GetAppAttestServingAuthorization()
+			lease.OSVersion = "28.0"
+			if !reg.GrantAppAttestServingAuthorization(p, lease) {
+				t.Fatal("grant OS-qualified lease")
+			}
 			expire := func() { now = p.GetAppAttestServingAuthorization().ValidUntil }
 			unqualify := func() { reg.SetAppAttestQualificationGeneration(1) }
 			switch state {

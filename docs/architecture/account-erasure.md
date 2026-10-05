@@ -314,7 +314,9 @@ A redaction job moves through these steps, one per worker pass
    moves to `manual_action`.
 4. **Stuck.** A job that keeps one non-terminal status for more than
    `erasureRedactionStuck` moves to `manual_action`. The status clock
-   restarts when the job or its status changes.
+   restarts when the job or its status changes. A failed Stripe call keeps
+   the last known status (`redactionAPIOutcome`), so retried errors do not
+   restart the clock.
 5. **Gone.** When the job is not found, the generation goes up, so the next
    create does not get the dead job back from Stripe's idempotency cache.
 

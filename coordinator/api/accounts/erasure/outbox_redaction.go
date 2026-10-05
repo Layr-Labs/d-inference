@@ -48,7 +48,7 @@ func (s *Owner) redactCheckoutSessions(row store.ErasureOutboxWork) outboxOutcom
 			return splitMissingSessions(stripe, row, ids, now)
 		}
 		if err != nil {
-			return redactionAPIOutcome(err, "")
+			return redactionAPIOutcome(err, "", "")
 		}
 		return outboxOutcome{kind: outboxProgress, jobID: job.ID, jobStatus: job.Status, next: poll}
 	}
@@ -59,7 +59,7 @@ func (s *Owner) redactCheckoutSessions(row store.ErasureOutboxWork) outboxOutcom
 		return outboxOutcome{kind: outboxProgress, next: now, newGeneration: true}
 	}
 	if err != nil {
-		return redactionAPIOutcome(err, row.StripeJobID)
+		return redactionAPIOutcome(err, row.StripeJobID, row.JobStatus)
 	}
 	switch job.Status {
 	case "succeeded":
@@ -76,7 +76,7 @@ func (s *Owner) redactCheckoutSessions(row store.ErasureOutboxWork) outboxOutcom
 	if job.Status == "ready" {
 		ran, err := stripe.RunRedactionJob(job.ID)
 		if err != nil {
-			return redactionAPIOutcome(err, job.ID)
+			return redactionAPIOutcome(err, job.ID, job.Status)
 		}
 		return outboxOutcome{kind: outboxProgress, jobID: job.ID, jobStatus: ran.Status, next: poll}
 	}
@@ -98,7 +98,7 @@ func splitMissingSessions(stripe *billing.StripeProcessor, row store.ErasureOutb
 	for _, id := range ids {
 		ok, err := stripe.CheckoutSessionExists(id)
 		if err != nil {
-			return redactionAPIOutcome(err, "")
+			return redactionAPIOutcome(err, "", "")
 		}
 		if ok {
 			found = append(found, id)
@@ -128,7 +128,7 @@ func splitMissingSessions(stripe *billing.StripeProcessor, row store.ErasureOutb
 func failedRedactionJob(stripe *billing.StripeProcessor, row store.ErasureOutboxWork, jobID string, now time.Time) outboxOutcome {
 	verrs, err := stripe.RedactionValidationErrors(jobID)
 	if err != nil {
-		return redactionAPIOutcome(err, jobID)
+		return redactionAPIOutcome(err, jobID, row.JobStatus)
 	}
 	if len(verrs) == 0 {
 		return outboxOutcome{kind: outboxManual, err: "redaction job " + jobID + " failed without validation errors"}
@@ -153,9 +153,13 @@ func failedRedactionJob(stripe *billing.StripeProcessor, row store.ErasureOutbox
 // endpoints. A definitive 4xx (including "feature not enabled for this
 // account") needs an operator; anything else is retried. A "not found"
 // from the job create or the job read is handled before this call.
-func redactionAPIOutcome(err error, jobID string) outboxOutcome {
+// jobStatus is the last status known for jobID, so a failed call does not
+// restart the job's status clock (outboxResult) and postpone the
+// erasureRedactionStuck escalation.
+func redactionAPIOutcome(err error, jobID, jobStatus string) outboxOutcome {
+	out := outboxOutcome{kind: outboxRetry, err: truncateErasureError(err.Error()), jobID: jobID, jobStatus: jobStatus}
 	if stripeDefinitive(err) {
-		return outboxOutcome{kind: outboxManual, err: truncateErasureError(err.Error()), jobID: jobID}
+		out.kind = outboxManual
 	}
-	return outboxOutcome{kind: outboxRetry, err: truncateErasureError(err.Error()), jobID: jobID}
+	return out
 }

@@ -378,3 +378,47 @@ func TestErasureOutboxRedactionEscalation(t *testing.T) {
 		wantManual(t, fx.row(t, account, store.ErasureTargetCheckoutSessions), "still too recent")
 	})
 }
+
+// A transient Stripe error while a job runs must not restart the job's
+// status clock; otherwise retried errors postpone the stuck-job escalation
+// forever.
+func TestErasureOutboxTransientErrorKeepsJobStatusClock(t *testing.T) {
+	fx := newOutboxFixture(t, false)
+	transient := `{"error":{"type":"api_error","message":"try again"}}`
+
+	t.Run("job read fails", func(t *testing.T) {
+		account := fx.scrub(t, outboxSeed{sessions: []string{"cs_test_1"}})
+		since := time.Now().UTC().Add(-redactionStuckAfter - time.Hour)
+		fx.setRow(t, fx.row(t, account, store.ErasureTargetCheckoutSessions), func(r *store.ErasureOutboxResult) {
+			r.StripeJobID, r.JobStatus, r.JobStatusSince = "prj_flaky", "validating", &since
+		})
+		fx.stripe.on(http.MethodGet, "/v1/privacy/redaction_jobs/prj_flaky", 500, transient)
+		for attempt := 1; attempt <= 3; attempt++ {
+			fx.pass(t, account)
+			row := fx.row(t, account, store.ErasureTargetCheckoutSessions)
+			wantRetry(t, row, attempt)
+			if row.StripeJobID != "prj_flaky" || row.JobStatus != "validating" || row.JobStatusSince == nil || !row.JobStatusSince.Equal(since) {
+				t.Fatalf("after transient error %d = %+v; the job status clock moved", attempt, row)
+			}
+			fx.setRow(t, row, nil)
+		}
+		fx.stripe.on(http.MethodGet, "/v1/privacy/redaction_jobs/prj_flaky", 200, `{"id":"prj_flaky","status":"validating"}`)
+		fx.pass(t, account)
+		wantManual(t, fx.row(t, account, store.ErasureTargetCheckoutSessions), "validating since")
+	})
+	t.Run("job run fails", func(t *testing.T) {
+		account := fx.scrub(t, outboxSeed{sessions: []string{"cs_test_1"}})
+		since := time.Now().UTC().Add(-24 * time.Hour)
+		fx.setRow(t, fx.row(t, account, store.ErasureTargetCheckoutSessions), func(r *store.ErasureOutboxResult) {
+			r.StripeJobID, r.JobStatus, r.JobStatusSince = "prj_ready", "ready", &since
+		})
+		fx.stripe.on(http.MethodGet, "/v1/privacy/redaction_jobs/prj_ready", 200, `{"id":"prj_ready","status":"ready"}`)
+		fx.stripe.on(http.MethodPost, "/v1/privacy/redaction_jobs/prj_ready/run", 500, transient)
+		fx.pass(t, account)
+		row := fx.row(t, account, store.ErasureTargetCheckoutSessions)
+		wantRetry(t, row, 1)
+		if row.JobStatus != "ready" || row.JobStatusSince == nil || !row.JobStatusSince.Equal(since) {
+			t.Fatalf("after a failed run = %+v; the job status clock moved", row)
+		}
+	})
+}

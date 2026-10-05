@@ -1,8 +1,35 @@
 # Changelog
 
+## Unreleased — stale cache allowlist entries
+
+- Report cache-routing allowlist entries that a model revision has left behind. Publishing new weights or a new template under the same model ID changes the artifact tuple, so the model silently lost cache routing and its cache hits fell to zero until an operator appended the new tuple. `GET /v1/cache/status` now counts such models as `artifact_allowlist.stale_models`, with matching Prometheus and Datadog gauges, and the coordinator log names each live tuple once. Routing behaviour and the allowlist's exact-match rule are unchanged.
+
+## Unreleased - Mac CI cost controls
+
+- Cancel superseded pull-request CI and integration runs without cancelling default-branch pushes. Bound provider unit-test stalls with the existing diagnostic watchdog, and reuse compatible integration build caches while retaining every test gate and parallel job.
+
+## Unreleased - provider test coverage
+
+- Report Swift product, CLI and benchmark coverage separately in CI, merging isolated test-process profiles without replacing test failures with coverage results.
+- Expand provider and standalone lifecycle, tiny-model loading, CLI/service/fan, SSD-cache and benchmark harness regressions with temporary state and scripted host boundaries. Keep real tiny-model execution distinct from full-checkpoint quality and performance qualification.
+
+## Unreleased - provider email campaigns
+
+- Add the `provider-emails` operator command to preview provider software/macOS update audiences, sync owner groups to Resend, render and test notices, and create unsent broadcasts for review. Preserve unsubscribe preferences and remove owners from managed groups when their reported machines meet the target.
+- Serialize campaign reply-to addresses in the Resend broadcast API's array form while keeping the campaign configuration's single-address input.
+
 ## Unreleased - Autopilot inventory reporting
 
 - Add an admin-only connected Autopilot inventory report with exact per-model last-reported approval counts, deduplicated approval totals and a models-per-provider distribution. Distinguish unpaused, paused and stale connections without exposing provider identities or claiming fresh disk verification, residency or routing eligibility. The read does not depend on the operation ledger.
+
+## Unreleased - Open Sales Program
+
+- Add an Open Sales Program page to register and share a code, apply a referrer, and track referred consumers and earned rewards. Preserve referral links through sign-in and invite redemption.
+- Reward referrers with 5% of their referred consumers' collected token spend as withdrawable earnings funded by Darkbloom. Consumer prices, provider earnings, and platform-fee credits remain unchanged.
+- Settle consumer charges and referral credits atomically per request, excluding free or uncollected usage and preventing duplicate rewards. Keep attribution immutable and prospective; retire the old platform-fee-share setting.
+- Include only the paid portion of token-promotion requests in referral earnings, atomically with promotion settlement.
+- Exclude execution on the consumer's own machines, explicit self-routing, and selected-machine routing from referral rewards and eligible-spend totals, including paid owner-preferred fallbacks. The same exclusions apply to the paid portion of promotion requests. Request billing, provider payouts, and promotion grant use are unchanged.
+- Require Privy sessions for referral mutations and retry uncertain settlement without releasing reserved service funds or repeating live-request accounting. Reconcile pending settlements during graceful shutdown.
 
 ## Unreleased — routing scan cost
 

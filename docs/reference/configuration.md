@@ -95,6 +95,16 @@ causes a reported conflict instead of being overwritten (`stageReplacement`,
 | console-ui | Next.js `.env*` files or the hosting build environment (Vercel-style). Every console-ui variable is `NEXT_PUBLIC_*` or build-tooling: inlined at **build** time, so changing one requires a rebuild. There is no server-only secret; a gitignored `.env.local` in `console-ui/` is the only local file and no `.env.example` exists. |
 | admin-ui | Server-only **runtime** variables read by React Server Components on each request; set them in `.env*` or the host environment. `NODE_ENV` is set by Next. |
 
+## Provider email operator command
+
+These variables apply only to the separately invoked `provider-emails` tool,
+not the coordinator server. See [provider email campaigns](../operations/provider-emails.md).
+
+| Variable | Values / type | Default | Read in | Effect |
+|---|---|---|---|---|
+| `PROVIDER_EMAIL_DATABASE_URL` | PostgreSQL connection string | unset | `coordinator/provideremail/command/run.go` (`loadSnapshot`) | Read fleet ownership, reported versions and owner email in a read-only snapshot; unnecessary with a local fixture or `test`. |
+| `RESEND_API_KEY` | Secret, Full access for contact/segment/broadcast operations | unset | `coordinator/provideremail/command/run.go` (`Run`) | Authenticate Resend sync/draft operations and explicitly addressed test sends; unnecessary for fleet preview. |
+
 ## Coordinator
 
 ### Core server
@@ -413,12 +423,11 @@ operator pause. See `coordinator/registry/autopilot_activation.go`
 
 ### Billing, Stripe and base rewards
 
-Prices, the platform fee and the referral share live in [`../architecture/billing.md#invariants`](../architecture/billing.md#invariants); this table only names the switches.
+Prices, the platform fee and the fixed consumer referral reward live in [`../architecture/billing.md#invariants`](../architecture/billing.md#invariants); this table only names the switches.
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
 | `EIGENINFERENCE_BILLING_MOCK` | `true` | `false` | `coordinator/billing/config.go` (`ReadConfig`); `coordinator/app/services.go` | Bypasses Stripe with an instant-credit mock (dev only). |
-| `EIGENINFERENCE_REFERRAL_SHARE_PCT` | integer percent | `20` | `coordinator/billing/config.go` (`ReadConfig`) | Share of the platform fee paid to a consumer's referrer. |
 | `EIGENINFERENCE_STRIPE_SECRET_KEY` | secret | unset (deposits disabled) | `coordinator/billing/config.go` (`ReadConfig`) | Stripe API key for consumer deposits. |
 | `EIGENINFERENCE_STRIPE_WEBHOOK_SECRET` | secret | unset | `coordinator/billing/config.go` (`ReadConfig`) | Verifies Checkout webhooks. |
 | `EIGENINFERENCE_STRIPE_SUCCESS_URL`, `EIGENINFERENCE_STRIPE_CANCEL_URL` | URLs | unset | `coordinator/billing/config.go` (`ReadConfig`); `coordinator/billing/stripe.go` (`NewStripeProcessor`) | Checkout redirect targets. |

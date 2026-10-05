@@ -1,10 +1,34 @@
 # Build
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the
 operator’s live status or recovery evidence (`scripts/run-provider-tests.sh`).
+
+CI and Integration Tests cancel an older run only when a newer revision of the
+same pull request starts in that workflow. Concurrency groups include the
+workflow and event names; non-PR runs use a unique run ID, so default-branch pushes
+remain independent. Provider unit, SDK, parity and integration jobs remain
+parallel, without a shared-build dependency between workflows.
+
+Integration Tests reuse their own compatible Swift debug and Rust build caches
+through `scripts/provider-ci-cache.py` (`keys --lane integration`). The restore
+prefix binds the lane, toolchain, SDK, OS, checkout path, dependency pins and build
+recipe; the exact key also binds the source commit. Restored source timestamps
+are checked by content, cached runtime resources are discarded, and Swift and
+sidecar build commands still execute. Metal uses an exact source/toolchain key
+shared with compatible provider lanes, followed by the existing source-matched
+validation and staging. Cache misses build normally; caches never skip E2E tests
+or enter the separate release-build namespace. Compare cache transfer plus build
+time and whole-job runtime on real runners before claiming a saving.
+Homebrew and `zstd` are installed before any integration cache restore, including
+Go's cache. Restore and save must use the same compression format, which is part
+of the Actions cache version; installing it between those steps produces misses
+even when the visible cache key matches.
+The test-bundle staging helper uses APFS-capable clone copies on Darwin and ordinary
+copies on other platforms, so its offline Linux tests exercise the same atomic
+copy, byte-comparison and rename path (`scripts/stage-test-metallib.sh`).
 
 Pull-request CI selects expensive component jobs through
 `scripts/ci-component-paths.py`, called by `.github/workflows/component-changes.yml`.
@@ -182,6 +206,10 @@ Go/Swift fixture and focused checks are described in [test.md](test.md) and
 [prediction telemetry](../reference/prediction-decision-telemetry.md).
 
 The `ProviderAppAttest` Swift target uses public DeviceCheck/Security APIs. Its [shadow packaging and live-validation requirements](../reference/app-attest-shadow.md#packaging-and-live-acceptance) are separate from a successful local compile.
+
+The provider email operator command builds separately with
+`go build -o /tmp/provider-emails ./coordinator/cmd/provider-emails`. It is not
+part of the coordinator server process. See the [provider email runbook](../operations/provider-emails.md).
 
 Provider signing, R2 staging and publication run in separate jobs in `.github/workflows/release-swift.yml`. `scripts/provider-release-publication.py` stages the final signed bundle under an immutable digest path, retains metadata, and gates publication on coordinator qualification. A staging or publication retry downloads and reuses the original signed artifact and does not rerun compilation or notarization. `scripts/provider_release_github.py` resumes draft/upload state, verifies asset hashes before publishing and never replaces completed mismatched bytes. See [build qualification](../operations/app-attest-build-qualification.md).
 
@@ -525,6 +553,25 @@ To compile all test targets without executing fixtures:
 ```bash
 (cd provider-swift && swift build --build-tests)
 ```
+
+The test products include the provider/standalone lifecycle, CLI/service/fan,
+SSD-cache and benchmark harness groups described in the
+[provider test-group map](test.md#provider-lifecycle-cli-and-benchmark-groups).
+Most use scripted dependencies and isolated files; the generated tiny-model
+load tests execute actual MLX kernels without downloading a checkpoint. A
+successful compile alone does not run either group, and neither substitutes
+for full-checkpoint qualification. Stage the matched metallib before execution
+and use the runner's serial/fresh-process isolation rather than parallelizing
+tests that share MLX or model-cache state.
+
+For coverage, the provider CI lane builds tests and the fan-helper product with
+`--enable-code-coverage`; its cache key distinguishes instrumented builds from
+the SDK and parity lanes (`.github/actions/provider-ci-build/action.yml`). Follow
+the [isolated local coverage recipe](test.md#provider-coverage-report-only) for
+fresh profiles, state paths, all reported executable objects and retained test
+exit status. Product, CLI and benchmark rows are report-only, not a release or
+performance gate. Keep these instrumented debug products separate from the
+optimized binaries used for performance measurements.
 
 ```bash
 make provider-build
@@ -956,6 +1003,9 @@ one `<Package>PackageTests.xctest`. CI uses the native build system through
 Build, which makes one `<Target>.xctest` for each test target. `make provider-test`
 and the provider/nested CI jobs invoke this helper. A missing test runner or
 failed source verification is an error; an existing library is always replaced.
+Staging uses `cp -c` on Darwin to retain APFS cloning and ordinary `cp` on other
+hosts, including Linux fixture runners. Copy errors and byte-comparison failures
+stop before the destination is replaced; no failed clone is silently retried.
 See [the live-test setup](test.md) for the pinned DiffusionGemma artifact and
 opt-in encrypted transport gate.
 

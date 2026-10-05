@@ -31,8 +31,8 @@ models. This uses `Provider.ServingModelsLocked` in
 
 ## Provider-bound caller fields
 
-The coordinator accepts top-level `user` and generic `metadata` on the four
-inference endpoints but removes them from provider-bound bodies before encryption.
+The coordinator accepts top-level `user`, generic `metadata`, `safety_identifier`
+and caller `prompt_cache_key` on the four inference endpoints but removes them from provider-bound bodies before encryption.
 The shared `parseInferencePrelude` (`coordinator/api/inference/prelude_parser.go`)
 runs `Parser.Parse`, which calls `stripProviderCallerIdentity`
 (`coordinator/internal/inference/prelude/request_prelude.go`,
@@ -713,7 +713,7 @@ Requests are decoded into a generic JSON object with `json.Number` preserved (`p
 | `response_format` | Passed through to the provider without coordinator validation |
 | `reasoning`, `reasoning_effort` | Applied per model policy by `ApplyResolvedModelReasoningPolicy` (`coordinator/api/inference/request/reasoning_request_policy.go`) |
 | `provider` and other routing hints | Removed by `StripProviderRoutingFields` (`coordinator/api/inference/request/request_introspection.go`) |
-| `user`, `metadata` (top level) | Accepted, then removed before the body is forwarded to a provider; see [provider-bound caller fields](#provider-bound-caller-fields) |
+| `user`, `metadata`, `safety_identifier`, `prompt_cache_key` (top level) | Accepted, then removed before the body is forwarded to a provider (the coordinator may add its own protocol-0 `prompt_cache_key` afterwards); see [provider-bound caller fields](#provider-bound-caller-fields) |
 | `image_url` parts with `http(s)` URLs | Fetched by the coordinator before dispatch (`Bridge.Resolve`, `coordinator/internal/inference/media/media_resolve.go`) |
 
 ### Chat Completions response (`ChatCompletionResponse`, `coordinator/api/types/types.go`)

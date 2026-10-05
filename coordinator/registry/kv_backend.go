@@ -2,8 +2,8 @@ package registry
 
 import (
 	"strings"
-	"unicode/utf8"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/kvbackend"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
@@ -121,109 +121,21 @@ var knownKVFallbackClasses = map[string]struct{}{
 	KVFallbackInvalidDType:     {},
 }
 
-// maxKVFallbackReasonBytes bounds the stored reason. It is untrusted provider
-// input held for the life of a provider session across up to
-// maxTrackedKVBackendSlots slots.
-//
-// DELIBERATELY ABOVE THE PRODUCER'S BOUND, not equal to it. The Swift provider
-// clamps to 200 Characters in EngineV2Bridge.heartbeatFallbackReason, so a
-// conforming build never reaches this clamp — it only fires on a misbehaving
-// or future one. Keeping the coordinator's bound strictly looser means the two
-// cannot fight over a legitimate reason, and keeping it AT ALL is the point:
-// this side of the trust boundary must not depend on the other side having
-// behaved. Raise the provider's bound first if it ever needs to grow.
-//
-// A grapheme cluster can be up to ~4 bytes in UTF-8, so 200 Characters can be
-// ~800 bytes; the difference is why this is not "200 too".
-const maxKVFallbackReasonBytes = 1024
-
-// slotKVBackend is one slot's KV-backend observation. Kind and FallbackReason
-// live in ONE value because they are only meaningful together and must be
-// written together: recording them in two maps lets a slot that degraded, then
-// reloaded clean, keep a stale reason next to a fresh kind — a permanent false
-// degrade, which is the exact failure this field exists to prevent.
-type slotKVBackend struct {
-	// Kind is the resolved backend, verbatim from the wire.
-	Kind string
-	// FallbackReason is the degrade reason, "" when the slot did not
-	// degrade. Because the pair is always written together, "" here is an
-	// OBSERVATION of no degrade, not missing data.
-	FallbackReason string
+func (r *Registry) newKVBackendHistory(id string) *kvbackend.History {
+	if r.kvBackendsFactory != nil {
+		if history := r.kvBackendsFactory(id); history != nil {
+			return history
+		}
+	}
+	return &kvbackend.History{}
 }
 
-// maxTrackedKVBackendSlots bounds the per-provider slot record. Slot models are
-// untrusted provider input, so a box that heartbeats thousands of distinct slot
-// models must not grow coordinator state without bound. A real box carries
-// `maxModelSlots` (default 3) at a time and cycles through a handful more over
-// a session, so the cap is unreachable in practice; past it, new models simply
-// stay unattributed rather than being mis-attributed.
-const maxTrackedKVBackendSlots = 64
-
-// recordKVBackendsLocked folds the KV backend of every slot in a heartbeat into
-// the provider's per-slot record. Caller must hold p.mu.
-//
-// STICKY on purpose: an entry survives its slot leaving the heartbeat. The
-// provider reports only RESIDENT engine slots — `allSlots` comes from
-// `engineV2Runtime.capacitySummary` (ProviderLoop+Capacity.swift:97) — so a
-// slot that OOMs, crashes or is evicted mid-request vanishes from the report
-// entirely. Without stickiness the 503s from a paged slot that just fell over
-// would be attributed to "unknown", losing precisely the signal the gate exists
-// to catch. The record lives on Provider, so it dies with the provider session
-// and a reconnect starts clean.
-//
-// A nil KVBackend never overwrites an earlier observation: nil is "this
-// provider says nothing", not an observation of anything.
-//
-// The fallback reason is written IN LOCKSTEP with the kind, under that same
-// nil-KVBackend gate — including when it is absent, which clears any earlier
-// reason. That is not incidental: a slot that degrades, is reloaded and comes
-// back clean reports a kind with no reason, and an update that only ever
-// WROTE reasons would pin the old degrade to the healthy slot forever.
+// recordKVBackendsLocked retains slot attribution under the existing provider lock.
 func (p *Provider) recordKVBackendsLocked(bc *protocol.BackendCapacity) {
-	if bc == nil {
-		return
+	if p.kvBackends == nil {
+		p.kvBackends = &kvbackend.History{}
 	}
-	for i := range bc.Slots {
-		slot := &bc.Slots[i]
-		if slot.Model == "" || slot.KVBackend == nil {
-			continue
-		}
-		if p.kvBackends == nil {
-			p.kvBackends = make(map[string]slotKVBackend, len(bc.Slots))
-		}
-		if _, known := p.kvBackends[slot.Model]; !known && len(p.kvBackends) >= maxTrackedKVBackendSlots {
-			continue
-		}
-		var reason string
-		if slot.KVBackendFallbackReason != nil {
-			reason = clampKVFallbackReason(*slot.KVBackendFallbackReason)
-		}
-		p.kvBackends[slot.Model] = slotKVBackend{
-			Kind:           *slot.KVBackend,
-			FallbackReason: reason,
-		}
-	}
-}
-
-// clampKVFallbackReason bounds an untrusted reason to maxKVFallbackReasonBytes.
-// Truncation is from the tail, so the leading class token the metric groups on
-// always survives.
-//
-// RUNE-SAFE. A plain reason[:n] byte slice can cut a multi-byte rune in half,
-// and these reasons interpolate errors straight out of MLX/Metal — a
-// non-ASCII path or device name is entirely possible. The trailing fragment
-// would then be invalid UTF-8, which Postgres rejects on the route-outcome
-// write and Go renders as U+FFFD in logs. Backing up to the last rune boundary
-// costs at most three bytes of a 1 KiB tail.
-func clampKVFallbackReason(reason string) string {
-	if len(reason) <= maxKVFallbackReasonBytes {
-		return reason
-	}
-	cut := maxKVFallbackReasonBytes
-	for cut > 0 && !utf8.RuneStart(reason[cut]) {
-		cut--
-	}
-	return reason[:cut]
+	p.kvBackends.Record(bc)
 }
 
 // kvBackendForModelLocked reports the last observation for this provider's slot
@@ -231,29 +143,8 @@ func clampKVFallbackReason(reason string) string {
 // caller must not read that as any particular kind, nor as "did not degrade".
 // An observed empty Kind is a real (if unhelpful) report and stays distinct
 // from absence. Caller must hold p.mu.
-func (p *Provider) kvBackendForModelLocked(model string) (obs slotKVBackend, observed bool) {
-	obs, observed = p.kvBackends[model]
-	return obs, observed
-}
-
-// slotKVBackendObservation is the one lookup both dimensions come from.
-// Read-only; takes no registry write lock and never touches routing state.
-//
-// Unexported because nothing outside this package needs the RAW pair — the
-// verbatim reason ("pool_construction_capacity: needed N, available M") is
-// deliberately not what metrics carry. Package tests use it to assert what
-// clampKVFallbackReason stored; production goes through SlotKVBackendTags.
-func (r *Registry) slotKVBackendObservation(providerID, model string) (slotKVBackend, bool) {
-	if r == nil || providerID == "" || model == "" {
-		return slotKVBackend{}, false
-	}
-	p := r.GetProvider(providerID)
-	if p == nil {
-		return slotKVBackend{}, false
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.kvBackendForModelLocked(model)
+func (p *Provider) kvBackendForModelLocked(model string) (kvbackend.Observation, bool) {
+	return p.kvBackends.Observe(model)
 }
 
 // SlotKVBackendTags resolves both metric dimensions for a provider the caller
@@ -325,8 +216,8 @@ func KVBackendTag(kind string, observed bool) string {
 // A degrade class is the leading token of the reason, which every producer
 // writes as "<class>: <detail>" (or the bare "kill_switch"). The detail is
 // dropped here on purpose — it embeds byte counts and error strings, which
-// would blow out tag cardinality; the raw pair stays available in-package
-// through slotKVBackendObservation.
+// would blow out tag cardinality; the raw pair stays in the session's
+// kvbackend.History.
 //
 // NEVER returns "": every branch names a vocabulary constant. The API layer
 // emits these values as metric tags without re-normalizing, and

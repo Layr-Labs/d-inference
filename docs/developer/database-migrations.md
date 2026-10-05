@@ -31,23 +31,23 @@ in production is the [schema migration runbook](../operations/schema-migration.m
    | Change | Kind | Example in the repo |
    |---|---|---|
    | Add a table, a nullable column, or a column with a constant default; add a constraint `NOT VALID` | SQL file, one transaction (the default) | Template in step 3 |
-   | Several `ALTER TABLE`s on busy tables that must not hold their locks together; `DROP INDEX CONCURRENTLY`; `VALIDATE CONSTRAINT` after a `NOT VALID` add | SQL file with `-- +goose NO TRANSACTION` | `coordinator/store/schema/migrations/00001_baseline.sql` |
+   | Several `ALTER TABLE`s on busy tables that must not hold their locks together; `DROP INDEX CONCURRENTLY`; `VALIDATE CONSTRAINT` after a `NOT VALID` add | SQL file with `-- +goose NO TRANSACTION` | `coordinator/store/postgres/schema/migrations/00001_baseline.sql` |
    | Create an index on a table that has rows in production | Go migration through `ensureConcurrentIndex` | `ensureProviderRestoreIndexes` (version 3) |
    | A step that must read data first, check a precondition, or check its own result | Go migration | `checkRetiredBackfills` (version 2) |
    | Rename or drop a column, or tighten a constraint | Two or more releases; see [expand and contract](#change-a-column-in-two-releases-expand-and-contract) | — |
    | Fix rows that a writer keeps producing | Not a migration: fix the writer | — |
-   | A cleanup that needs a long lock | Manual SQL under `coordinator/store/migrations/`, applied under an approved operation | `coordinator/store/migrations/dedupe_provider_earnings.sql` |
+   | A cleanup that needs a long lock | Manual SQL under `coordinator/store/postgres/migrations/`, applied under an approved operation | `coordinator/store/postgres/migrations/dedupe_provider_earnings.sql` |
 
 2. **Pick the version.** Use one more than the highest version in
-   `coordinator/store/schema/migrations/` and in `goMigrations`
-   (`coordinator/store/postgres_migrations.go`). SQL files and Go migrations
+   `coordinator/store/postgres/schema/migrations/` and in `goMigrations`
+   (`coordinator/store/postgres/migrations.go`). SQL files and Go migrations
    share one sequence. If a branch that merges before yours takes the same
    number, renumber yours before it merges.
 
 3. **Write the migration.** Follow the part for your kind.
 
    *SQL file, one transaction.* Create
-   `coordinator/store/schema/migrations/<NNNNN>_<short_name>.sql`, where
+   `coordinator/store/postgres/schema/migrations/<NNNNN>_<short_name>.sql`, where
    `<NNNNN>` is the version with leading zeros:
 
    ```sql
@@ -80,7 +80,7 @@ in production is the [schema migration runbook](../operations/schema-migration.m
 
    *Concurrent index.* Do not put `CREATE INDEX CONCURRENTLY` in an SQL file;
    `TestSQLMigrationsDoNotBuildIndexesConcurrently` fails. Add a Go migration
-   that calls `ensureConcurrentIndex` (`coordinator/store/postgres_startup.go`),
+   that calls `ensureConcurrentIndex` (`coordinator/store/postgres/startup.go`),
    as `ensureProviderRestoreIndexes` does:
 
    ```go
@@ -115,24 +115,24 @@ in production is the [schema migration runbook](../operations/schema-migration.m
    docker exec dinf-store-pg pg_dump -U postgres --schema-only --no-owner --no-privileges \
      --exclude-table=goose_db_version schema_dump \
      | grep -v '^\\restrict \|^\\unrestrict \|^-- Dumped from database version\|^-- Dumped by pg_dump version' \
-     > coordinator/store/schema/schema.sql
+     > coordinator/store/postgres/schema/schema.sql
    docker exec dinf-store-pg dropdb -U postgres schema_dump
    ```
 
    The `--migrate-only` run logs one `postgres migration` line per version
    with `"result":"applied"`, then `coordinator migrations complete`. Use the
    `pg_dump` inside the container, so that its major version matches
-   production (17). Review `git diff coordinator/store/schema/schema.sql`: it
+   production (17). Review `git diff coordinator/store/postgres/schema/schema.sql`: it
    must show only your change.
 
 6. **Update the rest of the store.** Make `MemoryStore`
-   (`coordinator/store/memory.go`) match, and update the docs that describe
+   (`coordinator/store/memory/`) match, and update the docs that describe
    the changed tables ([storage](../architecture/storage.md)).
 
 ## Verify
 
 ```bash
-go test ./coordinator/store -count=1 \
+go test ./coordinator/tests/store/postgres -count=1 \
   -run 'TestMigrations|TestConcurrentMigrations|TestMigrateRetries|TestSQLMigrations'
 ```
 
@@ -140,7 +140,7 @@ go test ./coordinator/store -count=1 \
 |---|---|
 | `TestMigrationsBuildCheckedInSchema` | `schema.sql` differs from what the migrations build |
 | `TestMigrationsLeaveLegacyDatabaseUnchanged` | Versions 1 to 5 change a database that a pre-goose coordinator built |
-| `TestConcurrentMigrationsApplyOnce` | Two runs at once apply a version twice |
+| `TestConcurrentMigrationsApplyOnce` | Two runs at once apply a version twice, or a run changes the schema while another session holds the goose advisory lock |
 | `TestSQLMigrationsDoNotBuildIndexesConcurrently` | An SQL file contains `CREATE [UNIQUE] INDEX CONCURRENTLY` |
 
 Then run the store tests for the tables you changed, on both backends.

@@ -22,17 +22,17 @@ Goose ([`github.com/pressly/goose/v3`](https://github.com/pressly/goose))
 replaces that loop. Each schema change is a numbered version. Goose applies a
 version once, records it in `goose_db_version`, and skips it on every later
 boot. The 255 statements are version 1, unchanged and in the same order
-(`coordinator/store/schema/migrations/00001_baseline.sql`).
+(`coordinator/store/postgres/schema/migrations/00001_baseline.sql`).
 
 ## Mechanism
 
 ### Startup path
 
-`NewPostgres` (`coordinator/store/postgres.go`) opens the serving pool, pings
-it, and calls `migrate` (`coordinator/store/postgres_migrations.go`). It
+`NewPostgres` (`coordinator/store/postgres/postgres.go`) opens the serving pool, pings
+it, and calls `migrate` (`coordinator/store/postgres/migrations.go`). It
 returns the store only after every pending version has applied.
-`coordinator --migrate-only` (`coordinator/cmd/coordinator/maintenance.go`,
-`runMaintenanceCommand`) calls the same `NewPostgres` with a 15-minute context
+`coordinator --migrate-only` (`coordinator/internal/command/coordinator/maintenance.go`,
+`Maintenance`) calls the same `NewPostgres` with a 15-minute context
 and exits; it seeds no admin key and starts no listener or worker.
 
 ```mermaid
@@ -61,11 +61,11 @@ Legend: blue = step, amber = decision, green = success, red = exit 1.
 
 | Version | Source | What it does |
 |---|---|---|
-| 1 | `coordinator/store/schema/migrations/00001_baseline.sql` | The 255 statements of the pre-goose boot, in the same order, as one `-- +goose NO TRANSACTION` file. On a schema that a pre-goose coordinator built, every statement is a no-op. |
-| 2 | `checkRetiredBackfills` (`coordinator/store/postgres_retired_backfills.go`) | Guards the retired one-shot backfills; see [Version 2](#version-2-the-retired-backfill-guard). |
-| 3 | `ensureProviderRestoreIndexes` (`coordinator/store/postgres_startup.go`) | Builds `idx_providers_restore_serial` and `idx_providers_restore_se_key` `CONCURRENTLY` through `ensureConcurrentIndex`. |
-| 4 | `ensureProviderEarningsJobIndex` (`coordinator/store/postgres.go`) | Drops an invalid leftover with a plain `DROP INDEX`, fails on duplicate non-empty `job_id`s, then builds the unique `idx_provider_earnings_job` `CONCURRENTLY`. |
-| 5 | `ensureProviderEarningsWindowIndex` (`coordinator/store/postgres_earnings_window_index.go`) | Builds the BRIN `idx_provider_earnings_created_at_brin` through `ensureConcurrentIndex` and sets `autovacuum_analyze_scale_factor` to `0.005`. |
+| 1 | `coordinator/store/postgres/schema/migrations/00001_baseline.sql` | The 255 statements of the pre-goose boot, in the same order, as one `-- +goose NO TRANSACTION` file. On a schema that a pre-goose coordinator built, every statement is a no-op. |
+| 2 | `checkRetiredBackfills` (`coordinator/store/postgres/retired_backfills.go`) | Guards the retired one-shot backfills; see [Version 2](#version-2-the-retired-backfill-guard). |
+| 3 | `ensureProviderRestoreIndexes` (`coordinator/store/postgres/startup.go`) | Builds `idx_providers_restore_serial` and `idx_providers_restore_se_key` `CONCURRENTLY` through `ensureConcurrentIndex`. |
+| 4 | `ensureProviderEarningsJobIndex` (`coordinator/store/postgres/provider_earnings_index.go`) | Drops an invalid leftover with a plain `DROP INDEX`, fails on duplicate non-empty `job_id`s, then builds the unique `idx_provider_earnings_job` `CONCURRENTLY`. |
+| 5 | `ensureProviderEarningsWindowIndex` (`coordinator/store/postgres/earnings_window_index.go`) | Builds the BRIN `idx_provider_earnings_created_at_brin` through `ensureConcurrentIndex` and sets `autovacuum_analyze_scale_factor` to `0.005`. |
 
 Versions 2 to 5 are Go migrations, listed in `goMigrations`. They are the
 startup steps that ran after the old DDL loop, with their code unchanged.
@@ -85,7 +85,7 @@ unapplied version below the highest applied one
 
 An SQL file must not contain `CREATE INDEX CONCURRENTLY`
 (`TestSQLMigrationsDoNotBuildIndexesConcurrently` in
-`coordinator/store/postgres_migrations_test.go`). A build that fails, for
+`coordinator/tests/store/postgres/migrations_test.go`). A build that fails, for
 example on `lock_timeout`, leaves an invalid index; on the next attempt
 `IF NOT EXISTS` skips it and goose records the version with a broken index.
 `ensureConcurrentIndex` returns at once for a valid index, refuses an invalid
@@ -103,7 +103,7 @@ build before retrying`), and fails unless the new index is valid and ready.
 | Retries | `migrationAttempts = 3`; pauses of 1 s and 2 s | `migrate`, `isLockTimeout` | Only a lock timeout is retried. Each attempt opens a new migration pool and starts again from the pending check. |
 | Advisory lock | session lock `4097083626` (goose `lock.DefaultLockID`), `pg_try_advisory_lock` every 5 s, 60 retries | `lock.NewPostgresSessionLocker` in `newMigrationProvider` | Two coordinators that start together take turns. The second one gives up after 5 min with `failed to acquire lock`. |
 | Go migrations | no session timeouts unless the URL sets them | `goMigrations` run on the store pool | Keeps the pre-goose behaviour of versions 2 to 5: a `CREATE INDEX CONCURRENTLY` that times out leaves an invalid index. |
-| `--migrate-only` | `context.WithTimeout(..., 15*time.Minute)` | `runMaintenanceCommand` | The whole run stops after 15 min. The serving path has no such deadline. |
+| `--migrate-only` | `context.WithTimeout(..., 15*time.Minute)` | `Maintenance` | The whole run stops after 15 min. The serving path has no such deadline. |
 
 `CREATE INDEX CONCURRENTLY` blocks no reads or writes, but it waits for every
 transaction that holds an older snapshot. On a busy database it can wait for a
@@ -151,7 +151,7 @@ fix the writer.
 
 ### The checked-in schema
 
-`coordinator/store/schema/schema.sql` is the `pg_dump --schema-only
+`coordinator/store/postgres/schema/schema.sql` is the `pg_dump --schema-only
 --no-owner --no-privileges` of the schema that the migrations build, without
 `goose_db_version`. `TestMigrationsBuildCheckedInSchema` builds a fresh
 database with goose and fails when its catalog differs from a database loaded
@@ -164,7 +164,7 @@ versions 1 to 5 change no object and no row. The
 
 `schema_migrations` is an older table. It holds the markers of the one-shot
 data migrations inside the baseline and of the retired backfills, not goose
-versions. Two SQL files under `coordinator/store/migrations/` are applied by
+versions. Two SQL files under `coordinator/store/postgres/migrations/` are applied by
 hand with `psql`, never at boot: `dedupe_provider_earnings.sql` (an offline
 cleanup that once held a relation lock for about 15 minutes on the production
 table) and `request_waterfall.sql` (an analysis view, kept off the boot path
@@ -174,7 +174,7 @@ so a `CREATE VIEW` cannot queue behind a long query's lock).
 ### Logs
 
 Logs carry bounded labels only, never SQL or parameters
-(`logStartupMigration` in `coordinator/store/postgres_startup.go`).
+(`logStartupMigration` in `coordinator/store/postgres/startup.go`).
 
 | Message | Fields | When |
 |---|---|---|
@@ -188,11 +188,11 @@ Logs carry bounded labels only, never SQL or parameters
 ## Invariants
 
 1. **The coordinator serves only after every pending version applied.**
-   `NewPostgres` returns an error, and `main` exits 1, when `migrate` fails
-   (`coordinator/store/postgres.go`, `coordinator/cmd/coordinator/main.go`).
+   `NewPostgres` returns an error, and `openStore` exits 1, when `migrate` fails
+   (`coordinator/store/postgres/postgres.go`, `coordinator/app/store.go`).
 2. **A version applies once.** Goose records it after it succeeds, under the
    session advisory lock, and lists versions again after it takes the lock
-   (`newMigrationProvider` in `coordinator/store/postgres_migrations.go`).
+   (`newMigrationProvider` in `coordinator/store/postgres/migrations.go`).
    `TestConcurrentMigrationsApplyOnce` runs two migrations at once.
 3. **A failed version is not recorded.** A transactional SQL file rolls back
    with its version row. A `NO TRANSACTION` file or a Go migration records
@@ -222,7 +222,7 @@ Logs carry bounded labels only, never SQL or parameters
 | Exit 1 with `found duplicate migration version` | Two sources share a number | Renumber one. |
 | Exit 1 with `missing (out-of-order) migration` | A version below the highest applied one was never applied, for example after two branches added migrations | `SELECT version_id FROM goose_db_version ORDER BY id`; renumber the unapplied version above the highest one. |
 | Exit 1 with `database holds data that retired backfills never processed` or `balances.withdrawable_micro_usd is missing` | The database has history but never ran a backfill retired after v0.9.10 | Boot a v0.9.10 coordinator against it once, then redeploy (`checkRetiredBackfills`). |
-| Exit 1 with a `provider_earnings` duplicate `job_id` message | Rows share a non-empty `job_id`, so version 4 cannot build its unique index | Run `coordinator/store/migrations/dedupe_provider_earnings.sql` offline, then redeploy. |
+| Exit 1 with a `provider_earnings` duplicate `job_id` message | Rows share a non-empty `job_id`, so version 4 cannot build its unique index | Run `coordinator/store/postgres/migrations/dedupe_provider_earnings.sql` offline, then redeploy. |
 | A dropped column comes back, or a `SET NOT NULL` is undone, after a rollback | The rollback image was built before goose and replayed its boot DDL (`ADD COLUMN IF NOT EXISTS`; `DROP NOT NULL` on `fleet_snapshots.free_for_load_gb`) | Do not ship a destructive migration while a pre-goose image can be a fallback; see [expand and contract](../developer/database-migrations.md#change-a-column-in-two-releases-expand-and-contract). |
 | A column or index that `schema.sql` has is missing in production after the first goose deploy | One of the baseline's `DO ... EXCEPTION WHEN others` blocks swallowed an error (for example a lock timeout), and goose still recorded version 1 | The `pg_dump` diff in the [first cut-over checklist](../operations/schema-migration.md#first-production-cut-over-to-goose). |
 
@@ -230,14 +230,14 @@ Logs carry bounded labels only, never SQL or parameters
 
 | Concern | Location |
 |---|---|
-| Migration runner, timeouts, retries, Go migration list | `coordinator/store/postgres_migrations.go` (`migrate`, `migrateOnce`, `newMigrationProvider`, `goMigrations`) |
-| SQL migrations | `coordinator/store/schema/migrations/` |
-| Checked-in schema | `coordinator/store/schema/schema.sql` |
-| Concurrent index helper and startup log line | `coordinator/store/postgres_startup.go` (`ensureConcurrentIndex`, `logStartupMigration`) |
-| Go migration bodies | `coordinator/store/postgres_retired_backfills.go`, `coordinator/store/postgres.go` (`ensureProviderEarningsJobIndex`), `coordinator/store/postgres_earnings_window_index.go` |
-| Database-only command | `coordinator/cmd/coordinator/maintenance.go` (`runMaintenanceCommand`) |
-| Tests | `coordinator/store/postgres_migrations_test.go`, `coordinator/store/migration_harness_test.go` |
-| Manual SQL | `coordinator/store/migrations/` |
+| Migration runner, timeouts, retries, Go migration list | `coordinator/store/postgres/migrations.go` (`migrate`, `migrateOnce`, `newMigrationProvider`, `goMigrations`) |
+| SQL migrations | `coordinator/store/postgres/schema/migrations/` |
+| Checked-in schema | `coordinator/store/postgres/schema/schema.sql` |
+| Concurrent index helper and startup log line | `coordinator/store/postgres/startup.go` (`ensureConcurrentIndex`, `logStartupMigration`) |
+| Go migration bodies | `coordinator/store/postgres/retired_backfills.go`, `coordinator/store/postgres/provider_earnings_index.go` (`ensureProviderEarningsJobIndex`), `coordinator/store/postgres/earnings_window_index.go` |
+| Database-only command | `coordinator/internal/command/coordinator/maintenance.go` (`Maintenance`) |
+| Tests | `coordinator/tests/store/postgres/migrations_test.go`, `coordinator/tests/store/postgres/migration_harness_test.go` |
+| Manual SQL | `coordinator/store/postgres/migrations/` |
 
 ## Related
 

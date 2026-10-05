@@ -1,6 +1,6 @@
 # Telemetry event schema
 
-> Last updated: 2026-09-29
+> Last updated: 2026-10-03
 
 The shape of a telemetry *event* as it exists in three mirrors (Go, Swift,
 TypeScript), the closed enums it carries, and the tests that keep the mirrors
@@ -46,14 +46,14 @@ They add no event fields. The native queue captures
 computes age for the heartbeat without traversing allocator ownership. Optional
 `allocator_padding_bytes` and `last_allocation_allowance_bytes` distinguish
 retained nonusable bytes from released preparation allowance. The canonical
-`coordinator/protocol/testdata/paged_footprint_wire.json` fixture pins their
+`coordinator/tests/protocol/testdata/paged_footprint_wire.json` fixture pins their
 wire representation and omission behavior across Swift, Go and TypeScript.
 
 Process ownership uses optional
 [`backend_capacity.telemetry.process_memory`](protocol-messages.md#backend_capacitytelemetryprocess_memory)
 (`coordinator/protocol/process_memory_telemetry.go`, `ProcessMemoryTelemetry`).
 The Swift producer, Go consumer and TypeScript mirror share the canonical
-`coordinator/protocol/testdata/process_memory_wire.json` fixture. These scalar
+`coordinator/tests/protocol/testdata/process_memory_wire.json` fixture. These scalar
 observations add no event fields.
 
 ## Local provider drain events
@@ -139,10 +139,10 @@ keys. Each event goes to three places in order:
 | Sink | What |
 |---|---|
 | `slog` | `telemetry: <message>` at the mapped level, with `kind`, `request_id` (when set) and every field as attributes |
-| in-process registry | `telemetry_events_total{source, severity, kind}` via `Metrics.IncCounterEvent` (`coordinator/api/metrics.go`), readable at `GET /v1/admin/metrics` |
+| in-process registry | `telemetry_events_total{source, severity, kind}` via `Metrics.IncCounterEvent` (`coordinator/api/`), readable at `GET /v1/admin/metrics` |
 | Datadog Logs API | `datadog.Client.ForwardLog` (`coordinator/datadog/datadog.go`) → `https://http-intake.logs.<site>/api/v2/logs`, only when `DD_API_KEY` is set |
 
-Call sites (`s.emit`, `s.emitRequest`, `s.emitPanic` in `coordinator/api/server.go`)
+Call sites (`Owner.Emit`, `Owner.EmitRequest`, `Owner.EmitPanic` in `coordinator/api/observation/events.go`)
 and their fields are enumerated in
 [`telemetry-inventory.md`](telemetry-inventory.md#coordinator-emitted-events).
 
@@ -150,9 +150,9 @@ and their fields are enumerated in
 
 | Test | File | Pins |
 |---|---|---|
-| `TestTelemetryJSONSymmetry`, `TestTelemetryKindsMatch` | `coordinator/protocol/telemetry_symmetry_test.go` | canonical event encodes to the exact JSON string; the kind set |
+| `TestTelemetryJSONSymmetry`, `TestTelemetryKindsMatch` | `coordinator/tests/protocol/telemetry_symmetry_test.go` | canonical event encodes to the exact JSON string; the kind set |
 | `telemetryEventJSONSymmetry`, `telemetryKindsMatch`, `sourceAndSeverityRawValues` | `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetrySymmetryTests.swift` | the Swift mirror of the two Go tests plus the source/severity raw values |
-| `TestTelemetryE2E_NoClientIngestionRoute` | `coordinator/api/telemetry_e2e_test.go` | the retired ingest route is gone: 404, body not reflected, nothing counted |
+| `TestTelemetryE2E_NoClientIngestionRoute` | `coordinator/tests/api/operations/contracts/telemetry_e2e_test.go` | the retired ingest route is gone: 404, body not reflected, nothing counted |
 | `TelemetryClientTests.swift`, `TelemetryOverflowQueueTests.swift` | `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetryClientTests.swift`, `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetryOverflowQueueTests.swift` | the client facade stays inert and the legacy queue purge removes only regular files |
 
 ## Related

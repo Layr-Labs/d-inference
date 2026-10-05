@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — Stripe refund clock skew
+
+- Refund a rejected Stripe withdrawal when the coordinator clock is ahead of the PostgreSQL clock. Before, the refund check missed the withdrawal debit, refused the refund, and the recovery loop and `payout-audit --apply-refund` retried without success. The check still credits each withdrawal at most once and still refuses a ledger that does not show the exact debit.
+
 ## Unreleased - nightly Linear workflow
 
 - Package one-time Codex setup and a nightly playbook that reconciles work from Codex, Claude Code, and Pi with each teammate's Linear. Reuse existing issues and route unclassified deliverables to Others.

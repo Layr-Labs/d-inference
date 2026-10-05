@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -84,6 +84,18 @@ sequenceDiagram
 | 5. Record usage | `coordinator/api/inference/completion_accounting.go` `completionAccounting` (called from `HandleCompleteAt`) | In-memory `payments.Ledger.RecordUsage` always (bounded recent history, lazily allocated to the [usage history limit](../reference/pricing-model.md#constants)); a persistent `usage` row (`store.RecordUsage`) unless the request was free self-route. Both carry `cached_tokens` so a cache hit's cost can be reconciled against the published rates; a model-token promotion records `0`, because that path bills cached tokens at the input rate. |
 | 6. Pay out | `HandleCompleteAt` | Normally use the collected amount returned by settlement for fee and provider-payout arithmetic. If an unreserved, non-service request not marked free self-route is uncollected, retain the quoted cost and platform-covered payout (`coordinator/api/inference/consumer_settlement.go`, `settleCompletedConsumer`, `platformCovered` / `settledCost`). Uncollected service requests and requests that lose free-self-route eligibility instead have zero cost and payout; no uncollected charge earns a referral reward. `feePercent` is the consumer override, else the global default (invariant 4). `CreditProviderAccount` credits `totalCost − platformFee` to a linked provider account as withdrawable earnings; `Credit("platform", …)` credits the full platform fee. The referral reward is already credited by settlement and reduces neither amount. |
 | 7. Abort / disconnect | `coordinator/api/inference/consumer.go` `refundReservedBalance`; `coordinator/api/inference/settlement.go` `settlementHolder` | A request that fails before any provider terminal refunds the whole reservation (`LedgerRefund`, reference `reservation_refund:<request_id>`). If the consumer disconnects first, the billing record is parked for `defaultTerminalSettleGrace = 30 * time.Second` so a late terminal settles it; otherwise it is refunded. |
+
+### Rejected Stripe withdrawal refunds
+
+`RefundRejectedStripeWithdrawal` in `coordinator/store/postgres/stripe_settlement.go`
+locks the withdrawal and shares the refund advisory lock with
+`CreditWithdrawableOnce`. It sums debit and refund rows for the account and
+`stripe_withdraw:<id>` reference without comparing coordinator and database
+timestamps. The net debit must equal the negative gross withdrawal amount; the net
+refund must be zero or equal that amount. A legacy full refund only repairs the flag;
+otherwise the credit, ledger row and flag commit together. Repeated recovery does
+not pay again. The [storage contract](storage.md#stripe-migration-settlement)
+describes the concurrent account/reference index that bounds this lookup.
 
 ### PostgreSQL debit cancellation
 

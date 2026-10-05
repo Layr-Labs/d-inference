@@ -1063,5 +1063,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 	if err := s.ensureProviderEarningsWindowIndex(ctx); err != nil {
 		return err
 	}
-	return nil
+	// The refund check is clock-independent and must not scan lifetime account history.
+	started := time.Now()
+	err := s.ensureConcurrentIndex(ctx, "idx_ledger_stripe_refund",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_ledger_stripe_refund ON ledger_entries(account_id, reference) WHERE entry_type IN ('refund','stripe_payout')`)
+	logStartupMigration("idx_ledger_stripe_refund", started, err)
+	return err
 }

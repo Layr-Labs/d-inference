@@ -924,7 +924,9 @@ make coordinator-test                      # runner guards + complete coordinato
 DATABASE_URL='postgres://testbed:testbed@127.0.0.1:5432/testbed?sslmode=disable' \
   python3 scripts/run-coordinator-tests.py --race --coverprofile coverage.out \
     $(go list ./... | grep -vx 'github.com/eigeninference/d-inference/e2e')
-go tool cover -func=coverage.out | tail -n 1   # total statement coverage
+# coordinator packages only, as CI reports it:
+{ head -n 1 coverage.out; grep '^github.com/eigeninference/d-inference/coordinator/' coverage.out; } > coverage-coordinator.out
+go tool cover -func=coverage-coordinator.out | tail -n 1   # total statement coverage
 gofmt -l .                                 # must print nothing
 golangci-lint run                          # .golangci.yml
 ```
@@ -941,9 +943,21 @@ elapsed-time tolerance. Repeat it with:
 go test -race ./coordinator/tests/registry -run '^TestReserveProviderExSnapshotAgeAndPending$' -count=1000
 ```
 
-CI writes the total statement coverage to the job summary and keeps
-`coverage.out` for 14 days as the `coordinator-coverage` artifact. The number
-is for information only. A low number does not fail the job.
+CI writes a coverage table to the job summary and keeps the full
+`coverage.out` for 14 days as the `coordinator-coverage` artifact. The table
+has the columns Component, Statements or Lines, Regions or Branches, Functions
+and Target. The target is 80% and is for information only: a low number does
+not fail the job. The step fails only when the profile has no coordinator data
+or no total. The denominator is the statements in the `coordinator/...`
+production packages. The runner instruments them in every test binary with
+`-coverpkg`, so the tests in `coordinator/tests/` credit the production code
+they run. A production package that no test imports still counts, at 0%. The
+`coordinator/tests/...` packages and their helpers are not instrumented, and
+`_test.go` files never count. The profile also holds `e2e/testbed/...` and a
+frozen docs evidence package; the step leaves them out. `go test` has no
+branch counters, so the table reports statements only. The table appears only
+when the [component router](#component-ci-routing) runs the job; pushes to the
+default branch always run it.
 
 The runner compiles each selected large API test package once and discovers its
 tests, examples, and fuzz seeds from that binary: `coordinator/tests/api`, its
@@ -1128,16 +1142,22 @@ checks `file` reports `statically linked|static-pie linked`, and replays the
 production prompt vectors against it with
 `scripts/verify-prompt-sidecar-linux.sh <binary>`.
 
-CI then measures coverage with `cargo-llvm-cov` 0.9.1 and writes the line
-coverage from its `TOTAL` row to the job summary. A low number does not fail
-the job. `cargo llvm-cov` runs the sidecar tests a second time, with coverage
-instrumentation, so a test failure can first appear in the Report coverage
-step. To measure it locally:
+CI then measures coverage with `cargo-llvm-cov` 0.9.1. It writes the same
+table shape as the coordinator job: lines, regions and functions, with an 80%
+report-only target, and it also appears only when the router runs the job.
+The step reads each value by its field name from the JSON report and fails if
+one is missing. A low number does not fail the job. The
+denominator is `coordinator/promptsidecar/src`. The tests under `tests/`,
+every `tests.rs` test module under `src/` and dependencies are left out;
+inline unit-test modules inside other `src` files are counted. Branch counters
+need a nightly toolchain, so branches are not reported. `cargo llvm-cov` runs
+the sidecar tests a second time, with coverage instrumentation, so a test
+failure can first appear in the Report coverage step. To measure it locally:
 
 ```bash
 rustup component add llvm-tools-preview --toolchain 1.88.0
 cargo install cargo-llvm-cov --version 0.9.1 --locked
-cd coordinator/promptsidecar && cargo +1.88.0 llvm-cov --locked --all-targets --summary-only
+cd coordinator/promptsidecar && cargo +1.88.0 llvm-cov --locked --all-targets --summary-only   # lines, regions, functions
 ```
 
 A number measured on macOS can differ from the Linux number in CI.
@@ -2527,7 +2547,7 @@ intentional skips for irrelevant PRs, rather than requiring unselected macOS job
 
 | Workflow | Trigger | Jobs (name → what runs) |
 |---|---|---|
-| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — release/script checks and offline provider CI/cache/routing guards · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `scripts/run-coordinator-tests.py --race --coverprofile` over every package except the top-level `e2e` integration package (`coordinator/internal/e2e` and `e2e/testbed/...` run), isolated API/registry shards and runner guards, with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence; total statement coverage in the job summary, merged `coverage.out` and timing evidence kept 14 days · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh`, then `cargo llvm-cov` (0.9.1) line coverage in the job summary · **Provider Unit Tests** (macOS 12-vcpu) — full debug test build, matched Metal, serial/fresh-process provider tests and installer checks · **Provider SDK Tests** (independent macOS 12-vcpu) — full nested test build and all required numerical/SDK selectors through checked wrappers · **Provider Prompt Parity** (independent macOS 12-vcpu) — `verify-prompt-parity.sh`, pinned Swift/Go/Rust vectors and sustained sidecar load proof · **Provider Tests** (Linux aggregate) — enforces the component-routing contract above · **Swift Build + Cache** (push only) — release build of `darkbloom` + `darkbloom-fan-helper` · **Console UI Lint & Build** — Node 22, `npm ci`, lint, vitest, and Next.js build |
+| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — release/script checks and offline provider CI/cache/routing guards · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `scripts/run-coordinator-tests.py --race --coverprofile` over every package except the top-level `e2e` integration package (`coordinator/internal/e2e` and `e2e/testbed/...` run), isolated API/registry shards and runner guards, with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence; job-summary coverage table (statements over `coordinator/...` only, 80% report-only target, no branch counters), merged `coverage.out` and timing evidence kept 14 days · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh`, then `cargo llvm-cov` (0.9.1) job-summary coverage table (lines, regions and functions over `coordinator/promptsidecar/src`, 80% report-only target, no branch counters) · **Provider Unit Tests** (macOS 12-vcpu) — full debug test build, matched Metal, serial/fresh-process provider tests and installer checks · **Provider SDK Tests** (independent macOS 12-vcpu) — full nested test build and all required numerical/SDK selectors through checked wrappers · **Provider Prompt Parity** (independent macOS 12-vcpu) — `verify-prompt-parity.sh`, pinned Swift/Go/Rust vectors and sustained sidecar load proof · **Provider Tests** (Linux aggregate) — enforces the component-routing contract above · **Swift Build + Cache** (push only) — release build of `darkbloom` + `darkbloom-fan-helper` · **Console UI Lint & Build** — Node 22, `npm ci`, lint, vitest, and Next.js build |
 | [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 75 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (blocking; explicit SSD opt-in and repeat demand) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`) |
 | [`.github/workflows/benchmarks.yml`](../../.github/workflows/benchmarks.yml) | PR, gated by the `benchmarks` environment (manual approval) | **E2E Benchmarks** — `go test ./e2e/ -count=1 -v -timeout 40m -p=1 -run 'TestBenchmark'`, posts `BENCHMARK_MD_PATH` as a PR comment |
 | [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml) | tag `v*`, manual | Provider release; see [`../operations/provider-release.md`](../operations/provider-release.md) |

@@ -1,6 +1,7 @@
 """Scan every source segment, then review interactions across the whole PR."""
 import copy
 import json
+import re
 from .client import ReviewUnavailable
 from .review import MAX_DIFF, SCHEMA, model_call
 
@@ -22,6 +23,35 @@ In an integration pass, evaluate the combined behavior, discover cross-file issu
 and validate candidate findings against the PR change. Return all supported findings,
 discard false positives and duplicates, and do not claim pre-existing issues are new.
 """
+
+
+def patch_context(items):
+    """Make split patch units independently citable, preserving both offsets."""
+    old = new = None
+    for item in items:
+        if item.get("kind") != "patch":
+            yield item
+            continue
+        lines = item["text"].splitlines(keepends=True)
+        if old is not None and not lines[0].startswith("@@"):
+            # Only count this continuation, stopping before the next real hunk.
+            continuation = []
+            for line in lines:
+                if line.startswith("@@"):
+                    break
+                continuation.append(line)
+            removed = sum(line.startswith((" ", "-")) for line in continuation)
+            added = sum(line.startswith((" ", "+")) for line in continuation)
+            header = f"@@ -{old},{removed} +{new},{added} @@\n"
+            item = dict(item, text=header + item["text"])
+        for line in lines:
+            match = re.match(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
+            if match:
+                old, new = map(int, match.groups())
+            elif old is not None:
+                old += line.startswith((" ", "-"))
+                new += line.startswith((" ", "+"))
+        yield item
 
 
 def units(records):

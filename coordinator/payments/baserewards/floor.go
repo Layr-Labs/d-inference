@@ -22,6 +22,8 @@ package baserewards
 import (
 	"math"
 	"time"
+
+	rewardpolicy "github.com/eigeninference/d-inference/coordinator/internal/payments/rewardpolicy"
 )
 
 // DefaultReductionK is the launch reduction rate (k=0): the base reward is pure
@@ -91,7 +93,7 @@ func Avail(uptimeFrac float64) float64 {
 // truncation) avoids a systematic 1µUSD underpay from float64 representation
 // error when availability is exactly 1.
 func PeriodFloor(memGB int, uptimeFrac float64, start, end time.Time) int64 {
-	return int64(math.Round(float64(TierFloor(memGB)) * periodMonthFraction(start, end) * Avail(uptimeFrac)))
+	return int64(math.Round(float64(TierFloor(memGB)) * rewardpolicy.PeriodMonthFraction(start, end) * Avail(uptimeFrac)))
 }
 
 // Draw returns the new money to print for one machine this settlement period:

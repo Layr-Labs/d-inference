@@ -1,6 +1,6 @@
 # Experimental model Autopilot
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-04
 
 Autopilot observes demand for an explicitly approved cached model inventory and
 can manage their memory residency during a separately enabled live rollout.
@@ -38,6 +38,23 @@ flowchart TD
   L --> G
 ```
 
+### Connected inventory reporting
+
+`coordinator/registry/autopilot_inventory_report.go` (`AutopilotInventory`)
+projects saved `SelectedModels` from connected provider sessions without calling
+the planner or changing consent, leases, routing gates or residency. It uses the
+existing consent predicate and excludes private-only providers. Counts include
+waiting, shadow, paused and stale sessions; they do not assert active control.
+Disconnected sessions disappear immediately and there is no durable offline
+inventory. Each exact model ID counts once per connection, without alias folding
+or filtering against today's catalog. These are last-reported approvals of cached
+builds, not a new disk scan, hash verification, resident count or routing claim.
+
+The admin-only inventory read is independent of controller configuration and the
+operation ledger, so a ledger outage cannot hide this in-memory projection. See
+the [inventory response contract](../reference/api-contracts.md#autopilot-inventory-report)
+for the population, freshness and count definitions.
+
 ### Enrollment and ownership
 
 `Start.resolveAutopilotChoice` asks once on the normal interactive start path.
@@ -69,9 +86,25 @@ starts unpaused (`saveAutopilotEnrollment`).
 
 `ModelAutopilotSettings.selectedModels` is an exact-build allowlist. An empty list
 cannot enroll, and another model appearing on disk cannot expand permission.
-The provider advertises this verified network inventory even when it is broader
-than saved `enabled_models`, and rechecks the allowlist before loads, prefetches
-and network acceptance. Discovering another build alone does not expand consent. An explicit startup
+The provider sends this verified network inventory separately in
+`register.autopilot_inventory`. The ordinary `models` advertisement remains the
+normal picker or explicit command-line selection. Waiting and shadow enrollment
+therefore cannot expand routing, cold loads, prefetches, startup preloading or
+the activation-memory reserve. Only an acknowledged, unexpired live lease permits an explicit placement
+command to make its named target loadable. The target is published under the
+reslice gate after survivor validation and a reserve raise; a lease or snapshot
+alone never expands the loadable set. Expiry, disconnect, pause and opt-out restore
+the ordinary selection. Accepted operations retain ownership until completion.
+The coordinator stores observation-only metadata with a separate permission
+marker: `providerOrdinaryModelAllowedLocked` fences public and owner routing,
+capacity and legacy commands, while `providerPassesAutopilotGatesLocked` lets the
+planner inspect candidates through the same remaining safety gates. Dedicated-model
+checks project the permission set after activation; a mixed cached inventory can
+therefore be excluded from a hypothetical plan while ordinary Gemma-only serving
+remains available. See
+`coordinator/registry/autopilot_inventory.go` and
+`provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+AutopilotInventory.swift`.
+Discovering another build alone does not expand consent. An explicit startup
 selection may add its chosen IDs to the recorded set. Ordinary starts with saved
 consent validate every recorded ID plus those chosen startup models or fail before persistence/drain if any is missing,
 ineligible or unverified, including a transient manifest error. They never save
@@ -88,13 +121,21 @@ state decoder’s snake-case conversion, including residents and load history.
 The 0.9.16 local file writes `autopilot_state` so a 0.9.15 watchdog can ignore
 the optional detail while reading heartbeat health; new readers also accept old
 `autopilot` files. WebSocket encoding and required-field validation remain unchanged.
-Desired-build updates outside the recorded set are ignored. While enrolled,
+Unrelated desired-build updates outside the recorded set are ignored. A declared
+successor of an ordinary selected model retains the existing artifact-update
+workflow even when its new build ID is absent from the Autopilot inventory;
+this does not add that ID to cached-only Autopilot consent. When that extends
+ordinary permission beyond cached consent, wire participation is suspended
+(`enabled=false`) until explicit inventory refresh. Saved enrollment stays on;
+`waiting_inventory` explains the required refresh. This prevents older
+coordinators from applying their cached-selection routing fence to the new
+ordinary successor and grants no additional Autopilot command permission. While enrolled,
 `darkbloom switch` directs the operator to `darkbloom autopilot models` or opt-out
 so a manual hosted-model transaction cannot bypass the approved selection.
 Both operation owners reject overlap, including model-switch validation. Pause, resume, pins and
 disable update a config revision consumed by the running daemon's capacity poll.
 
-Protocol 2 separates `enabled` consent, `observe_only` shadow mode and `active`
+Protocol 3 separates `enabled` consent, `observe_only` shadow mode and `active`
 live control. The coordinator defaults to `ObserveOnly=true`; operators explicitly
 set `EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY=false` and restart to switch to live.
 The startup enable switch and runtime admin pause remain independent controls;
@@ -108,6 +149,10 @@ ownership. Only a matching acknowledged live lease transfers normal network
 cold-load/idle ownership. Shadow planning uses eligible consent hypothetically,
 without requiring a lease acknowledgement, and never reserves, fences or sends residency
 commands (`autopilotFleetSnapshotLocked`, `modelAutopilotController.tick`).
+Request routing checks lease ownership for every candidate and reads the clock
+only for a provider holding a matching grant
+([scan cost per candidate](routing.md#scan-cost-per-candidate)); an expired
+grant still stops managing the provider at its expiry instant.
 Renewals enqueue without waiting on sockets through each connection's bounded
 priority lane. A full queue does not extend that provider's coordinator lease;
 slow connections cannot serialize renewal of healthy peers or the planning tick.
@@ -122,13 +167,16 @@ ninety-second serving heartbeat window, including ordinary, shadow, waiting and 
 providers. A fresh liveness-only frame never refreshes an old capacity sample.
 Before coordinator activation, the ordinary startup preloader retains the saved
 explicit or implicit model preference, including `preload_models`, within slot
-and memory limits. Advertising a broader enrolled inventory does not turn it
-into a preload-all request. Autopilot rejects commands while that
+and memory limits. Only models in the ordinary serving selection can preload;
+observation-only inventory does not turn it into a preload-all request. Autopilot rejects commands while that
 preloader is still running; it takes over only after the startup owner finishes.
 Absent or expired control restores ordinary serving policy. Pins apply while live
 control, explicit pause or an accepted operation owns residency.
 Recorded consent alone does not block ordinary idle or load-driven eviction.
-An explicitly paused provider retains its resident set and accepts network work only on ready models.
+An explicitly paused provider retains its resident set and accepts network work
+only on ready models in its ordinary serving selection. Protocol-2 coordinators
+ignore the additional inventory field and issue no protocol-3 control leases;
+selected models continue serving through ordinary routing.
 An accepted operation retains ownership until it finishes even after opt-out,
 pause, connection loss or lease expiry; newer commands cannot overlap it.
 
@@ -142,7 +190,7 @@ minimum, matching the other daemon diagnostics.
 
 ### Demand and placement
 
-`beginAutopilotDemand` creates a request-owned observation after entering an
+`BeginAutopilotDemand` creates a request-owned observation after entering an
 inference endpoint. Admission arms it only after public authentication, account
 limits, balance and parsing checks. Retries and speculative attempts annotate
 the same observation; terminal consumption occurs once. Owner/private traffic,
@@ -270,6 +318,23 @@ a residency decision.
 cohorts, placement, donor coverage, summaries and snapshot validation. The registry
 adapter keeps live provider pointers and locks out of that package. It binds each
 returned plan to the exact snapshotted session and revalidates it before mutation.
+Production-consumed components separate that policy from operational ownership:
+`autopilotstate.State` owns connection-local inventory, control lease and pending
+command/retry authority under the registry's existing provider lock;
+`autopilotcontrol.Controller` owns the bounded tick and reservation protocol over
+retained snapshot/reservation/delivery ports; `autopilotledger.Events` owns
+deduplicated pending operation phases and their durable flush. The registry
+adapter binds those ports to its real session, queue, transport and store
+collaborators (`coordinator/registry/autopilot_control.go`, `newAutopilotControl`;
+`coordinator/registry/dependencies.go`, `NewWithDependencies`). It retains the
+exclusive placement lease and final provider-local authority checks.
+
+`autopilot.DemandTracker` still records one content-free logical request at its
+original arrival time (`coordinator/registry/autopilot/demand.go`, `Record`). Its
+bounded history uses `demandwindow.Window` (`coordinator/internal/registry/demandwindow/window.go`,
+`Record`, `Snapshot`); live occupancy remains a separate lower bound, not another
+arrival. These ownership boundaries do not change shadow/live consent, command
+leases, donor protection, demand counting or uncertainty/reconciliation outcomes.
 `coordinator/api/autopilot/` owns admin request validation and ledger/status
 responses; its parent route adapter owns authentication and admin authorization.
 Swift runtime, protocol, CLI and test files are grouped by feature; startup has
@@ -283,9 +348,11 @@ its own `Start/` folder.
 | Protocol | `coordinator/protocol/model_autopilot.go`; `provider-swift/Sources/ProviderCore/Protocol/Autopilot/ModelAutopilot.swift` |
 | Shapes and planning | `coordinator/registry/autopilot/shapes.go`; `coordinator/registry/autopilot/coverage.go`; `coordinator/registry/autopilot/planner.go` |
 | Hard request eligibility | `coordinator/registry/autopilot/requirements.go`; `coordinator/registry/autopilot_traits.go` |
-| Demand and policy defaults | `coordinator/registry/autopilot/demand.go`; `coordinator/registry/autopilot/config.go` |
+| Demand and policy defaults | `coordinator/registry/autopilot/demand.go` (`DemandTracker.Record`); `coordinator/internal/registry/demandwindow/window.go` (`Window.Record`, `Snapshot`); `coordinator/registry/autopilot/config.go` |
+| Session consent, leases, inventory and command reconciliation | `coordinator/internal/registry/autopilotstate/state.go` (`State`, `Consented`, `AcceptControl`); `coordinator/internal/registry/autopilotstate/lease.go` (`Lease.Active`); `coordinator/internal/registry/autopilotstate/commands.go` (`Reserve`, `RollbackDelivery`, `Watchdog`); `coordinator/internal/registry/autopilotstate/reconcile.go` (`Reconcile`); `coordinator/internal/registry/autopilotstate/inventory.go` (`RegisterInventory`); adapters in `coordinator/registry/autopilot_provider_state.go` |
+| Bounded control pass and atomic reservation | `coordinator/internal/registry/autopilotcontrol/controller.go` (`Controller.Tick`, `Ports`); `coordinator/internal/registry/autopilotcontrol/plan.go` (`Controller.Reserve`, `Reservation`); `coordinator/registry/autopilot_control.go` (`newAutopilotControl`), `coordinator/registry/autopilot_reservation.go` (`beginAutopilotReservation`) |
 | Activation and execution | `coordinator/registry/autopilot_activation.go`; `coordinator/registry/autopilot_commands.go`; `provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+Autopilot.swift` |
-| Durable records | `coordinator/store/postgres_autopilot.go`; `coordinator/registry/autopilot_events.go` |
+| Durable records | `coordinator/internal/registry/autopilotledger/events.go` (`Events.Queue`, `Flush`); `coordinator/internal/registry/autopilotledger/proposal.go` (`ProposalID`); `coordinator/store/postgres/autopilot.go`; registry adapter `coordinator/registry/autopilot_events.go` |
 | Operator view | `coordinator/api/autopilot/handler.go`; authenticated adapter `coordinator/api/autopilot_handlers.go` |
 
 ## Related

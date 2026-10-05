@@ -34,11 +34,11 @@ extension ProviderLoop {
         guard servingDrain.owner != .modelSwitch,
               selectionRevision == nil || selectionRevision == modelSelectionRevision,
               publicationIsCurrent(expectedRevision) else { return false }
-        guard autopilotAllowsModel(modelId) else { return false }
         if autopilotCommand != nil {
             reserveDeferredPrefetches.insert(modelId)
             return false
         }
+        guard autopilotAllowsModel(modelId) else { return false }
         if revisionUpdatesInProgress.contains(modelId), expectedRevision == nil { return false }
         modelAdvertisementsInFlight += 1
         defer { modelAdvertisementsInFlight -= 1 }
@@ -257,6 +257,7 @@ extension ProviderLoop {
         // clear deliberately does NOT happen at the check, see there).
         failedSelfTestHashes.removeValue(forKey: modelId)
         advertisedModels[modelId] = info
+        if autopilotInventoryModels[modelId] != nil { autopilotInventoryModels[modelId] = info }
         pendingAdvertise.remove(modelId)  // now carried by `advertisedModels`
         reserveDeferredPrefetches.remove(modelId)  // the capacity deferral is over
         modelHashes[modelId] = hash
@@ -301,6 +302,9 @@ extension ProviderLoop {
         if let coordinatorClient {
             await coordinatorClient.updateModelWeightHashes(liveModelHashes)
             guard publicationIsCurrent(expectedRevision) else { return false }
+            if ordinaryServingModelIDs.contains(modelId) {
+                await coordinatorClient.allowOrdinaryModel(modelId)
+            }
             await coordinatorClient.advertiseModel(info)
             guard publicationIsCurrent(expectedRevision) else { return false }
             // Retirement interleaving in the two client awaits above removes

@@ -6,7 +6,7 @@ const (
 	TypeModelAutopilotControl = "model_autopilot_control"
 	TypeModelAutopilot        = "model_autopilot"
 	TypeModelAutopilotStatus  = "model_autopilot_status"
-	ModelAutopilotProtocol    = 2
+	ModelAutopilotProtocol    = 3
 )
 
 type ModelAutopilotResident struct {

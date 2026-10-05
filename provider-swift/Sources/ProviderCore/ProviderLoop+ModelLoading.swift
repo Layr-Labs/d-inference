@@ -120,6 +120,7 @@ extension ProviderLoop {
         if var model = advertisedModels[modelId] {
             model.weightHash = nil
             advertisedModels[modelId] = model
+            if autopilotInventoryModels[modelId] != nil { autopilotInventoryModels[modelId] = model }
         }
         if let previous {
             logger.warning(
@@ -201,7 +202,11 @@ extension ProviderLoop {
         try requireNativeMiMoProcessWorkAllowed()
         try refuseClosingNativeMiMoOwner(modelId)
         if !revisionUpdate { await waitForMTPUpgrade(modelId) }
-        guard autopilotAllowsModel(modelId) else { throw InferenceError.modelLoadFailed("model_not_selected") }
+        try checkAutopilotLoadOwnership(autopilotCommandId)
+        guard autopilotAllowsModel(modelId)
+            || (autopilotCommandId != nil && autopilotCommand?.commandId == autopilotCommandId
+                && autopilotCommand?.loadModelId == modelId)
+        else { throw InferenceError.modelLoadFailed("model_not_selected") }
         try checkAutopilotLoadOwnership(autopilotCommandId)
         try ModelRuntimeRequirements.requireEligible(
             modelID: modelId, available: loopConfig.runtimeCapabilities)

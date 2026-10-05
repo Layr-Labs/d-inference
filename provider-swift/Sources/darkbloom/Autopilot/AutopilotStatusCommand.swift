@@ -49,6 +49,7 @@ extension Autopilot {
             switch phase {
             case "shadow": return "shadow (not activated; no automatic model changes)"
             case "waiting": return "waiting (not activated; no current coordinator control)"
+            case "waiting_inventory": return "waiting for inventory refresh (not activated; run darkbloom autopilot models)"
             default: return phase
             }
         }

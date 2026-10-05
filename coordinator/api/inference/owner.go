@@ -113,6 +113,10 @@ type Owner struct {
 	exactCacheStatusCacheMu      sync.Mutex
 	exactCacheStatusCache        ExactCacheStatus
 	exactCacheStatusCacheExpires time.Time
+
+	// Missing cache-allowlist entries already named in the operator log.
+	staleAllowlistMu     sync.Mutex
+	staleAllowlistWarned map[registry.CacheRoutingArtifact]struct{}
 }
 
 func New(d Dependencies, cfg Config) *Owner {

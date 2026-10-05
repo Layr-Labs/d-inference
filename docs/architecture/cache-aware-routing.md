@@ -90,6 +90,12 @@ preserves existing eligibility, while `[]` declines every request. Excluded
 requests return `ineligible` with no participating plan or reusable remote scope
 (`coordinator/internal/registry/cachepolicy/artifacts.go`, `ArtifactAllowlist.Allows`;
 `coordinator/registry/cache_route_keys.go`, `PlanCacheRouteWithResult`).
+A revision therefore leaves its model listed under an artifact that is no
+longer live. The status counts such models as `artifact_allowlist.stale_models`
+and the coordinator log names each live tuple once, so the missing entry is
+reported instead of appearing only as a model whose hits stopped
+(`ArtifactAllowlist.StaleFor`; `coordinator/api/inference/exact_cache_allowlist_staleness.go`,
+`missingAllowlistEntries`).
 
 Without authenticated scope, `RemotePrefixCacheContext.cacheEnabled` is false
 and the provider forwards `prefixCacheEnabled=false` to the engine. This gates
@@ -987,7 +993,7 @@ and `coordinator/api/observation/cache_model_telemetry.go`.
 | Parked rows, fences and durable pruning | `coordinator/internal/registry/cachepersist/pending.go` (`Park`, `Take`); `coordinator/internal/registry/cachepersist/delete_fences.go` (`Tombstoned`); `coordinator/internal/registry/cachequeue/time_order.go` (`TimeOrder`); `coordinator/internal/registry/cachepersist/maintenance.go` (`Prune`) |
 | Persistence counters | `coordinator/internal/registry/cachepersist/status.go` (`Status`) |
 | Configuration and validation | `coordinator/registry/config.go` — `CacheRoutingConfig`, `Check`; `coordinator/registry/cache_routing.go` — `ConfigureCacheRouting` |
-| Optional artifact membership | `coordinator/internal/registry/cachepolicy/artifacts.go` (`ArtifactAllowlist.Allows`, exact tuple parsing, validation and immutable membership); aliases and construction in `coordinator/registry/cache_artifact_allowlist.go`; unset unrestricted, `[]` denied |
+| Optional artifact membership | `coordinator/internal/registry/cachepolicy/artifacts.go` (`ArtifactAllowlist.Allows`, `ArtifactAllowlist.StaleFor`, exact tuple parsing, validation and immutable membership); aliases, construction and `MissingCacheRoutingAllowlistEntries` in `coordinator/registry/cache_artifact_allowlist.go`; stale count and one-time warning in `coordinator/api/inference/exact_cache_allowlist_staleness.go`; unset unrestricted, `[]` denied |
 | Activation cohort and plan QPS | `coordinator/internal/registry/cacheactivation/gate.go` (`Gate`, `Allow`); `coordinator/registry/cache_activation_view.go` (`CacheRoutingActivationStatus`) |
 | Resident proof/publication and unique receipt correlation | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/ResidentPrefixCacheEvidence.swift` — `ResidentPrefixCacheEvidence`, `ResidentPrefixCachePromptProof`; `PrefixCacheEvidenceSequencer.swift` |
 | Per-tier holders, lifetime and lookup | `coordinator/registry/cache_tiers.go` (`cacheTierBoundaryKey`, `receiptTTL`); `coordinator/registry/cache_routing_hints.go` (`CacheHintQuery.Query`, `MatchBoundaries`, `CacheHintsForMatches`); `coordinator/internal/registry/cachetracker/matching.go` (`Tracker.MatchBoundaries`) |

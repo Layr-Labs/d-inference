@@ -98,6 +98,12 @@ Dashboard earnings windows include every row in each window, without the old
 lag by the per-account cache interval
 (`coordinator/api/accounts/me_summary_cache.go`, `mySummaryWindowsCacheTTL`).
 
+If you also operate a provider, distinguish completed-inference earnings from
+[base rewards](../reference/pricing-model.md#base-rewards): base rewards require
+macOS 27 or later and current qualified App Attest authorization for every
+provider, old or new, not legacy MDM alone. This does not
+remove previously earned balances or change payment for completed inference.
+
 ### 4. Understand what a request costs you
 
 Each request is charged

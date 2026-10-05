@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-05
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -180,8 +180,13 @@ Deploy the coordinator containing the native SSD-offload capacity accounting and
 ### MDM-optional onboarding candidate
 
 The installer and `darkbloom enroll` select App Attest setup on macOS 27+ without
-requesting an MDM profile. Older macOS keeps legacy enrollment and sees the
-upgrade/upcoming deactivation notice. Follow the
+requesting an MDM profile. On older macOS the installer defers eligible legacy
+reenrollment to account login and the signed `darkbloom enroll` check, while
+showing the upgrade/upcoming deactivation notice. Verify with
+`scripts/test-install-onboarding.py` that no installer branch posts an anonymous
+profile request or opens profile setup, and existing management stays untouched.
+Installer success is not serving authorization; new providers require macOS 27+
+and current qualified App Attest. Follow the
 [MDM-optional rollout runbook](mdm-optional-rollout.md) to coordinate the embedded
 installer, signed provider, setup page and serving cohort. A disabled or
 unqualified coordinator leaves new macOS 27+ providers pending; the notice does

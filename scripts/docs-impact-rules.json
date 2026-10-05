@@ -211,7 +211,12 @@
         "coordinator/store/migrations/**",
         "coordinator/store/postgres/migrations.go",
         "coordinator/store/postgres/migrations/**",
-        "coordinator/store/postgres/schema/**"
+        "coordinator/store/postgres/schema/**",
+        "coordinator/store/*schema*.go",
+        "coordinator/store/postgres/startup.go",
+        "coordinator/store/postgres/retired_backfills.go",
+        "coordinator/store/postgres/provider_earnings_index.go",
+        "coordinator/store/postgres/earnings_window_index.go"
       ],
       "docs_any_of": [
         "docs/architecture/storage.md",

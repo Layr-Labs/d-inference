@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/store"
 	production "github.com/eigeninference/d-inference/coordinator/store/postgres"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pressly/goose/v3/lock"
 )
 
@@ -31,8 +33,7 @@ func captureLogs(t *testing.T) *bytes.Buffer {
 	return &logs
 }
 
-// A fresh database built by goose has exactly the schema that the pre-goose
-// boot loop built (schema/schema.sql).
+// A fresh database built by goose matches the current checked-in schema.
 func TestMigrationsBuildCheckedInSchema(t *testing.T) {
 	ctx := context.Background()
 	s, err := openPostgresFixture(ctx, store.Config{DatabaseURL: newThrowawayTestDatabase(t)})
@@ -47,14 +48,34 @@ func TestMigrationsBuildCheckedInSchema(t *testing.T) {
 	assertSameLines(t, "schema/schema.sql", schemaSnapshot(t, dumpPool), "goose", schemaSnapshot(t, s.pool))
 }
 
-// A database that a pre-goose binary migrated meets goose for the first
-// time: every migration runs, and nothing changes except the new goose
-// version table.
-func TestMigrationsLeaveLegacyDatabaseUnchanged(t *testing.T) {
+// A frozen pre-goose database upgrades to the current schema without
+// changing the existing migration markers, counters or collection epoch.
+func TestMigrationsUpgradeLegacyDatabase(t *testing.T) {
+	for _, gooseBaseline := range []bool{false, true} {
+		name := "pre_goose"
+		if gooseBaseline {
+			name = "goose_version_5"
+		}
+		t.Run(name, func(t *testing.T) { testMigrationsUpgradeLegacyDatabase(t, gooseBaseline) })
+	}
+}
+
+func testMigrationsUpgradeLegacyDatabase(t *testing.T, gooseBaseline bool) {
 	ctx := context.Background()
 	databaseURL := newThrowawayTestDatabase(t)
 	pool := openTestPool(t, databaseURL)
-	loadSchemaFile(t, pool)
+	loadSchema(t, pool, legacySchemaFile)
+	if gooseBaseline {
+		// Public Goose version-table shape, as left by the original five-version
+		// build. The frozen schema already contains those versions' objects.
+		if _, err := pool.Exec(ctx, `CREATE TABLE goose_db_version (
+			id serial PRIMARY KEY, version_id bigint NOT NULL,
+			is_applied boolean NOT NULL, tstamp timestamp NOT NULL DEFAULT now());
+			INSERT INTO goose_db_version (version_id, is_applied, tstamp)
+			SELECT n, true, '2026-01-02T03:04:05Z' FROM generate_series(0, 5) n`); err != nil {
+			t.Fatal(err)
+		}
+	}
 	// The rows the pre-goose boot leaves on a fresh database.
 	for _, stmt := range []string{
 		`INSERT INTO schema_migrations (id, applied_at) VALUES
@@ -74,7 +95,7 @@ func TestMigrationsLeaveLegacyDatabaseUnchanged(t *testing.T) {
 		UNION ALL SELECT 'usage_totals ' || id || ' ' || total_requests FROM usage_totals
 		UNION ALL SELECT 'collection ' || started_at FROM model_demand_collection
 		ORDER BY 1`
-	schemaBefore, rowsBefore := schemaSnapshot(t, pool), queryLines(t, pool, rowsSQL)
+	rowsBefore := queryLines(t, pool, rowsSQL)
 
 	s, err := production.NewPostgres(ctx, store.Config{DatabaseURL: databaseURL})
 	if err != nil {
@@ -82,11 +103,20 @@ func TestMigrationsLeaveLegacyDatabaseUnchanged(t *testing.T) {
 	}
 	t.Cleanup(s.Close)
 
-	assertSameLines(t, "legacy", schemaBefore, "after goose", schemaSnapshot(t, pool))
+	current := openTestPool(t, newThrowawayTestDatabase(t))
+	loadSchemaFile(t, current)
+	assertSameLines(t, "current schema", schemaSnapshot(t, current), "upgraded legacy", schemaSnapshot(t, pool))
 	assertSameLines(t, "legacy rows", rowsBefore, "rows after goose", queryLines(t, pool, rowsSQL))
+	if gooseBaseline {
+		rows := queryLines(t, pool, `SELECT version_id::text FROM goose_db_version
+			WHERE version_id <= 5 AND tstamp = '2026-01-02T03:04:05Z' ORDER BY id`)
+		if strings.Join(rows, " ") != "0 1 2 3 4 5" {
+			t.Fatalf("original version history changed: %v", rows)
+		}
+	}
 	versions := queryLines(t, pool, `SELECT version_id::text FROM `+gooseVersionTable+` ORDER BY id`)
-	if got := strings.Join(versions, " "); got != "0 1 2 3 4 5" {
-		t.Fatalf("goose versions = %q, want 0 through 5", got)
+	if got := strings.Join(versions, " "); got != "0 1 2 3 4 5 6 7 8 9" {
+		t.Fatalf("goose versions = %q, want 0 through 9", got)
 	}
 }
 
@@ -146,15 +176,15 @@ func TestConcurrentMigrationsApplyOnce(t *testing.T) {
 	for _, m := range applied {
 		got = append(got, m[1]+":"+m[2])
 	}
-	if want := "1:applied 2:applied 3:applied 4:applied 5:applied"; strings.Join(got, " ") != want {
-		t.Fatalf("migration results = %q, want each of the 5 versions applied once; logs:\n%s", got, logs.String())
+	if want := "1:applied 2:applied 3:applied 4:applied 5:applied 6:applied 7:applied 8:applied 9:applied"; strings.Join(got, " ") != want {
+		t.Fatalf("migration results = %q, want each of the 9 versions applied once; logs:\n%s", got, logs.String())
 	}
 	var rows, distinct int
 	if err := pool.QueryRow(ctx, `SELECT count(*), count(DISTINCT version_id) FROM `+gooseVersionTable).Scan(&rows, &distinct); err != nil {
 		t.Fatal(err)
 	}
-	if rows != 6 || distinct != 6 {
-		t.Fatalf("goose version rows = %d (%d distinct), want 6", rows, distinct)
+	if rows != 10 || distinct != 10 {
+		t.Fatalf("goose version rows = %d (%d distinct), want 10", rows, distinct)
 	}
 }
 
@@ -212,5 +242,59 @@ func TestSQLMigrationsDoNotBuildIndexesConcurrently(t *testing.T) {
 		if regexp.MustCompile(`(?i)CREATE\s+(UNIQUE\s+)?INDEX\s+CONCURRENTLY`).Match(b) {
 			t.Errorf("%s builds an index CONCURRENTLY; use a Go migration with ensureConcurrentIndex", filepath.Base(file))
 		}
+	}
+}
+
+// A pre-goose database may be missing a column from an earlier failed boot.
+// A lock timeout must leave the entire baseline pending, so the next startup
+// retries the missing column instead of trusting an incomplete version marker.
+func TestMigrationsBlockedLegacyColumnRemainsPending(t *testing.T) {
+	ctx := context.Background()
+	databaseURL := newThrowawayTestDatabase(t)
+	pool := openTestPool(t, databaseURL)
+	loadSchema(t, pool, legacySchemaFile)
+	if _, err := pool.Exec(ctx, `ALTER TABLE providers DROP COLUMN version`); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `LOCK TABLE providers IN ACCESS SHARE MODE`); err != nil {
+		t.Fatal(err)
+	}
+
+	blockedURL := databaseURL + "&lock_timeout=100ms"
+	blocked, err := production.NewPostgres(ctx, store.Config{DatabaseURL: blockedURL})
+	if blocked != nil {
+		blocked.Close()
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
+		t.Fatalf("blocked missing-column migration = %v, want lock timeout", err)
+	}
+	var applied bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM goose_db_version WHERE version_id = 1 AND is_applied)`).Scan(&applied); err != nil {
+		t.Fatal(err)
+	}
+	if applied {
+		t.Fatal("blocked baseline was recorded as applied")
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	migrated, err := production.NewPostgres(ctx, store.Config{DatabaseURL: databaseURL})
+	if err != nil {
+		t.Fatalf("retry after releasing lock: %v", err)
+	}
+	t.Cleanup(migrated.Close)
+	var columnPresent bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'providers' AND column_name = 'version')`).Scan(&columnPresent); err != nil {
+		t.Fatal(err)
+	}
+	if !columnPresent {
+		t.Fatal("retry did not restore providers.version")
 	}
 }

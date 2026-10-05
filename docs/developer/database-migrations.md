@@ -1,6 +1,6 @@
 # Add a database migration
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 How to change the coordinator's Postgres schema: choose the migration kind,
 write it as a numbered goose version, regenerate the checked-in schema, and
@@ -71,7 +71,7 @@ in production is the [schema migration runbook](../operations/schema-migration.m
    `context.Context` and returns an error, and add it to `goMigrations`:
 
    ```go
-   step(6, s.checkExampleRows),
+   step(10, s.checkExampleRows),
    ```
 
    It runs on the store pool with no session timeouts unless the database URL
@@ -84,7 +84,7 @@ in production is the [schema migration runbook](../operations/schema-migration.m
    as `ensureProviderRestoreIndexes` does:
 
    ```go
-   step(6, func(ctx context.Context) error {
+   step(10, func(ctx context.Context) error {
        return s.ensureConcurrentIndex(ctx, "idx_example_account",
            `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_example_account ON example (account_id)`)
    }),
@@ -123,7 +123,9 @@ in production is the [schema migration runbook](../operations/schema-migration.m
    with `"result":"applied"`, then `coordinator migrations complete`. Use the
    `pg_dump` inside the container, so that its major version matches
    production (17). Review `git diff coordinator/store/postgres/schema/schema.sql`: it
-   must show only your change.
+   must show only your change. Keep the frozen legacy fixture under
+   `coordinator/tests/store/postgres/testdata/legacy_schema.sql` unchanged;
+   the upgrade test compares it to the newly generated current schema.
 
 6. **Update the rest of the store.** Make `MemoryStore`
    (`coordinator/store/memory/`) match, and update the docs that describe
@@ -139,7 +141,8 @@ go test ./coordinator/tests/store/postgres -count=1 \
 | Test | Fails when |
 |---|---|
 | `TestMigrationsBuildCheckedInSchema` | `schema.sql` differs from what the migrations build |
-| `TestMigrationsLeaveLegacyDatabaseUnchanged` | Versions 1 to 5 change a database that a pre-goose coordinator built |
+| `TestMigrationsUpgradeLegacyDatabase` | A frozen pre-goose database does not upgrade to the current schema, or loses preserved marker/counter rows |
+| `TestMigrationsBlockedLegacyColumnRemainsPending` | A blocked baseline is recorded as successful, or the missing column is not restored on retry |
 | `TestConcurrentMigrationsApplyOnce` | Two runs at once apply a version twice, or a run changes the schema while another session holds the goose advisory lock |
 | `TestSQLMigrationsDoNotBuildIndexesConcurrently` | An SQL file contains `CREATE [UNIQUE] INDEX CONCURRENTLY` |
 

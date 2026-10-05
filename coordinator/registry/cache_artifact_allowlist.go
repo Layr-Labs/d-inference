@@ -17,3 +17,18 @@ func readCacheRoutingArtifacts() ([]CacheRoutingArtifact, error) { return cachep
 func newCacheArtifactAllowlist(artifacts []CacheRoutingArtifact) (cacheArtifactAllowlist, error) {
 	return cachepolicy.NewArtifactAllowlist(artifacts)
 }
+
+// MissingCacheRoutingAllowlistEntries returns the live artifacts whose models
+// the allowlist names only under other tuples. Each is the exact tuple to append.
+func (r *Registry) MissingCacheRoutingAllowlistEntries(live []CacheRoutingArtifact) []CacheRoutingArtifact {
+	r.mu.RLock()
+	allowlist := r.cacheRoutingAllowedArtifacts
+	r.mu.RUnlock()
+	var missing []CacheRoutingArtifact
+	for _, artifact := range live {
+		if allowlist.StaleFor(artifact) {
+			missing = append(missing, artifact)
+		}
+	}
+	return missing
+}

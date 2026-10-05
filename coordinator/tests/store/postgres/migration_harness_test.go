@@ -11,11 +11,11 @@ import (
 	"github.com/pressly/goose/v3/lock"
 )
 
-// The goose files and the pg_dump of the pre-goose schema, relative to this
-// test package.
+// The migration sources, current schema and frozen pre-goose fixture.
 var (
-	migrationSQLDir = filepath.Join("..", "..", "..", "store", "postgres", "schema", "migrations")
-	schemaDumpFile  = filepath.Join("..", "..", "..", "store", "postgres", "schema", "schema.sql")
+	migrationSQLDir  = filepath.Join("..", "..", "..", "store", "postgres", "schema", "migrations")
+	legacySchemaFile = filepath.Join("testdata", "legacy_schema.sql")
+	schemaDumpFile   = filepath.Join("..", "..", "..", "store", "postgres", "schema", "schema.sql")
 )
 
 // gooseVersionTable is the table in which the store records applied goose
@@ -89,13 +89,17 @@ func replayMigrations(t testing.TB, s *postgresFixture) {
 	}
 }
 
-// loadSchemaFile applies schemaDumpFile (the pg_dump of the pre-goose schema)
-// to the database at pool. The session settings at the top of the
+// loadSchemaFile applies the current schema dump to the database at pool. The session settings at the top of the
 // dump are skipped: some name settings older servers do not have, and the
 // empty search_path would stay on the pooled connection.
 func loadSchemaFile(t testing.TB, pool *pgxpool.Pool) {
 	t.Helper()
-	b, err := os.ReadFile(schemaDumpFile)
+	loadSchema(t, pool, schemaDumpFile)
+}
+
+func loadSchema(t testing.TB, pool *pgxpool.Pool, file string) {
+	t.Helper()
+	b, err := os.ReadFile(file)
 	if err != nil {
 		t.Fatalf("read schema file: %v", err)
 	}

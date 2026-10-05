@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/jackc/pgx/v5"
 )
 
 func (s *PostgresStore) CreateDeviceCode(dc *store.DeviceCode) error {
@@ -108,8 +109,11 @@ func (s *PostgresStore) GetProviderToken(token string) (*store.ProviderToken, er
 		`SELECT token_hash, account_id, label, active, created_at
 		 FROM provider_tokens WHERE token_hash = $1 AND active = TRUE`, h,
 	).Scan(&pt.TokenHash, &pt.AccountID, &pt.Label, &pt.Active, &pt.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("store: %w: %w", store.ErrProviderTokenInvalid, err)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("store: provider token not found: %w", err)
+		return nil, fmt.Errorf("store: get provider token: %w", err)
 	}
 	return &pt, nil
 }

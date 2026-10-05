@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased - cache-routing stale evidence
+
+- Revalidate copied cache-routing hints after an accepted miss or shorter hit removes their holder, so a prepared reservation cannot retain the removed endpoint's prefill credit. Preserve unaffected endpoint and other-provider evidence, persistent cache epochs, physical admission and billing.
+
 ## Unreleased - provider email campaigns
 
 - Add the `provider-emails` operator command to preview provider software/macOS update audiences, sync owner groups to Resend, render and test notices, and create unsent broadcasts for review. Preserve unsubscribe preferences and remove owners from managed groups when their reported machines meet the target.

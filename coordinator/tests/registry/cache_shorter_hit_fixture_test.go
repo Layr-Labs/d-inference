@@ -23,10 +23,14 @@ type shorterHitFixture struct {
 	admission   production.CacheReceiptAdmitter
 }
 
-func newShorterHitFixture(t *testing.T) *shorterHitFixture {
+func newShorterHitFixture(t *testing.T, dependencies ...production.Dependencies) *shorterHitFixture {
 	t.Helper()
 	f := &shorterHitFixture{}
-	r, pricing := newCheckpointPricingFixture(t, production.Dependencies{Cache: production.CacheDependencies{
+	var deps production.Dependencies
+	if len(dependencies) != 0 {
+		deps = dependencies[0]
+	}
+	deps.Cache = production.CacheDependencies{
 		Trackers: func(config cachetracker.Config[*production.Provider]) *cachetracker.Tracker[*production.Provider] {
 			f.config = config
 			return cachetracker.New(config)
@@ -35,7 +39,8 @@ func newShorterHitFixture(t *testing.T) *shorterHitFixture {
 			f.admission = admission
 			return admission
 		},
-	}})
+	}
+	r, pricing := newCheckpointPricingFixture(t, deps)
 	r.Disconnect("provider-a")
 	checkpointPricingUncap(t, r)
 	capability := exactTestCapability("11111111-1111-1111-1111-111111111111")

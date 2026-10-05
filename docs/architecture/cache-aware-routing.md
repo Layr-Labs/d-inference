@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-05
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -324,6 +324,24 @@ or hit re-teaches them. Neither path fences the provider or moves its sequence
 watermark. Slot unload,
 replacement, shutdown, and connection changes invalidate resident evidence.
 There is no targeted resident-eviction wire message in this extension.
+
+Each indexed holder record also owns a process-local `HolderEvidence` token
+(`coordinator/internal/registry/cachetracker/holder.go`). `RemoveHolderLocked`
+and replacement by `UpsertHolderLocked` revoke that record's token; copied
+routing hints check it in `CurrentForProviderLocked`
+(`coordinator/registry/cache_routing_hints.go`) before applying service credit.
+An accepted miss or shorter hit therefore cannot leave an earlier prepared
+reservation using the removed endpoint's prefill saving. Commit reprices without
+that credit and its existing cost/forecast comparison requests a fresh scan
+(`coordinator/registry/scheduler.go`, `ReservationSelection.commit`). Surviving
+endpoints, tiers, continuations and other providers retain their tokens. A
+refresh conservatively retires copies of that endpoint's old observation even
+when its capability is unchanged; a new query uses the replacement evidence.
+Re-teaching an endpoint never revives its old token. This adds no tracker lock
+to provider-locked pricing, persistent epoch rotation, capability quarantine or
+durable schema field; physical admission and billing are unchanged. The atomic
+check is the observation cutoff, not a guarantee against a later provider
+eviction or a receipt arriving after pricing.
 
 Attempts remain briefly after inference terminal state because encrypted SSD
 write-behind can finish later. Routing uses in-memory attempt and holder maps;

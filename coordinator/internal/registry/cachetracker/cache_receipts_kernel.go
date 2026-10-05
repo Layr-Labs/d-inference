@@ -37,6 +37,10 @@ func (t *Tracker[P]) UpsertHolderLocked(key string, holder Holder[P]) {
 		return
 	}
 	holders := t.holders.Bucket(key)
+	if previous, exists := holders.Load(holder.ProviderID); exists && previous.Evidence != nil {
+		previous.Evidence.revoked.Store(true)
+	}
+	holder.Evidence = &HolderEvidence{}
 	if inserted := t.holders.Store(cacheindex.HolderRef{Key: key, ProviderID: holder.ProviderID}, holder); inserted {
 		t.holderAdded++
 	}
@@ -114,6 +118,9 @@ func (t *Tracker[P]) RemoveHolderLocked(
 ) {
 	ref := cacheindex.HolderRef{Key: key, ProviderID: providerID}
 	if removed, exists := t.holders.Load(ref); exists {
+		if removed.Evidence != nil {
+			removed.Evidence.revoked.Store(true)
+		}
 		// A disconnect keeps the durable row: the file is still on the
 		// provider and its epoch identifies it again on reconnect.
 		t.PersistHolderRemoval(key, removed, reason)

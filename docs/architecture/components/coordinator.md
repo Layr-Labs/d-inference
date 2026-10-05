@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -236,6 +236,16 @@ and invalidation; `CacheSnapshotUpdater.Apply`
 connection ownership. Deferred persistence work revalidates that connection through
 `CacheSnapshotResult` (`coordinator/registry/cache_snapshot_result.go`). The detailed
 evidence and generation fences are in [cache-aware routing](../cache-aware-routing.md).
+
+The tracker owns each holder observation's `HolderEvidence` token
+(`coordinator/internal/registry/cachetracker/holder.go`); its receipt kernel revokes
+the token on replacement or removal
+(`coordinator/internal/registry/cachetracker/cache_receipts_kernel.go`,
+`UpsertHolderLocked`, `RemoveHolderLocked`). The registry carries that token in
+copied `CacheRoutingHint` values and checks it under the provider lock in `CurrentForProviderLocked`
+(`coordinator/registry/cache_routing_hints.go`), without reacquiring the tracker lock.
+Reservation repricing and rescan remain owned by `ReservationSelection.commit`
+(`coordinator/registry/scheduler.go`), not by the tracker.
 
 Provider and consumer paths converge on that lifecycle. Component extraction
 does not add another terminal claim or settlement owner. Shared resources are

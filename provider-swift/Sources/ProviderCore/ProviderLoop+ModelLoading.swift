@@ -602,10 +602,10 @@ extension ProviderLoop {
             // serveable model. Mirrors evictUntilAvailable / fastAdmissionReject's
             // clearCache-then-measure self-heal.
             clearCacheAfterConfirmedNativeOwnership()
-            if !KVHeadroomProbe.hasServeableKVHeadroom(activationReserveBytes: resolvedActivationReserveBytes) {
+            let postLoadHeadroomBytes = postLoadKVHeadroomBytes
+            if !UnifiedMemoryCap.loadIsServeable(measuredLiveKVHeadroomBytes: postLoadHeadroomBytes) {
                 let headroomGb = String(
-                    format: "%.1f",
-                    Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes(activationReserveBytes: resolvedActivationReserveBytes)) / (1024.0 * 1024.0 * 1024.0))
+                    format: "%.1f", Double(postLoadHeadroomBytes) / (1024.0 * 1024.0 * 1024.0))
                 let minGb = String(
                     format: "%.1f", Double(UnifiedMemoryCap.minimumLoadKVBytes) / (1024.0 * 1024.0 * 1024.0))
                 // Pre-shrink failure: no grants were mutated, so ordering is
@@ -707,7 +707,8 @@ extension ProviderLoop {
             var postBridgeServeable = KVHeadroomProbe.postBuildServeable(
                 kvBackendKind: engineV2Bridge.kvBackendKind,
                 pagedPoolBytes: await engineV2Bridge.kvBackendPoolBytes(),
-                activationReserveBytes: resolvedActivationReserveBytes)
+                activationReserveBytes: resolvedActivationReserveBytes,
+                measuredHeadroomBytes: postLoadKVHeadroomBytes)
             let runtimeMTPActive = await engineV2Bridge.mtpStatusSnapshot().active
             if engineBundle.mtpStatus.active,
                 !postBridgeServeable || !runtimeMTPActive
@@ -750,12 +751,12 @@ extension ProviderLoop {
                 postBridgeServeable = KVHeadroomProbe.postBuildServeable(
                     kvBackendKind: engineV2Bridge.kvBackendKind,
                     pagedPoolBytes: await engineV2Bridge.kvBackendPoolBytes(),
-                    activationReserveBytes: resolvedActivationReserveBytes)
+                    activationReserveBytes: resolvedActivationReserveBytes,
+                    measuredHeadroomBytes: postLoadKVHeadroomBytes)
             }
             if !postBridgeServeable {
                 let headroomGb = String(
-                    format: "%.1f",
-                    Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes(activationReserveBytes: resolvedActivationReserveBytes)) / (1024.0 * 1024.0 * 1024.0))
+                    format: "%.1f", Double(postLoadKVHeadroomBytes) / (1024.0 * 1024.0 * 1024.0))
                 // Retire the bridge, release the newcomer's weights, THEN
                 // regrow survivors — in that order (Codex review): regrowing
                 // while the aborted newcomer's weights are still resident
@@ -1065,6 +1066,13 @@ extension ProviderLoop {
             // sees the raised floor — see `pendingAdvertise`.
             modelIDs: Array(advertisedModels.keys) + Array(modelSlots.keys)
                 + Array(modelsLoading) + Array(pendingAdvertise) + Array(nativeMiMoLoads.keys))
+    }
+
+    /// Measured live KV headroom for the post-load guards in
+    /// `ensureModelLoaded`, read through `kvBudget` like its load admission.
+    var postLoadKVHeadroomBytes: UInt64 {
+        KVHeadroomProbe.measuredLiveKVHeadroomBytes(
+            budget: kvBudget, activationReserveBytes: resolvedActivationReserveBytes)
     }
 
     /// Headroom (GB) reserved above the weights at load time. Must be at least

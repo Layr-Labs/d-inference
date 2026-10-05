@@ -5,10 +5,11 @@ import Testing
 @testable import ProviderCore
 
 // The standalone (local mode) server loads a tiny synthetic model through the
-// real loader and the real CBv2 engine. The load-admission budget is scripted
-// (ScriptedProviderMemory). No test hooks replace the engine, and the two
-// measured headroom checks after the load read the real machine; the tiny
-// model leaves that headroom as it was.
+// real loader and the real CBv2 engine. The KV budget's memory sample is
+// scripted (ScriptedProviderMemory). No test hooks replace the engine. The
+// load admission and the two measured headroom checks after the load read
+// that sample, so the result does not depend on the free memory of the
+// machine.
 
 extension TinyModelLoadTests {
     @Suite("Standalone server")

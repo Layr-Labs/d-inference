@@ -981,6 +981,13 @@ public actor StandaloneServer {
             modelIDs: models.map(\.id) + Array(slots.keys) + Array(modelsLoading))
     }
 
+    /// Measured live KV headroom for the post-load guards in
+    /// `ensureModelLoaded`, read through `kvBudget` like its load admission.
+    var postLoadKVHeadroomBytes: UInt64 {
+        KVHeadroomProbe.measuredLiveKVHeadroomBytes(
+            budget: kvBudget, activationReserveBytes: resolvedActivationReserveBytes)
+    }
+
     /// One existing slot's re-slice bookkeeping (mirrors the ProviderLoop's
     /// `ExistingSlotGrant`): sizing inputs, the grant BEFORE this re-slice
     /// (the restore point), and the bridge whose ceiling gets updated.
@@ -1887,15 +1894,10 @@ public actor StandaloneServer {
             // a model with no serveable KV headroom under the cap rather than
             // publish a "loaded but every request rejected" model. Serialized by
             // isLoadingAny, so the MLX measurement reflects this load.
-            if !KVHeadroomProbe.hasServeableKVHeadroom(
-                activationReserveBytes: resolvedActivationReserveBytes)
-            {
+            let postLoadHeadroomBytes = postLoadKVHeadroomBytes
+            if !UnifiedMemoryCap.loadIsServeable(measuredLiveKVHeadroomBytes: postLoadHeadroomBytes) {
                 let headroomGb = String(
-                    format: "%.1f",
-                    Double(
-                        KVHeadroomProbe.measuredLiveKVHeadroomBytes(
-                            activationReserveBytes: resolvedActivationReserveBytes))
-                        / (1024.0 * 1024.0 * 1024.0))
+                    format: "%.1f", Double(postLoadHeadroomBytes) / (1024.0 * 1024.0 * 1024.0))
                 let minGb = String(
                     format: "%.1f", Double(UnifiedMemoryCap.minimumLoadKVBytes) / (1024.0 * 1024.0 * 1024.0))
                 // Pre-shrink failure: no grants were mutated, so ordering is
@@ -1960,7 +1962,8 @@ public actor StandaloneServer {
             var postBridgeServeable = KVHeadroomProbe.postBuildServeable(
                 kvBackendKind: bridge.kvBackendKind,
                 pagedPoolBytes: await bridge.kvBackendPoolBytes(),
-                activationReserveBytes: resolvedActivationReserveBytes)
+                activationReserveBytes: resolvedActivationReserveBytes,
+                measuredHeadroomBytes: postLoadKVHeadroomBytes)
             let runtimeMTPActive = await bridge.mtpStatusSnapshot().active
             if bundle.mtpStatus.active,
                 !postBridgeServeable || !runtimeMTPActive
@@ -1987,15 +1990,12 @@ public actor StandaloneServer {
                 postBridgeServeable = KVHeadroomProbe.postBuildServeable(
                     kvBackendKind: bridge.kvBackendKind,
                     pagedPoolBytes: await bridge.kvBackendPoolBytes(),
-                    activationReserveBytes: resolvedActivationReserveBytes)
+                    activationReserveBytes: resolvedActivationReserveBytes,
+                    measuredHeadroomBytes: postLoadKVHeadroomBytes)
             }
             if !postBridgeServeable {
                 let headroomGb = String(
-                    format: "%.1f",
-                    Double(
-                        KVHeadroomProbe.measuredLiveKVHeadroomBytes(
-                            activationReserveBytes: resolvedActivationReserveBytes))
-                        / (1024.0 * 1024.0 * 1024.0))
+                    format: "%.1f", Double(postLoadKVHeadroomBytes) / (1024.0 * 1024.0 * 1024.0))
                 // Retire the bridge, release the newcomer's weights, THEN
                 // regrow survivors — in that order (Codex review): regrowing
                 // while the aborted newcomer's weights are still resident

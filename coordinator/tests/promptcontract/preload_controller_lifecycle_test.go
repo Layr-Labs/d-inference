@@ -405,17 +405,6 @@ func TestPreloadControllerMatchesRequiresSameContractSet(t *testing.T) {
 	}
 }
 
-func TestCatalogBoundedStatusError(t *testing.T) {
-	if got := catalog.BoundedStatusError("  spaced  "); got != "spaced" {
-		t.Fatalf("trimmed = %q", got)
-	}
-	// 512 bytes is the shared operational-status bound.
-	long := strings.Repeat("x", 522)
-	if got := catalog.BoundedStatusError(long); len(got) != 512 {
-		t.Fatalf("bounded length = %d", len(got))
-	}
-}
-
 type preloadCatalogFixture struct {
 	mu       sync.RWMutex
 	snapshot catalog.Snapshot

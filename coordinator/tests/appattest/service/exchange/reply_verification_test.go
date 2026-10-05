@@ -19,7 +19,7 @@ import (
 	memorystore "github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
-func replyKeyID(fill byte) string {
+func shadowKeyID(fill byte) string {
 	return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{fill}, 32))
 }
 
@@ -53,7 +53,7 @@ func readyReply(keyID string) protocol.AppAttestShadowPayload {
 
 func TestReadyReplyStopsOnKeyLookupFailure(t *testing.T) {
 	pipeline, attempt := readyExchange(exchange.Dependencies{Keys: &failingShadowKeyRead{memorystore.NewMemory(store.Config{})}})
-	result := pipeline.Handle(context.Background(), attempt, readyReply(replyKeyID(1)))
+	result := pipeline.Handle(context.Background(), attempt, readyReply(shadowKeyID(1)))
 	if result.Next != "stop" || result.Outcome != "storage_error" {
 		t.Fatalf("next=%q outcome=%q", result.Next, result.Outcome)
 	}
@@ -77,7 +77,7 @@ func TestReadyReplyRejectsKeyOfAnotherOwnerOrPolicy(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			mem := memorystore.NewMemory(store.Config{})
-			tc.key.KeyID, tc.key.PublicKey = replyKeyID(2), []byte{1}
+			tc.key.KeyID, tc.key.PublicKey = shadowKeyID(2), []byte{1}
 			if _, err := mem.InsertAppAttestShadowKey(context.Background(), tc.key); err != nil {
 				t.Fatal(err)
 			}
@@ -96,7 +96,7 @@ func TestReadyReplyRejectsKeyOfAnotherOwnerOrPolicy(t *testing.T) {
 
 func TestProofReplyWithoutPreparedContextStops(t *testing.T) {
 	var observed observedOutcomes
-	key := &store.AppAttestShadowKey{KeyID: replyKeyID(3)}
+	key := &store.AppAttestShadowKey{KeyID: shadowKeyID(3)}
 	c := exchange.Challenge{Expected: "assertion", Credential: key, Binding: transcript.Binding{Session: "session", Challenge: "challenge"}}
 	reply := protocol.AppAttestShadowPayload{Session: "session", Action: "assertion", Result: "ok", KeyID: key.KeyID, Challenge: "challenge", Proof: base64.StdEncoding.EncodeToString([]byte("proof"))}
 	if result := exchange.Verify(context.Background(), exchange.Dependencies{Observe: observed.observe}, c, reply); result.Next != "stop" || !slices.Equal(observed, observedOutcomes{"assertion:enrollment_context"}) {
@@ -107,7 +107,7 @@ func TestProofReplyWithoutPreparedContextStops(t *testing.T) {
 func TestInvalidAttestationIsRejectedWithoutStoringKey(t *testing.T) {
 	mem := memorystore.NewMemory(store.Config{})
 	var observed observedOutcomes
-	key := &store.AppAttestShadowKey{KeyID: replyKeyID(4)}
+	key := &store.AppAttestShadowKey{KeyID: shadowKeyID(4)}
 	deps := exchange.Dependencies{Keys: mem, Verifier: appattest.New(appattest.Policy{AppID: "TEST.app", Environment: "production"}), Observe: observed.observe,
 		Commit: func(context.Context, store.AppAttestDecision) bool {
 			t.Fatal("rejected attestation committed")
@@ -132,7 +132,7 @@ func TestVerifierBusyReplyIsArchivedAsRejection(t *testing.T) {
 	var observed observedOutcomes
 	pipeline, attempt := readyExchange(exchange.Dependencies{Keys: &failingShadowKeyRead{memorystore.NewMemory(store.Config{})}, Observe: observed.observe})
 	attempt.Rejection = "verifier_busy"
-	result := pipeline.Handle(context.Background(), attempt, readyReply(replyKeyID(5)))
+	result := pipeline.Handle(context.Background(), attempt, readyReply(shadowKeyID(5)))
 	if result.Next != "stop" || result.Outcome != "verifier_busy" || !slices.Equal(observed, observedOutcomes{"archive:verifier_busy"}) {
 		t.Fatalf("next=%q outcome=%q observed=%v", result.Next, result.Outcome, observed)
 	}

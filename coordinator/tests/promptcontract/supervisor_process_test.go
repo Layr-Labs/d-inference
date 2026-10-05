@@ -20,7 +20,7 @@ func TestNextBackoffDoublesUntilMaximum(t *testing.T) {
 	}
 	for _, test := range tests {
 		if got := process.NextBackoff(test.current, test.maximum); got != test.want {
-			t.Fatalf("nextBackoff(%v, %v) = %v, want %v", test.current, test.maximum, got, test.want)
+			t.Fatalf("NextBackoff(%v, %v) = %v, want %v", test.current, test.maximum, got, test.want)
 		}
 	}
 }

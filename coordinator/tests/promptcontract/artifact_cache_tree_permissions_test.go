@@ -21,7 +21,7 @@ func TestArtifactCachePublishLocksNestedDirectories(t *testing.T) {
 		_, _ = w.Write(body)
 	}))
 	defer server.Close()
-	root := writableCacheRoot(t)
+	root := readOnlyTempRoot(t)
 	cache := newTestArtifactCache(t, root, server)
 
 	published, err := cache.Ensure(context.Background(), manifest)
@@ -50,7 +50,7 @@ func TestArtifactCachePublishLocksNestedDirectories(t *testing.T) {
 func TestArtifactCachePublishRejectsSymlinkInStagingTree(t *testing.T) {
 	body := []byte(`{"version":"1.0"}`)
 	manifest := fixtureNestedManifest("tokenizer.json", body)
-	root := writableCacheRoot(t)
+	root := readOnlyTempRoot(t)
 	outside := realTempDir(t)
 	outsideMode := fileMode(t, outside).Perm()
 	var injectErr error
@@ -84,19 +84,6 @@ func TestArtifactCachePublishRejectsSymlinkInStagingTree(t *testing.T) {
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("cache root after rejected publish: entries=%d err=%v", len(entries), err)
 	}
-}
-
-func writableCacheRoot(t *testing.T) string {
-	t.Helper()
-	root := realTempDir(t)
-	t.Cleanup(func() {
-		rootHandle, err := os.OpenRoot(root)
-		if err == nil {
-			_ = artifacts.MakeTreeWritable(rootHandle)
-			_ = rootHandle.Close()
-		}
-	})
-	return root
 }
 
 func newTestArtifactCache(t *testing.T, root string, server *httptest.Server) *artifacts.ArtifactCache {

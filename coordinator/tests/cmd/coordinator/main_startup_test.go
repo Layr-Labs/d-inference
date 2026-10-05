@@ -2,19 +2,17 @@ package coordinator_test
 
 import (
 	"log/slog"
-	"math/rand/v2"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
 	command "github.com/eigeninference/d-inference/coordinator/internal/command/coordinator"
+	"github.com/eigeninference/d-inference/coordinator/tests/internal/testkit"
 )
 
 // startupEnv is the environment for an in-process run of Main with the
@@ -55,33 +53,11 @@ func startupEnv(port string) map[string]string {
 	}
 }
 
-// freeListenPort returns a port that is free on all interfaces. The
-// coordinator binds the port itself after this returns and exits the process
-// on a bind error, so the port comes from below the ephemeral ranges of macOS
-// (49152+) and Linux (32768+), where outgoing connections and other tests'
-// ":0" listeners cannot take it in the meantime.
-func freeListenPort(t *testing.T) string {
-	t.Helper()
-	for range 100 {
-		port := strconv.Itoa(10000 + rand.IntN(22000))
-		ln, err := net.Listen("tcp", ":"+port)
-		if err != nil {
-			continue
-		}
-		if err := ln.Close(); err != nil {
-			t.Fatal(err)
-		}
-		return port
-	}
-	t.Fatal("no free port below the ephemeral range")
-	return ""
-}
-
 // TestMainServesWithMemoryStoreAndDrainsOnSIGTERM runs the real Main in this
 // process: configuration, store selection, server wiring, listening, and the
 // SIGTERM drain and shutdown path.
 func TestMainServesWithMemoryStoreAndDrainsOnSIGTERM(t *testing.T) {
-	port := freeListenPort(t)
+	port := testkit.FreeListenPort(t)
 	for k, v := range startupEnv(port) {
 		t.Setenv(k, v)
 	}

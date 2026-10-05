@@ -1,7 +1,6 @@
 package exchange_test
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -18,7 +17,7 @@ import (
 	memorystore "github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
-var sendKey = &store.AppAttestShadowKey{KeyID: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))}
+var sendKey = &store.AppAttestShadowKey{KeyID: shadowKeyID(7)}
 
 func sendBinding(endpoint string) transcript.Binding {
 	return transcript.Binding{Session: "session", Owner: "owner", Account: "account", PublicKey: endpoint, AppID: "TEST.app", Environment: "production", ProtocolVersion: 3}

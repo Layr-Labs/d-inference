@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -99,8 +100,9 @@ func (u *trustUpdates) list() []trustUpdate {
 	return append([]trustUpdate(nil), u.updates...)
 }
 
-// revokePresenter registers a provider that presented credential, then revokes
-// it. Only a started serving authorizer queues the provider's status change.
+// revokePresenter registers a provider as the verified presenter of a
+// credential, then revokes that credential. Only a started serving authorizer
+// queues the provider's status change.
 func revokePresenter(t *testing.T, r *registry.Registry, s *service.Service) *registry.Provider {
 	t.Helper()
 	endpoint := base64.StdEncoding.EncodeToString(make([]byte, 32))
@@ -128,11 +130,10 @@ func TestStartRunsEveryWorkerUntilServiceContextEnds(t *testing.T) {
 		m := newMetricLog()
 		outbox := authorization.NewOutbox(4)
 		trust := &trustUpdates{}
-		var mu sync.Mutex
-		releaseRefreshes := 0
+		var releaseRefreshes atomic.Int32
 		s := service.New(ctx, service.Config{Enabled: true, ServingEnabled: true, Environment: "production", AppID: "TEST.app", ReceiptKeyPath: keyPath, ReceiptKeyID: "TESTKEY"}, service.Dependencies{
 			Store: st, Registry: r, Logger: logger, Metrics: m.metrics(), Notifications: outbox, SendTrustStatus: trust.send,
-			RefreshReleasePolicy: func() error { mu.Lock(); releaseRefreshes++; mu.Unlock(); return nil },
+			RefreshReleasePolicy: func() error { releaseRefreshes.Add(1); return nil },
 		})
 		s.Start()
 		s.Start() // A second call must not start a second set of workers.
@@ -144,11 +145,9 @@ func TestStartRunsEveryWorkerUntilServiceContextEnds(t *testing.T) {
 		if !s.ReleaseReady(qualified.Release) {
 			t.Fatal("build qualifications not loaded at start")
 		}
-		mu.Lock()
-		if releaseRefreshes != 1 {
-			t.Fatalf("release policy refreshed %d times at start", releaseRefreshes)
+		if got := releaseRefreshes.Load(); got != 1 {
+			t.Fatalf("release policy refreshed %d times at start", got)
 		}
-		mu.Unlock()
 		if g := m.gauge("app_attest.receipt.configured"); len(g) != 1 || g[0] != 1 {
 			t.Fatalf("receipt configured gauge %v", g)
 		}
@@ -174,13 +173,11 @@ func TestStartRunsEveryWorkerUntilServiceContextEnds(t *testing.T) {
 		// One refresh period later the periodic workers have run again.
 		time.Sleep(authorization.RefreshInterval)
 		synctest.Wait()
-		mu.Lock()
-		if releaseRefreshes != 2 {
-			t.Fatalf("release policy refreshes after one period: %d", releaseRefreshes)
+		if got := releaseRefreshes.Load(); got != 2 {
+			t.Fatalf("release policy refreshes after one period: %d", got)
 		}
-		mu.Unlock()
 		if _, _, claims, inventory := st.counts(); claims != 5 || inventory != 2 {
-			t.Fatalf("after 5s claims=%d inventory=%d", claims, inventory)
+			t.Fatalf("after one refresh period claims=%d inventory=%d", claims, inventory)
 		}
 		time.Sleep(time.Minute)
 		synctest.Wait()
@@ -208,12 +205,12 @@ func TestStartWithoutOptInsKeepsOnlyUnconditionalWorkers(t *testing.T) {
 		}
 		m := newMetricLog()
 		trust := &trustUpdates{}
-		refreshed := false
+		var refreshed atomic.Bool
 		s := service.New(ctx, service.Config{Environment: "production"}, service.Dependencies{Store: mem, Registry: r, Logger: logger, Metrics: m.metrics(),
-			SendTrustStatus: trust.send, RefreshReleasePolicy: func() error { refreshed = true; return nil }})
+			SendTrustStatus: trust.send, RefreshReleasePolicy: func() error { refreshed.Store(true); return nil }})
 		s.Start()
 		synctest.Wait()
-		if s.ReleaseReady(qualified.Release) || refreshed {
+		if s.ReleaseReady(qualified.Release) || refreshed.Load() {
 			t.Fatal("serving workers started without an opt-in")
 		}
 		if enabled, _ := r.AppAttestServingPolicy(); enabled {

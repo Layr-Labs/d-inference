@@ -4,18 +4,15 @@ import (
 	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
-	cryptorand "crypto/rand"
+	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
 	"log/slog"
-	"math/rand/v2"
-	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -24,13 +21,14 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/app"
 	"github.com/eigeninference/d-inference/coordinator/config"
+	"github.com/eigeninference/d-inference/coordinator/tests/internal/testkit"
 )
 
 // testAPNsKeyPEM returns a fresh PKCS#8 PEM key of the kind Apple issues
 // (.p8, ECDSA P-256). It is generated per test and is not a real credential.
 func testAPNsKeyPEM(t *testing.T) []byte {
 	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), cryptorand.Reader)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,33 +57,11 @@ func (l *startupLog) String() string {
 	return l.buf.String()
 }
 
-// freeListenPort returns a port that is free on all interfaces. The
-// coordinator binds the port itself after this returns and exits the process
-// on a bind error, so the port comes from below the ephemeral ranges of macOS
-// (49152+) and Linux (32768+), where outgoing connections and other tests'
-// ":0" listeners cannot take it in the meantime.
-func freeListenPort(t *testing.T) string {
-	t.Helper()
-	for range 100 {
-		port := strconv.Itoa(10000 + rand.IntN(22000))
-		ln, err := net.Listen("tcp", ":"+port)
-		if err != nil {
-			continue
-		}
-		if err := ln.Close(); err != nil {
-			t.Fatal(err)
-		}
-		return port
-	}
-	t.Fatal("no free port below the ephemeral range")
-	return ""
-}
-
 // runCoordinator starts app.Run with the in-memory store and the given APNs
 // environment, stops it with SIGTERM and returns its log.
 func runCoordinator(t *testing.T, apnsEnv map[string]string) string {
 	t.Helper()
-	port := freeListenPort(t)
+	port := testkit.FreeListenPort(t)
 	for k, v := range map[string]string{
 		"EIGENINFERENCE_DATABASE_URL":           "",
 		"EIGENINFERENCE_ALLOW_MEMORY_STORE":     "true",
@@ -149,7 +125,7 @@ func runCoordinator(t *testing.T, apnsEnv map[string]string) string {
 const apnsDisabled = "APNs code-identity attestation not configured"
 
 func TestAPNsAttestorDisabledWithoutCompleteConfig(t *testing.T) {
-	rsaKey, err := rsa.GenerateKey(cryptorand.Reader, 2048)
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
 	}

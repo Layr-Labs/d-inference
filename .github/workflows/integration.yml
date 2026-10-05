@@ -6,8 +6,15 @@ on:
   pull_request:
 
 jobs:
+  changes:
+    uses: ./.github/workflows/component-changes.yml
+    permissions:
+      contents: read
+
   integration-tests:
     name: E2E Integration Tests
+    needs: changes
+    if: ${{ needs.changes.outputs.integration == 'true' }}
     runs-on: blacksmith-12vcpu-macos-27
     # Job budget = the sum of every step's worst case, not the warm-path wall
     # time. Test allowances: 25m (blocking paged lane) + 15m (blocking

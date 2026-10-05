@@ -1,7 +1,6 @@
 package store
 
 import (
-	"bytes"
 	"context"
 	"time"
 )
@@ -29,13 +28,4 @@ type AppAttestShadowKey struct {
 	// i.e. the key's last verified assertion. It is never serialized into the
 	// evidence JSON and never authorizes anything.
 	UpdatedAt time.Time `json:"-"`
-}
-
-func cloneAppAttestKey(k AppAttestShadowKey) *AppAttestShadowKey {
-	k.PublicKey = bytes.Clone(k.PublicKey)
-	if k.ValidationCategory != nil {
-		v := *k.ValidationCategory
-		k.ValidationCategory = &v
-	}
-	return &k
 }

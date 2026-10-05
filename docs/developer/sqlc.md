@@ -16,14 +16,14 @@ the Postgres-to-Go types are in [sqlc type mapping](../reference/sqlc-type-mappi
   needs Go 1.26 (`Makefile`, `SQLC`).
 - For `make sqlc-check`, a throwaway Postgres server and `DATABASE_URL`, as in
   [Add a database migration](database-migrations.md#prerequisites).
-- A `coordinator/store/schema/schema.sql` that includes the tables and columns
+- A `coordinator/store/postgres/schema/schema.sql` that includes the tables and columns
   your query reads. If your change also adds a migration, regenerate that file
   first ([step 5 of the migration how-to](database-migrations.md#steps)).
 
 ## Steps: add a query
 
-1. Add the query to the domain's file in `coordinator/store/queries/`, for
-   example `coordinator/store/queries/api_keys.sql`. Start it with a name and
+1. Add the query to the domain's file in `coordinator/store/postgres/queries/`, for
+   example `coordinator/store/postgres/queries/api_keys.sql`. Start it with a name and
    a command:
 
    ```sql
@@ -40,8 +40,8 @@ the Postgres-to-Go types are in [sqlc type mapping](../reference/sqlc-type-mappi
    make sqlc-generate
    ```
 
-   sqlc writes `coordinator/store/storedb/<file>.sql.go` and updates
-   `coordinator/store/storedb/models.go`. A query with one parameter takes it
+   sqlc writes `coordinator/store/postgres/storedb/<file>.sql.go` and updates
+   `coordinator/store/postgres/storedb/models.go`. A query with one parameter takes it
    as an argument; two or more become a `<Name>Params` struct
    (`storedb.GetAPIKeyByIDParams`). Do not edit generated files.
 
@@ -57,33 +57,31 @@ the Postgres-to-Go types are in [sqlc type mapping](../reference/sqlc-type-mappi
    ```
 
    Convert the generated row to the public store type in one function per
-   domain (`apiKeyFromRow` in `coordinator/store/postgres_api_keys.go`). Keep
+   domain (`apiKeyFromRow` in `coordinator/store/postgres/apikey.go`). Keep
    storage encodings, such as the JSON text in `api_keys.allowed_models`, in
    that function and its inverse (`insertAPIKeyParams`).
 
 4. If the method is new on the `Store` interface, implement it in
-   `MemoryStore` too and cover both backends in one test, as
-   `TestAPIKeyLifecycleOnEveryBackend` (`coordinator/store/apikey_backends_test.go`)
-   does.
+   `MemoryStore` (`coordinator/store/memory/`) too and cover both backends in
+   one test, as `TestAPIKeyLifecycleOnEveryBackend`
+   (`coordinator/tests/store/contracts/apikey_backends_test.go`) does.
 
 ## Steps: convert a hand-written domain
 
-The api_keys domain moved from hand-written SQL in
-`coordinator/store/postgres.go` to sqlc without a change to the `Store`
-interface, `MemoryStore` or `CachedStore`. Repeat these steps for another
+The api_keys domain in `coordinator/store/postgres/apikey.go` moved from
+hand-written SQL to sqlc without a change to the `Store` interface, `MemoryStore` or `CachedStore`. Repeat these steps for another
 domain.
 
 1. List every SQL statement of the domain and the helpers it uses. For
    api_keys the statements became twelve named queries; the helpers were the
    `apiKeyColumns` select list and `scanAPIKeyRow`.
 2. Write each statement as a named query in
-   `coordinator/store/queries/<table>.sql`. Keep its `WHERE`, `ORDER BY`,
+   `coordinator/store/postgres/queries/<table>.sql`. Keep its `WHERE`, `ORDER BY`,
    `FOR UPDATE` and `ON CONFLICT` clauses exactly; `GetAPIKeyByIDForUpdate`
    keeps the row lock that `RotateAPIKey` needs.
 3. Run `make sqlc-generate`.
-4. Move the domain's methods to `coordinator/store/postgres_<domain>.go`
-   (`coordinator/store/postgres_api_keys.go`) and make them call the
-   generated queries. Keep transactions in the store method: `RotateAPIKey`
+4. Keep the domain's methods in its file in `coordinator/store/postgres/`
+   (`apikey.go`) and make them call the generated queries. Keep transactions in the store method: `RotateAPIKey`
    begins the transaction on the pool and runs its read, insert and delete
    through `storedb.New(tx)`.
 5. Write one row-to-type function and one type-to-params function. Two
@@ -97,7 +95,7 @@ domain.
 
 | Topic | Rule | Example |
 |---|---|---|
-| File | One file per table or domain under `coordinator/store/queries/` | `coordinator/store/queries/api_keys.sql` |
+| File | One file per table or domain under `coordinator/store/postgres/queries/` | `coordinator/store/postgres/queries/api_keys.sql` |
 | Query name | Verb, noun, qualifier, in PascalCase; spell initialisms as `API`, `ID` | `GetAPIKeyByHash`, `ListAPIKeysByOwner`, `GetAPIKeyByIDForUpdate`, `InsertAPIKeyIfAbsent`, `DeactivateAPIKeyByHash` |
 | Command | `:one` for one row (no row returns `pgx.ErrNoRows`); `:many` for a slice; `:exec` when only the error matters; `:execrows` when the caller needs the affected-row count | `UpdateAPIKey :execrows` lets `UpdateAPIKey` return `key not found` on 0 rows |
 | Positional parameter | `$n`, each used once and compared with a column; sqlc names it after the column | `$1` in `GetActiveKeyAccount` becomes `keyHash string` |
@@ -116,21 +114,21 @@ make sqlc-check
 
 It needs `DATABASE_URL`. It runs `TestMigrationsBuildCheckedInSchema` (fails
 when `schema.sql` is stale), then `sqlc diff` (prints a unified diff and fails
-when `coordinator/store/storedb` is stale). CI runs it in the Coordinator
+when `coordinator/store/postgres/storedb` is stale). CI runs it in the Coordinator
 Tests job. Then run the store tests of the domain on Postgres:
 
 ```bash
-go test ./coordinator/store -count=1 -run 'APIKey'
+go test ./coordinator/tests/store/... -count=1 -run 'APIKey'
 ```
 
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `make sqlc-check` prints `--- a/storedb/...` and fails | The generated code is stale | `make sqlc-generate`, then commit `coordinator/store/storedb`. |
+| `make sqlc-check` prints `--- a/storedb/...` and fails | The generated code is stale | `make sqlc-generate`, then commit `coordinator/store/postgres/storedb`. |
 | `sqlc-check: set DATABASE_URL to a disposable Postgres server` | `DATABASE_URL` is unset | Point it at a throwaway server. |
 | `TestMigrationsBuildCheckedInSchema` fails inside `make sqlc-check` | `schema.sql` is stale | Regenerate it ([migration how-to step 5](database-migrations.md#steps)), then `make sqlc-generate`. |
-| sqlc reports `column "..." does not exist` | `schema.sql` lacks the column (stale), or `sqlc.yaml` was pointed at `coordinator/store/schema/migrations/`, where the baseline adds columns inside `DO` blocks that sqlc cannot see | Regenerate `schema.sql`; keep `schema: schema/schema.sql`. |
+| sqlc reports `column "..." does not exist` | `schema.sql` lacks the column (stale), or `sqlc.yaml` was pointed at `coordinator/store/postgres/schema/migrations/`, where the baseline adds columns inside `DO` blocks that sqlc cannot see | Regenerate `schema.sql`; keep `schema: schema/schema.sql`. |
 | A result or parameter is `interface{}` | An expression or `sqlc.narg` without a cast, for example `COALESCE(SUM(x), 0)` | Cast it: `::bigint`, `::timestamptz`. |
 | A parameter is `pgtype.Timestamp`, not `*time.Time` | The cast is `::timestamp` (without time zone); the overrides cover only `timestamptz` | Cast to `::timestamptz`. |
 | A parameter is named `dollar_1` | A positional parameter that sqlc cannot tie to a column | Use `sqlc.arg('name')`. |

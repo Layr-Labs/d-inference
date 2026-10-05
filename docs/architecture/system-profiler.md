@@ -1,6 +1,6 @@
 # System profiler
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
 The profiler answers "where did the time go, and what did the router know when
 it chose?" for one request, without carrying a single prompt-derived byte. It
@@ -28,9 +28,9 @@ per-token cost, or a free-form provider string to storage.
 
 | Artefact | Grain | Producer | Sink | Retention |
 |---|---|---|---|---|
-| `request_profiles` row | dispatched attempt (pre-dispatch rejections never produce one) | stamps on `registry.RequestProfile` / `AttemptProfile`, flattened by `buildProfileRecord` (`coordinator/api/profiler_record.go`) | `profileSink` (`coordinator/api/profiler_sink.go`) → multi-row INSERT | `profileRetainProfiles` — value in [`../reference/telemetry-inventory.md#coordinator-per-request-records-postgres`](../reference/telemetry-inventory.md#coordinator-per-request-records-postgres) |
-| `fleet_snapshots` row | (provider session, slot) per 60 s + one `provider_id = 'coordinator'` row | `registry.FleetSample`, `CoordinatorSample` (`coordinator/registry/fleet_sample.go`) | sampler goroutine, `pgx.CopyFrom` (`coordinator/store/postgres_profiles.go`) | `profileRetainFleet` — same page |
-| `X-Timing` additive keys | committed response | `writeTimingHeaderWithProfile` (`coordinator/api/profiler_dispatch.go`) | response header ([`../reference/api-contracts.md#headers`](../reference/api-contracts.md#headers)) | n/a |
+| `request_profiles` row | dispatched attempt (pre-dispatch rejections never produce one) | stamps on `registry.RequestProfile` / `AttemptProfile`, flattened by `buildProfileRecord` (`coordinator/internal/observation/profile/profiler_record.go`) | `profileSink` (`coordinator/internal/observation/profile/profiler_sink.go`) → multi-row INSERT | `profileRetainProfiles` — value in [`../reference/telemetry-inventory.md#coordinator-per-request-records-postgres`](../reference/telemetry-inventory.md#coordinator-per-request-records-postgres) |
+| `fleet_snapshots` row | (provider session, slot) per 60 s + one `provider_id = 'coordinator'` row | `registry.FleetSample`, `CoordinatorSample` (`coordinator/registry/fleet_sample.go`) | sampler goroutine, `pgx.CopyFrom` (`coordinator/store/postgres/profiles.go`) | `profileRetainFleet` — same page |
+| `X-Timing` additive keys | committed response | `writeTimingHeaderWithProfile` (`coordinator/api/inference/profiler_dispatch.go`) | response header ([`../reference/api-contracts.md#headers`](../reference/api-contracts.md#headers)) | n/a |
 | Datadog counters | process | [Operations](#operations) | DogStatsD / HTTPS series | n/a |
 
 ## Mechanism
@@ -47,28 +47,28 @@ attempt stamps.
 
 | Column | Taken at | Segment since the previous stamp |
 |---|---|---|
-| `auth_done_us`, `auth_kind`, `auth_db_read` | `stampAuth` (`coordinator/api/profiler.go`) from the auth middleware | header read + API-key or Privy auth; `auth_db_read` = a key lookup hit the store |
-| `ratelimit_done_us` | rate-limit middleware (`coordinator/api/server.go`) | rate limiter |
-| `sealed_open_us`, `sealed_body_bytes` | `sealedTransport` (`coordinator/api/sender_encryption.go`) | sealed-transport body decrypt; absent for plain HTTPS |
-| `handler_entry_us` | inference handler entry (`coordinator/api/consumer.go`) | remaining middleware + mux (= `X-Timing.pre_handler_us`) |
-| `parsed_us`, `db_us`, `db_calls` | handler; DB accumulator `profileDBCall` | body read, JSON decode, model resolve, registry read |
+| `auth_done_us`, `auth_kind`, `auth_db_read` | `stampAuth` (`coordinator/api/access/owner.go`) from the auth middleware | header read + API-key or Privy auth; `auth_db_read` = a key lookup hit the store |
+| `ratelimit_done_us` | rate-limit middleware (`coordinator/api/access/rate_limits.go`) | rate limiter |
+| `sealed_open_us`, `sealed_body_bytes` | `SealedTransport` (`coordinator/api/inference/sender_encryption.go`) | sealed-transport body decrypt; absent for plain HTTPS |
+| `handler_entry_us` | inference handler entry (`coordinator/api/inference/consumer.go`) | remaining middleware + mux (= `X-Timing.pre_handler_us`) |
+| `parsed_us`, `db_us`, `db_calls` | handler; DB accumulator `ProfileDBCall` | body read, JSON decode, model resolve, registry read |
 | `reserved_us` | handler | balance reservation |
 | `preflight_done_us`, `preflight_us`, `preflight_outcome` ∈ {`passed`, `handled`} | handler | admission preflight |
 | `plan_done_us`, `first_content_budget_ms` | handler | second registry read + cache-route plan |
 | `media_fetched_us` | handler, only when media was inlined | remote media fetch |
-| `attempt_start_us` | direct path (`consumer.go`) / queued path (`coordinator/api/dispatch.go`) | retry/backup loop overhead before this attempt |
+| `attempt_start_us` | direct path (`consumer.go`) / queued path (`coordinator/api/inference/dispatch.go`) | retry/backup loop overhead before this attempt |
 | `reserve_lock_acquired_us` | derived: `attempt_start_us + LockWaitUS` (`AttemptProfile.SetDecision`) | wait for `r.mu`, measured from `ReserveProviderEx` entry (`coordinator/registry/scheduler.go`) |
 | `reserve_done_us` | after `ReserveProviderEx` returns; the `RoutingDecision` is copied by value here | candidate scan + selection + admit re-check (`scan_us`, `admit_us`) |
 | `queued_us`, `dequeued_us` | queued path | enqueue; pure queue wait (= `X-Timing.queue_pure_us`) |
 | `topup_done_us` | handler | provider-specific surcharge reservation |
 | `encrypted_us` | handler / dispatch | session key + body encryption |
 | `write_submitted_us`, `write_dequeued_us`, `write_done_us` | dispatch, from the provider writer's `DequeuedAt` | frame build + submit; writer queue wait (= `writer_us`); socket write (= `socket_us`) |
-| `accepted_us` | `handleInferenceAccepted` (`coordinator/api/provider.go`) | provider ack round trip (= `provider_ack_us`) |
+| `accepted_us` | `HandleInferenceAccepted` (`coordinator/api/inference/provider_inference.go`) | provider ack round trip (= `provider_ack_us`) |
 | `first_chunk_ingress_us`, `chunks_in`, `decrypt_us_total` | chunk ingress on the WS read loop (one clock read + two atomic adds per chunk) | provider dequeue → prefill → first frame → transport |
 | `first_content_ingress_us` | read loop | preamble frames before the first content-bearing chunk |
 | `first_chunk_dequeued_us`, `first_content_us`, `held_preamble_chunks` | dispatch goroutine (`profiler_dispatch.go`) | channel hand-off + commit decision |
-| `headers_written_us` | `stampCommitted` for streams; `writeNonStreamBody` for JSON bodies | `X-Timing` computed, headers written |
-| `first_flush_us`, `last_flush_us`, `done_flushed_us`, `chunks_out`, `bytes_out`, `max_chunk_gap_us`, `client_write_err` | `relayStamps` from the chat, Responses and generic SSE relays; non-stream bodies stamp the same fields once | relay to the client; a failed or short write sets `client_write_err` and leaves `done_flushed_us` absent |
+| `headers_written_us` | `stampCommitted` for streams; `WriteNonStreamBody` for JSON bodies | `X-Timing` computed, headers written |
+| `first_flush_us`, `last_flush_us`, `done_flushed_us`, `chunks_out`, `bytes_out`, `max_chunk_gap_us`, `client_write_err` | `RelayStamps` from the chat, Responses and generic SSE relays; non-stream bodies stamp the same fields once | relay to the client; a failed or short write sets `client_write_err` and leaves `done_flushed_us` absent |
 | `client_gone_us`, `client_gone_phase` ∈ {`before_first_token`, `after_commit`} | dispatch / consumer / `finalizeProfile` | client disconnect |
 | `cancel_sent_us` | dispatch, after the relay returns | cancel frame to the provider |
 | `complete_ingress_us` | terminal frame ingress (`provider.go`; parked, complete and error sites) | provider terminal received |
@@ -76,8 +76,8 @@ attempt stamps.
 
 Outcome columns are written first-wins by `AttemptProfile.SetOutcome`: provider
 complete (`handleComplete`), provider error with `terminal_cause`
-(`handleInferenceError`), consumer-side synthetic terminals
-(`coordinator/api/route_outcome.go`), never-dispatched attempts
+(`HandleInferenceError`), consumer-side synthetic terminals
+(`coordinator/internal/inference/outcome/route_outcome_value.go`), never-dispatched attempts
 (`closeUndispatchedAttempt`, class from `dispatchErrorClass`), and grace expiry
 → `provider_outcome = 'no_terminal'` (`armFallback`,
 `coordinator/registry/attempt_profile_finalize.go`).
@@ -173,7 +173,7 @@ token only, inside the stream lock. The cumulative engine counters
 `step_wall_ns_total` and `decode_rows_total` travel on the heartbeat
 `slots[].telemetry` object instead and land in `fleet_snapshots`.
 
-Both sides load `coordinator/protocol/testdata/profiler_wire_fixture.json`
+Both sides load `coordinator/tests/protocol/testdata/profiler_wire_fixture.json`
 (Go writes it, Swift reads it) and assert the key sets.
 
 ### Ingress validation
@@ -183,7 +183,7 @@ The WS read loop does one thing with `profile`: `SetProviderProfileRaw`
 `maxProviderProfileBytes` (the same bound as `MaxInferenceProfileBytes`) and
 retains the bytes on the attempt, first
 profile wins. Everything else runs on the profile-sink worker
-(`decodeInferenceProfile`, `applyProviderProfile`, `coordinator/api/profiler_provider.go`)
+(`DecodeInferenceProfile`, `ApplyProviderProfile`, `coordinator/internal/observation/profile/profiler_provider.go`)
 after the terminal has been fully processed.
 
 | Step | Rule | Outcome (`provider_profile_invalid_reason`) |
@@ -217,8 +217,8 @@ Each candidate also carries optional `first_content` JSON with `status`, `reason
 `feasible`, `unknown` and `predicted_late`. The winner's record uses commit-time
 evidence. This is coordinator-owned profiler JSON, not new provider telemetry or
 a schema migration (`FirstContentEstimate`,
-`coordinator/registry/first_content_forecast.go`; `decisionJSON`,
-`coordinator/api/profiler_record.go`). See [first-content routing](first-content-routing.md).
+`coordinator/registry/first_content_forecast.go`; `DecisionJSON`,
+`coordinator/internal/observation/profile/profiler_record.go`). See [first-content routing](first-content-routing.md).
 
 Filled by value under `r.mu` from fixed-size `candidateScan` fields
 (`coordinator/registry/scheduler.go`), returned on `RoutingDecision`, copied
@@ -234,8 +234,8 @@ JSON-encoded on the sink worker.
 | `runner_up_provider_id`, `runner_up_cost_ms` | lowest-cost candidate of the narrowed pool other than the winner; absent with one candidate | `selectRoutingCandidate` (`coordinator/registry/candidate_selection.go`) |
 | `best_idle_provider_id`, `best_idle_ttft_ms` | lowest-TTFT candidate with the model resident and `backend_running + backend_waiting == 0`, computed over every gate-passing candidate before pool narrowing | `scheduler.go` |
 | `near_tie_pool_size`, `selection_path` | retained cost candidates: within `nearTieCostWindowMs` of the minimum in every pool; a restore-penalty candidate is retained only at the exact minimum. For cache-adjusted pools `near_tie_pool_size` therefore steps from 1 to the band size. Current branches `none`, `unique_min`, `tie_queue`, `tie_pending`, `random`, `prefix_affinity`, `cache_credit` (`selectionPathNames`). `prefix_affinity` is a stable repeat-demand preference among equivalent, non-quarantined cache-capable candidates; it does not prove a cache hit. `cache_credit` prefers useful validated reuse only after first-content band and whole-Mac service-work ordering; equivalents spread uniformly. Historical rows may retain `cache_tiebreak` | `coordinator/registry/candidate_selection.go`, `selectRoutingCandidateWithAffinity`; `coordinator/registry/gate_reason.go`, `SelectionPath` |
-| `snapshot_age_ms`, per-candidate `hb_age_ms` | `now − LastHeartbeat` when the routing snapshot was taken; observability only | `heartbeatAgeMs` |
-| `predicted_ttft_ms`, `raw_ttft_ms`, `ttft_calibration_ratio`, `prefill_decode_ratio`, `predicted_decode_tps` | calibrated vs raw estimate, the (model, chip) ratio applied, the decode→prefill fallback multiplier, `projectedPerRequestDecodeTPS` | `scheduler.go` |
+| `snapshot_age_ms`, per-candidate `hb_age_ms` | `now − LastHeartbeat`; the winner's `snapshot_age_ms` uses the fresh pre-debit commit snapshot, while candidate `hb_age_ms` retains the scan snapshot. Elapsed time or an intervening heartbeat can make them differ; observability only | `routingDecisionForCandidate` (`coordinator/registry/scheduler.go`), `candidateSummaryOf` (`coordinator/registry/gate_reason.go`) |
+| `predicted_ttft_ms`, `raw_ttft_ms`, `ttft_calibration_ratio`, `prefill_decode_ratio`, `predicted_decode_tps` | calibrated vs raw estimate, the (model, chip) ratio applied, the decode→prefill fallback multiplier, `candidateSnapshot.projectedDecodeTPS` | `scheduler.go`, `candidate_snapshot.go` |
 | `pending_for_model`, `total_pending` | winner's coordinator-side pending counts before this reservation | `scheduler.go` |
 | `capacity_rate_ms`, `cache_discount_ms` | gray-box capacity-503 penalty; exact-cache discount | `scheduler.go` |
 | `shadow_would_shed`, `shadow_idle_alternative` | `NULL` unless the TTFT shadow evaluator ran | `profiler_record.go` |
@@ -245,12 +245,12 @@ JSON-encoded on the sink worker.
 
 ### Tables
 
-`request_profiles` (DDL in `coordinator/store/schema/migrations/00001_baseline.sql`;
+`request_profiles` (DDL in `coordinator/store/postgres/schema/migrations/00001_baseline.sql`;
 column order pinned by `requestProfileColumns`, `coordinator/store/profile_records.go`):
 
 | Group | Columns |
 |---|---|
-| identity + outcome | `id`, `coord_request_id`, `request_id` (attempt UUID, joins `inference_routes`), `attempt`, `backup_of`, `winning`, `endpoint` (mux pattern via `httpPathLabel`), `stream`, `model`, `public_model`, `provider_id` (session id), `provider_version` (`ProviderVersionFold`: `^\d{1,3}\.\d{1,3}\.\d{1,4}(-[a-z0-9.]{1,16})?$` or `invalid`, `''` unreported), `chip_family` (`foldChipFamily`: `m1`…`m9` prefixes, else `other`), `kv_backend`, `final_status` (`success`, `partial_success`, `error`, `cancelled`, `timeout`, or `rejected` for 429/503/504 attempts that never dispatched — a value `inference_routes` never carries), `error_reason` (the route row's closed `error_class` when recorded, else its normalized reason), `terminal_cause`, `client_outcome` ∈ {`completed`, `client_gone`, `error_response`}, `provider_outcome` ∈ {`completed`, `error`, `not_dispatched`, `no_terminal`}, `client_gone_phase`, `first_content_budget_ms`, `admission_mode`, `received_at` |
+| identity + outcome | `id`, `coord_request_id`, `request_id` (attempt UUID, joins `inference_routes`), `attempt`, `backup_of`, `winning`, `endpoint` (mux pattern via `httpPathLabel`), `stream`, `model`, `public_model`, `provider_id` (session id), `provider_version` (`ProviderVersionFold`: `^\d{1,3}\.\d{1,3}\.\d{1,4}(-[a-z0-9.]{1,16})?$` or `invalid`, `''` unreported), `chip_family` (`FoldChipFamily`: `m1`…`m9` prefixes, else `other`), `kv_backend`, `final_status` (`success`, `partial_success`, `error`, `cancelled`, `timeout`, or `rejected` for 429/503/504 attempts that never dispatched — a value `inference_routes` never carries), `error_reason` (the route row's closed `error_class` when recorded, else its normalized reason), `terminal_cause`, `client_outcome` ∈ {`completed`, `client_gone`, `error_response`}, `provider_outcome` ∈ {`completed`, `error`, `not_dispatched`, `no_terminal`}, `client_gone_phase`, `first_content_budget_ms`, `admission_mode`, `received_at` |
 | request shape | `estimated_prompt_tokens`, `requested_max_tokens`, `requires_vision`, `has_tools` |
 | coordinator offsets (BIGINT µs, `NULL` = did not happen) | the `*_us` columns above plus `settle_db_us`, `db_us`, `db_calls` |
 | counts / context | `body_bytes`, `sealed_body_bytes`, `auth_kind`, `auth_db_read`, `reserve_mode`, `media_items`, `media_bytes`, `preflight_outcome`, `plan_outcome`, `chunks_in`, `chunks_out`, `bytes_out`, `decrypt_us_total`, `max_chunk_gap_us`, `held_preamble_chunks`, `client_write_err`, `attempts_total`, `failed_attempts`, `failed_attempts_us`, `backup_launched`, `backup_won`, `transport_est_us`, `slept_us`, `timing_anomaly` |
@@ -299,7 +299,7 @@ profiler build.
 
 The separate optional `slots[].paged_storage` observations are available in
 live backend snapshots and Datadog through `recordPagedStorageTelemetry`
-(`coordinator/api/provider_paged_storage_telemetry.go`); they are not columns in
+(`coordinator/internal/provider/heartbeat/provider_paged_storage_telemetry.go`); they are not columns in
 `fleet_snapshots`. The [wire reference](../reference/protocol-messages.md#slotspaged_storage)
 defines their overlapping memory gauges, counter scopes, freshness and current
 producer status.
@@ -314,17 +314,17 @@ producer status.
 | `timing_anomaly` | any decreasing pair along `handler_entry_us, parsed_us, reserved_us, attempt_start_us, reserve_done_us, encrypted_us, write_submitted_us, write_dequeued_us, write_done_us, first_chunk_ingress_us, first_content_us, complete_ingress_us` (`profileTimingAnomaly`); never rejects the row |
 | finalize | two halves (handler, terminal) under `sync.Once`; a fallback timer `profileFallbackGrace = defaultTerminalSettleGrace + 1 s` = 31 s arms when the handler half completes first and on expiry sets `provider_outcome = no_terminal`; a provider frame that owns the terminal claim completes the terminal half itself, the route-outcome funnel completes it only when no frame owns it (`CompleteTerminalUnlessClaimed`) |
 | sink | own channel of `defaultTelemetrySinkCapacity = 4096`, one worker, non-blocking submit; drop ⇒ `telemetry.sink_dropped{sink:profile}` and a warning at powers of ten; batches of `profileBatchMax = 64` or `profileBatchWait = 250 ms` |
-| store write | multi-row INSERT padded to `profileInsertShapes = {1, 8, 64}`, `ON CONFLICT (request_id, attempt) DO NOTHING`, 5 s context (`RecordRequestProfiles`, `coordinator/store/postgres_profiles.go`) |
+| store write | multi-row INSERT padded to `profileInsertShapes = {1, 8, 64}`, `ON CONFLICT (request_id, attempt) DO NOTHING`, 5 s context (`RecordRequestProfiles`, `coordinator/store/postgres/profiles.go`) |
 | fleet write | never on the sink: one `CopyFrom` per 60 s tick, 10 s context; row-count mismatch is an error |
 | retention | `PruneTelemetry`: per table, `cutoff = MAX(id) WHERE time < before` via the time index, then `DELETE … WHERE id >= lo AND id < hi` in `profilePruneBatch = 5000` windows, each its own transaction with `SET LOCAL lock_timeout = '2s'`; hourly (`profilePruneInterval`), 10 min context; **runs even when the profiler is off** so old rows stay bounded |
 | memory store | implements the same `TelemetryStore` methods and prunes its slices (`coordinator/store/interface_domains.go`; `TestMemoryPruneCapsProfilerSlices`) |
-| `request_waterfall` view | not in the boot migrations; apply by hand with `psql "$EIGENINFERENCE_DATABASE_URL" -f coordinator/store/migrations/request_waterfall.sql`; explicit column list, `LEFT JOIN inference_routes ON (request_id, attempt)`; re-run after adding a column (`TestRequestWaterfallViewListsEveryProfileColumn`) |
+| `request_waterfall` view | not in the boot migrations; apply by hand with `psql "$EIGENINFERENCE_DATABASE_URL" -f coordinator/store/postgres/migrations/request_waterfall.sql`; explicit column list, `LEFT JOIN inference_routes ON (request_id, attempt)`; re-run after adding a column (`TestRequestWaterfallViewListsEveryProfileColumn`) |
 
 ### Operations
 
 The only two knobs are the kill switch `EIGENINFERENCE_PROFILER` and the
 sample rate `EIGENINFERENCE_PROFILE_SAMPLE_RATE` (`newProfilerFromEnv`,
-`coordinator/api/profiler.go`; values and defaults in
+`coordinator/api/observation/profiler.go`; values and defaults in
 [`../reference/configuration.md#telemetry-datadog-and-profiling`](../reference/configuration.md#telemetry-datadog-and-profiling)).
 `off` (trimmed, case-insensitive) means no `RequestProfile` is created, no
 sink, no fleet sampler and no provider-profile decode — the retention sweep
@@ -332,7 +332,7 @@ still runs; any other value is on. The sample rate is clamped to [0, 1], an
 unparseable value falls back to the default (`defaultProfileSample`), and the
 always-record predicates bypass it.
 
-Admin endpoints (`requireAdminKey`; `coordinator/api/profiler_admin.go`):
+Admin endpoints (`RequireAdminKey`; `coordinator/api/observation/profiler_admin.go`):
 
 | Endpoint | Returns | Query |
 |---|---|---|
@@ -368,11 +368,11 @@ to the replication set, and accepts the hourly retention DELETE volume.
    sub-objects plus counters on `HeartbeatStats`. Raw profile bytes are only
    length-checked and retained on the read loop; decode is a sink-worker job.
 2. **Closed by construction.** Every persisted string is a coordinator-minted
-   id or a closed enum; provider strings are folded (`foldChipFamily`,
-   `foldThermalState`, `foldProviderVersion`, `SlotStateFold`,
+   id or a closed enum; provider strings are folded (`FoldChipFamily`,
+   `foldThermalState`, `FoldProviderVersion`, `SlotStateFold`,
    `ThermalStateFold`); unknown enum values fold to `other`; invalid outcomes
    are a bounded reason set. `TestRequestProfileRecordHasNoFreeFormProviderBytes`
-   (`coordinator/store/profile_records_test.go`) checks the record type
+   (`coordinator/store/`) checks the record type
    reflectively.
 3. **Clock domains never mix.** Coordinator µs from `t0` (monotonic), provider
    µs from `t0p` (`SuspendingClock`), engine ns from enqueue (`DispatchTime`).
@@ -381,7 +381,7 @@ to the replication set, and accepts the hourly retention DELETE volume.
    middleware; stamps are one clock read + one CAS; routing context is
    returned by value from fixed-size fields inside the existing scan loops (0
    allocations, no new lock under `r.mu`; `BenchmarkReserveProviderEx_350x2`,
-   `coordinator/registry/reserve_bench_test.go`); per chunk on the WS read loop
+   `coordinator/tests/registry/reserve_bench_test.go`); per chunk on the WS read loop
    = 1 clock read + 2 atomic adds; provider ≤ 32 lock ops per request, no
    per-token lock; engine ≤ 8 clock reads per step and no added allocation.
 5. **Two knobs only.** Kill switch and sample rate; retention, cadence, batch
@@ -438,10 +438,10 @@ ring or `DaemonState` mirror.
 |---|---|
 | One key, one meaning; add a key only with its producer; omission means unknown | mixed-fleet contract; [`../reference/telemetry-schema.md`](../reference/telemetry-schema.md) |
 | Every new string is a closed enum with a named Go type, `Valid()`/fold and `other`; never copy a provider string verbatim | `TestRequestProfileRecordHasNoFreeFormProviderBytes` |
-| Add the field to both mirrors (`coordinator/protocol/profile.go`, `provider-swift/Sources/ProviderCore/Protocol/InferenceProfile.swift`) and the shared fixture, with the round-trip / omitted / explicit-zero test triplet | `coordinator/protocol/testdata/profiler_wire_fixture.json` |
-| New `GateReason` / `SelectionPath` / `DrainTrigger` values go before the `*Count` sentinel or into the fold; never reorder persisted enums | `TestGateReasonNamesComplete` (`coordinator/registry/routing_context_test.go`) |
+| Add the field to both mirrors (`coordinator/protocol/profile.go`, `provider-swift/Sources/ProviderCore/Protocol/InferenceProfile.swift`) and the shared fixture, with the round-trip / omitted / explicit-zero test triplet | `coordinator/tests/protocol/testdata/profiler_wire_fixture.json` |
+| New `GateReason` / `SelectionPath` / `DrainTrigger` values go before the `*Count` sentinel or into the fold; never reorder persisted enums | `TestGateReasonNamesComplete` (`coordinator/tests/registry/routing_context_test.go`) |
 | New column: append at the end of the Go struct, the DDL and `requestProfileColumns` / `fleetSnapshotColumns` in one change | `TestRequestProfileColumnsStayAligned` |
-| Never `ALTER` a hot table in the boot loop; new indexes are built `CONCURRENTLY` outside it | `coordinator/store/postgres.go` migration slice |
+| Never `ALTER` a hot table in the boot loop; new indexes are built `CONCURRENTLY` outside it | `coordinator/store/postgres/` migration slice |
 | Anything read under `r.mu` is a fixed-size value copy — no maps, slices, pointers or JSON | `BenchmarkReserveProviderEx_350x2` shows 0 added allocs |
 | Nothing on the WS read loop beyond a length check and atomic adds | `SetProviderProfileRaw`; decode in `profiler_provider.go` |
 | Tags: only `stage`, `model`, `status`, `valid`, `reason`, `sink`, `kind`; never an id | [Operations](#operations) |
@@ -451,17 +451,17 @@ ring or `DaemonState` mirror.
 
 | Concern | Path |
 |---|---|
-| Knobs, constants, sampling, middleware stamps | `coordinator/api/profiler.go` |
-| Row builder, folds, always-record, anomaly | `coordinator/api/profiler_record.go` |
-| Provider profile decode and validation | `coordinator/api/profiler_provider.go` |
-| Sink | `coordinator/api/profiler_sink.go`, `coordinator/api/telemetry_sink.go` |
-| Fleet sampler, retention loop, metrics | `coordinator/api/profiler_fleet.go`, `coordinator/registry/fleet_sample.go` |
-| Dispatch hooks, `X-Timing`, relay stamps | `coordinator/api/profiler_dispatch.go` |
-| Admin endpoints | `coordinator/api/profiler_admin.go`, `coordinator/api/admin_telemetry.go` |
+| Knobs, constants, sampling, middleware stamps | `coordinator/api/observation/profiler.go` |
+| Row builder, folds, always-record, anomaly | `coordinator/internal/observation/profile/profiler_record.go` |
+| Provider profile decode and validation | `coordinator/internal/observation/profile/profiler_provider.go` |
+| Sink | `coordinator/internal/observation/profile/profiler_sink.go`, `coordinator/internal/observation/routes/telemetry_sink.go` |
+| Fleet sampler, retention loop, metrics | `coordinator/api/observation/profiler_fleet.go`, `coordinator/registry/fleet_sample.go` |
+| Dispatch hooks, `X-Timing`, relay stamps | `coordinator/api/inference/profiler_dispatch.go` |
+| Admin endpoints | `coordinator/api/observation/profiler_admin.go`, `coordinator/api/observation/admin_telemetry.go` |
 | Profiles and attempts | `coordinator/registry/request_profile.go`, `coordinator/registry/attempt_profile.go`, `coordinator/registry/attempt_profile_finalize.go` |
 | Routing context and folds | `coordinator/registry/scheduler.go`, `coordinator/registry/gate_reason.go`, `coordinator/registry/queue.go` |
-| Wire types and fixture | `coordinator/protocol/profile.go`, `coordinator/protocol/testdata/profiler_wire_fixture.json` |
-| Store | `coordinator/store/profile_records.go`, `coordinator/store/postgres_profiles.go`, `coordinator/store/postgres.go`, `coordinator/store/migrations/request_waterfall.sql` |
+| Wire types and fixture | `coordinator/protocol/profile.go`, `coordinator/tests/protocol/testdata/profiler_wire_fixture.json` |
+| Store | `coordinator/store/profile_records.go`, `coordinator/store/postgres/profiles.go`, `coordinator/store/postgres/`, `coordinator/store/postgres/migrations/request_waterfall.sql` |
 | Fleet replay | `coordinator/registry/routingsim/fleet_ndjson.go` |
 | Provider side | `provider-swift/Sources/ProviderCore/Telemetry/RequestProfileBuilder.swift`, `provider-swift/Sources/ProviderCore/Protocol/InferenceProfile.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Profile.swift` |
 | Engine side | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2RequestTiming+Stamps.swift` |

@@ -3,29 +3,29 @@
 > Last updated: 2026-10-04
 
 Reference for the Go types that sqlc v1.31.1 generates in
-`coordinator/store/storedb/` from `coordinator/store/schema/schema.sql`
-under `coordinator/store/sqlc.yaml`, and how the store converts each one to
+`coordinator/store/postgres/storedb/` from `coordinator/store/postgres/schema/schema.sql`
+under `coordinator/store/postgres/sqlc.yaml`, and how the store converts each one to
 its public type. How to write a query is
 [Write store queries with sqlc](../developer/sqlc.md).
 
 ## Configuration flags
 
-Each flag in `coordinator/store/sqlc.yaml` that changes a Go type.
+Each flag in `coordinator/store/postgres/sqlc.yaml` that changes a Go type.
 
 | Setting | Value | Effect on the generated types |
 |---|---|---|
-| `sql_package` | `pgx/v5` | Queries take a `storedb.DBTX` (`Exec`, `Query`, `QueryRow` of pgx v5; `coordinator/store/storedb/db.go`). Without the overrides below, `timestamptz` and `timestamp` come from `pgtype`. |
+| `sql_package` | `pgx/v5` | Queries take a `storedb.DBTX` (`Exec`, `Query`, `QueryRow` of pgx v5; `coordinator/store/postgres/storedb/db.go`). Without the overrides below, `timestamptz` and `timestamp` come from `pgtype`. |
 | `emit_pointers_for_null_types` | `true` | A nullable column or parameter becomes a pointer (`*int64`), not a `pgtype` wrapper (`pgtype.Int8`). |
-| `omit_unused_structs` | `true` | `coordinator/store/storedb/models.go` holds only the table structs that a query returns (`ApiKey`). |
+| `omit_unused_structs` | `true` | `coordinator/store/postgres/storedb/models.go` holds only the table structs that a query returns (`ApiKey`). |
 | `overrides`: `db_type: pg_catalog.timestamptz` | `go_type: time.Time`; with `nullable: true`, `*time.Time` | Applies to schema columns (`pg_dump` writes them as `timestamp with time zone`). Without it a column is `pgtype.Timestamptz`. |
 | `overrides`: `db_type: timestamptz` | `go_type: time.Time`; with `nullable: true`, `*time.Time` | Applies to a `::timestamptz` cast in a query, as in `KeySpendSince`. Without it `Since` is `pgtype.Timestamptz`. |
 
 ## Mappings in the generated code
 
 Every Postgres type that a checked-in query reads or writes. Fields are in
-`storedb.ApiKey` (`coordinator/store/storedb/models.go`) and the
-`*Params` structs (`coordinator/store/storedb/api_keys.sql.go`). Conversions
-are in `coordinator/store/postgres_api_keys.go`.
+`storedb.ApiKey` (`coordinator/store/postgres/storedb/models.go`) and the
+`*Params` structs (`coordinator/store/postgres/storedb/api_keys.sql.go`). Conversions
+are in `coordinator/store/postgres/apikey.go`.
 
 | Postgres type | Null | Go type in `storedb` | Caused by | Column or expression → field | Store conversion to the public type |
 |---|---|---|---|---|---|
@@ -60,11 +60,11 @@ narrower select returns a scalar or a `<Name>Row` struct.
 
 The schema also has these types. No checked-in query reads them, so
 `storedb` has no field for them yet. The Go types below are the output of
-sqlc v1.31.1 with `coordinator/store/sqlc.yaml` for a one-column probe query
+sqlc v1.31.1 with `coordinator/store/postgres/sqlc.yaml` for a one-column probe query
 on each listed column (2026-10-04). Check the generated code when you add the
 first query, and move the row to the table above.
 
-| Postgres type | Null | Go type | Caused by | Probe column in `coordinator/store/schema/schema.sql` |
+| Postgres type | Null | Go type | Caused by | Probe column in `coordinator/store/postgres/schema/schema.sql` |
 |---|---|---|---|---|
 | `text` | nullable | `*string` | `emit_pointers_for_null_types` | `darkbloom_machines.merged_into` |
 | `bigint` | `NOT NULL` | `int64` | default | `ledger_entries.id` |

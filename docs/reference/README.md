@@ -28,7 +28,7 @@ Every row cites the code that defines it. For how and why things work, use
 | [telemetry-inventory.md](telemetry-inventory.md) | Every telemetry datum collected — producer, sink, cadence, retention — and the Datadog metric-name inventory with tags and emitting file |
 | [pricing-model.md](pricing-model.md) | Micro-USD units, price resolution order, formulas, every billing constant (single home for money constants), routes, service accounts |
 | [model-registry-format.md](model-registry-format.md) | Manifest schema, registration payload, alias format |
-| [sqlc-type-mapping.md](sqlc-type-mapping.md) | Postgres type and nullability → generated Go type in `coordinator/store/storedb`, the `sqlc.yaml` flag that causes it, and the store conversion |
+| [sqlc-type-mapping.md](sqlc-type-mapping.md) | Postgres type and nullability → generated Go type in `coordinator/store/postgres/storedb`, the `sqlc.yaml` flag that causes it, and the store conversion |
 | [qwen4-next-support.md](qwen4-next-support.md) | Native Flash-Next private serving/state contract and pending qualification; not a catalog or release claim |
 
 ## Prefix cache formats

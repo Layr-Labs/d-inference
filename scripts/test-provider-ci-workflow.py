@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import shlex
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -275,6 +276,57 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(field(upload, "path", indent=10), "${{ runner.temp }}/provider-test-diagnostics")
         self.assertEqual(field(upload, "retention-days", indent=10), "7")
         self.assertNotIn("continue-on-error:", self.jobs["test-provider"])
+
+    def test_coverage_summary_preserves_weighted_rows_and_failure_checks(self):
+        report = next(step for step in step_blocks(self.jobs["test-provider"])
+                      if field(step, "id") == "provider-coverage")
+        summary_script = run_command(report).split("<<'PY'\n", 1)[1].split("\nPY", 1)[0]
+        source_root = "/fixture/provider-swift/Sources"
+        metrics = ("lines", "regions", "functions")
+
+        def summary(covered, count):
+            return {metric: {"covered": covered, "count": count} for metric in metrics}
+
+        # Unequal file sizes pin weighted coverage, rather than an average
+        # of percentages. Only the total includes the helper target.
+        files = [
+            {"filename": f"{source_root}/{target}/File.swift", "summary": summary(covered, count)}
+            for target, covered, count in (
+                ("ProviderCore", 1, 2), ("ProviderCoreFoundation", 2, 8),
+                ("ProviderAppAttest", 1, 5), ("DarkbloomFanCore", 1, 5),
+                ("darkbloom", 3, 10), ("ProviderBenchmark", 4, 10),
+                ("darkbloom-fan-helper", 8, 10),
+            )
+        ]
+        baseline = {"data": [{"files": files, "totals": summary(20, 50)}]}
+        with tempfile.TemporaryDirectory(prefix="provider-coverage-summary-") as temporary:
+            export = Path(temporary) / "coverage.json"
+            for scenario in ("valid", "missing metric", "empty row"):
+                with self.subTest(scenario=scenario):
+                    payload = json.loads(json.dumps(baseline))
+                    if scenario == "missing metric":
+                        del payload["data"][0]["files"][0]["summary"]["regions"]
+                    elif scenario == "empty row":
+                        payload["data"][0]["files"] = [entry for entry in payload["data"][0]["files"]
+                                                        if "/darkbloom/" not in entry["filename"]]
+                    export.write_text(json.dumps(payload))
+                    result = subprocess.run(
+                        [sys.executable, "-c", summary_script, str(export), source_root],
+                        capture_output=True, text=True, timeout=5)
+                    if scenario != "valid":
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("regions" if scenario == "missing metric" else
+                                      "No lines for Provider CLI (`darkbloom`)", result.stderr)
+                        continue
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    rows = [line for line in result.stdout.splitlines() if line.startswith("| Provider")]
+                    self.assertEqual(rows, [
+                        "| Provider (Swift) product | 25.00% of 20 lines | 25.00% regions | 25.00% | 80% (report-only) |",
+                        "| Provider CLI (`darkbloom`) | 30.00% of 10 lines | 30.00% regions | 30.00% | 80% (report-only) |",
+                        "| Provider benchmark (`ProviderBenchmark`) | 40.00% of 10 lines | 40.00% regions | 40.00% | 80% (report-only) |",
+                        "| Provider (Swift) total | 40.00% of 50 lines | 40.00% regions | 40.00% | 80% (report-only) |",
+                    ])
+                    self.assertIn("These targets are only in the total: `darkbloom-fan-helper`.", result.stdout)
 
     def test_sdk_retains_every_original_gate_command(self):
         steps = step_blocks(self.jobs["test-provider-sdk"])

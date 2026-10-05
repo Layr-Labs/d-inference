@@ -444,36 +444,47 @@ jobs:
           # row fails the step.
           python3 - "$out/provider-coverage.json" "$PWD/Sources" \
             > "$out/provider-coverage-summary.md" <<'PY'
-          import json, sys
-          data = json.load(open(sys.argv[1]))["data"][0]
-          root = sys.argv[2].rstrip("/") + "/"
+          import json
+          import sys
+
+          with open(sys.argv[1]) as export:
+              coverage = json.load(export)["data"][0]
+          source_root = sys.argv[2].rstrip("/") + "/"
           product = ["ProviderCore", "ProviderCoreFoundation", "ProviderAppAttest", "DarkbloomFanCore"]
           rows = {
               "Provider (Swift) product": product,
               "Provider CLI (`darkbloom`)": ["darkbloom"],
               "Provider benchmark (`ProviderBenchmark`)": ["ProviderBenchmark"],
           }
-          row_of = {target: name for name, targets in rows.items() for target in targets}
-          kinds = ("lines", "regions", "functions")
-          sums = {name: {k: [0, 0] for k in kinds} for name in rows}
-          seen = set()
-          for entry in data["files"]:
-              target = entry["filename"].removeprefix(root).split("/")[0]
-              seen.add(target)
-              if target in row_of:
-                  for k in kinds:
-                      sums[row_of[target]][k][0] += entry["summary"][k]["covered"]
-                      sums[row_of[target]][k][1] += entry["summary"][k]["count"]
-          sums["Provider (Swift) total"] = {k: [data["totals"][k]["covered"], data["totals"][k]["count"]] for k in kinds}
+          row_by_target = {target: name for name, targets in rows.items() for target in targets}
+          metrics = ("lines", "regions", "functions")
+          totals_by_row = {name: {metric: [0, 0] for metric in metrics} for name in rows}
+          seen_targets = set()
+          for entry in coverage["files"]:
+              target = entry["filename"].removeprefix(source_root).split("/")[0]
+              seen_targets.add(target)
+              if target not in row_by_target:
+                  continue
+              row_totals = totals_by_row[row_by_target[target]]
+              for metric in metrics:
+                  row_totals[metric][0] += entry["summary"][metric]["covered"]
+                  row_totals[metric][1] += entry["summary"][metric]["count"]
+          totals_by_row["Provider (Swift) total"] = {
+              metric: [coverage["totals"][metric]["covered"], coverage["totals"][metric]["count"]]
+              for metric in metrics
+          }
           print("| Component | Statements or Lines | Regions or Branches | Functions | Target |")
           print("|---|---|---|---|---|")
-          for name, s in sums.items():
-              if s["lines"][1] == 0:
+          for name, row_totals in totals_by_row.items():
+              if row_totals["lines"][1] == 0:
                   sys.exit(f"No lines for {name}")
-              lines, regions, functions = (f"{100 * c / n:.2f}%" for c, n in (s[k] for k in kinds))
-              print(f"| {name} | {lines} of {s['lines'][1]:,} lines | {regions} regions | {functions} | 80% (report-only) |")
-          product_names = [f"`{t}`" for t in product]
-          other = ", ".join(f"`{t}`" for t in sorted(seen.difference(row_of), key=str.lower))
+              lines, regions, functions = (
+                  f"{100 * covered / count:.2f}%"
+                  for covered, count in (row_totals[metric] for metric in metrics)
+              )
+              print(f"| {name} | {lines} of {row_totals['lines'][1]:,} lines | {regions} regions | {functions} | 80% (report-only) |")
+          product_names = [f"`{target}`" for target in product]
+          other = ", ".join(f"`{target}`" for target in sorted(seen_targets.difference(row_by_target), key=str.lower))
           print()
           print(f"The product row counts the code that serves requests: {', '.join(product_names[:-1])} and {product_names[-1]}. "
                 f"The CLI and the benchmark harness have their own rows. The total counts every file in the report. These targets are only in the total: {other}.")

@@ -5,7 +5,8 @@ import Testing
 
 /// `LaunchAgent` install, stop, restart and uninstall against a scripted
 /// launchctl. Each test binds the task-local seams in `LaunchctlControl`:
-/// no launchctl process runs and the plist goes to a temp home folder.
+/// no launchctl process runs, polling uses virtual time, and the plist goes
+/// to a temp home folder.
 
 /// Answers launchctl calls by verb and records every call.
 private final class ScriptedLaunchctl: @unchecked Sendable {
@@ -13,6 +14,7 @@ private final class ScriptedLaunchctl: @unchecked Sendable {
     private var calls: [[String]] = []
     private var answers: [String: [LaunchctlControl.Output]] = [:]
     private var spawnFailures: Set<String> = []
+    private var clock: TimeInterval = 0
 
     /// Queue answers for one verb. The last answer repeats.
     func answer(_ verb: String, _ outputs: LaunchctlControl.Output...) {
@@ -26,6 +28,11 @@ private final class ScriptedLaunchctl: @unchecked Sendable {
 
     var recorded: [[String]] { lock.withLock { calls } }
     var verbs: [String] { recorded.map { $0.first ?? "" } }
+    var uptime: TimeInterval { lock.withLock { clock } }
+
+    func sleep(_ interval: TimeInterval) {
+        lock.withLock { clock += interval }
+    }
 
     func run(_ arguments: [String]) throws -> LaunchctlControl.Output {
         try lock.withLock {
@@ -52,6 +59,10 @@ private func failure(_ stderr: String, status: Int32 = 1) -> LaunchctlControl.Ou
     LaunchctlControl.Output(status: status, stdout: "", stderr: stderr)
 }
 
+private let absent = failure(
+    "Could not find service \"io.darkbloom.provider\"\n",
+    status: 113)
+
 /// Run `body` with the scripted launchctl and a temp home folder bound.
 private func withScriptedLaunchd<T>(
     _ launchctl: ScriptedLaunchctl,
@@ -63,7 +74,11 @@ private func withScriptedLaunchd<T>(
     defer { try? FileManager.default.removeItem(at: home) }
     return try LaunchctlControl.$homeDirectoryForTesting.withValue(home) {
         try LaunchctlControl.$runnerForTesting.withValue({ try launchctl.run($0) }) {
-            try body(home)
+            try LaunchctlControl.$uptimeForTesting.withValue({ launchctl.uptime }) {
+                try LaunchctlControl.$sleepForTesting.withValue({ launchctl.sleep($0) }) {
+                    try body(home)
+                }
+            }
         }
     }
 }
@@ -162,42 +177,46 @@ struct LaunchAgentLifecycleTests {
         ])
     }
 
-    @Test("install unloads a loaded service first so the new plist takes effect")
+    @Test("install confirms removal of a loaded service before loading the new plist")
     func installUnloadsLoadedService() throws {
         let launchctl = ScriptedLaunchctl()
-        launchctl.answer("print", ok)
+        launchctl.answer("print", ok, ok, absent)
         try withScriptedLaunchd(launchctl) { _ in
             try LaunchAgent.installAndStart(coordinatorURL: "ws://127.0.0.1:1/ws/provider")
             #expect(LaunchAgent.isInstalled())
         }
-        #expect(launchctl.verbs == ["print", "bootout", "enable", "bootstrap", "kickstart"])
+        #expect(launchctl.verbs == ["print", "bootout", "print", "print", "enable", "bootstrap", "kickstart"])
+        #expect(launchctl.uptime == 0.1)
     }
 
     @Test("bootstrap that reports already loaded is not an error")
     func bootstrapAlreadyLoadedIsTolerated() throws {
         let launchctl = ScriptedLaunchctl()
         launchctl.answer("print", failure("not loaded"))
-        launchctl.answer("bootstrap", failure("Bootstrap failed: 37: Operation already in progress"))
+        launchctl.answer("bootstrap", failure("Service is already loaded"))
         try withScriptedLaunchd(launchctl) { _ in
             try LaunchAgent.installAndStart(coordinatorURL: "ws://127.0.0.1:1/ws/provider")
         }
         #expect(launchctl.verbs == ["print", "enable", "bootstrap", "kickstart"])
     }
 
-    @Test("any other bootstrap failure is thrown with the trimmed launchctl text")
-    func bootstrapFailureThrows() throws {
+    @Test("any other bootstrap failure is thrown with the trimmed launchctl text", arguments: [
+        (Int32(5), "Bootstrap failed: 5: Input/output error"),
+        (Int32(37), "Bootstrap failed: 37: Operation already in progress"),
+    ])
+    func bootstrapFailureThrows(status: Int32, message: String) throws {
         let launchctl = ScriptedLaunchctl()
         launchctl.answer("print", failure("not loaded"))
-        launchctl.answer("bootstrap", failure("Bootstrap failed: 5: Input/output error\n"))
+        launchctl.answer("bootstrap", failure(message + "\n", status: status))
         try withScriptedLaunchd(launchctl) { _ in
             do {
                 try LaunchAgent.installAndStart(coordinatorURL: "ws://127.0.0.1:1/ws/provider")
                 Issue.record("expected bootstrapFailed")
             } catch LaunchAgentError.bootstrapFailed(let detail) {
-                #expect(detail == "Bootstrap failed: 5: Input/output error")
+                #expect(detail == message)
             }
         }
-        #expect(!launchctl.verbs.contains("kickstart"))
+        #expect(launchctl.verbs == ["print", "enable", "bootstrap"])
     }
 
     @Test("a failed kickstart after bootstrap is thrown")
@@ -232,10 +251,10 @@ struct LaunchAgentLifecycleTests {
 
     // MARK: Stop
 
-    @Test("stop disables the service and boots out a loaded one")
+    @Test("stop disables the service, boots it out and confirms removal")
     func stopDisablesAndBootsOut() throws {
         let launchctl = ScriptedLaunchctl()
-        launchctl.answer("print", ok)
+        launchctl.answer("print", ok, absent)
         try withScriptedLaunchd(launchctl) { _ in
             try LaunchAgent.stop()
         }
@@ -243,6 +262,7 @@ struct LaunchAgentLifecycleTests {
             ["disable", serviceTarget],
             ["print", serviceTarget],
             ["bootout", serviceTarget],
+            ["print", serviceTarget],
         ])
     }
 
@@ -271,15 +291,15 @@ struct LaunchAgentLifecycleTests {
         #expect(launchctl.verbs == ["disable"])
     }
 
-    @Test("bootout of a service that is already gone is not an error")
+    @Test("bootout of an already-gone service is tolerated after confirming absence")
     func bootoutMissingServiceIsTolerated() throws {
         let launchctl = ScriptedLaunchctl()
-        launchctl.answer("print", ok)
+        launchctl.answer("print", ok, absent)
         launchctl.answer("bootout", failure("Boot-out failed: 3: No such process"))
         try withScriptedLaunchd(launchctl) { _ in
             try LaunchAgent.stop()
         }
-        #expect(launchctl.verbs == ["disable", "print", "bootout"])
+        #expect(launchctl.verbs == ["disable", "print", "bootout", "print"])
     }
 
     @Test("any other bootout failure is thrown")
@@ -396,10 +416,10 @@ struct LaunchAgentLifecycleTests {
         #expect(launchctl.recorded.isEmpty)
     }
 
-    @Test("restart after drain raises the exit allowance, boots out and loads again")
+    @Test("restart after drain raises the exit allowance, confirms removal and loads again")
     func restartAfterDrainReloads() throws {
         let launchctl = ScriptedLaunchctl()
-        launchctl.answer("print", ok)
+        launchctl.answer("print", ok, ok, absent)
         try withScriptedLaunchd(launchctl) { home in
             let path = try writeInstalledPlist(home: home)
             try LaunchAgent.restartAfterDrain()
@@ -407,7 +427,8 @@ struct LaunchAgentLifecycleTests {
             #expect(plist["ExitTimeOut"] as? Int == 3660)
             #expect(plist["ProgramArguments"] as? [String] == ["/opt/darkbloom", "start", "--foreground"])
         }
-        #expect(launchctl.verbs == ["print", "bootout", "enable", "bootstrap", "kickstart"])
+        #expect(launchctl.verbs == ["print", "bootout", "print", "print", "enable", "bootstrap", "kickstart"])
+        #expect(launchctl.uptime == 0.1)
     }
 
     // MARK: Watchdog kickstart
@@ -448,17 +469,17 @@ struct LaunchAgentLifecycleTests {
 
     // MARK: Uninstall
 
-    @Test("uninstall stops the service and removes the plist")
+    @Test("uninstall confirms the service is removed and deletes the plist")
     func uninstallRemovesPlist() throws {
         let launchctl = ScriptedLaunchctl()
-        launchctl.answer("print", ok)
+        launchctl.answer("print", ok, absent)
         try withScriptedLaunchd(launchctl) { home in
             let path = try writeInstalledPlist(home: home)
             try LaunchAgent.uninstall()
             #expect(!FileManager.default.fileExists(atPath: path.path))
             #expect(!LaunchAgent.isInstalled())
         }
-        #expect(launchctl.verbs == ["disable", "print", "bootout"])
+        #expect(launchctl.verbs == ["disable", "print", "bootout", "print"])
     }
 
     @Test("uninstall with no plist only stops the service")

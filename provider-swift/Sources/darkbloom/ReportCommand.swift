@@ -73,6 +73,17 @@ struct Report: AsyncParsableCommand {
     }
 
     mutating func run() async throws {
+        try await run(
+            collectLogs: Self.collectUnifiedLogs,
+            collectEvidence: { DeviceCheckEvidence.collect() },
+            loadPushHistory: { APNsPushHistoryStore().load() })
+    }
+
+    mutating func run(
+        collectLogs: (String) throws -> Data,
+        collectEvidence: () -> DeviceCheckEvidence.Outcome,
+        loadPushHistory: () -> APNsPushHistory
+    ) async throws {
         let invokingHome = ReportAppAttestEvidence.adoptInvokingUserFiles()
         await runUpdateBannerIfEnabled()
 
@@ -95,7 +106,7 @@ struct Report: AsyncParsableCommand {
         print("Collecting unified logs...")
         var logData = Data()
         do {
-            logData = try collectUnifiedLogs(last: last)
+            logData = try collectLogs(last)
             if logData.isEmpty {
                 print("  No provider logs for the given time window (is the provider running? Try: darkbloom start).")
             }
@@ -111,8 +122,8 @@ struct Report: AsyncParsableCommand {
 
         print("Collecting App Attest evidence...")
         var diagnosticData = ReportAppAttestEvidence.snapshotLine(
-            state: DaemonStateFile.read(), pushHistory: APNsPushHistoryStore().load(), now: Date())
-        let evidence = DeviceCheckEvidence.collect()
+            state: DaemonStateFile.read(), pushHistory: loadPushHistory(), now: Date())
+        let evidence = collectEvidence()
         diagnosticData.append(DeviceCheckEvidence.reportLines(evidence))
         let originalBytes = logData.count
         logData = try ReportPayload.assemble(logs: logData, evidence: diagnosticData)
@@ -163,7 +174,7 @@ struct Report: AsyncParsableCommand {
         }
     }
 
-    private func collectUnifiedLogs(last: String) throws -> Data {
+    private static func collectUnifiedLogs(last: String) throws -> Data {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/log")
         process.arguments = Self.logShowArguments(last: last)

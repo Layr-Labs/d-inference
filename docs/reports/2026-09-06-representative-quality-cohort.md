@@ -1,6 +1,6 @@
 # Representative quality cohort preparation
 
-> Last updated: 2026-09-06 · commit `ffe365029`
+> Last updated: 2026-09-06
 
 The prepared cohort contains 12 logical prose, code and reasoning cases for all six fleet artifacts, including both Gemma formats. Each model/case has a serving input, teacher input and canonical token record: 72 of each. No model has run against this cohort, and no quality result is claimed.
 

@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-09-28 · commit `18fad5efe`
+> Last updated: 2026-10-02
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -51,7 +51,7 @@ Open `url` and pay. The coordinator does not credit on redirect; it credits
 when Stripe delivers `checkout.session.completed` to its webhook, usually
 within seconds. The credit lands as a `stripe_deposit` ledger entry on your
 spendable balance; deposits are never withdrawable
-(`coordinator/api/billing_handlers.go` `handleStripeWebhook`).
+(`coordinator/api/billing/stripe_checkout_webhook.go` `HandleStripeWebhook`).
 
 In the console, **Buy Credits** on `/billing` reaches the same endpoint through
 the same-origin relay `/api/payments/stripe/checkout`, which forwards your Privy
@@ -67,7 +67,7 @@ curl "https://api.darkbloom.dev/v1/billing/stripe/session?id=3f0e..." \
 ```
 
 `status` moves from `pending` to `completed` when the webhook has been
-processed (`handleStripeSessionStatus`).
+processed (`HandleStripeSessionStatus`).
 
 ### 3. Read your balance and usage
 
@@ -89,13 +89,13 @@ never count toward it, so a pure consumer sees `0`. `GET /v1/payments/usage` lis
 requests with `job_id`, `model`, `prompt_tokens`, `cached_tokens` (the part of
 the prompt a provider served from its prefix cache; omitted when zero),
 `completion_tokens`, `cost_micro_usd`, `timestamp`
-(`coordinator/api/consumer.go` `handleBalance`, `handleUsage`). Console users get the same figures from `GET /v1/me/summary`
+(`coordinator/api/inference/consumer.go` `HandleBalance`, `HandleUsage`). Console users get the same figures from `GET /v1/me/summary`
 (**Privy**). Usage is a recent-history view, not a complete billing export;
 the process retains the newest entries up to the [usage history limit](../reference/pricing-model.md#constants).
 Dashboard earnings windows include every row in each window, without the old
 5,000-row truncation. Concurrent tabs share one aggregate per account and may
 lag by the per-account cache interval
-(`coordinator/api/me_summary_cache.go`, `mySummaryWindowsCacheTTL`).
+(`coordinator/api/accounts/me_summary_cache.go`, `mySummaryWindowsCacheTTL`).
 
 ### 4. Understand what a request costs you
 
@@ -139,7 +139,7 @@ curl -X POST https://api.darkbloom.dev/v1/keys \
 `PATCH /v1/keys/{id}`. The cap is checked against the key's settled usage in
 the window before each request's reservation; it is a soft sub-cap under your
 account balance, so several in-flight requests can together overshoot it by up
-to their reservations (`coordinator/api/apikey_handlers.go` `checkKeySpendCap`).
+to their reservations (`coordinator/api/inference/key_policy.go` `checkKeySpendCap`).
 `GET /v1/keys` shows `usage_usd`, `limit_usd`, and `remaining_usd` per key.
 
 ### 6. Referral codes
@@ -177,7 +177,7 @@ curl -X POST https://api.darkbloom.dev/v1/invite/redeem \
 Invite codes are created by Darkbloom staff and carry a fixed amount. A
 successful redemption returns `credited_usd` and `balance_usd`; the credit is
 spendable but not withdrawable, and each account can redeem a given code once
-(`coordinator/api/invite_handlers.go` `handleRedeemInviteCode`).
+(`coordinator/api/accounts/invite_handlers.go` `HandleRedeemInviteCode`).
 
 ### 8. High-volume integrations: service accounts
 
@@ -249,3 +249,26 @@ Sign in and click the model offer’s **Claim tokens** button before its deadlin
 Input and output tokens both consume the allowance. Tiny requests consume their actual token usage; there is no extra token deduction for a sponsored payout minimum. When it runs out, requests use your paid balance. If a request crosses the boundary, only its uncovered tokens are billed, subject to the normal request minimum. A `402 free_tokens_exhausted` means no free tokens are available and paid credit cannot cover the request. Add credit, or wait if another request has reserved the remaining free tokens. A `402 promotion_balance_required` means the maximum requested size cannot fit the remaining free tokens plus paid balance; reduce `max_tokens` or add credit. A request may reserve more than it ultimately uses; unused tokens return at settlement.
 
 With an interactive Privy session, `GET /v1/me/token-promotions` lists grants; `POST /v1/me/token-promotions/claim` with `{"model_id":"..."}` claims the selected offer safely. The response also lists available offers, remaining claim slots and eligibility status. API keys may use an existing grant but cannot issue one. See [pricing-model.md](../reference/pricing-model.md).
+
+## Update bank details when prompted
+
+1. Open the bank withdrawal panel in Billing or provider earnings.
+2. If it says **Update your bank details to continue withdrawing**, confirm your
+   country and select **Update bank details**.
+3. Complete the secure Stripe page yourself, including bank and any required
+   identity information, then return to Darkbloom.
+4. Wait for the bank destination to become ready. Review the withdrawal amount,
+   local-currency estimate and destination before confirming.
+
+Your Darkbloom login, provider setup, earned balance and withdrawal history stay
+with your account. Already configured bank-payout users need no migration step.
+The migrated flow offers standard bank payouts; the former Connect instant-card
+option is not part of it. **Reset bank setup** clears the current destination,
+not your history, and requires you to link a bank again. A funding-unavailable
+message before confirmation leaves earnings untouched. An uncertain submitted
+withdrawal must be checked using its existing confirmation, not submitted again
+as a new withdrawal.
+
+The bank panel and self-service migration state are implemented by
+`console-ui/src/components/payouts/StripePayoutsCard.tsx` and
+`coordinator/api/billing/payouts/global_payouts_status.go` (`maybeGlobalStatus`).

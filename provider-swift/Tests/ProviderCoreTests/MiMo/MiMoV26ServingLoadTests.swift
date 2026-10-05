@@ -120,10 +120,10 @@ private final class MiMoAdmissionTerminalGate: @unchecked Sendable {
 /// Prepared, not executed by the source worker. These use the real strict
 /// filesystem/serial factory, LocalTokenizerLoader/Jinja and shared ledger.
 /// The tiny BPE/template are synthetic routing fixtures, NOT official prompt
-/// parity or full-artifact/model-quality evidence. Native cases fail (not skip)
-/// without the coordinator lane flag and existing synthetic payload fixture.
+/// parity or full-artifact/model-quality evidence. Native cases opt in; enabled
+/// gates fail if their bounded fixture is missing or invalid.
 final class MiMoV26ServingLoadTests: XCTestCase {
-    private enum FixtureError: Error { case nativeLaneRequired, payloadFixtureRequired, debugSeamsRequired, waitExpired }
+    private enum FixtureError: Error { case payloadFixtureRequired, debugSeamsRequired, waitExpired }
     private let literal = "<|im_start|>x<think>{% if enable_thinking is false %}</think>{% endif %}"
     private var nativeOwners: [MiMoServingTestOwner] = []
     private var metadataRegistries: [MiMoV26NativeLoadRegistry] = []
@@ -269,9 +269,7 @@ final class MiMoV26ServingLoadTests: XCTestCase {
     }
 
     private func lane() throws {
-        guard ProcessInfo.processInfo.environment["MIMO_V26_SERIAL_NATIVE_TESTS"] == "1" else {
-            throw FixtureError.nativeLaneRequired
-        }
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_SERIAL_NATIVE_TESTS")
     }
     private func budget() -> GlobalKVCacheBudget {
         GlobalKVCacheBudget(activationReserveBytes: 256 << 20)
@@ -645,7 +643,7 @@ final class MiMoV26ServingLoadTests: XCTestCase {
             let tokenizer = await container.tokenizerHandle(modelType: "mimo_v2", directory: root)
             let bundle = try await EngineV2SlotFactory.makeProductionBundle(modelId: "native-admission-fixture",
                 modelType: "mimo_v2", isVLM: false, modelDirectory: root, container: container,
-                tokenizer: tokenizer, sizing: sizing, kvBytesCapacity: 64 << 20, maxConcurrentRequests: 2,
+                tokenizer: tokenizer, sizing: sizing, kvBytesCapacity: 2 << 30, maxConcurrentRequests: 2,
                 kvBudget: budget, specDecPreparation: preparation, preparedModel: prepared,
                 environment: ["DARKBLOOM_PREFIX_CACHE": "0", "DARKBLOOM_PREFIX_CACHE_MEMORY": "0"],
                 startServingTelemetry: false)

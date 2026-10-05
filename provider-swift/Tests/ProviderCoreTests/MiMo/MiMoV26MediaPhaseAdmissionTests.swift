@@ -36,7 +36,7 @@ final class MiMoV26MediaPhaseAdmissionTests: XCTestCase {
             prepareUsage: { usage.prepare() },
             readUsage: { usage.read() })
         let reservation = try MiMoV26ManagedMediaReservation(initialBytes: 4096, hostBytes: 1024,
-            maximumBytes: 16384, additionalSystemReserveBytes: 1, ledger: ledger)
+            maximumBytes: 16384, additionalSystemReserveBytes: 1, ledger: ledger, serviceBudget: .init())
         return (usage, ledger, reservation)
     }
     private func assertOrdinary(_ error: Error, file: StaticString = #filePath, line: UInt = #line) {
@@ -51,13 +51,13 @@ final class MiMoV26MediaPhaseAdmissionTests: XCTestCase {
             readUsage: { usage.read() })
         usage.setAvailable(0)
         XCTAssertThrowsError(try MiMoV26ManagedMediaReservation(initialBytes: 4096, hostBytes: 1024,
-            maximumBytes: 16384, additionalSystemReserveBytes: 1, ledger: ledger)) { assertOrdinary($0) }
+            maximumBytes: 16384, additionalSystemReserveBytes: 1, ledger: ledger, serviceBudget: .init())) { assertOrdinary($0) }
         XCTAssertEqual(ledger.snapshot().ownerCount, 0)
         XCTAssertEqual(ledger.snapshot().chargedBytes, 0)
         XCTAssertEqual(ledger.snapshot().materializedBytes, 0)
         usage.setAvailable(1 << 20)
         let accepted = try MiMoV26ManagedMediaReservation(initialBytes: 4096, hostBytes: 1024,
-            maximumBytes: 16384, additionalSystemReserveBytes: 1, ledger: ledger)
+            maximumBytes: 16384, additionalSystemReserveBytes: 1, ledger: ledger, serviceBudget: .init())
         try accepted.disposeUnstartedEncodedPromise() // no decoder/native work was issued
         XCTAssertEqual(ledger.snapshot().ownerCount, 0)
         XCTAssertEqual(ledger.snapshot().chargedBytes, 0)

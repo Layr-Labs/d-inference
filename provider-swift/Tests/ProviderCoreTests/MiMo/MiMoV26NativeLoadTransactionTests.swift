@@ -68,7 +68,7 @@ private final class MiMoHostWeakBundleProbe: @unchecked Sendable {
 /// allocation/eval, successful fake drain or materialized-M credit. Fixture setup
 /// copies the existing bounded synthetic files; it creates no new weights.
 final class MiMoV26NativeLoadTransactionTests: XCTestCase {
-    private enum FixtureError: Error { case fixtureRequired, nativeLaneRequired }
+    private enum FixtureError: Error { case fixtureRequired }
     private let gib: UInt64 = 1 << 30
 
     private func allowMetadata() throws {
@@ -78,7 +78,7 @@ final class MiMoV26NativeLoadTransactionTests: XCTestCase {
     }
     private func nativeLane(faultCase: String? = nil) throws {
         let environment = ProcessInfo.processInfo.environment
-        guard environment["MIMO_V26_SERIAL_NATIVE_TESTS"] == "1" else { throw FixtureError.nativeLaneRequired }
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_SERIAL_NATIVE_TESTS", environment: environment)
         guard environment["MIMO_V26_HOST_FAULT_CASE"] == faultCase else {
             throw XCTSkip("Run the exact retained-fault selector alone")
         }
@@ -167,7 +167,7 @@ final class MiMoV26NativeLoadTransactionTests: XCTestCase {
             let engine = try await transaction.withNativeConstruction { model, scope in
                 let binding = try model.makeCBv2Binding()
                 _ = try binding.adapter.probeNativeKVTypes(retaining: scope)
-                let resources = try binding.adapter.makeNativeExecutionResources(bytesCapacity: 16 << 20, retaining: scope)
+                let resources = try binding.adapter.makeNativeExecutionResources(bytesCapacity: 2 << 30, retaining: scope)
                 let engine = EngineV2(model: binding.adapter, layerKinds: binding.adapter.layerKinds,
                     backend: resources.backend, cacheProvider: resources.cacheProvider,
                     schedulerConfig: .init(maxConcurrentRequests: 1, enablePrefixCache: false),
@@ -823,24 +823,34 @@ final class MiMoV26NativeLoadTransactionTests: XCTestCase {
 
     func testNativeCompletePrefixONUsesExactOwnerAndRealRetirement() async throws {
         // Keep the default 512-token prefill chunk and 2048-token MTP work envelope.
-        // That envelope exceeds this fixture's old 16 MiB local arena.
-        // Fund this positive fixture; the underfunded case remains explicit below.
-        try await nativeCompletePrefixOwner(mtp: true, bytesCapacity: 64 << 20)
+        // Keep the production minimum useful KV allowance and watermark too.
+        // This logical contiguous grant does not eagerly allocate device KV.
+        // The underfunded case remains explicit below.
+        try await nativeCompletePrefixOwner(mtp: true, bytesCapacity: 2 << 30)
     }
 
     func testNativeCompletePrefixONRefusesUnderfundedArenaAndRetiresCleanly() async throws {
-        try await nativeCompletePrefixOwner(mtp: true, expectCapacityRefusal: true)
+        try await nativeCompletePrefixOwner(mtp: true, bytesCapacity: 16 << 20, expectCapacityRefusal: true)
     }
 
     func testNativeCompletePrefixONPublishesAnActualInteriorBoundaryBeforeRetirement() async throws {
         try await nativeCompletePrefixOwner(mtp: true, requireInteriorPublication: true)
     }
 
+    /// The bridge stages a checkpoint under a placeholder engine ID and mints
+    /// the real ID just before submit. The repeat must still adopt the
+    /// published boundary through the real bridge, report a hit with saved
+    /// prefill, and continue exactly as the cold submission did.
+    func testNativeCompletePrefixONReusesThePublishedBoundaryThroughTheBridge() async throws {
+        try await nativeCompletePrefixOwner(mtp: true, requireInteriorPublication: true, requireReuse: true)
+    }
+
     /// Real strict-loaded tiny target and actual optional assistant; constant
     /// fixture identity is NOT production artifact/prompt qualification.
     private func nativeCompletePrefixOwner(mtp: Bool, requireInteriorPublication: Bool = false,
-                                          bytesCapacity: Int = 16 << 20,
-                                          expectCapacityRefusal: Bool = false) async throws {
+                                          bytesCapacity: Int = 2 << 30,
+                                          expectCapacityRefusal: Bool = false,
+                                          requireReuse: Bool = false) async throws {
         try nativeLane()
         let registry = MiMoV26NativeLoadRegistry(), budget = budget(native: true)
         defer { retainFaultUntilProcessExit(registry) }
@@ -961,13 +971,15 @@ final class MiMoV26NativeLoadTransactionTests: XCTestCase {
             request: .init(model: "synthetic-native-mimo-prefix", messages: [], temperature: 0, max_tokens: 8),
             requestId: requestID, cacheScope: "synthetic-owner-tenant")
         var terminals = 0, capacityRefusals = 0
+        var coldText = ""
         for await event in events {
             let ids = await budget.reservationIDsForTesting()
             XCTAssertFalse(ids.contains(requestID), "bridge duplicated the exact native Admission request owner")
             switch event {
+            case .chunk(let text): coldText += text
             case .error(let error):
                 if expectCapacityRefusal {
-                    XCTAssertEqual(error, "token_budget_exhausted: request requires \(quote) tokens but only \(available) available")
+                    XCTAssertEqual(error, "token_budget_exhausted: whole-Mac service allowance exhausted")
                     capacityRefusals += 1
                 } else { XCTFail(error) }
             case .terminal: XCTFail("unexpected native failure")
@@ -1003,6 +1015,35 @@ final class MiMoV26NativeLoadTransactionTests: XCTestCase {
             XCTAssertGreaterThan(store.stats().filesWritten, 0,
                 "fresh engine-owned assistant context must reach real interior complete publication")
             XCTAssertEqual(store.stats().writesDropped, 0)
+        }
+        if requireReuse {
+            let signal = EngineV2RequestUsageSignal()
+            let repeatID = "mimo-prefix-owned-request-repeat"
+            let repeated = await bundle.bridge.submitTokenized(promptTokens: Array(repeating: 12, count: 257),
+                request: .init(model: "synthetic-native-mimo-prefix", messages: [], temperature: 0, max_tokens: 8),
+                requestId: repeatID, cacheScope: "synthetic-owner-tenant", usageSignal: signal)
+            var warmText = "", warmTerminals = 0
+            for await event in repeated {
+                switch event {
+                case .chunk(let text): warmText += text
+                case .info(_, let count, _, _): XCTAssertGreaterThan(count, 0); warmTerminals += 1
+                case .error(let error): XCTFail(error)
+                case .terminal: XCTFail("unexpected native failure")
+                }
+            }
+            XCTAssertEqual(warmTerminals, 1)
+            XCTAssertEqual(warmText, coldText, "adopted prefix must continue exactly like the cold prefill")
+            let lookup = try XCTUnwrap(signal.lookupResult)
+            print("MiMoPrefixReuse outcome=\(lookup.outcome) tier=\(lookup.tier.map { "\($0)" } ?? "nil") cached=\(lookup.cachedTokens) saved=\(lookup.prefillTokensSaved) written=\(owner.store?.stats().filesWritten ?? -1) dropped=\(owner.store?.stats().writesDropped ?? -1)")
+            XCTAssertEqual(lookup.outcome, .hit, "the staged boundary must be adopted, not refused")
+            XCTAssertEqual(lookup.tier, .ssd, "the repeat must reuse the durable SSD checkpoint")
+            XCTAssertEqual(lookup.cachedTokens, 256)
+            XCTAssertEqual(lookup.prefillTokensSaved, 256)
+            XCTAssertEqual(signal.prefixCacheHitTokens, 256)
+            let pumps = await bundle.bridge.pumpTasks
+            for task in pumps.values { await task.value }
+            let transferred = await bundle.bridge.nativeTransferredRetirementTasks
+            for task in transferred.values { await task.value }
         }
         let contract = try XCTUnwrap(actual.nativeShutdownExecutionContractID)
         do { _ = try await bundle.bridge.shutdownNativeConstruction(expectedEngine: actual, executionContractID: contract) }
@@ -1056,6 +1097,11 @@ final class MiMoV26NativeLoadTransactionTests: XCTestCase {
         await fulfillment(of: [entered], timeout: 10)
         let pendingCount = await bridge._testPendingSubmissionCount()
         XCTAssertEqual(pendingCount, 1)
+        let occupiedCount = await bridge.activeRequestCount()
+        XCTAssertEqual(occupiedCount, 1, "a real pending native submission occupies its concurrency slot")
+        let overAdmitted = await bridge.acquireServiceAllowance(requestID: "second-native-submission")
+        if overAdmitted { await bridge.releaseServiceAllowance(requestID: "second-native-submission") }
+        XCTAssertFalse(overAdmitted, "the one-slot native bridge must reject a second allowance")
         do {
             _ = try await bridge.shutdownNativeConstruction(expectedEngine: actual, executionContractID: contract)
             XCTFail("suspended host submission cannot mint bridge completion")
@@ -1080,6 +1126,8 @@ final class MiMoV26NativeLoadTransactionTests: XCTestCase {
         XCTAssertEqual(errors, 1)
         let remaining = await bridge._testPendingSubmissionCount()
         XCTAssertEqual(remaining, 0)
+        let remainingOccupied = await bridge.activeRequestCount()
+        XCTAssertEqual(remainingOccupied, 0)
         XCTAssertEqual(service.count, 0, "the actual request allowance has unwound")
         let afterHostUnwind = await bridge.nativeShutdownActivity
         XCTAssertTrue(heldActivity === afterHostUnwind)

@@ -1,13 +1,13 @@
 # Self-route: use your own machine through the coordinator
 
-> Last updated: 2026-09-27 · commit `eafeab723`
+> Last updated: 2026-10-02
 
 Send your normal Darkbloom API requests to the provider your account owns —
 free, end-to-end, through the same `api.darkbloom.dev` endpoint and SDK
 configuration — by adding one request header or pinning an API key. For
 operators who run a provider and also consume the network. Nothing changes on
 the provider; the policy lives entirely on the coordinator
-(`coordinator/api/self_route.go`, `resolveSelfRoutePolicy`).
+(`coordinator/api/inference/self_route.go`, `resolveSelfRoutePolicy`).
 
 Self-route is not [direct mode](./direct-mode.md): direct mode is a local
 socket on the provider Mac with no coordinator involved; self-route is regular
@@ -32,7 +32,7 @@ fleet traffic whose scheduler is told which machine may serve it.
    |---|---|---|
    | `X-Darkbloom-Route: self` | one request | **Exclusive.** Only providers owned by the calling account; free; never falls back to the paid fleet — an explicit error if your machine cannot serve |
    | `X-Darkbloom-Route: prefer` | one request | **Prefer.** Owned machine first (free when it serves), otherwise the paid fleet. Takes a normal balance reservation up front; billing is decided at settlement by who served |
-   | API key `self_route_only = true` | every request on that key | Hard ceiling: exclusive self-route regardless of header. Set in the console key form (`console-ui/src/components/api-keys/KeyForm.tsx`) or `PATCH` the key with `{"self_route_only": true}` (`coordinator/api/apikey_handlers.go`) |
+   | API key `self_route_only = true` | every request on that key | Hard ceiling: exclusive self-route regardless of header. Set in the console key form (`console-ui/src/components/api-keys/KeyForm.tsx`) or `PATCH` the key with `{"self_route_only": true}` (`coordinator/api/access/keys/handlers.go`) |
 
    Header values are trimmed and case-insensitive. A key with
    `self_route_only` ignores `prefer`.
@@ -52,8 +52,8 @@ fleet traffic whose scheduler is told which machine may serve it.
    also works with a sealed private-text body.
 
 3. Discover what your machine serves with the same header. `GET /v1/models`
-   follows the resolved route mode (`coordinator/api/models_endpoints.go`,
-   `handleListModels`): with `self` (or a `self_route_only` key) it lists only
+   follows the resolved route mode (`coordinator/api/catalog/models_endpoints.go`,
+   `HandleListModels`): with `self` (or a `self_route_only` key) it lists only
    models on your online owned machines; header-less and `prefer` requests see
    the public catalog.
 
@@ -117,7 +117,7 @@ returns `503 machine_offline`.
 ## Troubleshooting
 
 Exclusive self-route fails fast with the real cause instead of queueing
-(`coordinator/api/self_route.go`, `selfRouteUnavailable`):
+(`coordinator/api/inference/self_route.go`, `selfRouteUnavailable`):
 
 | Status / code | Meaning | Fix |
 |---|---|---|

@@ -63,10 +63,18 @@ enum MiMoV26EncodedMediaIngress {
         .multimodalRejected("native media input is unsupported or exceeds its bound")
     }
     static func outwardFailure(_ error: Error) -> Error {
+        // These are request/device quota checks before vision execution, not
+        // evidence that the loaded text engine or its KV budget is unhealthy.
+        if let failure = error as? MiMoV26VisionError, case .executionLimit = failure {
+            return MultiModelBatchSchedulerEngineError.mediaMemoryUnavailable
+        }
+        if let failure = error as? MiMoV26Pixels.Failure, case .resourceLimit = failure {
+            return MultiModelBatchSchedulerEngineError.mediaMemoryUnavailable
+        }
         if let failure = error as? MiMoV26EncodedAudioDecoder.Failure {
             switch failure {
             case .limit,.arithmeticOverflow: return MediaIngest.MediaError.mediaTooLarge("native audio input bound")
-            default: return MultiModelBatchSchedulerEngineError.multimodalRejected("unsupported or malformed mono24k WAV input")
+            default: return MultiModelBatchSchedulerEngineError.multimodalRejected("unsupported or malformed PCM WAV input")
             }
         }
         if let failure = error as? MiMoV26EncodedAudiovisualDecoder.Failure {
@@ -91,8 +99,7 @@ enum MiMoV26EncodedMediaIngress {
         if let failure = error as? MiMoV26MultimodalError {
             switch failure {
             case .reservationRejected:
-                return MultiModelBatchSchedulerEngineError.fromSchedulerMessage(
-                    "token_budget_exhausted: native media memory admission refused")
+                return MultiModelBatchSchedulerEngineError.mediaMemoryUnavailable
             case .invalidInput,.limit,.unsupportedProfile,.missingAudioCodec:
                 return refusal()
             case .cancelled: return CancellationError()
@@ -171,7 +178,7 @@ enum MiMoV26EncodedMediaIngress {
                               let payload = audio["data"] as? String,
                               let spelling = audio["format"] as? String,
                               let format = OpenAIInputAudio.Format(rawValue:spelling), format == .wav else {
-                            throw MultiModelBatchSchedulerEngineError.multimodalRejected("only mono24k WAV input is enabled")
+                            throw MultiModelBatchSchedulerEngineError.multimodalRejected("only PCM WAV input is enabled")
                         }
                         mediaCount += 1
                         guard mediaCount <= policy.limits.maximumMedia else { throw refusal() }
@@ -209,10 +216,11 @@ enum MiMoV26EncodedMediaIngress {
             maximumEncodedBytes:MediaIngest.maxMediaDecodedBytes)
         let audiovisualLimits = MiMoV26EncodedAudiovisualDecoder.Limits(
             maximumFrames:native.audio.maximumInputSamples, maximumWorkingBytes:working,
-            maximumBuffers:min(4096,native.maximumMetadataNodes))
-        var imageCount = 0, videoCount = 0, audioCount = 0, totalAudioFrames = 0
+            maximumBuffers:min(4096,native.maximumMetadataNodes),
+            maximumChannels:native.audio.maximumChannels, maximumSampleRate:native.audio.maximumSampleRate)
+        var imageCount = 0, videoCount = 0, audioCount = 0, totalAudioSamples = 0
         var totalImagePixels = 0, totalVideoPixels = 0, totalRGBPixels = 0
-        var decodeBytes = plan.hostBytes
+        var decodeMemory = MiMoV26MediaDecodeMemory(hostBytes: plan.hostBytes)
         var messages: [ReadyMessage] = []
         for message in plan.messages {
             var parts: [ReadyPart] = []
@@ -233,7 +241,7 @@ enum MiMoV26EncodedMediaIngress {
                     let (rgb,overflowRGB) = totalRGBPixels.addingReportingOverflow(pixels)
                     guard !overflowRGB, rgb <= native.pixels.maximumInputElements / 3 else { throw refusal() }
                     totalRGBPixels = rgb
-                    decodeBytes = try add(decodeBytes,try multiply(UInt64(pixels),32))
+                    try decodeMemory.includeVisual(.image(pixels: pixels))
                     parts.append(.image(data,pixels))
                 case .video(let uri):
                     videoCount += 1
@@ -251,7 +259,7 @@ enum MiMoV26EncodedMediaIngress {
                     let (rgb,overflowRGB) = totalRGBPixels.addingReportingOverflow(pixels)
                     guard !overflowPixels, !overflowRGB, rgb <= native.pixels.maximumInputElements / 3 else { throw refusal() }
                     totalRGBPixels = rgb
-                    decodeBytes = try add(decodeBytes,UInt64(try video.decodeWorkingByteBound()))
+                    try decodeMemory.includeVisual(video.decodeMemory())
                     if video.hasAudioTrack {
                         guard plan.allowAudio else {
                             throw MiMoV26EncodedVisualDecoder.Failure.audioTrackRequiresAudiovisualProfile
@@ -262,10 +270,10 @@ enum MiMoV26EncodedMediaIngress {
                         guard audioCount <= native.audio.maximumClips else { throw refusal() }
                         let audiovisual = try await MiMoV26EncodedAudiovisualDecoder.inspect(
                             video,limits:audiovisualLimits)
-                        let (sum,overflow) = totalAudioFrames.addingReportingOverflow(audiovisual.frameCount)
+                        let (sum,overflow) = totalAudioSamples.addingReportingOverflow(audiovisual.sampleCount)
                         guard !overflow, sum <= native.audio.maximumInputSamples else { throw refusal() }
-                        totalAudioFrames = sum
-                        decodeBytes = try add(decodeBytes,UInt64(audiovisual.audioWorkingByteBound))
+                        totalAudioSamples = sum
+                        try decodeMemory.includeRetained(UInt64(audiovisual.audioWorkingByteBound))
                         parts.append(.audiovisual(audiovisual))
                     } else {
                         parts.append(.video(video))
@@ -282,11 +290,13 @@ enum MiMoV26EncodedMediaIngress {
                     let audio = try MiMoV26EncodedAudioDecoder.inspect(data,
                         limits:.init(maximumEncodedBytes:MediaIngest.maxMediaDecodedBytes,
                             maximumFrames:native.audio.maximumInputSamples,maximumWorkingBytes:working,
-                            maximumChunks:min(4096,native.maximumMetadataNodes)))
-                    let (sum,overflow) = totalAudioFrames.addingReportingOverflow(audio.frameCount)
+                            maximumChunks:min(4096,native.maximumMetadataNodes),
+                            maximumChannels:native.audio.maximumChannels,
+                            maximumSampleRate:native.audio.maximumSampleRate))
+                    let (sum,overflow) = totalAudioSamples.addingReportingOverflow(audio.sampleCount)
                     guard !overflow, sum <= native.audio.maximumInputSamples else { throw refusal() }
-                    totalAudioFrames = sum
-                    decodeBytes = try add(decodeBytes,UInt64(audio.decodedByteBound))
+                    totalAudioSamples = sum
+                    try decodeMemory.includeRetained(UInt64(audio.decodedByteBound))
                     parts.append(.audio(audio))
                 }
             }
@@ -294,7 +304,8 @@ enum MiMoV26EncodedMediaIngress {
         }
         // Actual source geometry/counts are now known; grow the SAME charge
         // before ImageIO raster copies or decoded AV frame buffers are created.
-        try reservation.reserveDecodeWorkingBytes(decodeBytes)
+        // Retain every result, but only one image/frame decoder runs at a time.
+        try reservation.reserveDecodeWorkingBytes(decodeMemory.peakBytes)
         var decodedMessages: [MiMoV26MultimodalMessage] = []
         for message in messages {
             var content: [MiMoV26MultimodalContent] = []

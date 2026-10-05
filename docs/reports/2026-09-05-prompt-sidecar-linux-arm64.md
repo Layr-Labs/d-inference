@@ -1,6 +1,6 @@
 # Prompt sidecar under the Linux address-space limit
 
-> Last updated: 2026-09-05 · commit `5d29819d9`
+> Last updated: 2026-09-05
 
 The tokenizer-sharing sidecar passed a local native ARM Linux check with its
 hard 1 GiB address-space limit enabled. All 96 cold and 375 warm requests

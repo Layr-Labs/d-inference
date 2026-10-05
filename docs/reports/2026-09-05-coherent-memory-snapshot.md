@@ -1,6 +1,6 @@
 # Coherent allocator memory snapshots
 
-> Last updated: 2026-09-05 · commit `966eac55c`
+> Last updated: 2026-09-05
 
 The existing Swift `Memory.snapshot()` now captures active, cached and peak
 allocator bytes under one native allocator lock. CPU, Metal and the Swift C

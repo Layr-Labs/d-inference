@@ -24,12 +24,11 @@ extension EngineV2SlotFactory {
         hasAudio ? .decodedAudio : hasVisual ? .decodedVisual : .text
     }
 
-    /// Existing opt-in/cache policy only. Joint media authority is checked by
+    /// Model-scoped default/cache policy only. Joint media authority is checked by
     /// the protected SDK issuer, not inferred from this successful policy gate.
     static func nativeMiMoPrefixRefusal(modelId: String,
         environment: [String: String]) -> PrefixCacheStatusReason? {
-        guard environment["DARKBLOOM_MIMO_COMPLETE_PREFIX"] == "1",
-              PrefixCachePolicy.isEnabled(modelId: modelId, environment: environment) else {
+        guard PrefixCachePolicy.isMiMoCompletePrefixEnabled(modelId: modelId, environment: environment) else {
             return .configDisabled
         }
         return nil

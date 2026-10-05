@@ -57,6 +57,16 @@ const WITHDRAW_ERROR_COPY = new Map<string, Omit<PayoutErrorPresentation, "code"
     refreshStatus: false,
     closeModal: false,
   }],
+  ["bank_setup_required", {
+    message: "Update your bank details to continue withdrawing. Your earnings are unchanged.",
+    refreshStatus: true,
+    closeModal: true,
+  }],
+  ["payout_funding_unavailable", {
+    message: "Bank payouts are temporarily unavailable. This attempt did not debit your earnings; check any pending withdrawal before trying again.",
+    refreshStatus: false,
+    closeModal: false,
+  }],
   ["not_onboarded", {
     message: "Finish your payout setup first, then try withdrawing again.",
     refreshStatus: true,

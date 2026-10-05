@@ -1,6 +1,6 @@
 # Process admission and native ownership integration
 
-> Last updated: 2026-09-05 · commit `51e210e14`
+> Last updated: 2026-09-05
 
 Typed model-load claims and native paged ownership now share one process admission
 ledger. The native connection is optional; production factory binding and

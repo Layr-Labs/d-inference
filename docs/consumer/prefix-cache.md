@@ -1,6 +1,6 @@
 # Make repeated text requests cache-friendly
 
-> Last updated: 2026-09-28 · commit `05d26caaf`
+> Last updated: 2026-09-28
 
 This how-to helps API consumers preserve identical prefixes across related text
 requests. Reuse depends on the model, a valid checkpoint, provider capacity and

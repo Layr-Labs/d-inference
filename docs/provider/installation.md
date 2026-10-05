@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-09-27 · commit `a2ccc2499`
+> Last updated: 2026-09-30
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -169,7 +169,7 @@ loaded — restarts it via `ProcessLifecycle.restartAfterUpdate()`. Flags:
 with `darkbloom autoupdate enable|disable|status`
 (`provider-swift/Sources/darkbloom/AutoUpdateCommand.swift`). When enabled the
 daemon checks once at start (`runStartupAutoUpdate`,
-`provider-swift/Sources/darkbloom/StartCommand+Modes.swift`) and then on a loop
+`provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift`) and then on a loop
 (`provider-swift/Sources/ProviderCore/ProviderLoop+AutoUpdate.swift`):
 
 | Step | Symbol |

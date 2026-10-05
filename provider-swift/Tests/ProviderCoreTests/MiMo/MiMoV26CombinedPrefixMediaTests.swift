@@ -47,11 +47,9 @@ final class MiMoV26CombinedPrefixMediaTests: XCTestCase {
 
     private func loaded(audio: Bool, mtp: Bool) async throws -> Loaded {
         let flags = ProcessInfo.processInfo.environment
-        guard flags["MIMO_V26_SERIAL_NATIVE_TESTS"] == "1",
-              flags["MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS"] == "1",
-              let path = flags["MIMO_V26_MANAGED_AUDIO_FIXTURE_ROOT"] else {
-            throw Failure.requiredInput
-        }
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_SERIAL_NATIVE_TESTS", environment: flags)
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS", environment: flags)
+        let path = try XCTUnwrap(flags["MIMO_V26_MANAGED_AUDIO_FIXTURE_ROOT"])
         let root = URL(fileURLWithPath: path)
         let data = try MiMoV26ServingLoad.readMetadata(root.appendingPathComponent("config.json"), limit: 1 << 20).bytes
         let config = try JSONDecoder().decode(MiMoV26Configuration.self, from: data)
@@ -83,7 +81,7 @@ final class MiMoV26CombinedPrefixMediaTests: XCTestCase {
             isVLM: false, modelDirectory: root, container: container, specDecPreparation: intent)
         let bundle = try await EngineV2SlotFactory.makeProductionBundle(modelId: modelID, modelType: "mimo_v2",
             isVLM: false, modelDirectory: root, container: container, tokenizer: tokenizer,
-            sizing: sizing, kvBytesCapacity: 64 << 20, maxConcurrentRequests: 1,
+            sizing: sizing, kvBytesCapacity: 2 << 30, maxConcurrentRequests: 1,
             kvBudget: budget, kvBackendConfig: "contiguous", weightHash: weightHash, specDecPreparation: intent,
             preparedModel: prepared, environment: environment, startServingTelemetry: false)
         let owned = await bundle.bridge.ownedEngine

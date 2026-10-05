@@ -705,11 +705,11 @@ struct DeadlineDecisionBridgeTests {
                 prefillTokens: 3, decodeTokens: 0, scheduledSteps: 1, mixedSteps: 0),
             serviceDuration: .milliseconds(1)))
         let profile = RequestProfileBuilder()
-        // Leave setup time for the full provider suite's concurrent GPU/model
-        // work. The engine fixture itself waits until this real deadline has
-        // expired; no separate submit task or fixed-count yield loop competes
-        // to observe entry during a one-second window.
-        let deadline = FirstContentDeadline(relativeBudgetMilliseconds: 30_000)
+        // The shell runner isolates this case and explicitly authorizes its
+        // short setup margin. Direct/IDE runners retain the original allowance
+        // for unrelated suite work; both arms wait for the real expiry.
+        let isolated = ProcessInfo.processInfo.environment["DARKBLOOM_ISOLATED_DEADLINE_TEST"] == "1"
+        let deadline = FirstContentDeadline(relativeBudgetMilliseconds: isolated ? 2_000 : 30_000)
         await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
             _ = try await submitControlled(
                 bridge: bridge, requestId: "accepted-expired", profile: profile, deadline: deadline)

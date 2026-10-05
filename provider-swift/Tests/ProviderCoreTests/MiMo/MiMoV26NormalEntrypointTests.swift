@@ -156,14 +156,16 @@ final class MiMoV26NormalEntrypointTests: XCTestCase {
     }
 
     func testSelectedSidecarNormalInspectionBindsRealHeaderWithoutClaimingPayloadAuthentication() throws {
-        guard let path = ProcessInfo.processInfo.environment["MIMO_V26_MANAGED_AUDIO_FIXTURE_ROOT"] else {
-            throw XCTSkip("Requires existing target plus unchanged selected audio sidecar")
-        }
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS")
+        let path = try XCTUnwrap(ProcessInfo.processInfo.environment["MIMO_V26_MANAGED_AUDIO_FIXTURE_ROOT"])
         let load = try XCTUnwrap(MiMoV26OrdinaryServingPolicy.inspect(
             directory: URL(fileURLWithPath: path), budget: budget(), deviceLimits: device))
         let request = try XCTUnwrap(load.audioLoadRequest)
         XCTAssertNotNil(load.decodedMediaPolicy)
-        XCTAssertNotNil(load.decodedAudioPolicy)
+        let audio = try XCTUnwrap(load.decodedAudioPolicy).media.limits.audio
+        XCTAssertEqual(audio.maximumChannels, 2)
+        XCTAssertEqual(audio.maximumSampleRate, 192000)
+        XCTAssertGreaterThanOrEqual(audio.maximumResampledSamples, audio.maximumInputSamples)
         XCTAssertEqual(request.inputTensorCount, 389)
         XCTAssertEqual(request.payloadSHA256, MiMoV26AudioTokenizerWeights.selectedPayloadSHA256)
         XCTAssertEqual(request.mainConfigurationSHA256, load.request.binding.configSHA256)

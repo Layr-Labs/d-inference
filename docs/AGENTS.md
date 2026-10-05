@@ -1,6 +1,6 @@
 # Darkbloom docs — how this documentation is organised and maintained
 
-> Last updated: 2026-09-27 · commit `ca4eb0b16`
+> Last updated: 2026-10-03
 
 Rules for anyone — human or agent — who reads, writes, or checks a file under
 `docs/`. The code is the source of truth; a doc that disagrees with the code is
@@ -76,9 +76,9 @@ skeleton.
    and nowhere else. Delete superseded text instead of caveating it. Where code
    says it better, cite the code instead of paraphrasing it.
 8. **Docs are code.** Under version control, reviewed with the code they
-   describe, linted in CI (`make docs-check`), stamped with a freshness date and
-   the commit they were verified against, and deprecated on purpose — never
-   abandoned. The owner of a doc is whoever changes the code it describes. —
+   describe, linted in CI (`make docs-check`), stamped with a freshness date,
+   and deprecated on purpose — never abandoned. The owner of a doc is whoever
+   changes the code it describes. —
    SWE at Google ch. 10 (freshness dates, canonical docs, deprecation).
 9. **Write for agents as well as people.** Agents forage with `grep`/`glob`
    and read a page in isolation. Use stable, grep-able identifiers (exact env
@@ -122,33 +122,44 @@ sentence lede (principle 3). Then, by type:
 Line 3 of every doc:
 
 ```
-> Last updated: YYYY-MM-DD · commit `<short sha>`
+> Last updated: YYYY-MM-DD
 ```
 
 - *Last updated* is the day the content was last written or re-verified
   against the code, not the day the file was touched by a rename.
-- *commit* is the repository commit the claims were checked against.
 - Update it whenever you change a doc's content: `make docs-stamp
-  FILES="docs/path.md"` (today + HEAD). For frozen records use
-  `scripts/docs-stamp.sh --from-git <file>`.
+  FILES="docs/path.md"` (today, UTC; `DOCS_STAMP_DATE` overrides the date).
+- For a format-only migration or a frozen record, use
+  `scripts/docs-stamp.sh --from-git <file>`. It preserves an existing stamp's
+  date; without a stamp it uses the last content commit's date, following
+  renames. An untracked file without a stamp uses today or `DOCS_STAMP_DATE`.
+- Keep source revisions in immutable source URLs or body evidence when needed,
+  not in freshness metadata. Never remove dependency pins, evidence commits,
+  or source URLs while migrating a stamp.
 - A doc whose stamp is older than the code it cites is suspect; re-verify and
   restamp rather than trusting it.
 
 ## 6. Checks (`make docs-check`, CI job "Docs Lint")
 
-`scripts/docs-check.sh` fails on: a missing stamp; a relative link to a
+`scripts/docs-check.sh` fails on: a missing date-only stamp in the first 12
+lines (SHA suffixes are rejected); a relative link to a
 missing file; an inline-code citation of a repo path that does not exist
 (exempt: `reports/`, `releases/`, `design/`); and an orphan page that no other
 doc links to. Run it before opening a PR that touches `docs/`. It checks only
 git-tracked files by default; `--all` includes untracked drafts.
 
 For a missing relative source link in a frozen report, release note, or design
-record, the checker can verify the source at that document's exact stamped
-commit. The commit and target must exist in local Git history; current docs
+record, the checker recovers the most recent legacy header stamp from the
+document's committed history and verifies the source at that exact commit.
+For a record created with date-only stamps, it uses the commit that introduced
+the particular link. History follows renames, not copies; freshness dates are
+never mapped to commits. Complete local Git history, resolvable provenance, and
+the exact source target are required; otherwise validation fails. Current docs
 and relative documentation links still require an existing working-tree
 target. Keep frozen records unchanged and use the
 [historical source procedure](developer/historical-references.md) to navigate
-their original source. Docs Lint checks out full history for this validation.
+their original source. Docs Lint checks out full history for this validation
+and tests both historical-link handling and date-preserving, idempotent stamping.
 
 ## 7. When you change code, change these docs
 
@@ -160,9 +171,12 @@ their original source. Docs Lint checks out full history for this validation.
 | Coordinator env var or config default | `reference/configuration.md`; `operations/coordinator-deploy.md` if prod sets it |
 | Provider CLI command, flag, env var | `provider/cli-reference.md`; `reference/configuration.md` |
 | Routing / admission / scheduling constant or gate | `architecture/routing.md` or `architecture/scheduling.md` |
+| Cache-routing evidence, generation fences, restoration or persistence | `architecture/cache-aware-routing.md`; retain the routing, protocol and ownership rows for those surfaces too |
+| Experimental model Autopilot policy, rollout or enrollment (`coordinator/registry/autopilot*`, `coordinator/api/autopilot*`, provider runtime/CLI `Autopilot/`) | `architecture/model-autopilot.md`, `operations/model-autopilot.md`; apply the configuration, CLI, protocol and API rows for those surfaces too |
 | Trust level, attestation, enrollment, encryption | `architecture/security/*.md`; `provider/attestation.md`; `consumer/verification.md`; `threat-model.yaml` |
 | Pricing, ledger, payouts, referral | `architecture/billing.md`, `reference/pricing-model.md`, `consumer/billing.md` |
 | Store schema / migration | `architecture/storage.md` |
+| Coordinator package ownership, application assembly, or backend boundaries | `developer/navigation.md`, `architecture/components/coordinator.md`; retain the relevant API, configuration, storage, and telemetry rows for behavioral surfaces |
 | Provider version bump (`ProviderCore.version` ↔ `LatestProviderVersion`) | `operations/provider-release.md`; `CHANGELOG.md` |
 | Build, test, CI, or script | `developer/build.md`, `developer/test.md`; `operations/` runbook that invokes it |
 | New model family or engine capability | `architecture/inference.md`, `consumer/models.md`, `provider/hardware-requirements.md` |
@@ -173,6 +187,15 @@ CI encodes the high-confidence part of this matrix in
 against each pull-request diff before the ordinary documentation lint. Keep the
 matrix and machine-readable rules aligned when adding a documentation-sensitive
 surface.
+
+Coordinator source-to-doc mappings apply to the production-consumed components
+under `coordinator/internal/` as well as their API/service adapters. A component
+move must preserve the original behavior-specific mapping; ownership documentation
+does not substitute for API, protocol, configuration, telemetry, trust or billing
+documentation. Go tests are isolated under `coordinator/tests/`; moving test
+files or shared fixtures also requires checking selectors, source-relative fixture
+consumers and the build/test guides. Keep local migration handoff checklists out
+of the published documentation; they are not architectural completion evidence.
 
 ## 8. Adding, moving, retiring pages
 

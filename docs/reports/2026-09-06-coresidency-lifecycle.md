@@ -1,6 +1,6 @@
 # Three-model shared-memory lifecycle, 2026-09-06
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-06
 
 The reviewed test build passed one non-skipped lifecycle test with nine request outcomes and 17 ordered observations. Qwen 3.6 used paged attention, SSD caching and normal MTP; GPT-OSS 20B and Gemma 4 QAT used paged attention with SSD and MTP off.
 

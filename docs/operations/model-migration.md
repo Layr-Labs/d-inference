@@ -1,6 +1,6 @@
 # Migrate a public model to a new build
 
-> Last updated: 2026-09-28 · commit `18fad5efe`
+> Last updated: 2026-10-03
 
 Runbook for moving a public model name (an **alias**, e.g. `gemma-4-26b`) from
 one concrete build to another with no downtime and without consumers ever
@@ -25,32 +25,32 @@ approval for the specific operation.
 Not for: registering a brand-new model (that is just steps 1–2 plus
 `promote`), or changing prices/status of an existing build
 (`POST /v1/admin/models/<id>/status`, `…/promote`, `…/runtime-parameters` in
-`coordinator/api/model_registry_handlers.go`, `handleAdminModelRegistryAction`).
+`coordinator/api/catalog/`, `HandleAdminModelRegistryAction`).
 
 ## Prerequisites
 
 - **Auth.** A publishing key: `MODEL_REGISTRY_PUBLISHING_KEY` (env bootstrap),
   `EIGENINFERENCE_ADMIN_KEY`, or an active row in `publishing_api_keys`
-  (`requirePublishingAPIKey`, header `X-Darkbloom-Publishing-Key` or
+  (`RequirePublishingAPIKey`, header `X-Darkbloom-Publishing-Key` or
   `Authorization: Bearer`). The same key authorizes `/v1/admin/models/register`,
   `/v1/admin/models/aliases`, and the per-model actions.
-- **Providers that understand `desired_models`.** `fanOutDesiredModels` in
-  `coordinator/api/model_alias_handlers.go` only pushes to providers passing
-  `providerSupportsDesiredModels(backend)`, i.e. the Swift backend. Every Swift
+- **Providers that understand `desired_models`.** `FanOutDesiredModels` in
+  `coordinator/api/catalog/model_alias_handlers.go` only pushes to providers passing
+  `ProviderSupportsDesiredModels(backend)`, i.e. the Swift backend. Every Swift
   build above the routing floor understands the message.
 - **Coordinator with the retired-resident-build challenge alibi.** After a
   hard-swap the old build is still resident on the provider and may be reported
   as `active_model_hash` at the next challenge; the coordinator accepts any
   catalog-validated hash from `model_hashes` (regression test
   `TestChallengeRetiredResidentBuildHashDoesNotUntrust`,
-  `coordinator/api/model_hash_race_test.go`). Do **not** deprecate the old
+   `coordinator/tests/api/provider/contracts/model_hash_race_test.go`). Do **not** deprecate the old
   registry record while any provider may still hold it resident (see "Retire").
 - **Canary the new build on one production-version provider** via its raw build
   id before flipping: prefetch, hash-verify, GPU-load, and serve chat, tool
   calls, and vision if applicable. Disk verification proves bytes, not
   loadability; the hard-swap advertises the build **before** its first load, so
   an unloadable build turns the fleet into 500s until you revert (the
-  `load-failure cool-down started` path in `coordinator/api/provider.go` lets
+  `load-failure cool-down started` path in `coordinator/api/provider/` lets
   alias resolution fall back to `previous_build`, but treat it as a backstop).
 - **For a takeover migration, pre-position the rollback build first** (step 6).
 - R2 access for publishing: `R2_ACCOUNT_ID`, `GCP_PROJECT`, and the Secret
@@ -134,7 +134,7 @@ curl -fsS -X POST "$COORD/v1/admin/models/register" \
   }'
 ```
 
-`handleRegisterModel` fetches `manifest.json` from the CDN, verifies every
+`HandleRegisterModel` fetches `manifest.json` from the CDN, verifies every
 listed file exists with the declared size and hash, and stores the version;
 `promote: true` makes it the active version. Prices are micro-USD per 1M tokens
 and required. Confirm both old and new builds are visible:
@@ -164,10 +164,10 @@ curl -fsS -X POST "$COORD/v1/admin/models/aliases" \
 ```
 
 `GET /v1/models` now lists `gemma-4-26b` and hides raw builds (pass
-`?include_builds=1` to see them, `coordinator/api/models_endpoints.go`).
+`?include_builds=1` to see them, `coordinator/api/catalog/models_endpoints.go`).
 Requests that still send the raw id keep working.
 
-`aliasUpsertRequest` fields (`coordinator/api/model_alias_handlers.go`;
+`aliasUpsertRequest` fields (`coordinator/api/catalog/model_alias_handlers.go`;
 unknown fields rejected): `alias_id` (letters, digits, `.`, `_`, `-`; ≤128),
 `display_name`, `desired_build` (required, must be a registered build ≠
 `alias_id`), `previous_build`, `active` (default `true`), `takeover`.
@@ -197,7 +197,7 @@ curl -fsS -X POST "$COORD/v1/admin/models/aliases" \
 ```
 
 The upsert is idempotent on `alias_id`, re-syncs the registry, and calls
-`fanOutDesiredModels`, which pushes `desired_models` to every eligible provider
+`FanOutDesiredModels`, which pushes `desired_models` to every eligible provider
 advertising a member of the alias; new or reconnecting providers get the push
 right after `register`. Download stagger across the fleet is the only
 rate-limiting there is.
@@ -216,7 +216,7 @@ lines to watch: `provider now advertises build (models_update)`,
 started`, and the deroute signature `provider active model hash matches no
 advertised model` (should not be sustained). Prefetch progress is **provider-
 side** only: the coordinator ignores `prefetch_model_status` frames
-(`coordinator/api/provider.go`, `TypePrefetchModelStatus`); look at the
+(`coordinator/api/provider/`, `TypePrefetchModelStatus`); look at the
 provider's log for `Scheduling desired-build prefetch retry`.
 
 Failed downloads retry with bounded backoff — `desiredPrefetchRetryDelays` in

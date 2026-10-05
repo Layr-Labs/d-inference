@@ -218,91 +218,99 @@ func (r *Registry) persistProviderNow(p *Provider) {
 		return
 	}
 	saferun.Go(r.logger, "registry.persistProvider", func() {
-		p.persistMu.Lock()
-		defer p.persistMu.Unlock()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		p.mu.Lock()
-		hardwareJSON, _ := json.Marshal(p.Hardware)
-		modelsJSON, _ := json.Marshal(p.selectedModelsLocked())
-		var attestJSON json.RawMessage
-		if p.AttestationResult != nil {
-			attestJSON, _ = json.Marshal(p.AttestationResult)
-		}
-		seKey := ""
-		serial := ""
-		if p.AttestationResult != nil && !p.stateRestorePending {
-			seKey = p.AttestationResult.PublicKey
-			serial = p.AttestationResult.SerialNumber
-		}
-		providerKey := p.PublicKey // X25519 key — earnings/session identity (base rewards)
-		var mdaCertJSON json.RawMessage
-		if len(p.MDACertChain) > 0 {
-			mdaCertJSON, _ = json.Marshal(p.MDACertChain)
-		}
-		var lastChallenge *time.Time
-		if !p.LastChallengeVerified.IsZero() {
-			t := p.LastChallengeVerified
-			lastChallenge = &t
-		}
-
-		var locationCopy *store.ProviderLocation
-		if p.Location != nil {
-			lc := *p.Location
-			locationCopy = &lc
-		}
-		statsJSON, _ := json.Marshal(p.Stats)
-		lastSessionStatsJSON, _ := json.Marshal(p.lastSessionStats)
-
-		rec := store.ProviderRecord{
-			ID:                         p.ID,
-			Hardware:                   hardwareJSON,
-			Models:                     modelsJSON,
-			Backend:                    p.Backend,
-			Location:                   locationCopy,
-			TrustLevel:                 string(p.TrustLevel),
-			Attested:                   p.Attested,
-			AttestationResult:          attestJSON,
-			SEPublicKey:                seKey,
-			PublicKey:                  p.PublicKey,
-			SerialNumber:               serial,
-			MDAVerified:                p.MDAVerified,
-			MDACertChain:               mdaCertJSON,
-			Version:                    p.Version,
-			RuntimeVerified:            p.RuntimeVerified,
-			LastChallengeVerified:      lastChallenge,
-			FailedChallenges:           p.FailedChallenges,
-			AccountID:                  p.AccountID,
-			LifetimeRequestsServed:     p.Stats.RequestsServed,
-			LifetimeTokensGenerated:    p.Stats.TokensGenerated,
-			LastSessionRequestsServed:  p.lastSessionStats.RequestsServed,
-			LastSessionTokensGenerated: p.lastSessionStats.TokensGenerated,
-			LifetimeStats:              statsJSON,
-			LastSessionStats:           lastSessionStatsJSON,
-			RegisteredAt:               time.Now(),
-			LastSeen:                   time.Now(),
-		}
-		completed := !p.stateRestorePending
-		rep := providerReputationRecordLocked(p)
-		p.mu.Unlock()
-
-		var err error
-		if completed {
-			err = r.store.UpsertProviderWithReputation(ctx, rec, rep)
-		} else {
-			err = r.store.UpsertProvider(ctx, rec)
-		}
-		if err != nil {
-			r.logger.Warn("failed to persist provider", "provider_id", p.ID, "error", err)
-		}
-
-		// Keep this connection's session row fresh and backfill
-		// serial/account/provider_key once attestation/linking has populated them.
-		if err := r.store.TouchProviderSession(ctx, rec.ID, rec.SerialNumber, rec.AccountID, providerKey, rec.LastSeen); err != nil {
-			r.logger.Warn("failed to touch provider session", "provider_id", rec.ID, "error", err)
-		}
+		r.providerPersistenceFor(p).PersistProvider()
 	})
+}
+
+func (s *ProviderPersistence) PersistProvider() {
+	r, p := s.registry, s.provider
+	if r.store == nil {
+		return
+	}
+	s.serial.Lock()
+	defer s.serial.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	p.mu.Lock()
+	hardwareJSON, _ := json.Marshal(p.Hardware)
+	modelsJSON, _ := json.Marshal(p.selectedModelsLocked())
+	var attestJSON json.RawMessage
+	if p.AttestationResult != nil {
+		attestJSON, _ = json.Marshal(p.AttestationResult)
+	}
+	seKey := ""
+	serial := ""
+	if p.AttestationResult != nil && s.CanPublishLocked() {
+		seKey = p.AttestationResult.PublicKey
+		serial = p.AttestationResult.SerialNumber
+	}
+	providerKey := p.PublicKey // X25519 key — earnings/session identity (base rewards)
+	var mdaCertJSON json.RawMessage
+	if len(p.MDACertChain) > 0 {
+		mdaCertJSON, _ = json.Marshal(p.MDACertChain)
+	}
+	var lastChallenge *time.Time
+	if !p.LastChallengeVerified.IsZero() {
+		t := p.LastChallengeVerified
+		lastChallenge = &t
+	}
+
+	var locationCopy *store.ProviderLocation
+	if p.Location != nil {
+		lc := *p.Location
+		locationCopy = &lc
+	}
+	statsJSON, _ := json.Marshal(p.Stats)
+	lastSessionStatsJSON, _ := json.Marshal(p.lastSessionStats)
+
+	rec := store.ProviderRecord{
+		ID:                         p.ID,
+		Hardware:                   hardwareJSON,
+		Models:                     modelsJSON,
+		Backend:                    p.Backend,
+		Location:                   locationCopy,
+		TrustLevel:                 string(p.TrustLevel),
+		Attested:                   p.Attested,
+		AttestationResult:          attestJSON,
+		SEPublicKey:                seKey,
+		PublicKey:                  p.PublicKey,
+		SerialNumber:               serial,
+		MDAVerified:                p.MDAVerified,
+		MDACertChain:               mdaCertJSON,
+		Version:                    p.Version,
+		RuntimeVerified:            p.RuntimeVerified,
+		LastChallengeVerified:      lastChallenge,
+		FailedChallenges:           p.FailedChallenges,
+		AccountID:                  p.AccountID,
+		LifetimeRequestsServed:     p.Stats.RequestsServed,
+		LifetimeTokensGenerated:    p.Stats.TokensGenerated,
+		LastSessionRequestsServed:  p.lastSessionStats.RequestsServed,
+		LastSessionTokensGenerated: p.lastSessionStats.TokensGenerated,
+		LifetimeStats:              statsJSON,
+		LastSessionStats:           lastSessionStatsJSON,
+		RegisteredAt:               time.Now(),
+		LastSeen:                   time.Now(),
+	}
+	completed := s.CanPublishLocked()
+	rep := providerReputationRecordLocked(p)
+	p.mu.Unlock()
+
+	var err error
+	if completed {
+		err = r.store.UpsertProviderWithReputation(ctx, rec, rep)
+	} else {
+		err = r.store.UpsertProvider(ctx, rec)
+	}
+	if err != nil {
+		r.logger.Warn("failed to persist provider", "provider_id", p.ID, "error", err)
+	}
+
+	// Keep this connection's session row fresh and backfill
+	// serial/account/provider_key once attestation/linking has populated them.
+	if err := r.store.TouchProviderSession(ctx, rec.ID, rec.SerialNumber, rec.AccountID, providerKey, rec.LastSeen); err != nil {
+		r.logger.Warn("failed to touch provider session", "provider_id", rec.ID, "error", err)
+	}
 }
 
 // persistReputation saves a provider's current reputation to the store.
@@ -311,17 +319,23 @@ func (r *Registry) persistReputation(p *Provider) {
 	if r.store == nil {
 		return
 	}
-	saferun.Go(r.logger, "registry.persistReputation", func() { r.persistReputationNow(p) })
+	saferun.Go(r.logger, "registry.persistReputation", func() {
+		r.providerPersistenceFor(p).PersistReputation()
+	})
 }
 
-func (r *Registry) persistReputationNow(p *Provider) {
-	p.persistMu.Lock()
-	defer p.persistMu.Unlock()
+func (s *ProviderPersistence) PersistReputation() {
+	r, p := s.registry, s.provider
+	if r.store == nil {
+		return
+	}
+	s.serial.Lock()
+	defer s.serial.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	p.mu.Lock()
-	if p.stateRestorePending {
+	if !s.CanPublishLocked() {
 		p.mu.Unlock()
 		return
 	}
@@ -339,7 +353,7 @@ func (r *Registry) persistReputationNow(p *Provider) {
 // pending. This does not grant attestation, MDA or any routing trust.
 func (p *Provider) CompleteProviderStateRestore() {
 	p.mu.Lock()
-	p.stateRestorePending = false
+	p.persistence.pending = false
 	p.mu.Unlock()
 }
 

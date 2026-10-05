@@ -124,7 +124,7 @@ func (r *Registry) mergeProviderModels(
 					delete(p.PrefixCacheStatuses, m.ID)
 					delete(p.PrefixCacheV2Models, m.ID)
 					delete(p.PrefixCacheMemoryModels, m.ID)
-					p.prefixCacheRevision++
+					p.advanceCacheRevisionLocked()
 					cacheStateInvalidated[m.ID] = struct{}{}
 				}
 				p.Models[i] = m
@@ -135,14 +135,10 @@ func (r *Registry) mergeProviderModels(
 		if !replaced {
 			p.Models = append(p.Models, m)
 		}
-		for i := range p.autopilotInventory {
-			if p.autopilotInventory[i].ID == m.ID {
-				p.autopilotInventory[i] = m
-			}
-		}
+		p.autopilotState.RefreshModel(m)
 		for _, target := range aliasTargets {
 			if target.Desired == m.ID && providerSelectedModelLocked(p, target.Previous) {
-				delete(p.autopilotOnlyModels, m.ID)
+				p.autopilotState.PromoteSuccessor(m.ID)
 			}
 		}
 		merged = append(merged, m.ID)
@@ -189,20 +185,14 @@ func (r *Registry) mergeProviderModels(
 				delete(p.PrefixCacheStatuses, m.ID)
 				delete(p.PrefixCacheV2Models, m.ID)
 				delete(p.PrefixCacheMemoryModels, m.ID)
-				p.prefixCacheRevision++
+				p.advanceCacheRevisionLocked()
 				cacheStateInvalidated[m.ID] = struct{}{}
 				continue
 			}
 			kept = append(kept, m)
 		}
 		p.Models = kept
-		inventory := p.autopilotInventory[:0]
-		for _, model := range p.autopilotInventory {
-			if _, removed := drop[model.ID]; !removed {
-				inventory = append(inventory, model)
-			}
-		}
-		p.autopilotInventory = inventory
+		p.autopilotState.DropRetired(drop)
 	}
 	p.PrefixCacheStatuses, p.PrefixCacheStatusReported =
 		reconcilePrefixCacheStatuses(

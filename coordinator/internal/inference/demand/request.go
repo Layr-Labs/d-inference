@@ -1,0 +1,207 @@
+package demand
+
+import (
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/registry/autopilot"
+)
+
+// Request is owned by one logical HTTP request. Retries, queue
+// transitions and speculative attempts annotate this object; only the handler
+// exit consumes it. There is no request-ID set, content, or identity retention.
+type Request struct {
+	mu       sync.Mutex
+	sample   autopilot.DemandSample
+	profile  *registry.RequestProfile
+	reason   string
+	armed    bool
+	finished bool
+}
+
+func New(receivedAt time.Time) *Request {
+	return &Request{sample: autopilot.DemandSample{ReceivedAt: receivedAt}}
+}
+
+// Admission contains only the validated public-demand envelope and hard traits.
+type Admission struct {
+	Model                  string
+	EstimatedPromptTokens  int
+	RequestedMaxTokens     int
+	Deadline               time.Duration
+	RequiresVision         bool
+	OwnerOnly              bool
+	PreferOwner            bool
+	AllowedProviderSerials []string
+	Traits                 registry.RequestTraits
+	TraitsForModel         func(string) registry.RequestTraits
+}
+
+// Arm runs only after the public handler's authentication,
+// account/token limits, balance and request parsing checks. Further validation
+// failures are excluded at finish. Scoped owner/serial traffic is not demand for
+// the public fleet. An honest short request still counts; token length alone is
+// not evidence of abuse.
+func (d *Request) Arm(p Admission) {
+	if d == nil || p.OwnerOnly || p.PreferOwner || len(p.AllowedProviderSerials) > 0 ||
+		p.Model == "" || len(p.Model) > 256 || p.EstimatedPromptTokens <= 0 || p.RequestedMaxTokens <= 0 {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.armed || d.finished {
+		return
+	}
+	d.sample.DeadlineKnown = true
+	d.sample.FirstContentDeadline = p.Deadline
+	d.sample.Model = p.Model
+	d.sample.PromptTokens = p.EstimatedPromptTokens
+	d.sample.RequestedMaxTokens = p.RequestedMaxTokens
+	traits := p.Traits
+	if p.TraitsForModel != nil {
+		traits = p.TraitsForModel(p.Model)
+	}
+	d.sample.Requirements = traits.AutopilotRequirements(p.RequiresVision)
+	d.armed = true
+}
+
+func (d *Request) SetModel(model string, traits registry.RequestTraits) {
+	if d == nil || model == "" || len(model) > 256 {
+		return
+	}
+	d.mu.Lock()
+	if !d.finished {
+		d.sample.Model = model
+		d.sample.Requirements = traits.AutopilotRequirements(d.sample.RequiresVision)
+	}
+	d.mu.Unlock()
+}
+
+func (d *Request) BindProfile(rp *registry.RequestProfile) {
+	if d != nil {
+		d.mu.Lock()
+		d.profile = rp
+		d.mu.Unlock()
+	}
+}
+
+type Rejection struct {
+	ResolvedModel string
+	ReasonCode    string
+	HTTPStatus    int
+}
+
+func (d *Request) Annotate(info Rejection) {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.finished {
+		return
+	}
+	// Coordinator-owned reasons are immediately folded into a closed vocabulary.
+	// A free-form provider error, account ID, or request ID never enters state.
+	d.reason = TerminalReason(info.ReasonCode, info.HTTPStatus)
+	if info.ResolvedModel != "" && len(info.ResolvedModel) <= 256 {
+		d.sample.Model = info.ResolvedModel
+	}
+}
+
+// TerminalReason folds coordinator reasons into the content-free demand vocabulary.
+func TerminalReason(reason string, status int) string {
+	switch reason {
+	case "machine_busy", "queue_full", "queue_timeout":
+		return "capacity_shed"
+	case "queue_deadline", "deadline_unreachable", "first_chunk_timeout", "ttft_too_slow":
+		return "deadline"
+	case "routing_saturated":
+		return "routing_saturated"
+	case "context_exceeded", "oversized_request":
+		return "intrinsic_unservable"
+	case "no_provider", "no_eligible_provider", "prompt_too_long", "unservable_token_budget", "model_too_large":
+		return "no_eligible_provider"
+	default:
+		if status == http.StatusTooManyRequests {
+			return "other_rate_limit"
+		}
+		if status >= http.StatusInternalServerError {
+			return "provider_fault"
+		}
+		return "unknown"
+	}
+}
+
+// Finish consumes exactly once. This is offered logical demand, not a request
+// success counter. Valid requests that fail or depart still consumed demand;
+// intrinsic request limits and coordinator saturation are explicitly labeled so
+// the controller must not mistake them for a removable model-placement deficit.
+func (d *Request) Finish(status int, clientDeparted bool) (autopilot.DemandSample, bool) {
+	if d == nil {
+		return autopilot.DemandSample{}, false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.finished {
+		return autopilot.DemandSample{}, false
+	}
+	d.finished = true
+	if !d.armed || d.sample.Model == "" || (status >= 400 && status < 500 && status != http.StatusTooManyRequests && status != 499) {
+		return autopilot.DemandSample{}, false
+	}
+	sample := d.sample
+	sample.Reason = d.reason
+	if sample.Reason == "" {
+		sample.Reason = TerminalReason("", status)
+	}
+	// Unknown/account 429s are not actionable arrival pressure. Recognized
+	// intrinsic/coordinator rejections remain separately diagnosable.
+	if sample.Reason == "other_rate_limit" {
+		return autopilot.DemandSample{}, false
+	}
+	if clientDeparted || status == 499 {
+		sample.Reason = "client_departure"
+		return sample, true
+	}
+	sample.CapacityShed = (status == http.StatusTooManyRequests || status == http.StatusServiceUnavailable) &&
+		(sample.Reason == "capacity_shed" || sample.Reason == "deadline" || sample.Reason == "no_eligible_provider")
+	if status >= 200 && status < 300 {
+		sample.Reason = "admitted"
+		observeAutopilotCompletion(&sample, d.profile)
+	}
+	return sample, true
+}
+
+// A 200 header does not prove stream completion. Only a successful winning
+// provider terminal plus completed consumer output supplies work/service data.
+// Service time includes provider waiting and inference, but excludes coordinator
+// queue/retry time and cold loading (which the placement controller costs apart).
+func observeAutopilotCompletion(sample *autopilot.DemandSample, rp *registry.RequestProfile) {
+	if rp == nil || rp.ClientWriteErr.Load() || rp.ClientGoneUS.Load() > 0 || rp.DoneFlushedUS.Load() <= 0 {
+		return
+	}
+	for _, ap := range rp.Attempts() {
+		if !ap.Winning.Load() {
+			continue
+		}
+		status, _, _, provider, _ := ap.Outcome()
+		if status != "success" || provider != "completed" || !ap.ProviderCompleteObserved.Load() {
+			return
+		}
+		prompt, output, ok := ap.TerminalUsage()
+		if !ok || prompt < 0 || output < 0 {
+			return
+		}
+		sample.Completed = true
+		sample.Reason = "completed"
+		sample.ObservedPromptTokens = prompt
+		sample.ObservedOutputTokens = output
+		accepted, complete := ap.AcceptedUS.Load(), ap.CompleteIngressUS.Load()
+		if ap.DecisionSet && ap.Decision.StateMs == 0 && accepted > 0 && complete > accepted {
+			sample.ServiceTime = time.Duration(complete-accepted) * time.Microsecond
+		}
+		return
+	}
+}

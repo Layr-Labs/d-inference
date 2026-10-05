@@ -236,7 +236,7 @@ Logs carry bounded labels only, never SQL or parameters
 | Exit 1 with `missing (out-of-order) migration` | A version below the highest applied one was never applied, for example after two branches added migrations | `SELECT version_id FROM goose_db_version ORDER BY id`; renumber the unapplied version above the highest one. |
 | Exit 1 with `database holds data that retired backfills never processed` or `balances.withdrawable_micro_usd is missing` | The database has history but never ran a backfill retired after v0.9.10 | Boot a v0.9.10 coordinator against it once, then redeploy (`checkRetiredBackfills`). |
 | Exit 1 with a `provider_earnings` duplicate `job_id` message | Rows share a non-empty `job_id`, so version 4 cannot build its unique index | Run `coordinator/store/postgres/migrations/dedupe_provider_earnings.sql` offline, then redeploy. |
-| A dropped column comes back, or a `SET NOT NULL` is undone, after a rollback | The rollback image was built before goose and replayed its boot DDL (`ADD COLUMN IF NOT EXISTS`; `DROP NOT NULL` on `fleet_snapshots.free_for_load_gb`) | Do not ship a destructive migration while a pre-goose image can be a fallback; see [expand and contract](../developer/database-migrations.md#change-a-column-in-two-releases-expand-and-contract). |
+| A dropped column comes back, or a `SET NOT NULL` is undone, after a rollback | The rollback image was built before goose and replayed its boot DDL (`ADD COLUMN IF NOT EXISTS`; `DROP NOT NULL` on `fleet_snapshots.free_for_load_gb`) | Do not ship a destructive migration while a pre-goose image can be a fallback; see [expand and contract](../developer/database-migrations.md#change-a-column-while-preserving-rollback-compatibility). |
 
 ## Code map
 

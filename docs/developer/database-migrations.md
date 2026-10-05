@@ -35,7 +35,7 @@ in production is the [schema migration runbook](../operations/schema-migration.m
    | Several `ALTER TABLE`s on busy tables that must not hold their locks together; `DROP INDEX CONCURRENTLY`; `VALIDATE CONSTRAINT` after a `NOT VALID` add | SQL file with `-- +goose NO TRANSACTION` | `coordinator/store/postgres/schema/migrations/00001_baseline.sql` |
    | Create an index on a table that has rows in production | Go migration through `ensureConcurrentIndex` | `ensureProviderRestoreIndexes` (version 3) |
    | A step that must read data first, check a precondition, or check its own result | Go migration | `checkRetiredBackfills` (version 2) |
-   | Rename or drop a column, or tighten a constraint | Two or more releases; see [expand and contract](#change-a-column-in-two-releases-expand-and-contract) | — |
+   | Rename or drop a column, or tighten a constraint | Compatible release phases; see [expand and contract](#change-a-column-while-preserving-rollback-compatibility) | — |
    | Fix rows that a writer keeps producing | Not a migration: fix the writer | — |
    | A cleanup that needs a long lock | Manual SQL under `coordinator/store/postgres/migrations/`, applied under an approved operation | `coordinator/store/postgres/migrations/dedupe_provider_earnings.sql` |
 
@@ -149,44 +149,72 @@ go test ./coordinator/tests/store/postgres -count=1 \
 
 Then run the store tests for the tables you changed, on both backends.
 
-## Change a column in two releases (expand and contract)
+## Change a column while preserving rollback compatibility
 
-A rollback starts the previous image on the migrated schema; nothing reverts
-the schema ([invariants](../architecture/schema-lifecycle.md#invariants)).
-`--migrate-only` can also run while the previous image still serves. So each
-release must work on the schema of the release after it. A breaking change
-therefore ships in steps, and the contract step ships two releases after the
-expand step.
+A rollback starts an older image against the already-migrated schema
+([invariants](../architecture/schema-lifecycle.md#invariants)). Both the active
+image and every permitted fallback must read current values and accept each
+other's writes. `--migrate-only` can also run while the previous image serves.
+
+For a column replacement, keep the old column authoritative while any writer
+updates only that column. Reading `COALESCE(new_col, old_col)` during this
+phase can return a stale non-null value after a rollback writer updates only
+`old_col`. Use these phases when both representations can preserve the values
+accepted by the active image and its fallback:
 
 ```mermaid
-flowchart LR
+flowchart TD
   classDef rel fill:#dbeafe,stroke:#1d4ed8,color:#0b1220
+  classDef gate fill:#fef3c7,stroke:#b45309,color:#1f1300
   classDef fb fill:#f1f5f9,stroke:#475569,color:#0f172a
-  N["Release N: expand<br/>migration adds new_col<br/>code writes old_col and new_col,<br/>reads COALESCE(new_col, old_col)"]:::rel
-  N1["Release N+1: switch<br/>no migration<br/>code reads and writes new_col only"]:::rel
-  N2["Release N+2: contract<br/>migration drops old_col"]:::rel
-  F0["fallback N-1:<br/>ignores new_col; old_col is current"]:::fb
-  F1["fallback N:<br/>new_col is current"]:::fb
-  F2["fallback N+1:<br/>never touches old_col"]:::fb
-  N --> N1 --> N2
+  N["N: expand<br/>read old_col<br/>write both atomically"]:::rel
+  G["Retire every N-1 writer and fallback<br/>reconcile new_col from current old_col"]:::gate
+  N1["N+1: switch reads<br/>read new_col<br/>keep writing both atomically"]:::rel
+  N2["N+2: retire old access<br/>read and write new_col only<br/>keep old_col in schema"]:::rel
+  N3["N+3: contract<br/>drop old_col"]:::rel
+  F0["Fallback N-1<br/>reads and writes current old_col"]:::fb
+  F1["Fallback N<br/>reads current old_col<br/>writes both"]:::fb
+  F2["Fallback N+1<br/>reads current new_col<br/>writes both"]:::fb
+  F3["Fallback N+2<br/>never accesses old_col"]:::fb
+  N --> G --> N1 --> N2 --> N3
   N -. "rollback" .-> F0
   N1 -. "rollback" .-> F1
   N2 -. "rollback" .-> F2
+  N3 -. "rollback" .-> F3
 ```
 
-Legend: blue = release, grey = the image a rollback starts.
+Legend: blue = release, amber = required transition, grey = permitted fallback.
 
-1. Release N, expand: add the new column, table or index as an additive
-   migration. Write both shapes, and read the new one with a fallback to the
-   old one. Backfill old rows in small batches, as a Go migration or a
-   reviewed manual operation; a backfill in one statement holds row locks for
-   its whole run.
-2. Deploy release N. Ship N+1 only after N runs in production, so that N is
-   the fallback image.
-3. Release N+1, switch: read and write only the new shape. No migration.
-4. Deploy release N+1. Ship N+2 only after N+1 runs in production.
-5. Release N+2, contract: drop the old shape, or add the constraint
-   (`NOT VALID`, then `VALIDATE`).
+1. **Release N, expand.** Add `new_col` with an additive migration. Read
+   `old_col` and update both representations in the same transaction on every
+   write path, including inserts and maintenance commands. The N-1 fallback
+   can keep updating only `old_col`; N continues reading the authoritative
+   value after a rollback and re-upgrade.
+2. **Retire old-only writers and reconcile.** Once N is deployed, remove N-1
+   from the permitted fallback set and retire every old-only writer before
+   switching reads. Reconcile `new_col` from authoritative `old_col` in small
+   batches, including rows whose `new_col` is already non-null. Lock each row
+   and derive the new value from its current old value in the same transaction
+   so reconciliation cannot overwrite a concurrent dual write with stale data.
+   Verify parity before proceeding. Perform production backfills under the
+   [schema migration runbook](../operations/schema-migration.md), with approval
+   for that specific mutation.
+3. **Release N+1, switch reads.** Read `new_col` and keep updating both columns
+   atomically. N is the permitted fallback: its reads of `old_col` remain current.
+   Keep values compatible with both representations while such a fallback is
+   permitted.
+4. **Release N+2, retire old access.** After N+1 is deployed and N is retired
+   from the fallback set, read and write only `new_col`. Keep `old_col` in the
+   schema for N+1, whose reads already use `new_col` and whose writes still
+   mention both columns. Before omitting old-column writes, ensure inserts and
+   updates still satisfy the old column's defaults, nullability and constraints;
+   stage any compatible schema relaxation separately.
+5. **Release N+3, contract.** After N+2 is deployed and N+1 is retired from the
+   fallback set, drop `old_col`. The permitted N+2 fallback never accesses it.
+   Check every remaining reader, writer and database dependency before removal.
+   Tightening a constraint similarly requires all active and fallback writers
+   to satisfy it before it is enforced; use `NOT VALID` and `VALIDATE` where
+   PostgreSQL supports them.
 
 ## Destructive changes and the pre-goose fallback
 

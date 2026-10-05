@@ -1,6 +1,6 @@
 # Darkbloom documentation
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 > Darkbloom is a decentralized private-inference network: an OpenAI- and
 > Anthropic-compatible HTTP API served by a Go coordinator that routes each
@@ -106,7 +106,7 @@
 - [`developer/navigation.md`](developer/navigation.md): find implementation and tests, choose descriptive filenames, and check path dependencies when moving files.
 - [`developer/build.md`](developer/build.md): build the coordinator, sidecar, provider, and UIs; toolchain pins.
 - [`developer/test.md`](developer/test.md): every test suite, what CI runs, how to run the e2e suite.
-- [`developer/database-migrations.md`](developer/database-migrations.md): choose the migration kind, add a numbered goose migration, change a column in two releases, regenerate the checked-in schema.
+- [`developer/database-migrations.md`](developer/database-migrations.md): choose the migration kind, add a numbered goose migration, change a column while preserving rollback compatibility, regenerate the checked-in schema.
 - [`developer/threat-model-review.md`](developer/threat-model-review.md): configure full PR text scans against the threat model and non-blocking author feedback.
 - [`developer/serving-performance-qualification.md`](developer/serving-performance-qualification.md): measure and review exact serving profiles before promoting concurrency limits or prefill policy.
 

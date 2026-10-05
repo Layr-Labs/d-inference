@@ -17,11 +17,17 @@ import (
 )
 
 type readinessControllerFixture struct {
-	t            *testing.T
-	controller   *preload.PreloadController
-	client       preload.Client
-	provisioner  *catalog.State
-	supervisor   *preloadChildFixture
+	t           *testing.T
+	controller  *preload.PreloadController
+	client      preload.Client
+	provisioner *catalog.State
+	supervisor  *preloadChildFixture
+	// activeSet is the controller's actual selection policy. The controller
+	// serializes it; read it only between controller calls.
+	activeSet *preload.PreloadActiveSet
+	// policyClock, once set, replaces the injected policy clock's default of
+	// time since construction.
+	policyClock  atomic.Pointer[func() time.Duration]
 	generation   uint64
 	preloads     atomic.Int64
 	readyCalls   atomic.Int64
@@ -70,8 +76,19 @@ func newReadinessControllerFixture(t *testing.T, respond func(context.Context, i
 	f.supervisor = &preloadChildFixture{status: preload.ChildStatus{Running: true, Ready: true, ChildGeneration: 1}}
 	var err error
 	f.client = controlled
+	origin := time.Now()
 	f.controller, err = preload.New(f.provisioner, f.supervisor, controlled, preload.PreloadControllerConfig{
 		FailureBackoffMin: time.Hour, FailureBackoffMax: 2 * time.Hour,
+		PolicyNow: func() time.Duration {
+			if clock := f.policyClock.Load(); clock != nil {
+				return (*clock)()
+			}
+			return time.Since(origin)
+		},
+		ActiveSets: func() *preload.PreloadActiveSet {
+			f.activeSet = preload.NewPreloadActiveSet()
+			return f.activeSet
+		},
 	})
 	if err != nil {
 		t.Fatal(err)

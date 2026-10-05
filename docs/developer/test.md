@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 ## Reservation storage and scan benchmarks
 
@@ -1323,8 +1323,15 @@ controller selects a bounded set under the
 
 #### Bounded preload selection and real HTTP overflow
 
-Controller tests cover standalone tokenizer readiness without authorization. API
-tests retain the original planning reason and sampling/QPS assertions. Use the
+The pure `coordinator/tests/promptcontract/preload_active_set*_test.go` cases cover
+full verified-set preservation, deduplication, eligible demand, expiry, residence,
+fair waiting, failure backoff, same-generation verified-set growth and irreversible
+in-flight ABA fencing. Controller tests additionally cover completed native
+acknowledgement versus current participation, forced polls during partial-backoff
+admissibility drift, capture-through-apply ordering, background-only advisory
+refresh, HTTP 409 retirement and standalone tokenizer readiness without
+authorization. API tests retain the original planning reason and sampling/QPS
+assertions and check policy drift between classification and commitment. Use the
 ordinary and race gates for `coordinator/tests/promptcontract`,
 `coordinator/tests/registry` and `coordinator/tests/api/inference`; no pure
 helper result substitutes for actual sidecar/HTTP qualification.

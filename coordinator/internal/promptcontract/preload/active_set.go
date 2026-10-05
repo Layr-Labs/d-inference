@@ -12,10 +12,12 @@ import (
 )
 
 const (
-	preloadActiveSetMaxTuples  = 128
-	preloadDemandExpiry        = 5 * time.Minute
-	preloadMinimumResidence    = 30 * time.Second
-	preloadReplacementInterval = 30 * time.Second
+	preloadActiveSetMaxTuples = 128
+	preloadDemandExpiry       = 5 * time.Minute
+	preloadMinimumResidence   = 30 * time.Second
+	// PreloadReplacementInterval is the least time between two ordinary
+	// replacements of a resident member by a waiting one.
+	PreloadReplacementInterval = 30 * time.Second
 )
 
 var (
@@ -59,16 +61,27 @@ type PreloadSelectionSnapshot struct {
 	Desired             []string
 }
 
-func (k PreloadSelectionSnapshot) equal(other PreloadSelectionSnapshot) bool {
+// Equal compares the full key, including admissibility.
+func (k PreloadSelectionSnapshot) Equal(other PreloadSelectionSnapshot) bool {
 	return k.CatalogGeneration == other.CatalogGeneration && k.ChildGeneration == other.ChildGeneration &&
 		k.SelectionGeneration == other.SelectionGeneration && k.Capacity == other.Capacity &&
 		slices.Equal(k.Verified, other.Verified) && slices.Equal(k.Admissible, other.Admissible) &&
 		slices.Equal(k.Desired, other.Desired)
 }
 
-type preloadSelectionLease struct {
-	operation uint64
-	key       PreloadSelectionSnapshot
+func (k PreloadSelectionSnapshot) detached() PreloadSelectionSnapshot {
+	k.Verified = slices.Clone(k.Verified)
+	k.Admissible = slices.Clone(k.Admissible)
+	k.Desired = slices.Clone(k.Desired)
+	return k
+}
+
+// PreloadSelectionLease binds one preload attempt to the exact key it was
+// issued under. Its holder returns it unchanged to CompleteAttempt or
+// RetireConflict; a different operation or key is refused.
+type PreloadSelectionLease struct {
+	Operation uint64
+	Key       PreloadSelectionSnapshot
 }
 
 type preloadDemand struct {
@@ -82,10 +95,11 @@ type preloadSelectedMember struct {
 	failed                  bool
 }
 
+// PreloadActiveSet is the bounded preload selection policy.
 // Caller serializes this pure policy. No IO, goroutines, callbacks, wall clock,
 // auth/account/request/prompt state or readiness authority lives here. Ticks are
 // nonnegative monotonic durations from one controller-local origin.
-type preloadActiveSet struct {
+type PreloadActiveSet struct {
 	key                 PreloadSelectionSnapshot
 	demand              map[PreloadDemandIdentity]preloadDemand
 	members             map[string]preloadSelectedMember
@@ -102,25 +116,22 @@ type preloadActiveSet struct {
 	needsLoad           bool
 	failedResult        bool
 	operation           uint64
-	inflight            *preloadSelectionLease
+	inflight            *PreloadSelectionLease
 	inflightInvalidated bool
 }
 
-func newPreloadActiveSet() *preloadActiveSet {
-	return &preloadActiveSet{}
+func NewPreloadActiveSet() *PreloadActiveSet {
+	return &PreloadActiveSet{}
 }
 
-func (p *preloadActiveSet) snapshot() PreloadSelectionSnapshot {
-	key := p.key
-	key.Verified = slices.Clone(key.Verified)
-	key.Admissible = slices.Clone(key.Admissible)
-	key.Desired = slices.Clone(key.Desired)
-	return key
-}
+// Snapshot is the current exact key, detached from the policy.
+func (p *PreloadActiveSet) Snapshot() PreloadSelectionSnapshot { return p.key.detached() }
 
-func (p *preloadActiveSet) successes() []string { return slices.Clone(p.successful) }
+// Successes are the acknowledged members of the current key.
+func (p *PreloadActiveSet) Successes() []string { return slices.Clone(p.successful) }
 
-func (p *preloadActiveSet) reason() string {
+// Reason is the bounded status of a current key that is not fully loaded.
+func (p *PreloadActiveSet) Reason() string {
 	if p.failedResult {
 		return "preload_failed"
 	}
@@ -130,7 +141,7 @@ func (p *preloadActiveSet) reason() string {
 	return ""
 }
 
-func (p *preloadActiveSet) acceptTick(now time.Duration) bool {
+func (p *PreloadActiveSet) acceptTick(now time.Duration) bool {
 	if now < 0 || now < p.lastTick || p.closed {
 		return false
 	}
@@ -140,7 +151,7 @@ func (p *preloadActiveSet) acceptTick(now time.Duration) bool {
 
 // Invalid authoritative input immediately closes this policy, but keeps an
 // outstanding lease until its real completion so no replacement IO overlaps it.
-func (p *preloadActiveSet) invalidate() {
+func (p *PreloadActiveSet) Invalidate() {
 	if p.inflight != nil {
 		p.inflightInvalidated = true
 	}
@@ -152,7 +163,7 @@ func (p *preloadActiveSet) invalidate() {
 	p.setDesired(nil)
 }
 
-func (p *preloadActiveSet) setDesired(desired []string) {
+func (p *PreloadActiveSet) setDesired(desired []string) {
 	sort.Strings(desired)
 	if slices.Equal(p.key.Desired, desired) {
 		return
@@ -177,17 +188,18 @@ func (p *preloadActiveSet) setDesired(desired []string) {
 	}
 }
 
-func (p *preloadActiveSet) reconcile(now time.Duration, input PreloadSelectionInput) (PreloadSelectionSnapshot, error) {
+// Reconcile applies one authoritative input and returns the resulting key.
+func (p *PreloadActiveSet) Reconcile(now time.Duration, input PreloadSelectionInput) (PreloadSelectionSnapshot, error) {
 	if !p.acceptTick(now) {
-		p.invalidate()
-		return p.snapshot(), errPreloadSelectionClock
+		p.Invalidate()
+		return p.Snapshot(), errPreloadSelectionClock
 	}
 	verified, admissible, err := validatePreloadSelection(input)
 	if err != nil {
-		p.invalidate()
-		return p.snapshot(), err
+		p.Invalidate()
+		return p.Snapshot(), err
 	}
-	before := p.snapshot()
+	before := p.Snapshot()
 	catalogChanged := input.CatalogGeneration != p.key.CatalogGeneration
 	childChanged := input.ChildGeneration != p.key.ChildGeneration
 	if catalogChanged || p.demand == nil {
@@ -249,7 +261,7 @@ func (p *preloadActiveSet) reconcile(now time.Duration, input PreloadSelectionIn
 			desired = append(desired, waiters[0].id)
 			waiters = waiters[1:]
 		}
-		if len(waiters) > 0 && len(desired) == input.Capacity && (!p.replaced || now-p.lastReplacement >= preloadReplacementInterval) {
+		if len(waiters) > 0 && len(desired) == input.Capacity && (!p.replaced || now-p.lastReplacement >= PreloadReplacementInterval) {
 			if victim := p.oldestMember(desired, now, false); victim != "" {
 				desired = append(removePreloadContract(desired, victim), waiters[0].id)
 				p.lastReplacement, p.replaced = now, true
@@ -259,9 +271,9 @@ func (p *preloadActiveSet) reconcile(now time.Duration, input PreloadSelectionIn
 	p.initialized = true
 	p.setDesired(desired)
 	if p.closed {
-		return p.snapshot(), errPreloadSelectionLimit
+		return p.Snapshot(), errPreloadSelectionLimit
 	}
-	if !before.equal(p.key) {
+	if !before.Equal(p.key) {
 		// A new exact requested set must not inherit the old batch's retry
 		// delay. Per-contract overflow waiter eligibility remains independent.
 		p.batchRetryKey, p.batchRetryAt = PreloadSelectionSnapshot{}, 0
@@ -273,12 +285,12 @@ func (p *preloadActiveSet) reconcile(now time.Duration, input PreloadSelectionIn
 		p.successful, p.failedResult = nil, false
 		p.needsLoad = len(p.key.Desired) > 0
 	}
-	return p.snapshot(), nil
+	return p.Snapshot(), nil
 }
 
 // Caller has already authenticated and passed final-resolved text/preflight and
 // exact Registry identity/allowlist checks. No request/auth value is accepted.
-func (p *preloadActiveSet) noteDemand(now time.Duration, identity PreloadDemandIdentity) bool {
+func (p *PreloadActiveSet) NoteDemand(now time.Duration, identity PreloadDemandIdentity) bool {
 	if !p.valid {
 		return false
 	}
@@ -299,7 +311,7 @@ func (p *preloadActiveSet) noteDemand(now time.Duration, identity PreloadDemandI
 	return true
 }
 
-func (p *preloadActiveSet) expireDemand(now time.Duration) {
+func (p *PreloadActiveSet) expireDemand(now time.Duration) {
 	for identity, demand := range p.demand {
 		if now-demand.last >= preloadDemandExpiry {
 			delete(p.demand, identity)
@@ -307,7 +319,7 @@ func (p *preloadActiveSet) expireDemand(now time.Duration) {
 	}
 }
 
-func (p *preloadActiveSet) hasDemand(id string) bool {
+func (p *PreloadActiveSet) hasDemand(id string) bool {
 	for identity := range p.demand {
 		if identity.PromptContractID == id {
 			return true
@@ -316,7 +328,7 @@ func (p *preloadActiveSet) hasDemand(id string) bool {
 	return false
 }
 
-func (p *preloadActiveSet) markWaiting(id string, now time.Duration, failed bool) {
+func (p *PreloadActiveSet) markWaiting(id string, now time.Duration, failed bool) {
 	for identity, demand := range p.demand {
 		if identity.PromptContractID == id && (!demand.waiting || failed) {
 			demand.waiting, demand.waitingSince, demand.requeued = true, now, failed
@@ -332,7 +344,7 @@ type preloadWaiter struct {
 	available bool
 }
 
-func (p *preloadActiveSet) waiters(desired []string, now time.Duration) []preloadWaiter {
+func (p *PreloadActiveSet) waiters(desired []string, now time.Duration) []preloadWaiter {
 	byContract := make(map[string]preloadWaiter)
 	for identity, demand := range p.demand {
 		id := identity.PromptContractID
@@ -369,7 +381,7 @@ func preloadWaiterLess(a, b preloadWaiter) bool {
 	return a.id < b.id
 }
 
-func (p *preloadActiveSet) oldestMember(ids []string, now time.Duration, safety bool) string {
+func (p *PreloadActiveSet) oldestMember(ids []string, now time.Duration, safety bool) string {
 	var chosen string
 	var oldest time.Duration
 	var failed bool
@@ -389,36 +401,38 @@ func (p *preloadActiveSet) oldestMember(ids []string, now time.Duration, safety 
 	return chosen
 }
 
-func (p *preloadActiveSet) beginAttempt(now time.Duration) (preloadSelectionLease, bool) {
+// BeginAttempt leases the current key for one preload when a load is due and
+// no other attempt is outstanding.
+func (p *PreloadActiveSet) BeginAttempt(now time.Duration) (PreloadSelectionLease, bool) {
 	if !p.acceptTick(now) || !p.valid || p.inflight != nil || !p.needsLoad || p.key.ChildGeneration == 0 || len(p.key.Desired) == 0 {
-		return preloadSelectionLease{}, false
+		return PreloadSelectionLease{}, false
 	}
-	if p.key.equal(p.batchRetryKey) && now < p.batchRetryAt {
-		return preloadSelectionLease{}, false
+	if p.key.Equal(p.batchRetryKey) && now < p.batchRetryAt {
+		return PreloadSelectionLease{}, false
 	}
 	if p.operation == ^uint64(0) {
 		p.closed = true
-		p.invalidate()
-		return preloadSelectionLease{}, false
+		p.Invalidate()
+		return PreloadSelectionLease{}, false
 	}
 	p.operation++
 	p.inflightInvalidated = false
-	p.inflight = &preloadSelectionLease{operation: p.operation, key: p.snapshot()}
+	p.inflight = &PreloadSelectionLease{Operation: p.operation, Key: p.Snapshot()}
 	p.successful = nil
-	return preloadSelectionLease{operation: p.operation, key: p.snapshot()}, true
+	return PreloadSelectionLease{Operation: p.operation, Key: p.Snapshot()}, true
 }
 
 // Successful IDs must already come from strict Client report validation and,
 // for partial reports, fresh Client.Ready. This method cannot establish either.
 // Every omitted member failed/has unknown completion; no prior S is restored.
-func (p *preloadActiveSet) completeAttempt(now time.Duration, lease preloadSelectionLease, successful []string, failureBackoff time.Duration) bool {
-	if !p.acceptTick(now) || p.inflight == nil || lease.operation != p.inflight.operation || !lease.key.equal(p.inflight.key) {
+func (p *PreloadActiveSet) CompleteAttempt(now time.Duration, lease PreloadSelectionLease, successful []string, failureBackoff time.Duration) bool {
+	if !p.acceptTick(now) || p.inflight == nil || lease.Operation != p.inflight.Operation || !lease.Key.Equal(p.inflight.Key) {
 		return false
 	}
 	invalidated := p.inflightInvalidated
 	p.inflight = nil
 	p.inflightInvalidated = false
-	if invalidated || !p.valid || !lease.key.equal(p.key) {
+	if invalidated || !p.valid || !lease.Key.Equal(p.key) {
 		return false
 	}
 	seen := make(map[string]bool, len(p.key.Desired))
@@ -437,12 +451,12 @@ func (p *preloadActiveSet) completeAttempt(now time.Duration, lease preloadSelec
 	}
 	failed := len(seen) != len(p.key.Desired)
 	if failed && (failureBackoff <= 0 || failureBackoff > time.Duration(1<<63-1)-now) {
-		p.invalidate()
+		p.Invalidate()
 		return false
 	}
 	p.batchRetryKey, p.batchRetryAt = PreloadSelectionSnapshot{}, 0
 	if failed {
-		p.batchRetryKey, p.batchRetryAt = p.snapshot(), now+failureBackoff
+		p.batchRetryKey, p.batchRetryAt = p.Snapshot(), now+failureBackoff
 	}
 	p.successful = nil
 	for _, id := range p.key.Desired {

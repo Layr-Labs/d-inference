@@ -50,7 +50,7 @@ func (c *PreloadController) selectionInput(refreshAvailability bool) (catalog.Sn
 	child := c.supervisor.Status()
 	c.mu.RLock()
 	source := c.selectionSource
-	sameVerified := c.selection.key.CatalogGeneration == provisioned.Generation && slices.Equal(c.selection.key.Verified, verified)
+	sameVerified := c.selection.HoldsVerified(provisioned.Generation, verified)
 	c.mu.RUnlock()
 	if !sameVerified {
 		c.publicAvailable = nil
@@ -92,27 +92,28 @@ func (c *PreloadController) reconcileSelectionLocked(input PreloadSelectionInput
 	if c.closed {
 		return PreloadSelectionSnapshot{}, false
 	}
-	before := c.selection.snapshot()
-	retryKey, retryAt, failed := c.selection.batchRetryKey, c.selection.batchRetryAt, c.selection.failedResult
-	key, err := c.selection.reconcile(c.policyNow(), input)
+	// Reconciliation neither issues nor retires a lease, so the outstanding
+	// operation read here is still the policy's after it.
+	before := c.selection.State()
+	key, err := c.selection.Reconcile(c.policyNow(), input)
 	if err != nil {
 		c.invalidateLocked("invalid preload selection")
 		return key, false
 	}
-	if !before.equal(key) {
+	if !before.Key.Equal(key) {
 		if !c.advanceOperationLocked() {
 			return key, false
 		}
 		if !c.published.nativeEqual(key) {
 			c.clearPublicationLocked("preload identity changed")
 		}
-		if c.inflight == 0 && c.selection.inflight == nil && before.nativeEqual(key) && retryKey.equal(before) && retryAt > 0 && failed {
+		if c.inflight == 0 && before.InflightOperation == 0 && before.Key.nativeEqual(key) &&
+			before.BatchRetryKey.Equal(before.Key) && before.BatchRetryAt > 0 && before.FailedResult {
 			// A completed failed/partial native batch has not changed. Rekey
 			// its original deadline without resetting it or withdrawing A's
 			// completed acknowledgement. Real V/D/child/capacity changes still
 			// bypass the old batch delay; live full-K leases stay invalidated.
-			c.selection.batchRetryKey, c.selection.batchRetryAt = c.selection.snapshot(), retryAt
-			c.selection.failedResult = true
+			c.selection.CarryBatchRetry(before.BatchRetryAt)
 			c.retryIdentity = key
 		} else {
 			c.resetRetryLocked()
@@ -139,7 +140,7 @@ func (c *PreloadController) NoteDemand(identity PreloadDemandIdentity) bool {
 		return false
 	}
 	if c.selectionSource != nil && slices.Contains(key.Admissible, identity) {
-		return c.selection.noteDemand(c.policyNow(), identity)
+		return c.selection.NoteDemand(c.policyNow(), identity)
 	}
 	return false
 }

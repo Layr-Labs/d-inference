@@ -1,6 +1,6 @@
 # Prompt-contract sidecar
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 The Go `LowerResponsesInferenceBody` serving adapter preserves ordered inline
 media; it does not broaden this sidecar's text-only cache-planning contract.
@@ -206,7 +206,7 @@ warm/cold members contribute their returned counts; Rust preload counters remain
 batch counters (`PreloadController.finishAttemptLocked`, `prepareAttempt`,
 `coordinator/internal/promptcontract/preload/controller.go`). A rejected HTTP 409 consumes
 only its matching live lease, without failure backoff or success publication
-(`preloadActiveSet.retireConflict`,
+(`PreloadActiveSet.RetireConflict`,
 `coordinator/internal/promptcontract/preload/active_set_conflict.go`).
 A fresh or stale artifact root alone never grants planning eligibility.
 
@@ -225,11 +225,11 @@ accounts, request IDs, bodies, prompts or provider identities
 The pure selector bounds tuples at `preloadActiveSetMaxTuples = 128`, expires
 demand after `preloadDemandExpiry = 5 * time.Minute`, gives admitted members
 `preloadMinimumResidence = 30 * time.Second`, and allows at most one ordinary
-replacement per `preloadReplacementInterval = 30 * time.Second`. Oldest eligible
+replacement per `PreloadReplacementInterval = 30 * time.Second`. Oldest eligible
 waiting demand wins; public model availability only breaks otherwise equal fresh
 waits. Failed members requeue under the existing retry deadline instead of
 monopolizing a slot. Safety revocation is immediate and is not delayed by minimum
-residence or the replacement interval (`preloadActiveSet`,
+residence or the replacement interval (`PreloadActiveSet`,
 `coordinator/internal/promptcontract/preload/active_set.go`).
 
 The controller serializes detached authority capture through policy application,
@@ -701,7 +701,7 @@ gate.
 | Contract provisioned but never planning-eligible | Artifact root reached through a symlink (for example `/data`), or an artifact failed size or hash re-verification | `artifacts.rs` (`load`), `artifact_cache.go` (`verifyPublished`) |
 | Fixed planning failure for one model on every request | Unsupported template clock use or missing request date; body over `EIGENINFERENCE_PROMPT_SIDECAR_MAX_BODY_BYTES`; rendered prompt over `_MAX_TOKENS` | `render.rs` (`RenderError::DynamicTime`), `server/handler.rs` (body limit), `planner.rs` (`PlanError::TooManyTokens`) |
 | Preload rejected | Active set larger than `EIGENINFERENCE_PROMPT_SIDECAR_MAX_LOADED_CONTRACTS` | `preload.rs` (`validate_contracts`) |
-| Controller reports `capacity_deferred` | Verified contracts exceed capacity and some are not selected; current eligible demand, residence and retry order determine replacement | `preload/active_set.go` (`reason`, `reconcile`) |
+| Controller reports `capacity_deferred` | Verified contracts exceed capacity and some are not selected; current eligible demand, residence and retry order determine replacement | `preload/active_set.go` (`Reason`, `Reconcile`) |
 | `verify-prompt-parity.sh` fails | Regenerated vectors differ from `production_vectors.json`; a manifest, artifact or corpus case is missing; an unrecognised template incompatibility — no fabricated token IDs are accepted | `scripts/verify-prompt-parity.sh`, `prompt-fixtures.rs` (`require_model_manifests`, `require_case_ids`) |
 
 ## Code map
@@ -714,7 +714,7 @@ gate.
 | Artifact provisioning and verified publication | `coordinator/promptcontract/provisioner.go`, `coordinator/promptcontract/artifact_cache.go` |
 | Descriptor-relative artifact paths | `coordinator/internal/promptcontract/artifacts/secure_files_unix.go` (`walkSecureDirectories`): absolute and root-relative path validation share descriptor traversal, optional directory creation, `O_NOFOLLOW` checks and ownership cleanup |
 | Go per-contract publication and identity fences | `coordinator/internal/promptcontract/preload/controller.go` (`prepareAttempt`, `finishAttemptLocked`), `coordinator/internal/promptcontract/preload/selection.go` (`PlanningState`, `ReadyFor`, `reconcileSelectionLocked`) |
-| Bounded demand and preload selection | `coordinator/internal/promptcontract/preload/active_set.go` (`preloadActiveSet`), `coordinator/registry/cache_preload_identity.go` (`CachePreloadIdentities`), `coordinator/api/inference/cache_preload_selection.go` (`cachePreloadSelection`) |
+| Bounded demand and preload selection | `coordinator/internal/promptcontract/preload/active_set.go` (`PreloadActiveSet`), `coordinator/registry/cache_preload_identity.go` (`CachePreloadIdentities`), `coordinator/api/inference/cache_preload_selection.go` (`cachePreloadSelection`) |
 | Rust managed membership and preload ownership | `coordinator/promptsidecar/src/planner/readiness.rs` (`PreloadOperation`), `coordinator/promptsidecar/src/planner/preloading.rs` (`preload_contracts`) |
 | Contract identity and block chain (Go) | `coordinator/promptcontract/contract.go`, `coordinator/internal/promptcontract/identity/blockhash.go` |
 | Sidecar process, socket server, routes | `coordinator/promptsidecar/src/main.rs`, `coordinator/promptsidecar/src/server.rs`, `coordinator/promptsidecar/src/server/handler.rs` |

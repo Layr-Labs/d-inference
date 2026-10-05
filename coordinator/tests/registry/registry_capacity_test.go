@@ -1,0 +1,338 @@
+package registry_test
+
+import (
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	production "github.com/eigeninference/d-inference/coordinator/registry"
+)
+
+// TestFindProviderDynamicConcurrency verifies that with dynamic concurrency,
+// a provider with 5 pending requests on a 96 GB box is still eligible
+// (Phase 2 cap for 96 GB = 6).
+func TestFindProviderDynamicConcurrency(t *testing.T) {
+	reg := production.New(testLogger())
+	msg := testRegisterMessage()
+	p := reg.Register("p1", nil, msg)
+	p.TrustLevel = production.TrustHardware
+	p.LastChallengeVerified = time.Now()
+	p.ChallengeVerifiedSIP = true
+	p.DecodeTPS = 100.0
+	// 96 GB → cap=6 under Phase 2.
+	p.Mu().Lock()
+	p.BackendCapacity = &protocol.BackendCapacity{
+		TotalMemoryGB: 96,
+	}
+	p.Mu().Unlock()
+
+	// 5 pending is below the new cap of 6.
+	for i := range 5 {
+		p.AddPending(&production.PendingRequest{RequestID: fmt.Sprintf("req-%d", i)})
+	}
+
+	found := findRoutableProvider(reg, "mlx-community/Qwen3.5-9B-Instruct-4bit")
+	if found == nil {
+		t.Error("FindProvider should return provider with 5/6 capacity used (Phase 2 cap)")
+	}
+}
+
+// TestHeartbeatBackendCapacity verifies that BackendCapacity from heartbeats
+// is stored on the Provider struct.
+func TestHeartbeatBackendCapacity(t *testing.T) {
+	reg := production.New(testLogger())
+	msg := testRegisterMessage()
+	reg.Register("p1", nil, msg)
+
+	cap := &protocol.BackendCapacity{
+		Slots: []protocol.BackendSlotCapacity{
+			{
+				Model:              "mlx-community/Qwen3.5-9B-Instruct-4bit",
+				State:              "running",
+				NumRunning:         3,
+				NumWaiting:         1,
+				ActiveTokens:       5000,
+				MaxTokensPotential: 12000,
+			},
+		},
+		GPUMemoryActiveGB: 45.2,
+		GPUMemoryPeakGB:   52.1,
+		GPUMemoryCacheGB:  8.3,
+		TotalMemoryGB:     64,
+	}
+
+	hb := &protocol.HeartbeatMessage{
+		Type:            protocol.TypeHeartbeat,
+		Status:          "serving",
+		Stats:           protocol.HeartbeatStats{},
+		BackendCapacity: cap,
+	}
+	reg.Heartbeat("p1", hb)
+
+	p := reg.GetProvider("p1")
+	p.Mu().Lock()
+	defer p.Mu().Unlock()
+
+	if p.BackendCapacity == nil {
+		t.Fatal("BackendCapacity should be set after heartbeat")
+	}
+	if len(p.BackendCapacity.Slots) != 1 {
+		t.Fatalf("expected 1 slot, got %d", len(p.BackendCapacity.Slots))
+	}
+	if p.BackendCapacity.Slots[0].NumRunning != 3 {
+		t.Errorf("num_running = %d, want 3", p.BackendCapacity.Slots[0].NumRunning)
+	}
+	if p.BackendCapacity.GPUMemoryActiveGB != 45.2 {
+		t.Errorf("gpu_memory_active_gb = %f, want 45.2", p.BackendCapacity.GPUMemoryActiveGB)
+	}
+	if p.BackendCapacity.TotalMemoryGB != 64 {
+		t.Errorf("total_memory_gb = %f, want 64", p.BackendCapacity.TotalMemoryGB)
+	}
+}
+
+// TestHeartbeatWithoutBackendCapacityUsesDefaultLimits verifies that a
+// heartbeat carrying no backend_capacity (the engine has not produced its
+// first snapshot yet, or encoding it failed) leaves the provider routable
+// under the default limits.
+func TestHeartbeatWithoutBackendCapacityUsesDefaultLimits(t *testing.T) {
+	reg := production.New(testLogger())
+	msg := testRegisterMessage()
+	p := reg.Register("p1", nil, msg)
+	p.TrustLevel = production.TrustHardware
+	p.LastChallengeVerified = time.Now()
+	p.ChallengeVerifiedSIP = true
+	p.DecodeTPS = 100.0
+
+	// Send a heartbeat without BackendCapacity.
+	hb := &protocol.HeartbeatMessage{
+		Type:   protocol.TypeHeartbeat,
+		Status: "idle",
+		Stats:  protocol.HeartbeatStats{},
+	}
+	reg.Heartbeat("p1", hb)
+
+	// BackendCapacity should remain nil.
+	if p.BackendCapacity != nil {
+		t.Error("BackendCapacity should stay nil without a reported snapshot")
+	}
+
+	// MaxConcurrency should return the default.
+	if p.MaxConcurrency() != production.DefaultMaxConcurrent {
+		t.Errorf("MaxConcurrency() = %d, want %d (default)", p.MaxConcurrency(), production.DefaultMaxConcurrent)
+	}
+
+	// Provider should be routable with default limits.
+	found := findRoutableProvider(reg, "mlx-community/Qwen3.5-9B-Instruct-4bit")
+	if found == nil {
+		t.Error("provider without a BackendCapacity snapshot should still be routable")
+	}
+}
+
+func TestHeartbeatClearsStaleBackendCapacity(t *testing.T) {
+	reg := production.New(testLogger())
+	msg := testRegisterMessage()
+	p := reg.Register("p1", nil, msg)
+	p.Mu().Lock()
+	p.BackendCapacity = &protocol.BackendCapacity{
+		TotalMemoryGB: 64,
+		Slots: []protocol.BackendSlotCapacity{{
+			Model: "mlx-community/Qwen3.5-9B-Instruct-4bit",
+			State: "crashed",
+		}},
+	}
+	p.Mu().Unlock()
+
+	reg.Heartbeat("p1", &protocol.HeartbeatMessage{
+		Type:   protocol.TypeHeartbeat,
+		Status: "idle",
+		Stats:  protocol.HeartbeatStats{},
+	})
+
+	p.Mu().Lock()
+	defer p.Mu().Unlock()
+	if p.BackendCapacity != nil {
+		t.Fatalf("BackendCapacity=%+v, want nil after omitted heartbeat capacity", p.BackendCapacity)
+	}
+}
+
+// TestSetProviderIdleDynamicCap verifies that SetProviderIdle drains queued
+// requests using dynamic concurrency limits. A provider with max=8 and
+// pending=5 should still try to drain after completing a request.
+func TestSetProviderIdleDynamicCap(t *testing.T) {
+	reg := production.New(testLogger())
+	msg := testRegisterMessage()
+	p := reg.Register("p1", nil, msg)
+	p.TrustLevel = production.TrustHardware
+	p.LastChallengeVerified = time.Now()
+	p.ChallengeVerifiedSIP = true
+	p.DecodeTPS = 100.0
+
+	// 96 GB → cap=6 under Phase 2.
+	p.Mu().Lock()
+	p.BackendCapacity = &protocol.BackendCapacity{TotalMemoryGB: 96}
+	p.Mu().Unlock()
+
+	// 5 pending (under cap of 6).
+	for i := range 5 {
+		p.AddPending(&production.PendingRequest{RequestID: fmt.Sprintf("req-%d", i)})
+	}
+
+	// Queue a request
+	qr := &production.QueuedRequest{
+		RequestID:  "req-queued",
+		Model:      "mlx-community/Qwen3.5-9B-Instruct-4bit",
+		ResponseCh: make(chan *production.Provider, 1),
+	}
+	reg.Queue().Enqueue(qr)
+
+	// Complete one pending → 4/6, queue should drain.
+	p.RemovePending("req-0")
+
+	reg.SetProviderIdle(p.ID)
+
+	select {
+	case assigned := <-qr.ResponseCh:
+		if assigned == nil {
+			t.Fatal("expected non-nil provider from queue drain")
+		}
+		if assigned.ID != "p1" {
+			t.Errorf("assigned provider = %q, want p1", assigned.ID)
+		}
+	case <-time.After(1 * time.Second):
+		t.Error("timed out waiting for queue drain — dynamic cap may not be working")
+	}
+}
+
+// TestFindProviderPrefersCrashedLast verifies that when the only provider
+// has a crashed slot for the requested model, it is still returned (with
+// low score) rather than returning nil.
+func TestFindProviderPrefersCrashedLast(t *testing.T) {
+	reg := production.New(testLogger())
+	model := "mlx-community/Qwen3.5-9B-Instruct-4bit"
+	msg := testRegisterMessage()
+
+	// Register two providers: one crashed, one hot.
+	crashed := reg.Register("crashed-provider", nil, msg)
+	crashed.TrustLevel = production.TrustHardware
+	crashed.LastChallengeVerified = time.Now()
+	crashed.ChallengeVerifiedSIP = true
+	crashed.DecodeTPS = 100.0
+	crashed.RuntimeVerified = true
+	crashed.Mu().Lock()
+	crashed.BackendCapacity = &protocol.BackendCapacity{
+		TotalMemoryGB: 64,
+		Slots: []protocol.BackendSlotCapacity{
+			{Model: model, State: "crashed"},
+		},
+	}
+	crashed.Mu().Unlock()
+
+	hot := reg.Register("hot-provider", nil, msg)
+	hot.TrustLevel = production.TrustHardware
+	hot.LastChallengeVerified = time.Now()
+	hot.ChallengeVerifiedSIP = true
+	hot.DecodeTPS = 100.0
+	hot.RuntimeVerified = true
+	hot.Mu().Lock()
+	hot.BackendCapacity = &protocol.BackendCapacity{
+		TotalMemoryGB: 64,
+		Slots: []protocol.BackendSlotCapacity{
+			{Model: model, State: "running"},
+		},
+	}
+	hot.Mu().Unlock()
+
+	// FindProvider should strongly prefer the hot provider.
+	found := findRoutableProvider(reg, model)
+	if found == nil {
+		t.Fatal("FindProvider returned nil when providers are available")
+	}
+	if found.ID != "hot-provider" {
+		t.Errorf("expected hot-provider, got %q", found.ID)
+	}
+}
+
+// The idle-memory policy is provider config, reported in every heartbeat by
+// providers that know it and never by legacy ones: 0 must be stored as a real
+// value, negatives are ignored, and a heartbeat without the field keeps the
+// last reported policy rather than clearing it.
+func TestHeartbeatIdleUnloadMinsIsStickyAndValidated(t *testing.T) {
+	reg := production.New(testLogger())
+	reg.Register("p1", nil, testRegisterMessage())
+
+	policy := func() *int {
+		p := reg.GetProvider("p1")
+		p.Mu().Lock()
+		defer p.Mu().Unlock()
+		return p.IdleUnloadMins
+	}
+
+	reg.Heartbeat("p1", &protocol.HeartbeatMessage{Type: protocol.TypeHeartbeat, Status: "idle"})
+	if policy() != nil {
+		t.Fatalf("legacy heartbeat set a policy: %d", *policy())
+	}
+
+	zero := 0
+	reg.Heartbeat("p1", &protocol.HeartbeatMessage{Type: protocol.TypeHeartbeat, Status: "idle", IdleUnloadMins: &zero})
+	if got := policy(); got == nil || *got != 0 {
+		t.Fatalf("always-ready policy = %v, want 0", got)
+	}
+	// Registry owns its copy; mutating the message must not leak in.
+	zero = 99
+	if got := policy(); *got != 0 {
+		t.Fatalf("policy aliased the heartbeat message: %d", *got)
+	}
+
+	negative := -5
+	reg.Heartbeat("p1", &protocol.HeartbeatMessage{Type: protocol.TypeHeartbeat, Status: "idle", IdleUnloadMins: &negative})
+	if got := policy(); *got != 0 {
+		t.Fatalf("negative policy accepted: %d", *got)
+	}
+
+	reg.Heartbeat("p1", &protocol.HeartbeatMessage{Type: protocol.TypeHeartbeat, Status: "idle"})
+	if got := policy(); got == nil || *got != 0 {
+		t.Fatalf("field-less heartbeat cleared the policy: %v", got)
+	}
+}
+
+// TestMaxConcurrencyDefault verifies that providers without BackendCapacity
+// fall back to DefaultMaxConcurrent (4).
+func TestMaxConcurrencyDefault(t *testing.T) {
+	p := &production.Provider{}
+	if got := p.MaxConcurrency(); got != production.DefaultMaxConcurrent {
+		t.Errorf("MaxConcurrency() = %d, want %d (default)", got, production.DefaultMaxConcurrent)
+	}
+}
+
+// TestMaxConcurrencyWithCapacity verifies hardware-based dynamic concurrency.
+func TestMaxConcurrencyWithCapacity(t *testing.T) {
+	cases := []struct {
+		memGB    float64
+		expected int
+	}{
+		// Phase 2 tier values (lowered from 4/8/16/24/32). See
+		// maxConcurrency() in provider.go for the rationale.
+		{16, 2},
+		{24, 2},
+		{36, 4},
+		{48, 4},
+		{64, 6},
+		{96, 6},
+		{128, 8},
+		{192, 12},
+		{256, 12},
+	}
+
+	for _, tc := range cases {
+		p := &production.Provider{
+			BackendCapacity: &protocol.BackendCapacity{
+				TotalMemoryGB: tc.memGB,
+			},
+		}
+		got := p.MaxConcurrency()
+		if got != tc.expected {
+			t.Errorf("MaxConcurrency() with %.0f GB = %d, want %d", tc.memGB, got, tc.expected)
+		}
+	}
+}

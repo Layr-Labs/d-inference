@@ -203,6 +203,39 @@ final class MiMoV26TemplateFixTests: XCTestCase {
         }
     }
 
+    func testOpenRouterThinkingAliasPreservesBooleanControlsAndToolHistory() throws {
+        for enabled in [false, true] {
+            let history: [[String: Any]] = [
+                ["role":"user", "content":"Call get_time; retain the selected word."],
+                ["role":"assistant", "content":NSNull(), "reasoning_content":"The word is jacaranda.",
+                 "tool_calls":[["id":"call_get_time_1", "type":"function",
+                                "function":["name":"get_time", "arguments":"{}"]]]],
+                ["role":"tool", "tool_call_id":"call_get_time_1", "content":"12:00"]]
+            for kwargs in [["thinking":enabled], ["thinking":enabled, "enable_thinking":enabled],
+                           ["thinking":!enabled, "enable_thinking":enabled]] {
+                let body = try JSONSerialization.data(withJSONObject:["model":"m", "messages":history,
+                    "reasoning":["enabled":enabled], "chat_template_kwargs":kwargs, "max_tokens":131072])
+                let request = try ProviderLoop.decodeOpenAIRequest(body)
+                let controls = ProviderLoop.extractChatTemplateControls(from:body)
+                let local = try JSONDecoder().decode(LocalChatRequest.self,from:body)
+                XCTAssertNoThrow(try MiMoV26TemplateFix.validateRawControls(body))
+                XCTAssertNoThrow(try MiMoV26TemplateFix.validateRequest(request))
+                XCTAssertEqual(local.templateControls.rawMiMoControls,controls.rawMiMoControls)
+                XCTAssertEqual(try MiMoV26TemplateFix.additionalContext(request:request,controls:controls)?["enable_thinking"] as? Bool,enabled)
+                XCTAssertEqual(request.messages[1].reasoningContent,"The word is jacaranda.")
+            }
+            let aliasBody = MiMoConsumerFixture.body("\"chat_template_kwargs\":{\"thinking\":\(enabled)}")
+            let aliasRequest = try ProviderLoop.decodeOpenAIRequest(aliasBody)
+            let aliasControls = ProviderLoop.extractChatTemplateControls(from:aliasBody)
+            XCTAssertEqual(try MiMoV26TemplateFix.additionalContext(request:aliasRequest,controls:aliasControls)?["enable_thinking"] as? Bool,enabled)
+        }
+        for invalid: Any in ["false", 0, NSNull()] {
+            let body = try JSONSerialization.data(withJSONObject:["model":"m", "messages":[],
+                "chat_template_kwargs":["thinking":invalid, "enable_thinking":true]])
+            XCTAssertThrowsError(try MiMoV26TemplateFix.validateRawControls(body))
+        }
+    }
+
     func testRawBooleanLookalikesNullAndUnsupportedControlsReject() throws {
         for path in ["top", "nested", "kwargs"] {
             for invalid: Any in ["false", "true", 0, 1, NSNull(), [Int](), [String: Int]()] {

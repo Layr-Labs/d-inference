@@ -43,7 +43,7 @@ final class MiMoV26EncodedAudiovisualIngressTests: XCTestCase {
             readUsage:{ .init(activeBytes:0,cacheBytes:0,systemAvailableBytes:128 << 20) })
         let reservation = try MiMoV26ManagedMediaReservation(
             initialBytes:plan.initialBytes,hostBytes:plan.hostBytes,
-            maximumBytes:plan.policy.maximumReservationBytes,additionalSystemReserveBytes:1,ledger:ledger)
+            maximumBytes:plan.policy.maximumReservationBytes,additionalSystemReserveBytes:1,ledger:ledger,serviceBudget:.init())
         XCTAssertGreaterThan(ledger.snapshot().chargedBytes,0)
         defer {
             reservation.abortBeforeNativeAdoption()

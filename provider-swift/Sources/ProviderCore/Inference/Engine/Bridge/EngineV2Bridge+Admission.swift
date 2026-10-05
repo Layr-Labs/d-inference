@@ -47,23 +47,29 @@ extension EngineV2Bridge {
     func firstTokenDeadlineAdmission(
         deadline: FirstContentDeadline?,
         multimodal: CBv2MultimodalInput?,
-        requestID: String? = nil, promptTokens: Int = 0, promptWork: PromptWork? = nil
+        requestID: String? = nil, promptTokens: Int = 0, promptWork: PromptWork? = nil,
+        nativeMediaEvidence: NativeMediaRateEvidence? = nil
     ) throws -> CBv2FirstTokenDeadlineAdmission? {
-        guard let admission = targetFirstTokenDeadlineAdmission(
-            deadline: deadline, requestID: requestID,
-            promptTokens: promptTokens, promptWork: promptWork) else { return nil }
-        guard let multimodal else { return admission }
+        guard prefillDeadlineMode == .enforce, prefillDeadlineProjectionEnabled,
+            deadline != nil else { return nil }
+        guard let multimodal else {
+            return targetFirstTokenDeadlineAdmission(deadline: deadline, requestID: requestID,
+                promptTokens: promptTokens, promptWork: promptWork)
+        }
         guard multimodal.nativeMediaToken != nil, multimodal.attention == .causal,
               multimodal.positionState == nil, multimodal.deepstackEmbeddings == nil else { return nil }
         // A stale/foreign/missing capability is an actual veto, never a nil
         // fallback to ordinary submission after identifying a native seal.
         _ = try nativeMiMoDecodedMediaBinding()
-        return admission
+        return targetFirstTokenDeadlineAdmission(deadline: deadline, requestID: requestID,
+            promptTokens: promptTokens, promptWork: promptWork, nativeMedia: true,
+            nativeMediaEvidence: nativeMediaEvidence)
     }
 
     private func targetFirstTokenDeadlineAdmission(
         deadline: FirstContentDeadline?,
-        requestID: String?, promptTokens: Int, promptWork: PromptWork?
+        requestID: String?, promptTokens: Int, promptWork: PromptWork?, nativeMedia: Bool = false,
+        nativeMediaEvidence: NativeMediaRateEvidence? = nil
     ) -> CBv2FirstTokenDeadlineAdmission? {
         guard prefillDeadlineMode == .enforce,
             prefillDeadlineProjectionEnabled,
@@ -75,9 +81,20 @@ extension EngineV2Bridge {
         // Use observed phase rates directly. The engine still prices its
         // actual queue/cache work against the original absolute deadline;
         // optional reviewed calibration supplies only measured error bounds.
-        let prefillRate = isolatedPrefillEwmaInitialized
+        let expired = supportsPrefillRecoveryRetirement && isolatedPrefillEvidenceExpired()
+        if expired, let requestID, prefillEvidenceRecovery.owner == requestID,
+            prefillEvidenceRecovery.evidenceGuard?.isValid == true {
+            // One bounded idle exploration uses the existing unmeasured-rate
+            // path, retaining absolute expiry, physical capacity and retirement.
+            // Never present a fabricated hardware/fleet rate as local evidence.
+            return nil
+        }
+        var prefillRate = isolatedPrefillEwmaInitialized
             && isolatedPrefillTpsEwma.isFinite && isolatedPrefillTpsEwma > 0
             ? isolatedPrefillTpsEwma : nil
+        if promptTokens > 0, let shapeRate = performanceMeasurements.freshIsolatedPrefillRate(promptTokens: promptTokens) {
+            prefillRate = prefillRate.map { min($0, shapeRate) } ?? shapeRate
+        }
         let decodeRate =
             ewmaInitialized && observedDecodeTpsEwma.isFinite && observedDecodeTpsEwma > 0
             ? observedDecodeTpsEwma
@@ -85,13 +102,16 @@ extension EngineV2Bridge {
         let calibration = requestID.flatMap {
             calibratedDeadlinePolicy(requestID: $0, promptTokens: promptTokens, promptWork: promptWork)
         }
-        guard prefillRate != nil || calibration != nil else { return nil }
+        guard prefillRate != nil || calibration != nil || nativeMedia else { return nil }
 
         return CBv2FirstTokenDeadlineAdmission(
             deadline: deadline.instant,
             conservativePrefillTokensPerSecond: prefillRate,
             conservativeDecodeTokensPerSecond: decodeRate,
-            calibration: calibration)
+            calibration: calibration,
+            nativeTargetPrefill: nativeMedia
+                ? nativeMediaDeadlinePolicy(requestID: requestID, promptTokens: promptTokens,
+                    evidence: nativeMediaEvidence) : nil)
     }
 
     /// Move post-commit cancellation cleanup out of the cancelling task. The
@@ -128,6 +148,7 @@ extension EngineV2Bridge {
             await bridge.completeTransferredPreSubmitRetirement(
                 requestID: requestID,
                 engineID: engineID,
+                prefillReceipt: prefillReceipt,
                 completion: completion,
                 sharedKVReserved: sharedKVReserved,
                 prefixCacheReceiptID: prefixCacheReceiptID,
@@ -150,6 +171,7 @@ extension EngineV2Bridge {
     private func completeTransferredPreSubmitRetirement(
         requestID: String,
         engineID: CBv2RequestID,
+        prefillReceipt: EnginePrefillReceipt,
         completion: Int,
         sharedKVReserved: Bool,
         prefixCacheReceiptID: CBv2RequestID?,
@@ -158,7 +180,8 @@ extension EngineV2Bridge {
         usageSignal: EngineV2RequestUsageSignal?,
         failure: PrefixCacheLookupFailureClass
     ) async {
-        recordGenerationWork(completion: completion)
+        consumePrefillReceipt(id: requestID, receipt: prefillReceipt)
+        recordGenerationWork(completion: completion, requestID: requestID)
         await releasePreSubmitResources(
             requestID: requestID,
             sharedKVReserved: sharedKVReserved,
@@ -174,6 +197,28 @@ extension EngineV2Bridge {
         pendingEngineIDs.remove(engineID)
         if active[requestID] == nil, idMap[requestID] == engineID {
             idMap.removeValue(forKey: requestID)
+        }
+    }
+
+    /// Calibration retirement happens before pending profiles or resource
+    /// ownership exist. Preserve the ordinary refusal diagnostics here too.
+    func checkBeforeServiceAdmission(
+        _ deadline: FirstContentDeadline?,
+        profile: RequestProfileBuilder?,
+        usageSignal: EngineV2RequestUsageSignal?
+    ) throws {
+        do {
+            try Task.checkCancellation()
+            try deadline?.check()
+        } catch is CancellationError {
+            profile?.observeDeadlineDecision(.cancelled, deadline: deadline)
+            recordCancelledBeforeGeneration(profile)
+            usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
+            throw CancellationError()
+        } catch let failure as PreContentDeadlineFailure {
+            profile?.observeDeadlineDecision(.expiredBeforeSubmit, deadline: deadline)
+            usageSignal?.finalizeLookup(failure: .capacity, fallbackTier: prefixCacheFallbackTier)
+            throw failure
         }
     }
 

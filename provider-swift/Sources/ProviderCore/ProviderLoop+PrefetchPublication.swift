@@ -34,6 +34,11 @@ extension ProviderLoop {
         guard servingDrain.owner != .modelSwitch,
               selectionRevision == nil || selectionRevision == modelSelectionRevision,
               publicationIsCurrent(expectedRevision) else { return false }
+        if autopilotCommand != nil {
+            reserveDeferredPrefetches.insert(modelId)
+            return false
+        }
+        guard autopilotAllowsModel(modelId) else { return false }
         if revisionUpdatesInProgress.contains(modelId), expectedRevision == nil { return false }
         modelAdvertisementsInFlight += 1
         defer { modelAdvertisementsInFlight -= 1 }
@@ -80,6 +85,10 @@ extension ProviderLoop {
         }
 
         guard publicationIsCurrent(expectedRevision) else { return false }
+        if autopilotCommand != nil {
+            reserveDeferredPrefetches.insert(modelId)
+            return false
+        }
 
         // A verified prefetch whose snapshot we can't scan must NOT be
         // advertised: a synthetic zero-size ModelInfo would be routed with
@@ -162,7 +171,7 @@ extension ProviderLoop {
         // can act — the pending-load reservation fences competing KV
         // grants, not this. Defer through the desired-build backoff; the
         // load's install clears the marker well within the retry budget.
-        guard modelsLoading.isEmpty else {
+        guard autopilotAllowsModel(modelId), modelsLoading.isEmpty, autopilotCommand == nil else {
             logger.info(
                 "Prefetch verified \(modelId) while a load is in flight (\(modelsLoading.sorted())); "
                     + "deferring the advertisement")
@@ -210,7 +219,7 @@ extension ProviderLoop {
         // bridge's grant): a load admitted during those hops passed its gate
         // against the pre-raise floor and is not in `modelSlots` yet, so the
         // preflight neither counted its weights nor covered its transient.
-        guard modelsLoading.isEmpty else {
+        guard autopilotAllowsModel(modelId), modelsLoading.isEmpty, autopilotCommand == nil else {
             releaseResliceGate()
             logger.info(
                 "Prefetch verified \(modelId) but a load entered during the preflight; "
@@ -248,6 +257,7 @@ extension ProviderLoop {
         // clear deliberately does NOT happen at the check, see there).
         failedSelfTestHashes.removeValue(forKey: modelId)
         advertisedModels[modelId] = info
+        if autopilotInventoryModels[modelId] != nil { autopilotInventoryModels[modelId] = info }
         pendingAdvertise.remove(modelId)  // now carried by `advertisedModels`
         reserveDeferredPrefetches.remove(modelId)  // the capacity deferral is over
         modelHashes[modelId] = hash
@@ -292,6 +302,9 @@ extension ProviderLoop {
         if let coordinatorClient {
             await coordinatorClient.updateModelWeightHashes(liveModelHashes)
             guard publicationIsCurrent(expectedRevision) else { return false }
+            if ordinaryServingModelIDs.contains(modelId) {
+                await coordinatorClient.allowOrdinaryModel(modelId)
+            }
             await coordinatorClient.advertiseModel(info)
             guard publicationIsCurrent(expectedRevision) else { return false }
             // Retirement interleaving in the two client awaits above removes

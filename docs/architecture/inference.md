@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-29
+> Last updated: 2026-10-01
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -67,6 +67,19 @@ prefill rates. Cross-model activity is tracked across the shared runtime, not
 inferred from one engine's occupancy. Engine decode rate ends at the last
 confirmed token, excluding terminal delivery delays; delivered and end-to-end
 rates remain separate.
+
+Owner-bound native MiMo submissions retain target-decoder prefill observations
+in the separate `native_media_prefill` workload phase. Its timer starts at the
+first target prefill launch, after image/video/audio preparation, and ends at
+confirmed prompt computation. The buckets retain computed-suffix size, full
+context size, cache state and same/other-model overlap. They do not train text
+rates. Cold, unpacked, non-preempted samples with exclusive whole-Mac ownership
+and one continuously observed nominal AC/Automatic posture can inform the
+native target predictor described in [first-content routing](first-content-routing.md#native-media-target-observations).
+These online observations are not a release-certified prediction envelope.
+Generic vision submissions remain excluded. The native owner and opaque media seal are checked before a
+submission can produce a completed receipt
+(`EngineV2Bridge+MiMoMedia.swift`, `nativeMediaMeasurementEligible`).
 
 Consuming a valid prompt receipt requests an aggregate capacity rebuild
 independently of generation completion. New measurement epochs, sample counts and cumulative work
@@ -457,15 +470,15 @@ disabled for this hybrid model.
 
 ### Sampling parameters
 
-`EngineV2Translation.samplingParams(from:)`
+`EngineV2Translation.samplingParams(from:defaults:)`
 (`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Translation.swift`):
 
 | OpenAI field | Honoured as | Default |
 |---|---|---|
-| `temperature` | `temperature` | `0.0` (greedy) |
-| `top_p` | `topP` | `1.0` |
-| `top_k` | `topK` | `0` |
-| `repetition_penalty` | `repetitionPenalty` | `1.0` |
+| `temperature` | `temperature` | artifact default, else `0.0` (greedy) |
+| `top_p` | `topP` | artifact default, else `1.0` |
+| `top_k` | `topK` | artifact default, else `0` |
+| `repetition_penalty` | `repetitionPenalty` | artifact default, else `1.0` |
 | `frequency_penalty` / `presence_penalty` | `frequencyPenalty` / `presencePenalty` | `0` |
 | `seed` | `seed`; also keys a stable engine request id | nil |
 | `logit_bias` | `logitBias` — string keys parsed to non-negative `Int`; invalid keys dropped and counted | `[:]` |
@@ -475,12 +488,36 @@ disabled for this hybrid model.
 | `min_p`, `priority` | **Ignored**: always `0` | — |
 | `n`, `best_of` | **Not represented**: one alternative | — |
 
+"Artifact default" means the value declared in the checkpoint's
+`generation_config.json`, resolved once at slot construction by
+`EngineV2SamplingDefaults.resolve(modelId:modelType:modelDirectory:)`
+(`provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2SamplingDefaults.swift`)
+and stored on the `EngineV2Bridge` next to the stop-token set. It fills only
+the knobs a request omits; an explicit request value always wins, so
+`temperature: 0` is still greedy. Admission is per family, like
+`ToolChoiceEnforcementPolicy.nativeStructuredTarget`: today only
+`model_type == nemotron_h` with a qualified Nemotron 3.5 Lightning listing id
+(`EngineV2SupportedModels.isNemotron35ListingModelID`) honours its artifact
+(`temperature 1.0`, `top_p 0.95`, `do_sample true`, the values the model card
+recommends). Every other family keeps the legacy defaults in the table
+byte-for-byte. `do_sample: false` or an absent/unreadable file is legacy. The
+sampler is not part of prompt or cache identity, so prefix-cache and SSD
+checkpoint identity do not change.
+
 ### Streaming reasoning state
 
 `NativeChannelSplitter` treats tool payloads as opaque while routing reasoning
 markers. It emits unclosed-frame payload incrementally and retains only a
 possible closing-marker suffix; it does not buffer an entire unfinished tool
 call (`provider-swift/Sources/ProviderCore/Inference/Streaming/NativeChannelSplitter.swift`).
+
+Only qualified Nemotron Lightning listings absorb a stray `</think>` already
+in content state, leaving preceding text as content and tool arguments opaque.
+`ToolChoiceEnforcementPolicy.absorbsStrayThinkClose` gates the behavior by exact
+listing and `nemotron_h` type; `MultiModelBatchSchedulerEngine.makeEventStream`
+passes it through `NativeToolStreamRouter` to the splitter. Other native-channel
+families retain their previous literal-close behavior
+(`provider-swift/Sources/ProviderCore/Inference/Tools/ToolChoiceEnforcementPolicy.swift`).
 
 `ReasoningPromptProbe.streamingPrefix` in
 `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningPromptProbe.swift`
@@ -641,6 +678,35 @@ path installs through strict SDK loading. The target-only benchmark does not
 install this sidecar; its success alone cannot validate ordinary multimodal
 startup (`MiMoV26OrdinaryServingPolicy` and `makeNativeMiMoBundle`).
 
+Managed vision prepares each temporal grid separately and synchronously
+evaluates every transformer block through the existing native-work owner
+(`MiMoV26VisionTower.forwardBounded`, `MiMoV26MultimodalProcessor.admitted`).
+The reservation includes the largest frame/block working set plus all retained
+decoded inputs, patches and features (`MiMoV26VisionWorkingSet.frameBytes`,
+`MiMoV26ManagedVisualCommitment`). It does not multiply peak attention memory
+by the full tower depth or video length. Codec weights, target KV and the
+process OS/activation reserves remain separately enforced.
+
+On the default Metal stream, MiMo's validated 64-wide attention heads use a
+fused kernel. The vision quote counts live projection, rotary, MLP and mask
+buffers without inventing a full per-head score matrix. Other head geometries,
+wider local windows and CPU/custom streams retain the conservative full-score
+quote. The synchronous engine scope keeps quoting and execution together.
+Owned audio preparation also completes every encoder block and RVQ codebook
+step; its scratch quote uses the original padded groups, actual tile length,
+retained mels/features and real causal masks. Codec-load accounting and the
+global activation reserve are separate from these request workspaces.
+After each successful checked evaluation, the native owner retires completed
+scratch-array registrations. It retains the preparation owner and loan until
+the request's real retirement; a failed evaluation retains all fault roots.
+This prevents the ownership registry from keeping every old layer output alive.
+
+A refused media reservation maps to the typed `media_memory_unavailable`
+reason (`MiMoV26EncodedMediaIngress.outwardFailure`). It leaves a healthy text
+engine and its routing budget available. Failed required native completion
+still retains and quarantines the actual owner; it is not reclassified as a
+recoverable media refusal.
+
 ```mermaid
 flowchart LR
   A[Validated source and load permit] --> B[Owned native construction]
@@ -658,9 +724,9 @@ flowchart LR
 | Entry point | Dedicated native factory and managed benchmark; generic TokenIterator is refused | `libs/mlx-swift-lm/Libraries/MLXVLM/Models/MiMo/MiMoV26ModelFactory.swift` (`MiMoV26FactoryError.nativeCBv2Required`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BenchmarkLoading.swift` (`loadNativeMiMoBenchmarkSession`) |
 | MTP | Embedded heads requested by default under `auto`, subject to real native inventory/owner/budget validation; explicit `off` or process kill switch disables them. Serial-target verification remains default; rectangular stays a separate unqualified experiment | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`MTPMode.enablesMTP`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift` (`nativeMiMoVerificationMode`) |
 | Media | Explicit decoded visual/audio profiles bind the real processor/codec, load generation and reservation; media requests stay target-only even when a text assistant is installed | `libs/mlx-swift-lm/Libraries/MLXVLM/Models/MiMo/MiMoV26LoadedModel.swift`; `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26ServingLoad.swift` |
-| Prefix | Opt-in text-only COMPLETE checkpoints bind the exact store, observed dtypes, assistant codec, process owner and loaded validator; async store work participates in retirement | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/EngineV2SlotFactory+MiMoPrefix.swift` (`prepareNativeMiMoPrefix`); `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2NativeCompletePrefixWork.swift` |
+| Prefix | [Exact MiMo identities default to SSD reuse](prefix-cache.md#mimo-complete-state); text-only COMPLETE checkpoints bind the exact store, observed dtypes, assistant codec, process owner and loaded validator; async store work participates in retirement | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/EngineV2SlotFactory+MiMoPrefix.swift` (`prepareNativeMiMoPrefix`); `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2NativeCompletePrefixWork.swift` |
 | Native paging / generic fast paths | Separate opt-in target-only or explicit serial-MTP paging binds the actual asymmetric pool, bank and process owner. Authenticated text-prefix composition restores target pages and assistant state before publication; rectangular verification and paged media remain refused. Generic prefix reuse, compiled decode and packed-prefill flags remain disabled | `libs/mlx-swift-lm/Libraries/MLXVLM/Models/MiMo/MiMoV26NativePagedProducer.swift` (`makeNativePagedExecutionResources`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift` (`makeNativeMiMoBundle`) |
-| Fast prefill | Native-rounded NAX attention and admitted query-block grouping default on where eligible. The provider requests larger budgeted solo-text stripes, preserving explicit overrides and fallback. Runtime and matched-speed qualification remain separate | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26PrefillProfile.swift`; `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26PrefillPolicy.swift`; [SDK policy](../../libs/mlx-swift-lm/docs/mimo-v26/FAST-PREFILL-POLICY.md) |
+| Fast prefill | Native-rounded NAX attention and admitted query-block grouping default on where eligible. The provider budgets fixed workspace for all configured concurrent requests, target rings, the watermark and minimum KV allowance before choosing a larger solo-text stripe. Unaffordable candidates retain a narrower or ungrouped profile; actual request charges and explicit overrides remain intact. Runtime and matched-speed qualification remain separate | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26PrefillProfile.swift`; `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26PrefillMemoryBudget.swift`; [SDK policy](../../libs/mlx-swift-lm/docs/mimo-v26/FAST-PREFILL-POLICY.md) |
 | Public availability | Exact `mimo_v2` is admitted by the ordinary allowlist; normal callers select bounded visual/audio policies through MiMoV26OrdinaryServingPolicy. This does not create a catalog entry or qualify all endpoints | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2SupportedModels.swift` (`isSupported`); `provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift`; `provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift` |
 
 The native contiguous and paged factories use the same artifact-bound serving
@@ -692,12 +758,65 @@ lifecycle/API qualification are separate gates; a helper or component result
 does not certify them. `input_audio` remains excluded from text-only cache
 planning and is not treated as vision.
 
+MiMo encoded audio accepts RIFF/WAVE integer PCM8/16/24/32 and IEEE Float32,
+mono or stereo, at 8–192 kHz. The transport decoder converts interleaved samples
+to planar Float channels and preserves the source rate; the existing native
+frontend resamples each channel to 24 kHz before averaging channels. PCM8 is
+unsigned and centered at 128. Float32 signed zero and finite values are preserved.
+Byte, frame, channel, sample-rate and working-memory limits are checked before
+allocation. Provider admission counts every channel's decoded samples and
+bounds the possible 8-to-24-kHz expansion; the native plan charges the actual
+resampling geometry. MP3/compressed audio and WAVE_FORMAT_EXTENSIBLE are not
+accepted by this WAV path. A single AAC track in MP4/MOV is decompressed to
+bounded Float PCM at its source rate/channels by `MiMoV26EncodedAACAudio`; the
+native frontend then resamples and mixes. The decoder honors one container trim,
+including AAC priming, and validates contiguous output timing and the complete
+presented sample count. Multiple tracks, gaps and retiming remain refused.
+
+MiMo accepts the Boolean `chat_template_kwargs.thinking` alias used by OpenRouter.
+`reasoning.enabled` takes precedence, followed by top-level `enable_thinking`,
+kwargs `enable_thinking`, then kwargs `thinking`. Every supplied value is type
+checked, including shadowed aliases. `MiMoV26TemplateFix` and the coordinator's
+`mimo_v26::additional_context` implement the same normalization. Existing
+reasoning history remains intact; this alias adds no granular effort or
+reasoning-budget support.
+
 Encoded MiMo visual ingress passes the existing transport ceiling
 `MediaIngest.maxMediaDecodedBytes` to the SDK decoder's `maximumEncodedBytes`.
 `MiMoV26EncodedMediaIngress.decode` enforces the same bounded input contract
 before ImageIO parsing or AVFoundation asset reads; SDK callers without a
 separate ceiling default to their declared working-byte limit. Raster/frame
 and owned-reservation checks remain additional gates.
+
+In 0.9.13, native MiMo's decode charge is **retained owners and RGB results +
+the largest sequential decode transient**. `MiMoV26MediaDecodeMemory` sums
+retained bytes and takes the maximum scratch from the SDK's
+`MiMoV26VisualDecodeMemory`. Images retain 12 bytes/pixel (planar Float RGB) and
+allow 20 bytes/pixel + 1 MiB scratch. Video retains only sampled Float RGB,
+encoded ownership and bounded frame/control metadata; its transient is one
+32 bytes/pixel + 1 MiB allowance, not that amount times every source frame.
+ImageIO and each AVAssetReader iteration drain an autorelease pool. Video BGRA
+is read directly under a read-only buffer lock, with actual row-stride checks,
+into the retained Float output. No extra Data/CGImage/CFData raster chain is made.
+A 300-frame 1080p clip sampled to 20 frames consequently needs about 0.53 GiB
+of visual decode allowance, excluding encoded bytes, rather than about 19 GiB.
+
+Native preparation also uses the actual pixel working-byte calculation shared
+with `MiMoV26Pixels.prepare`, rather than reserving
+`limits.pixels.maximumWorkingBytes` (a ceiling that can approach physical RAM).
+The maximum actual pixel workload remains charged alongside conservative
+retained decoded/patch/feature amounts. Vision work uses the largest temporal
+grid/block workspace, with the fused-kernel or conservative full-score path
+described above; completed frames and layers do not multiply that workspace.
+Allocator node rounding and retained outputs remain charged.
+
+This is application-owned decode accounting, not a claimed bound on private
+AVFoundation codec pools. The same process ledger, system headroom, activation
+reserve, native feature/KV charge, limits and ownership-until-retirement gates
+remain mandatory. Pixel preprocessing separately prices every retained RGB
+input and output patch. Base64 transport size is not used as KV tokens; its
+bounded encoded owners/copies remain charged before decoding. Audio and
+unsupported representation policies are unchanged.
 
 The SDK's `MemoryBackedVideoAsset` derives both its resource-loader type and
 in-memory URL suffix from the validated container. QuickTime uses `.mov`, MP4

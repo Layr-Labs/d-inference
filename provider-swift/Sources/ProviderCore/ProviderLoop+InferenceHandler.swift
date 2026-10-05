@@ -132,6 +132,9 @@ extension ProviderLoop {
     /// could keep reservations non-empty and hold `run()` open for the full
     /// shutdown drain timeout, then have its models unloaded mid-stream.
     internal func throwIfRefusingNewLocalWork(modelId: String? = nil) throws {
+        if let modelId, !autopilotAllowsModel(modelId) {
+            throw MultiModelBatchSchedulerEngineError.requestRejected("model_not_selected")
+        }
         if autopilotCommand != nil {
             throw MultiModelBatchSchedulerEngineError.queueFull("model autopilot placement in progress")
         }

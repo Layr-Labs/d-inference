@@ -81,7 +81,7 @@ struct AutopilotSnapshotCodingTests {
         let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(json["observe_only"] as? Bool == true)
         #expect(json["observeOnly"] == nil)
-        #expect(json["protocol"] as? Int == 2)
+        #expect(json["protocol"] as? Int == 3)
         let residents = try #require(json["resident_models"] as? [[String: Any]])
         #expect(residents.first?["resident_gb"] as? Double == 14.8)
         let history = try #require(json["load_history"] as? [[String: Any]])

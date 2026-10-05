@@ -21,7 +21,7 @@ private struct CoverageFixture: Decodable {
         guard parent != root else { throw CocoaError(.fileNoSuchFile) }
         root = parent
     }
-    let data = try Data(contentsOf: root.appendingPathComponent("coordinator/protocol/testdata/deadline_coverage_confidence.json"))
+    let data = try Data(contentsOf: root.appendingPathComponent("coordinator/tests/protocol/testdata/deadline_coverage_confidence.json"))
     let decoder = JSONDecoder()
     decoder.keyDecodingStrategy = .convertFromSnakeCase
     let shared = try decoder.decode(CoverageFixture.self, from: data)

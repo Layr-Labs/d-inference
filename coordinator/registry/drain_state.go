@@ -6,6 +6,8 @@ import (
 	"errors"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/providerdrain"
+	providerwrite "github.com/eigeninference/d-inference/coordinator/internal/registry/providerwrite"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
@@ -54,16 +56,25 @@ import (
 // enough that a provider whose drain was aborted but whose heartbeats stopped
 // arriving is back in routing within minutes. It is the heartbeat-loss
 // fallback; a live provider clears its mark with its next idle/serving.
-const drainStateTTL = 150 * time.Second
+const drainStateTTL = providerdrain.TTL
 
 var ErrProviderDraining = errors.New("provider draining")
 
-var errProviderDrainSuperseded = errors.New("provider drain superseded")
+var errProviderDrainSuperseded = providerdrain.ErrSuperseded
+
+func (r *Registry) newProviderDrain(id string) *providerdrain.Authority {
+	if r.providerDrainFactory != nil {
+		if authority := r.providerDrainFactory(id); authority != nil {
+			return authority
+		}
+	}
+	return &providerdrain.Authority{}
+}
 
 // providerDrainingLocked reports whether p has an unexpired draining mark.
 // Caller holds p.mu.
 func providerDrainingLocked(p *Provider, now time.Time) bool {
-	return p.drainCommitted || (!p.drainingUntil.IsZero() && now.Before(p.drainingUntil))
+	return p.drain.Draining(now)
 }
 
 // applyHeartbeatDrainStateLocked updates the draining mark from a heartbeat's
@@ -74,12 +85,7 @@ func providerDrainingLocked(p *Provider, now time.Time) bool {
 // reports "draining" while it refuses work, so an idle/serving heartbeat
 // means the drain is over (see the file header). Caller holds p.mu.
 func applyHeartbeatDrainStateLocked(p *Provider, status string, now time.Time) {
-	switch status {
-	case protocol.HeartbeatStatusDraining:
-		p.drainingUntil = now.Add(drainStateTTL)
-	case "idle", "serving":
-		p.drainingUntil = time.Time{}
-	}
+	p.drain.Heartbeat(status, now)
 }
 
 // MarkDraining marks a live provider draining for drainStateTTL (the typed
@@ -94,14 +100,13 @@ func (r *Registry) MarkDraining(id string) (transitioned bool) {
 	}
 	now := time.Now()
 	p.mu.Lock()
-	was := providerDrainingLocked(p, now)
-	p.drainingUntil = now.Add(drainStateTTL)
+	transitioned = p.drain.Mark(now)
 	p.mu.Unlock()
-	if !was {
+	if transitioned {
 		r.logger.Info("provider draining: routing skips it until it reports idle/serving or the drain TTL lapses",
 			"provider_id", id, "ttl", drainStateTTL)
 	}
-	return !was
+	return transitioned
 }
 
 // ProviderDraining reports whether the provider currently carries an
@@ -129,22 +134,7 @@ func (r *Registry) CommitProviderDrain(p *Provider, requestID string) uint64 {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.drainCommitted = true
-	p.drainRequestID = requestID
-	p.drainGeneration++
-	p.drainReady = false
-	p.drainReplacementPending = false
-	p.drainReplacementAcked = false
-	p.drainReplacementReadySeq = 0
-	p.drainReplacementAppliedSeq = 0
-	p.drainReplacementID = ""
-	p.lastResumedModelReplacement = protocol.ModelsReplaceResumedMessage{}
-	// A failed replacement already changed inventory. Keep the removed IDs
-	// through a new barrier so its eventual readiness can reconcile old queues.
-	if len(p.pendingReqs) > 0 && p.drainPendingDone == nil {
-		p.drainPendingDone = make(chan struct{})
-	}
-	return p.drainGeneration
+	return p.drain.Commit(requestID, len(p.pendingReqs))
 }
 
 // CompleteProviderDrain binds terminal settlement to the exact barrier generation.
@@ -156,11 +146,7 @@ func (r *Registry) CompleteProviderDrain(p *Provider, requestID string, generati
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if !p.drainCommitted || p.drainReplacementPending || p.drainRequestID != requestID || p.drainGeneration != generation || len(p.pendingReqs) != 0 {
-		return false
-	}
-	p.drainReady = true
-	return true
+	return p.drain.Complete(requestID, generation, len(p.pendingReqs))
 }
 
 // WriteProviderDrainAck checks the barrier again at the control writer's final
@@ -174,15 +160,12 @@ func (r *Registry) WriteProviderDrainAck(ctx context.Context, p *Provider, reque
 	if w == nil {
 		return errProviderWriterStopped
 	}
-	_, err := w.writeRequest(ctx, &providerWriteRequest{
-		data: data,
-		beforeWrite: func() error {
-			if !r.CompleteProviderDrain(p, requestID, generation) {
-				return errProviderDrainSuperseded
-			}
-			return nil
-		},
-	}, true, nil)
+	_, err := w.WriteRequest(ctx, providerwrite.NewFrame(data, func() error {
+		if !r.CompleteProviderDrain(p, requestID, generation) {
+			return errProviderDrainSuperseded
+		}
+		return nil
+	}), true, nil)
 	return err
 }
 
@@ -197,17 +180,11 @@ func (r *Registry) ProviderDrainPending(p *Provider, generation uint64) (<-chan 
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if !p.drainCommitted || p.drainGeneration != generation {
-		return nil, false
-	}
-	return p.drainPendingDone, true
+	return p.drain.Pending(generation)
 }
 
 // settleDrainPendingLocked broadcasts the final removal (or disconnect) to
 // every barrier waiter. Ordinary dispatch never allocates settlement tracking.
 func (p *Provider) settleDrainPendingLocked() {
-	if p.drainPendingDone != nil {
-		close(p.drainPendingDone)
-		p.drainPendingDone = nil
-	}
+	p.drain.SettlePending()
 }

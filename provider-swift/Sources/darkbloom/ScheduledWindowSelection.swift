@@ -39,33 +39,29 @@ struct ScheduledWindowSelection {
         let saved = savedBackend.enabledModels
         hasSeenConfigFile = true
         usesSavedSelection = usesSavedSelection || saved != startup.config.backend.enabledModels
-            || savedBackend.modelAutopilot != startup.config.backend.modelAutopilot
-        guard usesSavedSelection else { return startup }
+        guard usesSavedSelection || savedBackend.modelAutopilot != startup.config.backend.modelAutopilot
+        else { return startup }
         // Empty enabled_models means every eligible local model at normal start.
         // Re-resolve that set for each scheduled window as local artifacts change.
-        let selectedIDs: [String]
-        if savedBackend.modelAutopilot.hasConsent {
-            // Saved enabled_models remains a preload preference, not permission
-            // to shrink or expand the enrolled network inventory between windows.
-            selectedIDs = savedBackend.modelAutopilot.selectedModels
-        } else {
-            selectedIDs = saved.isEmpty
-                ? try Switch.selectModels(requested: [], local: scanLocalModels(startup.hardware),
-                    capabilities: startup.runtimeCapabilities)
-                : saved
-        }
+        let selectedIDs = !usesSavedSelection ? startup.models.map(\.id) : (saved.isEmpty
+            ? try Switch.selectModels(requested: [], local: scanLocalModels(startup.hardware),
+                capabilities: startup.runtimeCapabilities)
+            : saved)
+        let inventoryIDs = savedBackend.modelAutopilot.hasConsent ? savedBackend.modelAutopilot.selectedModels : []
+        let combinedIDs = selectedIDs + inventoryIDs.filter { !selectedIDs.contains($0) }
 
         // Capture BEFORE scan's weight hashing, as in attachWeightHashes. A
         // concurrent file change must force re-hashing, never bless stale bytes.
         var fingerprints: [String: String] = [:]
-        for id in selectedIDs {
+        for id in combinedIDs {
             if let snapshot = resolveLocalPath(id),
                 let fingerprint = WeightHasher.snapshotFingerprint(snapshotDir: snapshot) {
                 fingerprints[id] = fingerprint
             }
         }
-        let models = try resolveModels(selectedIDs, startup.runtimeCapabilities)
-        let hashes = Dictionary(uniqueKeysWithValues: models.compactMap { model in
+        let verified = try resolveModels(combinedIDs, startup.runtimeCapabilities)
+        let models = verified.filter { selectedIDs.contains($0.id) }
+        let hashes = Dictionary(uniqueKeysWithValues: verified.compactMap { model in
             model.weightHash.map { (model.id, $0) }
         })
         var config = startup.config
@@ -82,7 +78,8 @@ struct ScheduledWindowSelection {
             modelHashes: hashes,
             modelHashFingerprints: fingerprints,
             localEndpoint: startup.localEndpoint,
-            configPath: path
+            configPath: path,
+            autopilotInventory: verified.filter { inventoryIDs.contains($0.id) && $0.weightHash?.isEmpty == false }
         )
     }
 }

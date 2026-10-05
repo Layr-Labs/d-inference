@@ -43,6 +43,29 @@ struct ScheduledWindowSelectionTests {
         }
     }
 
+    @Test func consentRefreshKeepsExplicitStartupOverride() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("provider.toml")
+        let paths = ["fixture/a": try snapshot(in: directory, id: "fixture/a"),
+                     "fixture/b": try snapshot(in: directory, id: "fixture/b")]
+        var config = ProviderConfig(provider: ProviderSettings(name: "override"))
+        config.backend.enabledModels = ["fixture/a"]
+        config.backend.modelAutopilot = .init(enabled: true, consentRecorded: true,
+            selectedModels: ["fixture/a", "fixture/b"], revision: "initial")
+        try ConfigManager.save(config, to: path)
+        var selection = ScheduledWindowSelection(startup: startup(config: config, path: path,
+            model: "fixture/b"), configFileExists: true)
+        #expect(try selection.nextWindowConfiguration().models.map(\.id) == ["fixture/b"])
+        config.backend.modelAutopilot.revision = "refreshed"
+        try ConfigManager.save(config, to: path)
+        let next = try selection.nextWindowConfiguration(
+            resolveModels: { ids, _ in try resolve(ids, cache: directory, paths: paths) },
+            resolveLocalPath: { paths[$0] })
+        #expect(next.models.map(\.id) == ["fixture/b"])
+        #expect(Set(next.autopilotInventory.map(\.id)) == Set(paths.keys))
+    }
+
     @Test func nextWindowUsesDurableSelectionAndFreshHashesWithoutReloadingOtherSettings() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -215,13 +238,13 @@ struct ScheduledWindowSelectionTests {
     }
 
     @Test(arguments: [["fixture/b"], []])
-    func enrolledInventoryRemainsAdvertisedWhenPreloadPreferenceChanges(saved: [String]) throws {
+    func servingSelectionChangesWithoutAdvertisingShadowInventory(saved: [String]) throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let path = directory.appendingPathComponent("provider.toml")
         let paths = ["fixture/a": try snapshot(in: directory, id: "fixture/a"),
                      "fixture/b": try snapshot(in: directory, id: "fixture/b")]
-        _ = try snapshot(in: directory, id: "fixture/local-only")
+
         var config = ProviderConfig(provider: ProviderSettings(name: "enrolled"))
         config.backend.enabledModels = ["fixture/a"]
         config.backend.modelAutopilot = .init(enabled: true, consentRecorded: true,
@@ -233,10 +256,10 @@ struct ScheduledWindowSelectionTests {
         let next = try selection.nextWindowConfiguration(
             resolveModels: { ids, _ in try resolve(ids, cache: directory, paths: paths) },
             resolveLocalPath: { paths[$0] }, scanLocalModels: { _ in
-                Issue.record("Enrolled scheduled windows must not rescan unapproved local models")
-                return []
+                ModelScanner.scanAllModels(in: directory, environment: [:])
             })
-        #expect(next.models.map(\.id) == ["fixture/a", "fixture/b"])
+        #expect(next.models.map(\.id) == (saved.isEmpty ? ["fixture/a", "fixture/b"] : saved))
+        #expect(next.autopilotInventory.map(\.id).sorted() == ["fixture/a", "fixture/b"])
         #expect(next.config.backend.enabledModels == saved)
         #expect(next.config.backend.modelAutopilot == config.backend.modelAutopilot)
     }
@@ -254,8 +277,8 @@ struct ScheduledWindowSelectionTests {
             selectedModels: ["fixture/a", "fixture/b"], revision: "inventory")
         try ConfigManager.save(config, to: path)
         var selection = ScheduledWindowSelection(startup: startup(config: config, path: path,
-            models: config.backend.modelAutopilot.selectedModels), configFileExists: true)
-        #expect(try selection.nextWindowConfiguration().models.map(\.id) == ["fixture/a", "fixture/b"])
+            models: config.backend.enabledModels), configFileExists: true)
+        #expect(try selection.nextWindowConfiguration().models.map(\.id) == ["fixture/a"])
         var disabled = config
         disabled.backend.modelAutopilot.enabled = false
         disabled.backend.modelAutopilot.revision = "disabled"
@@ -275,7 +298,7 @@ struct ScheduledWindowSelectionTests {
     }
 
     @Test(arguments: [["fixture/b"], ["fixture/b", "fixture/c"]])
-    func refreshedConsentSelectsOnlyCurrentApprovedInventory(approved: [String]) throws {
+    func refreshedConsentChangesInventoryWithoutChangingServingSelection(approved: [String]) throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let path = directory.appendingPathComponent("provider.toml")
@@ -290,7 +313,7 @@ struct ScheduledWindowSelectionTests {
             selectedModels: ["fixture/a", "fixture/b"], revision: "initial")
         try ConfigManager.save(config, to: path)
         var selection = ScheduledWindowSelection(startup: startup(config: config, path: path,
-            models: config.backend.modelAutopilot.selectedModels), configFileExists: true)
+            models: config.backend.enabledModels), configFileExists: true)
         _ = try selection.nextWindowConfiguration()
         var refreshed = config
         refreshed.backend.modelAutopilot.selectedModels = approved
@@ -306,8 +329,9 @@ struct ScheduledWindowSelectionTests {
                 Issue.record("Refreshed consent must not discover arbitrary local models")
                 return []
             })
-        #expect(next.models.map(\.id) == approved)
-        #expect(Set(next.modelHashes.keys) == Set(approved))
+        #expect(next.models.map(\.id) == ["fixture/a"])
+        #expect(next.autopilotInventory.map(\.id) == approved)
+        #expect(Set(next.modelHashes.keys) == Set(approved + ["fixture/a"]))
         #expect(next.config.backend.modelAutopilot == refreshed.backend.modelAutopilot)
         #expect(next.config.backend.enabledModels == config.backend.enabledModels)
         #expect(next.config.backend.preloadModels == config.backend.preloadModels)

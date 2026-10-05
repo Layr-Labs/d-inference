@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-28
+> Last updated: 2026-10-04
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -10,6 +10,8 @@ what was decided and whether it shipped read [`../design/README.md`](../design/R
 
 File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
+
+- [Registry scan optimization](2026-10-04-registry-scan-optimization.md) — combined reservation storage, compact evidence and pending-work measurements on an isolated Mac mini, with correctness and production-latency limits.
 
 - [Hybrid provider trust review](2026-09-27-hybrid-provider-trust-review.md) — September 27 snapshot of legacy MDM/APNs and App Attest authorization boundaries, threats, evidence and deployment limits.
 - [First-content performance and M5 capacity investigation](2026-09-28-first-content-performance.md) — production latency, deadline-refusal amplification and prefill measurement bounds; separates observations from unqualified concurrency targets.

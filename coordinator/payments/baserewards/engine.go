@@ -3,9 +3,9 @@ package baserewards
 import (
 	"context"
 	"log/slog"
-	"sort"
 	"time"
 
+	rewardpolicy "github.com/eigeninference/d-inference/coordinator/internal/payments/rewardpolicy"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -34,8 +34,9 @@ type Config struct {
 	// across reinstalls. The pool remains bounded. A concentration cap is kept
 	// as an optional independent risk policy.
 	PerAccountCapFrac float64
-	MinUptimeFrac     float64 // 0.90 — hard eligibility gate (design §6 gate 3)
-	GraceSeconds      int     // 90 — open-session uptime grace (design §8)
+	MinUptimeFrac     float64          // 0.90 — hard eligibility gate (design §6 gate 3)
+	GraceSeconds      int              // 90 — open-session uptime grace (design §8)
+	Now               func() time.Time `json:"-"` // nil uses time.Now
 }
 
 // DefaultConfig returns the recommended launch configuration: k=0 additive base
@@ -60,7 +61,7 @@ type Engine struct {
 	reg    *registry.Registry
 	cfg    Config
 	logger *slog.Logger
-	now    func() time.Time // injectable clock for tests
+	now    func() time.Time
 }
 
 // NewEngine constructs an Engine. The store is the durable money source of
@@ -72,18 +73,22 @@ func NewEngine(s store.Store, reg *registry.Registry, cfg Config, logger *slog.L
 	if cfg.GraceSeconds <= 0 {
 		cfg.GraceSeconds = defaultGraceSeconds
 	}
+	now := cfg.Now
+	if now == nil {
+		now = time.Now
+	}
 	return &Engine{
 		store:  s,
 		reg:    reg,
 		cfg:    cfg,
 		logger: logger,
-		now:    time.Now,
+		now:    now,
 	}
 }
 
 // SettleResult summarizes one SettleEpoch call.
 type SettleResult struct {
-	EpochID           EpochID
+	EpochID           rewardpolicy.EpochID
 	Eligible          int   // candidates that passed every gate
 	Settled           int   // rows newly credited this call
 	AlreadySettled    int   // skipped via idempotent (provider_key, epoch_id) conflict
@@ -93,7 +98,7 @@ type SettleResult struct {
 // candidate pairs an allocation Candidate with the per-machine audit context the
 // settlement row records.
 type candidate struct {
-	c              Candidate
+	c              rewardpolicy.Candidate
 	uptimeFrac     float64
 	machineID      string
 	machineAliases []string
@@ -104,13 +109,13 @@ type candidate struct {
 // SettleEpoch settles the prorated base reward for one closed period. It is a
 // no-op when the flag is off (design §6) or the period is not yet closed, and is
 // idempotent — re-running over the same store credits nothing twice (design §8).
-func (e *Engine) SettleEpoch(ctx context.Context, epochID EpochID) (SettleResult, error) {
+func (e *Engine) SettleEpoch(ctx context.Context, epochID rewardpolicy.EpochID) (SettleResult, error) {
 	res := SettleResult{EpochID: epochID}
 	if !e.cfg.Enabled {
 		return res, nil // flag off — zero behavior change
 	}
 
-	start, end, err := epochBounds(epochID)
+	start, end, err := rewardpolicy.EpochBounds(epochID)
 	if err != nil {
 		return res, err
 	}
@@ -138,78 +143,6 @@ func (e *Engine) SettleEpoch(ctx context.Context, epochID EpochID) (SettleResult
 		return res, lockErr
 	}
 	return res, nil
-}
-
-// uptimeByProviderKey unions overlapping session intervals per machine and
-// returns the covered fraction of the period, capped at 1.0. Open sessions accrue
-// only to min(end, last_seen + grace); blue-green deploys leave two open rows
-// that union without double-counting (design §8). Sessions with no provider key
-// (pre-backfill) are ignored — they cannot be credited.
-func (e *Engine) uptimeByProviderKey(sessions []store.ProviderSession, start, end time.Time) map[string]float64 {
-	grace := time.Duration(e.cfg.GraceSeconds) * time.Second
-	total := epochSeconds(start, end)
-
-	type interval struct{ s, e time.Time }
-	byKey := make(map[string][]interval)
-	for _, ps := range sessions {
-		if ps.ProviderKey == "" {
-			continue
-		}
-		s := ps.ConnectedAt
-		if s.Before(start) {
-			s = start
-		}
-		var sessEnd time.Time
-		if ps.DisconnectedAt != nil {
-			// Closed session: clamp to min(disconnected_at, last_seen + grace) so a
-			// stale eviction (disconnected well after last heartbeat) does not
-			// overcount uptime.
-			sessEnd = *ps.DisconnectedAt
-			if graceEnd := ps.LastSeen.Add(grace); graceEnd.Before(sessEnd) {
-				sessEnd = graceEnd
-			}
-		} else {
-			// Open session: clamp to last_seen + grace.
-			sessEnd = ps.LastSeen.Add(grace)
-		}
-		if sessEnd.After(end) {
-			sessEnd = end
-		}
-		if !sessEnd.After(s) {
-			continue
-		}
-		byKey[ps.ProviderKey] = append(byKey[ps.ProviderKey], interval{s, sessEnd})
-	}
-
-	out := make(map[string]float64, len(byKey))
-	for key, ivs := range byKey {
-		// Sort by start, then sweep-merge overlapping intervals (handles
-		// blue-green double-open without double-counting).
-		sort.Slice(ivs, func(i, j int) bool { return ivs[i].s.Before(ivs[j].s) })
-		var covered float64
-		curS, curE := ivs[0].s, ivs[0].e
-		for _, iv := range ivs[1:] {
-			if iv.s.After(curE) {
-				covered += curE.Sub(curS).Seconds()
-				curS, curE = iv.s, iv.e
-				continue
-			}
-			if iv.e.After(curE) {
-				curE = iv.e
-			}
-		}
-		covered += curE.Sub(curS).Seconds()
-
-		frac := 0.0
-		if total > 0 {
-			frac = covered / total
-		}
-		if frac > 1 {
-			frac = 1 // no >100% uptime
-		}
-		out[key] = frac
-	}
-	return out
 }
 
 // latestAccountByProviderKey returns, per provider key, the account from the
@@ -247,7 +180,7 @@ func (e *Engine) Run(ctx context.Context) {
 	// Settle once at startup (covers a restart that missed the tick), then every
 	// settlement period.
 	e.settleOnce(ctx)
-	ticker := time.NewTicker(SettlementPeriod)
+	ticker := time.NewTicker(rewardpolicy.SettlementPeriod)
 	defer ticker.Stop()
 	for {
 		select {
@@ -260,7 +193,7 @@ func (e *Engine) Run(ctx context.Context) {
 }
 
 func (e *Engine) settleOnce(ctx context.Context) {
-	epochID := previousEpochID(e.now())
+	epochID := rewardpolicy.PreviousEpochID(e.now())
 	res, err := e.SettleEpoch(ctx, epochID)
 	if err != nil {
 		e.logger.Error("base rewards: settlement failed", "epoch", epochID, "error", err)
@@ -283,8 +216,8 @@ func (e *Engine) Status(ctx context.Context) (map[string]any, error) {
 	if !e.cfg.Enabled {
 		return map[string]any{"enabled": false}, nil
 	}
-	epochID := previousEpochID(e.now())
-	start, end, err := epochBounds(epochID)
+	epochID := rewardpolicy.PreviousEpochID(e.now())
+	start, end, err := rewardpolicy.EpochBounds(epochID)
 	if err != nil {
 		return nil, err
 	}
@@ -301,7 +234,7 @@ func (e *Engine) Status(ctx context.Context) (map[string]any, error) {
 		"epoch_id":            epochID,
 		"period_seconds":      int64(end.Sub(start).Seconds()),
 		"monthly_pool_budget": e.cfg.PoolBudgetMicroUSD,
-		"pool_budget":         PeriodBudget(e.cfg.PoolBudgetMicroUSD, start, end),
+		"pool_budget":         rewardpolicy.PeriodBudget(e.cfg.PoolBudgetMicroUSD, start, end),
 		"pool_used":           used,
 		"reduction_k":         e.cfg.ReductionK,
 		"draw_count":          len(draws),

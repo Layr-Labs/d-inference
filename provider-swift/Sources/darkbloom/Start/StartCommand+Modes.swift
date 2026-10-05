@@ -189,7 +189,18 @@ extension Start {
         // (previous_exit / start_reason) before any in-place update exec.
         ProviderProcessRun.begin()
 
-        let (models, modelHashes, modelHashFingerprints) = attachWeightHashes(to: selectedModels)
+        let selectedIDs = Set(selectedModels.map(\.id))
+        let inventory = config.backend.modelAutopilot.hasConsent
+            ? snapshot.models.filter {
+                config.backend.modelAutopilot.allows($0.id)
+                    && ModelRuntimeRequirements.isEligible(modelID: $0.id, available: runtimeCapabilities)
+            } : []
+        let combined = selectedModels + inventory.filter { !selectedIDs.contains($0.id) }
+        let (verified, modelHashes, modelHashFingerprints) = attachWeightHashes(to: combined)
+        let models = verified.filter { selectedIDs.contains($0.id) }
+        let autopilotInventory = verified.filter {
+            config.backend.modelAutopilot.allows($0.id) && $0.weightHash?.isEmpty == false
+        }
         let runtimeHashes = (try? RuntimeHashReporter().report().coordinatorRuntimeHashes)
         let authToken = AuthTokenStore.load()
         if let identity = ProcessIdentity.current() {
@@ -305,7 +316,8 @@ extension Start {
             modelHashes: modelHashes,
             modelHashFingerprints: modelHashFingerprints,
             localEndpoint: localEndpointConfig,
-            configPath: snapshot.configPath
+            configPath: snapshot.configPath,
+            autopilotInventory: autopilotInventory
         )
 
         do {

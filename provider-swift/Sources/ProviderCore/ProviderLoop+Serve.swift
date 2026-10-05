@@ -182,7 +182,8 @@ extension ProviderLoop {
             privateOnly: loopConfig.config.coordinator.privateOnly,
             apnsDeviceToken: apnsDeviceToken,
             apnsEnvironment: apnsDeviceToken != nil ? "production" : nil,
-            idleUnloadMins: loopConfig.config.backend.idleTimeoutMins
+            idleUnloadMins: loopConfig.config.backend.idleTimeoutMins,
+            autopilotInventory: loopConfig.autopilotInventory
         )
 
         // A termination received during the APNs/startup awaits can already

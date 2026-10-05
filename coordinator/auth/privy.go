@@ -60,13 +60,17 @@ func NewPrivyAuth(cfg Config, st store.Store, logger *slog.Logger) (*PrivyAuth, 
 		return nil, errors.New("privy: verification key is not an ECDSA key")
 	}
 
+	client := cfg.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
 	return &PrivyAuth{
 		appID:           cfg.AppID,
 		appSecret:       cfg.AppSecret,
 		verificationKey: ecKey,
 		store:           st,
 		logger:          logger,
-		httpClient:      &http.Client{Timeout: 10 * time.Second},
+		httpClient:      client,
 	}, nil
 }
 

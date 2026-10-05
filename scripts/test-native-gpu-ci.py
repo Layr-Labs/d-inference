@@ -172,7 +172,8 @@ class NativeGPUTestRouting(unittest.TestCase):
 
     def test_workflow_keeps_checked_entrypoints(self):
         workflow = (ROOT / '.github/workflows/ci.yml').read_text()
-        self.assertIn('run: ../scripts/run-provider-tests.sh', workflow)
+        self.assertIn('python3 ../scripts/run-provider-test-watchdog.py', workflow)
+        self.assertIn('-- ../scripts/run-provider-tests.sh', workflow)
         self.assertIn('run: ../../scripts/run-paged-kernel-tests.sh', workflow)
         self.assertIn('run: python3 scripts/test-native-gpu-ci.py', workflow)
 

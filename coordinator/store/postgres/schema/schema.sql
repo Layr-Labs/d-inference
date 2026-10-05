@@ -3452,5 +3452,3 @@ ALTER TABLE ONLY public.small_models_interest
 --
 -- PostgreSQL database dump complete
 --
-
-

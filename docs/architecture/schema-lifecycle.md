@@ -70,7 +70,6 @@ Legend: blue = step, amber = decision, green = success, red = exit 1.
 | 3 | `ensureProviderRestoreIndexes` (`coordinator/store/postgres/startup.go`) | Builds `idx_providers_restore_serial` and `idx_providers_restore_se_key` `CONCURRENTLY` through `ensureConcurrentIndex`. |
 | 4 | `ensureProviderEarningsJobIndex` (`coordinator/store/postgres/provider_earnings_index.go`) | Drops an invalid leftover with a plain `DROP INDEX`, fails on duplicate non-empty `job_id`s, then builds the unique `idx_provider_earnings_job` `CONCURRENTLY`. |
 | 5 | `ensureProviderEarningsWindowIndex` (`coordinator/store/postgres/earnings_window_index.go`) | Builds the BRIN `idx_provider_earnings_created_at_brin` through `ensureConcurrentIndex` and sets `autovacuum_analyze_scale_factor` to `0.005`. |
-
 | 6 | `coordinator/store/postgres/schema/migrations/00006_consumer_charge_settlements.sql` | Adds consumer charge settlement records and the referrer index. |
 | 7 | `coordinator/store/postgres/schema/migrations/00007_legacy_mdm_cohort.sql` | Adds the legacy MDM cohort and freeze tables; it does not freeze membership. |
 | 8 | `coordinator/store/postgres/schema/migrations/00008_small_models_interest.sql` | Adds saved small-model hardware interest, including the user foreign key and RAM constraint. |

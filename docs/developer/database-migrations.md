@@ -4,8 +4,9 @@
 
 How to change the coordinator's Postgres schema: choose the migration kind,
 write it as a numbered goose version, regenerate the checked-in schema, and
-test it. Every schema change is a new version. Do not put DDL in Go strings,
-and do not edit a migration that has merged. Why the rules exist is in
+test it. Every schema change is a new version. Put ordinary DDL in SQL files;
+use Go migrations for the checks and concurrent indexes described below.
+Do not edit a migration that has merged. Why the rules exist is in
 [schema lifecycle](../architecture/schema-lifecycle.md); applying a migration
 in production is the [schema migration runbook](../operations/schema-migration.md).
 

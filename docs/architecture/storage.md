@@ -462,9 +462,10 @@ existing pool through `StripeSettlementForMaintenance` without startup migration
 
 ## Autopilot operation ledger
 
-`coordinator/store/postgres/autopilot.go` (`RecordAutopilot`)
+The baseline (`coordinator/store/postgres/schema/migrations/00001_baseline.sql`)
 creates `autopilot_events`, keyed by `(command_id, phase)` with an indexed `at`
-timestamp and a bounded typed JSON record. Insert retries are idempotent. The
+timestamp and a bounded typed JSON record. `RecordAutopilot`
+(`coordinator/store/postgres/autopilot.go`) inserts records idempotently. The
 ledger stores model/control metadata without prompts or free-form provider
 errors. A command intent is persisted before dispatch; failed writes prevent new
 changes and terminal observations remain queued for retry. Incomplete historical

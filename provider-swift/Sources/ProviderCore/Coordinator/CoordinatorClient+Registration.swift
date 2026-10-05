@@ -36,7 +36,9 @@ extension CoordinatorClient {
                 ? prefixCache.memoryModels : nil,
             prefixCacheStatuses: prefixCache.statuses,
             prefixCacheDonationOutcomes: prefixCache.donationOutcomes,
-            modelAutopilot: state.modelAutopilot
+            modelAutopilot: state.modelAutopilot,
+            ordinaryServingModelIDs: ordinaryServingModelIDs,
+            autopilotInventory: state.autopilotInventory
         )
         guard let jsonString = String(data: jsonData, encoding: .utf8) else {
             throw CoordinatorError.encodingFailed

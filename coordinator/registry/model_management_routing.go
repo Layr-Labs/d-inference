@@ -1,6 +1,6 @@
 package registry
 
-import "slices"
+import "time"
 
 // providerAutopilotRoutingBlockedLocked is a capacity gate, not a catalog or
 // trust gate. Managed providers retain their cached inventory for planning but
@@ -9,28 +9,12 @@ import "slices"
 // direct local inference retains its independent admission/ownership checks.
 // Caller holds r.mu and p.mu.
 func providerAutopilotRoutingBlockedLocked(p *Provider, model string) bool {
-	if p.ModelAutopilot != nil && p.ModelAutopilot.Enabled && !slices.Contains(p.ModelAutopilot.SelectedModels, model) {
-		return true
-	}
-	if providerAutopilotTransitionLocked(p) {
-		return true
-	}
-	if !providerAutopilotManagedLocked(p) {
-		return false
-	}
-	if p.BackendCapacity != nil {
-		for _, slot := range p.BackendCapacity.Slots {
-			if slot.Model == model {
-				return !slotStateModelLoaded(slot.State)
-			}
-		}
-	}
-	return true
+	return p.autopilotState.RoutingBlocked(p.ModelAutopilot, p.ID, model, p.BackendCapacity, time.Now)
 }
 
 // Active control or an explicit pause owns residency. Accepted commands retain
 // their fence until reconciliation. Consent without control keeps ordinary
 // serving policy, and a hypothetical plan never claims mutation ownership.
 func providerLegacyModelChangesBlockedLocked(p *Provider) bool {
-	return providerAutopilotManagedLocked(p) || providerAutopilotTransitionLocked(p)
+	return p.autopilotState.LegacyChangesBlocked(p.ModelAutopilot, p.ID, time.Now)
 }

@@ -23,13 +23,16 @@ struct AutopilotStartupPreferencesTests {
         var backend = backend
         backend.modelAutopilot = .init(enabled: true, consentRecorded: true,
             selectedModels: inventory, revision: "test")
+        let selected = backend.enabledModels.isEmpty ? inventory : Array(Set(backend.enabledModels + [backend.model].compactMap { $0 })).sorted()
+        let infos = inventory.map { ModelInfo(id: $0, modelType: "gemma4", sizeBytes: 1024, estimatedMemoryGb: 2) }
         let loop = try ProviderLoop(config: ProviderLoopConfig(
             coordinatorURL: "ws://127.0.0.1:0/unused",
             hardware: HardwareInfo(machineModel: "Mac16,5", chipName: "Apple M4 Max", chipFamily: .m4, chipTier: .max,
                 memoryGb: 128, memoryAvailableGb: 124, cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4),
                 gpuCores: 40, memoryBandwidthGbs: 546),
-            models: inventory.map { ModelInfo(id: $0, modelType: "gemma4", sizeBytes: 1024, estimatedMemoryGb: 2) },
-            config: ProviderConfig(provider: ProviderSettings(name: "startup-preference-test"), backend: backend)),
+            models: infos.filter { selected.contains($0.id) },
+            config: ProviderConfig(provider: ProviderSettings(name: "startup-preference-test"), backend: backend),
+            autopilotInventory: infos),
             attestationSigner: nil)
         await loop.setLoadedModelsFileForTesting(root.appendingPathComponent("loaded.json"))
         await loop.setDaemonStateFileForTesting(root.appendingPathComponent("daemon.json"))
@@ -51,19 +54,18 @@ struct AutopilotStartupPreferencesTests {
         #expect(await loop.startupPreloadPlanForTesting().map(\.modelId) == ["selected"])
         #expect(await loop.runStartupPreloadGateForTesting() == .warm)
         #expect(recorder.loads == ["selected"])
-        #expect(await loop.advertisedModels.keys.sorted() == ["extra", "pin", "selected"])
-        #expect(await loop.autopilotAllowsModel("extra"))
+        #expect(await loop.advertisedModels.keys.sorted() == ["selected"])
+        #expect(await loop.autopilotAllowsModel("extra") == false)
         #expect(await loop.autopilotManagesResidency == false)
         #expect(await loop.loopConfig.config.backend.enabledModels == backend.enabledModels)
         #expect(await loop.loopConfig.config.backend.idleTimeoutMins == backend.idleTimeoutMins)
 
-        // The extra advertised inventory remains cold-loadable in ordinary
-        // shadow/waiting mode; preload preferences are not a serving allowlist.
+        // Inventory must remain observational in both waiting and shadow mode.
         let replies = AutopilotRecorder()
         await loop.handleLoadModelRequest(modelId: "extra", send: SendHandle(replies.append))
         let preload = await loop.preloadTasks["extra"]
         await preload?.value
-        #expect(replies.legacyStatuses.first == .started)
+        #expect(replies.legacyStatuses == [.failed])
     }
 
     @Test func implicitPreloadPrioritizesPinnedModelWithoutWarmingExtraInventory() async throws {
@@ -77,15 +79,15 @@ struct AutopilotStartupPreferencesTests {
         #expect(recorder.loads == ["pin", "selected"])
     }
 
-    @Test func explicitPreloadListKeepsOperatorOrderAndMayIncludeOtherInventory() async throws {
+    @Test func explicitPreloadListCannotWidenServingSelection() async throws {
         let root = try stateDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let backend = BackendSettings(model: "pin", enabledModels: ["selected"],
             preloadModels: ["extra", "selected", "extra"])
         let (loop, recorder) = try await fixture(root: root, backend: backend)
-        #expect(await loop.startupPreloadPlanForTesting().map(\.modelId) == ["extra", "selected"])
+        #expect(await loop.startupPreloadPlanForTesting().map(\.modelId) == ["selected"])
         #expect(await loop.runStartupPreloadGateForTesting() == .warm)
-        #expect(recorder.loads == ["extra", "selected"])
+        #expect(recorder.loads == ["selected"])
         #expect(await loop.loopConfig.config.backend.preloadModels == backend.preloadModels)
     }
 
@@ -97,7 +99,7 @@ struct AutopilotStartupPreferencesTests {
                 preloadModels: ["extra"]))
         #expect(await loop.runStartupPreloadGateForTesting() == .disabled)
         #expect(recorder.loads.isEmpty)
-        #expect(await loop.advertisedModels.count == 3)
+        #expect(await loop.advertisedModels.count == 1)
     }
 
     @Test func emptySavedSelectionRetainsOrdinaryAllAdvertisedPreloadBehavior() async throws {

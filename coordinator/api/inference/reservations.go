@@ -5,7 +5,6 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/api/access"
 	"github.com/eigeninference/d-inference/coordinator/internal/inference/reservations"
-	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -18,9 +17,6 @@ func (s *Owner) reserveInitialBalance(accountID, model string, amount int64) (bo
 }
 func (s *Owner) releaseInitialReservation(accountID, model string, amount int64, serviceMode bool) {
 	s.reservations.ReleaseInitial(accountID, model, amount, serviceMode)
-}
-func (s *Owner) releaseServiceReservation(pr *registry.PendingRequest, reason string) {
-	s.reservations.ReleaseService(pr, reason)
 }
 
 func (s *Owner) recordBalanceRejection(r *http.Request, parsed map[string]any, p reservations.Params, reason string) {

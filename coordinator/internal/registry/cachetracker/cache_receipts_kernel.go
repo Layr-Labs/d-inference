@@ -14,7 +14,8 @@ func (t *Tracker[P]) StoreAttemptLocked(nonce string, attempt Attempt[P]) bool {
 	if !valid {
 		return false
 	}
-	t.SweepIfDueLocked(t.now())
+	now := t.now()
+	t.SweepIfDueLocked(now)
 	old := t.attempts.Lookup(nonce).AccountedBytes
 	total, fits := t.attemptBudget.replacementTotal(old, charge)
 	if !fits && (total == 0 || charge > t.attemptBudget.MaxBytes()) {
@@ -30,7 +31,7 @@ func (t *Tracker[P]) StoreAttemptLocked(nonce string, attempt Attempt[P]) bool {
 	// The complete candidate is validated and detached before any terminal
 	// grace is given up for it.
 	if !fits {
-		total, fits = t.reclaimTerminalGraceLocked(nonce, total)
+		total, fits = t.reclaimTerminalGraceLocked(now, nonce, total)
 		if !fits {
 			t.noteAttemptBudgetRefusalLocked()
 			return false

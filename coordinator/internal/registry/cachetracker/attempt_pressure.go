@@ -1,5 +1,7 @@
 package cachetracker
 
+import "time"
+
 // Terminal grace is optional late-receipt evidence, never live request
 // authority. Byte pressure examines at most graceReclaimScan terminal records
 // per admission, keeps the byte limit, and refuses when live records or the
@@ -20,16 +22,19 @@ func (t *Tracker[P]) AttemptLifecycle() AttemptLifecycle {
 // reclaimTerminalGraceLocked makes room for a validated, detached candidate
 // whose replacement total exceeds the limit. It removes terminal records only
 // when their complete refund admits the candidate, and returns the total after
-// those removals.
-func (t *Tracker[P]) reclaimTerminalGraceLocked(exclude string, total uint64) (uint64, bool) {
+// those removals. Only a record still inside its grace at now counts as a
+// grace reclaim; one whose grace already ended is an expiry the sweep has not
+// reached yet.
+func (t *Tracker[P]) reclaimTerminalGraceLocked(now time.Time, exclude string, total uint64) (uint64, bool) {
 	victims := t.terminalBudgetVictimsLocked(exclude, total-t.attemptBudget.MaxBytes())
 	if victims == nil {
 		return total, false
 	}
 	for _, victim := range victims {
-		total -= t.attempts.Lookup(victim).AccountedBytes
+		attempt := t.attempts.Lookup(victim)
+		total -= attempt.AccountedBytes
 		t.RemoveAttemptLocked(victim)
-		if t.attemptGraceReclaimed != ^uint64(0) {
+		if now.Before(attempt.ExpiresAt) && t.attemptGraceReclaimed != ^uint64(0) {
 			t.attemptGraceReclaimed++
 		}
 	}

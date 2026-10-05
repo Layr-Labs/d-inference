@@ -148,7 +148,8 @@ The retained cache-attempt ledger adds three aggregate gauges, each mirroring a
 `exact_cache_attempt_bytes` / Datadog `exact_cache.attempt_bytes` (logical bytes held
 against the 64 MiB budget), `exact_cache_attempt_budget_refused` /
 `exact_cache.attempt_budget_refused` (dispatches sent without a cache scope because
-the budget stayed full after reclaiming finished requests' records) and
+the byte budget had no room for their record even counting up to 64 finished
+requests' records, or the record alone exceeds it) and
 `exact_cache_attempt_grace_reclaimed` / `exact_cache.attempt_grace_reclaimed`
 (finished requests' records reclaimed inside their terminal grace). They carry no
 labels; see [attempt-record memory accounting](../architecture/cache-aware-routing.md#attempt-record-memory-accounting).

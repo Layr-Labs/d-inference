@@ -198,3 +198,45 @@ func TestCacheAttemptPressureOrderPeeksEarliestWithoutMoving(t *testing.T) {
 		t.Fatal("peeking moved heap entries")
 	}
 }
+
+// A finished record whose grace has already ended is an expiry the sweep has
+// not reached yet, not late-receipt evidence given up early: reclaiming it
+// frees the bytes but is not counted. A reclaim inside the grace is.
+func TestCacheAttemptPressureCountsOnlyGraceCutShort(t *testing.T) {
+	// Equal-length nonces give equal charges, so the ledger holds exactly one.
+	a := budgetTestAttempt()
+	charge := pressureTestCharge(t, "old", a)
+	now := a.CreatedAt
+	tr := &receiptKernelFixture{newCacheIndexKernelFixture(
+		cachetracker.Settings{TTL: time.Minute, MaxHolders: 2, MaxEntries: indexKernelMaxEntries, MaxAttempts: indexKernelMaxAttempts},
+		func(config *cachetracker.Config[*production.Provider]) {
+			config.AttemptBudget = cachetracker.NewAttemptBudget(charge)
+			config.Now = func() time.Time { return now }
+		})}
+	if !tr.StoreAttemptLocked("old", a) {
+		t.Fatal("setup")
+	}
+	tr.MarkAttemptTerminal("old", now)
+	// Sweep 5 s before the grace ends, then admit 10 s after it ended, before
+	// the next sweep is due.
+	now = now.Add(cachetracker.AttemptTTL - 5*time.Second)
+	tr.SweepIfDueLocked(now)
+	now = now.Add(15 * time.Second)
+	if !tr.StoreAttemptLocked("new", a) {
+		t.Fatal("an expired finished record kept a new request out")
+	}
+	if got := tr.AttemptLifecycle().GraceReclaimed; got != 0 {
+		t.Errorf("attempt_grace_reclaimed=%d for a record whose grace had ended 10s earlier", got)
+	}
+	tr.MarkAttemptTerminal("new", now)
+	now = now.Add(10 * time.Second)
+	if !tr.StoreAttemptLocked("one", a) {
+		t.Fatal("a finished record inside its grace kept a new request out")
+	}
+	if got := tr.AttemptLifecycle().GraceReclaimed; got != 1 {
+		t.Errorf("attempt_grace_reclaimed=%d after reclaiming a record inside its grace, want 1", got)
+	}
+	if _, _, err := budgetLifecycleInvariant(tr.config); err != nil {
+		t.Fatal(err)
+	}
+}

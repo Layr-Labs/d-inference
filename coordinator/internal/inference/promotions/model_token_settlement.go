@@ -19,7 +19,7 @@ func StampReservation(pr *registry.PendingRequest, reservation *store.ModelToken
 	pr.PromotionFreeTokens = reservation.FreeTokens
 }
 
-func (s *Engine) Settle(pr *registry.PendingRequest, provider *registry.Provider, usage protocol.UsageInfo, rates payments.Rates, feePercent *int64, freeSelf bool, onSettled func(int64)) (bool, int64, int64, error) {
+func (s *Engine) Settle(pr *registry.PendingRequest, provider *registry.Provider, usage protocol.UsageInfo, rates payments.Rates, feePercent *int64, freeSelf bool, referralEligible bool, onSettled func(int64)) (bool, int64, int64, error) {
 	backend, ok := store.As[store.ModelTokenPromotionStore](s.store)
 	if !ok {
 		return false, 0, 0, errors.New("promotion store unavailable")
@@ -47,7 +47,7 @@ func (s *Engine) Settle(pr *registry.PendingRequest, provider *registry.Provider
 	var result store.ModelTokenSettlement
 	finalized, err := pr.FinalizeReservation(func() error {
 		var settleErr error
-		result, settleErr = backend.SettleModelTokenReservation(pr.ModelTokenReservationID, actual, quote, earning)
+		result, settleErr = backend.SettleModelTokenReservation(pr.ModelTokenReservationID, actual, quote, earning, referralEligible)
 		return settleErr
 	})
 	if err != nil {
@@ -60,7 +60,7 @@ func (s *Engine) Settle(pr *registry.PendingRequest, provider *registry.Provider
 		}
 		id := pr.ModelTokenReservationID
 		s.settlements.Store(id, func() error {
-			settled, retryErr := backend.SettleModelTokenReservation(id, actual, quote, earning)
+			settled, retryErr := backend.SettleModelTokenReservation(id, actual, quote, earning, referralEligible)
 			if permanentModelTokenSettlementError(retryErr) {
 				return s.abandon(id)
 			}

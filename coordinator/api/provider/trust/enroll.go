@@ -5,6 +5,7 @@ import (
 
 	httpx "github.com/eigeninference/d-inference/coordinator/api/httpx"
 	enrollment "github.com/eigeninference/d-inference/coordinator/internal/provider/enrollment"
+	"github.com/eigeninference/d-inference/coordinator/internal/provider/legacymdm"
 )
 
 const maxControlPlaneBodyBytes = 64 << 10
@@ -12,14 +13,15 @@ const maxControlPlaneBodyBytes = 64 << 10
 // HandleEnroll generates a generic .mobileconfig containing MDM enrollment
 // (SCEP + MDM payloads).
 //
-// The request body is intentionally empty. Older providers may still send a
-// serial_number field during rollout; Go's JSON decoder ignores it and the
-// coordinator never stores, logs, or embeds it. MicroMDM learns the device
-// identity from the authenticated MDM check-in, and trust comes from subsequent
-// SecurityInfo/MDA verification rather than possession of this generic profile.
+// Production requires account authentication and a fresh proof of possession of
+// the frozen machine key. The profile remains generic, so every MDM trust grant
+// independently enforces the same cohort; possession of a profile grants nothing.
 func (s *Owner) HandleEnroll(w http.ResponseWriter, r *http.Request) {
-	var req struct{}
+	var req legacymdm.EnrollmentProof
 	if !httpx.DecodeCappedJSON(w, r, maxControlPlaneBodyBytes, &req) {
+		return
+	}
+	if !s.LegacyMDM.AuthorizeEnrollment(w, r, req) {
 		return
 	}
 

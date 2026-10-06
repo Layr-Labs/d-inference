@@ -1449,9 +1449,8 @@ func TestIntegration_ReferralRewardDistribution(t *testing.T) {
 	require.NoError(t, s.PgStore.Credit(referrerKey, 0, "deposit", "seed"))
 	require.NoError(t, s.PgStore.Credit(consumerKey, 1_000_000, "deposit", "seed"))
 
-	// Referral rewards are funded from the platform fee, which defaults to 0%
-	// during the public alpha. Give the consumer an explicit non-zero fee
-	// override so there is a fee pool to distribute.
+	// Use a non-zero fee to verify it is retained in full while the referral
+	// reward is funded separately from 5% of collected consumer spend.
 	feePercent := int64(5)
 	require.NoError(t, s.PgStore.CreateUser(&store.User{
 		AccountID:          consumerKey,
@@ -1473,6 +1472,10 @@ func TestIntegration_ReferralRewardDistribution(t *testing.T) {
 	err = referral.Apply(consumerKey, "TESTREF")
 	require.NoError(t, err, "should apply referral code")
 
+	consumerBalanceBefore := getBalance(t, s, consumerKey)
+	platformFeeBefore := sumAmounts(queryLedgerEntries(t, s, "platform", "platform_fee"))
+	platformBalanceBefore := getBalance(t, s, "platform")
+
 	resp := postChatCompletionsWithAuth(t, s, consumerAPIKey, "Say hello.", false, 20)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -1484,10 +1487,25 @@ func TestIntegration_ReferralRewardDistribution(t *testing.T) {
 	require.NotEmpty(t, platformFees, "should have platform fee entries")
 
 	rewardTotal := sumAmounts(rewards)
-	feeTotal := sumAmounts(platformFees)
+	feeTotal := sumAmounts(platformFees) - platformFeeBefore
+	collectedSpend := consumerBalanceBefore - getBalance(t, s, consumerKey)
+	require.Greater(t, collectedSpend, int64(0), "consumer should pay for inference")
 	require.Greater(t, rewardTotal, int64(0), "referral reward should be positive")
-	require.Less(t, rewardTotal, feeTotal, "referral reward should be less than total platform fee")
+	require.Equal(t, collectedSpend/20, rewardTotal, "referral reward should be 5%% of collected spend")
+	require.Equal(t, payments.PlatformFeeWithPercent(collectedSpend, &feePercent), feeTotal,
+		"the full platform fee should be retained")
+	require.Equal(t, feeTotal, getBalance(t, s, "platform")-platformBalanceBefore,
+		"referral rewards must not be deducted from the platform balance")
+	require.Equal(t, rewardTotal, s.PgStore.GetWithdrawableBalance(referrerKey),
+		"referral rewards should be withdrawable")
+
+	stats, err := referral.Stats(referrerKey)
+	require.NoError(t, err)
+	require.Equal(t, 1, stats.TotalReferred)
+	require.Equal(t, collectedSpend, stats.TotalReferredSpendMicroUSD)
+	require.Equal(t, rewardTotal, stats.TotalRewardsMicroUSD)
 
 	assertAccounting(t, s)
-	t.Logf("referral: reward=%d micro-USD, platform_fee=%d micro-USD", rewardTotal, feeTotal)
+	t.Logf("referral: collected_spend=%d micro-USD, reward=%d micro-USD, platform_fee=%d micro-USD",
+		collectedSpend, rewardTotal, feeTotal)
 }

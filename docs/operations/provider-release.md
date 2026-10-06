@@ -482,6 +482,13 @@ without a tag is refused ("Production publication requires a source-matching
 release tag"). Dev releases use `DEV_*` secrets, register with the dev
 coordinator, and create no GitHub Release.
 
+Dev and production builds carry the same version string. A Mac reaches the dev
+release only through the dev installer
+(`curl -fsSL https://api.dev.darkbloom.xyz/install.sh | bash`), which writes
+the dev `[coordinator] url` into `provider.toml`
+(`scripts/install.sh`, `bind_provider_coordinator`); updates then come from the
+dev coordinator. See [dev-environment.md](dev-environment.md), step 9.
+
 ### Signed validation bundle
 
 To test a source revision before release registration, dispatch the same signing,

@@ -27,6 +27,10 @@ func (s *MemoryStore) UpsertCodeAttestation(_ context.Context, rec store.CodeAtt
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.erasedCodeAttestationLocked(rec.SEPubKey, rec.AccountID) {
+		return store.ErrErasureConflict
+	}
+	rec.AccountID = "" // the shared proof never owns an account
 	if old, ok := s.codeAttestations[rec.SEPubKey]; !ok || !rec.AttestedAt.Before(old.AttestedAt) {
 		if ok && sameCodeProof(old, rec) && old.ContinuousCoverageUntil != nil && (rec.ContinuousCoverageUntil == nil || old.ContinuousCoverageUntil.After(*rec.ContinuousCoverageUntil)) {
 			rec.ContinuousCoverageUntil = old.ContinuousCoverageUntil

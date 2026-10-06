@@ -300,11 +300,13 @@ func (s *PostgresStore) ScrubAccount(ctx context.Context, requestID string, now 
 		} else if n > 0 {
 			return store.ErrErasureOpenWithdrawal
 		}
-		k, err := collectErasureKeys(ctx, q, req.AccountID, user.StripeAccountID, req.WalletAddresses)
-		if err != nil {
+		// Freeze personal writers before collecting their identity links. A write
+		// already admitted must be included in this scrub, not just wait for it.
+		if err := q.LockErasureObservations(ctx); err != nil {
 			return err
 		}
-		if err := q.LockErasureObservations(ctx); err != nil {
+		k, err := collectErasureKeys(ctx, q, req.AccountID, user.StripeAccountID, req.WalletAddresses)
+		if err != nil {
 			return err
 		}
 		applied := store.ErasureCounts{Retained: k.Retained()}

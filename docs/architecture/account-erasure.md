@@ -19,11 +19,13 @@ caches, and at Stripe. Erasure here means: remove or replace every value that
 identifies the person, keep the financial records the platform must keep, and
 make sure no later write brings the data back.
 
-IDs stay. An account ID, provider ID, machine ID, request ID, key ID or public
-key is a random or derived identifier. Alone it does not identify a person, and
-the ledger, earnings and audit rows need it to stay consistent
-(`coordinator/internal/store/erasure/rules.go`, file comment). After the scrub, nothing
-links those IDs to a person.
+Account, provider, machine, request and key identifiers stay so financial and
+audit records remain consistent. They remain pseudonymous identifiers, not a
+guarantee of anonymity: backups, shared-device records and external financial
+records can retain links. The retained audit also includes actor identifiers and
+the operator-supplied reason. Operators must keep names, emails and other
+personal details out of that free text
+(`coordinator/internal/store/erasure/rules.go`, `coordinator/store/erasure_types.go`).
 
 Erasure is irreversible, so it runs in steps: an admin plans it (a dry run),
 confirms it (a soft delete that starts a grace period), and only after the
@@ -173,6 +175,7 @@ sequenceDiagram
     end
   end
   rect rgba(14, 116, 144, 0.14)
+    S->>DB: LockErasureObservations (exclusive; drain personal writers)
     S->>DB: collectErasureKeys
     Note over S: Drop SE and App Attest keys that another account uses
   end
@@ -233,7 +236,10 @@ sequenceDiagram
    (`Scheduler.Forget`, which also cancels running attempts and drops UDID
    routes) through `ForgetSEKeys`, and drops the ledger's in-memory usage
    history (`Ledger.ForgetConsumer`). Then it clears the API key cache. Shared
-   keys are not in `ErasureResult.SEKeys`, so their cache entries stay.
+   keys are not in `ErasureResult.SEKeys`, so their cache entries stay. The
+   separate account-scoped `ForgetAccountTrust` hook removes the erased
+   membership and serial from the frozen legacy-MDM policy while retaining
+   another account on the same device (`legacymdm.Policy.ForgetAccount`).
 
 `MemoryStore.ScrubAccount` applies the same rules to its maps through
 `memoryErasureRules`, under one store lock.
@@ -242,7 +248,7 @@ sequenceDiagram
 
 A payout can bounce, a Global Payout can come back, or a settlement or
 referral reward can land after the scrub. Each would refill a forfeited
-account. Migration 21
+account. Migration 25
 (`coordinator/store/postgres/schema/migrations/00025_erasure_refuse_credits.sql`)
 adds three triggers that fire only when the account has an `erased` request
 (`erasure_account_erased`):
@@ -267,7 +273,7 @@ during the grace period still apply, because the erasure can be canceled.
 | A late heartbeat persist rewrites a provider row | The upsert skips a soft-deleted row | `coordinator/store/postgres/providers.go` (`upsertProviderRecord`, `WHERE providers.deleted_at IS NULL`); `coordinator/store/memory/providers.go` (`upsertProviderRecordLocked`) |
 | A reconnect restores provider state from the store | The restore read filters `deleted_at IS NULL` | `coordinator/store/postgres/provider_restore.go` (`GetProviderForRestore`) |
 | A provider reconnects with its old token | Tokens are revoked in the confirm commit, before the disconnect | `RequestAccountErasure` (`SoftDeleteProviderTokens`); `registry.DisconnectAccount` |
-| An open provider session backfills a serial | The scrub closes open sessions | `ScrubProviderSessionsRows` (`disconnected_at = COALESCE(disconnected_at, NOW())`) |
+| A delayed provider session opens or backfills a serial | Open and touch serialize with scrub and reject erased account/session ownership, including blank rows | `coordinator/store/postgres/provider_sessions.go` (`OpenProviderSession`, `TouchProviderSession`); memory mirrors the checks |
 | An API key keeps working from the cache | Keys are revoked, and the handler clears the key cache | `SoftDeleteAPIKeys`; `InvalidateAllAPIKeyCache` |
 | A Privy login during the grace period creates a second account | 403 `account_pending_deletion` | `coordinator/auth/privy.go` (`GetOrCreateUser`, `ErrAccountPendingDeletion`); `coordinator/api/access/auth.go` (`writePrivyUserError`) |
 | A Privy login after the scrub finds the old account | The stored Privy ID is random, so the login makes a new, empty account | `ScrubUsersRow` |
@@ -331,11 +337,13 @@ Outside the live database:
 5. **Locks are taken in one order.** `users`, `erasure_requests`,
    `billing_sessions`, `balances` (`ScrubAccount`;
    `TestScrubLocksBillingSessionsBeforeBalances`).
-6. **An erased account's balance stays zero.** The migration 21 triggers and
+6. **An erased account's balance stays zero.** The migration 25 triggers and
    `refuseErasedCreditLocked` (`TestErasedAccountRefusesCredits`).
-7. **The erasure record holds no personal data after the scrub.** The token
-   and wallet list are stored as hashes; `wallet_addresses` is cleared by
-   `MarkErasureErased` and `MarkErasureCanceled`; the email is never stored.
+7. **Confirmation data has a bounded lifetime.** The plan token and wallet
+   list are hashed. The confirmed raw `wallet_addresses` are cleared by
+   `MarkErasureErased` and `MarkErasureCanceled`; the confirmed email is not
+   stored in the request. Lifecycle/audit identifiers and the freeform reason
+   remain, so the reason must not contain personal details.
 8. **Another account's rows survive.** Shared keys and aliases are removed
    from the key sets before any statement runs (`erasure.WithoutKeys`;
    `TestErasureMarkerPostgres`).
@@ -370,7 +378,7 @@ Outside the live database:
 | Postgres steps | `coordinator/store/postgres/erasure.go` (`PlanAccountErasure`, `RequestAccountErasure`, `ScrubAccount`, `forfeitBalance`); `coordinator/store/postgres/erasure_rules.go` (`erasureStatements`, `applyRules`); `coordinator/store/postgres/erasure_keys.go` (`collectErasureKeys`) |
 | SQL | `coordinator/store/postgres/queries/erasure.sql` (sqlc input), `coordinator/store/postgres/storedb/erasure.sql.go` (generated) |
 | Memory steps | `coordinator/store/memory/erasure.go` (`PlanAccountErasure`, `ScrubAccount`, `refuseErasedCreditLocked`), `coordinator/store/memory/erasure_keys.go` (`collectErasureKeysLocked`), `coordinator/store/memory/erasure_rules.go` (`memoryErasureRules`, `runMemoryRulesLocked`) |
-| Schema | `coordinator/store/postgres/schema/migrations/00022_erasure_tables.sql`, `coordinator/store/postgres/schema/migrations/00025_erasure_refuse_credits.sql`, `coordinator/store/postgres/migration_indexes.go` (versions 19, 20) |
+| Schema | `coordinator/store/postgres/schema/migrations/00022_erasure_tables.sql`, `coordinator/store/postgres/schema/migrations/00025_erasure_refuse_credits.sql`, `coordinator/store/postgres/migration_indexes.go` (versions 23, 24) |
 | Cache invalidation | `coordinator/store/cached.go` |
 | HTTP | `coordinator/api/accounts/erasure/handlers.go`; owner built in `coordinator/api/server.go` (`NewRuntime`); routes in `coordinator/api/routes.go` |
 | Loop, post-commit clears | `coordinator/api/accounts/erasure/loop.go` (`Owner.StartLoop`, `scrub`); `coordinator/api/accounts/erasure/owner.go` (`Hooks`); `coordinator/api/accounts_lifecycle.go` (`StartAccountErasureLoop`), called from `coordinator/app/lifecycle.go` |
@@ -397,13 +405,36 @@ Provider IDs come from the mutable provider row and retained provider/machine
 session history, so removing an offline provider cannot hide its App Attest
 proofs from erasure (`collectErasureKeys`, `coordinator/store/postgres/erasure_keys.go`).
 
-Usage and route persistence hold the shared advisory transaction lock
-`(714320, 2)`; scrub holds it exclusively. Their subsequent erased-state read
-sees any scrub that completed while they waited. Late usage retains token and
+Personal-data writers hold the shared advisory transaction lock `(714320, 2)`;
+scrub holds it exclusively **before** collecting keys. It therefore includes an
+already-admitted write that finishes while scrub waits. Subsequent erased-state reads
+see any scrub that completed while writers waited. Late usage retains token and
 cost accounting but omits the request location; single and batch route writes
 omit erased consumer and provider regions. The memory backend applies the same
 policy under its store mutex (`coordinator/store/postgres/erasure_observations.go`,
 `coordinator/store/memory/erasure_ownership.go`).
+
+App Attest evidence admission binds the server-supplied account to durable
+provider-session ownership before storing proof bytes; completion checks that
+original session again. Shared App Attest keys do not permit an erased account's
+transcript to return. Receipt renewal and queued APNs proof persistence instead
+check the key's owners and remain valid while another owner is live. Both reject
+writes after the last owner is erased. Delayed log uploads return 409
+`account_deleted` after scrub, even if authentication ran before reading the body
+(`coordinator/store/postgres/erasure_personal_writes.go`,
+`coordinator/store/postgres/app_attest_archive.go`,
+`coordinator/store/postgres/app_attest_receipts.go`,
+`coordinator/api/operations/log_reports.go`).
+
+A live payer's Checkout may wait on Stripe while its referrer is erased.
+`fenceBillingSession` revalidates the captured referrer account under the shared
+privacy fence and clears the code if that account was scrubbed, preserving the
+payer's session. New Checkout metadata omits personal referral codes; the webhook
+uses the stored session's canonical attribution instead of historical metadata.
+Old Stripe sessions belonging to another live payer can still contain historical
+referral metadata; this local scrub does not erase that payer's external payment
+(`coordinator/store/postgres/billing_erasure.go`,
+`coordinator/api/billing/stripe_checkout_webhook.go`).
 
 Stripe responses can arrive after local deletion. `fenceErasureExternalObject`
 (`coordinator/store/postgres/erasure_external.go`) reacquires the user fence,

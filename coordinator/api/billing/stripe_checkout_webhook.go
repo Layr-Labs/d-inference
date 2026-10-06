@@ -82,7 +82,12 @@ func (s *Owner) HandleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	// Legacy checkout attribution affects future inference, not the deposit.
 	// Referral.Apply is idempotent; retries recover without re-crediting payment.
-	if code := obj.Metadata["referral_code"]; code != "" {
+	storedSession, err := s.billing.Store().GetBillingSession(id)
+	if err != nil {
+		http.Error(w, "Referral attribution unavailable", http.StatusInternalServerError)
+		return
+	}
+	if code := storedSession.ReferralCode; code != "" {
 		if err := s.billing.Referral().Apply(account, code); err != nil {
 			if errors.Is(err, billing.ErrInvalidReferral) || errors.Is(err, store.ErrReferralConflict) {
 				// The payment is settled. A permanent, inapplicable referral

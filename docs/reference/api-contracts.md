@@ -453,7 +453,7 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 |---|---|---|---|---|
 | POST | `/v1/enroll` | `HandleEnroll` (`coordinator/api/provider/trust/enroll.go`) | Linked provider Bearer token + signed SE-key proof (upcoming policy) | Downloads an MDM profile only for an existing key under its frozen account; [proof contract](#legacy-mdm-enrollment-proof) |
 | GET | `/ws/provider` | `HandleProviderWS` (`coordinator/api/provider/provider.go`) | `ws` | Provider WebSocket; message catalogue in [`protocol-messages.md`](protocol-messages.md) |
-| POST | `/v1/provider/log-report` | `HandleUploadLogReport` (`coordinator/api/operations/log_reports.go`) | `key` | Body capped at [`maxLogReportBodySize`](#timeouts-and-constants); 426 `upgrade_required` when `?serial=` names a provider below the minimum version |
+| POST | `/v1/provider/log-report` | `HandleUploadLogReport` (`coordinator/api/operations/log_reports.go`) | `key` | Body capped at [`maxLogReportBodySize`](#timeouts-and-constants); 409 `account_deleted` if scrub finishes before persistence; 426 `upgrade_required` when `?serial=` names a provider below the minimum version |
 
 #### Legacy MDM enrollment proof
 

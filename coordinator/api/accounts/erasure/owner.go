@@ -28,6 +28,8 @@ type Hooks struct {
 	DisconnectAccount func(accountID string) int
 	// ForgetSEKeys drops the trust state of the erased Secure Enclave keys.
 	ForgetSEKeys func(seKeys []string)
+	// ForgetAccountTrust removes account-scoped cohort membership, including shared devices.
+	ForgetAccountTrust func(accountID string)
 	// ForgetConsumer drops the in-memory usage history of the account.
 	ForgetConsumer func(accountID string)
 }

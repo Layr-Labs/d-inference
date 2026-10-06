@@ -32,7 +32,7 @@ func TestCheckoutReferralRetriesWithoutRecreditingDeposit(t *testing.T) {
 	if err := mem.CreateReferrer("promoter", "REFER"); err != nil {
 		t.Fatal(err)
 	}
-	if err := mem.CreateBillingSession(&store.BillingSession{ID: "referral-session", ExternalID: "cs_referral", AccountID: "buyer", PaymentMethod: "stripe", AmountMicroUSD: 5_000_000, Status: "pending", CreatedAt: time.Now()}); err != nil {
+	if err := mem.CreateBillingSession(&store.BillingSession{ID: "referral-session", ReferralCode: "REFER", ExternalID: "cs_referral", AccountID: "buyer", PaymentMethod: "stripe", AmountMicroUSD: 5_000_000, Status: "pending", CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	payload := []byte(`{"type":"checkout.session.completed","data":{"object":{"id":"cs_referral","amount_total":500,"currency":"usd","payment_status":"paid","metadata":{"billing_session_id":"referral-session","consumer_key":"buyer","referral_code":"REFER","app":"darkbloom"}}}}`)
@@ -73,7 +73,7 @@ func TestCheckoutAcknowledgesPermanentReferralErrors(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if err := st.CreateBillingSession(&store.BillingSession{ID: "local", ExternalID: "cs_paid", AccountID: "buyer", PaymentMethod: "stripe", AmountMicroUSD: 5_000_000, Status: "pending", CreatedAt: time.Now()}); err != nil {
+			if err := st.CreateBillingSession(&store.BillingSession{ID: "local", ReferralCode: "REFER", ExternalID: "cs_paid", AccountID: "buyer", PaymentMethod: "stripe", AmountMicroUSD: 5_000_000, Status: "pending", CreatedAt: time.Now()}); err != nil {
 				t.Fatal(err)
 			}
 			payload := []byte(`{"type":"checkout.session.completed","data":{"object":{"id":"cs_paid","amount_total":500,"currency":"usd","payment_status":"paid","metadata":{"billing_session_id":"local","consumer_key":"buyer","referral_code":"REFER","app":"darkbloom"}}}}`)

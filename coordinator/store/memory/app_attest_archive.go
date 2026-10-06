@@ -20,6 +20,20 @@ func (s *MemoryStore) BeginAppAttestEvidence(ctx context.Context, e store.AppAtt
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.erasedAccounts[e.AccountID] || s.erasedProviderLocked(e.SessionID) {
+		return store.ErrErasureConflict
+	}
+	if e.AccountID != "" {
+		if err := s.history.OpenProviderSession(ctx, e.SessionID, "", e.AccountID); err != nil {
+			return err
+		}
+		for i := range s.history.ProviderSessions {
+			row := &s.history.ProviderSessions[i]
+			if row.SessionID == e.SessionID && row.AccountID == "" {
+				row.AccountID = e.AccountID
+			}
+		}
+	}
 	if s.appAttestEvidence == nil {
 		s.appAttestEvidence = map[string]memoryAppAttestEvidence{}
 	}
@@ -41,6 +55,9 @@ func (s *MemoryStore) CompleteAppAttestEvidence(ctx context.Context, id string, 
 	e, ok := s.appAttestEvidence[id]
 	if !ok {
 		return "", errors.New("evidence_missing")
+	}
+	if s.erasedAccounts[e.Evidence.AccountID] || s.erasedProviderLocked(e.Evidence.SessionID) {
+		return "", store.ErrErasureConflict
 	}
 	if e.Decision.Outcome != "pending" {
 		return e.Decision.Outcome, nil

@@ -86,6 +86,9 @@ func (s *Owner) scrub(ctx context.Context, requestID string) (*store.ErasureResu
 	accountID := res.Request.AccountID
 	s.hooks.DisconnectAccount(accountID)
 	s.hooks.ForgetSEKeys(res.SEKeys)
+	if s.hooks.ForgetAccountTrust != nil {
+		s.hooks.ForgetAccountTrust(accountID)
+	}
 	s.hooks.ForgetConsumer(accountID)
 	s.access.InvalidateAllAPIKeyCache()
 	s.logger.Info("account erased", "request_id", requestID, "account_id", accountID)

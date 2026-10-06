@@ -1,8 +1,9 @@
 -- Account erasure. erasure_requests holds one row per request and its state.
--- It stores no personal data: the plan column has row counts only, the
--- confirm token and the planned wallet list are SHA-256 hashes, and the scrub
--- clears wallet_addresses after
--- it uses them. erasure_outbox holds the external deletions that the scrub
+-- It retains lifecycle/audit identifiers and the operator-supplied reason.
+-- The plan has row counts; the confirm token and planned wallet list are hashed.
+-- Confirmed wallet_addresses remain raw during grace and are cleared on scrub
+-- or cancellation. Reasons must not contain personal details.
+-- erasure_outbox holds the external deletions that the scrub
 -- leaves for a worker; external_id carries a Stripe ID until that deletion
 -- is confirmed and is then cleared. New tables take no lock on existing ones;
 -- the file runs in one transaction, and IF NOT EXISTS keeps a replay a no-op.

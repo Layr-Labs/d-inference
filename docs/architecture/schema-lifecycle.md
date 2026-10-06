@@ -1,6 +1,6 @@
 # Schema lifecycle
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 Explanation of how the coordinator's Postgres schema changes: numbered goose
 migrations that run inside `NewPostgres` before the coordinator serves, the

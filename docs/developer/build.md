@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the

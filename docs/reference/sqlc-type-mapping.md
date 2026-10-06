@@ -1,6 +1,6 @@
 # sqlc type mapping
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-06
 
 Reference for the Go types that sqlc v1.31.1 generates in
 `coordinator/store/postgres/storedb/` from `coordinator/store/postgres/schema/schema.sql`

@@ -1,6 +1,6 @@
 # Add a database migration
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 How to change the coordinator's Postgres schema: choose the migration kind,
 write it as a numbered goose version, regenerate the checked-in schema, and

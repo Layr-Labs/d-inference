@@ -2,6 +2,11 @@
 
 > Last updated: 2026-10-06
 
+Stack maintenance uses Python 3, Git, authenticated `gh`, and a configured commit
+signer; it requires no product build. Follow [Maintain a pull-request stack](pull-requests.md)
+for `scripts/restack-after-squash.py` checks, signed ancestry updates, and
+post-push verification. Branch updates still require the affected CI gates.
+
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the
 operator’s live status or recovery evidence (`scripts/run-provider-tests.sh`).

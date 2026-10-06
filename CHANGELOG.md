@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased - pull-request stack tooling
+
+- Add a checked, signed same-tree ancestry repair for dependent PRs after each parent squash, with atomic non-force pushes and optional retargeting. Document linear bases, manual reconciliation on content differences, and renewed signature, CI and approval checks; the tool does not merge PRs or automate conflict resolution.
+
 ## Unreleased — personal data in coordinator logs
 
 - Stop writing email addresses, IP addresses, device serial numbers and MDA UDIDs to coordinator process logs, which are forwarded to Datadog. Log lines name accounts by `account_id` (`user_id` in the access log) and providers by `provider_id`; the access log no longer has a `remote` field and the MDM webhook debug line no longer includes a body preview. Logs written before this change are not affected.

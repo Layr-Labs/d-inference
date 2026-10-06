@@ -18,7 +18,9 @@ A signed version must be [qualified by the coordinator](../reference/provider-au
 
 Account erasure also clears delayed account-specific proof writes and frozen
 legacy-MDM membership; [shared-device cleanup](../architecture/account-erasure.md#shared-machines-and-shared-keys)
-retains another live account's device evidence.
+retains another live account's device evidence. Unshared APNs tokens and pending
+challenges are removed from the coordinator's runtime cache too; stale replies
+cannot restore them ([identity cleanup](../architecture/security/identity-binding.md#account-erasure-and-apns-runtime-state)).
 
 ## Read current verification in the dashboard
 

@@ -309,7 +309,7 @@ func TestApprovedTransitionGrantsWithoutMDMOrAPNs(t *testing.T) {
 	}
 	// The no-new-push path is authorized only by this prior genuine APNs proof,
 	// then completed by a live encrypted process-key possession challenge.
-	srv.codeAttestThrottle.RecordAttestedForProcess(
+	srv.codeAttestThrottle.RecordAttestedForProcess(srv.codeAttestThrottle.PublicationGeneration(),
 		sePublic, "0.8.14", "token-current", processKey, trHashA)
 	provider.SignalApplicationProofSettled()
 	srv.CodeAttestLoop(context.Background(), "prov-fs", provider)

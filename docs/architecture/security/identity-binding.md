@@ -1,6 +1,6 @@
 # Identity binding
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-06
 
 How the coordinator binds a provider's process encryption key, account and
 verification credentials. Legacy MDM/APNs evidence and App Attest credentials
@@ -126,6 +126,25 @@ RFC 8628-style flow implemented in `coordinator/api/access/device/handlers.go` a
 | Result | `sub` is the Privy DID (`did:privy:…`); `GetOrCreateUser` looks it up or creates `User{AccountID: uuid, PrivyUserID, Email}` after fetching details from `https://auth.privy.io/api/v1/users/<did>` with Basic auth `app_id:app_secret` and `Privy-App-Id` | `coordinator/auth/privy.go` (`GetOrCreateUser`, `fetchUserDetails`) |
 | Admin email OTP | `InitEmailOTP` and `VerifyEmailOTP` encode email/code with typed JSON serialization before calling Privy; quotes, backslashes and control characters remain inside their string fields | `coordinator/auth/privy.go` |
 | Failure | Missing header → `401 authentication_error "missing credentials"`; bad token → `401 authentication_error "invalid Privy token"` | `coordinator/api/access/auth.go` (`RequirePrivyAuth`) |
+
+### Account erasure and APNs runtime state
+
+After durable scrub identifies keys with no remaining live owner,
+`ForgetErasedKeys` (`coordinator/api/provider/trust/erasure.go`) also clears the
+APNs throttle's raw token proofs, pending push and resume challenges, loop
+ownership and push budgets. Resume fallback timers are canceled. Shared keys
+are excluded by the erasure owner and retain their live account's evidence.
+
+`Throttle.PublicationGeneration` is captured before proof validation, reuse
+checks and persisted-cache reads. `Throttle.Forget` invalidates older
+publications for those keys using hash-only generation fences; a delayed reply,
+resume setup or startup read cannot repopulate an erased token. The same fence
+covers budget resets returning from storage. A new legitimate owner can earn a
+fresh challenge after the boundary. The throttle never holds its global mutex
+across storage or transport I/O (`coordinator/internal/provider/identity/erasure.go`,
+`coordinator/internal/provider/identity/code_attest_budget.go`). Durable writer
+ownership checks remain necessary independently of these process-local fences;
+see [shared-device cleanup](../account-erasure.md#shared-machines-and-shared-keys).
 
 ## Invariants
 

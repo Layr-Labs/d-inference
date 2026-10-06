@@ -43,7 +43,8 @@ fields and method verdict exposed by the public endpoint. See the [diagnostic fi
 and [attestation boundary](../architecture/security/attestation.md).
 
 A scrubbed account cannot restore raw proofs through a delayed verification
-callback. Another live account on a shared device keeps its own verification
+callback or an in-flight APNs cache load. Runtime token proofs and pending
+challenges for unshared keys are also cleared. Another live account on a shared device keeps its own verification
 evidence; see [shared-device cleanup](../architecture/account-erasure.md#shared-machines-and-shared-keys).
 
 ## Read verification in chat and network stats

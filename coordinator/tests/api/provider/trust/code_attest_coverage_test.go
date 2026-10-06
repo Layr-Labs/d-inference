@@ -101,7 +101,7 @@ func TestCodeContinuityRefusesChangedOrExpiredIdentity(t *testing.T) {
 			th.Now = func() time.Time { return now }
 			r := base
 			tc.modify(&r)
-			th.Seed([]store.CodeAttestation{r})
+			th.Seed(th.PublicationGeneration(), []store.CodeAttestation{r})
 			got := th.reuseAttestation(tc.se, tc.version, tc.token, tc.node)
 			if got != (tc.name == "same process") {
 				t.Fatalf("reuse=%v", got)
@@ -128,7 +128,7 @@ func TestCodeCoverageRequiresVerifiedCurrentBinding(t *testing.T) {
 	p.Status = registry.StatusOnline
 	p.TrustLevel = registry.TrustHardware
 	p.AttestationResult.BinaryHash = strings.Repeat("a", 64)
-	srv.codeAttestThrottle.RecordAttestedForProcess(se, p.Version, p.APNsDeviceToken, p.PublicKey, p.AttestationResult.BinaryHash)
+	srv.codeAttestThrottle.RecordAttestedForProcess(srv.codeAttestThrottle.PublicationGeneration(), se, p.Version, p.APNsDeviceToken, p.PublicKey, p.AttestationResult.BinaryHash)
 	for _, tc := range []struct {
 		name   string
 		change func(*registry.Provider)
@@ -175,7 +175,7 @@ func TestCodeCoverageSweepDisconnectAndClose(t *testing.T) {
 	p.FreshCodeAttested = true
 	p.AttestationResult.BinaryHash = strings.Repeat("a", 64)
 	p.Mu().Unlock()
-	srv.codeAttestThrottle.RecordAttestedForProcess("coverage-se", p.Version, p.APNsDeviceToken, p.PublicKey, p.AttestationResult.BinaryHash)
+	srv.codeAttestThrottle.RecordAttestedForProcess(srv.codeAttestThrottle.PublicationGeneration(), "coverage-se", p.Version, p.APNsDeviceToken, p.PublicKey, p.AttestationResult.BinaryHash)
 	proof, _ := srv.codeAttestThrottle.ProofForIdentity("coverage-se", p.Version, p.APNsDeviceToken, p.PublicKey, p.AttestationResult.BinaryHash)
 	if proof.SEPubKey != "coverage-se" {
 		t.Fatal("exact-bound proof missing from coverage cache")
@@ -211,7 +211,7 @@ func TestCodeCoverageSweepDisconnectAndClose(t *testing.T) {
 	for _, gap := range []time.Duration{100 * time.Second, 120 * time.Second, 121 * time.Second} {
 		th := newThrottleFixture()
 		th.Now = func() time.Time { return disconnectedAt.Add(gap) }
-		th.Seed(rows)
+		th.Seed(th.PublicationGeneration(), rows)
 		if got := th.reuseAttestation("coverage-se", p.Version, p.APNsDeviceToken, p.PublicKey); got != (gap <= identitystate.ContinuityGap) {
 			t.Fatalf("reuse after disconnect gap %s = %v", gap, got)
 		}

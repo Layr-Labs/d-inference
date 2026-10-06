@@ -88,6 +88,7 @@ func testPostgresStore(t testing.TB) *postgresFixture {
 		"app_attest_shadow_events",
 		"request_profiles",
 		"fleet_snapshots",
+		"erasure_se_owners",
 		"erasure_outbox",
 		"erasure_requests",
 	} {

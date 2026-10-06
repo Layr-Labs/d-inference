@@ -95,7 +95,7 @@ UPDATE provider_tokens SET active = FALSE, deleted_at = $2 WHERE account_id = $1
 UPDATE users SET deleted_at = NULL WHERE account_id = $1 AND deleted_at IS NOT NULL;
 
 -- name: RestoreProviders :execrows
-UPDATE providers SET deleted_at = NULL WHERE account_id = $1 AND deleted_at IS NOT NULL;
+UPDATE providers SET deleted_at = NULL WHERE account_id = $1 AND deleted_at = $2;
 
 -- Money that is still moving blocks erasure.
 
@@ -142,10 +142,42 @@ SELECT DISTINCT serial_number FROM provider_log_reports WHERE account_id = $1 AN
 -- name: ListAppAttestKeysForSessions :many
 SELECT DISTINCT key_id FROM app_attest_evidence WHERE session_id = ANY(sqlc.arg('session_ids')::text[]) AND key_id <> '';
 
+-- Historical aliases are authenticated, account-scoped legacy SE bindings.
+-- Never substitute provider_sessions.provider_key (an X25519 transport key)
+-- or an unverified serial for this ownership link.
+-- name: ListAccountHistoricalSEKeys :many
+WITH keys AS (
+ SELECT se_pubkey FROM provider_trust_reuse
+ UNION SELECT se_pubkey FROM code_attestations
+ UNION SELECT se_pubkey FROM provider_verification_jobs
+)
+SELECT k.se_pubkey FROM keys k WHERE k.se_pubkey <> '' AND (
+ EXISTS(SELECT 1 FROM darkbloom_machine_aliases a WHERE a.kind='legacy_se' AND a.scope=$1
+ AND a.digest=encode(sha256(convert_to('legacy_se','UTF8') || '\x00'::bytea || convert_to(k.se_pubkey,'UTF8')),'hex'))
+ OR EXISTS(SELECT 1 FROM erasure_se_owners o WHERE o.account_id=$1
+ AND o.se_key_digest=encode(sha256(convert_to('legacy_se','UTF8') || '\x00'::bytea || convert_to(k.se_pubkey,'UTF8')),'hex'))
+);
+
+-- name: RetainErasureSEOwners :exec
+INSERT INTO erasure_se_owners(se_key_digest, account_id)
+SELECT encode(sha256(convert_to('legacy_se','UTF8') || '\x00'::bytea || convert_to(p.se_public_key,'UTF8')),'hex'), p.account_id
+FROM providers p WHERE p.account_id=$1 AND p.se_public_key<>''
+UNION SELECT digest, scope FROM darkbloom_machine_aliases WHERE kind='legacy_se' AND scope=$1 AND digest ~ '^[0-9a-f]{64}$'
+ON CONFLICT DO NOTHING;
+
 -- name: ListSharedSEKeys :many
-SELECT DISTINCT se_public_key FROM providers
-WHERE se_public_key = ANY(sqlc.arg('se_keys')::text[]) AND providers.account_id <> sqlc.arg('account_id')
-AND NOT EXISTS (SELECT 1 FROM erasure_requests r WHERE r.account_id = providers.account_id AND r.state = 'erased');
+WITH candidates AS (
+ SELECT unnest(sqlc.arg('se_keys')::text[]) AS se_key
+), owners AS (
+ SELECT encode(sha256(convert_to('legacy_se','UTF8') || '\x00'::bytea || convert_to(p.se_public_key,'UTF8')),'hex') AS digest, p.account_id
+ FROM providers p WHERE p.se_public_key=ANY(sqlc.arg('se_keys')::text[])
+ UNION SELECT a.digest, a.scope FROM darkbloom_machine_aliases a WHERE a.kind='legacy_se'
+ UNION SELECT o.se_key_digest, o.account_id FROM erasure_se_owners o
+)
+SELECT DISTINCT c.se_key::text FROM candidates c JOIN owners o
+ ON o.digest=encode(sha256(convert_to('legacy_se','UTF8') || '\x00'::bytea || convert_to(c.se_key,'UTF8')),'hex')
+WHERE o.account_id<>sqlc.arg('account_id')
+AND NOT EXISTS(SELECT 1 FROM erasure_requests r WHERE r.account_id=o.account_id AND r.state='erased');
 
 -- name: ListSharedAppAttestKeys :many
 SELECT DISTINCT key_id FROM app_attest_evidence
@@ -193,7 +225,10 @@ SELECT a.digest, EXISTS (
       AND NOT EXISTS (SELECT 1 FROM erasure_requests r WHERE r.account_id = s.account_id AND r.state = 'erased')
 ) AS shared
 FROM darkbloom_machine_aliases a
-WHERE a.kind = 'mda_serial' AND a.scope = '' AND a.digest = ANY(sqlc.arg('digests')::text[]);
+WHERE a.kind = 'mda_serial' AND a.scope = '' AND (
+ a.digest = ANY(sqlc.arg('digests')::text[])
+ OR EXISTS(SELECT 1 FROM darkbloom_machine_sessions own WHERE own.machine_id=a.machine_id AND own.account_id=sqlc.arg('account_id'))
+);
 
 -- Scrub statements, in erasure_rules.go order.
 

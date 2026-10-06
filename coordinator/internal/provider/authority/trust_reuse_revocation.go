@@ -55,6 +55,7 @@ func (s *Service,
 		}
 		return journalErr
 	}
+	publication := s.trustReuseCache.PublicationGeneration()
 	authoritative, err := s.revokePersistedTrustReuseWithRetry(
 		st, seKey, revocationEventID)
 	if err != nil {
@@ -64,7 +65,7 @@ func (s *Service,
 		}
 		return fmt.Errorf("revoke persisted trust reuse: %w", err)
 	}
-	s.trustReuseCache.InstallAuthoritativeTrustReuse(authoritative)
+	s.trustReuseCache.InstallAuthoritativeTrustReuse(publication, authoritative)
 
 	if journaled {
 		remaining, err := s.trustReuseJournal.Remove(entry)
@@ -121,11 +122,12 @@ func (s *Service,
 				delay = min(delay*2, 30*time.Second)
 				continue
 			}
+			publication := s.trustReuseCache.PublicationGeneration()
 			authoritative, err := s.revokePersistedTrustReuseWithRetry(
 				st, seKey, entry.RevocationID,
 			)
 			if err == nil {
-				s.trustReuseCache.InstallAuthoritativeTrustReuse(authoritative)
+				s.trustReuseCache.InstallAuthoritativeTrustReuse(publication, authoritative)
 				remaining, removeErr := s.trustReuseJournal.Remove(entry)
 				if removeErr != nil {
 					s.Latch(removeErr)

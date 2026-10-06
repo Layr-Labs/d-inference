@@ -248,7 +248,14 @@ the image by these rules:
 4. **After a row has `deleted_at` set, roll back only to an image that filters
    it.** Images built before versions 17 to 21 do not filter `deleted_at`, so
    they return soft-deleted rows as live
-   ([soft-delete reads](../reference/soft-delete.md)).
+   ([soft-delete reads](../reference/soft-delete.md)). Once any account-erasure
+   request is `pending` or `erased`, the fallback must also include the
+   erasure-aware account admission fences, pending-erasure Privy checks,
+   personal-write and cache-publication fences, and compatible retained
+   ownership metadata. Goose support and read filters alone are insufficient:
+   a schema-only soft-delete build can recreate credentials or personal fields.
+   Before enabling erasure, retain an image meeting this stricter floor
+   ([account-erasure prerequisites](account-erasure.md#prerequisites)).
 5. **Never start a coordinator built before the
    `backfill_withdrawable_balance_v1` marker existed**; the deploy runbook
    states this rule.

@@ -184,7 +184,7 @@ func (s *MemoryStore) CancelAccountErasure(ctx context.Context, accountID, actor
 	u.DeletedAt = nil
 	s.usersByPrivyID[u.PrivyUserID] = u
 	for _, p := range s.providerRecords {
-		if p.AccountID == accountID {
+		if p.AccountID == accountID && p.DeletedAt != nil && r.RequestedAt != nil && p.DeletedAt.Equal(*r.RequestedAt) {
 			p.DeletedAt = nil
 		}
 	}
@@ -216,6 +216,7 @@ func (s *MemoryStore) ScrubAccount(ctx context.Context, requestID string, now ti
 	if s.openWithdrawalsLocked(r.AccountID, now) > 0 {
 		return nil, store.ErrErasureOpenWithdrawal
 	}
+	s.retainErasureSEOwnersLocked(r.AccountID)
 	k := s.collectErasureKeysLocked(u, r.wallets)
 	applied := store.ErasureCounts{Retained: k.Retained(), StripeObjectCounts: erasure.StripeObjectCounts(k.StripeObjects())}
 	applied.BalanceMicroUSD, applied.WithdrawableMicroUSD = s.balances[r.AccountID], s.withdrawable[r.AccountID]

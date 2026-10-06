@@ -26,6 +26,9 @@ func (s *Scheduler) submit(ctx context.Context, providerID string, provider *reg
 	if start != nil {
 		start()
 	}
+	s.mu.Lock()
+	erasureGeneration := s.erasureGeneration
+	s.mu.Unlock()
 	now := s.deps.Now().UTC()
 	record, err := s.store.UpsertVerificationJob(ctx, store.VerificationJob{
 		SEPubKey: result.PublicKey, Serial: result.SerialNumber,
@@ -43,6 +46,12 @@ func (s *Scheduler) submit(ctx context.Context, providerID string, provider *reg
 	seKey := result.PublicKey
 	key := Key(seKey, record.Kind)
 	s.mu.Lock()
+	// The store write may have committed before Forget while its response was
+	// delayed. Never republish that captured binding after erasure cleanup.
+	if s.erasureGeneration != erasureGeneration {
+		s.mu.Unlock()
+		return 0
+	}
 	generation := s.generation.Add(1)
 	binding := &Binding{
 		ProviderID: providerID, Provider: provider, Attestation: *result,
@@ -310,6 +319,7 @@ func (s *Scheduler) Forget(seKeys []string) {
 		erased[key] = true
 	}
 	s.mu.Lock()
+	s.erasureGeneration++
 	for key, job := range s.jobs {
 		if !erased[job.Record.SEPubKey] {
 			continue

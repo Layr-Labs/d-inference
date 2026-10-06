@@ -60,27 +60,43 @@ func (c *Cache) AdvanceCoverage(seKeys []string, until time.Time) {
 	}
 }
 
-func (c *Cache) RecordTrust(rec store.ProviderTrustReuse) {
-	if rec.SEPubKey == "" {
-		return
-	}
+// PublicationGeneration must be captured before reading or writing durable
+// evidence. Forget invalidates every outstanding publication without retaining
+// the erased keys. Unrelated in-flight grants may retry after an erasure.
+func (c *Cache) PublicationGeneration() uint64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if current, ok := c.records[rec.SEPubKey]; ok {
-		if current.revokedAt != nil ||
-			current.RevocationGeneration != rec.RevocationGeneration {
-			return
-		}
-	}
-	c.records[rec.SEPubKey] = trustReuseRecordFromStore(rec)
+	return c.publicationGeneration
 }
 
-func (c *Cache) RecoverTrust(rec store.ProviderTrustReuse, expectedRevocationGeneration uint64) bool {
+func (c *Cache) RecordTrust(generation uint64, rec store.ProviderTrustReuse) bool {
 	if rec.SEPubKey == "" {
 		return false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if generation != c.publicationGeneration {
+		return false
+	}
+	if current, ok := c.records[rec.SEPubKey]; ok {
+		if current.revokedAt != nil ||
+			current.RevocationGeneration != rec.RevocationGeneration {
+			return false
+		}
+	}
+	c.records[rec.SEPubKey] = trustReuseRecordFromStore(rec)
+	return true
+}
+
+func (c *Cache) RecoverTrust(generation uint64, rec store.ProviderTrustReuse, expectedRevocationGeneration uint64) bool {
+	if rec.SEPubKey == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if generation != c.publicationGeneration {
+		return false
+	}
 	if current, ok := c.records[rec.SEPubKey]; ok &&
 		current.RevocationGeneration != expectedRevocationGeneration {
 		return false
@@ -101,11 +117,12 @@ func (c *Cache) RevocationState(seKey string) (uint64, string) {
 // Forget drops the cached records of erased SE keys. With no record the next
 // connection of such a key takes the full verification path.
 func (c *Cache) Forget(seKeys []string) {
-	if c == nil {
+	if c == nil || len(seKeys) == 0 {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.publicationGeneration++
 	for _, key := range seKeys {
 		delete(c.records, key)
 	}
@@ -154,12 +171,15 @@ func (c *Cache) InstallRevocationGeneration(seKey string, generation uint64) {
 	c.records[seKey] = rec
 }
 
-func (c *Cache) InstallAuthoritativeTrustReuse(rec store.ProviderTrustReuse) {
+func (c *Cache) InstallAuthoritativeTrustReuse(generation uint64, rec store.ProviderTrustReuse) {
 	if rec.SEPubKey == "" {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if generation != c.publicationGeneration {
+		return
+	}
 	current := c.records[rec.SEPubKey]
 	if current.RevocationGeneration > rec.RevocationGeneration {
 		return

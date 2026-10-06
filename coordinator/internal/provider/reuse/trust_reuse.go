@@ -102,9 +102,10 @@ type Store interface {
 
 type Cache struct {
 	*Policy
-	mu      sync.Mutex
-	records map[string]Record
-	Store   Store
+	mu                    sync.Mutex
+	publicationGeneration uint64
+	records               map[string]Record
+	Store                 Store
 }
 
 // trustReusePolicy is the deployment's measured-gap and wall-clock policy.

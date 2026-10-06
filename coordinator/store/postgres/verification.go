@@ -43,7 +43,15 @@ func (s *PostgresStore) UpsertVerificationJob(ctx context.Context, rec store.Ver
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	row := s.pool.QueryRow(ctx,
+	tx, err := beginErasureObservation(ctx, s.pool)
+	if err != nil {
+		return store.VerificationJob{}, err
+	}
+	defer rollbackErasureTx(tx)
+	if err := checkPersonalSEOwner(ctx, tx, rec.SEPubKey, ""); err != nil {
+		return store.VerificationJob{}, err
+	}
+	row := tx.QueryRow(ctx,
 		`INSERT INTO provider_verification_jobs (
 			se_pubkey, serial, udid, task_kind, task_state, priority,
 			retry_stage, previous_delay_ns, next_attempt_at, last_outcome,
@@ -90,6 +98,9 @@ func (s *PostgresStore) UpsertVerificationJob(ctx context.Context, rec store.Ver
 	out, err := scanVerificationJob(row)
 	if err != nil {
 		return store.VerificationJob{}, fmt.Errorf("store: upsert verification job: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return store.VerificationJob{}, err
 	}
 	return out, nil
 }

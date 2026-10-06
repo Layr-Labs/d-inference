@@ -3,11 +3,11 @@ package identity
 import "github.com/eigeninference/d-inference/coordinator/store"
 
 // SeedPushBudgets restores durable admission windows and rotation-clear history.
-func (t *Throttle) SeedPushBudgets(budgets []store.CodeAttestPushBudget) {
+func (t *Throttle) SeedPushBudgets(generation uint64, budgets []store.CodeAttestPushBudget) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for _, budget := range budgets {
-		if budget.SEPubKey == "" {
+		if budget.SEPubKey == "" || !t.publicationCurrentLocked(budget.SEPubKey, generation) {
 			continue
 		}
 		if budget.TokenHash == "" {

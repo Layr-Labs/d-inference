@@ -207,6 +207,9 @@ object or another service) that must be deleted after the scrub.
    it exclusively before collecting keys. Carry the originating account when
    registry persistence may not exist yet, as `BeginAppAttestEvidence` does.
    An erased session cannot borrow another account's shared-key exception.
+   SE-scoped writers use `checkPersonalSEOwner`, including retained pseudonymous
+   ownership after the inventory alias is removed. Preserve ordinary provider
+   tombstones and check a live shared owner before accepting delayed device writes.
    See `coordinator/store/postgres/erasure_personal_writes.go`.
 
 4. **A new in-memory copy of personal data** (a cache or map keyed by

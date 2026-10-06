@@ -58,10 +58,15 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p store.ProviderReco
 	return tx.Commit(ctx)
 }
 
-// upsertProviderRecord leaves a soft-deleted row alone: the account is under
-// erasure and a late heartbeat persist must not rewrite its serial or location.
-func upsertProviderRecord(ctx context.Context, db providerRecordDB, p store.ProviderRecord) error {
-	_, err := db.Exec(ctx,
+// upsertProviderRecord leaves removed and erasing rows alone: a late heartbeat
+// must not revive the provider or rewrite its serial or location.
+func upsertProviderRecord(ctx context.Context, tx pgx.Tx, p store.ProviderRecord) error {
+	// A new live co-owner must become visible either before the scrub collects
+	// shared keys or after it commits, never halfway through that decision.
+	if err := lockPersonalDataWrite(ctx, tx); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx,
 		`INSERT INTO providers (
 			id, hardware, models, backend, location, trust_level, attested,
 			attestation_result, se_public_key, serial_number,
@@ -214,14 +219,18 @@ func (s *PostgresStore) DeleteProvidersBySerial(ctx context.Context, ownerAccoun
 	if err != nil {
 		return 0, fmt.Errorf("store: delete providers begin: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer rollbackErasureTx(tx)
+	if err := lockAccountAdmission(ctx, tx, ownerAccountID); err != nil {
+		return 0, err
+	}
 
 	// Resolve all provider rows for this owner matching the stable identity
 	// (serial OR session id). Postgres keeps one row per session UUID, so a
-	// serial can map to many ids — delete them all.
+	// serial can map to many ids — hide them all. Retain SE/account ownership
+	// so a later scrub can still find device proofs and reject delayed writes.
 	rows, err := tx.Query(ctx,
 		`SELECT id FROM providers
-		 WHERE account_id = $1
+		 WHERE account_id = $1 AND deleted_at IS NULL
 		   AND ((serial_number = $2 AND serial_number <> '') OR id = $2)`,
 		ownerAccountID, serialOrID,
 	)
@@ -248,10 +257,8 @@ func (s *PostgresStore) DeleteProvidersBySerial(ctx context.Context, ownerAccoun
 		return 0, nil
 	}
 
-	// provider_reputation.provider_id has a FK to providers(id) with NO
-	// ON DELETE CASCADE — delete the reputation rows FIRST or the providers
-	// delete fails. usage / provider_earnings / provider_sessions hold
-	// money/uptime history and have no FK; they are intentionally preserved.
+	// Reputation is discarded as before. Usage, earnings and sessions keep
+	// their accounting history; the hidden provider row retains ownership.
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM provider_reputation WHERE provider_id = ANY($1)`, ids,
 	); err != nil {
@@ -259,7 +266,7 @@ func (s *PostgresStore) DeleteProvidersBySerial(ctx context.Context, ownerAccoun
 	}
 
 	tag, err := tx.Exec(ctx,
-		`DELETE FROM providers WHERE id = ANY($1) AND account_id = $2`,
+		`UPDATE providers SET deleted_at=NOW() WHERE id=ANY($1) AND account_id=$2 AND deleted_at IS NULL`,
 		ids, ownerAccountID,
 	)
 	if err != nil {

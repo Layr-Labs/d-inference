@@ -9,13 +9,13 @@ package operations
 
 import (
 	"errors"
-	"github.com/eigeninference/d-inference/coordinator/store"
 	"io"
 	"net/http"
 	"strconv"
 
 	"github.com/eigeninference/d-inference/coordinator/api/access"
 	httpx "github.com/eigeninference/d-inference/coordinator/api/httpx"
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 const maxLogReportBodySize = 10 << 20 // 10 MB

@@ -60,6 +60,12 @@ func MDASerialDigest(serial string) string {
 	return hex.EncodeToString(h[:])
 }
 
+// LegacySEDigest matches the authenticated account-scoped inventory alias.
+func LegacySEDigest(key string) string {
+	h := sha256.Sum256([]byte("legacy_se\x00" + key))
+	return hex.EncodeToString(h[:])
+}
+
 // NormalizeWallets trims, drops empty and duplicate addresses and sorts them.
 func NormalizeWallets(in []string) []string {
 	trimmed := make([]string, 0, len(in))

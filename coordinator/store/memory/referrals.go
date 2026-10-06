@@ -11,6 +11,9 @@ import (
 func (s *MemoryStore) CreateReferrer(accountID, code string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.accountAdmissionLocked(accountID); err != nil {
+		return err
+	}
 
 	if _, exists := s.referrersByCode[code]; exists {
 		return fmt.Errorf("%w: referral code %q already exists", store.ErrReferralConflict, code)

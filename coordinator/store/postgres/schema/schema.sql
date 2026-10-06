@@ -641,6 +641,17 @@ CREATE TABLE public.erasure_requests (
 
 
 --
+-- Name: erasure_se_owners; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.erasure_se_owners (
+    se_key_digest text NOT NULL,
+    account_id text NOT NULL,
+    CONSTRAINT erasure_se_owners_se_key_digest_check CHECK ((se_key_digest ~ '^[0-9a-f]{64}$'::text))
+);
+
+
+--
 -- Name: fleet_snapshots; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2391,6 +2402,14 @@ ALTER TABLE ONLY public.erasure_requests
 
 
 --
+-- Name: erasure_se_owners erasure_se_owners_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.erasure_se_owners
+    ADD CONSTRAINT erasure_se_owners_pkey PRIMARY KEY (se_key_digest, account_id);
+
+
+--
 -- Name: fleet_snapshots fleet_snapshots_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2983,6 +3002,13 @@ CREATE INDEX erasure_requests_erased ON public.erasure_requests USING btree (acc
 --
 
 CREATE UNIQUE INDEX erasure_requests_open ON public.erasure_requests USING btree (account_id) WHERE (state = ANY (ARRAY['planned'::text, 'pending'::text]));
+
+
+--
+-- Name: erasure_se_owners_account; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX erasure_se_owners_account ON public.erasure_se_owners USING btree (account_id);
 
 
 --

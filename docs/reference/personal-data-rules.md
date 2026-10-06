@@ -103,6 +103,7 @@ The scrub keeps these on purpose. The marker tests allow only
 | An `mda_serial` alias of a machine another account also used | Deleting it would break that account's machine identity | `retainedSharedMDAAlias` |
 | Trust-reuse, verification, code-attestation and push-budget rows of a Secure Enclave key another account's provider has; their trust-reuse cache entries and MDM jobs | They belong to the other account too | `retainedSharedSEKey` |
 | App Attest receipts, receipt blobs and receipt jobs of a key another account's session used | They belong to the other account too | `retainedSharedAppAttestKey` |
+| `erasure_se_owners`: domain-separated SE-key digests and account IDs | Retained pseudonymous ownership rejects delayed trust/job/proof writes after aliases are deleted; these hashes are not anonymous | `RetainErasureSEOwners`, `checkPersonalSEOwner` |
 | `erasure_requests`: state, actor, reason, row counts, times | The record that the erasure happened; no email, token or wallet address after the scrub | `MarkErasureErased` |
 | `erasure_refused_credits` | Credits refused after the erasure, kept for review; IDs, amounts and cleaned references only | `00025_erasure_refuse_credits.sql` |
 | `erasure_outbox.external_id` | The Stripe ID waits here until the worker confirms the deletion; a `manual_action` row keeps it until an operator clears it | `erasureMarkerAllowList`; `SaveErasureOutboxResult` |
@@ -162,6 +163,16 @@ Indexes: `erasure_requests_open` (unique `account_id` where `state` is
 `created_at DESC`), `erasure_requests_due` (`scrub_after` where `pending`),
 `erasure_requests_erased` (`account_id` where `erased`, read by the
 triggers).
+
+### `erasure_se_owners`
+
+Migration 22 creates `se_key_digest TEXT NOT NULL` and `account_id TEXT NOT NULL`,
+with primary key `(se_key_digest, account_id)` and index
+`erasure_se_owners_account (account_id)`. The digest is SHA-256 of
+`legacy_se`, a zero byte, and the authenticated SE public key, matching the
+account-scoped inventory alias (`LegacySEDigest`,
+`coordinator/internal/store/erasure/keys.go`). Scrub retains these pseudonymous
+ownership links before deleting aliases; it stores no serial, UDID or APNs token.
 
 ### `erasure_outbox`
 

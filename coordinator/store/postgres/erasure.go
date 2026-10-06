@@ -246,7 +246,7 @@ func (s *PostgresStore) CancelAccountErasure(ctx context.Context, accountID, act
 		if _, err := q.RestoreUser(ctx, accountID); err != nil {
 			return fmt.Errorf("store: restore user: %w", err)
 		}
-		if _, err := q.RestoreProviders(ctx, accountID); err != nil {
+		if _, err := q.RestoreProviders(ctx, storedb.RestoreProvidersParams{AccountID: accountID, DeletedAt: open.RequestedAt}); err != nil {
 			return err
 		}
 		id = open.ID
@@ -303,6 +303,9 @@ func (s *PostgresStore) ScrubAccount(ctx context.Context, requestID string, now 
 		// Freeze personal writers before collecting their identity links. A write
 		// already admitted must be included in this scrub, not just wait for it.
 		if err := q.LockErasureObservations(ctx); err != nil {
+			return err
+		}
+		if err := q.RetainErasureSEOwners(ctx, req.AccountID); err != nil {
 			return err
 		}
 		k, err := collectErasureKeys(ctx, q, req.AccountID, user.StripeAccountID, req.WalletAddresses)

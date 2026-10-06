@@ -49,7 +49,7 @@ func (s *PostgresStore) UpsertCodeAttestation(ctx context.Context, rec store.Cod
 		return err
 	}
 	defer rollbackErasureTx(tx)
-	if err = checkCodeAttestationOwner(ctx, tx, rec.SEPubKey, rec.AccountID); err != nil {
+	if err = checkPersonalSEOwner(ctx, tx, rec.SEPubKey, rec.AccountID); err != nil {
 		return err
 	}
 	_, err = tx.Exec(ctx,

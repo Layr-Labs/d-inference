@@ -277,16 +277,17 @@ Account erasure removes the personal data of one account in three steps:
 plan (a read-only dry run), confirm (a soft delete that sets `deleted_at` and
 revokes keys and tokens), and, after the grace period, one scrub transaction
 that applies every rule in `erasure.Rules` (`coordinator/internal/store/erasure/rules.go`)
-with each statement's affected rows checked against a count. It uses three
-tables: `erasure_requests` (state and counts, no personal data after the
-scrub), `erasure_outbox` (Stripe deletions and the Datadog `erasure_log`
-record, delivered by a worker) and `erasure_refused_credits`
-(credits that triggers keep out of an erased account). Goose versions 22 to 26
+with each statement's affected rows checked against a count. It uses four
+tables: `erasure_requests` (state, counts, and retained audit
+metadata), `erasure_outbox` (Stripe deletions and the Datadog `erasure_log`
+record, delivered by a worker), `erasure_refused_credits`
+(credits that triggers keep out of an erased account), and `erasure_se_owners`
+(pseudonymous key digests and account IDs that fence delayed device writes). Goose versions 22 to 26
 add them and their indexes:
 
 | Version | Source | What it does |
 |---|---|---|
-| 22 | `00022_erasure_tables.sql` | Creates `erasure_requests` and `erasure_outbox`. |
+| 22 | `00022_erasure_tables.sql` | Creates `erasure_requests`, `erasure_outbox`, and indexed `erasure_se_owners`. |
 | 23–24 | Go: `indexMigrations` | `CONCURRENTLY` indexes `billing_sessions(referral_code)` and `users(privy_user_id) WHERE deleted_at IS NOT NULL`. |
 | 25 | `00025_erasure_refuse_credits.sql` | `erasure_refused_credits` and the triggers that keep credits out of an erased account (`erasure_keep_balance_insert`, `erasure_keep_balance_update` on `balances`; `erasure_refuse_ledger_credit` on `ledger_entries`). |
 | 26 | `00026_erasure_outbox_stripe_job.sql` | Adds the redaction-job columns of `erasure_outbox` (`stripe_job_id`, its status, status time and generation) for `checkout_sessions` rows, plus the independent `lease_generation BIGINT` that fences delivery result commits. |

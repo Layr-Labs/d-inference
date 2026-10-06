@@ -1,5 +1,5 @@
 // Package erasurefixture seeds accounts for the account erasure tests of the
-// store contract, memory and PostgreSQL suites.
+// store contract, memory, PostgreSQL and composed API suites.
 package erasurefixture
 
 import (

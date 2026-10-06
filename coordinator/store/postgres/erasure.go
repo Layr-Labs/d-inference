@@ -115,7 +115,7 @@ func (s *PostgresStore) SaveErasurePlan(ctx context.Context, accountID, actor st
 	if err != nil {
 		return nil, err
 	}
-	var id string
+	var result *store.ErasureRequest
 	err = s.erasureTx(ctx, pgx.TxOptions{}, func(ctx context.Context, q *storedb.Queries) error {
 		if _, err := q.LockLiveUserForErasure(ctx, accountID); noRows(err) {
 			return store.ErrNotFound
@@ -123,10 +123,11 @@ func (s *PostgresStore) SaveErasurePlan(ctx context.Context, accountID, actor st
 			return err
 		}
 		open, err := q.GetOpenErasureRequestForUpdate(ctx, accountID)
+		var id string
 		switch {
 		case noRows(err):
 			id = uuid.NewString()
-			return q.InsertErasurePlan(ctx, storedb.InsertErasurePlanParams{
+			err = q.InsertErasurePlan(ctx, storedb.InsertErasurePlanParams{
 				ID: id, AccountID: accountID, Actor: actor, Plan: raw,
 				ConfirmTokenHash: erasure.TokenHash(confirmToken), ConfirmExpiresAt: &expiresAt, WalletHash: walletHash,
 			})
@@ -134,12 +135,18 @@ func (s *PostgresStore) SaveErasurePlan(ctx context.Context, accountID, actor st
 			return err
 		case open.State != string(store.ErasurePlanned):
 			return store.ErrErasureConflict
+		default:
+			id = open.ID
+			err = q.UpdateErasurePlan(ctx, storedb.UpdateErasurePlanParams{
+				ID: id, Actor: actor, Plan: raw, ConfirmTokenHash: erasure.TokenHash(confirmToken), ConfirmExpiresAt: &expiresAt,
+				WalletHash: walletHash,
+			})
 		}
-		id = open.ID
-		return q.UpdateErasurePlan(ctx, storedb.UpdateErasurePlanParams{
-			ID: id, Actor: actor, Plan: raw, ConfirmTokenHash: erasure.TokenHash(confirmToken), ConfirmExpiresAt: &expiresAt,
-			WalletHash: walletHash,
-		})
+		if err != nil {
+			return err
+		}
+		result, err = getErasureRequest(ctx, q, id)
+		return err
 	})
 	if isUniqueViolation(err) {
 		return nil, store.ErrErasureConflict
@@ -147,7 +154,7 @@ func (s *PostgresStore) SaveErasurePlan(ctx context.Context, accountID, actor st
 	if err != nil {
 		return nil, err
 	}
-	return s.getErasureRequest(ctx, id)
+	return result, nil
 }
 
 func isUniqueViolation(err error) bool {
@@ -158,7 +165,7 @@ func isUniqueViolation(err error) bool {
 // RequestAccountErasure soft deletes the account after checking the token
 // and the email.
 func (s *PostgresStore) RequestAccountErasure(ctx context.Context, in store.ErasureConfirm) (*store.ErasureRequest, error) {
-	var id string
+	var result *store.ErasureRequest
 	err := s.erasureTx(ctx, pgx.TxOptions{}, func(ctx context.Context, q *storedb.Queries) error {
 		// Lock order for every erasure step: users, then erasure_requests.
 		user, err := q.LockUserForErasure(ctx, in.AccountID)
@@ -212,21 +219,24 @@ func (s *PostgresStore) RequestAccountErasure(ctx context.Context, in store.Eras
 			return err
 		}
 		scrubAfter := now.Add(in.Grace)
-		id = open.ID
-		return q.MarkErasurePending(ctx, storedb.MarkErasurePendingParams{
-			ID: id, Actor: in.Actor, Reason: in.Reason, WalletAddresses: erasure.NormalizeWallets(in.WalletAddresses),
+		if err := q.MarkErasurePending(ctx, storedb.MarkErasurePendingParams{
+			ID: open.ID, Actor: in.Actor, Reason: in.Reason, WalletAddresses: erasure.NormalizeWallets(in.WalletAddresses),
 			RequestedAt: &now, ScrubAfter: &scrubAfter,
-		})
+		}); err != nil {
+			return err
+		}
+		result, err = getErasureRequest(ctx, q, open.ID)
+		return err
 	})
 	if err != nil {
 		return nil, err
 	}
-	return s.getErasureRequest(ctx, id)
+	return result, nil
 }
 
 // CancelAccountErasure restores the user and providers of a pending request.
 func (s *PostgresStore) CancelAccountErasure(ctx context.Context, accountID, actor string, now time.Time) (*store.ErasureRequest, error) {
-	var id string
+	var result *store.ErasureRequest
 	err := s.erasureTx(ctx, pgx.TxOptions{}, func(ctx context.Context, q *storedb.Queries) error {
 		if _, err := q.LockUserForErasure(ctx, accountID); noRows(err) {
 			return store.ErrNotFound
@@ -249,13 +259,16 @@ func (s *PostgresStore) CancelAccountErasure(ctx context.Context, accountID, act
 		if _, err := q.RestoreProviders(ctx, storedb.RestoreProvidersParams{AccountID: accountID, DeletedAt: open.RequestedAt}); err != nil {
 			return err
 		}
-		id = open.ID
-		return q.MarkErasureCanceled(ctx, storedb.MarkErasureCanceledParams{ID: id, CanceledBy: actor, CanceledAt: &now})
+		if err := q.MarkErasureCanceled(ctx, storedb.MarkErasureCanceledParams{ID: open.ID, CanceledBy: actor, CanceledAt: &now}); err != nil {
+			return err
+		}
+		result, err = getErasureRequest(ctx, q, open.ID)
+		return err
 	})
 	if err != nil {
 		return nil, err
 	}
-	return s.getErasureRequest(ctx, id)
+	return result, nil
 }
 
 // ScrubAccount removes the personal data of a pending request in one
@@ -346,12 +359,10 @@ func (s *PostgresStore) ScrubAccount(ctx context.Context, requestID string, now 
 			return err
 		}
 		result.SEKeys, result.ProviderIDs = k.SEKeys, k.ProviderIDs
-		return nil
+		result.Request, err = getErasureRequest(ctx, q, requestID)
+		return err
 	})
 	if err != nil {
-		return nil, err
-	}
-	if result.Request, err = s.getErasureRequest(ctx, requestID); err != nil {
 		return nil, err
 	}
 	return &result, nil
@@ -384,10 +395,10 @@ func forfeitBalance(ctx context.Context, q *storedb.Queries, accountID, requestI
 	return bal.BalanceMicroUsd, bal.WithdrawableMicroUsd, nil
 }
 
-func (s *PostgresStore) getErasureRequest(ctx context.Context, id string) (*store.ErasureRequest, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	row, err := s.queries().GetErasureRequest(ctx, id)
+// Read and decode the result inside the write transaction. Once COMMIT succeeds,
+// callers must receive it even if their context is canceled before runtime cleanup.
+func getErasureRequest(ctx context.Context, q *storedb.Queries, id string) (*store.ErasureRequest, error) {
+	row, err := q.GetErasureRequest(ctx, id)
 	if noRows(err) {
 		return nil, store.ErrNotFound
 	}

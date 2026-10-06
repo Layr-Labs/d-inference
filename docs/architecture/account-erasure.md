@@ -227,8 +227,9 @@ sequenceDiagram
    Global Payouts recipient, per batch of up to `ErasureCheckoutBatch`
    Checkout Session IDs, and one `erasure_log` row (`Keys.OutboxRows`).
 7. **Mark erased.** `MarkErasureErased` stores the planned and applied counts,
-   clears `wallet_addresses`, `lease_until` and `last_error`, and the
-   transaction commits.
+   clears `wallet_addresses`, `lease_until` and `last_error`. The transaction
+   reads and decodes the result before committing, then returns that retained
+   result so cancellation immediately after commit cannot skip runtime cleanup.
 8. **Clear in-memory copies.** `CachedStore` drops its cached users. Then
    `scrub` calls the `Hooks`: it disconnects the account's providers
    (`DisconnectAccount`), removes the erased Secure Enclave keys from the
@@ -473,6 +474,12 @@ late-created resources.
 
 `erasureTx` passes its bounded context to every query and commit; rollback
 uses a separate five-second cleanup context, even if the caller canceled.
+`SaveErasurePlan`, `RequestAccountErasure`, `CancelAccountErasure` and
+`ScrubAccount` read and decode their result in that transaction. They return it
+only after a successful commit, without another database read. A later caller
+cancellation cannot turn a committed transition into an error or suppress the
+confirmation and scrub runtime hooks; a read, decode or commit failure still
+returns an error without a result.
 The refused-credit audit retains a SHA-256 reference hash. `CreditWithdrawableOnce`
 checks that hash under its existing reference advisory lock, so a repeated
 callback creates one review record even when its public reference is scrubbed.

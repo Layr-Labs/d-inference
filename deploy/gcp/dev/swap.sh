@@ -121,9 +121,11 @@ rollback() {    # runbook "Rollback"
     docker image inspect "$PREVIOUS_IMAGE" --format '{{.Id}}' >/dev/null || fail "previous image $PREVIOUS_IMAGE is not on the host"
     grep -Fxq "$DRAIN_GRACE_LINE" "$PREVIOUS_ENV_BACKUP" || fail "the env backup has no $DRAIN_GRACE_LINE"
     if docker container inspect coordinator >/dev/null 2>&1; then
+        container_has_drain_grace coordinator || fail "the coordinator container has no $DRAIN_GRACE_LINE; nothing stopped"
         docker stop -t "$STOP_TIMEOUT" coordinator >/dev/null && docker rm coordinator >/dev/null
     fi
     if docker ps -q --filter "name=^${FALLBACK}\$" | grep -q .; then
+        container_has_drain_grace "$FALLBACK" || fail "$FALLBACK has no $DRAIN_GRACE_LINE"
         docker stop -t "$STOP_TIMEOUT" "$FALLBACK" >/dev/null
     fi
     cp "$PREVIOUS_ENV_BACKUP" "$ENV_FILE"

@@ -342,8 +342,9 @@ class ZeroMutationTests(unittest.TestCase):
             ["gcloud", "^secrets versions list", "projects/x/secrets/y/versions/1\n", 0],
             ["gcloud", "sql instances describe.*value\\(state\\)", "RUNNABLE\n", 0],
             ["gcloud", "sql instances describe.*type", "PRIVATE\n", 0],
-            ["gcloud", "^builds triggers describe", "deploy/gcp/cloudbuild-prod.yaml\n", 0],
-            ["gcloud", "^builds list", "build-id\n", 0],
+            ["gcloud", "^builds triggers describe.*filename", "deploy/gcp/cloudbuild-prod.yaml\n", 0],
+            ["gcloud", "^builds triggers describe.*value\\(id\\)", "trigger-id\n", 0],
+            ["gcloud", "^builds list.*buildTriggerId=trigger-id", "build-id\n", 0],
             ["gcloud", "^artifacts docker images describe", DIGEST + "\n", 0],
             ["gcloud", "^compute ssh", "PASS on-VM fixture\n", 0],
             ["dig", "", "192.0.2.10\n", 0],
@@ -411,7 +412,7 @@ class ZeroMutationTests(unittest.TestCase):
         self.assertIn("deploys are paused or the pause state is unknown", result.stderr)
         self.assertIn("nothing changed", result.stderr)
         self.assertEqual(box.calls("gcloud"), [])
-        self.assertEqual([c for c in box.calls("git")], [])
+        self.assertEqual(box.calls("git"), [])
         self.assert_read_only(box)
 
     def test_deploy_refuses_when_paused(self):

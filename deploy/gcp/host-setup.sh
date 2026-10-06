@@ -37,12 +37,16 @@ case "$MODE" in
     *) echo "usage: $0 [--check|--apply]" >&2; exit 2 ;;
 esac
 
-[ "$(id -u)" = 0 ] || { echo "FAIL run as root" >&2; exit 1; }
+die() {
+    echo "FAIL $*" >&2
+    exit 1
+}
+[ "$(id -u)" = 0 ] || die "run as root"
 project=$(curl -fsS --max-time 5 -H 'Metadata-Flavor: Google' "$METADATA_URL") ||
-    { echo "FAIL cannot read the project from the metadata server" >&2; exit 1; }
-[ "$project" = "$PROJECT" ] || { echo "FAIL project is $project, not $PROJECT" >&2; exit 1; }
+    die "cannot read the project from the metadata server"
+[ "$project" = "$PROJECT" ] || die "project is $project, not $PROJECT"
 DOMAIN=$(awk -F= '$1 == "DOMAIN" { print substr($0, index($0, "=") + 1); exit }' "$OVERRIDES")
-[[ "$DOMAIN" =~ ^[a-z0-9.-]+$ ]] || { echo "FAIL no valid DOMAIN in $OVERRIDES" >&2; exit 1; }
+[[ "$DOMAIN" =~ ^[a-z0-9.-]+$ ]] || die "no valid DOMAIN in $OVERRIDES"
 
 status=0
 pass() { echo "PASS $*"; }
@@ -90,8 +94,6 @@ env_has_value() {
     [ -f "$ENV_FILE" ] &&
         awk -F= -v key="$1" '$1 == key && length(substr($0, index($0, "=") + 1)) > 0 { found = 1 } END { exit !found }' "$ENV_FILE"
 }
-
-same_file() { [ -f "$2" ] && cmp -s "$1" "$2"; }
 
 if [ "$MODE" = --apply ]; then
     export DEBIAN_FRONTEND=noninteractive
@@ -189,7 +191,7 @@ else
 fi
 for pair in "refresh-env.sh:$REFRESH_BIN" "required-env-keys.txt:$ENVLIB/required-env-keys.txt" \
     "release-env-defaults:$ENVLIB/release-env-defaults" "darkbloom-env-refresh.service:$UNIT"; do
-    if same_file "$PROD/${pair%%:*}" "${pair#*:}"; then
+    if cmp -s "$PROD/${pair%%:*}" "${pair#*:}"; then
         pass "${pair#*:} is the copy of deploy/gcp/prod/${pair%%:*}"
     else
         miss "${pair#*:} is missing or differs from deploy/gcp/prod/${pair%%:*}. Fix: host-setup.sh --apply"

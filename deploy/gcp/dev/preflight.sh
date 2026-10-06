@@ -64,7 +64,7 @@ DOMAIN=$(awk -F= '$1 == "DOMAIN" { print substr($0, index($0, "=") + 1); exit }'
 
 # 1. Local tools.
 for cmd in gcloud git dig; do
-    command -v "$cmd" >/dev/null || { miss "command $cmd is missing on this machine. Fix: install it"; }
+    command -v "$cmd" >/dev/null || miss "command $cmd is missing on this machine. Fix: install it"
 done
 [ "$status" = 0 ] || exit 1
 
@@ -142,9 +142,11 @@ if [ "$(gcloud builds triggers describe "$TRIGGER" --project="$PROJECT" --format
 else
     miss "trigger $TRIGGER is absent or does not build $BUILD_FILE. Fix: infra runbook 07"
 fi
-if [[ "$master" =~ ^[0-9a-f]{40}$ ]] &&
+trigger_id=$(gcloud builds triggers describe "$TRIGGER" --project="$PROJECT" --format='value(id)' 2>/dev/null)
+if [[ "$master" =~ ^[0-9a-f]{40}$ ]] && [ -n "$trigger_id" ] &&
     [ -n "$(gcloud builds list --project="$PROJECT" --limit=1 \
-        --filter="substitutions.COMMIT_SHA=$master AND status=SUCCESS" --format='value(id)' 2>/dev/null)" ] &&
+        --filter="buildTriggerId=$trigger_id AND substitutions.COMMIT_SHA=$master AND status=SUCCESS" \
+        --format='value(id)' 2>/dev/null)" ] &&
     [[ "$(gcloud artifacts docker images describe "$REPO:${master:0:7}" --project="$PROJECT" \
         --format='value(image_summary.digest)' 2>/dev/null)" =~ ^sha256:[0-9a-f]{64}$ ]]; then
     pass "image $REPO:${master:0:7} of master $master exists"

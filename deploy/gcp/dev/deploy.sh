@@ -61,21 +61,21 @@ SSH=(gcloud compute ssh "$INSTANCE" --project="$PROJECT" --zone="$ZONE" --tunnel
 DEPLOYED=false
 output() { echo "deployed=$DEPLOYED"; [ -z "${GITHUB_OUTPUT:-}" ] || echo "deployed=$DEPLOYED" >> "$GITHUB_OUTPUT"; }
 trap output EXIT
-die() { echo "FAIL $*" >&2; exit "${2:-1}"; }
+die() { echo "FAIL $1" >&2; exit "${2:-1}"; }
 
 [[ "$MIGRATE_ONLY" =~ ^[01]$ ]] || die "MIGRATE_ONLY must be 0 or 1" 2
 
 # The pause gate comes before any change and fails closed.
 if [ -n "${DEV_DEPLOY_PAUSED+set}" ]; then
     paused=$DEV_DEPLOY_PAUSED
-    source="environment"
+    pause_source=environment
 elif paused=$(gh variable get DEV_DEPLOY_PAUSED -R "$GITHUB_REPO" 2>/dev/null); then
-    source="gh variable get"
+    pause_source="gh variable get"
 else
     paused="<unreadable>"
-    source="gh variable get"
+    pause_source="gh variable get"
 fi
-echo "REPORT DEV_DEPLOY_PAUSED=${paused:-<empty>} (from $source)"
+echo "REPORT DEV_DEPLOY_PAUSED=${paused:-<empty>} (from $pause_source)"
 if [ "$paused" != false ]; then
     if [ -n "$OVERRIDE_REASON" ]; then
         actor=${GITHUB_ACTOR:-$(gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null | head -n 1)}
@@ -95,9 +95,10 @@ remote_run() {
     shift 2
     for kv in "$@"; do setenv="$setenv --setenv=$kv"; done
     local start="sudo systemd-run --quiet --unit=$unit$setenv --setenv=RESULT=$REMOTE/$unit.result /bin/bash $script"
-    local wait="for i in \$(seq 1 300); do sudo test -s $REMOTE/$unit.result && break; sleep 5; done; \
+    local wait="for i in \$(seq 1 300); do sudo test -s $REMOTE/$unit.result && break; \
+sudo systemctl is-active --quiet $unit || { sleep 2; break; }; sleep 5; done; \
 sudo journalctl -u $unit --no-pager -o cat; \
-sudo cat $REMOTE/$unit.result 2>/dev/null || echo 'FAIL no result after 25 min; the unit $unit may still run'"
+sudo cat $REMOTE/$unit.result 2>/dev/null || echo 'FAIL no result from unit $unit (it stopped early, or it still runs after 25 min)'"
     if [ "$DRY_RUN" = 1 ]; then
         echo "DRY-RUN ssh: $start"
         echo "DRY-RUN ssh: wait for $REMOTE/$unit.result, print the journal of $unit"
@@ -113,6 +114,8 @@ sudo cat $REMOTE/$unit.result 2>/dev/null || echo 'FAIL no result after 25 min; 
 }
 
 if [ "$MODE" = rollback ]; then
+    [ "$DRY_RUN" = 1 ] || "${SSH[@]}" --command="sudo test -f $REMOTE/current/deploy/gcp/dev/swap.sh" ||
+        die "no verified swap on the VM ($REMOTE/current); nothing to roll back to"
     remote_run "darkbloom-dev-rollback-$(date +%s)" "$REMOTE/current/deploy/gcp/dev/swap.sh" \
         MODE=rollback LIB="$REMOTE/current" || die "rollback failed; read the lines above"
     [ "$DRY_RUN" = 1 ] || DEPLOYED=true

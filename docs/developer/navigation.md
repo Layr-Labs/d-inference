@@ -24,7 +24,7 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | Request admission, dispatch and settlement | `coordinator/api/inference/`; request/response codecs in its `request/` and `response/` packages |
 | Provider sessions and trust | `coordinator/api/provider/` and `provider/trust/`; terminal inference events return to the shared inference owner |
 | Catalog publication and release policy | `coordinator/api/catalog/` and `coordinator/api/releases/` |
-| Accounts, billing HTTP and payouts | `coordinator/api/accounts/`, `coordinator/api/billing/`, `billing/payouts/` |
+| Accounts, account erasure, billing HTTP and payouts | `coordinator/api/accounts/`, `accounts/erasure/`, `coordinator/api/billing/`, `billing/payouts/` |
 | Earn-page hardware interest: registration, own readback and admin export | `coordinator/api/accounts/small_models_interest.go`; contract in `coordinator/store/small_models_interest.go`, backends in `coordinator/store/memory/small_models_interest.go` and `coordinator/store/postgres/small_models_interest.go` |
 | Public projections and operational endpoints | `coordinator/api/reporting/` and `coordinator/api/operations/` |
 | Profiles, request outcomes and route sinks | `coordinator/api/observation/`; separate bounded queues retain their own loss/flush rules |
@@ -59,6 +59,7 @@ components for the specific invariant:
 | Optional cache-planning decisions and their bounded metric reasons | `coordinator/internal/inference/routeplan/cache_planning.go` (`CachePlanner.PlanResult`), `coordinator/internal/inference/routeplan/cache_planning_telemetry.go` (`CachePlanner.EmitDecision`); bound by `coordinator/api/inference/cache_planner.go` (`NewCachePlanner`) and called from `coordinator/api/inference/prompt_work.go` (`planPromptRoute`) |
 | Uncertain consumer-charge settlement | `coordinator/internal/inference/consumercharge/settlement.go` (`Engine`); the inference owner supplies completion callbacks and `coordinator/app/services.go` runs maintenance |
 | Session/inventory/heartbeat, challenge, identity, MDM and trust authority | `coordinator/internal/provider/` |
+| APNs proof, challenge and budget erasure; publication generation fences | `coordinator/internal/provider/identity/erasure.go`; `coordinator/api/provider/trust/erasure.go` connects the account scrub to runtime cleanup |
 | Apple transcript, exchange/evidence/storage, recovery, qualification and authorization | `coordinator/internal/appattest/`; `coordinator/appattest/service/` binds the live session lifecycle and collaborators |
 | Independent route/profile/outcome pipelines | `coordinator/internal/observation/` |
 | Writer lanes/watchdog, drain authority, identity gates, queue-drain coalescing, bounded demand and detached residency/capacity/forecast/deadline policy | `coordinator/internal/registry/` |
@@ -71,12 +72,13 @@ components for the specific invariant:
 | Observed cache demand, the soft affinity key and first-sight preparation of a new prompt | `coordinator/internal/registry/cachedemand/tracker.go` (`Tracker.Observe`), `coordinator/internal/registry/cachedemand/first_sight.go` (`FirstSight`); applied to a plan by `coordinator/internal/registry/cacheplan/demand.go` (`Plan.ObserveRouteDemand`); threshold in `coordinator/registry/config.go` (`CacheRoutingConfig.FirstSightMinTokens`), count in `coordinator/internal/registry/cacheactivation/gate.go` (`Gate.RecordPlanned`); the two counts reach the provider frame apart, as `cache_repeated_prefix_tokens` and `cache_first_sight_tokens`, through `coordinator/internal/registry/cacheattempt/owner.go` (`Metadata`, `Snapshot.MetadataMessage`, `Owner.ApplyTo`) |
 | Autopilot session authority, bounded control and pending durable phases | `coordinator/internal/registry/autopilotstate/`, `autopilotcontrol/`, `autopilotledger/`; pure placement and demand contracts remain under `coordinator/registry/autopilot/` |
 | Routing scan candidate storage | `coordinator/internal/registry/candidatearena/` (`Arena`, `Storage`, `ChunkSize`); private ownership in `coordinator/registry/reservation_storage.go`, compact retained evidence in `coordinator/registry/candidate_snapshot.go`; chunk size and retained public lifetimes are guarded by `coordinator/tests/registry/candidate_arena_test.go`, `candidate_storage_test.go` and `reservation_storage_test.go` |
-| Cache generations, memory history, shared records and SQL helpers | `coordinator/internal/store/` |
+| Cache generations, memory history, shared records, account erasure rules and SQL helpers | `coordinator/internal/store/`; erasure rules and keys in `coordinator/internal/store/erasure/` |
 | Consumer referral accounting shared by both backends | `coordinator/internal/store/consumersettlement/settlement.go` owns validation, replay, collected-cost and promotion-record rules; `coordinator/store/memory/consumer_settlement.go` and `coordinator/store/postgres/consumer_settlement.go` own atomic writes |
 | Sidecar identity, protocol, artifacts, catalog/preload and endpoint lowering | `coordinator/internal/promptcontract/` |
 | Sidecar planning admission and per-contract preload readiness | `coordinator/internal/promptcontract/sidecar/plan_admission.go` (`PlanAdmission`), `coordinator/internal/promptcontract/sidecar/client.go` (`NewClient`, `Client.Plan`); `coordinator/internal/promptcontract/preload/controller.go` (`Reconcile`), `coordinator/internal/promptcontract/preload/selection.go` (`PreloadController.ReadyFor`, `PlanningState`) |
 | Remote media policy, read budgets and reference grouping | `coordinator/internal/mediafetch/` |
 | Frame scanning and decoding | `coordinator/internal/wire/` |
+| Command bodies: coordinator lifecycle, payout audit and DevNet seed data | `coordinator/internal/command/coordinator/`, `payoutaudit/`, `devnetseed/`; each `coordinator/cmd/<name>/main.go` is a thin entry point |
 
 Application assembly supplies the same registry/store/ledger/read-cache instances
 through `api.RuntimeDependencies` (`coordinator/api/server.go`, `NewRuntime`).

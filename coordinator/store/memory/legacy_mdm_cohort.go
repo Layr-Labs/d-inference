@@ -25,7 +25,7 @@ func (s *MemoryStore) FreezeLegacyMDMCohort(ctx context.Context) ([]store.Legacy
 		members := map[store.LegacyMDMMachine]bool{}
 		for _, p := range s.providerRecords {
 			u := s.usersByAccountID[p.AccountID]
-			if u == nil || !u.CreatedAt.Before(cutoff) || !p.RegisteredAt.Before(cutoff) || p.AccountID == "" || p.SEPublicKey == "" || p.SerialNumber == "" || s.machineInventory == nil {
+			if u == nil || u.DeletedAt != nil || p.DeletedAt != nil || !u.CreatedAt.Before(cutoff) || !p.RegisteredAt.Before(cutoff) || p.AccountID == "" || p.SEPublicKey == "" || p.SerialNumber == "" || s.machineInventory == nil {
 				continue
 			}
 			alias := (store.MachineObservation{AccountID: p.AccountID, SEKey: p.SEPublicKey}).Aliases()[0]

@@ -24,6 +24,9 @@ func (s *MemoryStore) UpsertProviderTrustReuse(_ context.Context, rec store.Prov
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.erasedSEOwnerLocked(rec.SEPubKey, "") {
+		return store.ProviderTrustReuseWriteResult{}, store.ErrErasureConflict
+	}
 	current, ok := s.providerTrustReuse[rec.SEPubKey]
 	if ok && (current.RevokedAt != nil ||
 		current.RevocationGeneration != expectedRevocationGeneration) {
@@ -54,6 +57,9 @@ func (s *MemoryStore) RecoverProviderTrustReuse(_ context.Context, rec store.Pro
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.erasedSEOwnerLocked(rec.SEPubKey, "") {
+		return store.ProviderTrustReuseWriteResult{}, store.ErrErasureConflict
+	}
 	current, ok := s.providerTrustReuse[rec.SEPubKey]
 	if ok && current.RevocationGeneration != expectedRevocationGeneration {
 		return store.ProviderTrustReuseWriteResult{

@@ -183,7 +183,6 @@ func (s *Stack) Logging(next http.Handler) http.Handler {
 			"route", route,
 			"status", sw.Status,
 			"duration_ms", dur.Milliseconds(),
-			"remote", r.RemoteAddr,
 			"user_id", userID,
 		)
 

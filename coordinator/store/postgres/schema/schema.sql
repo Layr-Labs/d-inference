@@ -41,6 +41,72 @@ END $$;
 
 
 --
+-- Name: erasure_account_erased(text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.erasure_account_erased(account text) RETURNS boolean
+    LANGUAGE plpgsql STABLE
+    AS $$
+BEGIN
+    RETURN EXISTS (SELECT 1 FROM erasure_requests WHERE account_id = account AND state = 'erased');
+END $$;
+
+
+--
+-- Name: erasure_keep_balance_insert(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.erasure_keep_balance_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF (NEW.balance_micro_usd > 0 OR NEW.withdrawable_micro_usd > 0)
+       AND erasure_account_erased(NEW.account_id) THEN
+        NEW.balance_micro_usd := LEAST(NEW.balance_micro_usd, 0);
+        NEW.withdrawable_micro_usd := LEAST(NEW.withdrawable_micro_usd, 0);
+    END IF;
+    RETURN NEW;
+END $$;
+
+
+--
+-- Name: erasure_keep_balance_update(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.erasure_keep_balance_update() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF (NEW.balance_micro_usd > OLD.balance_micro_usd OR NEW.withdrawable_micro_usd > OLD.withdrawable_micro_usd)
+       AND erasure_account_erased(NEW.account_id) THEN
+        NEW.balance_micro_usd := LEAST(NEW.balance_micro_usd, OLD.balance_micro_usd);
+        NEW.withdrawable_micro_usd := LEAST(NEW.withdrawable_micro_usd, OLD.withdrawable_micro_usd);
+    END IF;
+    RETURN NEW;
+END $$;
+
+
+--
+-- Name: erasure_refuse_ledger_credit(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.erasure_refuse_ledger_credit() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF erasure_account_erased(NEW.account_id) THEN
+        INSERT INTO erasure_refused_credits (account_id, entry_type, amount_micro_usd, reference_hash, reference)
+        VALUES (NEW.account_id, NEW.entry_type, NEW.amount_micro_usd, encode(sha256(convert_to(NEW.reference, 'UTF8')), 'hex'),
+                CASE WHEN NEW.entry_type IN ('admin_credit', 'admin_reward') THEN NEW.entry_type
+                     WHEN NEW.reference LIKE 'stripe:%' THEN 'stripe:erased'
+                     ELSE NEW.reference END);
+        RETURN NULL;
+    END IF;
+    RETURN NEW;
+END $$;
+
+
+--
 -- Name: update_model_demand_hourly(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -101,7 +167,8 @@ CREATE TABLE public.api_keys (
     allowed_models text DEFAULT ''::text NOT NULL,
     expires_at timestamp with time zone,
     last_used_at timestamp with time zone,
-    self_route_only boolean DEFAULT false NOT NULL
+    self_route_only boolean DEFAULT false NOT NULL,
+    deleted_at timestamp with time zone
 );
 
 
@@ -483,6 +550,104 @@ CREATE TABLE public.earnings_summary (
     total_prompt_tokens bigint DEFAULT 0 NOT NULL,
     total_completion_tokens bigint DEFAULT 0 NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: erasure_outbox; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.erasure_outbox (
+    id text NOT NULL,
+    request_id text NOT NULL,
+    target text NOT NULL,
+    external_id text DEFAULT ''::text NOT NULL,
+    state text DEFAULT 'pending'::text NOT NULL,
+    attempts integer DEFAULT 0 NOT NULL,
+    next_at timestamp with time zone DEFAULT now() NOT NULL,
+    lease_until timestamp with time zone,
+    last_error text DEFAULT ''::text NOT NULL,
+    done_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    stripe_job_id text DEFAULT ''::text NOT NULL,
+    stripe_job_status text DEFAULT ''::text NOT NULL,
+    stripe_job_status_since timestamp with time zone,
+    stripe_job_generation integer DEFAULT 0 NOT NULL,
+    lease_generation bigint DEFAULT 0 NOT NULL,
+    CONSTRAINT erasure_outbox_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'done'::text, 'manual_action'::text]))),
+    CONSTRAINT erasure_outbox_target_check CHECK ((target = ANY (ARRAY['stripe_account'::text, 'global_recipient'::text, 'checkout_sessions'::text, 'erasure_log'::text, 'resend_contact'::text])))
+);
+
+
+--
+-- Name: erasure_refused_credits; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.erasure_refused_credits (
+    id bigint NOT NULL,
+    account_id text NOT NULL,
+    entry_type text NOT NULL,
+    amount_micro_usd bigint NOT NULL,
+    reference_hash text NOT NULL,
+    reference text DEFAULT ''::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: erasure_refused_credits_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.erasure_refused_credits_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: erasure_refused_credits_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.erasure_refused_credits_id_seq OWNED BY public.erasure_refused_credits.id;
+
+
+--
+-- Name: erasure_requests; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.erasure_requests (
+    id text NOT NULL,
+    account_id text NOT NULL,
+    actor text DEFAULT ''::text NOT NULL,
+    canceled_by text DEFAULT ''::text NOT NULL,
+    reason text DEFAULT ''::text NOT NULL,
+    state text NOT NULL,
+    plan jsonb DEFAULT '{}'::jsonb NOT NULL,
+    confirm_token_hash text DEFAULT ''::text NOT NULL,
+    confirm_expires_at timestamp with time zone,
+    wallet_hash text DEFAULT ''::text NOT NULL,
+    wallet_addresses text[] DEFAULT '{}'::text[] NOT NULL,
+    requested_at timestamp with time zone,
+    scrub_after timestamp with time zone,
+    erased_at timestamp with time zone,
+    canceled_at timestamp with time zone,
+    lease_until timestamp with time zone,
+    last_error text DEFAULT ''::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT erasure_requests_state_check CHECK ((state = ANY (ARRAY['planned'::text, 'pending'::text, 'erased'::text, 'canceled'::text])))
+);
+
+
+--
+-- Name: erasure_se_owners; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.erasure_se_owners (
+    se_key_digest text NOT NULL,
+    account_id text NOT NULL,
+    CONSTRAINT erasure_se_owners_se_key_digest_check CHECK ((se_key_digest ~ '^[0-9a-f]{64}$'::text))
 );
 
 
@@ -1324,7 +1489,8 @@ CREATE TABLE public.provider_tokens (
     account_id text NOT NULL,
     label text DEFAULT ''::text NOT NULL,
     active boolean DEFAULT true NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    deleted_at timestamp with time zone
 );
 
 
@@ -1406,7 +1572,8 @@ CREATE TABLE public.providers (
     last_session_requests_served bigint DEFAULT 0 NOT NULL,
     last_session_tokens_generated bigint DEFAULT 0 NOT NULL,
     lifetime_stats jsonb DEFAULT '{}'::jsonb NOT NULL,
-    last_session_stats jsonb DEFAULT '{}'::jsonb NOT NULL
+    last_session_stats jsonb DEFAULT '{}'::jsonb NOT NULL,
+    deleted_at timestamp with time zone
 );
 
 
@@ -1854,8 +2021,16 @@ CREATE TABLE public.users (
     stripe_account_country text DEFAULT ''::text NOT NULL,
     stripe_destination_type text DEFAULT ''::text NOT NULL,
     stripe_destination_last4 text DEFAULT ''::text NOT NULL,
-    stripe_instant_eligible boolean DEFAULT false NOT NULL
+    stripe_instant_eligible boolean DEFAULT false NOT NULL,
+    deleted_at timestamp with time zone
 );
+
+
+--
+-- Name: erasure_refused_credits id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.erasure_refused_credits ALTER COLUMN id SET DEFAULT nextval('public.erasure_refused_credits_id_seq'::regclass);
 
 
 --
@@ -2200,6 +2375,38 @@ ALTER TABLE ONLY public.device_codes
 
 ALTER TABLE ONLY public.earnings_summary
     ADD CONSTRAINT earnings_summary_pkey PRIMARY KEY (key, key_type);
+
+
+--
+-- Name: erasure_outbox erasure_outbox_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.erasure_outbox
+    ADD CONSTRAINT erasure_outbox_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: erasure_refused_credits erasure_refused_credits_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.erasure_refused_credits
+    ADD CONSTRAINT erasure_refused_credits_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: erasure_requests erasure_requests_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.erasure_requests
+    ADD CONSTRAINT erasure_requests_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: erasure_se_owners erasure_se_owners_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.erasure_se_owners
+    ADD CONSTRAINT erasure_se_owners_pkey PRIMARY KEY (se_key_digest, account_id);
 
 
 --
@@ -2651,14 +2858,6 @@ ALTER TABLE ONLY public.users
 
 
 --
--- Name: users users_privy_user_id_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.users
-    ADD CONSTRAINT users_privy_user_id_key UNIQUE (privy_user_id);
-
-
---
 -- Name: app_attest_evidence_key; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2757,6 +2956,62 @@ CREATE INDEX darkbloom_machines_merged_into ON public.darkbloom_machines USING b
 
 
 --
+-- Name: erasure_outbox_due; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX erasure_outbox_due ON public.erasure_outbox USING btree (next_at) WHERE (state = 'pending'::text);
+
+
+--
+-- Name: erasure_outbox_request; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX erasure_outbox_request ON public.erasure_outbox USING btree (request_id);
+
+
+--
+-- Name: erasure_refused_credits_account; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX erasure_refused_credits_account ON public.erasure_refused_credits USING btree (account_id, created_at DESC);
+
+
+--
+-- Name: erasure_requests_account; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX erasure_requests_account ON public.erasure_requests USING btree (account_id, created_at DESC);
+
+
+--
+-- Name: erasure_requests_due; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX erasure_requests_due ON public.erasure_requests USING btree (scrub_after) WHERE (state = 'pending'::text);
+
+
+--
+-- Name: erasure_requests_erased; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX erasure_requests_erased ON public.erasure_requests USING btree (account_id) WHERE (state = 'erased'::text);
+
+
+--
+-- Name: erasure_requests_open; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX erasure_requests_open ON public.erasure_requests USING btree (account_id) WHERE (state = ANY (ARRAY['planned'::text, 'pending'::text]));
+
+
+--
+-- Name: erasure_se_owners_account; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX erasure_se_owners_account ON public.erasure_se_owners USING btree (account_id);
+
+
+--
 -- Name: global_payout_account; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2813,6 +3068,13 @@ CREATE INDEX idx_billing_sessions_external ON public.billing_sessions USING btre
 
 
 --
+-- Name: idx_billing_sessions_referral_code; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_billing_sessions_referral_code ON public.billing_sessions USING btree (referral_code) WHERE (referral_code <> ''::text);
+
+
+--
 -- Name: idx_cache_routing_demand_seen; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2848,6 +3110,20 @@ CREATE INDEX idx_consumer_settlements_referrer ON public.consumer_charge_settlem
 
 
 --
+-- Name: idx_darkbloom_machine_sessions_account; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_darkbloom_machine_sessions_account ON public.darkbloom_machine_sessions USING btree (account_id);
+
+
+--
+-- Name: idx_device_codes_account; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_device_codes_account ON public.device_codes USING btree (account_id);
+
+
+--
 -- Name: idx_device_codes_user; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2880,6 +3156,13 @@ CREATE INDEX idx_floor_draws_account ON public.provider_floor_draws USING btree 
 --
 
 CREATE INDEX idx_floor_draws_epoch ON public.provider_floor_draws USING btree (epoch_id);
+
+
+--
+-- Name: idx_inference_routes_consumer_key_hash; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_inference_routes_consumer_key_hash ON public.inference_routes USING btree (consumer_key_hash);
 
 
 --
@@ -2946,6 +3229,13 @@ CREATE INDEX idx_model_registry_status ON public.model_registry USING btree (sta
 
 
 --
+-- Name: idx_model_token_reservations_account; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_model_token_reservations_account ON public.model_token_reservations USING btree (account_id);
+
+
+--
 -- Name: idx_model_token_reservations_open; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2995,6 +3285,13 @@ CREATE INDEX idx_provider_earnings_provider ON public.provider_earnings USING bt
 
 
 --
+-- Name: idx_provider_log_reports_account; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_provider_log_reports_account ON public.provider_log_reports USING btree (account_id);
+
+
+--
 -- Name: idx_provider_payouts_address; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3006,6 +3303,13 @@ CREATE INDEX idx_provider_payouts_address ON public.provider_payouts USING btree
 --
 
 CREATE INDEX idx_provider_payouts_settled ON public.provider_payouts USING btree (settled, created_at DESC);
+
+
+--
+-- Name: idx_provider_sessions_account; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_provider_sessions_account ON public.provider_sessions USING btree (account_id);
 
 
 --
@@ -3135,6 +3439,13 @@ CREATE INDEX idx_request_profiles_provider ON public.request_profiles USING btre
 
 
 --
+-- Name: idx_request_rejections_consumer_key_hash; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_request_rejections_consumer_key_hash ON public.request_rejections USING btree (consumer_key_hash);
+
+
+--
 -- Name: idx_request_rejections_created; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3247,10 +3558,17 @@ CREATE INDEX idx_usage_request_location_notnull ON public.usage USING btree (cre
 
 
 --
--- Name: idx_users_privy; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_users_privy_deleted; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX idx_users_privy ON public.users USING btree (privy_user_id);
+CREATE INDEX idx_users_privy_deleted ON public.users USING btree (privy_user_id) WHERE (deleted_at IS NOT NULL);
+
+
+--
+-- Name: idx_users_privy_live; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_users_privy_live ON public.users USING btree (privy_user_id) WHERE (deleted_at IS NULL);
 
 
 --
@@ -3272,6 +3590,27 @@ CREATE TRIGGER clear_legacy_cache_affinity_key BEFORE INSERT OR UPDATE OF cache_
 --
 
 CREATE TRIGGER clear_provider_log_report_serial BEFORE INSERT OR UPDATE OF serial_number ON public.provider_log_reports FOR EACH ROW EXECUTE FUNCTION public.clear_provider_log_report_serial();
+
+
+--
+-- Name: balances erasure_keep_balance_insert; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER erasure_keep_balance_insert BEFORE INSERT ON public.balances FOR EACH ROW EXECUTE FUNCTION public.erasure_keep_balance_insert();
+
+
+--
+-- Name: balances erasure_keep_balance_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER erasure_keep_balance_update BEFORE UPDATE ON public.balances FOR EACH ROW EXECUTE FUNCTION public.erasure_keep_balance_update();
+
+
+--
+-- Name: ledger_entries erasure_refuse_ledger_credit; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER erasure_refuse_ledger_credit BEFORE INSERT ON public.ledger_entries FOR EACH ROW WHEN ((new.amount_micro_usd > 0)) EXECUTE FUNCTION public.erasure_refuse_ledger_credit();
 
 
 --
@@ -3362,6 +3701,14 @@ ALTER TABLE ONLY public.darkbloom_machines
 
 
 --
+-- Name: erasure_outbox erasure_outbox_request_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.erasure_outbox
+    ADD CONSTRAINT erasure_outbox_request_id_fkey FOREIGN KEY (request_id) REFERENCES public.erasure_requests(id);
+
+
+--
 -- Name: invite_redemptions invite_redemptions_code_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3434,11 +3781,11 @@ ALTER TABLE ONLY public.provider_reputation
 
 
 --
--- Name: referrals referrals_referrer_code_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: referrals referrals_referrer_code_cascade_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.referrals
-    ADD CONSTRAINT referrals_referrer_code_fkey FOREIGN KEY (referrer_code) REFERENCES public.referrers(code);
+    ADD CONSTRAINT referrals_referrer_code_cascade_fkey FOREIGN KEY (referrer_code) REFERENCES public.referrers(code) ON UPDATE CASCADE;
 
 
 --

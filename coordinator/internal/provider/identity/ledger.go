@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"crypto/sha256"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -9,6 +10,8 @@ import (
 // The same lock protects push admission, proof reuse and resume consumption.
 type ledger struct {
 	mu                     sync.Mutex
+	publicationGeneration  uint64
+	forgotten              map[[sha256.Size]byte]uint64
 	attested               map[string]proofRecord
 	lastPush               map[string]time.Time
 	lastBudgetClear        map[string]time.Time
@@ -31,6 +34,7 @@ type reservationLock struct {
 
 func newLedger() *ledger {
 	return &ledger{
+		forgotten:              make(map[[sha256.Size]byte]uint64),
 		attested:               make(map[string]proofRecord),
 		lastPush:               make(map[string]time.Time),
 		lastBudgetClear:        make(map[string]time.Time),

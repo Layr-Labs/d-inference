@@ -26,7 +26,7 @@ func TestTrustReuseCacheReuseAndWindow(t *testing.T) {
 		t.Fatal("no record yet → not a candidate")
 	}
 
-	c.RecordTrust(hardwareReuseRecord(se, serial, trHashA, cur))
+	c.RecordTrust(c.PublicationGeneration(), hardwareReuseRecord(se, serial, trHashA, cur))
 
 	if _, ok := cachedTrust(c, se, serial, trHashA); !ok {
 		t.Fatal("fresh, matching record must reuse")
@@ -46,7 +46,7 @@ func TestTrustReuseCacheReuseAndWindow(t *testing.T) {
 	// FIX 2 clock-skew guard: a record dated implausibly far in the FUTURE
 	// (corrupt/forged VerifiedAt) must be rejected, not treated as eternally fresh.
 	future := c.Now().Add(c.Window + time.Minute)
-	c.RecordTrust(hardwareReuseRecord(se, serial, trHashA, future))
+	c.RecordTrust(c.PublicationGeneration(), hardwareReuseRecord(se, serial, trHashA, future))
 	if _, ok := cachedTrust(c, se, serial, trHashA); ok {
 		t.Fatal("a future-dated record (beyond skew tolerance) must not reuse")
 	}
@@ -63,7 +63,7 @@ func TestTrustReuseCacheRejectsMismatch(t *testing.T) {
 	c := trustreuse.New()
 	c.Now = func() time.Time { return cur }
 	const se, serial = "se-1", "SER-1"
-	c.RecordTrust(hardwareReuseRecord(se, serial, trHashA, cur))
+	c.RecordTrust(c.PublicationGeneration(), hardwareReuseRecord(se, serial, trHashA, cur))
 
 	if _, ok := cachedTrust(c, "", serial, trHashA); ok {
 		t.Fatal("empty SE key must not reuse")
@@ -85,13 +85,13 @@ func TestTrustReuseCacheRejectsMismatch(t *testing.T) {
 	}
 
 	// A non-hardware record (e.g. a downgraded write) is never reusable.
-	c.RecordTrust(store.ProviderTrustReuse{SEPubKey: "se-ss", Serial: "SER-2", TrustLevel: "self_signed", LastVerifiedBinaryHash: trHashA, SIPEnabled: true, SecureBootFull: true, HardwareProofVerifiedAt: cur})
+	c.RecordTrust(c.PublicationGeneration(), store.ProviderTrustReuse{SEPubKey: "se-ss", Serial: "SER-2", TrustLevel: "self_signed", LastVerifiedBinaryHash: trHashA, SIPEnabled: true, SecureBootFull: true, HardwareProofVerifiedAt: cur})
 	if _, ok := cachedTrust(c, "se-ss", "SER-2", trHashA); ok {
 		t.Fatal("non-hardware record must not reuse")
 	}
 
 	// A record whose recorded posture was not good is never reusable (defensive).
-	c.RecordTrust(store.ProviderTrustReuse{SEPubKey: "se-bad", Serial: "SER-3", TrustLevel: string(registry.TrustHardware), LastVerifiedBinaryHash: trHashA, SIPEnabled: true, SecureBootFull: false, HardwareProofVerifiedAt: cur})
+	c.RecordTrust(c.PublicationGeneration(), store.ProviderTrustReuse{SEPubKey: "se-bad", Serial: "SER-3", TrustLevel: string(registry.TrustHardware), LastVerifiedBinaryHash: trHashA, SIPEnabled: true, SecureBootFull: false, HardwareProofVerifiedAt: cur})
 	if _, ok := cachedTrust(c, "se-bad", "SER-3", trHashA); ok {
 		t.Fatal("record with bad recorded posture must not reuse")
 	}
@@ -101,7 +101,7 @@ func TestTrustReuseDecisionSameBinaryAndApprovedTransition(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	cache := trustreuse.New()
 	cache.Now = func() time.Time { return now }
-	cache.RecordTrust(hardwareReuseRecord("se", "SER", trHashA, now))
+	cache.RecordTrust(cache.PublicationGeneration(), hardwareReuseRecord("se", "SER", trHashA, now))
 
 	same := cache.Decide(trustreuse.Input{
 		SEPubKey: "se", Serial: "SER", FreshBinaryHash: trHashA,
@@ -134,7 +134,7 @@ func TestTrustReuseCacheInvalidate(t *testing.T) {
 	c := trustreuse.New()
 	c.Now = func() time.Time { return cur }
 	const se, serial = "se-1", "SER-1"
-	c.RecordTrust(hardwareReuseRecord(se, serial, trHashA, cur))
+	c.RecordTrust(c.PublicationGeneration(), hardwareReuseRecord(se, serial, trHashA, cur))
 	if _, ok := cachedTrust(c, se, serial, trHashA); !ok {
 		t.Fatal("precondition: record should reuse")
 	}
@@ -185,7 +185,7 @@ func TestTrustReuseCacheSeed(t *testing.T) {
 	}
 
 	// A newer in-memory record must not be clobbered by an older persisted row.
-	c.RecordTrust(hardwareReuseRecord("se-fresh", "SER-F", trHashB, cur)) // newer (cur) + different binary
+	c.RecordTrust(c.PublicationGeneration(), hardwareReuseRecord("se-fresh", "SER-F", trHashB, cur)) // newer (cur) + different binary
 	older := hardwareReuseRecord("se-fresh", "SER-F", trHashA, cur.Add(-10*time.Minute))
 	c.Seed([]store.ProviderTrustReuse{older})
 	if _, ok := cachedTrust(c, "se-fresh", "SER-F", trHashB); !ok {
@@ -233,7 +233,7 @@ func TestTrustReuseWindowIgnoresRetiredTTLKnob(t *testing.T) {
 			c.Window, trustreuse.DefaultWindow)
 	}
 	se, serial := "se-ttl-knob", "SER-TTL"
-	c.RecordTrust(hardwareReuseRecord(se, serial, trHashA, cur.Add(-11*time.Minute)))
+	c.RecordTrust(c.PublicationGeneration(), hardwareReuseRecord(se, serial, trHashA, cur.Add(-11*time.Minute)))
 	if c.HasFreshRecord(se, serial) {
 		t.Fatal("a record older than the window must not be a fast-skip candidate")
 	}

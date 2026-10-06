@@ -27,7 +27,7 @@ func (s *MemoryStore) UpsertCodeAttestation(_ context.Context, rec store.CodeAtt
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.erasedCodeAttestationLocked(rec.SEPubKey, rec.AccountID) {
+	if s.erasedSEOwnerLocked(rec.SEPubKey, rec.AccountID) {
 		return store.ErrErasureConflict
 	}
 	rec.AccountID = "" // the shared proof never owns an account

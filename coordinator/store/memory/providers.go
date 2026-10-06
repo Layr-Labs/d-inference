@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -21,8 +22,8 @@ func (s *MemoryStore) UpsertProvider(_ context.Context, p store.ProviderRecord) 
 }
 
 func (s *MemoryStore) upsertProviderRecordLocked(p store.ProviderRecord) {
-	// A soft-deleted record belongs to an account under erasure; a late
-	// heartbeat persist must not bring it back or rewrite it.
+	// Removed and erasing records stay hidden; a late heartbeat must not
+	// bring them back or rewrite their personal fields.
 	if old, ok := s.providerRecords[p.ID]; ok && old.DeletedAt != nil {
 		return
 	}
@@ -109,6 +110,9 @@ func (s *MemoryStore) DeleteProvidersBySerial(_ context.Context, ownerAccountID,
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.accountAdmissionLocked(ownerAccountID); err != nil {
+		return 0, err
+	}
 
 	// Iterate the full record map (not just the serial index) so historical
 	// duplicate rows sharing a serial are all caught. Match by serial OR id, but
@@ -116,7 +120,7 @@ func (s *MemoryStore) DeleteProvidersBySerial(_ context.Context, ownerAccountID,
 	// skipped and not counted, leaving the caller to decide 403 vs 404.
 	var matched []string
 	for id, rec := range s.providerRecords {
-		if rec.AccountID != ownerAccountID {
+		if rec.AccountID != ownerAccountID || rec.DeletedAt != nil {
 			continue
 		}
 		if (rec.SerialNumber == serialOrID && rec.SerialNumber != "") || rec.ID == serialOrID {
@@ -124,8 +128,9 @@ func (s *MemoryStore) DeleteProvidersBySerial(_ context.Context, ownerAccountID,
 		}
 	}
 
+	now := time.Now().UTC()
 	for _, id := range matched {
-		delete(s.providerRecords, id)
+		s.providerRecords[id].DeletedAt = &now
 		delete(s.reputationRecords, id)
 		// usage, provider_earnings and provider_sessions are intentionally
 		// preserved — they hold money/uptime history.

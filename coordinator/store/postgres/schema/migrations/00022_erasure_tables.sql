@@ -48,3 +48,12 @@ CREATE TABLE IF NOT EXISTS erasure_outbox (
 );
 CREATE INDEX IF NOT EXISTS erasure_outbox_request ON erasure_outbox (request_id);
 CREATE INDEX IF NOT EXISTS erasure_outbox_due ON erasure_outbox (next_at) WHERE state = 'pending';
+
+-- Retained pseudonymous identity ownership fences delayed device callbacks after
+-- account-scoped inventory aliases have been removed. No serial, UDID or token.
+CREATE TABLE IF NOT EXISTS erasure_se_owners (
+    se_key_digest TEXT NOT NULL CHECK (se_key_digest ~ '^[0-9a-f]{64}$'),
+    account_id TEXT NOT NULL,
+    PRIMARY KEY (se_key_digest, account_id)
+);
+CREATE INDEX IF NOT EXISTS erasure_se_owners_account ON erasure_se_owners (account_id);

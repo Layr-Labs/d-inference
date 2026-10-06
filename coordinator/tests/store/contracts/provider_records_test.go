@@ -90,9 +90,9 @@ func TestMemoryListProvidersByAccount(t *testing.T) {
 	}
 }
 
-// TestMemoryDeleteProvidersBySerial verifies the hard delete: all rows
+// TestMemoryDeleteProvidersBySerial verifies provider removal: all live rows
 // sharing a serial for the owner are removed (plus their reputation), other
-// accounts are untouched, and the serial index is cleaned up.
+// accounts are untouched, and removed records cannot restore a provider.
 func TestMemoryDeleteProvidersBySerial(t *testing.T) {
 	st := memory.NewMemory(store.Config{})
 	ctx := context.Background()

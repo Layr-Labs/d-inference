@@ -244,6 +244,19 @@ sequenceDiagram
 `MemoryStore.ScrubAccount` applies the same rules to its maps through
 `memoryErasureRules`, under one store lock.
 
+Ordinary provider removal retains a hidden provider identity row and drops its
+reputation. Repeat removal returns zero, restore and backfill skip the row, and
+canceling erasure restores only provider rows stamped by that request. This
+preserves the SE/account link needed by a later scrub. For earlier removals,
+`ListAccountHistoricalSEKeys` matches surviving device-proof keys against
+account-scoped `legacy_se` alias digests. Before deleting those aliases,
+`RetainErasureSEOwners` retains their digests and account IDs in
+`erasure_se_owners`; these remain pseudonymous identifiers. Shared live owners
+keep their proof, and a later authenticated new owner can register the device.
+Preexisting proof rows with neither a provider owner nor a verified account-scoped
+historical binding cannot be attributed safely. The scrub does not guess from
+unverified serial claims or X25519 session keys.
+
 ### Refused credits after the scrub
 
 A payout can bounce, a Global Payout can come back, or a settlement or
@@ -286,8 +299,9 @@ during the grace period still apply, because the erasure can be canceled.
 One Mac can move between accounts, so some rows belong to more than one
 account. The scrub never deletes another account's data:
 
-- **Secure Enclave keys.** `ListSharedSEKeys` finds keys that a provider of
-  another account also has. They leave `SEKeys`, so their
+- **Secure Enclave keys.** `ListSharedSEKeys` finds keys that another live
+  account owns through a provider row, an authenticated account-scoped inventory
+  alias, or retained ownership. They leave `SEKeys`, so their
   `provider_trust_reuse`, `provider_verification_jobs`, `code_attestations`
   and `code_attest_push_budgets` rows stay, and so do their trust-reuse cache
   entries and MDM jobs.
@@ -426,6 +440,17 @@ writes after the last owner is erased. Delayed log uploads return 409
 `coordinator/store/postgres/app_attest_receipts.go`,
 `coordinator/api/operations/log_reports.go`).
 
+Trust-reuse upserts, full recovery writes and verification jobs use the same
+shared privacy fence and durable SE ownership check. Inventory observations and
+referrer registration take the account admission fence before storing any
+aliases or chosen referral code. A late disconnect capture cannot recreate
+aliases after scrub (`checkPersonalSEOwner`, `ObserveMachine`, `CreateReferrer`).
+Trust-reuse publications and scheduler submissions capture an erasure generation
+before store I/O and compare it under the owner mutex after I/O. `Forget` advances
+that generation, so a committed response delayed until after cache cleanup cannot
+reinsert personal fields. Unrelated in-flight grants may retry after a scrub;
+no global mutex spans database I/O.
+
 A live payer's Checkout may wait on Stripe while its referrer is erased.
 `fenceBillingSession` revalidates the captured referrer account under the shared
 privacy fence and clears the code if that account was scrubbed, preserving the
@@ -452,6 +477,13 @@ The refused-credit audit retains a SHA-256 reference hash. `CreditWithdrawableOn
 checks that hash under its existing reference advisory lock, so a repeated
 callback creates one review record even when its public reference is scrubbed.
 Ordinary repeated credits remain separate audit records.
+
+Erasure activation raises the rollback floor: after a request is pending or
+erased, fallback binaries must preserve admission and personal-write fences plus
+retained ownership metadata, in addition to Goose and read filters. Check the
+[runbook prerequisites](../operations/account-erasure.md#prerequisites) before
+activation and the [schema rollback rules](../operations/schema-migration.md#rollback)
+for fallback selection.
 
 ## Related
 

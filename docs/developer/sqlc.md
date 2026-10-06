@@ -149,6 +149,11 @@ bounded context; use that argument for every generated query. Source:
 `coordinator/store/postgres/queries/erasure.sql`; adapters:
 `coordinator/store/postgres/erasure.go` and `coordinator/store/postgres/erasure_keys.go`.
 
+Account-erasure key collection in `coordinator/store/postgres/queries/erasure.sql`
+uses authenticated account-scoped inventory aliases plus retained hashed
+ownership. Keep owner filtering and the shared-owner exclusion together when
+changing these queries; transport keys and serial claims are not SE ownership.
+
 ## Related
 
 - [Schema lifecycle](../architecture/schema-lifecycle.md#generated-queries-sqlc) — where sqlc sits between the schema and the store

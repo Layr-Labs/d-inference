@@ -34,14 +34,35 @@ func (s *MemoryStore) collectErasureKeysLocked(u *store.User, wallets []string) 
 			}
 		}
 	}
-	k.ProviderIDs, k.SEKeys, k.Serials = erasure.SortedUnique(k.ProviderIDs), erasure.SortedUnique(seKeys), erasure.SortedUnique(serials)
-	ownKeys := stringSet(k.SEKeys)
+	// Retired providers may exist only as authenticated inventory aliases.
+	candidates := map[string]bool{}
+	for _, key := range seKeys {
+		candidates[key] = true
+	}
+	for key := range s.providerTrustReuse {
+		candidates[key] = true
+	}
+	for key := range s.codeAttestations {
+		candidates[key] = true
+	}
+	for _, job := range s.verificationJobs {
+		candidates[job.SEPubKey] = true
+	}
 	var sharedSE []string
-	for _, p := range s.providerRecords {
-		if p.AccountID != account && !s.erasedAccounts[p.AccountID] && ownKeys[p.SEPublicKey] {
-			sharedSE = append(sharedSE, p.SEPublicKey)
+	for key := range candidates {
+		owners := s.personalSEOwnersLocked(key)
+		if !owners[account] {
+			continue
+		}
+		seKeys = append(seKeys, key)
+		for owner := range owners {
+			if owner != account && !s.erasedAccounts[owner] {
+				sharedSE = append(sharedSE, key)
+				break
+			}
 		}
 	}
+	k.ProviderIDs, k.SEKeys, k.Serials = erasure.SortedUnique(k.ProviderIDs), erasure.SortedUnique(seKeys), erasure.SortedUnique(serials)
 	k.SEKeys, k.SharedSEKeys = erasure.WithoutKeys(k.SEKeys, erasure.SortedUnique(sharedSE))
 	providers := stringSet(k.ProviderIDs)
 	var keyIDs []string
@@ -115,8 +136,14 @@ func (s *MemoryStore) collectErasureKeysLocked(u *store.User, wallets []string) 
 		for _, serial := range k.Serials {
 			digests[erasure.MDASerialDigest(serial)] = true
 		}
+		ownedMachines := map[string]bool{}
+		for session, observation := range inv.Sessions {
+			if observation.AccountID == account {
+				ownedMachines[inv.SessionMachines[session]] = true
+			}
+		}
 		for alias, machine := range inv.Aliases {
-			if alias.Kind != "mda_serial" || alias.Scope != "" || !digests[alias.Digest] {
+			if alias.Kind != "mda_serial" || alias.Scope != "" || (!digests[alias.Digest] && !ownedMachines[machine]) {
 				continue
 			}
 			if s.machineSharedLocked(machine, account) {

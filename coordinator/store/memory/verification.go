@@ -27,6 +27,9 @@ func (s *MemoryStore) UpsertVerificationJob(_ context.Context, rec store.Verific
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.erasedSEOwnerLocked(rec.SEPubKey, "") {
+		return store.VerificationJob{}, store.ErrErasureConflict
+	}
 	key := verificationJobKey(rec.SEPubKey, rec.Kind)
 	current, exists := s.verificationJobs[key]
 	if exists && current.State != store.VerificationStateCompleted {

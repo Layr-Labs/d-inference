@@ -48,6 +48,12 @@ Orange: work in Stripe. Green: done.
 
 ## Prerequisites
 
+- Confirm both the active and fallback images include erasure-aware admission,
+  pending-erasure Privy checks, delayed personal-write and cache-publication
+  fences, and compatible ownership metadata. Once requests are `pending` or
+  `erased`, a Goose/schema-only soft-delete image is no longer a safe fallback
+  ([schema rollback rule 4](schema-migration.md#rollback)).
+
 - Explicit human approval for this erasure. Every step from step 3 on
   changes production data.
 - Admin access to the coordinator: the admin key

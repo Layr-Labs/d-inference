@@ -78,10 +78,15 @@ func checkReceiptOwner(ctx context.Context, tx pgx.Tx, key string) error {
 	return nil
 }
 
-func checkCodeAttestationOwner(ctx context.Context, tx pgx.Tx, key, account string) error {
+func checkPersonalSEOwner(ctx context.Context, tx pgx.Tx, key, account string) error {
 	var erased, live bool
 	err := tx.QueryRow(ctx, `WITH owners AS (
- SELECT account_id FROM providers WHERE se_public_key=$1 UNION SELECT $2::text WHERE $2<>''
+ SELECT account_id FROM providers WHERE se_public_key=$1
+ UNION SELECT scope FROM darkbloom_machine_aliases WHERE kind='legacy_se'
+ AND digest=encode(sha256(convert_to('legacy_se','UTF8') || '\x00'::bytea || convert_to($1::text,'UTF8')),'hex')
+ UNION SELECT account_id FROM erasure_se_owners
+ WHERE se_key_digest=encode(sha256(convert_to('legacy_se','UTF8') || '\x00'::bytea || convert_to($1::text,'UTF8')),'hex')
+ UNION SELECT $2::text WHERE $2<>''
  ) SELECT EXISTS(SELECT 1 FROM owners o JOIN erasure_requests r USING(account_id) WHERE r.state='erased'),
  EXISTS(SELECT 1 FROM owners o WHERE NOT EXISTS(SELECT 1 FROM erasure_requests r WHERE r.account_id=o.account_id AND r.state='erased'))`, key, account).Scan(&erased, &live)
 	if err != nil {

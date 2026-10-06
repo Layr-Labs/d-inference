@@ -980,6 +980,43 @@ func (q *Queries) ListAccountHistoricalProviderIDs(ctx context.Context, accountI
 	return items, nil
 }
 
+const listAccountHistoricalSEKeys = `-- name: ListAccountHistoricalSEKeys :many
+WITH keys AS (
+ SELECT se_pubkey FROM provider_trust_reuse
+ UNION SELECT se_pubkey FROM code_attestations
+ UNION SELECT se_pubkey FROM provider_verification_jobs
+)
+SELECT k.se_pubkey FROM keys k WHERE k.se_pubkey <> '' AND (
+ EXISTS(SELECT 1 FROM darkbloom_machine_aliases a WHERE a.kind='legacy_se' AND a.scope=$1
+ AND a.digest=encode(sha256(convert_to('legacy_se','UTF8') || '\x00'::bytea || convert_to(k.se_pubkey,'UTF8')),'hex'))
+ OR EXISTS(SELECT 1 FROM erasure_se_owners o WHERE o.account_id=$1
+ AND o.se_key_digest=encode(sha256(convert_to('legacy_se','UTF8') || '\x00'::bytea || convert_to(k.se_pubkey,'UTF8')),'hex'))
+)
+`
+
+// Historical aliases are authenticated, account-scoped legacy SE bindings.
+// Never substitute provider_sessions.provider_key (an X25519 transport key)
+// or an unverified serial for this ownership link.
+func (q *Queries) ListAccountHistoricalSEKeys(ctx context.Context, scope string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listAccountHistoricalSEKeys, scope)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var se_pubkey string
+		if err := rows.Scan(&se_pubkey); err != nil {
+			return nil, err
+		}
+		items = append(items, se_pubkey)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAccountLogReportSerials = `-- name: ListAccountLogReportSerials :many
 SELECT DISTINCT serial_number FROM provider_log_reports WHERE account_id = $1 AND serial_number <> ''
 `
@@ -1208,7 +1245,10 @@ SELECT a.digest, EXISTS (
       AND NOT EXISTS (SELECT 1 FROM erasure_requests r WHERE r.account_id = s.account_id AND r.state = 'erased')
 ) AS shared
 FROM darkbloom_machine_aliases a
-WHERE a.kind = 'mda_serial' AND a.scope = '' AND a.digest = ANY($2::text[])
+WHERE a.kind = 'mda_serial' AND a.scope = '' AND (
+ a.digest = ANY($2::text[])
+ OR EXISTS(SELECT 1 FROM darkbloom_machine_sessions own WHERE own.machine_id=a.machine_id AND own.account_id=$1)
+)
 `
 
 type ListMDASerialAliasesForErasureParams struct {
@@ -1280,29 +1320,38 @@ func (q *Queries) ListSharedAppAttestKeys(ctx context.Context, arg ListSharedApp
 }
 
 const listSharedSEKeys = `-- name: ListSharedSEKeys :many
-SELECT DISTINCT se_public_key FROM providers
-WHERE se_public_key = ANY($1::text[]) AND providers.account_id <> $2
-AND NOT EXISTS (SELECT 1 FROM erasure_requests r WHERE r.account_id = providers.account_id AND r.state = 'erased')
+WITH candidates AS (
+ SELECT unnest($2::text[]) AS se_key
+), owners AS (
+ SELECT encode(sha256(convert_to('legacy_se','UTF8') || '\x00'::bytea || convert_to(p.se_public_key,'UTF8')),'hex') AS digest, p.account_id
+ FROM providers p WHERE p.se_public_key=ANY($2::text[])
+ UNION SELECT a.digest, a.scope FROM darkbloom_machine_aliases a WHERE a.kind='legacy_se'
+ UNION SELECT o.se_key_digest, o.account_id FROM erasure_se_owners o
+)
+SELECT DISTINCT c.se_key::text FROM candidates c JOIN owners o
+ ON o.digest=encode(sha256(convert_to('legacy_se','UTF8') || '\x00'::bytea || convert_to(c.se_key,'UTF8')),'hex')
+WHERE o.account_id<>$1
+AND NOT EXISTS(SELECT 1 FROM erasure_requests r WHERE r.account_id=o.account_id AND r.state='erased')
 `
 
 type ListSharedSEKeysParams struct {
-	SeKeys    []string
 	AccountID string
+	SeKeys    []string
 }
 
 func (q *Queries) ListSharedSEKeys(ctx context.Context, arg ListSharedSEKeysParams) ([]string, error) {
-	rows, err := q.db.Query(ctx, listSharedSEKeys, arg.SeKeys, arg.AccountID)
+	rows, err := q.db.Query(ctx, listSharedSEKeys, arg.AccountID, arg.SeKeys)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var items []string
 	for rows.Next() {
-		var se_public_key string
-		if err := rows.Scan(&se_public_key); err != nil {
+		var c_se_key string
+		if err := rows.Scan(&c_se_key); err != nil {
 			return nil, err
 		}
-		items = append(items, se_public_key)
+		items = append(items, c_se_key)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -1594,11 +1643,16 @@ func (q *Queries) RecordErasureFailure(ctx context.Context, arg RecordErasureFai
 }
 
 const restoreProviders = `-- name: RestoreProviders :execrows
-UPDATE providers SET deleted_at = NULL WHERE account_id = $1 AND deleted_at IS NOT NULL
+UPDATE providers SET deleted_at = NULL WHERE account_id = $1 AND deleted_at = $2
 `
 
-func (q *Queries) RestoreProviders(ctx context.Context, accountID string) (int64, error) {
-	result, err := q.db.Exec(ctx, restoreProviders, accountID)
+type RestoreProvidersParams struct {
+	AccountID string
+	DeletedAt *time.Time
+}
+
+func (q *Queries) RestoreProviders(ctx context.Context, arg RestoreProvidersParams) (int64, error) {
+	result, err := q.db.Exec(ctx, restoreProviders, arg.AccountID, arg.DeletedAt)
 	if err != nil {
 		return 0, err
 	}
@@ -1615,6 +1669,19 @@ func (q *Queries) RestoreUser(ctx context.Context, accountID string) (int64, err
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const retainErasureSEOwners = `-- name: RetainErasureSEOwners :exec
+INSERT INTO erasure_se_owners(se_key_digest, account_id)
+SELECT encode(sha256(convert_to('legacy_se','UTF8') || '\x00'::bytea || convert_to(p.se_public_key,'UTF8')),'hex'), p.account_id
+FROM providers p WHERE p.account_id=$1 AND p.se_public_key<>''
+UNION SELECT digest, scope FROM darkbloom_machine_aliases WHERE kind='legacy_se' AND scope=$1 AND digest ~ '^[0-9a-f]{64}$'
+ON CONFLICT DO NOTHING
+`
+
+func (q *Queries) RetainErasureSEOwners(ctx context.Context, accountID string) error {
+	_, err := q.db.Exec(ctx, retainErasureSEOwners, accountID)
+	return err
 }
 
 const scrubAPIKeysRows = `-- name: ScrubAPIKeysRows :execrows

@@ -81,7 +81,7 @@ Legend: blue = step, amber = decision, green = success, red = exit 1.
 | 20 | `coordinator/store/postgres/schema/migrations/00020_users_privy_drop_old_index.sql` | `NO TRANSACTION`: `SET lock_timeout = '1min'`, then `DROP INDEX CONCURRENTLY IF EXISTS idx_users_privy`. |
 | 21 | `coordinator/store/postgres/schema/migrations/00021_referrals_referrer_code_cascade.sql` | `NO TRANSACTION`: adds `referrals_referrer_code_cascade_fkey` (`ON UPDATE CASCADE`) `NOT VALID`, validates it, then drops `referrals_referrer_code_fkey`. |
 
-| 22 | `coordinator/store/postgres/schema/migrations/00022_erasure_tables.sql` | Creates account-erasure requests and external cleanup outbox in one transaction. |
+| 22 | `coordinator/store/postgres/schema/migrations/00022_erasure_tables.sql` | Creates account-erasure requests, external cleanup outbox, and hashed SE/account ownership with primary-key and account indexes in one transaction. |
 | 23 | `indexMigrations` | Builds `idx_billing_sessions_referral_code` concurrently for referrer-code scrubbing. |
 | 24 | `indexMigrations` | Builds `idx_users_privy_deleted` concurrently for pending-erasure login checks. |
 | 25 | `coordinator/store/postgres/schema/migrations/00025_erasure_refuse_credits.sql` | Creates refused-credit audit records, including a reference hash for once-credit identity, and balance/ledger triggers in one transaction. |
@@ -276,7 +276,8 @@ result, red = hidden.
   deleted account under the same user lock as erasure. Late external creation
   results retain cleanup IDs in the outbox; delayed usage and route writes
   omit personal locations after the scrub. Historical accounting, revocation
-  and hard deletes remain available. The
+  and ordinary provider removal remain available. Provider removal keeps hidden
+  SE/account ownership rows for later erasure and discards reputation. The
   [soft-delete reference](../reference/soft-delete.md#late-writes) lists the
   affected methods and the paths that do not filter.
 - **Partial unique index.** `idx_users_privy_live` (version 18) keeps one
@@ -287,8 +288,9 @@ result, red = hidden.
 - **Restore paths.** Provider history restore (`GetProviderForRestore`) and
   machine continuity (`ResolveMachineContinuity`) skip soft-deleted provider
   records, so an erased account's history is never attached to a new session.
-  Only `CancelAccountErasure` clears `deleted_at`, on the user and providers,
-  before `scrub_after`; nothing restores a row after the scrub.
+  Only `CancelAccountErasure` clears `deleted_at`, on the user and provider rows
+  stamped by that request before `scrub_after`; earlier ordinary removals remain
+  hidden, and nothing restores a row after the scrub.
 - **Caches and other readers.** `CachedStore` caches users for `UserTTL`
   (`30 * time.Second`) and drops them after `RequestAccountErasure`,
   `CancelAccountErasure` and `ScrubAccount` (`coordinator/store/cached.go`).

@@ -7,6 +7,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/internal/provider/verification"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 )
 
 // After a scrub the in-memory MDM scheduler must not keep the erased
@@ -68,4 +69,51 @@ func TestMDMSchedulerForgetDropsErasedKeys(t *testing.T) {
 	}
 	var nilScheduler *verification.Scheduler
 	nilScheduler.Forget([]string{"se-erased"})
+}
+
+// The real memory store commits before this transport wrapper releases its
+// response. The scheduler must reject publication if Forget ran in that gap.
+type delayedSubmissionStore struct {
+	*memory.MemoryStore
+	written chan struct{}
+	release chan struct{}
+}
+
+func (s *delayedSubmissionStore) UpsertVerificationJob(ctx context.Context, rec store.VerificationJob) (store.VerificationJob, error) {
+	result, err := s.MemoryStore.UpsertVerificationJob(ctx, rec)
+	close(s.written)
+	select {
+	case <-s.release:
+	case <-ctx.Done():
+		return store.VerificationJob{}, ctx.Err()
+	}
+	return result, err
+}
+
+func TestMDMSchedulerForgetFencesSubmissionPublication(t *testing.T) {
+	st := &delayedSubmissionStore{MemoryStore: memory.NewMemory(store.Config{}), written: make(chan struct{}), release: make(chan struct{})}
+	srv, sch := newSchedulerTestServerWithStore(t, st, MDMSchedulerConfig{Workers: 1, QueueCapacity: 8}, mdmSchedulerDeps{})
+	provider := schedulerTestProvider(t, srv, "erased", "se-erased")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result := make(chan uint64, 1)
+	go func() { result <- sch.Submit(ctx, provider.ID, provider, store.VerificationPriorityRecovery) }()
+	select {
+	case <-st.written:
+	case <-ctx.Done():
+		t.Fatal("submission never persisted")
+	}
+	sch.Forget([]string{"se-erased"})
+	close(st.release)
+	select {
+	case generation := <-result:
+		if generation != 0 {
+			t.Fatalf("stale submission published generation %d", generation)
+		}
+	case <-ctx.Done():
+		t.Fatal("submission did not finish")
+	}
+	if status := sch.Status(); status.Jobs != 0 || status.Bindings != 0 || status.UDIDs != 0 {
+		t.Fatalf("erased binding restored: %+v", status)
+	}
 }

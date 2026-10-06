@@ -42,7 +42,11 @@ func collectErasureKeys(ctx context.Context, q *storedb.Queries, accountID, stri
 		return nil, err
 	}
 	k.ProviderIDs = erasure.SortedUnique(append(k.ProviderIDs, historicalIDs...))
-	k.SEKeys = erasure.SortedUnique(seKeys)
+	historicalSE, err := q.ListAccountHistoricalSEKeys(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	k.SEKeys = erasure.SortedUnique(append(seKeys, historicalSE...))
 	k.Serials = erasure.SortedUnique(append(append(serials, sessionSerials...), logSerials...))
 	if len(k.SEKeys) > 0 {
 		shared, err := q.ListSharedSEKeys(ctx, storedb.ListSharedSEKeysParams{SeKeys: k.SEKeys, AccountID: accountID})
@@ -114,23 +118,21 @@ func collectErasureKeys(ctx context.Context, q *storedb.Queries, accountID, stri
 	k.RecipientIDs = erasure.SortedUnique(k.RecipientIDs)
 	k.CheckoutSessionIDs = erasure.SortedUnique(k.CheckoutSessionIDs)
 
-	if len(k.Serials) > 0 {
-		digests := make([]string, 0, len(k.Serials))
-		for _, s := range k.Serials {
-			digests = append(digests, erasure.MDASerialDigest(s))
-		}
-		aliases, err := q.ListMDASerialAliasesForErasure(ctx, storedb.ListMDASerialAliasesForErasureParams{AccountID: accountID, Digests: digests})
-		if err != nil {
-			return nil, err
-		}
-		for _, a := range aliases {
-			if a.Shared {
-				k.MDADigestsShared++
-			} else {
-				k.MDADigestsToDelete = append(k.MDADigestsToDelete, a.Digest)
-			}
-		}
-		sort.Strings(k.MDADigestsToDelete)
+	digests := make([]string, 0, len(k.Serials))
+	for _, s := range k.Serials {
+		digests = append(digests, erasure.MDASerialDigest(s))
 	}
+	aliases, err := q.ListMDASerialAliasesForErasure(ctx, storedb.ListMDASerialAliasesForErasureParams{AccountID: accountID, Digests: digests})
+	if err != nil {
+		return nil, err
+	}
+	for _, a := range aliases {
+		if a.Shared {
+			k.MDADigestsShared++
+		} else {
+			k.MDADigestsToDelete = append(k.MDADigestsToDelete, a.Digest)
+		}
+	}
+	sort.Strings(k.MDADigestsToDelete)
 	return k, nil
 }

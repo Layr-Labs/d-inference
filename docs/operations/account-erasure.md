@@ -1,6 +1,6 @@
 # Erase an account (GDPR)
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-06
 
 Runbook for erasing the personal data of one consumer or provider account:
 plan, confirm, grace period, scrub, the Stripe deletions and their

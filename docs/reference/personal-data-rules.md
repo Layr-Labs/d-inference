@@ -180,7 +180,7 @@ triggers).
 | `stripe_job_status_since` | `TIMESTAMPTZ` | Since when the job has had that status (the stuck-job clock) |
 | `stripe_job_generation` | `INTEGER` | Part of the job's idempotency key; goes up when a new job must be made |
 
-The last four columns come from
+The Stripe job columns and `lease_generation` come from
 `coordinator/store/postgres/schema/migrations/00022_erasure_outbox_stripe_job.sql`.
 
 Indexes: `erasure_outbox_request` (`request_id`), `erasure_outbox_due`

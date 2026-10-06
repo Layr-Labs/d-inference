@@ -1,6 +1,6 @@
 # Provider trust during MDM and App Attest coexistence
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-06
 
 Darkbloom supports two independent provider authorization paths: legacy MDM/APNs verification and qualified App Attest. A connection can satisfy either or both. This explanation separates those paths from their shared dispatch checks and from claims neither path proves. The [authorization reference](../../reference/provider-authorization.md) owns configuration, deadlines and migration procedures.
 
@@ -14,9 +14,32 @@ The coordinator now serves only App Attest protocol 3. Protocol 1/2 registration
 
 ## Mechanism
 
+The upcoming [frozen legacy MDM policy](enrollment.md#frozen-legacy-authorization-cohort)
+restricts the legacy MDM path to durable authenticated account/key/serial
+membership frozen on the first upgraded startup after revocation replay.
+`coordinator/internal/provider/legacymdm/policy.go` (`Policy.Initialize`, `Policy.RegistrationAllowed`, `Policy.ProviderAllowed`)
+gates identity recovery, scheduling, live/late MDM and cached trust reuse; new
+identities must qualify through App Attest. Unsupported OS versions do not
+create a fallback. No grace period is chosen and no expiry is implemented.
+Generic copied profiles may still enroll directly in MicroMDM; this policy
+restricts coordinator authorization, not that direct enrollment.
+
+Noncohort connections require qualified App Attest even on authenticated owner
+self/prefer routes. `Provider.RequireAppAttestServingAuthorization` is a
+per-connection gate enforced by shared routing and the final handoff; a relaxed
+legacy `TrustNone` floor is not a fallback. Initialization validates enabled
+production App Attest serving with full rollout before freezing and fails
+startup on invalid configuration; see the [deployment prerequisites](../../operations/coordinator-deploy.md#frozen-legacy-mdm-cutover-prerequisites).
+
+Legacy-only serving eligibility does not qualify a machine for base rewards.
+Base rewards require current qualified App Attest authorization, including for a
+machine that also has MDM evidence; existing economics guards still apply.
+Inference/work earnings remain unchanged, and this does not claw back historical
+rewards. See [billing](../billing.md) for the settlement policy.
+
 ```mermaid
 flowchart TD
-  L["Legacy SE challenge + MDM SecurityInfo"] --> LP["Legacy policy: trust floor, freshness and configured APNs/release gates"]
+  L["Frozen account/key/serial + legacy SE challenge + MDM SecurityInfo"] --> LP["Legacy policy: trust floor, freshness and configured APNs/release gates"]
   A["Verified App Attest v3 proof"] --> AP["Qualified build, receipt, current identity and bounded lease"]
   LP --> E{"Either path valid?"}
   AP --> E
@@ -36,7 +59,7 @@ flowchart TD
   class S,O observation
 ```
 
-The diagram describes public serving. Authenticated owner routing may relax the public trust floor and admit a private-only machine; it retains the common runtime/privacy/freshness and hard-denial gates. `coordinator/registry/owner_authorization.go` (`ProviderOwnerServingAuthorized`) and `coordinator/registry/inference_authorization.go` (`authorizeInferenceHandoff`) enforce that separate policy.
+The diagram describes public serving. Authenticated owner routing may relax the public trust floor and admit a private-only machine; it retains the common runtime/privacy/freshness and hard-denial gates. `coordinator/registry/owner_authorization.go` (`ProviderOwnerServingAuthorized`) and `coordinator/registry/inference_authorization.go` (`InferenceHandoff.Authorize`) enforce that separate policy.
 
 | Evidence | Establishes | Does not establish | Code |
 |---|---|---|---|
@@ -46,13 +69,13 @@ The diagram describes public serving. Authenticated owner routing may relax the 
 | APNs code identity and legacy release evidence | Legacy application/endpoint evidence subject to configured enforcement policy | Continuous measurement of every instruction or model computation | `coordinator/registry/attestation_policy.go` (`codeAttestationEnforcedAtLocked`, `providerHoldsCurrentApplicationEvidenceLocked`) |
 | App Attest enrollment/assertion | Verified credential, Mac access-policy and code evidence plus a signed current transcript | Authorization without qualification, receipt and live connection checks | `coordinator/appattest/verify.go` (`Verifier.Attestation`, `Verifier.Assertion`); `coordinator/appattest/authorization.go` (`EvaluateAuthorization`) |
 | App Attest v3 hardware/status fields | App-origin claims bound to account, session, endpoint and verification key | Independent Apple certification of RAM, physical uniqueness or model execution | `provider-swift/Sources/ProviderAppAttest/ShadowProtocol.swift` (`clientHash`) |
-| Public verification verdict | Coordinator observation of the applicable method at its source snapshot or final dispatch | A transferable grant or Apple-signed result receipt | `coordinator/registry/verification.go` (`ProviderVerificationAndAuthorization`); `coordinator/registry/inference_authorization.go` (`authorizeInferenceHandoff`) |
+| Public verification verdict | Coordinator observation of the applicable method at its source snapshot or final dispatch | A transferable grant or Apple-signed result receipt | `coordinator/registry/verification.go` (`ProviderVerificationAndAuthorization`); `coordinator/registry/inference_authorization.go` (`InferenceHandoff.Authorize`) |
 
 ## Invariants
 
 1. **App Attest grants do not rewrite legacy evidence.** A current lease substitutes for specific legacy authorization requirements; it never sets `TrustHardware`, `MDAVerified` or `CodeAttested`. Common runtime/transport/privacy checks remain — `coordinator/registry/attestation_policy.go` (`providerSupportsPrivateTextAuthorizationAtLocked`).
-2. **Selection is not final authorization.** Every inference handoff rechecks current connection, account/machine/endpoint binding and applicable policy after frame preparation and owner acknowledgment. Later invalidation fences subsequent handoffs but cannot recall committed frames — `coordinator/registry/inference_authorization.go` (`WriteInferenceTextDeferred`, `authorizeInferenceHandoff`).
-3. **Missing evidence and hard denial differ.** Expiry or a transient lookup/Apple failure cannot extend App Attest permission; independently valid legacy evidence can remain usable. Explicit credential revocation and security denial fence matching live connections across both paths — `coordinator/appattest/service/authorizer.go` (`refresh`); `coordinator/registry/app_attest_authorization.go` (`RevokeAppAttestCredential`); `coordinator/registry/app_attest_denial.go` (`denyAppAttestProviderLocked`).
+2. **Selection is not final authorization.** Every inference handoff rechecks current connection, account/machine/endpoint binding and applicable policy after frame preparation and owner acknowledgment. Later invalidation fences subsequent handoffs but cannot recall committed frames — `coordinator/registry/inference_authorization.go` (`WriteInferenceTextDeferred`, `InferenceHandoff.Authorize`).
+3. **Missing evidence and hard denial differ.** Expiry or a transient lookup/Apple failure cannot extend App Attest permission; independently valid legacy evidence can remain usable only for connections eligible for the legacy path. Noncohort connections cannot fall back to legacy evidence, including on owner routes. Explicit credential revocation and security denial fence matching live connections across both paths — `coordinator/appattest/service/authorizer.go` (`refresh`); `coordinator/registry/app_attest_authorization.go` (`providerLegacyServingAuthorizedLocked`, `RevokeAppAttestCredential`); `coordinator/registry/app_attest_denial.go` (`denyAppAttestProviderLocked`).
 4. **Build publication is not qualification.** Serving requires current approved artifact/code identity, receipt and revocation evidence, with independent policy and qualification generation invalidation. Apple's truncated measurement must uniquely bind the durable full hash — `coordinator/appattest/service/build_qualifications.go` (`applyBuildQualification`); `coordinator/registry/app_attest_authorization.go` (`providerHasAppAttestAuthorizationLocked`).
 For existing deployments only, `applyBuildQualification` can use configured exact build/code mappings for a full Apple measurement when no durable row exists and the qualification snapshot is fresh. Durable rows and revocation tombstones override this compatibility path; truncated measurements and new release publication require durable qualification.
 
@@ -89,3 +112,12 @@ Platform security, signed-artifact qualification and physical SIP/boot transitio
 - [Serving authorization reference](../../reference/provider-authorization.md) — exact controls, deadlines and qualification.
 - [MDM-optional rollout](../../operations/mdm-optional-rollout.md) — activation and removal procedure.
 - [Hybrid trust review](../../reports/2026-09-27-hybrid-provider-trust-review.md) — scoped evidence and limits of this update.
+
+## Account erasure cleanup
+
+After durable scrub succeeds, `ForgetErasedKeys`
+(`coordinator/api/provider/trust/erasure.go`) removes the erased account's
+unshared keys from the trust-reuse cache and verification scheduler. Shared
+keys remain until their last non-erased owner is scrubbed. The store also
+removes that account's frozen legacy MDM cohort rows, preserving other owners'
+membership. See [account erasure](../account-erasure.md).

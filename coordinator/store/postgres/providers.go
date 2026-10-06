@@ -44,7 +44,18 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p store.ProviderReco
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	return upsertProviderRecord(ctx, s.pool, p)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer rollbackErasureTx(tx)
+	if err := lockAccountAdmission(ctx, tx, p.AccountID); err != nil {
+		return err
+	}
+	if err := upsertProviderRecord(ctx, tx, p); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // upsertProviderRecord leaves a soft-deleted row alone: the account is under

@@ -47,6 +47,36 @@ no SQL migration.
 
 The additive `app_attest_build_qualifications` table stores immutable signed-artifact approval, test evidence and server-attributed operator/time, plus permanent revocation tombstones. `coordinator/store/postgres/app_attest_builds.go` (`SetQualifiedRelease`) locks the same row used for revocation and atomically checks the exact identity before writing the active release. `store.As[AppAttestBuildStore]` unwraps the store decorator; qualification reads are deliberately uncached there. Service snapshots have a separate bounded lifetime, and stored approval never restores a live serving lease. See the [qualification runbook](../operations/app-attest-build-qualification.md).
 
+## Inventory registration timestamps
+
+`MachineObservation.RegisteredAt` in `coordinator/store/machine_inventory.go`
+is additive JSON metadata, not a new SQL column. `Session.Capture` in
+`coordinator/internal/appattest/inventory/session.go` copies the registry
+connection's immutable creation time, even after an earlier capture failed.
+Both stores retain it through their existing observation serialization. A missing
+origin is omitted, never replaced with the capture time; historical rows are not
+backfilled with guessed registration dates.
+
+The read-only campaign selector (`coordinator/provideremail/postgres.go`,
+`ReadSnapshot`) ranks this timestamp before filtering owners or versions.
+For an undated legacy observation, `first_seen` is only an upper bound on
+registration time. If that bound could beat or tie the newest known registration,
+the whole machine is excluded and counted as `unknown_registration`. If a known
+registration is later than the bound, the legacy session cannot displace it.
+Tied newest timestamps, including values collapsed by PostgreSQL's timestamp
+precision, are also excluded rather than assigning ownership by session ID.
+Merged identities use the surviving machine's combined session history.
+See [campaign operations](../operations/provider-emails.md) for rollout and
+recipient review; these observations do not grant serving permission.
+
+## Hardware-interest persistence
+
+`SmallModelsInterestStore` (`coordinator/store/small_models_interest.go`) is composed into `Store`. The memory implementation retains one value per internal account ID under the existing store mutex. The Postgres implementation creates the additive `small_models_interest` table after `users`; its primary key references `users(account_id)` with cascading deletion. An atomic upsert replaces Mac type/chip/RAM, preserves `created_at`, and advances `updated_at` (`coordinator/store/postgres/small_models_interest.go`, `smallModelsInterestDDL`, `UpsertSmallModelsInterest`). Repeated requests cannot create duplicate account rows.
+
+Contact email remains in `users`: bounded admin pages join it when read, so a registration does not freeze a stale email copy. `CachedStore` forwards this new domain through its embedded `Store`; these writes do not mutate cached user records. Postgres records survive reconnects and migrations; memory records last only for that process (`coordinator/store/memory/small_models_interest.go`).
+
+The console stores only pending hardware details; only an explicit click on the current page arms automatic submission after sign-in. After reload, select hardware and click the registration action again; the calculator does not restore its selection from this marker. It ignores the former anonymous success markers and confirms against the authenticated account's server record. An intent already bound to account A cannot submit as account B; late responses cannot replace the current account or a newer write. Explicit cancellation disarms pending sign-in registration; it does not delete an already stored record (`console-ui/src/app/earn/useSmallModelsInterest.ts`, `useSmallModelsInterest`). The [HTTP contract](../reference/api-contracts.md#small-model-interest) defines acknowledgment and export limits. This feature collects opt-ins; it does not send email.
+
 ## Context
 
 The coordinator is a single Go process whose in-memory registry is rebuilt from
@@ -62,10 +92,11 @@ Keychain. Nothing prompt-derived is stored on either side.
 
 ### The store interface
 
-`Store` (`coordinator/store/interface.go`) is the union of thirteen embedded
+`Store` (`coordinator/store/interface.go`) is the union of fourteen embedded
 domain interfaces. Most are declared in `coordinator/store/interface_domains.go`;
-`RequestOutcomeStore` lives in `coordinator/store/request_outcomes.go`. Callers
-depend on the narrow slice they need; both implementations satisfy all thirteen.
+`RequestOutcomeStore` lives in `coordinator/store/request_outcomes.go` and
+`SmallModelsInterestStore` in `coordinator/store/small_models_interest.go`. Callers
+depend on the narrow slice they need; both implementations satisfy all fourteen.
 
 | Sub-interface | Owns |
 |---|---|
@@ -78,6 +109,7 @@ depend on the narrow slice they need; both implementations satisfy all thirteen.
 | `ModelRegistryStore` | The manifest-backed model catalog and the public aliases that resolve to concrete builds. |
 | `ReleaseStore` | Versioned provider binary releases and their hashes. |
 | `UserStore` | Privy-linked consumer accounts, role, platform-fee override and Stripe Connect payout fields. |
+| `SmallModelsInterestStore` | One Earn-page hardware-interest record per account: upsert, own readback and bounded admin pages joined to the current email; see [hardware-interest persistence](#hardware-interest-persistence). |
 | `DeviceAuthStore` | The RFC 8628-style device-code flow and the long-lived provider tokens it mints. |
 | `InviteStore` | Invite codes and redemptions. |
 | `ProviderEarningsStore` | Per-node earnings, payouts and the base-rewards settlement rows. |
@@ -92,6 +124,41 @@ reads use bounded read-only transactions.
 
 Telemetry *events* are not in the store at all: the coordinator emitter sends
 them to Datadog only (see [`telemetry.md`](telemetry.md)).
+
+### Frozen legacy MDM cohort (upcoming)
+
+`LegacyMDMCohortStore` (`coordinator/store/legacy_mdm_cohort.go`) is an optional
+capability discovered through `store.As`. Its `FreezeLegacyMDMCohort` operation
+persists the one-time cutoff in `legacy_mdm_cohort_freeze` and stored
+account + SE public key + serial membership in `legacy_mdm_cohort`, derived from
+already successful MDM verification. `Policy.Initialize`
+(`coordinator/internal/provider/legacymdm/policy.go`), wired through
+`configureBillingAndTrust` (`coordinator/app/services.go`), runs on the first upgraded production startup **after
+revocation replay**, not during schema preparation. Later startups load the same
+cohort instead of rebuilding it from newly enrolled devices or new account
+associations. A recorded empty cohort remains frozen too.
+
+Lost or hashless historical records may be conservatively omitted. Retained
+hardware snapshots plus account-scoped historical inventory may supplement durable evidence;
+current MicroMDM enrollment or a self-reported identity alone cannot seed it.
+Before freezing, `Policy.Initialize` drains the existing `BackfillMachineInventory`
+capability in batches of 100 to zero under the startup 30-second deadline,
+including on restarts. An error, cancellation or deadline expiry before freezing
+leaves no new freeze marker. This retains the
+backfill's eligible closed-session filters, endpoint-bound SE-key checks and
+alias rules; recent/open or insufficiently evidenced history is not recovered
+merely because the loop reaches zero. Historical bindings use the stored provider
+account, not a fresh validation of each historical account token. Current grants
+still require the validated account, same frozen key and prior successful MDM
+evidence; later aliases cannot expand an existing cohort.
+The freeze survives PostgreSQL-backed restarts; the explicitly enabled memory
+store remains test/local-only and loses state on process exit. Neither membership
+nor a restored provider row grants live hardware trust. Registration identity
+recovery, scheduler submission, live/late MDM results and cached trust reuse all
+apply `Policy.RegistrationAllowed` or `Policy.ProviderAllowed` to the frozen
+association. No grace period is selected
+and no expiry is implemented. See [policy and residual enrollment
+limits](security/enrollment.md#frozen-legacy-authorization-cohort).
 
 ### Two implementations and when each runs
 
@@ -160,13 +227,13 @@ Legend: blue = step, amber = decision, green = serving, red = exit 1.
 ### Soft-deleted rows
 
 A row in `users`, `api_keys`, `providers` or `provider_tokens` whose
-`deleted_at` is set belongs to an erased account, and every live read hides
-it. Only [account erasure](#account-erasure) sets `deleted_at`. Writes do
-not filter, with one exception: the provider upsert leaves a soft-deleted
-`providers` row alone, so a late heartbeat persist cannot rewrite it
-(`upsertProviderRecord`). The model is in
-[schema lifecycle](schema-lifecycle.md#soft-delete); every filtered read,
-index and effect is in the [soft-delete reference](../reference/soft-delete.md).
+`deleted_at` is set is hidden from live reads. [Account erasure](#account-erasure)
+sets the column when the grace period begins. New credentials, provider records
+and payout admissions acquire the account fence and refuse a deleted account;
+late external creation results retain cleanup IDs in the erasure outbox.
+Historical accounting and revocation paths remain available. The model is in
+[schema lifecycle](schema-lifecycle.md#soft-delete); the exact read and write
+behavior is in the [soft-delete reference](../reference/soft-delete.md).
 
 ### Provider earnings and history
 
@@ -214,15 +281,15 @@ with each statement's affected rows checked against a count. It uses three
 tables: `erasure_requests` (state and counts, no personal data after the
 scrub), `erasure_outbox` (Stripe deletions and the Datadog `erasure_log`
 record, delivered by a worker) and `erasure_refused_credits`
-(credits that triggers keep out of an erased account). Goose versions 18 to 22
+(credits that triggers keep out of an erased account). Goose versions 22 to 26
 add them and their indexes:
 
 | Version | Source | What it does |
 |---|---|---|
-| 18 | `00018_erasure_tables.sql` | Creates `erasure_requests` and `erasure_outbox`. |
-| 19–20 | Go: `indexMigrations` | `CONCURRENTLY` indexes `billing_sessions(referral_code)` and `users(privy_user_id) WHERE deleted_at IS NOT NULL`. |
-| 21 | `00021_erasure_refuse_credits.sql` | `erasure_refused_credits` and the triggers that keep credits out of an erased account (`erasure_keep_balance_insert`, `erasure_keep_balance_update` on `balances`; `erasure_refuse_ledger_credit` on `ledger_entries`). |
-| 22 | `00022_erasure_outbox_stripe_job.sql` | Adds the redaction-job columns of `erasure_outbox` (`stripe_job_id`, its status, status time and generation) for `checkout_sessions` rows, plus the independent `lease_generation BIGINT` that fences delivery result commits. |
+| 22 | `00022_erasure_tables.sql` | Creates `erasure_requests` and `erasure_outbox`. |
+| 23–24 | Go: `indexMigrations` | `CONCURRENTLY` indexes `billing_sessions(referral_code)` and `users(privy_user_id) WHERE deleted_at IS NOT NULL`. |
+| 25 | `00025_erasure_refuse_credits.sql` | `erasure_refused_credits` and the triggers that keep credits out of an erased account (`erasure_keep_balance_insert`, `erasure_keep_balance_update` on `balances`; `erasure_refuse_ledger_credit` on `ledger_entries`). |
+| 26 | `00026_erasure_outbox_stripe_job.sql` | Adds the redaction-job columns of `erasure_outbox` (`stripe_job_id`, its status, status time and generation) for `checkout_sessions` rows, plus the independent `lease_generation BIGINT` that fences delivery result commits. |
 
 `CachedStore` overrides the three erasure writers (`RequestAccountErasure`,
 `CancelAccountErasure`, `ScrubAccount`) to drop cached users.
@@ -240,13 +307,39 @@ Roughly forty tables; grouped by what would be lost if the family vanished.
 | Family | Tables | Notes |
 |---|---|---|
 | Identity and access | `api_keys`, `users`, `device_codes`, `provider_tokens`, `publishing_api_keys`, `invite_codes`, `invite_redemptions` | Keys are stored as hashes with a display prefix; `users` carries the Stripe Connect fields. |
-| Money | `balances`, `ledger_entries`, `billing_sessions`, `model_prices`, `referrers`, `referrals`, `stripe_withdrawals`, `global_payout_recipients`, `global_payout_withdrawals`, `provider_earnings`, `earnings_summary`, `provider_payouts`, `provider_floor_draws`, `payments` (legacy) | The ledger is append-only; `balances` is the materialised view of it. `model_prices.cache_read_price` is nullable: `NULL` means the row sets no cache-read rate and billing derives one from `input_price` (`payments.RatesFor`). Semantics in [`billing.md`](billing.md). |
+| Money | `balances`, `ledger_entries`, `billing_sessions`, `model_prices`, `referrers`, `referrals`, `consumer_charge_settlements`, `stripe_withdrawals`, `global_payout_recipients`, `global_payout_withdrawals`, `provider_earnings`, `earnings_summary`, `provider_payouts`, `provider_floor_draws`, `payments` (legacy) | The ledger is append-only; `balances` is the materialised view of it. `model_prices.cache_read_price` is nullable: `NULL` means the row sets no cache-read rate and billing derives one from `input_price` (`payments.RatesFor`). Semantics in [`billing.md`](billing.md). |
 | Public model demand | `model_demand_requests`, `model_demand_hourly`, `model_demand_collection` | One compact projection per scoped coordinator UUID, hourly counters updated atomically by the `model_demand_rollup` trigger, and a persistent collection epoch; `coordinator/store/postgres/model_demand.go`. |
 | Usage and routing telemetry | `usage`, `usage_totals`, `inference_routes`, `request_rejections`, `request_profiles`, `fleet_snapshots`, `request_outcomes` | Row per request, per dispatched attempt, per rejection, per profiled attempt, per fleet sample; `usage_totals` is a single-row counter seeded by `checkRetiredBackfills` (migration version 2) and incremented by `RecordUsage`. `usage.cached_tokens` (`INTEGER NOT NULL DEFAULT 0`) is the subset of `prompt_tokens` billed at the cache-read rate; rows written before the column existed read 0, which is what they were billed. It and `model_prices.cache_read_price` are added by plain `ALTER TABLE … ADD COLUMN IF NOT EXISTS` statements, not exception-swallowing `DO` blocks. Settlement reads and writes both columns, so if either cannot be added (a lock timeout, a missing privilege), startup fails rather than boot a coordinator that bills at the default rates and drops usage rows. |
 | Provider fleet and trust | `providers`, `provider_reputation`, `provider_sessions`, `provider_trust_reuse`, `provider_verification_jobs`, `code_attestations`, `code_attest_push_budgets`, `provider_log_reports` | Trust reuse and code attestations are durable. `code_attestations.continuous_coverage_until` is compare-and-updated only for the exact original proof tuple; it never refreshes `attested_at` or inserts proof. This allows bounded same-process resume after a redeploy; see [`security/attestation.md`](security/attestation.md). `provider_log_reports.serial_number` is kept empty by trigger. |
 | Models and releases | `model_registry`, `model_versions`, `model_version_files`, `model_active_versions`, `model_aliases`, `releases` | The catalog the registry syncs at boot; see [`model-registry.md`](model-registry.md). |
 | Cache routing state | `cache_routing_holders`, `cache_routing_demand`, `cache_routing_meta` | Write-behind copy of the registry's in-memory exact prefix-cache holder index and observed-demand index, so a restart does not start from an empty index (`coordinator/store/postgres/cacheroutingstate.go`, `coordinator/store/cacheroutingstate/records.go`, `coordinator/registry/cachepersist/persister.go`). Holders are keyed by boundary key plus the provider's cache epoch (a UUID the provider mints per model SSD root and persists), never by connection-scoped provider ID; rows name a boundary by its keyed identifier (the HMAC output under the route key; the key material itself is never stored) and token count, plus the Ready fallback and measured stage costs; the provider-confirmed chain hash is not stored, and no prompt content is. Rows are pruned in 10,000-row batches every five minutes under the active routing TTL (the effective expiry is the earlier of the stored one and `updated_at` plus the TTL, indexed on both columns), so a longer past TTL cannot leave rows in the table after they stopped loading; rows stamped more than a minute ahead of the pruning clock (a previous instance's skew) are removed too, at boot and on every prune, so a current receipt is never outranked by a quarantined future timestamp. `cache_routing_meta` records a non-secret fingerprint of the cache-key generation (HMAC of the master key over every key-derivation label, the block contract and a persistence generation, `deriveCacheKeys`); nothing is written before a boot has recorded it; a boot under a different master key finds rows whose keys can never match a request again and empties both tables with unconditional bounded deletes, recording the new generation last, instead of restoring them (`cachepersist.Restore`, `ResetCacheRoutingState`). Loads apply the current TTL to each row's expiry before ordering and capping. Losing the tables costs minutes of hit rate, nothing else. |
 | Bookkeeping | `schema_migrations` | Completion markers for one-shot data migrations. |
+
+### Consumer referral settlement
+
+`FinalizeConsumerCharge` adds a request-keyed settlement record in
+`consumer_charge_settlements` through `consumerSettlementSchema`
+(`coordinator/store/postgres/consumer_settlement.go`); the normal boot migration
+creates it. Each row stores input account/reservation/cost, collected cost,
+referral enablement, captured referrer account, reward, and collection outcome.
+It does not backfill historical usage or modify existing referral relationships.
+
+The Postgres implementation serializes a job with an advisory transaction lock,
+then locks the consumer and referrer balances in sorted account order. It commits
+the consumer debit/refund, withdrawable referral credit, and settlement row
+atomically. Exact replay returns the stored outcome with `Applied = false`;
+changed inputs fail (`coordinator/internal/store/consumersettlement/settlement.go`,
+`Replay`). This also prevents later attribution from rewriting
+a settled job. The memory implementation preserves the same behavior under one
+mutex (`coordinator/store/memory/consumer_settlement.go`).
+
+Token-promotion settlements also write this table, using
+`promotion:<reservation_id>` and only the collected paid portion. The record
+and reward share the promotion settlement transaction.
+
+These paths write balances, ledger and settlement records, not cached users or
+model-registry rows. Attribution uses `referrers` and `referrals`; the reward
+formula and funding model are in [Billing](billing.md#consumer-referral).
 
 ### Global Payouts state
 
@@ -347,7 +440,7 @@ KV blocks under a per-model key, not tokens.
    transaction, and a difference rolls the whole scrub back
    (`applyRules`, `coordinator/store/postgres/erasure_rules.go`).
 10. **An erased account's balance stays zero.** The triggers in
-   `coordinator/store/postgres/schema/migrations/00021_erasure_refuse_credits.sql`
+   `coordinator/store/postgres/schema/migrations/00025_erasure_refuse_credits.sql`
    refuse every credit after the scrub and record it for review
    (`TestErasedAccountRefusesCredits`).
 
@@ -383,6 +476,17 @@ KV blocks under a per-model key, not tokens.
 | Persistent-disk state outside Postgres (MicroMDM, journals) | `coordinator/deploy/start.sh`, `coordinator/internal/provider/journal/trust_reuse_journal.go`, [`../operations/state-export.md`](../operations/state-export.md) |
 | Provider files and Keychain | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `provider-swift/Sources/ProviderCore/Service/`, `provider-swift/Sources/ProviderCore/KVCacheSSD/`, `provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift` |
 
+### Erasure persistence boundaries
+
+Refused credits include `reference_hash`, a SHA-256 identity that preserves
+once-only callback deduplication after the public reference is scrubbed.
+Account-owned credential/provider/hardware-interest writes and payout admissions
+synchronize with deletion using the user row. Late external creation results
+are staged in `erasure_outbox`, including during grace; only erased requests
+may deliver them. The scrub also deletes the account's frozen legacy MDM
+cohort and saved hardware interest. Code and synchronization:
+[concurrent erasure writes](account-erasure.md#concurrent-writes-and-late-external-results).
+
 ## Related
 
 - [`../reference/configuration.md`](../reference/configuration.md) — `EIGENINFERENCE_DATABASE_URL`, `EIGENINFERENCE_ALLOW_MEMORY_STORE`, `USER_PERSISTENT_DATA_PATH` and the provider path overrides
@@ -411,6 +515,15 @@ flag together. A durable confirmed-rejection marker makes failed refund writes
 retryable; unverified old rows remain for operator review. These methods do not
 write cached user records.
 
+The refund aggregate matches all `refund` and `stripe_payout` rows by account
+and `stripe_withdraw:<id>` reference, not by the coordinator-stamped withdrawal
+time: ledger timestamps use the database clock. Goose version 9 builds the non-unique
+partial `idx_ledger_stripe_refund(account_id, reference)` index concurrently
+(`coordinator/store/postgres/startup.go`, `ensureStripeRefundIndex`), using
+`ensureConcurrentIndex` to require a valid index before readiness. This bounds
+the lookup without discarding old debits or legacy refunds. Interrupted builds
+fail readiness and require index repair; repeated startup retains a valid index.
+
 `RemoveGlobalRecipient` resets the row to a new empty generation instead of
 deleting it. The retained row fences routing to Global Payouts after unlink or
 country-policy rollback and invalidates old unconfirmed quotes. Historical
@@ -420,9 +533,10 @@ existing pool through `StripeSettlementForMaintenance` without startup migration
 
 ## Autopilot operation ledger
 
-`coordinator/store/postgres/autopilot.go` (`RecordAutopilot`)
+The baseline (`coordinator/store/postgres/schema/migrations/00001_baseline.sql`)
 creates `autopilot_events`, keyed by `(command_id, phase)` with an indexed `at`
-timestamp and a bounded typed JSON record. Insert retries are idempotent. The
+timestamp and a bounded typed JSON record. `RecordAutopilot`
+(`coordinator/store/postgres/autopilot.go`) inserts records idempotently. The
 ledger stores model/control metadata without prompts or free-form provider
 errors. A command intent is persisted before dispatch; failed writes prevent new
 changes and terminal observations remain queued for retry. Incomplete historical

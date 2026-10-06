@@ -15,6 +15,10 @@ func (s *Scheduler) submit(ctx context.Context, providerID string, provider *reg
 	if s == nil || provider == nil {
 		return 0
 	}
+	if s.deps.LegacyMDMAllowed != nil && !s.deps.LegacyMDMAllowed(provider) {
+		provider.SetMDMFailureReason("app-attest-required")
+		return 0
+	}
 	result := provider.GetAttestationResult()
 	if result == nil || !result.Valid || result.PublicKey == "" || result.SerialNumber == "" {
 		return 0
@@ -461,6 +465,9 @@ func (s *Scheduler) refreshReleasedJob(work mdmSchedulerWork) {
 }
 
 func (s *Scheduler) EnqueueMDA(binding Binding, udid string) {
+	if s.deps.LegacyMDMAllowed != nil && !s.deps.LegacyMDMAllowed(binding.Provider) {
+		return
+	}
 	if udid == "" {
 		s.metricCounter("mda_verification_total", "outcome", "invalid")
 		s.mu.Lock()

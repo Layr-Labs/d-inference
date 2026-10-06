@@ -59,6 +59,9 @@ func (s *MemoryStore) CreditWithdrawableOnce(accountID string, amountMicroUSD in
 			return false, nil
 		}
 	}
+	if s.erasureRefusedIdentities[refusedCreditIdentity{accountID, entryType, store.HashKey(reference)}] {
+		return false, nil
+	}
 	if s.creditLocked(accountID, amountMicroUSD, entryType, reference, time.Now()) {
 		s.withdrawable[accountID] += amountMicroUSD
 	}

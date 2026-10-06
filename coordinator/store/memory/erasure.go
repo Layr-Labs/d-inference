@@ -60,128 +60,6 @@ func (s *MemoryStore) openWithdrawalsLocked(accountID string, now time.Time) int
 	return n
 }
 
-// collectErasureKeysLocked mirrors collectErasureKeys over the memory maps.
-func (s *MemoryStore) collectErasureKeysLocked(u *store.User, wallets []string) *erasure.Keys {
-	account := u.AccountID
-	k := erasure.NewKeys(account, wallets)
-	var seKeys, serials []string
-	for _, p := range s.providerRecords {
-		if p.AccountID == account {
-			k.ProviderIDs = append(k.ProviderIDs, p.ID)
-			seKeys = append(seKeys, p.SEPublicKey)
-			serials = append(serials, p.SerialNumber)
-		}
-	}
-	for _, ps := range s.history.ProviderSessions {
-		if ps.AccountID == account {
-			serials = append(serials, ps.SerialNumber)
-		}
-	}
-	if inv := s.machineInventory; inv != nil {
-		for _, o := range inv.Sessions {
-			if o.AccountID == account {
-				serials = append(serials, o.VerifiedSerial)
-			}
-		}
-	}
-	k.ProviderIDs, k.SEKeys, k.Serials = erasure.SortedUnique(k.ProviderIDs), erasure.SortedUnique(seKeys), erasure.SortedUnique(serials)
-	ownKeys := stringSet(k.SEKeys)
-	var sharedSE []string
-	for _, p := range s.providerRecords {
-		if p.AccountID != account && ownKeys[p.SEPublicKey] {
-			sharedSE = append(sharedSE, p.SEPublicKey)
-		}
-	}
-	k.SEKeys, k.SharedSEKeys = erasure.WithoutKeys(k.SEKeys, erasure.SortedUnique(sharedSE))
-	providers := stringSet(k.ProviderIDs)
-	var keyIDs []string
-	for _, e := range s.appAttestEvidence {
-		if providers[e.Evidence.SessionID] {
-			keyIDs = append(keyIDs, e.Evidence.KeyID)
-		}
-	}
-	k.AppAttestKeyIDs = erasure.SortedUnique(keyIDs)
-	ownAppKeys := stringSet(k.AppAttestKeyIDs)
-	var sharedApp []string
-	for _, e := range s.appAttestEvidence {
-		if ownAppKeys[e.Evidence.KeyID] && !providers[e.Evidence.SessionID] {
-			sharedApp = append(sharedApp, e.Evidence.KeyID)
-		}
-	}
-	k.AppAttestKeyIDs, k.SharedAppAttestKeys = erasure.WithoutKeys(k.AppAttestKeyIDs, erasure.SortedUnique(sharedApp))
-	stripeAccounts := []string{u.StripeAccountID}
-	for _, id := range s.stripeWithdrawalsByAccount[account] {
-		if w := s.stripeWithdrawalsByID[id]; w != nil {
-			stripeAccounts = append(stripeAccounts, w.StripeAccountID)
-		}
-	}
-	k.StripeAccountIDs = erasure.SortedUnique(stripeAccounts)
-	if r := s.referrersByAccount[account]; r != nil {
-		k.ReferrerCode = r.Code
-	}
-	var sessions []*store.BillingSession
-	for _, b := range s.billingSessions {
-		if b.AccountID == account && b.PaymentMethod == "stripe" && b.ExternalID != "" {
-			sessions = append(sessions, b)
-		}
-	}
-	sort.Slice(sessions, func(i, j int) bool {
-		if !sessions[i].CreatedAt.Equal(sessions[j].CreatedAt) {
-			return sessions[i].CreatedAt.Before(sessions[j].CreatedAt)
-		}
-		return sessions[i].ID < sessions[j].ID
-	})
-	for _, b := range sessions {
-		k.CheckoutSessionIDs = append(k.CheckoutSessionIDs, b.ExternalID)
-	}
-	var recipients []string
-	if r, ok := s.globalRecipients[account]; ok {
-		recipients = append(recipients, r.RecipientID)
-	}
-	for _, p := range s.globalPayouts {
-		if p.AccountID == account {
-			recipients = append(recipients, p.RecipientID)
-		}
-	}
-	k.RecipientIDs = erasure.SortedUnique(recipients)
-	if inv := s.machineInventory; inv != nil {
-		digests := map[string]bool{}
-		for _, serial := range k.Serials {
-			digests[erasure.MDASerialDigest(serial)] = true
-		}
-		for alias, machine := range inv.Aliases {
-			if alias.Kind != "mda_serial" || alias.Scope != "" || !digests[alias.Digest] {
-				continue
-			}
-			if s.machineSharedLocked(machine, account) {
-				k.MDADigestsShared++
-			} else {
-				k.MDADigestsToDelete = append(k.MDADigestsToDelete, alias.Digest)
-			}
-		}
-		sort.Strings(k.MDADigestsToDelete)
-	}
-	return k
-}
-
-// machineSharedLocked reports whether another account has a session on machine.
-func (s *MemoryStore) machineSharedLocked(machine, account string) bool {
-	for sid, o := range s.machineInventory.Sessions {
-		if o.AccountID != account && s.machineInventory.SessionMachines[sid] == machine {
-			return true
-		}
-	}
-	return false
-}
-
-func stringSet(values []string) map[string]bool {
-	out := make(map[string]bool, len(values))
-	for _, v := range values {
-		out[v] = true
-	}
-	return out
-}
-
 func (s *MemoryStore) PlanAccountErasure(ctx context.Context, accountID string, walletAddresses []string) (*store.ErasurePlan, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -350,6 +228,15 @@ func (s *MemoryStore) ScrubAccount(ctx context.Context, requestID string, now ti
 		return nil, err
 	}
 	applied.Rows = rows
+	kept := s.erasureOutbox[:0]
+	for _, item := range s.erasureOutbox {
+		previous := s.erasureRequests[item.RequestID]
+		if previous != nil && previous.AccountID == r.AccountID && previous.State != store.ErasureErased {
+			continue
+		}
+		kept = append(kept, item)
+	}
+	s.erasureOutbox = kept
 	for _, o := range k.OutboxRows() {
 		o.RequestID, o.NextAt, o.CreatedAt, o.HasExternalID = r.ID, now, now, o.ExternalID != ""
 		s.erasureOutbox = append(s.erasureOutbox, o)
@@ -451,11 +338,15 @@ func (s *MemoryStore) ListErasureRefusedCredits(ctx context.Context, accountID s
 }
 
 // refuseErasedCreditLocked records and refuses a credit to an erased
-// account, as the Postgres triggers in 00021_erasure_refuse_credits.sql do.
+// account, as the Postgres triggers in 00025_erasure_refuse_credits.sql do.
 func (s *MemoryStore) refuseErasedCreditLocked(accountID string, amount int64, entryType store.LedgerEntryType, reference string, at time.Time) bool {
 	if amount <= 0 || !s.erasedAccounts[accountID] {
 		return false
 	}
+	if s.erasureRefusedIdentities == nil {
+		s.erasureRefusedIdentities = make(map[refusedCreditIdentity]bool)
+	}
+	s.erasureRefusedIdentities[refusedCreditIdentity{accountID, entryType, store.HashKey(reference)}] = true
 	switch {
 	case entryType == store.LedgerAdminCredit || entryType == store.LedgerAdminReward:
 		reference = string(entryType)
@@ -467,4 +358,12 @@ func (s *MemoryStore) refuseErasedCreditLocked(accountID string, amount int64, e
 		ID: s.erasureRefusedSeq, AccountID: accountID, EntryType: entryType, AmountMicroUSD: amount, Reference: reference, CreatedAt: at,
 	})
 	return true
+}
+
+// The audit omits personal references; their hashes preserve once-credit
+// identity without changing the behavior of ordinary repeatable credits.
+type refusedCreditIdentity struct {
+	accountID     string
+	entryType     store.LedgerEntryType
+	referenceHash string
 }

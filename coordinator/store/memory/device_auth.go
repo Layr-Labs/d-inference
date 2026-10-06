@@ -82,6 +82,9 @@ func (s *MemoryStore) DeleteExpiredDeviceCodes() error {
 func (s *MemoryStore) CreateProviderToken(pt *store.ProviderToken) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.accountAdmissionLocked(pt.AccountID); err != nil {
+		return err
+	}
 
 	if _, exists := s.providerTokens[pt.TokenHash]; exists {
 		return errors.New("provider token already exists")
@@ -97,11 +100,8 @@ func (s *MemoryStore) GetProviderToken(token string) (*store.ProviderToken, erro
 
 	h := store.HashKey(token)
 	pt, ok := s.providerTokens[h]
-	if !ok || pt.DeletedAt != nil {
-		return nil, errors.New("provider token not found")
-	}
-	if !pt.Active {
-		return nil, errors.New("provider token is revoked")
+	if !ok || !pt.Active || pt.DeletedAt != nil {
+		return nil, store.ErrProviderTokenInvalid
 	}
 	copy := *pt
 	return &copy, nil

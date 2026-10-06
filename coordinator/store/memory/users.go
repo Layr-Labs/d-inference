@@ -66,6 +66,9 @@ func (s *MemoryStore) SetUserStripeAccount(accountID, stripeAccountID, status, s
 		return fmt.Errorf("user with account ID %q not found", accountID)
 	}
 
+	if s.retainDeletedExternalObjectLocked(accountID, store.ErasureTargetStripeAccount, stripeAccountID) {
+		return store.ErrErasureConflict
+	}
 	// Maintain the by-stripe-account index. A user may switch accounts (e.g.
 	// after a manual reset) so we drop the old mapping if it was different.
 	if u.StripeAccountID != "" && u.StripeAccountID != stripeAccountID {
@@ -89,6 +92,9 @@ func (s *MemoryStore) SetUserStripeAccount(accountID, stripeAccountID, status, s
 
 	if stripeAccountID != "" {
 		s.usersByStripeAccountID[stripeAccountID] = u
+	}
+	if u.DeletedAt != nil {
+		return store.ErrErasureConflict
 	}
 	return nil
 }

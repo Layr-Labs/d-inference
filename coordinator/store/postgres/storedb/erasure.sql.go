@@ -178,6 +178,17 @@ func (q *Queries) CountGlobalRecipientRow(ctx context.Context, accountID string)
 	return count, err
 }
 
+const countLegacyMDMCohortRows = `-- name: CountLegacyMDMCohortRows :one
+SELECT COUNT(*) FROM legacy_mdm_cohort WHERE account_id = $1
+`
+
+func (q *Queries) CountLegacyMDMCohortRows(ctx context.Context, accountID string) (int64, error) {
+	row := q.db.QueryRow(ctx, countLegacyMDMCohortRows, accountID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countMDASerialAliasesRows = `-- name: CountMDASerialAliasesRows :one
 SELECT COUNT(*) FROM darkbloom_machine_aliases
 WHERE kind = 'mda_serial' AND scope = '' AND digest = ANY($1::text[])
@@ -367,6 +378,17 @@ func (q *Queries) CountReferrersRow(ctx context.Context, accountID string) (int6
 	return count, err
 }
 
+const countSmallModelsInterestRows = `-- name: CountSmallModelsInterestRows :one
+SELECT COUNT(*) FROM small_models_interest WHERE account_id = $1
+`
+
+func (q *Queries) CountSmallModelsInterestRows(ctx context.Context, accountID string) (int64, error) {
+	row := q.db.QueryRow(ctx, countSmallModelsInterestRows, accountID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countStripeLedgerReferences = `-- name: CountStripeLedgerReferences :one
 SELECT COUNT(*) FROM ledger_entries WHERE account_id = $1 AND reference LIKE 'stripe:%'
 `
@@ -510,6 +532,18 @@ func (q *Queries) DeleteDeviceCodesRows(ctx context.Context, accountID string) (
 	return result.RowsAffected(), nil
 }
 
+const deleteLegacyMDMCohortRows = `-- name: DeleteLegacyMDMCohortRows :execrows
+DELETE FROM legacy_mdm_cohort WHERE account_id = $1
+`
+
+func (q *Queries) DeleteLegacyMDMCohortRows(ctx context.Context, accountID string) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteLegacyMDMCohortRows, accountID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteMDASerialAliasesRows = `-- name: DeleteMDASerialAliasesRows :execrows
 DELETE FROM darkbloom_machine_aliases
 WHERE kind = 'mda_serial' AND scope = '' AND digest = ANY($1::text[])
@@ -557,6 +591,28 @@ func (q *Queries) DeleteProviderVerificationJobsRows(ctx context.Context, seKeys
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const deleteSmallModelsInterestRows = `-- name: DeleteSmallModelsInterestRows :execrows
+DELETE FROM small_models_interest WHERE account_id = $1
+`
+
+func (q *Queries) DeleteSmallModelsInterestRows(ctx context.Context, accountID string) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteSmallModelsInterestRows, accountID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteStagedErasureObjects = `-- name: DeleteStagedErasureObjects :exec
+DELETE FROM erasure_outbox o USING erasure_requests r
+WHERE r.id = o.request_id AND r.account_id = $1 AND r.state <> 'erased'
+`
+
+func (q *Queries) DeleteStagedErasureObjects(ctx context.Context, accountID string) error {
+	_, err := q.db.Exec(ctx, deleteStagedErasureObjects, accountID)
+	return err
 }
 
 const getBalanceForErasure = `-- name: GetBalanceForErasure :one
@@ -1016,6 +1072,31 @@ func (q *Queries) ListAccountCheckoutSessionIDs(ctx context.Context, accountID s
 	return items, nil
 }
 
+const listAccountHistoricalProviderIDs = `-- name: ListAccountHistoricalProviderIDs :many
+SELECT p.session_id FROM provider_sessions p WHERE p.account_id = $1
+UNION SELECT m.session_id FROM darkbloom_machine_sessions m WHERE m.account_id = $1
+`
+
+func (q *Queries) ListAccountHistoricalProviderIDs(ctx context.Context, accountID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listAccountHistoricalProviderIDs, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var session_id string
+		if err := rows.Scan(&session_id); err != nil {
+			return nil, err
+		}
+		items = append(items, session_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAccountLogReportSerials = `-- name: ListAccountLogReportSerials :many
 SELECT DISTINCT serial_number FROM provider_log_reports WHERE account_id = $1 AND serial_number <> ''
 `
@@ -1211,7 +1292,7 @@ func (q *Queries) ListErasureOutbox(ctx context.Context, requestID string) ([]Er
 }
 
 const listErasureRefusedCredits = `-- name: ListErasureRefusedCredits :many
-SELECT id, account_id, entry_type, amount_micro_usd, reference, created_at FROM erasure_refused_credits WHERE account_id = $1 ORDER BY created_at, id LIMIT 500
+SELECT id, account_id, entry_type, amount_micro_usd, reference_hash, reference, created_at FROM erasure_refused_credits WHERE account_id = $1 ORDER BY created_at, id LIMIT 500
 `
 
 func (q *Queries) ListErasureRefusedCredits(ctx context.Context, accountID string) ([]ErasureRefusedCredit, error) {
@@ -1228,6 +1309,7 @@ func (q *Queries) ListErasureRefusedCredits(ctx context.Context, accountID strin
 			&i.AccountID,
 			&i.EntryType,
 			&i.AmountMicroUsd,
+			&i.ReferenceHash,
 			&i.Reference,
 			&i.CreatedAt,
 		); err != nil {
@@ -1245,6 +1327,7 @@ const listMDASerialAliasesForErasure = `-- name: ListMDASerialAliasesForErasure 
 SELECT a.digest, EXISTS (
     SELECT 1 FROM darkbloom_machine_sessions s
     WHERE s.machine_id = a.machine_id AND s.account_id <> $1
+      AND NOT EXISTS (SELECT 1 FROM erasure_requests r WHERE r.account_id = s.account_id AND r.state = 'erased')
 ) AS shared
 FROM darkbloom_machine_aliases a
 WHERE a.kind = 'mda_serial' AND a.scope = '' AND a.digest = ANY($2::text[])
@@ -1283,6 +1366,14 @@ func (q *Queries) ListMDASerialAliasesForErasure(ctx context.Context, arg ListMD
 const listSharedAppAttestKeys = `-- name: ListSharedAppAttestKeys :many
 SELECT DISTINCT key_id FROM app_attest_evidence
 WHERE key_id = ANY($1::text[]) AND NOT (session_id = ANY($2::text[]))
+AND NOT EXISTS (
+    SELECT 1 FROM erasure_requests r
+    WHERE r.state = 'erased' AND r.account_id IN (
+        SELECT account_id FROM providers WHERE id = app_attest_evidence.session_id
+        UNION SELECT account_id FROM provider_sessions WHERE session_id = app_attest_evidence.session_id
+        UNION SELECT account_id FROM darkbloom_machine_sessions WHERE session_id = app_attest_evidence.session_id
+    )
+)
 `
 
 type ListSharedAppAttestKeysParams struct {
@@ -1312,7 +1403,8 @@ func (q *Queries) ListSharedAppAttestKeys(ctx context.Context, arg ListSharedApp
 
 const listSharedSEKeys = `-- name: ListSharedSEKeys :many
 SELECT DISTINCT se_public_key FROM providers
-WHERE se_public_key = ANY($1::text[]) AND account_id <> $2
+WHERE se_public_key = ANY($1::text[]) AND providers.account_id <> $2
+AND NOT EXISTS (SELECT 1 FROM erasure_requests r WHERE r.account_id = providers.account_id AND r.state = 'erased')
 `
 
 type ListSharedSEKeysParams struct {
@@ -1340,12 +1432,117 @@ func (q *Queries) ListSharedSEKeys(ctx context.Context, arg ListSharedSEKeysPara
 	return items, nil
 }
 
+const listStagedErasureObjects = `-- name: ListStagedErasureObjects :many
+SELECT o.target, o.external_id FROM erasure_outbox o
+JOIN erasure_requests r ON r.id = o.request_id
+WHERE r.account_id = $1 AND r.state <> 'erased' AND o.external_id <> ''
+`
+
+type ListStagedErasureObjectsRow struct {
+	Target     string
+	ExternalID string
+}
+
+// A canceled erasure leaves staged external IDs with the live account. A later
+// scrub includes them before replacing staging with its complete cleanup set.
+func (q *Queries) ListStagedErasureObjects(ctx context.Context, accountID string) ([]ListStagedErasureObjectsRow, error) {
+	rows, err := q.db.Query(ctx, listStagedErasureObjects, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListStagedErasureObjectsRow
+	for rows.Next() {
+		var i ListStagedErasureObjectsRow
+		if err := rows.Scan(&i.Target, &i.ExternalID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockAccountBillingSessions = `-- name: LockAccountBillingSessions :many
 SELECT id FROM billing_sessions WHERE account_id = $1 ORDER BY id FOR UPDATE
 `
 
 func (q *Queries) LockAccountBillingSessions(ctx context.Context, accountID string) ([]string, error) {
 	rows, err := q.db.Query(ctx, lockAccountBillingSessions, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockAccountGlobalPayouts = `-- name: LockAccountGlobalPayouts :many
+SELECT id FROM global_payout_withdrawals WHERE account_id = $1 ORDER BY id FOR UPDATE
+`
+
+func (q *Queries) LockAccountGlobalPayouts(ctx context.Context, accountID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, lockAccountGlobalPayouts, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockAccountGlobalRecipient = `-- name: LockAccountGlobalRecipient :many
+SELECT account_id FROM global_payout_recipients WHERE account_id = $1 FOR UPDATE
+`
+
+func (q *Queries) LockAccountGlobalRecipient(ctx context.Context, accountID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, lockAccountGlobalRecipient, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var account_id string
+		if err := rows.Scan(&account_id); err != nil {
+			return nil, err
+		}
+		items = append(items, account_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockAccountStripeWithdrawals = `-- name: LockAccountStripeWithdrawals :many
+SELECT id FROM stripe_withdrawals WHERE account_id = $1 ORDER BY id FOR UPDATE
+`
+
+func (q *Queries) LockAccountStripeWithdrawals(ctx context.Context, accountID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, lockAccountStripeWithdrawals, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -1378,6 +1575,24 @@ func (q *Queries) LockBalance(ctx context.Context, accountID string) (LockBalanc
 	var i LockBalanceRow
 	err := row.Scan(&i.BalanceMicroUsd, &i.WithdrawableMicroUsd)
 	return i, err
+}
+
+const lockErasureIdentityCleanup = `-- name: LockErasureIdentityCleanup :exec
+SELECT pg_advisory_xact_lock(714320, 1)
+`
+
+func (q *Queries) LockErasureIdentityCleanup(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, lockErasureIdentityCleanup)
+	return err
+}
+
+const lockErasureObservations = `-- name: LockErasureObservations :exec
+SELECT pg_advisory_xact_lock(714320, 2)
+`
+
+func (q *Queries) LockErasureObservations(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, lockErasureObservations)
+	return err
 }
 
 const lockErasureOutbox = `-- name: LockErasureOutbox :exec

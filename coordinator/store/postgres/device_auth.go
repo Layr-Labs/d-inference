@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/jackc/pgx/v5"
 )
 
 func (s *PostgresStore) CreateDeviceCode(dc *store.DeviceCode) error {
@@ -87,7 +88,15 @@ func (s *PostgresStore) CreateProviderToken(pt *store.ProviderToken) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := s.pool.Exec(ctx,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer rollbackErasureTx(tx)
+	if err := lockAccountAdmission(ctx, tx, pt.AccountID); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx,
 		`INSERT INTO provider_tokens (token_hash, account_id, label, active)
 		 VALUES ($1, $2, $3, $4)`,
 		pt.TokenHash, pt.AccountID, pt.Label, pt.Active,
@@ -95,7 +104,7 @@ func (s *PostgresStore) CreateProviderToken(pt *store.ProviderToken) error {
 	if err != nil {
 		return fmt.Errorf("store: create provider token: %w", err)
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 func (s *PostgresStore) GetProviderToken(token string) (*store.ProviderToken, error) {
@@ -108,8 +117,11 @@ func (s *PostgresStore) GetProviderToken(token string) (*store.ProviderToken, er
 		`SELECT token_hash, account_id, label, active, created_at
 		 FROM provider_tokens WHERE token_hash = $1 AND active = TRUE AND deleted_at IS NULL`, h,
 	).Scan(&pt.TokenHash, &pt.AccountID, &pt.Label, &pt.Active, &pt.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("store: %w: %w", store.ErrProviderTokenInvalid, err)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("store: provider token not found: %w", err)
+		return nil, fmt.Errorf("store: get provider token: %w", err)
 	}
 	return &pt, nil
 }

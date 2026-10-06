@@ -48,10 +48,12 @@ func (s *PostgresStore) RefundRejectedStripeWithdrawal(id string) (bool, error) 
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, string(store.LedgerRefund)+":"+ref); err != nil {
 		return false, err
 	}
-	// Existing callers use the same advisory lock and reference. Include time to
-	// bound the lookup on the (account_id, created_at) index for busy providers.
+	// Existing callers use the same advisory lock and reference. Do not bound the
+	// lookup by w.CreatedAt: it is the coordinator clock, and ledger rows carry
+	// the database clock, so skew would hide the debit or an earlier refund.
+	// idx_ledger_stripe_refund bounds the scan by account and reference instead.
 	var credited, debited int64
-	err = tx.QueryRow(ctx, `SELECT COALESCE(SUM(amount_micro_usd) FILTER (WHERE entry_type='refund'),0), COALESCE(SUM(amount_micro_usd) FILTER (WHERE entry_type='stripe_payout'),0) FROM ledger_entries WHERE account_id=$1 AND reference=$2 AND created_at >= $3 AND entry_type IN ('refund','stripe_payout')`, w.AccountID, ref, w.CreatedAt).Scan(&credited, &debited)
+	err = tx.QueryRow(ctx, `SELECT COALESCE(SUM(amount_micro_usd) FILTER (WHERE entry_type='refund'),0), COALESCE(SUM(amount_micro_usd) FILTER (WHERE entry_type='stripe_payout'),0) FROM ledger_entries WHERE account_id=$1 AND reference=$2 AND entry_type IN ('refund','stripe_payout')`, w.AccountID, ref).Scan(&credited, &debited)
 	if err != nil {
 		return false, err
 	}

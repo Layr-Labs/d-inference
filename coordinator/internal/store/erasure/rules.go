@@ -218,6 +218,8 @@ var Rules = []Rule{
 		Name: "provider_payouts_address", Table: "provider_payouts", Link: "provider_address in the request's wallet addresses",
 		Columns: []Column{{"provider_address", SetRandom}},
 	},
+	{Name: "legacy_mdm_cohort", Table: "legacy_mdm_cohort", Link: "account_id", Delete: true},
+	{Name: "small_models_interest", Table: "small_models_interest", Link: "account_id", Delete: true},
 }
 
 // These reasons explain the personal-looking data the scrub keeps.

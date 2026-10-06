@@ -29,6 +29,9 @@ var _ store.GlobalPayoutStore = (*MemoryStore)(nil)
 func (s *MemoryStore) PrepareGlobalRecipient(r store.GlobalRecipient) (*store.GlobalRecipient, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.accountAdmissionLocked(r.AccountID); err != nil {
+		return nil, err
+	}
 	if s.globalRecipients == nil {
 		s.globalRecipients = make(map[string]store.GlobalRecipient)
 	}
@@ -42,11 +45,14 @@ func (s *MemoryStore) PrepareGlobalRecipient(r store.GlobalRecipient) (*store.Gl
 func (s *MemoryStore) SaveGlobalRecipient(r store.GlobalRecipient) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.retainDeletedExternalObjectLocked(r.AccountID, store.ErasureTargetGlobalRecipient, r.RecipientID) {
+		return store.ErrErasureConflict
+	}
 	if s.globalRecipients[r.AccountID].ID != r.ID {
 		return store.ErrPayoutConflict
 	}
 	s.globalRecipients[r.AccountID] = r
-	return nil
+	return s.accountAdmissionLocked(r.AccountID)
 }
 
 func (s *MemoryStore) GetGlobalRecipient(accountID string) (*store.GlobalRecipient, error) {
@@ -74,6 +80,9 @@ func (s *MemoryStore) CreateGlobalPayoutQuote(p store.GlobalPayout) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.accountAdmissionLocked(p.AccountID); err != nil {
+		return err
+	}
 	if s.globalPayouts == nil {
 		s.globalPayouts = make(map[string]store.GlobalPayout)
 	}
@@ -110,6 +119,9 @@ func (s *MemoryStore) GetGlobalPayoutByExternalID(id string) (*store.GlobalPayou
 func (s *MemoryStore) BeginGlobalPayout(accountID, id string, now time.Time) (*store.GlobalPayout, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if u := s.usersByAccountID[accountID]; u != nil && u.DeletedAt != nil {
+		return nil, store.ErrErasureConflict
+	}
 	p, ok := s.globalPayouts[id]
 	if !ok || p.AccountID != accountID {
 		return nil, store.ErrNotFound

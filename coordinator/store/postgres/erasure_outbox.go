@@ -37,7 +37,7 @@ func (s *PostgresStore) LeaseDueErasureOutbox(ctx context.Context, dueBefore, no
 
 // SaveErasureOutboxResult stores one delivery outcome.
 func (s *PostgresStore) SaveErasureOutboxResult(ctx context.Context, id string, r store.ErasureOutboxResult) error {
-	return s.erasureTx(ctx, pgx.TxOptions{}, func(q *storedb.Queries) error {
+	return s.erasureTx(ctx, pgx.TxOptions{}, func(ctx context.Context, q *storedb.Queries) error {
 		// Acquire the row before checking clock_timestamp in the update: a wait
 		// on another transaction must not preserve an already expired claim.
 		if err := q.LockErasureOutbox(ctx, id); err != nil {

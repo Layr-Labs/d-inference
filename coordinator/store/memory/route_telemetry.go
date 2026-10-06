@@ -45,6 +45,14 @@ func (s *MemoryStore) RecordInferenceRoutes(records []*store.InferenceRouteRecor
 
 func (s *MemoryStore) recordInferenceRouteLocked(record *store.InferenceRouteRecord, now time.Time) {
 	rec := *record
+	for account := range s.erasedAccounts {
+		if rec.ConsumerKeyHash == store.HashKey(account) {
+			rec.ConsumerRegion = ""
+		}
+	}
+	if s.erasedProviderLocked(rec.ProviderID) {
+		rec.ProviderRegion = ""
+	}
 	if rec.CreatedAt.IsZero() {
 		rec.CreatedAt = now
 	}

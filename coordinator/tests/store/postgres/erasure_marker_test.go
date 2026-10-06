@@ -38,6 +38,8 @@ var erasureMarkerFixture = []string{
 	// Account A.
 	`INSERT INTO users (account_id, privy_user_id, email, stripe_account_id, stripe_account_status, stripe_account_country, stripe_destination_type, stripe_destination_last4)
 	 VALUES ('acct-A', 'did:privy:PIIMARK', 'PIIMARK@example.com', 'acct_PIIMARK', 'PIIMARK', 'PIIMARK', 'PIIMARK', 'PIIMARK')`,
+	`INSERT INTO legacy_mdm_cohort (account_id,se_public_key,serial_number) VALUES ('acct-A','se-A','PIIMARK-SERIAL')`,
+	`INSERT INTO small_models_interest (account_id,mac_type,chip,ram_gb) VALUES ('acct-A','PIIMARK-hardware','PIIMARK-chip',16)`,
 	`INSERT INTO api_keys (key_hash, raw_prefix, owner_account_id, id, name) VALUES ('kh-A', 'sk-db-', 'acct-A', 'key-A', 'PIIMARK key name')`,
 	`INSERT INTO provider_tokens (token_hash, account_id, label) VALUES ('th-A', 'acct-A', 'PIIMARK-hostname')`,
 	`INSERT INTO device_codes (device_code, user_code, account_id, status, expires_at) VALUES ('dc-A', 'PIIMARK-UC', 'acct-A', 'approved', NOW() + interval '1 hour')`,
@@ -91,6 +93,8 @@ var erasureMarkerFixture = []string{
 
 	// Account B shares machine m-shared, was referred by A and copied A's code.
 	`INSERT INTO users (account_id, privy_user_id, email, stripe_account_id) VALUES ('acct-B', 'did:privy:KEEPMARK', 'KEEPMARK@example.com', 'acct_KEEPMARK')`,
+	`INSERT INTO legacy_mdm_cohort (account_id,se_public_key,serial_number) VALUES ('acct-B','se-B','KEEPMARK-SERIAL')`,
+	`INSERT INTO small_models_interest (account_id,mac_type,chip,ram_gb) VALUES ('acct-B','KEEPMARK-hardware','KEEPMARK-chip',16)`,
 	`INSERT INTO providers (id, hardware, models, backend, serial_number, se_public_key, account_id) VALUES ('prov-B', '{}', '[]', 'mlx', 'KEEPMARK-SERIAL', 'se-B', 'acct-B')`,
 	`INSERT INTO provider_trust_reuse (se_pubkey, serial) VALUES ('se-B', 'KEEPMARK-SERIAL'), ('se-shared', 'KEEPMARK-SHARED-SERIAL')`,
 	`INSERT INTO providers (id, hardware, models, backend, se_public_key, serial_number, account_id) VALUES ('prov-B2', '{}', '[]', 'mlx', 'se-shared', 'KEEPMARK-SHARED-SERIAL', 'acct-B')`,

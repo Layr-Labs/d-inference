@@ -267,8 +267,8 @@ func TestSoftDeletedProviderIgnoresLatePersist(t *testing.T) {
 			if err := s.UpsertProvider(ctx, store.ProviderRecord{
 				ID: a.ProviderID, Hardware: []byte(`{}`), Models: []byte(`[]`), Backend: "mlx",
 				SerialNumber: "LATE-SERIAL", AccountID: a.AccountID, RegisteredAt: time.Now(), LastSeen: time.Now(),
-			}); err != nil {
-				t.Fatal(err)
+			}); !errors.Is(err, store.ErrErasureConflict) {
+				t.Fatalf("late provider persist: %v", err)
 			}
 			if _, err := s.CancelAccountErasure(ctx, a.AccountID, "admin_key", time.Now().UTC()); err != nil {
 				t.Fatal(err)

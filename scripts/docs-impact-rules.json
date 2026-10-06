@@ -211,11 +211,62 @@
         "coordinator/store/migrations/**",
         "coordinator/store/postgres/migrations.go",
         "coordinator/store/postgres/migrations/**",
-        "coordinator/store/postgres/schema/**"
+        "coordinator/store/postgres/schema/**",
+        "coordinator/store/*schema*.go",
+        "coordinator/store/postgres/startup.go",
+        "coordinator/store/postgres/retired_backfills.go",
+        "coordinator/store/postgres/provider_earnings_index.go",
+        "coordinator/store/postgres/earnings_window_index.go",
+        "coordinator/store/postgres/migration_indexes.go"
       ],
       "docs_any_of": [
         "docs/architecture/storage.md",
         "docs/architecture/schema-lifecycle.md"
+      ]
+    },
+    {
+      "name": "soft-delete reads and writes",
+      "source_patterns": [
+        "coordinator/store/memory/users.go",
+        "coordinator/store/memory/apikey.go",
+        "coordinator/store/memory/providers.go",
+        "coordinator/store/memory/device_auth.go",
+        "coordinator/store/memory/provider_restore.go",
+        "coordinator/store/memory/machine_continuity.go",
+        "coordinator/store/memory/model_token_promotions.go",
+        "coordinator/store/memory/analytics.go",
+        "coordinator/store/postgres/users.go",
+        "coordinator/store/postgres/apikey.go",
+        "coordinator/store/postgres/providers.go",
+        "coordinator/store/postgres/device_auth.go",
+        "coordinator/store/postgres/provider_read.go",
+        "coordinator/store/postgres/provider_record_write.go",
+        "coordinator/store/postgres/provider_restore.go",
+        "coordinator/store/postgres/machine_continuity.go",
+        "coordinator/store/postgres/machine_inventory_backfill.go",
+        "coordinator/store/postgres/model_token_promotions.go",
+        "coordinator/store/postgres/analytics_flows.go",
+        "coordinator/store/postgres/queries/api_keys.sql",
+        "coordinator/store/postgres/storedb/api_keys.sql.go",
+        "coordinator/store/memory/small_models_interest.go",
+        "coordinator/store/memory/legacy_mdm_cohort.go",
+        "coordinator/store/postgres/small_models_interest.go",
+        "coordinator/store/postgres/legacy_mdm_cohort.go"
+      ],
+      "docs_any_of": [
+        "docs/reference/soft-delete.md"
+      ]
+    },
+    {
+      "name": "sqlc queries and type mappings",
+      "source_patterns": [
+        "coordinator/store/postgres/sqlc.yaml",
+        "coordinator/store/postgres/queries/**",
+        "coordinator/store/postgres/storedb/**"
+      ],
+      "docs_any_of": [
+        "docs/developer/sqlc.md",
+        "docs/reference/sqlc-type-mapping.md"
       ]
     },
     {
@@ -313,7 +364,9 @@
         "coordinator/internal/appattest/**",
         "coordinator/mdm/**",
         "coordinator/internal/mdm/**",
-        "coordinator/apns/**"
+        "coordinator/apns/**",
+        "coordinator/store/memory/legacy_mdm_cohort.go",
+        "coordinator/store/postgres/legacy_mdm_cohort.go"
       ],
       "docs_any_of": [
         "docs/architecture/security/attestation.md",

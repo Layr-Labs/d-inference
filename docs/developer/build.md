@@ -1,10 +1,34 @@
 # Build
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-06
 
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the
 operator’s live status or recovery evidence (`scripts/run-provider-tests.sh`).
+
+CI and Integration Tests cancel an older run only when a newer revision of the
+same pull request starts in that workflow. Concurrency groups include the
+workflow and event names; non-PR runs use a unique run ID, so default-branch pushes
+remain independent. Provider unit, SDK, parity and integration jobs remain
+parallel, without a shared-build dependency between workflows.
+
+Integration Tests reuse their own compatible Swift debug and Rust build caches
+through `scripts/provider-ci-cache.py` (`keys --lane integration`). The restore
+prefix binds the lane, toolchain, SDK, OS, checkout path, dependency pins and build
+recipe; the exact key also binds the source commit. Restored source timestamps
+are checked by content, cached runtime resources are discarded, and Swift and
+sidecar build commands still execute. Metal uses an exact source/toolchain key
+shared with compatible provider lanes, followed by the existing source-matched
+validation and staging. Cache misses build normally; caches never skip E2E tests
+or enter the separate release-build namespace. Compare cache transfer plus build
+time and whole-job runtime on real runners before claiming a saving.
+Homebrew and `zstd` are installed before any integration cache restore, including
+Go's cache. Restore and save must use the same compression format, which is part
+of the Actions cache version; installing it between those steps produces misses
+even when the visible cache key matches.
+The test-bundle staging helper uses APFS-capable clone copies on Darwin and ordinary
+copies on other platforms, so its offline Linux tests exercise the same atomic
+copy, byte-comparison and rename path (`scripts/stage-test-metallib.sh`).
 
 Pull-request CI selects expensive component jobs through
 `scripts/ci-component-paths.py`, called by `.github/workflows/component-changes.yml`.
@@ -183,11 +207,30 @@ Go/Swift fixture and focused checks are described in [test.md](test.md) and
 
 The `ProviderAppAttest` Swift target uses public DeviceCheck/Security APIs. Its [shadow packaging and live-validation requirements](../reference/app-attest-shadow.md#packaging-and-live-acceptance) are separate from a successful local compile.
 
+The provider email operator command builds separately with
+`go build -o /tmp/provider-emails ./coordinator/cmd/provider-emails`. It is not
+part of the coordinator server process. See the [provider email runbook](../operations/provider-emails.md).
+
 Provider signing, R2 staging and publication run in separate jobs in `.github/workflows/release-swift.yml`. `scripts/provider-release-publication.py` stages the final signed bundle under an immutable digest path, retains metadata, and gates publication on coordinator qualification. A staging or publication retry downloads and reuses the original signed artifact and does not rerun compilation or notarization. `scripts/provider_release_github.py` resumes draft/upload state, verifies asset hashes before publishing and never replaces completed mismatched bytes. See [build qualification](../operations/app-attest-build-qualification.md).
 
 The revision publisher accepts optional per-version HF repo, commit and path-prefix flags. It runs the SwiftPM `darkbloom-publish` executable to hash
 artifacts. It also needs Python 3 and the AWS CLI; use the existing pinned tools.
 The [revision runbook](../operations/model-revisions.md) describes its invocation.
+
+## Nightly Linear workflow
+
+The [nightly Linear package](../../automations/nightly-linear/README.md) needs
+Git, Python 3, local Codex desktop, and the teammate's own Linear connection.
+The [one-time setup prompt](../../automations/nightly-linear/teammate-prompt.md)
+creates a dedicated managed clone and links its two skills into the user's skill
+directory. Personal configuration and recovery state stay outside that clone.
+Claude Code and Pi supply saved work histories; they need no plugin installation.
+
+Each trigger runs `automations/nightly-linear/refresh.py` (`refresh`) to fetch
+one revision of the shared skills and playbook before any Linear updates.
+The [test procedure](test.md#nightly-linear-package) covers the updater's failure
+and preservation guarantees. The package's CI workflow runs these offline tests;
+it does not schedule anyone's nightly task or require Linear credentials.
 
 ## SDK 27 release builds and caches
 
@@ -474,6 +517,8 @@ lease used after launch. See the [test procedure](test.md#connected-coordinatorp
 
 CI checks formatting of tracked Go source while preserving frozen report
 evidence bytes; see the [coordinator checks](test.md#2-coordinator-go).
+Documentation-impact checks also cover the contact-export and legacy-cohort
+store owners; see the [soft-delete reference](../reference/soft-delete.md#documentation-coverage).
 
 ```bash
 make coordinator-build            # cd coordinator && go build ./cmd/coordinator
@@ -525,6 +570,25 @@ To compile all test targets without executing fixtures:
 ```bash
 (cd provider-swift && swift build --build-tests)
 ```
+
+The test products include the provider/standalone lifecycle, CLI/service/fan,
+SSD-cache and benchmark harness groups described in the
+[provider test-group map](test.md#provider-lifecycle-cli-and-benchmark-groups).
+Most use scripted dependencies and isolated files; the generated tiny-model
+load tests execute actual MLX kernels without downloading a checkpoint. A
+successful compile alone does not run either group, and neither substitutes
+for full-checkpoint qualification. Stage the matched metallib before execution
+and use the runner's serial/fresh-process isolation rather than parallelizing
+tests that share MLX or model-cache state.
+
+For coverage, the provider CI lane builds tests and the fan-helper product with
+`--enable-code-coverage`; its cache key distinguishes instrumented builds from
+the SDK and parity lanes (`.github/actions/provider-ci-build/action.yml`). Follow
+the [isolated local coverage recipe](test.md#provider-coverage-report-only) for
+fresh profiles, state paths, all reported executable objects and retained test
+exit status. Product, CLI and benchmark rows are report-only, not a release or
+performance gate. Keep these instrumented debug products separate from the
+optimized binaries used for performance measurements.
 
 ```bash
 make provider-build
@@ -847,7 +911,7 @@ local stub servers; its default observation mode sends only public GETs.
 | `prompt-sidecar-build` | `cargo build --locked --release --bin promptsidecar` |
 | `prompt-sidecar` | format + check + test + build |
 | `provider-build` | `swift build` + `scripts/fetch-metallib.sh <bin-path>` |
-| `provider-test` | `swift build --build-tests`, stage `mlx.metallib` into the bin dir and every `*PackageTests.xctest/Contents/MacOS`, then `swift test --skip-build` |
+| `provider-test` | `swift build --build-tests`, stage `mlx.metallib` into the bin dir and every `*.xctest` test bundle, then `swift test --skip-build` |
 | `provider` | `provider-build` + `provider-test` |
 | `benchmark-wrapper-test` | Python unittest discovery for `gemma_contbatch/tests` and `serving_performance` from `scripts/` |
 | `benchmark-gemma-contbatch` | `python3 scripts/benchmark-gemma-contbatch.py $(GEMMA_BENCHMARK_ARGS)` (needs GPU + weights) |
@@ -950,10 +1014,18 @@ Provider Tests also runs `python3 scripts/test-profile-inventory-auth.py` on mac
 
 After `swift build --build-tests`, run `scripts/stage-test-metallib.sh` with the
 package's `swift build --show-bin-path` directory. The helper builds or verifies
-the matching MLX library and stages it beside each test executable and in the
-nested resource bundle used by native checkpoint identity tests. `make provider-test`
+the matching MLX library. Then it copies the library into every `*.xctest`
+bundle in that directory: beside the test executable and in the nested resource
+bundle that native checkpoint identity tests use. The native build system makes
+one `<Package>PackageTests.xctest`. CI uses the native build system through
+`scripts/provider-release-swift.sh`. A local Swift 6.4 `swift build` uses Swift
+Build, which makes one `<Target>.xctest` for each test target. `make provider-test`
 and the provider/nested CI jobs invoke this helper. A missing test runner or
 failed source verification is an error; an existing library is always replaced.
+Staging prefers `cp -c` on Darwin to retain APFS cloning, falling back to ordinary
+`cp` if cloning fails or is unsupported. Other hosts, including Linux fixture
+runners, use ordinary `cp` directly. Copy or byte-verification failures leave
+the destination unchanged; verified copies replace it atomically.
 See [the live-test setup](test.md) for the pinned DiffusionGemma artifact and
 opt-in encrypted transport gate.
 

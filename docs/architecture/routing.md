@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-06
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -300,6 +300,21 @@ Two request policies relax the gate for the caller's **own** machines only:
 `providerServesRoutableModelReasonLocked` waives dedicated-catalog isolation.
 Every other gate — runtime verification, private-text attestation, challenge
 freshness, slot state, memory — still applies to owned machines.
+
+Under the upcoming [frozen legacy MDM policy](security/enrollment.md#frozen-legacy-authorization-cohort),
+noncohort connections set `Provider.RequireAppAttestServingAuthorization` before
+attestation attachment. They require current qualified App Attest authorization
+even for owner `SelfRouteOnly` or `PreferOwner` routing. A relaxed `TrustNone`
+floor cannot substitute for that authorization; shared routing checks and the
+final writer enforce it (`coordinator/registry/provider.go`,
+`coordinator/registry/owner_authorization.go`,
+`coordinator/registry/inference_authorization.go`). Frozen cohort membership
+itself is not a serving grant and does not waive existing legacy evidence gates.
+
+Serving and base-reward eligibility are separate: a grandfathered MDM-only
+machine may serve but cannot qualify for base rewards without current qualified
+App Attest authorization. Inference/work earnings are unchanged and historical
+rewards are not clawed back; [billing](billing.md) owns the economics guards.
 
 ### Challenge freshness
 
@@ -1084,3 +1099,13 @@ for update activation. Requests are coalesced by revision so an inventory change
 while a close is underway cannot be lost. Deadlines leave work alive; lifecycle
 stop takes precedence. Unexpected network loss still cancels work on the dead
 connection and does not replay partially emitted output.
+
+## Account deletion disconnects
+
+After the account-erasure transaction revokes credentials,
+`DisconnectAccount` (`coordinator/registry/provider_lifecycle.go`) snapshots
+linked provider IDs under the registry read lock, then calls the existing
+`Disconnect` lifecycle outside that lock. Each disconnect cleans reservations,
+queued work and provider state through the ordinary lifecycle. Persistence
+also checks the deleted account, so a heartbeat already in flight cannot add a
+fresh provider row. See [account erasure](account-erasure.md).

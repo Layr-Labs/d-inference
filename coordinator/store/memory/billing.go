@@ -16,7 +16,19 @@ func (s *MemoryStore) CreateBillingSession(session *store.BillingSession) error 
 		return fmt.Errorf("billing session %q already exists", session.ID)
 	}
 	copy := *session
+	u := s.usersByAccountID[session.AccountID]
+	rejected := u != nil && u.DeletedAt != nil
+	externalID := session.ExternalID
+	if session.PaymentMethod != "stripe" {
+		externalID = ""
+	}
+	if s.retainDeletedExternalObjectLocked(session.AccountID, store.ErasureTargetCheckoutSessions, externalID) {
+		copy.ExternalID, copy.ReferralCode, copy.Status = "", "", "erased"
+	}
 	s.billingSessions[session.ID] = &copy
+	if rejected {
+		return store.ErrErasureConflict
+	}
 	return nil
 }
 

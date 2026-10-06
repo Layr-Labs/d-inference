@@ -21,15 +21,15 @@ const erasureTimeout = 2 * time.Minute
 
 var _ store.AccountErasureStore = (*PostgresStore)(nil)
 
-func (s *PostgresStore) erasureTx(ctx context.Context, opts pgx.TxOptions, fn func(*storedb.Queries) error) error {
+func (s *PostgresStore) erasureTx(ctx context.Context, opts pgx.TxOptions, fn func(context.Context, *storedb.Queries) error) error {
 	ctx, cancel := context.WithTimeout(ctx, erasureTimeout)
 	defer cancel()
 	tx, err := s.pool.BeginTx(ctx, opts)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
-	if err := fn(storedb.New(tx)); err != nil {
+	defer rollbackErasureTx(tx)
+	if err := fn(ctx, storedb.New(tx)); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -72,7 +72,7 @@ func openWithdrawals(ctx context.Context, q *storedb.Queries, accountID string, 
 // PlanAccountErasure is a read-only dry run.
 func (s *PostgresStore) PlanAccountErasure(ctx context.Context, accountID string, walletAddresses []string) (*store.ErasurePlan, error) {
 	var plan *store.ErasurePlan
-	err := s.erasureTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(q *storedb.Queries) error {
+	err := s.erasureTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(ctx context.Context, q *storedb.Queries) error {
 		user, err := q.GetUserForErasurePlan(ctx, accountID)
 		if noRows(err) {
 			return store.ErrNotFound
@@ -116,7 +116,7 @@ func (s *PostgresStore) SaveErasurePlan(ctx context.Context, accountID, actor st
 		return nil, err
 	}
 	var id string
-	err = s.erasureTx(ctx, pgx.TxOptions{}, func(q *storedb.Queries) error {
+	err = s.erasureTx(ctx, pgx.TxOptions{}, func(ctx context.Context, q *storedb.Queries) error {
 		if _, err := q.LockLiveUserForErasure(ctx, accountID); noRows(err) {
 			return store.ErrNotFound
 		} else if err != nil {
@@ -159,7 +159,7 @@ func isUniqueViolation(err error) bool {
 // and the email.
 func (s *PostgresStore) RequestAccountErasure(ctx context.Context, in store.ErasureConfirm) (*store.ErasureRequest, error) {
 	var id string
-	err := s.erasureTx(ctx, pgx.TxOptions{}, func(q *storedb.Queries) error {
+	err := s.erasureTx(ctx, pgx.TxOptions{}, func(ctx context.Context, q *storedb.Queries) error {
 		// Lock order for every erasure step: users, then erasure_requests.
 		user, err := q.LockUserForErasure(ctx, in.AccountID)
 		if noRows(err) {
@@ -189,6 +189,9 @@ func (s *PostgresStore) RequestAccountErasure(ctx context.Context, in store.Eras
 		}
 		if open.WalletHash != erasure.WalletHash(in.WalletAddresses) {
 			return store.ErrErasureWalletMismatch
+		}
+		if err := lockErasurePayments(ctx, q, in.AccountID); err != nil {
+			return err
 		}
 		if n, err := openWithdrawals(ctx, q, in.AccountID, in.Now); err != nil {
 			return err
@@ -224,7 +227,7 @@ func (s *PostgresStore) RequestAccountErasure(ctx context.Context, in store.Eras
 // CancelAccountErasure restores the user and providers of a pending request.
 func (s *PostgresStore) CancelAccountErasure(ctx context.Context, accountID, actor string, now time.Time) (*store.ErasureRequest, error) {
 	var id string
-	err := s.erasureTx(ctx, pgx.TxOptions{}, func(q *storedb.Queries) error {
+	err := s.erasureTx(ctx, pgx.TxOptions{}, func(ctx context.Context, q *storedb.Queries) error {
 		if _, err := q.LockUserForErasure(ctx, accountID); noRows(err) {
 			return store.ErrNotFound
 		} else if err != nil {
@@ -259,10 +262,15 @@ func (s *PostgresStore) CancelAccountErasure(ctx context.Context, accountID, act
 // transaction.
 func (s *PostgresStore) ScrubAccount(ctx context.Context, requestID string, now time.Time) (*store.ErasureResult, error) {
 	var result store.ErasureResult
-	err := s.erasureTx(ctx, pgx.TxOptions{}, func(q *storedb.Queries) error {
-		// Lock order: users, erasure_requests, billing_sessions, balances —
-		// the same billing_sessions-before-balances order as
-		// CompleteStripeCheckout.
+	err := s.erasureTx(ctx, pgx.TxOptions{}, func(ctx context.Context, q *storedb.Queries) error {
+		// Shared identity ownership is evaluated one scrub at a time, so two
+		// accounts cannot each retain an identity while the other is erasing.
+		if err := q.LockErasureIdentityCleanup(ctx); err != nil {
+			return err
+		}
+		// Lock order: user, request, billing sessions, withdrawals, recipient,
+		// balance. Admission takes the user fence first; settlements may
+		// finish under their existing withdrawal-before-balance order.
 		peek, err := q.GetErasureRequest(ctx, requestID)
 		if noRows(err) {
 			return store.ErrNotFound
@@ -284,7 +292,7 @@ func (s *PostgresStore) ScrubAccount(ctx context.Context, requestID string, now 
 		if req.State != string(store.ErasurePending) || user.DeletedAt == nil {
 			return store.ErrErasureConflict
 		}
-		if _, err := q.LockAccountBillingSessions(ctx, req.AccountID); err != nil {
+		if err := lockErasurePayments(ctx, q, req.AccountID); err != nil {
 			return err
 		}
 		if n, err := openWithdrawals(ctx, q, req.AccountID, now); err != nil {
@@ -296,11 +304,17 @@ func (s *PostgresStore) ScrubAccount(ctx context.Context, requestID string, now 
 		if err != nil {
 			return err
 		}
+		if err := q.LockErasureObservations(ctx); err != nil {
+			return err
+		}
 		applied := store.ErasureCounts{Retained: k.Retained()}
 		if applied.BalanceMicroUSD, applied.WithdrawableMicroUSD, err = forfeitBalance(ctx, q, req.AccountID, req.ID); err != nil {
 			return err
 		}
 		if applied.Rows, err = applyRules(ctx, q, k); err != nil {
+			return err
+		}
+		if err := q.DeleteStagedErasureObjects(ctx, req.AccountID); err != nil {
 			return err
 		}
 		outbox := k.OutboxRows()

@@ -184,7 +184,7 @@ func (s *MemoryStore) releaseModelTokenLocked(id string, before time.Time) (bool
 	return true, nil
 }
 
-func (s *MemoryStore) SettleModelTokenReservation(id string, actual int64, quote store.ModelTokenQuote, earning *store.ModelTokenEarning) (store.ModelTokenSettlement, error) {
+func (s *MemoryStore) SettleModelTokenReservation(id string, actual int64, quote store.ModelTokenQuote, earning *store.ModelTokenEarning, referralEligible bool) (store.ModelTokenSettlement, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r, ok := s.modelTokenReservations[id]
@@ -222,6 +222,10 @@ func (s *MemoryStore) SettleModelTokenReservation(id string, actual int64, quote
 			return store.ModelTokenSettlement{}, errors.New("provider balance overflow")
 		}
 	}
+	referral, err := s.preparePromotionReferralLocked(next, credited, referralEligible)
+	if err != nil {
+		return store.ModelTokenSettlement{}, err
+	}
 	if delta > 0 {
 		_ = s.debitLocked(r.AccountID, delta, store.LedgerCharge, "promotion-settle:"+id)
 	}
@@ -244,6 +248,7 @@ func (s *MemoryStore) SettleModelTokenReservation(id string, actual int64, quote
 			_ = s.creditProviderAccountLocked(credited)
 		}
 	}
+	s.recordPromotionReferralLocked(referral)
 	s.modelTokenReservations[id] = next
 	return store.ModelTokenSettlement{Reservation: next, Applied: true}, nil
 }

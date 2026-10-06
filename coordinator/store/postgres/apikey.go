@@ -120,8 +120,19 @@ func (s *PostgresStore) CreateAPIKey(accountID string, opts store.APIKeyCreate) 
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := s.queries().InsertAPIKey(ctx, insertAPIKeyParams(rec)); err != nil {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return "", nil, err
+	}
+	defer rollbackErasureTx(tx)
+	if err := lockAccountAdmission(ctx, tx, accountID); err != nil {
+		return "", nil, err
+	}
+	if err := storedb.New(tx).InsertAPIKey(ctx, insertAPIKeyParams(rec)); err != nil {
 		return "", nil, fmt.Errorf("store: insert key: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", nil, err
 	}
 	return raw, rec, nil
 }

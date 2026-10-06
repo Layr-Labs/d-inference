@@ -49,6 +49,12 @@ func byKeys(keys []string, count, apply func(*storedb.Queries, context.Context, 
 // for the collected keys; none when the account has no linked keys of that
 // kind.
 var erasureStatements = map[string]func(k *erasure.Keys) []piiStatement{
+	"legacy_mdm_cohort": func(k *erasure.Keys) []piiStatement {
+		return byKey(k.AccountID, (*storedb.Queries).CountLegacyMDMCohortRows, (*storedb.Queries).DeleteLegacyMDMCohortRows)
+	},
+	"small_models_interest": func(k *erasure.Keys) []piiStatement {
+		return byKey(k.AccountID, (*storedb.Queries).CountSmallModelsInterestRows, (*storedb.Queries).DeleteSmallModelsInterestRows)
+	},
 	"users": func(k *erasure.Keys) []piiStatement {
 		return one(
 			func(ctx context.Context, q *storedb.Queries) (int64, error) { return q.CountUsersRow(ctx, k.AccountID) },

@@ -12,6 +12,9 @@ func (s *MemoryStore) UpsertProviderWithReputation(ctx context.Context, p store.
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.accountAdmissionLocked(p.AccountID); err != nil {
+		return err
+	}
 	s.upsertProviderRecordLocked(p)
 	cp := rep
 	s.reputationRecords[p.ID] = &cp

@@ -1,6 +1,6 @@
 # Provider serving authorization
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
 The coordinator can authorize private inference through complete legacy verification or a qualified App Attest connection. These are separate evidence paths; App Attest never sets legacy MDA/APNs flags. The [rollout runbook](../operations/mdm-optional-rollout.md) separates code availability from activation qualification.
 
@@ -107,12 +107,21 @@ requires the CLI's separate fresh readiness check.
 | Behavior | Contract | Code |
 |---|---|---|
 | Canonical history | Fresh verified account/credential association; a later canonical merge can supply a previously missing historical baseline. Apply the baseline once, preserving live trust and current-session work without adding overlapping cumulative snapshots twice | `coordinator/store/machine_continuity.go` (`MachineOperationalStore`); `coordinator/registry/machine_history.go` (`MergeVerifiedMachineHistory`) |
-| Base-reward eligibility | Current complete serving authorization, public model readiness and hardware measured inside the qualified signed app; existing memory caps, uptime and pool/account limits continue | `coordinator/payments/baserewards/machine_candidates.go` (`rewardSnapshotEligible`, `rewardMemoryGB`) |
+| Base-reward eligibility | Every provider, old or new, requires macOS 27 or later and current qualified App Attest public serving authorization. The OS claim must come from that same authorization; missing, malformed or older versions fail closed. Public model readiness, hardware measured inside the qualified signed app, memory caps, uptime and pool/account limits continue | `coordinator/payments/baserewards/machine_candidates.go` (`rewardSnapshotEligible`, `candidateSessionAuthorized`) |
 | Duplicate sessions | Union overlapping uptime and sum only matching-account organic earnings across original encryption keys | Same (`buildCandidates`) |
 | Settlement identity | New canonical floors use `machine:<canonical ID>`; original ledger rows/balances remain intact | `coordinator/store/` (`MachineFloorKey`) |
 | Rotation and merge races | Resolve canonical aliases inside the settlement transaction, including previously raw candidates, before checking same-epoch floors | `coordinator/store/postgres/machine_floor_settlement.go` (`SettleMachineFloorDraw`); `coordinator/store/` (`SettleProviderFloorDrawForSession`) |
 | Authorization changes during allocation | Commit the remaining plan atomically, including partial and zero-value rows. A late rejection rolls back that plan and reallocates its unspent budget; prior finalized rows and account/pool caps remain intact | `coordinator/payments/baserewards/settlement_plan.go` (`settleCandidatePlan`); `coordinator/store/floor_draw_batch.go` (`FloorDrawBatchStore`) |
 | Pending session inventory | A same-account durable endpoint association can resolve the canonical reward identity; ambiguous associations cannot authorize a credit | `coordinator/store/` (`resolveSessionFloorDrawLocked`); `coordinator/store/postgres/machine_floor_settlement.go` (`resolveSessionFloorDraw`) |
+
+The reward OS claim is carried from the current qualified App Attest status into
+the authorization lease and `ProviderSnapshot.AppAttestOSVersion`
+(`coordinator/registry/provider_snapshot.go`, `providerRewardSnapshotLocked`).
+The assertion and qualified executable authenticate the claim; Apple does not
+independently certify it as an OS measurement. Unsigned registration or inventory
+OS versions cannot substitute for it. This reward-only condition does not remove
+temporary frozen legacy serving, change inference/work earnings or claw back
+finalized rewards.
 
 Canonical identities deduplicate verified known associations. They do not prove physical uniqueness across deliberate reinstalls/new accounts, and App Attest does not independently certify RAM. These remain abuse-policy limits; the receipt fraud metric is a signal rather than a unique device identifier. Existing account/pool caps are retained.
 

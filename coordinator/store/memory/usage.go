@@ -129,6 +129,9 @@ func (s *MemoryStore) RecordUsage(rec store.UsageRecord) {
 	now := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.erasedAccounts[rec.ConsumerKey] {
+		rec.RequestLocation = nil
+	}
 	if rec.RequestLocation != nil {
 		cp := *rec.RequestLocation
 		rec.RequestLocation = &cp

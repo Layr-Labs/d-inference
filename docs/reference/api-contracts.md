@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 The public HTTP surface of the coordinator, derived from its composed route bindings under `coordinator/api/`, including the `/v1/` catch-all. Every route is listed below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -24,6 +24,28 @@ waiting or observing; enrollment alone does not change the operator's selected
 models. This uses `Provider.ServingModelsLocked` in
 `coordinator/registry/autopilot_inventory.go`; see
 [model Autopilot](../architecture/model-autopilot.md).
+
+## Small-model interest
+
+Both Earn-page notification buttons register the same per-account interest; a later registration replaces that account's selected hardware. No endpoint sends email.
+
+| Route | Authentication and rate limit | Result | Code |
+|---|---|---|---|
+| `POST /v1/interest/small-models` | Privy JWT only; financial mutation bucket | Empty `204` only after the store upsert completes | `coordinator/api/accounts/small_models_interest.go` (`HandleRegisterSmallModelsInterest`), `coordinator/api/routes.go` (`routes`) |
+| `GET /v1/interest/small-models` | Privy JWT only | Own record (`account_id`, hardware, `created_at`, `updated_at`), or `404`; private/no-store | `coordinator/api/accounts/small_models_interest.go` (`HandleGetSmallModelsInterest`) |
+| `GET /v1/admin/interest/small-models?limit=100&after=<account_id>` | Admin key or verified Privy admin; inference/provider keys rejected | `{data: [...], next_cursor?: string}`; each record includes the current user email; private/no-store | `coordinator/api/accounts/small_models_interest.go` (`HandleAdminSmallModelsInterest`) |
+
+| Registration field / constraint | Accepted values | Code |
+|---|---|---|
+| `mac_type` | `MacBook Pro`, `Mac Mini`, `Mac Studio`, `Mac Pro` | `coordinator/api/accounts/small_models_interest.go` (`HandleRegisterSmallModelsInterest`) |
+| `chip` | Nonblank string, at most 128 bytes, no control characters | Same handler |
+| `ram_gb` | Integer from 1 through 2048 | Same handler |
+| Identity/contact | Derived from the verified session and stored user; caller-supplied identity, email, or other unknown fields reject with `400` | Same handler |
+| Body | One JSON object, no trailing values; maximum 1024 bytes (`413` when exceeded) | Same handler, `interestJSONError` |
+| Contactability | A stored account email is required (`422 email_required`); `401` invalid/missing session, `403` noninteractive credentials, `429` rate limit, `500` storage failure never acknowledge registration | Same handler and `RequirePrivyAuth` in `coordinator/api/access/auth.go`, `RateLimitFinancial` in `coordinator/api/access/rate_limits.go` |
+| Export page | `limit` defaults to 100, valid range 1–100; `after` is exclusive account ID, at most 256 bytes; follow `next_cursor` until absent | `coordinator/api/accounts/small_models_interest.go` (`HandleAdminSmallModelsInterest`) |
+
+The console forwards only to this fixed coordinator path. Its pending hardware marker is not proof of registration; success requires `204` or authenticated readback. See [sign-in and registration steps](../consumer/authentication.md#6-register-hardware-interest).
 
 ## Graceful provider lifecycle
 
@@ -267,12 +289,50 @@ Ledger semantics, reservations and payouts: [`../architecture/billing.md`](../ar
 
 | Method | Path | Handler | Auth | Limiter | Notes |
 |---|---|---|---|---|---|
-| POST | `/v1/referral/register` | `HandleReferralRegister` (`coordinator/api/billing/referrals.go`) | `user` | `fin` | 400 `referral_error` on invalid input |
-| POST | `/v1/referral/apply` | `HandleReferralApply` (`coordinator/api/billing/referrals.go`) | `user` | `fin` | 400 `referral_error` |
-| GET | `/v1/referral/stats` | `HandleReferralStats` (`coordinator/api/billing/referrals.go`) | `key` | — | 404 `referral_error` when no referral record exists |
-| GET | `/v1/referral/info` | `HandleReferralInfo` (`coordinator/api/billing/referrals.go`) | `key` | — | 404 `referral_error` when no referral record exists |
+| POST | `/v1/referral/register` | `HandleReferralRegister` (`coordinator/api/billing/referrals.go`) | `user` | `fin` | Normalized code; repeated registration returns the existing code; 400 `referral_error` on invalid input |
+| POST | `/v1/referral/apply` | `HandleReferralApply` (`coordinator/api/billing/referrals.go`) | `user` | `fin` | Same-code application is idempotent; self-referral or reassignment returns 400 `referral_error` |
+| GET | `/v1/referral/stats` | `HandleReferralStats` (`coordinator/api/billing/referrals.go`) | `key` | — | 404 `referral_error` before registration |
+| GET | `/v1/referral/info` | `HandleReferralInfo` (`coordinator/api/billing/referrals.go`) | `key` | — | 200 before registration; empty `code`, current `referred_by` |
 | POST | `/v1/invite/redeem` | `HandleRedeemInviteCode` (`coordinator/api/accounts/invite_handlers.go`) | `key` | `fin` | Redeem an invite code |
 | GET | `/v1/providers/attestation` | `HandleProviderAttestation` (`coordinator/api/provider/trust/status.go`) | `—` | — | Public attestation roster; see [`../architecture/security/attestation.md`](../architecture/security/attestation.md) |
+
+### Open Sales Program payloads
+
+All routes resolve the caller's account; they do not accept an account ID from
+the body. Register and apply require Privy authentication. Read routes accept
+an authenticated API key or Privy user. New registration trims whitespace,
+uppercases ASCII letters, and enforces the
+[code rules](pricing-model.md#constants). Applying legacy codes containing
+Unicode letters remains supported.
+
+| Route | Request JSON | Success JSON | Citation |
+|---|---|---|---|
+| `POST /v1/referral/register` | `{"code":"MYCODE"}` | `code`, `share_percent`, `reward_basis`, `message` | `coordinator/api/billing/referrals.go` (`HandleReferralRegister`) |
+| `POST /v1/referral/apply` | `{"code":"MYCODE"}` | `status: "applied"`, normalized `code`, `message` | `HandleReferralApply` |
+| `GET /v1/referral/info` | — | `code` (empty before registration), `share_percent`, `reward_basis`, `referred_by` (empty without attribution) | `HandleReferralInfo` |
+| `GET /v1/referral/stats` | — | Fields below; 404 `referral_error` before registration | `coordinator/billing/referral.go` (`ReferralStatsResponse`); `HandleReferralStats` |
+
+| Stats field | Type | Meaning | Citation |
+|---|---|---|---|
+| `code` | string | Caller's own registered referral code | `coordinator/billing/referral.go` (`ReferralStatsResponse`) |
+| `share_percent` | integer | Fixed rate defined in [pricing constants](pricing-model.md#constants) | `ReferralService.SharePercent` |
+| `reward_basis` | string | `"consumer_spend"`; [reward arithmetic](pricing-model.md#formulas) | `ReferralStatsResponse` |
+| `total_referred` | integer | Accounts attributed to this code | `coordinator/store/postgres/referrals.go` (`GetReferralStats`) |
+| `total_referred_spend_micro_usd`, `total_referred_spend_usd` | integer, decimal string | Eligible collected spend attributed to this referrer in settlement records; excludes pre-program historical usage. [Routing exclusions](pricing-model.md#formulas) also apply to paid promotion portions. | `GetReferralStats` |
+| `total_rewards_micro_usd`, `total_rewards_usd` | integer, decimal string | Lifetime credited referral rewards, including historical referral ledger entries | `GetReferralStats`; `coordinator/billing/referral.go` (`ReferralStatsResponse`) |
+| `balance_micro_usd`, `balance_usd` | integer, decimal string | Current spendable account balance, including other funds; not lifetime rewards or the withdrawable subset | `ReferralService.Stats` |
+
+Get `withdrawable_micro_usd` from `GET /v1/payments/balance` or the authenticated
+summary when displaying available earned funds. USD strings use six decimal
+places. A per-request reward rounds down independently, so lifetime reward
+need not equal a percentage of the displayed aggregate spend; old referral
+rewards can also predate the settlement-based spend counter.
+
+Malformed JSON or missing code returns 400 `invalid_request_error`; invalid,
+taken, self-referral or conflicting codes return 400 `referral_error`.
+Unexpected store failures return a sanitized 503 `referral_error`; an unavailable
+referral service returns 503 `billing_error`
+(`coordinator/api/billing/referrals.go`, `writeReferralError` and referral handlers).
 
 <a id="public-stats-and-health-5"></a>
 
@@ -391,9 +451,58 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 
 | Method | Path | Handler | Auth | Notes |
 |---|---|---|---|---|
-| POST | `/v1/enroll` | `HandleEnroll` (`coordinator/api/provider/trust/enroll.go`) | `—` (enrollment token in body) | Exchanges an enrollment token for provider credentials; see [`../architecture/security/enrollment.md`](../architecture/security/enrollment.md) |
+| POST | `/v1/enroll` | `HandleEnroll` (`coordinator/api/provider/trust/enroll.go`) | Linked provider Bearer token + signed SE-key proof (upcoming policy) | Downloads an MDM profile only for an existing key under its frozen account; [proof contract](#legacy-mdm-enrollment-proof) |
 | GET | `/ws/provider` | `HandleProviderWS` (`coordinator/api/provider/provider.go`) | `ws` | Provider WebSocket; message catalogue in [`protocol-messages.md`](protocol-messages.md) |
 | POST | `/v1/provider/log-report` | `HandleUploadLogReport` (`coordinator/api/operations/log_reports.go`) | `key` | Body capped at [`maxLogReportBodySize`](#timeouts-and-constants); 426 `upgrade_required` when `?serial=` names a provider below the minimum version |
+
+#### Legacy MDM enrollment proof
+
+During provider WebSocket registration, a transient early token-store lookup
+failure closes the connection with `1013` (`StatusTryAgainLater`) before registry
+registration or frozen-cohort classification. Reconnecting retries the lookup;
+missing or revoked tokens retain the fail-closed authentication behavior and
+cannot gain authorization through a storage failure (`coordinator/api/provider/session.go`,
+`Owner.providerReadLoop`, local `resolveAccount` closure).
+
+Under the upcoming frozen legacy policy, `POST /v1/enroll` downloads a profile
+for authenticated reenrollment, not provider credentials (`coordinator/api/provider/trust/enroll.go`,
+`HandleEnroll`). Cohort and copied-profile limits are defined in
+[MDM enrollment](../architecture/security/enrollment.md#frozen-legacy-authorization-cohort).
+
+On older macOS, `EnrollmentService.enroll` in
+`provider-swift/Sources/ProviderCore/Auth/Enrollment.swift` uses this same
+authenticated endpoint before returning
+"Already enrolled" for an existing local Darkbloom profile. A successful response
+in that case is not saved or installed again, and a failed eligibility check
+cannot become success merely because a profile exists. This is an eligibility
+check, not a current serving grant. New providers require macOS 27 or later and
+current qualified App Attest; an OS version alone grants neither serving nor enrollment.
+
+| Input or outcome | Contract | Enforcement |
+|---|---|---|
+| `Authorization` | Exact `Bearer <token>` prefix with an active linked provider token; its account must be the frozen account for this key | `coordinator/internal/provider/legacymdm/policy.go` (`Policy.AuthorizeEnrollment`) |
+| `se_public_key` | Existing frozen key's exact standard-base64 string; decoded P-256 point is 65 bytes (`0x04` + X + Y), or accepted 64-byte X + Y | `coordinator/internal/provider/legacymdm/policy.go` (`Policy.AuthorizeEnrollment`); `coordinator/attestation/attestation.go` (`ParseP256PublicKey`) |
+| `timestamp` | JSON integer Unix seconds; at most five minutes behind or ahead of the coordinator clock | `coordinator/internal/provider/legacymdm/policy.go` (`Policy.AuthorizeEnrollment`) |
+| `signature` | Standard-base64 ASN.1 DER ECDSA P-256 signature over SHA-256 of the canonical transcript below | `coordinator/attestation/attestation.go` (`VerifyChallengeSignature`) |
+| Success | `200` MDM `.mobileconfig` response, not a trust grant or provider token | `coordinator/api/provider/trust/enroll.go` (`HandleEnroll`) |
+| Credential failure | `401` for missing, invalid, inactive or unlinked credentials; a backend lookup error is not an invalid credential | `coordinator/internal/provider/legacymdm/policy.go` (`Policy.AuthorizeEnrollment`) |
+| Credential-store unavailable | `503` on token lookup I/O failure; retry later without replacing credentials. The response does not expose the underlying store error | Same |
+| Proof or membership failure | `403` for a nonmember, out-of-window timestamp or invalid signature. Nonmembers receive macOS 27+/qualified App Attest guidance and the legacy base-reward restriction; a frozen account/key with an out-of-window proof receives clock/retry guidance instead | `coordinator/internal/provider/legacymdm/policy.go` (`Policy.AuthorizeEnrollment`) |
+
+The JSON body contains `se_public_key`, `timestamp` and `signature`. The canonical
+transcript uses LF separators and no trailing newline; `\n` below denotes one
+LF byte, not a literal backslash followed by `n`:
+
+```text
+darkbloom-mdm-enroll-v1\n<lowerhex SHA256 token>\n<se_public_key>\n<unix timestamp>
+```
+
+`<lowerhex SHA256 token>` is the lowercase hexadecimal SHA-256 digest of the
+Bearer token itself, excluding the `Bearer ` header prefix. `<se_public_key>` is
+the exact JSON string value and `<unix timestamp>` is the integer formatted in
+base 10. The proof binds the request to both token and key; possession of either
+alone is insufficient. The timestamp bound is proof freshness, **not** a cohort
+grace period or expiry; frozen membership remains a separate prerequisite.
 
 ### Admin (47)
 
@@ -467,6 +576,7 @@ are advertised provider/model pairs, not unique models or guaranteed cache hits.
 |---|---|---|
 | `artifact_allowlist.configured` | Whether the optional exact-artifact list is configured; `false` is unrestricted, `true` plus zero count denies all participation | `coordinator/api/inference/exact_cache_status.go` (`ExactCacheArtifactAllowlistStatus`) |
 | `artifact_allowlist.count` | Number of configured exact tuples; never returns their model IDs or hashes | Same |
+| `artifact_allowlist.stale_models` | While routing is `on`, the number of catalog models that the list names only under a superseded weight hash or prompt contract. Each stays out of cache routing until its live tuple is appended; the coordinator log names that tuple once | `coordinator/api/inference/exact_cache_allowlist_staleness.go` (`missingAllowlistEntries`); `coordinator/internal/registry/cachepolicy/artifacts.go` (`ArtifactAllowlist.StaleFor`) |
 | `providers.v2_ready_models` | Ready durable SSD capabilities; preserves the existing meaning | `coordinator/registry/cache_status.go` (`PrefixCacheProtocolStatus`) |
 | `providers.memory_ready_models` | Ready resident capabilities, counted separately from SSD readiness | `coordinator/registry/cache_status.go` (`PrefixCacheProtocolStatus`) |
 | `lifecycle.fences_applied` | Proof-fence windows opened or escalated | `coordinator/registry/cache_routing.go` (`CacheRoutingLifecycleStatus`); `coordinator/registry/cache_proof_fence.go` (`rejectCapability`) |
@@ -489,9 +599,10 @@ write-behind, restore and overflow guarantees are defined in
 [cache persistence](../architecture/cache-aware-routing.md#persistence-across-restarts).
 
 The artifact-list fields have Prometheus gauges
-`exact_cache_artifact_allowlist_configured`, `exact_cache_artifact_allowlist_count`
-and Datadog gauges `exact_cache.artifact_allowlist.configured`,
-`exact_cache.artifact_allowlist.count`; mode `off` remains authoritative
+`exact_cache_artifact_allowlist_configured`, `exact_cache_artifact_allowlist_count`,
+`exact_cache_artifact_allowlist_stale_models` and Datadog gauges
+`exact_cache.artifact_allowlist.configured`, `exact_cache.artifact_allowlist.count`,
+`exact_cache.artifact_allowlist.stale_models`; mode `off` remains authoritative
 (`coordinator/api/inference/exact_cache_metrics.go`).
 
 The additive resident count has Prometheus gauge
@@ -818,8 +929,10 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/internal/
 
 | Rule | Value / behaviour | Symbol |
 |---|---|---|
+| Non-streaming provider output | Default 64 MiB of decrypted chunk data and 262,144 frames per attempt, inclusive. All four inference endpoints share the limits, including first/preamble chunks, reasoning, tool calls and usage JSON. Overflow cancels the attempt and returns 502 `provider_error`; no partial success. Streaming consumers keep the existing backpressure policy. Limits are deployment-configurable; see [configuration](configuration.md). | `NewBudget` (`coordinator/internal/inference/responselimit/nonstream_response_limit.go`), `HandleChunk` (`coordinator/api/inference/provider_inference.go`), `NonStream` (`coordinator/internal/inference/relay/consumer_response.go`) |
 | Global request body | 64 MiB ceiling on every request (`maxRequestBodyBytes`, `bodyLimitMiddleware`) | `coordinator/api/server.go`, `coordinator/internal/api/middleware/middleware.go` |
 | Inference body | 16 MiB (`maxInferenceBodyBytes`) → 413 `invalid_request_error`; sealed bodies are read with the same cap (400 `invalid_request_error` when exceeded) | `parseInferencePrelude` (`coordinator/api/inference/inference_preprocess.go`), `SealedTransport` (`coordinator/api/inference/sender_encryption.go`) |
+| Console chat preflight | `MAX_CHAT_REQUEST_BYTES = 16 * 1024 * 1024`; send and retry measure the complete serialized UTF-8 body and, when encryption is enabled, the actual sealed envelope before `POST /api/chat`. Exactly at the cap is allowed. Oversized requests produce a local error and retain the user message/images in current chat state. Uploads still allow four images, each up to 10 MiB; base64, history and envelope overhead can make an accepted upload too large to send. Coordinator rewrite and final-forwarding checks remain authoritative | `assertChatRequestBudget` (`console-ui/src/lib/chat/request-budget.ts`), `streamChat` (`console-ui/src/lib/chat/stream.ts`), `useChatStream` (`console-ui/src/hooks/useChatStream.ts`) |
 | Control-plane bodies | 64 KiB (`maxControlPlaneBodyBytes`) for enroll, device token, admin auth | `coordinator/api/server.go` |
 | MDM webhook body | 1 MiB (`maxMDMWebhookBodyBytes`) | `HandleMDMWebhook` (`coordinator/api/provider/trust/settings.go`) |
 | `n` | Must be 1 | `HandleChatCompletions` |
@@ -1088,7 +1201,7 @@ Handler `HandleStatus`. No side effects.
 | Field | Type | Meaning |
 |---|---|---|
 | `request` | [`ErasureRequest`](#erasure-shapes) | The newest request (`GetLatestErasureRequest`, by `created_at`) |
-| `outbox` | array of [`ErasureOutboxItem`](#erasure-shapes) | Outbox rows of that request; empty until the scrub, then moved by the outbox worker |
+| `outbox` | array of [`ErasureOutboxItem`](#erasure-shapes) | Outbox rows of that request; late external results can be staged during the grace period, and the worker delivers only after scrub |
 | `refused_credits` | array of [`ErasureRefusedCredit`](#erasure-shapes) | Credits refused after the erasure, oldest first, at most 500 |
 
 | Status | `type` | When |
@@ -1228,7 +1341,7 @@ All in `coordinator/store/erasure_types.go`. Times are RFC 3339. Fields marked
 | Sealed transport | `coordinator/api/inference/sender_encryption.go` |
 | Models and catalog | `coordinator/api/catalog/models_endpoints.go`, `coordinator/api/catalog/concrete_model_entries.go`, `coordinator/api/catalog/openrouter_endpoint.go`, `coordinator/api/catalog/`, `coordinator/api/catalog/model_alias_handlers.go`, `coordinator/api/catalog/openrouter_alias_handlers.go`, `coordinator/api/catalog/capacity.go`, `coordinator/api/inference/exact_cache_status.go` |
 | Keys, device code, accounts | `coordinator/api/access/keys/handlers.go`, `coordinator/store/apikey.go`, `coordinator/api/access/device/handlers.go`, `coordinator/api/accounts/` |
-| Billing, Stripe, referral, invites | `coordinator/api/billing/`, `coordinator/api/billing/payouts/`, `coordinator/api/billing/payouts/stripe_withdraw.go`, `coordinator/api/billing/payouts/stripe_payouts_webhooks.go`, `coordinator/api/accounts/invite_handlers.go`, `coordinator/api/billing/base_rewards_handlers.go` |
+| Billing, Stripe, referral, invites | `coordinator/api/billing/`, `coordinator/api/billing/referrals.go`, `coordinator/api/billing/payouts/`, `coordinator/api/billing/payouts/stripe_withdraw.go`, `coordinator/api/billing/payouts/stripe_payouts_webhooks.go`, `coordinator/api/accounts/invite_handlers.go`, `coordinator/api/billing/base_rewards_handlers.go` |
 | Stats | `coordinator/api/reporting/stats_handler.go`, `coordinator/api/reporting/refresh_start.go`, `coordinator/api/reporting/totals_handler.go`, `coordinator/api/reporting/leaderboard.go`, `coordinator/api/reporting/network_series.go` |
 | Release, enrollment, provider WS, log reports | `coordinator/api/releases/release_handlers.go`, `coordinator/api/provider/trust/enroll.go`, `coordinator/api/provider/`, `coordinator/api/operations/log_reports.go` |
 | Account erasure | `coordinator/api/accounts/erasure/` (handlers, loop, outbox worker), `coordinator/api/routes.go`, `coordinator/store/erasure_types.go`; tests `coordinator/tests/api/accounts/contracts/erasure_test.go`, `coordinator/tests/api/accounts/contracts/erasure_outbox_test.go` |
@@ -1339,3 +1452,11 @@ Checkout amounts require at most two decimal places and the supported integer
 cent range (`coordinator/api/billing/stripe_checkout_webhook.go`, `checkoutUSDCents`).
 Current and legacy Checkout signatures share exact local-session validation and
 atomic, non-withdrawable credit (`HandleStripeWebhook`, `CompleteStripeCheckout`).
+
+### Checkout after account deletion
+
+`POST /v1/billing/stripe/create-session` returns HTTP 409 with error code
+`account_deleted` when the request's Stripe result reaches persistence after
+its account was deleted. The response omits the session URL; durable erasure
+cleanup retains the newly created Stripe identifier
+(`coordinator/api/billing/checkout.go`, `HandleStripeCreateSession`).

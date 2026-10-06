@@ -102,7 +102,7 @@ stateDiagram-v2
 
 An account has at most one `planned` or `pending` request: the partial unique
 index `erasure_requests_open` enforces it
-(`coordinator/store/postgres/schema/migrations/00018_erasure_tables.sql`). A new plan
+(`coordinator/store/postgres/schema/migrations/00022_erasure_tables.sql`). A new plan
 replaces the token of a `planned` request. A plan while a request is `pending`,
 or after the scrub, answers 409 `erasure_conflict`, because the user row is no
 longer live.
@@ -158,7 +158,7 @@ sequenceDiagram
   X->>C: ScrubAccount(requestID, now)
   C->>S: ScrubAccount
   rect rgba(109, 40, 217, 0.14)
-    Note over S,DB: Lock order: users, erasure_requests, billing_sessions, balances
+    Note over S,DB: Lock order: scrub fence, user, request, billing, withdrawals, recipient, balance
     S->>DB: GetErasureRequest (read the account ID)
     S->>DB: LockUserForErasure (users FOR UPDATE)
     S->>DB: GetErasureRequestForUpdate
@@ -353,7 +353,7 @@ It survives a database restore when a Datadog log archive keeps it.
 A payout can bounce, a Global Payout can come back, or a settlement or
 referral reward can land after the scrub. Each would refill a forfeited
 account. Migration 21
-(`coordinator/store/postgres/schema/migrations/00021_erasure_refuse_credits.sql`)
+(`coordinator/store/postgres/schema/migrations/00025_erasure_refuse_credits.sql`)
 adds three triggers that fire only when the account has an `erased` request
 (`erasure_account_erased`):
 
@@ -383,7 +383,7 @@ during the grace period still apply, because the erasure can be canceled.
 | A Privy login after the scrub finds the old account | The stored Privy ID is random, so the login makes a new, empty account | `ScrubUsersRow` |
 | A cached user keeps authenticating | `CachedStore` overrides the three writers | `coordinator/store/cached.go` |
 | A Checkout Session completes after the scrub | `ErrCheckoutErased`: the webhook answers 200 and credits nothing | `coordinator/store/postgres/stripe_settlement.go` (`CompleteStripeCheckout`); `coordinator/api/billing/stripe_checkout_webhook.go` (`HandleStripeWebhook`) |
-| A late credit refills the balance | The refused-credit triggers | `00021_erasure_refuse_credits.sql` |
+| A late credit refills the balance | The refused-credit triggers | `00025_erasure_refuse_credits.sql` |
 
 ### Shared machines and shared keys
 
@@ -498,8 +498,8 @@ Outside the live database:
 | Keys, outbox rows, hashes | `coordinator/internal/store/erasure/keys.go` (`Keys`, `NewKeys`, `Keys.OutboxRows`, `Keys.Retained`, `WithoutKeys`); `coordinator/internal/store/erasure/confirm.go` (`TokenHash`, `WalletHash`, `TokenValid`, `NormalizeEmail`) |
 | Postgres steps | `coordinator/store/postgres/erasure.go` (`PlanAccountErasure`, `RequestAccountErasure`, `ScrubAccount`, `forfeitBalance`); `coordinator/store/postgres/erasure_rules.go` (`erasureStatements`, `applyRules`); `coordinator/store/postgres/erasure_keys.go` (`collectErasureKeys`); `coordinator/store/postgres/erasure_outbox.go` (`LeaseDueErasureOutbox`, `SaveErasureOutboxResult`) |
 | SQL | `coordinator/store/postgres/queries/erasure.sql` (sqlc input), `coordinator/store/postgres/storedb/erasure.sql.go` (generated) |
-| Memory steps | `coordinator/store/memory/erasure.go` (`collectErasureKeysLocked`, `refuseErasedCreditLocked`), `coordinator/store/memory/erasure_rules.go` (`memoryErasureRules`, `runMemoryRulesLocked`), `coordinator/store/memory/erasure_outbox.go` |
-| Schema | `coordinator/store/postgres/schema/migrations/00018_erasure_tables.sql`, `coordinator/store/postgres/schema/migrations/00021_erasure_refuse_credits.sql`, `coordinator/store/postgres/schema/migrations/00022_erasure_outbox_stripe_job.sql`, `coordinator/store/postgres/migration_indexes.go` (versions 19, 20) |
+| Memory steps | `coordinator/store/memory/erasure.go` (`PlanAccountErasure`, `ScrubAccount`, `refuseErasedCreditLocked`), `coordinator/store/memory/erasure_keys.go` (`collectErasureKeysLocked`), `coordinator/store/memory/erasure_rules.go` (`memoryErasureRules`, `runMemoryRulesLocked`), `coordinator/store/memory/erasure_outbox.go` |
+| Schema | `coordinator/store/postgres/schema/migrations/00022_erasure_tables.sql`, `coordinator/store/postgres/schema/migrations/00025_erasure_refuse_credits.sql`, `coordinator/store/postgres/schema/migrations/00026_erasure_outbox_stripe_job.sql`, `coordinator/store/postgres/migration_indexes.go` (versions 23, 24) |
 | Cache invalidation | `coordinator/store/cached.go` |
 | HTTP | `coordinator/api/accounts/erasure/handlers.go`; owner built in `coordinator/api/server.go` (`NewRuntime`); routes in `coordinator/api/routes.go` |
 | Loop, post-commit clears | `coordinator/api/accounts/erasure/loop.go` (`Owner.StartLoop`, `scrub`); `coordinator/api/accounts/erasure/owner.go` (`Hooks`); `coordinator/api/accounts_lifecycle.go` (`StartAccountErasureLoop`), called from `coordinator/app/lifecycle.go` |
@@ -508,7 +508,50 @@ Outside the live database:
 | In-memory forgets | `coordinator/registry/provider_lifecycle.go` (`DisconnectAccount`); `coordinator/api/provider/trust/erasure.go` (`ForgetErasedKeys`), which calls `coordinator/internal/provider/authority/trust_reuse_state.go` (`ForgetTrustReuse`), `coordinator/internal/provider/reuse/trust_reuse_records.go` (`Cache.Forget`) and `coordinator/internal/provider/verification/queue.go` (`Scheduler.Forget`); `coordinator/payments/payments.go` (`ForgetConsumer`) |
 | Login block | `coordinator/auth/privy.go` (`GetOrCreateUser`), `coordinator/api/access/auth.go` (`writePrivyUserError`) |
 | Late Checkout | `coordinator/store/stripe_settlement.go` (`ErrCheckoutErased`), `coordinator/api/billing/stripe_checkout_webhook.go` (`HandleStripeWebhook`) |
-| Tests | `coordinator/tests/store/contracts/erasure_test.go`, `coordinator/tests/store/contracts/erasure_credits_test.go`, `coordinator/tests/store/contracts/erasure_soft_delete_reads_test.go`, `coordinator/tests/store/contracts/erasure_outbox_test.go`, `coordinator/tests/store/postgres/erasure_marker_test.go`, `coordinator/tests/store/postgres/erasure_lock_order_test.go`, `coordinator/tests/store/memory/erasure_marker_test.go`, `coordinator/tests/api/accounts/contracts/erasure_test.go`, `coordinator/tests/api/accounts/contracts/erasure_outbox_test.go` (fake Stripe and Datadog intake in `erasure_outbox_fixture_test.go`), `coordinator/tests/api/billing/contracts/stripe_checkout_erased_test.go`, `coordinator/tests/api/provider/trust/reuse_forget_test.go`, `coordinator/tests/api/provider/trust/verification/forget_test.go`, `coordinator/tests/auth/privy_test.go`, `coordinator/tests/datadog/logs_send_test.go`; seed helpers `coordinator/tests/internal/erasurefixture/account.go` |
+| Tests | `coordinator/tests/store/contracts/erasure_test.go`, `coordinator/tests/store/contracts/erasure_credits_test.go`, `coordinator/tests/store/contracts/erasure_soft_delete_reads_test.go`, `coordinator/tests/store/contracts/erasure_outbox_test.go`, `coordinator/tests/store/contracts/erasure_outbox_staging_test.go`, `coordinator/tests/store/postgres/erasure_marker_test.go`, `coordinator/tests/store/postgres/erasure_lock_order_test.go`, `coordinator/tests/store/memory/erasure_marker_test.go`, `coordinator/tests/api/accounts/contracts/erasure_test.go`, `coordinator/tests/api/accounts/contracts/erasure_outbox_test.go` (fake Stripe and Datadog intake in `erasure_outbox_fixture_test.go`), `coordinator/tests/api/billing/contracts/stripe_checkout_erased_test.go`, `coordinator/tests/api/provider/trust/reuse_forget_test.go`, `coordinator/tests/api/provider/trust/verification/forget_test.go`, `coordinator/tests/auth/privy_test.go`, `coordinator/tests/datadog/logs_send_test.go`; seed helpers `coordinator/tests/internal/erasurefixture/account.go` |
+
+### Concurrent writes and late external results
+
+`lockAccountAdmission` (`coordinator/store/postgres/erasure_fences.go`)
+takes the user row `FOR SHARE` before creating credentials, provider rows,
+hardware interest, payout quotes, or a withdrawal. Confirmation and scrub
+hold that row `FOR UPDATE`. A request authenticated before deletion therefore
+cannot create new usable credentials or move money after deletion. Existing
+settlement callbacks still finish: erasure locks billing sessions, Stripe
+withdrawals, Global Payouts and the recipient before it checks open withdrawals
+and locks the balance. Each table is locked in stable ID order.
+
+Only scrub takes the identity-cleanup advisory lock `(714320, 1)`, before the
+user row. Shared-key ownership excludes irrevocably erased accounts; serializing
+scrubs prevents two accounts from each retaining the other's shared identity.
+Provider IDs come from the mutable provider row and retained provider/machine
+session history, so removing an offline provider cannot hide its App Attest
+proofs from erasure (`collectErasureKeys`, `coordinator/store/postgres/erasure_keys.go`).
+
+Usage and route persistence hold the shared advisory transaction lock
+`(714320, 2)`; scrub holds it exclusively. Their subsequent erased-state read
+sees any scrub that completed while they waited. Late usage retains token and
+cost accounting but omits the request location; single and batch route writes
+omit erased consumer and provider regions. The memory backend applies the same
+policy under its store mutex (`coordinator/store/postgres/erasure_observations.go`,
+`coordinator/store/memory/erasure_ownership.go`).
+
+Stripe responses can arrive after local deletion. `fenceErasureExternalObject`
+(`coordinator/store/postgres/erasure_external.go`) reacquires the user fence,
+stages the external identifier in `erasure_outbox`, and refuses to restore it
+in the account, Checkout or recipient row. The Checkout endpoint returns 409
+without the URL. Outbox work is eligible only after the request is `erased`.
+A canceled request retains staged identifiers without delivering them; any
+later scrub collects those identifiers before replacing staging with the
+complete cleanup set for the new request. This preserves both original and
+late-created resources.
+
+`erasureTx` passes its bounded context to every query and commit; rollback
+uses a separate five-second cleanup context, even if the caller canceled.
+The refused-credit audit retains a SHA-256 reference hash. `CreditWithdrawableOnce`
+checks that hash under its existing reference advisory lock, so a repeated
+callback creates one review record even when its public reference is scrubbed.
+Ordinary repeated credits remain separate audit records.
 
 ## Related
 

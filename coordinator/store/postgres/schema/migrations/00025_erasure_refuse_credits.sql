@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS erasure_refused_credits (
     account_id       TEXT NOT NULL,
     entry_type       TEXT NOT NULL,
     amount_micro_usd BIGINT NOT NULL,
+    reference_hash   TEXT NOT NULL,
     reference        TEXT NOT NULL DEFAULT '',
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -55,8 +56,8 @@ END $$;
 CREATE OR REPLACE FUNCTION erasure_refuse_ledger_credit() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     IF erasure_account_erased(NEW.account_id) THEN
-        INSERT INTO erasure_refused_credits (account_id, entry_type, amount_micro_usd, reference)
-        VALUES (NEW.account_id, NEW.entry_type, NEW.amount_micro_usd,
+        INSERT INTO erasure_refused_credits (account_id, entry_type, amount_micro_usd, reference_hash, reference)
+        VALUES (NEW.account_id, NEW.entry_type, NEW.amount_micro_usd, encode(sha256(convert_to(NEW.reference, 'UTF8')), 'hex'),
                 CASE WHEN NEW.entry_type IN ('admin_credit', 'admin_reward') THEN NEW.entry_type
                      WHEN NEW.reference LIKE 'stripe:%' THEN 'stripe:erased'
                      ELSE NEW.reference END);

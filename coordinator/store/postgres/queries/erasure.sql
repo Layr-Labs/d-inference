@@ -144,11 +144,20 @@ SELECT DISTINCT key_id FROM app_attest_evidence WHERE session_id = ANY(sqlc.arg(
 
 -- name: ListSharedSEKeys :many
 SELECT DISTINCT se_public_key FROM providers
-WHERE se_public_key = ANY(sqlc.arg('se_keys')::text[]) AND account_id <> sqlc.arg('account_id');
+WHERE se_public_key = ANY(sqlc.arg('se_keys')::text[]) AND providers.account_id <> sqlc.arg('account_id')
+AND NOT EXISTS (SELECT 1 FROM erasure_requests r WHERE r.account_id = providers.account_id AND r.state = 'erased');
 
 -- name: ListSharedAppAttestKeys :many
 SELECT DISTINCT key_id FROM app_attest_evidence
-WHERE key_id = ANY(sqlc.arg('key_ids')::text[]) AND NOT (session_id = ANY(sqlc.arg('session_ids')::text[]));
+WHERE key_id = ANY(sqlc.arg('key_ids')::text[]) AND NOT (session_id = ANY(sqlc.arg('session_ids')::text[]))
+AND NOT EXISTS (
+    SELECT 1 FROM erasure_requests r
+    WHERE r.state = 'erased' AND r.account_id IN (
+        SELECT account_id FROM providers WHERE id = app_attest_evidence.session_id
+        UNION SELECT account_id FROM provider_sessions WHERE session_id = app_attest_evidence.session_id
+        UNION SELECT account_id FROM darkbloom_machine_sessions WHERE session_id = app_attest_evidence.session_id
+    )
+);
 
 -- name: ListAccountStripeAccountIDs :many
 SELECT DISTINCT stripe_account_id FROM stripe_withdrawals WHERE account_id = $1 AND stripe_account_id <> '';
@@ -181,6 +190,7 @@ SELECT data FROM global_payout_recipients WHERE account_id = $1;
 SELECT a.digest, EXISTS (
     SELECT 1 FROM darkbloom_machine_sessions s
     WHERE s.machine_id = a.machine_id AND s.account_id <> sqlc.arg('account_id')
+      AND NOT EXISTS (SELECT 1 FROM erasure_requests r WHERE r.account_id = s.account_id AND r.state = 'erased')
 ) AS shared
 FROM darkbloom_machine_aliases a
 WHERE a.kind = 'mda_serial' AND a.scope = '' AND a.digest = ANY(sqlc.arg('digests')::text[]);
@@ -397,6 +407,48 @@ SELECT COUNT(*) FROM provider_payouts WHERE provider_address = $1;
 
 -- name: ScrubProviderPayoutAddress :execrows
 UPDATE provider_payouts SET provider_address = sqlc.arg('replacement') WHERE provider_address = sqlc.arg('address');
+
+-- name: LockErasureIdentityCleanup :exec
+SELECT pg_advisory_xact_lock(714320, 1);
+
+-- name: LockErasureObservations :exec
+SELECT pg_advisory_xact_lock(714320, 2);
+
+-- name: LockAccountStripeWithdrawals :many
+SELECT id FROM stripe_withdrawals WHERE account_id = $1 ORDER BY id FOR UPDATE;
+
+-- name: LockAccountGlobalPayouts :many
+SELECT id FROM global_payout_withdrawals WHERE account_id = $1 ORDER BY id FOR UPDATE;
+
+-- name: LockAccountGlobalRecipient :many
+SELECT account_id FROM global_payout_recipients WHERE account_id = $1 FOR UPDATE;
+
+-- name: ListAccountHistoricalProviderIDs :many
+SELECT p.session_id FROM provider_sessions p WHERE p.account_id = $1
+UNION SELECT m.session_id FROM darkbloom_machine_sessions m WHERE m.account_id = $1;
+
+-- A canceled erasure leaves staged external IDs with the live account. A later
+-- scrub includes them before replacing staging with its complete cleanup set.
+-- name: ListStagedErasureObjects :many
+SELECT o.target, o.external_id FROM erasure_outbox o
+JOIN erasure_requests r ON r.id = o.request_id
+WHERE r.account_id = $1 AND r.state <> 'erased' AND o.external_id <> '';
+
+-- name: DeleteStagedErasureObjects :exec
+DELETE FROM erasure_outbox o USING erasure_requests r
+WHERE r.id = o.request_id AND r.account_id = $1 AND r.state <> 'erased';
+
+-- name: CountLegacyMDMCohortRows :one
+SELECT COUNT(*) FROM legacy_mdm_cohort WHERE account_id = $1;
+
+-- name: DeleteLegacyMDMCohortRows :execrows
+DELETE FROM legacy_mdm_cohort WHERE account_id = $1;
+
+-- name: CountSmallModelsInterestRows :one
+SELECT COUNT(*) FROM small_models_interest WHERE account_id = $1;
+
+-- name: DeleteSmallModelsInterestRows :execrows
+DELETE FROM small_models_interest WHERE account_id = $1;
 
 -- Outbox delivery.
 

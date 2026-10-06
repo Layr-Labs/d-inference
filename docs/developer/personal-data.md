@@ -48,7 +48,7 @@ and amounts are not personal data alone
 
    For a new key set, add a field to `erasure.Keys`. Read it in
    `collectErasureKeys`, inside the same transaction, and in
-   `collectErasureKeysLocked` (`coordinator/store/memory/erasure.go`). If
+   `collectErasureKeysLocked` (`coordinator/store/memory/erasure_keys.go`). If
    another account can hold the same key, remove the shared values
    (`erasure.WithoutKeys`), count them, and add a reason to `Keys.Retained`
    and to

@@ -68,6 +68,9 @@ predicate as the apply query. "Unshared" means no other account uses the key
 | 31 | `payments_provider_address` | `payments` | `provider_address`: random per wallet | `provider_address` = a named wallet address | `CountPaymentProviderAddress` / `ScrubPaymentProviderAddress` |
 | 32 | `provider_payouts_address` | `provider_payouts` | `provider_address`: random per wallet | `provider_address` = a named wallet address | `CountProviderPayoutAddress` / `ScrubProviderPayoutAddress` |
 
+| 33 | `legacy_mdm_cohort` | `legacy_mdm_cohort` | delete row | `account_id` | `CountLegacyMDMCohortRows` / `DeleteLegacyMDMCohortRows` |
+| 34 | `small_models_interest` | `small_models_interest` | delete row | `account_id` | `CountSmallModelsInterestRows` / `DeleteSmallModelsInterestRows` |
+
 Notes:
 
 - Rules 8 to 11, 13 to 18 and 21 run only when the account has keys of
@@ -82,6 +85,7 @@ Notes:
 - Before the rules, `forfeitBalance` sets `balances.balance_micro_usd` and
   `withdrawable_micro_usd` to 0 and writes one `erasure_forfeit` ledger entry
   (`coordinator/store/postgres/erasure.go`).
+
 
 ## Retained data
 
@@ -100,7 +104,7 @@ The scrub keeps these on purpose. The marker tests allow only
 | Trust-reuse, verification, code-attestation and push-budget rows of a Secure Enclave key another account's provider has; their trust-reuse cache entries and MDM jobs | They belong to the other account too | `retainedSharedSEKey` |
 | App Attest receipts, receipt blobs and receipt jobs of a key another account's session used | They belong to the other account too | `retainedSharedAppAttestKey` |
 | `erasure_requests`: state, actor, reason, row counts, times | The record that the erasure happened; no email, token or wallet address after the scrub | `MarkErasureErased` |
-| `erasure_refused_credits` | Credits refused after the erasure, kept for review; IDs, amounts and cleaned references only | `00021_erasure_refuse_credits.sql` |
+| `erasure_refused_credits` | Credits refused after the erasure, kept for review; IDs, amounts and cleaned references only | `00025_erasure_refuse_credits.sql` |
 | `erasure_outbox.external_id` | The Stripe ID waits here until the worker confirms the deletion; a `manual_action` row keeps it until an operator clears it | `erasureMarkerAllowList`; `SaveErasureOutboxResult` |
 | The Datadog `erasure_log` record | Request ID, account ID and `erased_at`: the list to replay after a restore | `writeErasureLog` |
 
@@ -133,7 +137,7 @@ Stripe cannot find (`InsertManualErasureOutbox`, `attempts` 1).
 
 ### `erasure_requests`
 
-`coordinator/store/postgres/schema/migrations/00018_erasure_tables.sql`.
+`coordinator/store/postgres/schema/migrations/00022_erasure_tables.sql`.
 
 | Column | Type | Meaning |
 |---|---|---|
@@ -181,14 +185,14 @@ triggers).
 | `stripe_job_generation` | `INTEGER` | Part of the job's idempotency key; goes up when a new job must be made |
 
 The Stripe job columns and `lease_generation` come from
-`coordinator/store/postgres/schema/migrations/00022_erasure_outbox_stripe_job.sql`.
+`coordinator/store/postgres/schema/migrations/00026_erasure_outbox_stripe_job.sql`.
 
 Indexes: `erasure_outbox_request` (`request_id`), `erasure_outbox_due`
 (`next_at` where `pending`).
 
 ### `erasure_refused_credits`
 
-`coordinator/store/postgres/schema/migrations/00021_erasure_refuse_credits.sql`.
+`coordinator/store/postgres/schema/migrations/00025_erasure_refuse_credits.sql`.
 
 | Column | Type | Meaning |
 |---|---|---|
@@ -217,8 +221,8 @@ first.
 
 | Version | Index | Used by |
 |---|---|---|
-| 19 | `idx_billing_sessions_referral_code` on `billing_sessions (referral_code) WHERE referral_code <> ''` | Rule 23 |
-| 20 | `idx_users_privy_deleted` on `users (privy_user_id) WHERE deleted_at IS NOT NULL` | `PrivyUserPendingErasure` |
+| 23 | `idx_billing_sessions_referral_code` on `billing_sessions (referral_code) WHERE referral_code <> ''` | Rule 23 |
+| 24 | `idx_users_privy_deleted` on `users (privy_user_id) WHERE deleted_at IS NOT NULL` | `PrivyUserPendingErasure` |
 
 ## Configuration and constants
 

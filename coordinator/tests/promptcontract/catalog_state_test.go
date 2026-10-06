@@ -34,3 +34,14 @@ func TestProvisionCatalogFencesLateArtifactResults(t *testing.T) {
 		t.Fatalf("rejected catalog reopened: %+v", snapshot)
 	}
 }
+
+func TestCatalogBoundedStatusError(t *testing.T) {
+	if got := catalog.BoundedStatusError("  spaced  "); got != "spaced" {
+		t.Fatalf("trimmed = %q", got)
+	}
+	// 512 bytes is the shared operational-status bound.
+	long := strings.Repeat("x", 522)
+	if got := catalog.BoundedStatusError(long); len(got) != 512 {
+		t.Fatalf("bounded length = %d", len(got))
+	}
+}

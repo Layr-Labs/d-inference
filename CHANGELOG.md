@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — coordinator schema migrations
+
+- Apply the coordinator's Postgres schema as numbered goose migrations instead of re-running every DDL statement at each boot. The first boot applies and records the existing schema as version 1; later boots apply only new versions. SQL migration statements stop waiting for a lock after 3 seconds and make up to three attempts, and coordinators that start together take turns on an advisory lock.
+- Fail startup without recording the baseline when a required schema statement fails, so a later startup retries missing columns. Preserve current consumer-settlement, legacy MDM cohort, small-model interest and Stripe refund-index schema changes as subsequent versions.
+- Check in the schema as `coordinator/store/postgres/schema/schema.sql` and test that the migrations build exactly that schema. New schema changes go in a new numbered migration file.
+
 ## Unreleased — Stripe refund clock skew
 
 - Refund a rejected Stripe withdrawal when the coordinator clock is ahead of the PostgreSQL clock. Before, the refund check missed the withdrawal debit, refused the refund, and the recovery loop and `payout-audit --apply-refund` retried without success. The check still credits each withdrawal at most once and still refuses a ledger that does not show the exact debit.

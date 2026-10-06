@@ -39,7 +39,7 @@ For bank payout configuration and validation, follow [Global Payouts](global-pay
 
 - `gcloud` authenticated with IAM to SSH via IAP into project `darkbloom-mainnet`
   and to read Cloud Build / Artifact Registry.
-- `psql` access to the production RDS database (`PROD_DB_URL`) for the
+- `psql` access to the production Cloud SQL database (`PROD_DB_URL`) for the
   pre-swap lock check.
 - Explicit human approval for the production mutation (rule 1 in
   [README.md](README.md) is the canonical statement), recorded where your team
@@ -67,7 +67,7 @@ For bank payout configuration and validation, follow [Global Payouts](global-pay
 | Shutdown policy | Production sets `EIGENINFERENCE_DRAIN_GRACE=45s`; Docker allows 75 seconds from SIGTERM before SIGKILL. The application default remains `10m` when the env override is absent. |
 | Inside the container | `start.sh` symlinks `/data -> /mnt/disks/userdata`, starts MicroMDM on `:9002` (state in `/data/micromdm`, command webhook `http://localhost:8080/v1/mdm/webhook`), then `exec coordinator` as PID 1. `/usr/local/bin/promptsidecar` is spawned by the coordinator when `EIGENINFERENCE_PROMPT_SIDECAR_ENABLED=true` |
 | Persistent disk | `/mnt/disks/userdata`: MicroMDM BoltDB, prompt-contract artifacts (`EIGENINFERENCE_PROMPT_SIDECAR_ARTIFACT_ROOT=/mnt/disks/userdata/prompt-contracts`), logs. **Omitting the bind mount boots a blank MDM and drops the fleet to `self_signed` trust** (2026-07-04 incident) |
-| Database | AWS RDS PostgreSQL via `EIGENINFERENCE_DATABASE_URL`; schema migrations run at coordinator start |
+| Database | Cloud SQL for PostgreSQL 17 in `darkbloom-mainnet` (read replica `d-inference-prod-pg17-ro`) via `EIGENINFERENCE_DATABASE_URL`; pending goose migrations apply at coordinator start |
 | Env file | `/etc/d-inference/env`, root-only `0600`, on the boot disk (never tmpfs). Managed by [`deploy/gcp/prod/refresh-env.sh`](../../deploy/gcp/prod/refresh-env.sh) with [`deploy/gcp/prod/required-env-keys.txt`](../../deploy/gcp/prod/required-env-keys.txt) and [`deploy/gcp/prod/release-env-defaults`](../../deploy/gcp/prod/release-env-defaults); applied at boot by [`deploy/gcp/prod/darkbloom-env-refresh.service`](../../deploy/gcp/prod/darkbloom-env-refresh.service) (`Before=docker.service`) |
 | Fallback | The previous container is renamed `coordinator_fallback_<timestamp>` and kept stopped |
 
@@ -115,9 +115,12 @@ by hand; shell variables do not cross SSH.
 
 ### 2. Pre-swap checks (VM and DB)
 
-Startup runs schema migrations. An `ALTER TABLE` queued behind a long query's
-relation lock hangs the deploy (2026-07-03 outage — the fix was killing the
-blocker, not restarting). No rows means safe to proceed:
+Startup applies pending goose migrations
+([schema lifecycle](../architecture/schema-lifecycle.md)). An SQL migration
+statement waits at most 3 s for a lock (`lock_timeout`); after three failed
+attempts the coordinator exits 1. Before goose, an `ALTER TABLE` queued behind
+a long query's relation lock hung the deploy (2026-07-03 outage). No rows
+means safe to proceed:
 
 ```bash
 psql "$PROD_DB_URL" -c "select pid, now()-query_start as runtime, state, left(query,80)
@@ -129,7 +132,7 @@ psql "$PROD_DB_URL" -c "select count(*) as blocked from pg_locks where granted =
 A coordinator built after v0.9.10 refuses to start on a database that holds
 billing, usage or earnings rows but never ran the retired one-shot backfills
 (`checkRetiredBackfills`, see
-[storage](../architecture/storage.md#migrations-run-inside-the-process-at-every-boot)).
+[schema lifecycle](../architecture/schema-lifecycle.md#version-2-the-retired-backfill-guard)).
 Production ran them; confirm all three markers before the swap (three rows):
 
 ```bash
@@ -228,32 +231,14 @@ No grace period is selected and no expiry is implemented. Preserve the cutoff
 and cohort during rollback; rolling back to code without these gates removes
 their enforcement, so review that security regression before approval.
 
-### Optional: prepare compatible migrations before draining
+### Schema migrations
 
-After reviewing the exact candidate's schema changes, a human-approved operator
-can run its database-only command while the current coordinator serves. This is
-a production database mutation and needs approval for that operation. Only
-backward-compatible migrations belong before cutover; `--migrate-only` executes
-all normal migrations and does not establish compatibility automatically.
-
-```bash
-sudo docker run --rm --network host --env-file /etc/d-inference/env \
-  --entrypoint /usr/local/bin/coordinator \
-  "${CANDIDATE_IMAGE%:*}@${CANDIDATE_DIGEST}" --migrate-only
-```
-
-The executable override is mandatory: the image's default `start.sh` starts
-MicroMDM and touches persistent MDM state. The database-only container needs no
-userdata mount, publishes no port, seeds no admin key, starts no workers and
-exits after migration success (with a 15-minute upper bound). Do not start a
-second ordinary coordinator container. Rerun the blocked-query/lock checks and
-verify current serving health after preparation; success is not approval to
-swap.
-
-New provider-recovery indexes are built concurrently and checked for validity. An
-interrupted build that leaves an invalid index fails closed with its index name;
-repair it under a separate approved operation. Ordinary startup still applies
-schema checks, and this preparation does not prove a five-second handoff.
+If the candidate adds goose versions, follow steps 1 to 4 of
+[Apply schema migrations in production](schema-migration.md#steps) now: scope
+the versions, take and record a Cloud SQL backup, check for long queries, and
+optionally apply additive versions with `--migrate-only` while the current
+coordinator serves. The first deploy of a goose build also follows its
+[first cut-over checklist](schema-migration.md#first-production-cut-over-to-goose).
 
 ### 3. Refresh the env file and capture rollback inputs
 
@@ -379,9 +364,10 @@ sudo docker run -d --name coordinator \
 ```
 
 Startup takes ~15–40 s (MicroMDM init, migrations, listeners). If `/health`
-does not answer after ~60 s, suspect a migration behind a DB lock: re-run the
-`pg_stat_activity` query and `pg_terminate_backend(<pid>)` the blocker. **Do
-not restart the container again** — restarts stack migrations.
+does not answer after ~60 s, or the container exits with `store: run
+migrations`, follow [schema migration troubleshooting](schema-migration.md#troubleshooting).
+A failed migration exits before the coordinator serves and records no failed
+version. **Do not loop restarts of the container.**
 
 ## Verification
 
@@ -414,7 +400,7 @@ curl -fsS localhost:8080/v1/cache/status | jq -e \
 # Fleet trust rebuild (~2 min) and MDM sanity.
 sudo docker logs coordinator 2>&1 | grep -c "upgraded live provider to hardware trust"   # should climb
 sudo docker logs coordinator 2>&1 | grep -c "device not found in MDM"        # baseline is a few dozen; hundreds = missing volume mount → Rollback
-sudo docker logs coordinator 2>&1 | grep "postgres migration completed"      # one line per migration; result already_applied on steady state
+sudo docker logs coordinator 2>&1 | grep '"postgres migration"'             # one line per applied version; none when nothing was pending
 
 # Public.
 curl -fsS https://api.darkbloom.dev/health
@@ -488,7 +474,11 @@ cause in the deploy record; the failed candidate image stays in Artifact
 Registry for diagnosis.
 
 Providers reconnect on their own; the live registry is in-process and rebuilt
-from reconnects, durable state is in RDS and on the persistent disk.
+from reconnects, durable state is in Cloud SQL and on the persistent disk.
+
+Rollback never reverts the schema. Which previous images are safe on a
+migrated database is in the
+[schema migration rollback rules](schema-migration.md#rollback).
 
 ## Environment file
 
@@ -546,7 +536,7 @@ reference copy; editing it changes nothing on the host.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| No `/health` after 60 s | migration behind an RDS relation lock | `pg_stat_activity` → `pg_terminate_backend(<pid>)`; do not restart the container |
+| No `/health` after 60 s, or exit with `store: run migrations` | a migration failed: a relation lock through three `lock_timeout` attempts, the 5 min advisory-lock wait, or an invalid index | [schema migration troubleshooting](schema-migration.md#troubleshooting); do not loop restarts |
 | Exit at boot with `database holds data that retired backfills never processed` or `balances.withdrawable_micro_usd is missing` | the database never ran a one-shot backfill retired after v0.9.10 (not production, which has all three markers) | roll back to the captured image, which runs the backfills at start, then redeploy the candidate |
 | Fleet drops to `self_signed`; "device not found in MDM" storm | container started without `-v /mnt/disks/userdata:/mnt/disks/userdata` (blank MicroMDM) | Rollback, then redo the swap with the mount |
 | `/v1/models` empty; providers `self_signed` | MicroMDM not running or `MICROMDM_API_KEY` ≠ `EIGENINFERENCE_MDM_API_KEY` | fix the env file, recreate the container |
@@ -561,6 +551,7 @@ reference copy; editing it changes nothing on the host.
 
 - [dev-environment.md](dev-environment.md) — the dev coordinator (`darkbloom-dev`).
 - [`provider-release.md`](provider-release.md) — provider CLI release runbook.
+- [`schema-migration.md`](schema-migration.md) — backup, checks and rollback rules for schema migrations.
 - [`../developer/build.md`](../developer/build.md) — what the Dockerfile builds.
 - [`../reference/configuration.md`](../reference/configuration.md) — every environment variable.
 - [`../architecture/cache-aware-routing.md`](../architecture/cache-aware-routing.md) — what the cache-routing controls do.

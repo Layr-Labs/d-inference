@@ -47,8 +47,9 @@ func (s *MemoryStore) FinalizeConsumerCharge(in store.ConsumerChargeSettlement) 
 		}
 	}
 	if reward > 0 {
-		s.creditLocked(referrer, reward, store.LedgerReferralReward, in.JobID, s.now())
-		s.withdrawable[referrer] += reward
+		if s.creditLocked(referrer, reward, store.LedgerReferralReward, in.JobID, s.now()) {
+			s.withdrawable[referrer] += reward
+		}
 	}
 	result := store.ConsumerChargeResult{CollectedMicroUSD: collected, ReferralRewardMicroUSD: reward, Applied: true, Uncollected: uncollected}
 	s.consumerSettlements[in.JobID] = consumersettlement.Record{Input: in, Result: result, Referrer: referrer}

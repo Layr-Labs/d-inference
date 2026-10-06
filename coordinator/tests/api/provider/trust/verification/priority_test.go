@@ -114,7 +114,7 @@ func TestFailedFastSkipPromotesRefreshToImmediateDue(t *testing.T) {
 		t.Fatalf("promoted job not persisted: %+v, %v", rec, err)
 	}
 	if rec.Priority != store.VerificationPriorityFirstOrExpired {
-		t.Fatalf("priority = %q after failed fast-skip, want promoted first/expired", rec.Priority)
+		t.Fatalf("priority = %v after failed fast-skip, want promoted first/expired", rec.Priority)
 	}
 	if due := rec.NextAttemptAt.Sub(now); due > mdmFirstVerifySpreadMax {
 		t.Fatalf("failed fast-skip settle due %s out, must be within %s", due, mdmFirstVerifySpreadMax)

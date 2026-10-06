@@ -61,8 +61,9 @@ func (s *MemoryStore) settleProviderFloorDrawLocked(draw *store.ProviderFloorDra
 	s.history.ProviderFloorDraws = append(s.history.ProviderFloorDraws, cp)
 
 	if cp.AmountMicroUSD > 0 {
-		s.creditLocked(cp.AccountID, cp.AmountMicroUSD, store.LedgerFloorDraw, cp.EpochID, cp.CreatedAt)
-		s.withdrawable[cp.AccountID] += cp.AmountMicroUSD
+		if s.creditLocked(cp.AccountID, cp.AmountMicroUSD, store.LedgerFloorDraw, cp.EpochID, cp.CreatedAt) {
+			s.withdrawable[cp.AccountID] += cp.AmountMicroUSD
+		}
 		// Surface the draw in the provider's earnings history/summary. Model
 		// "base_reward" keeps it out of organic earning sums while
 		// GetAccountEarnings* (which sum all rows) show

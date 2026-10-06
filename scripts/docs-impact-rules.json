@@ -224,6 +224,18 @@
       ]
     },
     {
+      "name": "sqlc queries and type mappings",
+      "source_patterns": [
+        "coordinator/store/postgres/sqlc.yaml",
+        "coordinator/store/postgres/queries/**",
+        "coordinator/store/postgres/storedb/**"
+      ],
+      "docs_any_of": [
+        "docs/developer/sqlc.md",
+        "docs/reference/sqlc-type-mapping.md"
+      ]
+    },
+    {
       "name": "provider release",
       "source_patterns": [
         ".github/workflows/release-swift.yml",

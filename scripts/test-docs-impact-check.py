@@ -55,6 +55,31 @@ class DocsImpactCheckTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("bypassed", result.stdout)
 
+    def test_sqlc_changes_require_canonical_docs(self) -> None:
+        sources = (
+            "coordinator/store/postgres/sqlc.yaml",
+            "coordinator/store/postgres/queries/api_keys.sql",
+            "coordinator/store/postgres/storedb/models.go",
+        )
+        documents = ("docs/developer/sqlc.md", "docs/reference/sqlc-type-mapping.md")
+        for source in sources:
+            with self.subTest(source=source):
+                for unrelated in ((), ("docs/architecture/storage.md",)):
+                    missing = self.run_check(source, *unrelated)
+                    self.assertEqual(missing.returncode, 1, missing.stdout + missing.stderr)
+                    self.assertIn("sqlc queries and type mappings source changed", missing.stderr)
+                for document in documents:
+                    covered = self.run_check(source, document)
+                    self.assertEqual(covered.returncode, 0, covered.stdout + covered.stderr)
+                overridden = self.run_check(source, labels=["docs-not-needed"])
+                self.assertEqual(overridden.returncode, 0, overridden.stdout + overridden.stderr)
+
+        ignored = self.run_check(
+            "coordinator/tests/store/postgres/storedb/models_test.go",
+            "coordinator/store/postgres/storedb/models_test.go",
+        )
+        self.assertEqual(ignored.returncode, 0, ignored.stdout + ignored.stderr)
+
     def test_reorganized_owners_keep_canonical_documentation_gates(self) -> None:
         cases = (
             ("coordinator/api/routes.go", "docs/reference/api-contracts.md"),

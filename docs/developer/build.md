@@ -398,18 +398,28 @@ The provider consumes the local packages through immutable Git submodule pins:
 
 | Package | Merged revision | Included update |
 |---|---|---|
-| `libs/mlx-swift` | `0f4fe403bef6899e8a72882bc6d4036a7a62ae31` | [PR #28](https://github.com/Layr-Labs/mlx-swift/pull/28): exact constant reuse for eligible Bonsai packed projections |
-| `libs/mlx-swift-lm` | `4101d4c1bfa6b3175e7f34393e8c235a75a7c1be` | [PR #170](https://github.com/Layr-Labs/mlx-swift-lm/pull/170): completed prefill receipts, confirmed-token timing and per-engine mixed-prefill policy |
+| `libs/mlx` | `cb77239be31b1df7f5db895226af55c39fc4f093` | `gather_mm` / `gather_qmm` row-tile backport |
+| `libs/mlx-swift/Source/Cmlx/mlx` | `cb77239be31b1df7f5db895226af55c39fc4f093` | Same merged MLX source used by Cmlx and the provider metallib |
+| `libs/mlx-swift` | `6923a80f624f5c91fbf456efe4e00e9698a72961` | [PR #34](https://github.com/Layr-Labs/mlx-swift/pull/34): merged nested MLX row-tile backport and regenerated kernel sources |
+| `libs/mlx-swift-lm` | `e407e899c4e3f9ee4d95f8974ed4f01e7e60e702` | Retained current SDK pin; no SDK gitlink change in this PR |
 
 Keep both local packages in the provider build. The SDK's standalone package
 manifest can still reference a pre-merge Swift review revision; the nested-test
 procedure in [test.md](test.md#4-provider-swift--unit-tests-with-a-source-matched-metallib) binds it to the recorded local
-Swift gitlink. The MLX core and C-wrapper pins are unchanged by this update.
+Swift gitlink. Keep `libs/mlx` and `libs/mlx-swift/Source/Cmlx/mlx` on the same
+merged MLX commit for the `gather_mm` / `gather_qmm` row-tile backport. The Swift
+pin includes kernel sources regenerated from that nested MLX revision, including
+the signed integer floor-division corrections from [MLX PR #32](https://github.com/Layr-Labs/mlx/pull/32)
+in the generated binary-operations and CPU preamble sources.
+Build `mlx.metallib` from the nested source with
+`scripts/fetch-metallib.sh`; changing only the top-level MLX gitlink does not
+change provider bytes.
 Rebuild the consumer after changing pins; earlier full-model measurements are
 evidence for their recorded dependency set, not a new benchmark of these pins.
-The pin uses merged SDK `main` history. Its production libraries and package
-manifest match the reviewed head `b52335b839d80c8e6d4194ebbd8809d737cd8eb3`;
-subsequent merged changes improve test reliability, fork CI and documentation.
+The earlier SDK [PR #170](https://github.com/Layr-Labs/mlx-swift-lm/pull/170)
+pin `4101d4c1bfa6b3175e7f34393e8c235a75a7c1be` had production libraries and a
+package manifest matching review head `b52335b839d80c8e6d4194ebbd8809d737cd8eb3`.
+That historical comparison is not validation of the current SDK pin above.
 
 ### Native Flash-Next candidate
 

@@ -10,8 +10,8 @@ import (
 // RecordProviderEarning and CreditProviderAccount.
 //
 // DAR-349: this MUST stay cheap and non-blocking on the serving startup path.
-//   - Fast path: if a valid index already exists, return immediately (every boot
-//     after the first does no work here).
+//   - Fast path: if a valid index already exists, return immediately (a
+//     database that already has the index does no work here).
 //   - It NEVER deletes rows. If existing data would violate uniqueness it fails
 //     loudly with an actionable message rather than running a destructive,
 //     table-locking cleanup at boot (the original outage).
@@ -22,7 +22,7 @@ import (
 func (s *PostgresStore) ensureProviderEarningsJobIndex(ctx context.Context) error {
 	const idxName = "idx_provider_earnings_job"
 
-	// Already present AND valid? No-op fast path for every boot after the first.
+	// Already present AND valid? No-op fast path.
 	var valid bool
 	if err := s.pool.QueryRow(ctx, `
 		SELECT COALESCE((

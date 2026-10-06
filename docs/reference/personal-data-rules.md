@@ -187,7 +187,7 @@ ownership links before deleting aliases; it stores no serial, UDID or APNs token
 | `next_at` | `TIMESTAMPTZ` | When the row is due |
 | `lease_until` | `TIMESTAMPTZ` | Delivery claim expiry; result commits check the clock after acquiring the row lock |
 | `lease_generation` | `BIGINT` | Advances on every delivery claim; only this generation may save a result or split while the lease remains active |
-| `last_error` | `TEXT` | Last delivery error |
+| `last_error` | `TEXT` | Last delivery error; restricted operational data that may contain upstream identifiers or personal data. `runOutbox` in `coordinator/api/accounts/erasure/outbox.go` excludes it from the manual-action operational log |
 | `done_at` | `TIMESTAMPTZ` | When it ended `done` |
 | `created_at` | `TIMESTAMPTZ` | Insert time; the 105-day redaction deadline counts from it |
 | `stripe_job_id` | `TEXT` | Redaction job of a `checkout_sessions` row (`prj_…`); cleared when done |

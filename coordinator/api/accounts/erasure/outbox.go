@@ -99,7 +99,7 @@ func (s *Owner) runOutbox(ctx context.Context) {
 		}
 		if result.State == store.ErasureOutboxManualAction {
 			s.logger.Error("erasure outbox: manual action required", "outbox_id", row.ID,
-				"request_id", row.RequestID, "target", row.Target, "error", result.LastError)
+				"request_id", row.RequestID, "target", row.Target, "state", result.State, "attempts", result.Attempts)
 		}
 	}
 }

@@ -2,6 +2,8 @@
 
 ## Unreleased — account erasure
 
+- Keep upstream error text out of erasure-outbox manual-action logs; retain safe correlation IDs, target, state and attempt count, with details available in restricted outbox records.
+
 - Preserve successful account-erasure results when the caller cancels after commit, so confirmation and scrub still disconnect providers and clear runtime caches.
 
 - Clear unshared APNs token proofs, pending challenges and push bookkeeping from runtime memory after erasure; fence delayed cache publication while preserving live shared keys and fresh ownership.

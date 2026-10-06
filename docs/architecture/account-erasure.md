@@ -510,7 +510,7 @@ Outside the live database:
 | The webhook log says `stripe Checkout completed for an erased account; refund it in Stripe` | A Checkout Session paid after the scrub | Refund it in the Stripe dashboard |
 | An outbox row is `manual_action` | A definitive Stripe refusal, 8 failed attempts, a stuck or failed redaction job, the 105-day deadline, or a session Stripe cannot find | `last_error` in `GET …/erasure`; [manual_action decisions](../operations/account-erasure.md#resolve-manual_action-rows) |
 | A `checkout_sessions` row stays `pending` for weeks | The sessions are under 90 days old; the row waits 7 days between jobs | Expected; `last_error` holds the validation message |
-| The worker logs `erasure outbox: manual action required` | The same as `manual_action` | The log names `outbox_id`, `request_id`, `target` and the error |
+| The worker logs `erasure outbox: manual action required` | The same as `manual_action` | The log names only `outbox_id`, `request_id`, `target`, `state` and `attempts`; inspect the restricted outbox `last_error` for upstream details |
 
 ## Code map
 

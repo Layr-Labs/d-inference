@@ -370,6 +370,28 @@ CREATE TABLE public.code_attestations (
 
 
 --
+-- Name: consumer_charge_settlements; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.consumer_charge_settlements (
+    job_id text NOT NULL,
+    account_id text NOT NULL,
+    reserved_micro_usd bigint NOT NULL,
+    requested_micro_usd bigint NOT NULL,
+    referral_enabled boolean NOT NULL,
+    collected_micro_usd bigint NOT NULL,
+    referrer_account text DEFAULT ''::text NOT NULL,
+    reward_micro_usd bigint NOT NULL,
+    uncollected boolean NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT consumer_charge_settlements_collected_micro_usd_check CHECK ((collected_micro_usd >= 0)),
+    CONSTRAINT consumer_charge_settlements_requested_micro_usd_check CHECK ((requested_micro_usd >= 0)),
+    CONSTRAINT consumer_charge_settlements_reserved_micro_usd_check CHECK ((reserved_micro_usd >= 0)),
+    CONSTRAINT consumer_charge_settlements_reward_micro_usd_check CHECK ((reward_micro_usd >= 0))
+);
+
+
+--
 -- Name: darkbloom_machine_aliases; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -756,6 +778,31 @@ CREATE SEQUENCE public.ledger_entries_id_seq
 --
 
 ALTER SEQUENCE public.ledger_entries_id_seq OWNED BY public.ledger_entries.id;
+
+
+--
+-- Name: legacy_mdm_cohort; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.legacy_mdm_cohort (
+    account_id text NOT NULL,
+    se_public_key text NOT NULL,
+    serial_number text NOT NULL,
+    CONSTRAINT legacy_mdm_cohort_account_id_check CHECK ((account_id <> ''::text)),
+    CONSTRAINT legacy_mdm_cohort_se_public_key_check CHECK ((se_public_key <> ''::text)),
+    CONSTRAINT legacy_mdm_cohort_serial_number_check CHECK ((serial_number <> ''::text))
+);
+
+
+--
+-- Name: legacy_mdm_cohort_freeze; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.legacy_mdm_cohort_freeze (
+    singleton boolean NOT NULL,
+    cutoff timestamp with time zone NOT NULL,
+    CONSTRAINT legacy_mdm_cohort_freeze_singleton_check CHECK (singleton)
+);
 
 
 --
@@ -1700,6 +1747,21 @@ CREATE TABLE public.schema_migrations (
 
 
 --
+-- Name: small_models_interest; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.small_models_interest (
+    account_id text NOT NULL,
+    mac_type text NOT NULL,
+    chip text NOT NULL,
+    ram_gb integer NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT small_models_interest_ram_gb_check CHECK (((ram_gb >= 1) AND (ram_gb <= 2048)))
+);
+
+
+--
 -- Name: stripe_withdrawals; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2069,6 +2131,14 @@ ALTER TABLE ONLY public.code_attestations
 
 
 --
+-- Name: consumer_charge_settlements consumer_charge_settlements_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.consumer_charge_settlements
+    ADD CONSTRAINT consumer_charge_settlements_pkey PRIMARY KEY (job_id);
+
+
+--
 -- Name: darkbloom_machine_aliases darkbloom_machine_aliases_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2194,6 +2264,22 @@ ALTER TABLE ONLY public.invite_redemptions
 
 ALTER TABLE ONLY public.ledger_entries
     ADD CONSTRAINT ledger_entries_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: legacy_mdm_cohort_freeze legacy_mdm_cohort_freeze_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.legacy_mdm_cohort_freeze
+    ADD CONSTRAINT legacy_mdm_cohort_freeze_pkey PRIMARY KEY (singleton);
+
+
+--
+-- Name: legacy_mdm_cohort legacy_mdm_cohort_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.legacy_mdm_cohort
+    ADD CONSTRAINT legacy_mdm_cohort_pkey PRIMARY KEY (account_id, se_public_key, serial_number);
 
 
 --
@@ -2525,6 +2611,14 @@ ALTER TABLE ONLY public.schema_migrations
 
 
 --
+-- Name: small_models_interest small_models_interest_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.small_models_interest
+    ADD CONSTRAINT small_models_interest_pkey PRIMARY KEY (account_id);
+
+
+--
 -- Name: stripe_withdrawals stripe_withdrawals_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2747,6 +2841,13 @@ CREATE INDEX idx_code_attest_push_budgets_due ON public.code_attest_push_budgets
 
 
 --
+-- Name: idx_consumer_settlements_referrer; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_consumer_settlements_referrer ON public.consumer_charge_settlements USING btree (referrer_account) WHERE (referrer_account <> ''::text);
+
+
+--
 -- Name: idx_device_codes_user; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2821,6 +2922,13 @@ CREATE INDEX idx_ledger_account ON public.ledger_entries USING btree (account_id
 --
 
 CREATE INDEX idx_ledger_reward ON public.ledger_entries USING btree (account_id, created_at DESC) WHERE (entry_type = ANY (ARRAY['referral_reward'::text, 'admin_reward'::text]));
+
+
+--
+-- Name: idx_ledger_stripe_refund; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ledger_stripe_refund ON public.ledger_entries USING btree (account_id, reference) WHERE (entry_type = ANY (ARRAY['refund'::text, 'stripe_payout'::text]));
 
 
 --
@@ -3334,7 +3442,13 @@ ALTER TABLE ONLY public.referrals
 
 
 --
--- PostgreSQL database dump complete
+-- Name: small_models_interest small_models_interest_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
+ALTER TABLE ONLY public.small_models_interest
+    ADD CONSTRAINT small_models_interest_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.users(account_id) ON DELETE CASCADE;
 
+
+--
+-- PostgreSQL database dump complete
+--

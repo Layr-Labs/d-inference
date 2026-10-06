@@ -1,11 +1,12 @@
 # Add a database migration
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 How to change the coordinator's Postgres schema: choose the migration kind,
 write it as a numbered goose version, regenerate the checked-in schema, and
-test it. Every schema change is a new version. Do not put DDL in Go strings,
-and do not edit a migration that has merged. Why the rules exist is in
+test it. Every schema change is a new version. Put ordinary DDL in SQL files;
+use Go migrations for the checks and concurrent indexes described below.
+Do not edit a migration that has merged. Why the rules exist is in
 [schema lifecycle](../architecture/schema-lifecycle.md); applying a migration
 in production is the [schema migration runbook](../operations/schema-migration.md).
 
@@ -34,7 +35,7 @@ in production is the [schema migration runbook](../operations/schema-migration.m
    | Several `ALTER TABLE`s on busy tables that must not hold their locks together; `DROP INDEX CONCURRENTLY`; `VALIDATE CONSTRAINT` after a `NOT VALID` add | SQL file with `-- +goose NO TRANSACTION` | `coordinator/store/postgres/schema/migrations/00001_baseline.sql` |
    | Create an index on a table that has rows in production | Go migration through `ensureConcurrentIndex` | `ensureProviderRestoreIndexes` (version 3) |
    | A step that must read data first, check a precondition, or check its own result | Go migration | `checkRetiredBackfills` (version 2) |
-   | Rename or drop a column, or tighten a constraint | Two or more releases; see [expand and contract](#change-a-column-in-two-releases-expand-and-contract) | — |
+   | Rename or drop a column, or tighten a constraint | Compatible release phases; see [expand and contract](#change-a-column-while-preserving-rollback-compatibility) | — |
    | Fix rows that a writer keeps producing | Not a migration: fix the writer | — |
    | A cleanup that needs a long lock | Manual SQL under `coordinator/store/postgres/migrations/`, applied under an approved operation | `coordinator/store/postgres/migrations/dedupe_provider_earnings.sql` |
 
@@ -71,7 +72,7 @@ in production is the [schema migration runbook](../operations/schema-migration.m
    `context.Context` and returns an error, and add it to `goMigrations`:
 
    ```go
-   step(6, s.checkExampleRows),
+   step(10, s.checkExampleRows),
    ```
 
    It runs on the store pool with no session timeouts unless the database URL
@@ -84,7 +85,7 @@ in production is the [schema migration runbook](../operations/schema-migration.m
    as `ensureProviderRestoreIndexes` does:
 
    ```go
-   step(6, func(ctx context.Context) error {
+   step(10, func(ctx context.Context) error {
        return s.ensureConcurrentIndex(ctx, "idx_example_account",
            `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_example_account ON example (account_id)`)
    }),
@@ -123,7 +124,9 @@ in production is the [schema migration runbook](../operations/schema-migration.m
    with `"result":"applied"`, then `coordinator migrations complete`. Use the
    `pg_dump` inside the container, so that its major version matches
    production (17). Review `git diff coordinator/store/postgres/schema/schema.sql`: it
-   must show only your change.
+   must show only your change. Keep the frozen legacy fixture under
+   `coordinator/tests/store/postgres/testdata/legacy_schema.sql` unchanged;
+   the upgrade test compares it to the newly generated current schema.
 
 6. **Regenerate the sqlc code** if a query in `coordinator/store/postgres/queries/`
    reads the changed table: `make sqlc-generate`
@@ -143,7 +146,8 @@ go test ./coordinator/tests/store/postgres -count=1 \
 | Test | Fails when |
 |---|---|
 | `TestMigrationsBuildCheckedInSchema` | `schema.sql` differs from what the migrations build |
-| `TestMigrationsLeaveLegacyDatabaseUnchanged` | Versions 1 to 5 change a database that a pre-goose coordinator built |
+| `TestMigrationsUpgradeLegacyDatabase` | A frozen pre-goose database does not upgrade to the current schema, or loses preserved marker/counter rows |
+| `TestMigrationsBlockedLegacyColumnRemainsPending` | A blocked baseline is recorded as successful, or the missing column is not restored on retry |
 | `TestConcurrentMigrationsApplyOnce` | Two runs at once apply a version twice, or a run changes the schema while another session holds the goose advisory lock |
 | `TestSQLMigrationsDoNotBuildIndexesConcurrently` | An SQL file contains `CREATE [UNIQUE] INDEX CONCURRENTLY` |
 
@@ -155,44 +159,72 @@ and fails when the generated sqlc code is stale:
 make sqlc-check
 ```
 
-## Change a column in two releases (expand and contract)
+## Change a column while preserving rollback compatibility
 
-A rollback starts the previous image on the migrated schema; nothing reverts
-the schema ([invariants](../architecture/schema-lifecycle.md#invariants)).
-`--migrate-only` can also run while the previous image still serves. So each
-release must work on the schema of the release after it. A breaking change
-therefore ships in steps, and the contract step ships two releases after the
-expand step.
+A rollback starts an older image against the already-migrated schema
+([invariants](../architecture/schema-lifecycle.md#invariants)). Both the active
+image and every permitted fallback must read current values and accept each
+other's writes. `--migrate-only` can also run while the previous image serves.
+
+For a column replacement, keep the old column authoritative while any writer
+updates only that column. Reading `COALESCE(new_col, old_col)` during this
+phase can return a stale non-null value after a rollback writer updates only
+`old_col`. Use these phases when both representations can preserve the values
+accepted by the active image and its fallback:
 
 ```mermaid
-flowchart LR
+flowchart TD
   classDef rel fill:#dbeafe,stroke:#1d4ed8,color:#0b1220
+  classDef gate fill:#fef3c7,stroke:#b45309,color:#1f1300
   classDef fb fill:#f1f5f9,stroke:#475569,color:#0f172a
-  N["Release N: expand<br/>migration adds new_col<br/>code writes old_col and new_col,<br/>reads COALESCE(new_col, old_col)"]:::rel
-  N1["Release N+1: switch<br/>no migration<br/>code reads and writes new_col only"]:::rel
-  N2["Release N+2: contract<br/>migration drops old_col"]:::rel
-  F0["fallback N-1:<br/>ignores new_col; old_col is current"]:::fb
-  F1["fallback N:<br/>new_col is current"]:::fb
-  F2["fallback N+1:<br/>never touches old_col"]:::fb
-  N --> N1 --> N2
+  N["N: expand<br/>read old_col<br/>write both atomically"]:::rel
+  G["Retire every N-1 writer and fallback<br/>reconcile new_col from current old_col"]:::gate
+  N1["N+1: switch reads<br/>read new_col<br/>keep writing both atomically"]:::rel
+  N2["N+2: retire old access<br/>read and write new_col only<br/>keep old_col in schema"]:::rel
+  N3["N+3: contract<br/>drop old_col"]:::rel
+  F0["Fallback N-1<br/>reads and writes current old_col"]:::fb
+  F1["Fallback N<br/>reads current old_col<br/>writes both"]:::fb
+  F2["Fallback N+1<br/>reads current new_col<br/>writes both"]:::fb
+  F3["Fallback N+2<br/>never accesses old_col"]:::fb
+  N --> G --> N1 --> N2 --> N3
   N -. "rollback" .-> F0
   N1 -. "rollback" .-> F1
   N2 -. "rollback" .-> F2
+  N3 -. "rollback" .-> F3
 ```
 
-Legend: blue = release, grey = the image a rollback starts.
+Legend: blue = release, amber = required transition, grey = permitted fallback.
 
-1. Release N, expand: add the new column, table or index as an additive
-   migration. Write both shapes, and read the new one with a fallback to the
-   old one. Backfill old rows in small batches, as a Go migration or a
-   reviewed manual operation; a backfill in one statement holds row locks for
-   its whole run.
-2. Deploy release N. Ship N+1 only after N runs in production, so that N is
-   the fallback image.
-3. Release N+1, switch: read and write only the new shape. No migration.
-4. Deploy release N+1. Ship N+2 only after N+1 runs in production.
-5. Release N+2, contract: drop the old shape, or add the constraint
-   (`NOT VALID`, then `VALIDATE`).
+1. **Release N, expand.** Add `new_col` with an additive migration. Read
+   `old_col` and update both representations in the same transaction on every
+   write path, including inserts and maintenance commands. The N-1 fallback
+   can keep updating only `old_col`; N continues reading the authoritative
+   value after a rollback and re-upgrade.
+2. **Retire old-only writers and reconcile.** Once N is deployed, remove N-1
+   from the permitted fallback set and retire every old-only writer before
+   switching reads. Reconcile `new_col` from authoritative `old_col` in small
+   batches, including rows whose `new_col` is already non-null. Lock each row
+   and derive the new value from its current old value in the same transaction
+   so reconciliation cannot overwrite a concurrent dual write with stale data.
+   Verify parity before proceeding. Perform production backfills under the
+   [schema migration runbook](../operations/schema-migration.md), with approval
+   for that specific mutation.
+3. **Release N+1, switch reads.** Read `new_col` and keep updating both columns
+   atomically. N is the permitted fallback: its reads of `old_col` remain current.
+   Keep values compatible with both representations while such a fallback is
+   permitted.
+4. **Release N+2, retire old access.** After N+1 is deployed and N is retired
+   from the fallback set, read and write only `new_col`. Keep `old_col` in the
+   schema for N+1, whose reads already use `new_col` and whose writes still
+   mention both columns. Before omitting old-column writes, ensure inserts and
+   updates still satisfy the old column's defaults, nullability and constraints;
+   stage any compatible schema relaxation separately.
+5. **Release N+3, contract.** After N+2 is deployed and N+1 is retired from the
+   fallback set, drop `old_col`. The permitted N+2 fallback never accesses it.
+   Check every remaining reader, writer and database dependency before removal.
+   Tightening a constraint similarly requires all active and fallback writers
+   to satisfy it before it is enforced; use `NOT VALID` and `VALIDATE` where
+   PostgreSQL supports them.
 
 ## Destructive changes and the pre-goose fallback
 

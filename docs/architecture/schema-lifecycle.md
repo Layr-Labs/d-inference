@@ -1,6 +1,6 @@
 # Schema lifecycle
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 Explanation of how the coordinator's Postgres schema changes: numbered goose
 migrations that run inside `NewPostgres` before the coordinator serves, the
@@ -12,7 +12,7 @@ against, and the sqlc code generated from that file. Read this before you add a 
 
 ## Context
 
-Before goose, `(*PostgresStore).migrate` ran 255 DDL statements on every boot.
+The baseline captures 255 DDL statements that `(*PostgresStore).migrate` ran on every boot.
 Each statement ran on its own, with no `lock_timeout`, so an `ALTER TABLE`
 that waited behind a long query blocked every later query on that table
 (the 2026-07-03 outage). Nothing stopped two coordinators from running the
@@ -21,8 +21,12 @@ same DDL at once, and repair `UPDATE`s ran again at every start.
 Goose ([`github.com/pressly/goose/v3`](https://github.com/pressly/goose))
 replaces that loop. Each schema change is a numbered version. Goose applies a
 version once, records it in `goose_db_version`, and skips it on every later
-boot. The 255 statements are version 1, unchanged and in the same order
-(`coordinator/store/postgres/schema/migrations/00001_baseline.sql`).
+boot. The baseline statements are version 1, in their original order
+(`coordinator/store/postgres/schema/migrations/00001_baseline.sql`). Broad
+exception handlers are removed so lock, permission and missing-column errors
+fail the version. Only the four `usage` alterations before its `CREATE TABLE`
+ignore `undefined_table`; the later create supplies those columns on a fresh
+database.
 
 ## Mechanism
 
@@ -61,14 +65,20 @@ Legend: blue = step, amber = decision, green = success, red = exit 1.
 
 | Version | Source | What it does |
 |---|---|---|
-| 1 | `coordinator/store/postgres/schema/migrations/00001_baseline.sql` | The 255 statements of the pre-goose boot, in the same order, as one `-- +goose NO TRANSACTION` file. On a schema that a pre-goose coordinator built, every statement is a no-op. |
+| 1 | `coordinator/store/postgres/schema/migrations/00001_baseline.sql` | The 255 statements of the pre-goose boot, in the same order, as one `-- +goose NO TRANSACTION` file. Existing object definitions and repaired data are preserved; required statement errors fail the version. |
 | 2 | `checkRetiredBackfills` (`coordinator/store/postgres/retired_backfills.go`) | Guards the retired one-shot backfills; see [Version 2](#version-2-the-retired-backfill-guard). |
 | 3 | `ensureProviderRestoreIndexes` (`coordinator/store/postgres/startup.go`) | Builds `idx_providers_restore_serial` and `idx_providers_restore_se_key` `CONCURRENTLY` through `ensureConcurrentIndex`. |
 | 4 | `ensureProviderEarningsJobIndex` (`coordinator/store/postgres/provider_earnings_index.go`) | Drops an invalid leftover with a plain `DROP INDEX`, fails on duplicate non-empty `job_id`s, then builds the unique `idx_provider_earnings_job` `CONCURRENTLY`. |
 | 5 | `ensureProviderEarningsWindowIndex` (`coordinator/store/postgres/earnings_window_index.go`) | Builds the BRIN `idx_provider_earnings_created_at_brin` through `ensureConcurrentIndex` and sets `autovacuum_analyze_scale_factor` to `0.005`. |
+| 6 | `coordinator/store/postgres/schema/migrations/00006_consumer_charge_settlements.sql` | Adds consumer charge settlement records and the referrer index. |
+| 7 | `coordinator/store/postgres/schema/migrations/00007_legacy_mdm_cohort.sql` | Adds the legacy MDM cohort and freeze tables; it does not freeze membership. |
+| 8 | `coordinator/store/postgres/schema/migrations/00008_small_models_interest.sql` | Adds saved small-model hardware interest, including the user foreign key and RAM constraint. |
+| 9 | `ensureStripeRefundIndex` (`coordinator/store/postgres/startup.go`) | Builds `idx_ledger_stripe_refund` concurrently through `ensureConcurrentIndex`. |
 
 Versions 2 to 5 are Go migrations, listed in `goMigrations`. They are the
 startup steps that ran after the old DDL loop, with their code unchanged.
+Versions 6 to 9 preserve later pre-goose schema additions; version 9 is also
+a Go migration.
 Goose reads SQL files from the embedded `migrationFiles` and refuses two
 sources with the same version (`found duplicate migration version`) and an
 unapplied version below the highest applied one
@@ -78,10 +88,10 @@ unapplied version below the highest applied one
 
 | Kind | How goose runs it | Why it exists | Example |
 |---|---|---|---|
-| SQL file (default) | All statements and the `goose_db_version` insert in one transaction, on the connection that holds the advisory lock | A change that must apply completely or not at all | None yet; template in the [how-to](../developer/database-migrations.md) |
+| SQL file (default) | All statements and the `goose_db_version` insert in one transaction, on the connection that holds the advisory lock | A change that must apply completely or not at all | Versions 6 to 8 |
 | SQL file with `-- +goose NO TRANSACTION` | Each statement (or each `StatementBegin`/`StatementEnd` block) commits on its own; the version is recorded after the last one | A statement that cannot run in a transaction (`DROP INDEX CONCURRENTLY`), or a file whose locks must be held one at a time | Version 1 |
 | Go migration (`goose.NewGoMigration` with `RunDB`) | Goose calls the function, then records the version on the second migration connection; no transaction | A step that must read the database before it acts, or check its result | Versions 2 and 4 |
-| Concurrent index (Go migration through `ensureConcurrentIndex`) | Checks `pg_index`, builds the index with one simple-protocol statement, then checks that it is valid | `CREATE INDEX CONCURRENTLY` cannot run in a transaction, and a failed build leaves an invalid index that `IF NOT EXISTS` would hide | Versions 3 and 5 |
+| Concurrent index (Go migration through `ensureConcurrentIndex`) | Checks `pg_index`, builds the index with one simple-protocol statement, then checks that it is valid | `CREATE INDEX CONCURRENTLY` cannot run in a transaction, and a failed build leaves an invalid index that `IF NOT EXISTS` would hide | Versions 3, 5 and 9 |
 
 An SQL file must not contain `CREATE INDEX CONCURRENTLY`
 (`TestSQLMigrationsDoNotBuildIndexesConcurrently` in
@@ -155,9 +165,10 @@ fix the writer.
 --no-owner --no-privileges` of the schema that the migrations build, without
 `goose_db_version`. `TestMigrationsBuildCheckedInSchema` builds a fresh
 database with goose and fails when its catalog differs from a database loaded
-from that file. `TestMigrationsLeaveLegacyDatabaseUnchanged` loads
-`schema.sql` with the marker rows that a pre-goose boot leaves and checks that
-versions 1 to 5 change no object and no row. The
+from that file. `TestMigrationsUpgradeLegacyDatabase` loads the frozen
+`coordinator/tests/store/postgres/testdata/legacy_schema.sql` with marker rows
+that a pre-goose boot leaves, checks the upgrade reaches the current schema,
+and verifies those rows are preserved. The
 [how-to](../developer/database-migrations.md) regenerates the file.
 
 ### Generated queries (sqlc)
@@ -220,7 +231,7 @@ Logs carry bounded labels only, never SQL or parameters
 
 | Message | Fields | When |
 |---|---|---|
-| `postgres startup phase` | `phase` (`connect` or an index name), `result`, `duration_ms` | After the ping, and after each index build in versions 3 and 5 |
+| `postgres startup phase` | `phase` (`connect` or an index name), `result`, `duration_ms` | After the ping, and after each index build in versions 3, 5 and 9 |
 | `postgres migration hit lock_timeout; retrying` (warn) | `attempt` | Before attempt 2 and 3 |
 | `postgres migration` | `version`, `result` (`applied` or `failed`), `duration_ms` | One line per version that goose ran, written after the attempt ends; none when nothing was pending |
 | `coordinator migrations complete` | `duration_ms` | `--migrate-only` succeeded |
@@ -239,10 +250,12 @@ Logs carry bounded labels only, never SQL or parameters
 3. **A failed version is not recorded.** A transactional SQL file rolls back
    with its version row. A `NO TRANSACTION` file or a Go migration records
    the version only after its last statement succeeds.
-4. **A migration statement does not wait more than 3 s for a table lock**
+4. **An SQL migration statement does not wait more than 3 s for a table lock**
    unless the database URL sets a longer `lock_timeout`
    (`migrationLockTimeout`). `TestMigrateRetriesLockTimeout` holds a lock and
-   checks the retry.
+   checks the retry. `TestMigrationsBlockedLegacyColumnRemainsPending` verifies
+   a blocked legacy column is not marked applied and is restored after retry.
+   Go migration helpers use the serving pool and retain its URL timeouts.
 5. **Migrations build exactly `schema.sql`** on a fresh database
    (`TestMigrationsBuildCheckedInSchema`).
 6. **The generated queries match `schema.sql` and the query files.**
@@ -260,17 +273,16 @@ Logs carry bounded labels only, never SQL or parameters
 
 | Symptom | Cause | What happens / where to look |
 |---|---|---|
-| Exit 1 with `partial migration error (type:sql,version:N): ERROR: canceling statement due to lock timeout (SQLSTATE 55P03)` after three `postgres migration hit lock_timeout; retrying` lines | A long query held a lock that version N needed, through all three attempts | Nothing was recorded for version N; a transactional file rolled back. `pg_stat_activity` for the blocker; [runbook](../operations/schema-migration.md#lock-timeout). |
+| Exit 1 with `partial migration error (type:sql,version:N): ERROR: canceling statement due to lock timeout (SQLSTATE 55P03)` after two `postgres migration hit lock_timeout; retrying` lines | A long query held a lock that version N needed, through all three attempts | Nothing was recorded for version N; a transactional file rolled back. `pg_stat_activity` for the blocker; [runbook](../operations/schema-migration.md#lock-timeout). |
 | Exit 1 with `failed to initialize: failed to acquire lock` after 5 min | Another process held the goose advisory lock for the whole lock wait | The holder in `pg_locks` (`objid = 4097083626`); [runbook](../operations/schema-migration.md#a-second-coordinator-waits-on-the-lock). |
 | A `NO TRANSACTION` file failed after some statements | Its earlier statements committed; the version is not recorded | The next run executes the whole file again, so every statement in such a file must be safe to run twice (`IF NOT EXISTS`, `IF EXISTS`). |
-| Exit 1 with `index ... is invalid; repair the interrupted concurrent index build before retrying` | A `CONCURRENTLY` build in version 3 or 5 was interrupted | `ensureConcurrentIndex` does not repair it; [runbook](../operations/schema-migration.md#invalid-index). |
+| Exit 1 with `index ... is invalid; repair the interrupted concurrent index build before retrying` | A `CONCURRENTLY` build in version 3, 5 or 9 was interrupted | `ensureConcurrentIndex` does not repair it; [runbook](../operations/schema-migration.md#invalid-index). |
 | Exit 1 with `found duplicate migration version` | Two sources share a number | Renumber one. |
 | CI fails in `make sqlc-check` | `schema.sql` or `coordinator/store/postgres/storedb` is stale | [sqlc troubleshooting](../developer/sqlc.md#troubleshooting). |
 | Exit 1 with `missing (out-of-order) migration` | A version below the highest applied one was never applied, for example after two branches added migrations | `SELECT version_id FROM goose_db_version ORDER BY id`; renumber the unapplied version above the highest one. |
 | Exit 1 with `database holds data that retired backfills never processed` or `balances.withdrawable_micro_usd is missing` | The database has history but never ran a backfill retired after v0.9.10 | Boot a v0.9.10 coordinator against it once, then redeploy (`checkRetiredBackfills`). |
 | Exit 1 with a `provider_earnings` duplicate `job_id` message | Rows share a non-empty `job_id`, so version 4 cannot build its unique index | Run `coordinator/store/postgres/migrations/dedupe_provider_earnings.sql` offline, then redeploy. |
-| A dropped column comes back, or a `SET NOT NULL` is undone, after a rollback | The rollback image was built before goose and replayed its boot DDL (`ADD COLUMN IF NOT EXISTS`; `DROP NOT NULL` on `fleet_snapshots.free_for_load_gb`) | Do not ship a destructive migration while a pre-goose image can be a fallback; see [expand and contract](../developer/database-migrations.md#change-a-column-in-two-releases-expand-and-contract). |
-| A column or index that `schema.sql` has is missing in production after the first goose deploy | One of the baseline's `DO ... EXCEPTION WHEN others` blocks swallowed an error (for example a lock timeout), and goose still recorded version 1 | The `pg_dump` diff in the [first cut-over checklist](../operations/schema-migration.md#first-production-cut-over-to-goose). |
+| A dropped column comes back, or a `SET NOT NULL` is undone, after a rollback | The rollback image was built before goose and replayed its boot DDL (`ADD COLUMN IF NOT EXISTS`; `DROP NOT NULL` on `fleet_snapshots.free_for_load_gb`) | Do not ship a destructive migration while a pre-goose image can be a fallback; see [expand and contract](../developer/database-migrations.md#change-a-column-while-preserving-rollback-compatibility). |
 
 ## Code map
 

@@ -4,18 +4,18 @@ import { AlertTriangle } from "lucide-react";
 import { fmtUSD } from "./calc";
 import { SmallModelsInterest } from "./SmallModelsInterest";
 import type { EarningsCalculator } from "./useEarningsCalculator";
+import type { InterestAuth } from "./useSmallModelsInterest";
 
 export function EarningsHero({
   calc,
   authenticated,
   ready,
   login,
+  accountId,
+  getAccessToken,
 }: {
   calc: EarningsCalculator;
-  authenticated: boolean;
-  ready: boolean;
-  login: () => void;
-}) {
+} & InterestAuth) {
   const { result, hasFittingModel, effectiveRAM } = calc;
 
   let unavailableDetail = "An earning estimate is unavailable for the models that fit this Mac.";
@@ -61,6 +61,8 @@ export function EarningsHero({
           authenticated={authenticated}
           ready={ready}
           login={login}
+          accountId={accountId}
+          getAccessToken={getAccessToken}
         />
       )}
 

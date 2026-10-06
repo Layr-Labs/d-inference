@@ -1,6 +1,6 @@
 # Apply schema migrations in production
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 Runbook for applying the goose migrations of a coordinator candidate to the
 production database (Cloud SQL for PostgreSQL 17 in `darkbloom-mainnet`, read
@@ -92,7 +92,7 @@ The replica's `masterInstanceName` names the primary. Wait for status
 
 ### 3. Check for long-running queries
 
-A migration statement waits 3 s for a lock, three times; a
+An SQL migration statement waits 3 s for a lock, for up to three attempts; a
 `CREATE INDEX CONCURRENTLY` waits for every older snapshot. Each query below
 should return no rows (the second returns `0`):
 
@@ -138,7 +138,7 @@ Expected JSON log lines, in this order:
 | `msg` | Fields | Meaning |
 |---|---|---|
 | `postgres startup phase` | `"phase":"connect","result":"applied"` | Connected and pinged |
-| `postgres startup phase` | `"phase":"<index name>","result":"applied"` | One per index that versions 3 and 5 build; none when no such version is pending |
+| `postgres startup phase` | `"phase":"<index name>","result":"applied"` | One per index that versions 3, 5 and 9 build; none when no such version is pending |
 | `postgres migration` | `"version":N,"result":"applied","duration_ms":…` | One per applied version, all written after the run ends; none when nothing was pending |
 | `coordinator migrations complete` | `duration_ms` | Exit 0 |
 
@@ -179,7 +179,7 @@ approved operation.
 
 ### Lock timeout
 
-Log: three `postgres migration hit lock_timeout; retrying` warnings, then
+Log: two `postgres migration hit lock_timeout; retrying` warnings, then
 `partial migration error (type:sql,version:N): ERROR: canceling statement due
 to lock timeout (SQLSTATE 55P03)`. Version N is not recorded; a transactional
 file rolled back, and the coordinator did not serve. Find the blocker with the
@@ -189,7 +189,7 @@ loop restarts of the container.
 ### Invalid index
 
 Log: `index <name> is invalid; repair the interrupted concurrent index build
-before retrying` (versions 3 and 5, `ensureConcurrentIndex`). The build was
+before retrying` (versions 3, 5 and 9, `ensureConcurrentIndex`). The build was
 interrupted and left an invalid index; the version is not recorded. Under
 approval, drop it without blocking writes, then run step 4 again:
 
@@ -243,26 +243,24 @@ the image by these rules:
 
 ## First production cut-over to goose
 
-The first goose build records the existing schema as version 1 and applies
-versions 2 to 5 once. They change nothing on a schema that the previous
-coordinator built, but a lock timeout inside one of the baseline's
-`DO ... EXCEPTION WHEN others` blocks is swallowed, and goose still records
-version 1.
+The first goose build applies the baseline as version 1 and the subsequent
+versions through 9. Versions 6 to 9 preserve schema additions merged while
+this migration conversion was in review. Required baseline statement failures
+abort startup without recording version 1; a retry resumes the pending version.
 
 - [ ] Step 1 shows `relation "goose_db_version" does not exist`.
-- [ ] The candidate's highest version is 5, so the pre-goose image stays a
+- [ ] The candidate's highest version is 9, so the pre-goose image stays a
       safe fallback ([rollback rule 2](#rollback)).
 - [ ] The three retired-backfill markers exist
       ([deploy step 2](coordinator-deploy.md#2-pre-swap-checks-vm-and-db)).
 - [ ] Backup taken; its ID is in the deploy record (step 2).
 - [ ] Step 3 is clean.
 - [ ] Migrations applied (step 4 or the swap). The log shows
-      `postgres migration` for versions 1 to 5 with `"result":"applied"`.
-- [ ] `goose_db_version` lists 0, 1, 2, 3, 4, 5.
+      `postgres migration` for versions 1 to 9 with `"result":"applied"`.
+- [ ] `goose_db_version` lists every version from 0 through 9.
 - [ ] The invalid-index query returns no rows.
-- [ ] The `pg_dump` diff shows only hand-applied objects. A missing column or
-      index means a swallowed statement; apply it under a separate approved
-      operation.
+- [ ] The `pg_dump` diff shows only hand-applied objects. Investigate any other
+      difference before approving the cutover; repairs need separate approval.
 
 ## Related
 

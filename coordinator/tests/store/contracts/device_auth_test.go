@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -91,7 +92,20 @@ func TestDeviceCodeExpiry(t *testing.T) {
 }
 
 func TestProviderToken(t *testing.T) {
-	s := memory.NewMemory(store.Config{})
+	for name, s := range storeBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			testProviderToken(t, s)
+		})
+	}
+}
+
+func testProviderToken(t *testing.T, s store.Store) {
+	t.Helper()
+	for _, token := range []string{"", "missing-token"} {
+		if got, err := s.GetProviderToken(token); got != nil || !errors.Is(err, store.ErrProviderTokenInvalid) {
+			t.Fatalf("missing token: got=%v err=%v, want nil and ErrProviderTokenInvalid", got, err)
+		}
+	}
 
 	rawToken := "darkbloom-token-abc123"
 	tokenHash := store.HashKey(rawToken)
@@ -111,7 +125,7 @@ func TestProviderToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetProviderToken: %v", err)
 	}
-	if got.AccountID != "account-abc" || got.Label != "my-macbook" {
+	if got.AccountID != "account-abc" || got.Label != "my-macbook" || !got.Active || got.TokenHash != tokenHash {
 		t.Errorf("got account=%q label=%q", got.AccountID, got.Label)
 	}
 
@@ -119,7 +133,7 @@ func TestProviderToken(t *testing.T) {
 	if err := s.RevokeProviderToken(rawToken); err != nil {
 		t.Fatalf("RevokeProviderToken: %v", err)
 	}
-	if _, err := s.GetProviderToken(rawToken); err == nil {
-		t.Error("expected error for revoked token")
+	if got, err := s.GetProviderToken(rawToken); got != nil || !errors.Is(err, store.ErrProviderTokenInvalid) {
+		t.Fatalf("revoked token: got=%v err=%v, want nil and ErrProviderTokenInvalid", got, err)
 	}
 }

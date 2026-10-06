@@ -138,8 +138,8 @@ func (s *PostgresStore) newMigrationProvider(db *sql.DB) (*goose.Provider, error
 
 // goMigrations are the startup steps that ran after the old boot-time DDL
 // loop, in the same order. They keep their code and run on the store pool,
-// which sets no session timeouts, as before: a CREATE INDEX CONCURRENTLY that
-// times out leaves an invalid index, and these steps do not repair one.
+// which sets no session timeouts unless the database URL specifies them. Each
+// index helper retains its existing invalid-index policy.
 func (s *PostgresStore) goMigrations() []*goose.Migration {
 	step := func(version int64, run func(context.Context) error) *goose.Migration {
 		return goose.NewGoMigration(version, &goose.GoFunc{
@@ -151,5 +151,6 @@ func (s *PostgresStore) goMigrations() []*goose.Migration {
 		step(3, s.ensureProviderRestoreIndexes),
 		step(4, s.ensureProviderEarningsJobIndex),
 		step(5, s.ensureProviderEarningsWindowIndex),
+		step(9, s.ensureStripeRefundIndex),
 	}
 }

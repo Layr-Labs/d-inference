@@ -482,7 +482,18 @@ CREATE TABLE public.earnings_summary (
     total_micro_usd bigint DEFAULT 0 NOT NULL,
     total_prompt_tokens bigint DEFAULT 0 NOT NULL,
     total_completion_tokens bigint DEFAULT 0 NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    total_base_reward_micro_usd bigint DEFAULT 0 NOT NULL
+);
+
+
+--
+-- Name: earnings_summary_base_reward_pending; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.earnings_summary_base_reward_pending (
+    account_id text NOT NULL,
+    amount_micro_usd bigint NOT NULL
 );
 
 
@@ -2200,6 +2211,14 @@ ALTER TABLE ONLY public.device_codes
 
 ALTER TABLE ONLY public.earnings_summary
     ADD CONSTRAINT earnings_summary_pkey PRIMARY KEY (key, key_type);
+
+
+--
+-- Name: earnings_summary_base_reward_pending earnings_summary_base_reward_pending_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.earnings_summary_base_reward_pending
+    ADD CONSTRAINT earnings_summary_base_reward_pending_pkey PRIMARY KEY (account_id);
 
 
 --

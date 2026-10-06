@@ -231,6 +231,30 @@ inserted earning rows, so duplicate non-empty job IDs never increment twice.
 draw settlement and MemoryStore. The record-only method does not credit balances
 or create ledger entries.
 
+`earnings_summary.total_base_reward_micro_usd` is the part of an account's
+`total_micro_usd` that came from base rewards. `RecordProviderEarning`,
+`CreditProviderAccount` and floor-draw settlement add to it in the statement
+that already updates the row. `GetAccountEarningsSummary` reads it, and
+`/v1/provider/account-earnings` reports work as
+`total_micro_usd - total_base_reward_micro_usd`, floored at zero. Migration
+`00010_earnings_summary_base_reward.sql` adds the column and the
+`earnings_summary_base_reward_pending` work table. The serving coordinator's
+startup (`BackfillEarningsSummaryBaseReward`, called from
+`coordinator/app/store.go` right after the Postgres store opens, before any
+worker starts) fills the column once from `provider_floor_draws` (markers
+`prepare_earnings_summary_base_reward_v1` for the plan and
+`backfill_earnings_summary_base_reward_v1` when done). A session advisory lock
+serialises coordinators, one REPEATABLE READ transaction commits per-account
+totals into the pending table, and pending rows are added and deleted in
+batches of 1000 per short transaction, so a crash resumes without
+double-adding. `--migrate-only` applies the migration but does not run this
+backfill, because the previous release keeps settling draws, without the
+column, for as long as it serves. Base rewards a previous coordinator settles
+after the plan snapshot, while a rollback to an earlier release serves, are in
+`total_micro_usd` but not in the column. The backfill adds to the column, so
+deleting its markers to run it again counts every account's history twice.
+The pending table stays after the backfill, empty.
+
 Provider history is recovered on demand after successful live SE attestation,
 using `GetProviderForRestore` with the verified serial first, then SE key if
 no serial record exists. Ordered partial indexes on each identity plus

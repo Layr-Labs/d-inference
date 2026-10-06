@@ -1,4 +1,4 @@
-// Per-machine operational stats: job counts + lifetime throughput +
+// Per-machine operational stats: request counts + lifetime throughput +
 // time-to-first-token. Tokens are per-box; the "Avg TTFT" stat reflects real
 // time-to-first-token, not answer length. Account-wide earnings live in the
 // fleet header, not on individual machine cards.
@@ -32,7 +32,7 @@ export function CardEarningsRow({ provider }: { provider: MyProvider }) {
   return (
     <div className="px-4 py-4 border-t border-border-dim/40 grid grid-cols-2 md:grid-cols-3 gap-2.5">
       <Stat
-        label="Jobs"
+        label="Requests"
         value={formatNumber(rep.total_jobs)}
         sub={`${formatNumber(rep.successful_jobs)} succeeded · ${formatNumber(rep.failed_jobs)} failed`}
       />

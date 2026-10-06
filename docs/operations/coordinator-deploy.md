@@ -368,6 +368,12 @@ does not answer after ~60 s, or the container exits with `store: run
 migrations`, follow [schema migration troubleshooting](schema-migration.md#troubleshooting).
 A failed migration exits before the coordinator serves and records no failed
 version. **Do not loop restarts of the container.**
+The first startup of a release that adds
+`earnings_summary.total_base_reward_micro_usd` also runs its one-time backfill
+(`BackfillEarningsSummaryBaseReward`, about 10 s per 10 million
+`provider_floor_draws` rows measured locally); a query on
+`provider_floor_draws` or `earnings_summary_base_reward_pending` is that
+backfill, not a blocker.
 
 ## Verification
 

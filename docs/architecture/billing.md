@@ -150,6 +150,13 @@ leaderboard and `GET /v1/me/summary` count as "reward" rather than "work"
 earnings (`coordinator/store/interface.go` `IsRewardLedgerType`;
 `coordinator/api/accounts/summary.go` `HandleMySummary`).
 
+`GET /v1/me/summary` also reports `lifetime_base_reward_micro_usd`, the part of
+`lifetime_micro_usd` that came from `base_reward` earnings
+(`earnings_summary.total_base_reward_micro_usd`). `GET
+/v1/provider/account-earnings` splits its total into `work_micro_usd` and
+`base_reward_micro_usd` (with `_usd` strings); work is the total minus base
+rewards, floored at zero.
+
 Credit and settlement primitives:
 
 | Primitive | Effect | Used for |

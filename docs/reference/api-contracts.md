@@ -251,10 +251,10 @@ Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInter
 | GET | `/v1/payments/usage` | `HandleUsage` (`coordinator/api/billing/account.go`) | `key` | — | `UsageResponse` `{usage: [...]}`; each `payments.UsageEntry` carries `cached_tokens` (omitted when 0) — the subset of `prompt_tokens` billed at the cache-read rate; recent history only ([retention](pricing-model.md#constants)) |
 | GET | `/v1/billing/wallet/balance` | `HandleWalletBalance` (`coordinator/api/billing/wallet.go`) | `key` | — | Wallet view of the ledger balance |
 | GET | `/v1/billing/methods` | `HandleBillingMethods` (`coordinator/api/billing/methods.go`) | `—` | — | Which top-up methods are enabled |
-| GET | `/v1/provider/account-earnings` | `HandleAccountEarnings` (`coordinator/api/billing/earnings.go`) | `key` | — | Earnings across the account's providers |
+| GET | `/v1/provider/account-earnings` | `HandleAccountEarnings` (`coordinator/api/billing/earnings.go`) | `key` | — | Earnings across the account's providers; totals split into `work_*` and `base_reward_*` fields (micro-USD and USD string) |
 | GET | `/v1/me/token-promotions` | `HandleMyModelTokenPromotions` (`coordinator/api/inference/model_token_promotions.go`) | `privy` | — | Account-scoped grants and eligible offers |
 | POST | `/v1/me/token-promotions/claim` | `HandleMyModelTokenPromotions` (`coordinator/api/inference/model_token_promotions.go`) | `privy` | `fin` | Claim a capped grant; [campaign procedure](../operations/model-token-promotions.md) |
-| GET | `/v1/me/summary` | `HandleMySummary` (`coordinator/api/accounts/summary.go`) | `user` | — | Console account summary; includes `latest_provider_version` |
+| GET | `/v1/me/summary` | `HandleMySummary` (`coordinator/api/accounts/summary.go`) | `user` | — | Console account summary; includes `latest_provider_version` and `lifetime_base_reward_micro_usd` |
 | GET | `/v1/me/providers` | `HandleMyProviders` (`coordinator/api/accounts/providers.go`) | `user` | — | Machines linked to the account |
 | GET | `/v1/me/self-route-models` | `HandleMySelfRouteModels` (`coordinator/api/accounts/self_route.go`) | `user` | — | Models the account's own machines can serve |
 | DELETE | `/v1/me/providers/{id}` | `HandleDeleteMyProvider` (`coordinator/api/accounts/delete_provider.go`) | `user` | `fin` | Unlink a machine |

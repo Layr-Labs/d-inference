@@ -115,8 +115,8 @@ func testMigrationsUpgradeLegacyDatabase(t *testing.T, gooseBaseline bool) {
 		}
 	}
 	versions := queryLines(t, pool, `SELECT version_id::text FROM `+gooseVersionTable+` ORDER BY id`)
-	if got := strings.Join(versions, " "); got != "0 1 2 3 4 5 6 7 8 9" {
-		t.Fatalf("goose versions = %q, want 0 through 9", got)
+	if got := strings.Join(versions, " "); got != "0 1 2 3 4 5 6 7 8 9 10" {
+		t.Fatalf("goose versions = %q, want 0 through 10", got)
 	}
 }
 
@@ -176,15 +176,15 @@ func TestConcurrentMigrationsApplyOnce(t *testing.T) {
 	for _, m := range applied {
 		got = append(got, m[1]+":"+m[2])
 	}
-	if want := "1:applied 2:applied 3:applied 4:applied 5:applied 6:applied 7:applied 8:applied 9:applied"; strings.Join(got, " ") != want {
-		t.Fatalf("migration results = %q, want each of the 9 versions applied once; logs:\n%s", got, logs.String())
+	if want := "1:applied 2:applied 3:applied 4:applied 5:applied 6:applied 7:applied 8:applied 9:applied 10:applied"; strings.Join(got, " ") != want {
+		t.Fatalf("migration results = %q, want each of the 10 versions applied once; logs:\n%s", got, logs.String())
 	}
 	var rows, distinct int
 	if err := pool.QueryRow(ctx, `SELECT count(*), count(DISTINCT version_id) FROM `+gooseVersionTable).Scan(&rows, &distinct); err != nil {
 		t.Fatal(err)
 	}
-	if rows != 10 || distinct != 10 {
-		t.Fatalf("goose version rows = %d (%d distinct), want 10", rows, distinct)
+	if rows != 11 || distinct != 11 {
+		t.Fatalf("goose version rows = %d (%d distinct), want 11", rows, distinct)
 	}
 }
 

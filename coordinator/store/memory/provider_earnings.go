@@ -64,7 +64,9 @@ func (s *MemoryStore) GetAccountEarningsSummary(accountID string) (store.Provide
 		}
 		summary.TotalMicroUSD += earning.AmountMicroUSD
 		// base_reward rows add money but are not inference jobs.
-		if earning.Model != "base_reward" {
+		if earning.Model == "base_reward" {
+			summary.BaseRewardMicroUSD += earning.AmountMicroUSD
+		} else {
 			summary.Count++
 			summary.PromptTokens += int64(earning.PromptTokens)
 			summary.CompletionTokens += int64(earning.CompletionTokens)

@@ -24,15 +24,17 @@ func (s *PostgresStore) RecordProviderEarning(earning *store.ProviderEarning) er
 		 ON CONFLICT (job_id) WHERE job_id <> '' DO NOTHING
 		 RETURNING account_id, model, amount_micro_usd, prompt_tokens, completion_tokens
 		)
-		INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
+		INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, total_base_reward_micro_usd, updated_at)
 		SELECT account_id, 'account', CASE WHEN model = 'base_reward' THEN 0 ELSE 1 END, amount_micro_usd,
 		 CASE WHEN model = 'base_reward' THEN 0 ELSE prompt_tokens END,
-		 CASE WHEN model = 'base_reward' THEN 0 ELSE completion_tokens END, NOW() FROM earning WHERE account_id <> ''
+		 CASE WHEN model = 'base_reward' THEN 0 ELSE completion_tokens END,
+		 CASE WHEN model = 'base_reward' THEN amount_micro_usd ELSE 0 END, NOW() FROM earning WHERE account_id <> ''
 		ON CONFLICT (key, key_type) DO UPDATE SET
 		 total_count = earnings_summary.total_count + EXCLUDED.total_count,
 		 total_micro_usd = earnings_summary.total_micro_usd + EXCLUDED.total_micro_usd,
 		 total_prompt_tokens = earnings_summary.total_prompt_tokens + EXCLUDED.total_prompt_tokens,
 		 total_completion_tokens = earnings_summary.total_completion_tokens + EXCLUDED.total_completion_tokens,
+		 total_base_reward_micro_usd = earnings_summary.total_base_reward_micro_usd + EXCLUDED.total_base_reward_micro_usd,
 		 updated_at = NOW()`,
 		earning.AccountID, earning.ProviderID, earning.ProviderKey, earning.JobID,
 		earning.Model, earning.AmountMicroUSD, earning.PromptTokens, earning.CompletionTokens,
@@ -86,11 +88,11 @@ func (s *PostgresStore) GetAccountEarningsSummary(accountID string) (store.Provi
 
 	var summary store.ProviderEarningsSummary
 	err := s.pool.QueryRow(ctx,
-		`SELECT total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens
+		`SELECT total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, total_base_reward_micro_usd
 		 FROM earnings_summary
 		 WHERE key = $1 AND key_type = 'account'`,
 		accountID,
-	).Scan(&summary.Count, &summary.TotalMicroUSD, &summary.PromptTokens, &summary.CompletionTokens)
+	).Scan(&summary.Count, &summary.TotalMicroUSD, &summary.PromptTokens, &summary.CompletionTokens, &summary.BaseRewardMicroUSD)
 	if err != nil {
 		// No rows = no earnings yet, return zeros (not an error).
 		return store.ProviderEarningsSummary{}, nil

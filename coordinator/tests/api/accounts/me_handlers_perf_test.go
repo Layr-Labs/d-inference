@@ -167,3 +167,42 @@ func TestMyProvidersBatchesReputationLookups(t *testing.T) {
 		t.Fatalf("store calls: ListProvidersByAccount=%d GetReputations=%d GetReputation=%d, want 1/1/0", list, batch, single)
 	}
 }
+
+// TestMySummaryWindowsExcludeBaseRewardFromJobs: base reward rows add to the
+// window money but are not jobs; lifetime_jobs is unchanged.
+func TestMySummaryWindowsExcludeBaseRewardFromJobs(t *testing.T) {
+	srv, st := newMeTestServer(t)
+	const account = "acct-base-reward"
+	now := time.Now()
+	rows := []struct {
+		model  string
+		age    time.Duration
+		amount int64
+	}{
+		{"model", 1 * time.Hour, 100},
+		{"model", 3 * 24 * time.Hour, 200},
+		{"base_reward", 2 * time.Hour, 1_000},
+		{"base_reward", 6 * time.Hour, 2_000},
+		{"base_reward", 4 * 24 * time.Hour, 4_000},
+	}
+	for i, r := range rows {
+		if err := st.RecordProviderEarning(&store.ProviderEarning{
+			AccountID: account, ProviderID: "node", ProviderKey: "key",
+			JobID: fmt.Sprintf("row-%d", i), Model: r.model,
+			AmountMicroUSD: r.amount, CreatedAt: now.Add(-r.age),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	resp := getMySummary(t, srv, account)
+	if resp.Last24hJobs != 1 || resp.Last24hMicroUSD != 100+1_000+2_000 {
+		t.Fatalf("last 24h = %d jobs / %d micro, want 1 / 3100", resp.Last24hJobs, resp.Last24hMicroUSD)
+	}
+	if resp.Last7dJobs != 2 || resp.Last7dMicroUSD != 100+200+1_000+2_000+4_000 {
+		t.Fatalf("last 7d = %d jobs / %d micro, want 2 / 7300", resp.Last7dJobs, resp.Last7dMicroUSD)
+	}
+	if resp.LifetimeJobs != 2 {
+		t.Fatalf("lifetime_jobs = %d, want 2 (inference rows only, unchanged)", resp.LifetimeJobs)
+	}
+}

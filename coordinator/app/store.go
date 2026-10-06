@@ -24,6 +24,10 @@ func openStore(ctx context.Context, cfg config.AppConfig, logger *slog.Logger) (
 			os.Exit(1)
 		}
 		closeStore = pgStore.Close
+		if err := pgStore.BackfillEarningsSummaryBaseReward(ctx); err != nil {
+			logger.Error("failed to backfill earnings summary base rewards", "error", err)
+			os.Exit(1)
+		}
 		st = pgStore
 		logger.Info("using PostgreSQL store")
 

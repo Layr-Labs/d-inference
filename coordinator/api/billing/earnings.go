@@ -49,6 +49,8 @@ func (s *Owner) HandleAccountEarnings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	availableBalance, withdrawableBalance := s.store.GetBalanceWithWithdrawable(accountID)
+	// Work is everything that is not a base reward.
+	workMicroUSD := max(summary.TotalMicroUSD-summary.BaseRewardMicroUSD, 0)
 
 	body, err := json.Marshal(map[string]any{
 		"account_id":                     accountID,
@@ -56,6 +58,10 @@ func (s *Owner) HandleAccountEarnings(w http.ResponseWriter, r *http.Request) {
 		"total_micro_usd":                summary.TotalMicroUSD,
 		"total_usd":                      fmt.Sprintf("%.6f", float64(summary.TotalMicroUSD)/1_000_000),
 		"count":                          summary.Count,
+		"work_micro_usd":                 workMicroUSD,
+		"work_usd":                       fmt.Sprintf("%.6f", float64(workMicroUSD)/1_000_000),
+		"base_reward_micro_usd":          summary.BaseRewardMicroUSD,
+		"base_reward_usd":                fmt.Sprintf("%.6f", float64(summary.BaseRewardMicroUSD)/1_000_000),
 		"recent_count":                   len(earnings),
 		"history_limit":                  limit,
 		"available_balance_micro_usd":    availableBalance,

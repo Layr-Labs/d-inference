@@ -250,7 +250,8 @@ describe("computeWarnings", () => {
     );
     expect(warnings.find((w) => w.id === "low_success_rate")).toMatchObject({
       severity: "info",
-      detail: "10 of 20 jobs succeeded; 10 failed. Check provider logs for failure details.",
+      title: "Request success rate low (50%)",
+      detail: "10 of 20 requests succeeded; 10 failed. Check provider logs for failure details.",
     });
   });
 

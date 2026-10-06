@@ -16,7 +16,7 @@ func TestMigrationsRefuseInvalidStripeRefundIndex(t *testing.T) {
 	}
 	t.Cleanup(s.Close)
 	if _, err := s.pool.Exec(ctx, `DROP INDEX idx_ledger_stripe_refund;
-		DELETE FROM goose_db_version WHERE version_id = 9;
+		DELETE FROM goose_db_version WHERE version_id >= 9;
 		INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference)
 		VALUES ('same-account', 'stripe_payout', -1, 0, 'same-reference'),
 		       ('same-account', 'stripe_payout', -1, 0, 'same-reference')`); err != nil {

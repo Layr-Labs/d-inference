@@ -48,6 +48,7 @@ func (s *Owner) HandleMySummary(w http.ResponseWriter, r *http.Request) {
 		PayoutReady:                 user.StripeAccountStatus == "ready",
 		LifetimeMicroUSD:            summary.TotalMicroUSD,
 		LifetimeJobs:                summary.Count,
+		LifetimeBaseRewardMicroUSD:  summary.BaseRewardMicroUSD,
 		Last24hMicroUSD:             windows.Last24hMicroUSD,
 		Last24hJobs:                 windows.Last24hJobs,
 		Last7dMicroUSD:              windows.Last7dMicroUSD,

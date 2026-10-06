@@ -40,11 +40,16 @@ type ProviderEarningsSummary struct {
 	TotalMicroUSD    int64 `json:"total_micro_usd"`
 	PromptTokens     int64 `json:"prompt_tokens"`
 	CompletionTokens int64 `json:"completion_tokens"`
+	// BaseRewardMicroUSD is the part of TotalMicroUSD that came from base
+	// rewards (model 'base_reward'); inference work is the remainder.
+	BaseRewardMicroUSD int64 `json:"base_reward_micro_usd"`
 }
 
-// AccountEarningsWindows holds an account's rolling-window earnings (row count
+// AccountEarningsWindows holds an account's rolling-window earnings (job count
 // and micro-USD sum over the last 24 h and the last 7 d) as computed by the
-// store, so the dashboard header never sums a truncated row page.
+// store, so the dashboard header never sums a truncated row page. Jobs count
+// inference rows only (base_reward rows excluded, matching the lifetime
+// count); the micro-USD sums include base_reward rows.
 type AccountEarningsWindows struct {
 	Last24hMicroUSD int64 `json:"last_24h_micro_usd"`
 	Last24hJobs     int64 `json:"last_24h_jobs"`

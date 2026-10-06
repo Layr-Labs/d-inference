@@ -34,3 +34,26 @@ func TestAuthorizationUsesOneImmutableReleasePolicySnapshot(t *testing.T) {
 		t.Fatal("unknown catalog authorized a provider")
 	}
 }
+
+func TestAuthorizationOSVersionComesFromVerifiedProofStatus(t *testing.T) {
+	for _, version := range []string{"26.5", "27.0", "28.1.2", "", "malformed"} {
+		t.Run(version, func(t *testing.T) {
+			f, p, _, state := newAuthorizationFixture(t, true)
+			p.AttestationResult.OSVersion = "27.0"
+			f.status.OSVersion = version
+			record := authorization.NewRecord(f.evidence, f.status, "proof", nil, 0)
+			// Later inventory/status changes cannot replace the verified proof claim.
+			f.status.OSVersion = "29.0"
+			if !f.controller.Apply(p, record, state, time.Now()) {
+				t.Fatal("OS reward policy must not change serving authorization")
+			}
+			if got := p.GetAppAttestServingAuthorization().OSVersion; got != version {
+				t.Fatalf("lease OS = %q, want verified status %q", got, version)
+			}
+			snapshot, ok := f.registry.GetProviderRewardSnapshot(p.ID)
+			if !ok || snapshot.AppAttestOSVersion != version {
+				t.Fatalf("snapshot lost verified OS: %+v", snapshot)
+			}
+		})
+	}
+}

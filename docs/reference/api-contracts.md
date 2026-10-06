@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 The public HTTP surface of the coordinator, derived from its composed route bindings under `coordinator/api/`, including the `/v1/` catch-all. Every route is listed below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -451,9 +451,58 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 
 | Method | Path | Handler | Auth | Notes |
 |---|---|---|---|---|
-| POST | `/v1/enroll` | `HandleEnroll` (`coordinator/api/provider/trust/enroll.go`) | `—` (enrollment token in body) | Exchanges an enrollment token for provider credentials; see [`../architecture/security/enrollment.md`](../architecture/security/enrollment.md) |
+| POST | `/v1/enroll` | `HandleEnroll` (`coordinator/api/provider/trust/enroll.go`) | Linked provider Bearer token + signed SE-key proof (upcoming policy) | Downloads an MDM profile only for an existing key under its frozen account; [proof contract](#legacy-mdm-enrollment-proof) |
 | GET | `/ws/provider` | `HandleProviderWS` (`coordinator/api/provider/provider.go`) | `ws` | Provider WebSocket; message catalogue in [`protocol-messages.md`](protocol-messages.md) |
 | POST | `/v1/provider/log-report` | `HandleUploadLogReport` (`coordinator/api/operations/log_reports.go`) | `key` | Body capped at [`maxLogReportBodySize`](#timeouts-and-constants); 426 `upgrade_required` when `?serial=` names a provider below the minimum version |
+
+#### Legacy MDM enrollment proof
+
+During provider WebSocket registration, a transient early token-store lookup
+failure closes the connection with `1013` (`StatusTryAgainLater`) before registry
+registration or frozen-cohort classification. Reconnecting retries the lookup;
+missing or revoked tokens retain the fail-closed authentication behavior and
+cannot gain authorization through a storage failure (`coordinator/api/provider/session.go`,
+`Owner.providerReadLoop`, local `resolveAccount` closure).
+
+Under the upcoming frozen legacy policy, `POST /v1/enroll` downloads a profile
+for authenticated reenrollment, not provider credentials (`coordinator/api/provider/trust/enroll.go`,
+`HandleEnroll`). Cohort and copied-profile limits are defined in
+[MDM enrollment](../architecture/security/enrollment.md#frozen-legacy-authorization-cohort).
+
+On older macOS, `EnrollmentService.enroll` in
+`provider-swift/Sources/ProviderCore/Auth/Enrollment.swift` uses this same
+authenticated endpoint before returning
+"Already enrolled" for an existing local Darkbloom profile. A successful response
+in that case is not saved or installed again, and a failed eligibility check
+cannot become success merely because a profile exists. This is an eligibility
+check, not a current serving grant. New providers require macOS 27 or later and
+current qualified App Attest; an OS version alone grants neither serving nor enrollment.
+
+| Input or outcome | Contract | Enforcement |
+|---|---|---|
+| `Authorization` | Exact `Bearer <token>` prefix with an active linked provider token; its account must be the frozen account for this key | `coordinator/internal/provider/legacymdm/policy.go` (`Policy.AuthorizeEnrollment`) |
+| `se_public_key` | Existing frozen key's exact standard-base64 string; decoded P-256 point is 65 bytes (`0x04` + X + Y), or accepted 64-byte X + Y | `coordinator/internal/provider/legacymdm/policy.go` (`Policy.AuthorizeEnrollment`); `coordinator/attestation/attestation.go` (`ParseP256PublicKey`) |
+| `timestamp` | JSON integer Unix seconds; at most five minutes behind or ahead of the coordinator clock | `coordinator/internal/provider/legacymdm/policy.go` (`Policy.AuthorizeEnrollment`) |
+| `signature` | Standard-base64 ASN.1 DER ECDSA P-256 signature over SHA-256 of the canonical transcript below | `coordinator/attestation/attestation.go` (`VerifyChallengeSignature`) |
+| Success | `200` MDM `.mobileconfig` response, not a trust grant or provider token | `coordinator/api/provider/trust/enroll.go` (`HandleEnroll`) |
+| Credential failure | `401` for missing, invalid, inactive or unlinked credentials; a backend lookup error is not an invalid credential | `coordinator/internal/provider/legacymdm/policy.go` (`Policy.AuthorizeEnrollment`) |
+| Credential-store unavailable | `503` on token lookup I/O failure; retry later without replacing credentials. The response does not expose the underlying store error | Same |
+| Proof or membership failure | `403` for a nonmember, out-of-window timestamp or invalid signature. Nonmembers receive macOS 27+/qualified App Attest guidance and the legacy base-reward restriction; a frozen account/key with an out-of-window proof receives clock/retry guidance instead | `coordinator/internal/provider/legacymdm/policy.go` (`Policy.AuthorizeEnrollment`) |
+
+The JSON body contains `se_public_key`, `timestamp` and `signature`. The canonical
+transcript uses LF separators and no trailing newline; `\n` below denotes one
+LF byte, not a literal backslash followed by `n`:
+
+```text
+darkbloom-mdm-enroll-v1\n<lowerhex SHA256 token>\n<se_public_key>\n<unix timestamp>
+```
+
+`<lowerhex SHA256 token>` is the lowercase hexadecimal SHA-256 digest of the
+Bearer token itself, excluding the `Bearer ` header prefix. `<se_public_key>` is
+the exact JSON string value and `<unix timestamp>` is the integer formatted in
+base 10. The proof binds the request to both token and key; possession of either
+alone is insufficient. The timestamp bound is proof freshness, **not** a cohort
+grace period or expiry; frozen membership remains a separate prerequisite.
 
 ### Admin (43)
 
@@ -523,6 +572,7 @@ are advertised provider/model pairs, not unique models or guaranteed cache hits.
 |---|---|---|
 | `artifact_allowlist.configured` | Whether the optional exact-artifact list is configured; `false` is unrestricted, `true` plus zero count denies all participation | `coordinator/api/inference/exact_cache_status.go` (`ExactCacheArtifactAllowlistStatus`) |
 | `artifact_allowlist.count` | Number of configured exact tuples; never returns their model IDs or hashes | Same |
+| `artifact_allowlist.stale_models` | While routing is `on`, the number of catalog models that the list names only under a superseded weight hash or prompt contract. Each stays out of cache routing until its live tuple is appended; the coordinator log names that tuple once | `coordinator/api/inference/exact_cache_allowlist_staleness.go` (`missingAllowlistEntries`); `coordinator/internal/registry/cachepolicy/artifacts.go` (`ArtifactAllowlist.StaleFor`) |
 | `providers.v2_ready_models` | Ready durable SSD capabilities; preserves the existing meaning | `coordinator/registry/cache_status.go` (`PrefixCacheProtocolStatus`) |
 | `providers.memory_ready_models` | Ready resident capabilities, counted separately from SSD readiness | `coordinator/registry/cache_status.go` (`PrefixCacheProtocolStatus`) |
 | `lifecycle.fences_applied` | Proof-fence windows opened or escalated | `coordinator/registry/cache_routing.go` (`CacheRoutingLifecycleStatus`); `coordinator/registry/cache_proof_fence.go` (`rejectCapability`) |
@@ -545,9 +595,10 @@ write-behind, restore and overflow guarantees are defined in
 [cache persistence](../architecture/cache-aware-routing.md#persistence-across-restarts).
 
 The artifact-list fields have Prometheus gauges
-`exact_cache_artifact_allowlist_configured`, `exact_cache_artifact_allowlist_count`
-and Datadog gauges `exact_cache.artifact_allowlist.configured`,
-`exact_cache.artifact_allowlist.count`; mode `off` remains authoritative
+`exact_cache_artifact_allowlist_configured`, `exact_cache_artifact_allowlist_count`,
+`exact_cache_artifact_allowlist_stale_models` and Datadog gauges
+`exact_cache.artifact_allowlist.configured`, `exact_cache.artifact_allowlist.count`,
+`exact_cache.artifact_allowlist.stale_models`; mode `off` remains authoritative
 (`coordinator/api/inference/exact_cache_metrics.go`).
 
 The additive resident count has Prometheus gauge

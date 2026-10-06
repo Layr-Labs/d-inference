@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -57,6 +57,7 @@ components for the specific invariant:
 | Media, provider-body memo/sealing, relay, cancellation, promotions/reservations and outcomes | `coordinator/internal/inference/` |
 | Uncertain consumer-charge settlement | `coordinator/internal/inference/consumercharge/settlement.go` (`Engine`); the inference owner supplies completion callbacks and `coordinator/app/services.go` runs maintenance |
 | Session/inventory/heartbeat, challenge, identity, MDM and trust authority | `coordinator/internal/provider/` |
+| APNs proof, challenge and budget erasure; publication generation fences | `coordinator/internal/provider/identity/erasure.go`; `coordinator/api/provider/trust/erasure.go` connects the account scrub to runtime cleanup |
 | Apple transcript, exchange/evidence/storage, recovery, qualification and authorization | `coordinator/internal/appattest/`; `coordinator/appattest/service/` binds the live session lifecycle and collaborators |
 | Independent route/profile/outcome pipelines | `coordinator/internal/observation/` |
 | Writer lanes/watchdog, drain authority, identity gates, queue-drain coalescing, bounded demand and detached residency/capacity/forecast/deadline policy | `coordinator/internal/registry/` |

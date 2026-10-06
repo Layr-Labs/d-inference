@@ -55,6 +55,7 @@ func (s *Transition,
 	providerID string,
 	provider *registry.Provider,
 ) bool {
+	generation := s.codeAttestThrottle.PublicationGeneration()
 	evidence, ok := provider.ApplicationEvidenceSnapshot()
 	if !ok || evidence.BinaryHash == "" || evidence.ProcessPublicKey == "" ||
 		evidence.APNsToken == "" || evidence.PolicyGeneration == 0 {
@@ -87,7 +88,7 @@ func (s *Transition,
 	}
 	if !s.resume.SendCodeIdentityResumeChallenge(
 		ctx, providerID, provider, nodeKey,
-		evidence.SEPublicKey, evidence.APNsToken,
+		evidence.SEPublicKey, evidence.APNsToken, generation,
 	) {
 		return false
 	}

@@ -3468,6 +3468,7 @@ threats:
       - coordinator/store/postgres/app_attest_receipts.go
       - coordinator/store/postgres/billing_erasure.go
       - coordinator/internal/provider/legacymdm/erasure.go
+      - coordinator/internal/provider/identity/erasure.go
       - coordinator/api/accounts/erasure/handlers.go
       - coordinator/api/accounts/erasure/loop.go
       - coordinator/auth/privy.go
@@ -3493,7 +3494,11 @@ threats:
           personal writers before scrub collects keys; archive, session, log and
           code-attestation writes recheck ownership afterward. Shared key receipts
           remain only for live owners, and frozen runtime cohort snapshots forget
-          erased accounts. Checkout revalidates its captured referrer identity and
+          erased accounts. Runtime APNs proofs, challenges and push bookkeeping
+          are cleared for unshared keys. Hash-only generation fences prevent
+          in-flight proof replies, resume setup, startup reads and budget resets
+          from repopulating erased tokens; unrelated keys and fresh proofs remain
+          usable. Checkout revalidates its captured referrer identity and
           the webhook uses local attribution instead of old personal metadata. Marker tests search every text, JSON,
           array and bytea column (and every MemoryStore value) after a scrub of the
           seeded tables.

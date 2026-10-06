@@ -110,9 +110,10 @@ func (s *Controller,
 	// Cached same-version evidence authorizes only a live encrypted nonce
 	// challenge to this exact process key. CodeAttested is set only after the
 	// process decrypts that challenge and the SE key signs its nonce.
+	publicationGeneration := s.codeAttestThrottle.PublicationGeneration()
 	if basis := s.codeAttestThrottle.ReuseAttestationBasis(seKey, version, apnsToken, nodeKey); allowResume && basis != "" {
 		if s.SendCodeIdentityResumeChallenge(
-			ctx, providerID, provider, nodeKey, seKey, apnsToken,
+			ctx, providerID, provider, nodeKey, seKey, apnsToken, publicationGeneration,
 		) {
 			s.CodeAttestMetric("resume_sent")
 			s.observation.Incr("code_attest.resume_proof_sent", []string{"basis:" + basis})
@@ -352,6 +353,7 @@ func (s *Controller,
 	if resp == nil {
 		return
 	}
+	publicationGeneration := s.codeAttestThrottle.PublicationGeneration()
 	alreadyAttested := provider.GetCodeAttested() &&
 		(!provider.RequiresFreshRuntimeCodeProof() || provider.GetFreshCodeAttested())
 
@@ -428,8 +430,11 @@ func (s *Controller,
 		return
 	}
 	if apnsProof {
-		s.codeAttestThrottle.RecordAttestedForProcess(
-			sePubKey, version, apnsToken, nodeKey, attestedBinaryHash)
+		if !s.codeAttestThrottle.RecordAttestedForProcess(
+			publicationGeneration,
+			sePubKey, version, apnsToken, nodeKey, attestedBinaryHash) {
+			return
+		}
 		// Persist the SE+token+process-key+binary binding. Reuse still requires
 		// a live encrypted nonce PoP before protected capabilities are restored.
 		provider.Mu().Lock()

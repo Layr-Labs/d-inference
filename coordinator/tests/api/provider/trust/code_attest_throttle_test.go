@@ -36,7 +36,7 @@ func TestCodeAttestThrottleBudgetAndReuse(t *testing.T) {
 		t.Fatal("a background push after the cooldown should be allowed")
 	}
 
-	th.RecordAttestedForProcess(se, "0.6.0", "token", nodeKey, "hash-a")
+	th.RecordAttestedForProcess(th.PublicationGeneration(), se, "0.6.0", "token", nodeKey, "hash-a")
 	if !th.reuseAttestation(se, "0.6.0", "token", nodeKey) {
 		t.Fatal("should reuse a fresh proof bound to the same version, token, and process key")
 	}
@@ -58,7 +58,7 @@ func TestCodeAttestThrottleTokenBinding(t *testing.T) {
 	th.Now = func() time.Time { return cur }
 	const se, nodeKey = "se-key-1", "node-key-1"
 
-	th.RecordAttestedForProcess(se, "0.6.0", "tokA", nodeKey, "hash-a")
+	th.RecordAttestedForProcess(th.PublicationGeneration(), se, "0.6.0", "tokA", nodeKey, "hash-a")
 	if !th.reuseAttestation(se, "0.6.0", "tokA", nodeKey) {
 		t.Fatal("same token and process key must reuse")
 	}
@@ -74,7 +74,7 @@ func TestCodeAttestThrottleTokenBinding(t *testing.T) {
 
 	// Legacy records missing either identity binding cannot satisfy current
 	// registration inputs and must bootstrap a genuine push.
-	th.Seed([]store.CodeAttestation{{SEPubKey: "se-legacy-token", Version: "0.6.0", AttestedAt: cur}})
+	th.Seed(th.PublicationGeneration(), []store.CodeAttestation{{SEPubKey: "se-legacy-token", Version: "0.6.0", AttestedAt: cur}})
 	if th.reuseAttestation("se-legacy-token", "0.6.0", "any-token", nodeKey) {
 		t.Fatal("a legacy token-less record bypassed current-token binding")
 	}
@@ -87,7 +87,7 @@ func TestCodeAttestThrottleTokenBinding(t *testing.T) {
 
 func TestCodeAttestThrottleProcessKeyBinding(t *testing.T) {
 	th := newThrottleFixture()
-	th.RecordAttestedForProcess("se", "0.8.17", "token", "node-key-A", "hash-a")
+	th.RecordAttestedForProcess(th.PublicationGeneration(), "se", "0.8.17", "token", "node-key-A", "hash-a")
 	if !th.reuseAttestation(
 		"se", "0.8.17", "token", "node-key-A",
 	) {
@@ -110,7 +110,7 @@ func TestCodeAttestThrottleProcessKeyBinding(t *testing.T) {
 	}
 
 	seeded := newThrottleFixture()
-	seeded.Seed([]store.CodeAttestation{{
+	seeded.Seed(seeded.PublicationGeneration(), []store.CodeAttestation{{
 		SEPubKey: "se", Version: "0.8.17", AttestedAt: time.Now(),
 		APNsToken: "token", NodePublicKey: "node-key-A",
 	}})
@@ -129,7 +129,7 @@ func TestCodeAttestThrottleProcessKeyBinding(t *testing.T) {
 // legacy record without a process-key or binary-identity binding still refuse.
 func TestCodeAttestThrottleTransitionProcessKeyBinding(t *testing.T) {
 	th := newThrottleFixture()
-	th.RecordAttestedForProcess("se", "0.8.17", "token", "node-key-A", "hash-a")
+	th.RecordAttestedForProcess(th.PublicationGeneration(), "se", "0.8.17", "token", "node-key-A", "hash-a")
 
 	if hash, ok := th.ReuseAttestationForTransition("se", "token"); !ok || hash != "hash-a" {
 		t.Fatalf("same SE identity + token should authorize a transition resume challenge with the earned identity, got %q ok=%v", hash, ok)
@@ -155,12 +155,12 @@ func TestCodeAttestThrottleTransitionProcessKeyBinding(t *testing.T) {
 	// never authorizes a transition resume; it must fall through to a real
 	// APNs challenge (Codex 05:55Z P1).
 	identityless := newThrottleFixture()
-	identityless.RecordAttestedForProcess("se", "0.8.17", "token", "node-key-A", "")
+	identityless.RecordAttestedForProcess(identityless.PublicationGeneration(), "se", "0.8.17", "token", "node-key-A", "")
 	if _, ok := identityless.ReuseAttestationForTransition("se", "token"); ok {
 		t.Fatal("identity-less cached proof authorized a transition resume")
 	}
 	seeded := newThrottleFixture()
-	seeded.Seed([]store.CodeAttestation{{
+	seeded.Seed(seeded.PublicationGeneration(), []store.CodeAttestation{{
 		SEPubKey: "se", Version: "0.8.17", AttestedAt: time.Now(),
 		APNsToken: "token", NodePublicKey: "node-key-A",
 	}})
@@ -168,7 +168,7 @@ func TestCodeAttestThrottleTransitionProcessKeyBinding(t *testing.T) {
 		t.Fatal("seeded pre-migration row without a binary identity authorized a transition resume")
 	}
 	seededWithHash := newThrottleFixture()
-	seededWithHash.Seed([]store.CodeAttestation{{
+	seededWithHash.Seed(seededWithHash.PublicationGeneration(), []store.CodeAttestation{{
 		SEPubKey: "se", Version: "0.8.17", AttestedAt: time.Now(),
 		APNsToken: "token", NodePublicKey: "node-key-A", BinaryHash: "hash-a",
 	}})
@@ -188,7 +188,7 @@ func TestCodeAttestResumeChallengeUsesExactResumeDeadline(t *testing.T) {
 	newThrottle := func(now *time.Time) *throttleFixture {
 		th := newThrottleFixture()
 		th.Now = func() time.Time { return *now }
-		th.resumeDone = th.RecordResumeChallenge(nonce, providerID, nodeKey, seKey, token)
+		th.resumeDone = th.RecordResumeChallenge(th.PublicationGeneration(), nonce, providerID, nodeKey, seKey, token)
 		return th
 	}
 
@@ -272,7 +272,7 @@ func TestCodeAttestResumeChallengeUsesExactResumeDeadline(t *testing.T) {
 
 func TestCodeAttestAPNsChallengeBindsTokenAndProcessKey(t *testing.T) {
 	th := newThrottleFixture()
-	th.RecordChallengeForIdentity("se", "nonce", "token", "K1")
+	th.RecordChallengeForIdentity(th.PublicationGeneration(), "se", "nonce", "token", "K1")
 	if th.MatchChallengeForIdentity("se", "nonce", "token", "K2") ||
 		th.ConsumeChallengeForIdentity("se", "nonce", "token", "K2") {
 		t.Fatal("K2 matched APNs challenge encrypted to K1")

@@ -2,6 +2,8 @@
 
 ## Unreleased — account erasure
 
+- Clear unshared APNs token proofs, pending challenges and push bookkeeping from runtime memory after erasure; fence delayed cache publication while preserving live shared keys and fresh ownership.
+
 - Fence delayed App Attest proof and receipt writes, APNs token persistence, session backfills and admitted log uploads against completed erasure. Preserve shared live device ownership, clear the frozen runtime MDM cohort by account, and keep late Checkout referral codes local and tied to their original owner.
 
 - Fence in-flight credential creation, provider persistence, financial admission and delayed Stripe responses against deletion. Preserve late external IDs for cleanup, strip late telemetry locations while retaining accounting, and remove frozen MDM cohort/hardware-interest records. Shared identities are removed after the last owner is erased; replayed refused refunds remain idempotent.

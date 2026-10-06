@@ -427,7 +427,7 @@ func TestCodeAttestTokenRotationInvalidatesLoopAndProofNotDeviceEvidence(t *test
 	th := newThrottleFixture()
 	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	th.Now = func() time.Time { return now }
-	th.RecordAttestedForProcess("se", "1.0", "old-token", "process", trHashA)
+	th.RecordAttestedForProcess(th.PublicationGeneration(), "se", "1.0", "old-token", "process", trHashA)
 	oldGeneration := th.BeginLoop("se")
 	th.InvalidateReuse("se")
 	newGeneration := th.RotateLoopAndClearPushBudget(context.Background(), "se")

@@ -405,7 +405,7 @@ func (s *PostgresStore) GetAccountErasure(ctx context.Context, accountID string)
 			Attempts: int(r.Attempts), NextAt: r.NextAt, LastError: r.LastError, DoneAt: r.DoneAt,
 			HasExternalID: r.ExternalID != "", ExternalID: r.ExternalID, CreatedAt: r.CreatedAt,
 			HasStripeJob: r.StripeJobID != "", StripeJobID: r.StripeJobID,
-			JobStatus: r.StripeJobStatus, JobStatusSince: r.StripeJobStatusSince, JobGeneration: int(r.StripeJobGeneration),
+			JobStatus: r.StripeJobStatus, JobStatusSince: r.StripeJobStatusSince, JobGeneration: int(r.StripeJobGeneration), LeaseGeneration: r.LeaseGeneration,
 		})
 	}
 	return req, items, nil

@@ -172,9 +172,10 @@ type ErasureOutboxItem struct {
 	StripeJobID   string             `json:"-"` // redaction job of a checkout_sessions row
 	// JobStatus is the last Stripe status seen for StripeJobID, since
 	// JobStatusSince; JobGeneration changes the job's idempotency key.
-	JobStatus      string     `json:"-"`
-	JobStatusSince *time.Time `json:"-"`
-	JobGeneration  int        `json:"-"`
+	JobStatus       string     `json:"-"`
+	JobStatusSince  *time.Time `json:"-"`
+	JobGeneration   int        `json:"-"`
+	LeaseGeneration int64      `json:"-"` // incremented on each claim; independent of Stripe jobs
 }
 
 // ErasureOutboxWork is a leased outbox row plus the request fields the
@@ -188,15 +189,16 @@ type ErasureOutboxWork struct {
 // ErasureOutboxResult is the new state of a delivered outbox row. State done
 // clears the external ID and the job ID and sets done_at to NextAt.
 type ErasureOutboxResult struct {
-	State          ErasureOutboxState
-	Attempts       int
-	NextAt         time.Time
-	LastError      string
-	ExternalID     string // the row's IDs from now on; ignored when done
-	StripeJobID    string
-	JobStatus      string
-	JobStatusSince *time.Time
-	JobGeneration  int
+	LeaseGeneration int64 // the claim this result completes
+	State           ErasureOutboxState
+	Attempts        int
+	NextAt          time.Time
+	LastError       string
+	ExternalID      string // the row's IDs from now on; ignored when done
+	StripeJobID     string
+	JobStatus       string
+	JobStatusSince  *time.Time
+	JobGeneration   int
 	// Split, when set, is a manual_action row written in the same
 	// transaction: Checkout Sessions Stripe cannot find with the current key.
 	Split *ErasureOutboxItem
@@ -267,12 +269,16 @@ type AccountErasureStore interface {
 	// RecordAccountErasureFailure stores the last scrub error of a request.
 	RecordAccountErasureFailure(ctx context.Context, requestID, message string) error
 
-	// LeaseDueErasureOutbox leases up to limit pending outbox rows whose
-	// next_at has passed, until now+lease.
-	LeaseDueErasureOutbox(ctx context.Context, now time.Time, lease time.Duration, limit int) ([]ErasureOutboxWork, error)
+	// LeaseDueErasureOutbox leases up to limit pending outbox rows of erased
+	// requests whose
+	// next_at is at or before dueBefore, until now+lease. Each claim advances
+	// LeaseGeneration; workers claim immediately before delivery.
+	LeaseDueErasureOutbox(ctx context.Context, dueBefore, now time.Time, lease time.Duration, limit int) ([]ErasureOutboxWork, error)
 
 	// SaveErasureOutboxResult stores the outcome of one delivery attempt and
-	// ends the lease. It changes only a pending row.
+	// ends the lease. It changes only a pending row with a matching generation
+	// and a lease that is still active when the row lock is acquired. A stale
+	// or already completed claim returns ErrErasureConflict without any writes.
 	SaveErasureOutboxResult(ctx context.Context, id string, r ErasureOutboxResult) error
 
 	// PrivyUserPendingErasure reports whether a soft-deleted account holds

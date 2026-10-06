@@ -187,8 +187,12 @@ type outboxFixture struct {
 
 func newOutboxFixture(t *testing.T, mock bool) *outboxFixture {
 	t.Helper()
+	return newOutboxFixtureWithLogger(t, mock, slog.New(slog.DiscardHandler))
+}
+
+func newOutboxFixtureWithLogger(t *testing.T, mock bool, logger *slog.Logger) *outboxFixture {
+	t.Helper()
 	f, fake := newFakeStripe(t)
-	logger := slog.New(slog.DiscardHandler)
 	st := memory.NewMemory(store.Config{})
 	ledger := payments.NewLedger(st)
 	srv := api.NewRuntime(api.RuntimeDependencies{Registry: registry.New(logger), Store: st, Ledger: ledger, ReadCache: readcache.New(), Logger: logger}, api.ServerConfig{}).Server
@@ -285,16 +289,32 @@ func (fx *outboxFixture) row(t *testing.T, account string, target store.ErasureT
 // path, due now unless edit moves NextAt.
 func (fx *outboxFixture) setRow(t *testing.T, it store.ErasureOutboxItem, edit func(*store.ErasureOutboxResult)) {
 	t.Helper()
-	r := store.ErasureOutboxResult{
-		State: it.State, Attempts: it.Attempts, NextAt: time.Now().UTC(), LastError: it.LastError,
-		ExternalID: it.ExternalID, StripeJobID: it.StripeJobID, JobStatus: it.JobStatus,
-		JobStatusSince: it.JobStatusSince, JobGeneration: it.JobGeneration,
-	}
-	if edit != nil {
-		edit(&r)
-	}
-	if err := fx.st.SaveErasureOutboxResult(context.Background(), it.ID, r); err != nil {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	rows, err := fx.st.LeaseDueErasureOutbox(ctx, it.NextAt, now, time.Minute, 1000)
+	if err != nil {
 		t.Fatal(err)
+	}
+	found := false
+	for _, row := range rows {
+		r := store.ErasureOutboxResult{
+			LeaseGeneration: row.LeaseGeneration, State: row.State, Attempts: row.Attempts, NextAt: row.NextAt, LastError: row.LastError,
+			ExternalID: row.ExternalID, StripeJobID: row.StripeJobID, JobStatus: row.JobStatus,
+			JobStatusSince: row.JobStatusSince, JobGeneration: row.JobGeneration,
+		}
+		if row.ID == it.ID {
+			found = true
+			r.NextAt = now
+			if edit != nil {
+				edit(&r)
+			}
+		}
+		if err := fx.st.SaveErasureOutboxResult(ctx, row.ID, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !found {
+		t.Fatalf("row %s was not available to lease", it.ID)
 	}
 }
 

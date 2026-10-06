@@ -44,6 +44,7 @@ type ErasureOutbox struct {
 	StripeJobStatus      string
 	StripeJobStatusSince *time.Time
 	StripeJobGeneration  int32
+	LeaseGeneration      int64
 }
 
 type ErasureRefusedCredit struct {

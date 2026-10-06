@@ -8,7 +8,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-func (s *MemoryStore) LeaseDueErasureOutbox(ctx context.Context, now time.Time, lease time.Duration, limit int) ([]store.ErasureOutboxWork, error) {
+func (s *MemoryStore) LeaseDueErasureOutbox(ctx context.Context, dueBefore, now time.Time, lease time.Duration, limit int) ([]store.ErasureOutboxWork, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -16,7 +16,11 @@ func (s *MemoryStore) LeaseDueErasureOutbox(ctx context.Context, now time.Time, 
 	defer s.mu.Unlock()
 	var due []int
 	for i, o := range s.erasureOutbox {
-		if o.State == store.ErasureOutboxPending && !o.NextAt.After(now) && !s.erasureOutboxLease[o.ID].After(now) {
+		r := s.erasureRequests[o.RequestID]
+		if r == nil || r.State != store.ErasureErased {
+			continue
+		}
+		if o.State == store.ErasureOutboxPending && !o.NextAt.After(dueBefore) && !s.erasureOutboxLease[o.ID].After(now) {
 			due = append(due, i)
 		}
 	}
@@ -26,6 +30,7 @@ func (s *MemoryStore) LeaseDueErasureOutbox(ctx context.Context, now time.Time, 
 		if len(out) == limit {
 			break
 		}
+		s.erasureOutbox[i].LeaseGeneration++
 		o := s.erasureOutbox[i]
 		s.erasureOutboxLease[o.ID] = now.Add(lease)
 		w := store.ErasureOutboxWork{ErasureOutboxItem: o}
@@ -51,7 +56,7 @@ func (s *MemoryStore) SaveErasureOutboxResult(ctx context.Context, id string, r 
 		if o.ID != id {
 			continue
 		}
-		if o.State != store.ErasureOutboxPending {
+		if o.State != store.ErasureOutboxPending || o.LeaseGeneration != r.LeaseGeneration || !s.erasureOutboxLease[id].After(time.Now()) {
 			return store.ErrErasureConflict
 		}
 		o.State, o.Attempts, o.NextAt, o.LastError, o.StripeJobID = r.State, r.Attempts, r.NextAt, r.LastError, r.StripeJobID

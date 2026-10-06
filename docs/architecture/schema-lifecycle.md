@@ -1,6 +1,6 @@
 # Schema lifecycle
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-06
 
 Explanation of how the coordinator's Postgres schema changes: numbered goose
 migrations that run inside `NewPostgres` before the coordinator serves, the
@@ -76,6 +76,7 @@ Legend: blue = step, amber = decision, green = success, red = exit 1.
 | 19 | `indexMigrations` | `CREATE INDEX CONCURRENTLY idx_billing_sessions_referral_code ON billing_sessions (referral_code) WHERE referral_code <> ''`. |
 | 20 | `indexMigrations` | `CREATE INDEX CONCURRENTLY idx_users_privy_deleted ON users (privy_user_id) WHERE deleted_at IS NOT NULL`. |
 | 21 | `coordinator/store/postgres/schema/migrations/00021_erasure_refuse_credits.sql` | One transaction: creates `erasure_refused_credits`, the function `erasure_account_erased`, and the triggers `erasure_keep_balance_insert` and `erasure_keep_balance_update` on `balances` and `erasure_refuse_ledger_credit` on `ledger_entries`. |
+| 22 | `coordinator/store/postgres/schema/migrations/00022_erasure_outbox_stripe_job.sql` | One transaction: adds the Stripe redaction-job fields and independent `lease_generation BIGINT NOT NULL DEFAULT 0` to `erasure_outbox`. Constant defaults change only the catalog; `ALTER TABLE` takes a brief exclusive table lock. |
 
 Versions 2 to 5 are Go migrations, listed in `goMigrations`. They are the
 startup steps that ran after the old DDL loop, with their code unchanged.

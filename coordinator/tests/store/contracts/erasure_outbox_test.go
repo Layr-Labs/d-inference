@@ -21,7 +21,7 @@ func TestErasureOutboxLeaseAndResult(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			rows, err := s.LeaseDueErasureOutbox(ctx, now, time.Minute, 10)
+			rows, err := s.LeaseDueErasureOutbox(ctx, now, now, time.Minute, 10)
 			if err != nil || len(rows) != 3 {
 				t.Fatalf("lease = %d rows, %v; want 3", len(rows), err)
 			}
@@ -32,7 +32,7 @@ func TestErasureOutboxLeaseAndResult(t *testing.T) {
 				}
 				byTarget[r.Target] = r
 			}
-			if again, _ := s.LeaseDueErasureOutbox(ctx, now, time.Minute, 10); len(again) != 0 {
+			if again, _ := s.LeaseDueErasureOutbox(ctx, now, now, time.Minute, 10); len(again) != 0 {
 				t.Fatalf("leased rows leased again: %d", len(again))
 			}
 
@@ -40,7 +40,7 @@ func TestErasureOutboxLeaseAndResult(t *testing.T) {
 			if acct.ExternalID != a.Stripe {
 				t.Fatalf("stripe_account external id = %q", acct.ExternalID)
 			}
-			if err := s.SaveErasureOutboxResult(ctx, acct.ID, store.ErasureOutboxResult{State: store.ErasureOutboxDone, NextAt: now}); err != nil {
+			if err := s.SaveErasureOutboxResult(ctx, acct.ID, store.ErasureOutboxResult{LeaseGeneration: acct.LeaseGeneration, State: store.ErasureOutboxDone, NextAt: now}); err != nil {
 				t.Fatal(err)
 			}
 			checkout := byTarget[store.ErasureTargetCheckoutSessions]
@@ -48,16 +48,16 @@ func TestErasureOutboxLeaseAndResult(t *testing.T) {
 			since := now.Add(-time.Minute)
 			split := &store.ErasureOutboxItem{ID: uniqueID("ob-split"), RequestID: req.ID, Target: store.ErasureTargetCheckoutSessions, ExternalID: "cs_missing", LastError: "not found"}
 			if err := s.SaveErasureOutboxResult(ctx, checkout.ID, store.ErasureOutboxResult{
-				State: store.ErasureOutboxPending, NextAt: later, ExternalID: checkout.ExternalID, StripeJobID: "prj_1",
+				LeaseGeneration: checkout.LeaseGeneration, State: store.ErasureOutboxPending, NextAt: later, ExternalID: checkout.ExternalID, StripeJobID: "prj_1",
 				JobStatus: "validating", JobStatusSince: &since, JobGeneration: 2, Split: split,
 			}); err != nil {
 				t.Fatal(err)
 			}
 			logRow := byTarget[store.ErasureTargetErasureLog]
-			if err := s.SaveErasureOutboxResult(ctx, logRow.ID, store.ErasureOutboxResult{State: store.ErasureOutboxManualAction, Attempts: 8, NextAt: now, LastError: "retries exhausted"}); err != nil {
+			if err := s.SaveErasureOutboxResult(ctx, logRow.ID, store.ErasureOutboxResult{LeaseGeneration: logRow.LeaseGeneration, State: store.ErasureOutboxManualAction, Attempts: 8, NextAt: now, LastError: "retries exhausted"}); err != nil {
 				t.Fatal(err)
 			}
-			if err := s.SaveErasureOutboxResult(ctx, logRow.ID, store.ErasureOutboxResult{State: store.ErasureOutboxDone, NextAt: now}); !errors.Is(err, store.ErrErasureConflict) {
+			if err := s.SaveErasureOutboxResult(ctx, logRow.ID, store.ErasureOutboxResult{LeaseGeneration: logRow.LeaseGeneration, State: store.ErasureOutboxDone, NextAt: now}); !errors.Is(err, store.ErrErasureConflict) {
 				t.Fatalf("result on a manual_action row: %v", err)
 			}
 
@@ -89,7 +89,7 @@ func TestErasureOutboxLeaseAndResult(t *testing.T) {
 				}
 			}
 			// The progress row is due again after its next_at.
-			if due, _ := s.LeaseDueErasureOutbox(ctx, later, time.Minute, 10); len(due) != 1 || due[0].StripeJobID != "prj_1" || due[0].JobGeneration != 2 {
+			if due, _ := s.LeaseDueErasureOutbox(ctx, later, later, time.Minute, 10); len(due) != 1 || due[0].StripeJobID != "prj_1" || due[0].JobGeneration != 2 {
 				t.Fatalf("lease after next_at = %+v", due)
 			}
 		})

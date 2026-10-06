@@ -1,6 +1,6 @@
 # Personal-data rules
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 Reference for account erasure: every personal column the scrub changes and
 how, the data it keeps and why, the erasure tables, and the constants. How the
@@ -170,7 +170,8 @@ triggers).
 | `state` | `TEXT` | `pending`, `done`, `manual_action` (`CHECK`, default `pending`) |
 | `attempts` | `INTEGER` | Delivery attempts |
 | `next_at` | `TIMESTAMPTZ` | When the row is due |
-| `lease_until` | `TIMESTAMPTZ` | Delivery lease |
+| `lease_until` | `TIMESTAMPTZ` | Delivery claim expiry; result commits check the clock after acquiring the row lock |
+| `lease_generation` | `BIGINT` | Advances on every delivery claim; only this generation may save a result or split while the lease remains active |
 | `last_error` | `TEXT` | Last delivery error |
 | `done_at` | `TIMESTAMPTZ` | When it ended `done` |
 | `created_at` | `TIMESTAMPTZ` | Insert time; the 105-day redaction deadline counts from it |

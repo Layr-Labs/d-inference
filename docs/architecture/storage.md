@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 What the coordinator persists, through which interface and in which backend;
 then what a provider keeps on its own disk and in its Keychain. How the schema
@@ -222,7 +222,7 @@ add them and their indexes:
 | 18 | `00018_erasure_tables.sql` | Creates `erasure_requests` and `erasure_outbox`. |
 | 19–20 | Go: `indexMigrations` | `CONCURRENTLY` indexes `billing_sessions(referral_code)` and `users(privy_user_id) WHERE deleted_at IS NOT NULL`. |
 | 21 | `00021_erasure_refuse_credits.sql` | `erasure_refused_credits` and the triggers that keep credits out of an erased account (`erasure_keep_balance_insert`, `erasure_keep_balance_update` on `balances`; `erasure_refuse_ledger_credit` on `ledger_entries`). |
-| 22 | `00022_erasure_outbox_stripe_job.sql` | Adds the redaction-job columns of `erasure_outbox` (`stripe_job_id`, its status, status time and generation) for `checkout_sessions` rows. |
+| 22 | `00022_erasure_outbox_stripe_job.sql` | Adds the redaction-job columns of `erasure_outbox` (`stripe_job_id`, its status, status time and generation) for `checkout_sessions` rows, plus the independent `lease_generation BIGINT` that fences delivery result commits. |
 
 `CachedStore` overrides the three erasure writers (`RequestAccountErasure`,
 `CancelAccountErasure`, `ScrubAccount`) to drop cached users.

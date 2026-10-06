@@ -1,6 +1,6 @@
 # Account erasure
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 This page explains how the coordinator erases the personal data of one
 consumer or provider account (GDPR Article 17): the request states, the scrub
@@ -242,10 +242,23 @@ sequenceDiagram
 The scrub cannot call Stripe inside its transaction, so it writes the
 external deletions to `erasure_outbox`, and a worker delivers them later.
 `StartErasureOutboxLoop` runs once at start and then every
-`erasureOutboxInterval`. Each pass leases up to `erasureOutboxBatch` due
-`pending` rows for `erasureOutboxLease` (`LeaseDueErasureOutbox`,
-`FOR UPDATE SKIP LOCKED`), delivers each one (`deliverOutbox`), and
-stores the outcome (`SaveErasureOutboxResult`), which also ends the lease.
+`erasureOutboxInterval`. Each pass handles up to `erasureOutboxBatch` rows
+of erased requests that were due at the pass's start. Staged rows of pending
+or canceled requests stay quarantined, so external deletion cannot run during
+the cancelable grace period. It claims one row immediately before
+`deliverOutbox`, for `erasureOutboxLease`, using `LeaseDueErasureOutbox`
+(`FOR UPDATE SKIP LOCKED`). Waiting behind earlier Stripe requests therefore
+does not consume a row's lease. The fixed due cutoff leaves a newly
+rescheduled row for the next pass.
+
+Each claim increments `lease_generation`, independently of the Stripe job's
+idempotency generation. `SaveErasureOutboxResult` locks the row, then checks
+that the generation still matches and the lease has not expired, using the
+current database clock after any lock wait. A valid result ends the lease;
+a stale, expired or already completed claim returns `ErrErasureConflict`
+without changing the row or creating a split. External delivery remains
+at least once: an expired worker's response cannot overwrite newer progress,
+and Stripe creates retain the same job idempotency key across lease retries.
 
 ```mermaid
 stateDiagram-v2
@@ -451,9 +464,12 @@ Outside the live database:
 11. **A `done` outbox row holds no Stripe ID.** `SaveErasureOutboxResult`
     clears `external_id` and `stripe_job_id` when the state is `done`, and
     changes only a `pending` row (`TestErasureOutboxLeaseAndResult`).
-12. **One outbox row is delivered by one worker at a time.**
-    `LeaseDueErasureOutbox` uses `FOR UPDATE SKIP LOCKED` and
-    `erasureOutboxLease`.
+12. **Only the current, unexpired outbox claim may commit a result.**
+    `LeaseDueErasureOutbox` increments `lease_generation` under its row lock.
+    `SaveErasureOutboxResult` checks the generation and expiry after taking
+    the row lock, before changing state or inserting a split. Rejected
+    results leave both untouched (`TestErasureOutboxRejectsStaleResults`,
+    `TestErasureOutboxRechecksExpiryAfterRowLock`).
 13. **A missing Checkout Session never blocks the rest of its batch.** The
     split row and the shortened batch commit together
     (`TestErasureOutboxRedactionSplitsMissingSessions`).

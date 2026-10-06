@@ -74,17 +74,23 @@ func (s *Owner) StartOutboxLoop(ctx context.Context) {
 	})
 }
 
-// runOutbox leases the due rows and delivers each one.
+// runOutbox claims each row immediately before delivery. The pass cutoff
+// prevents a just-rescheduled row from consuming the same pass again.
 func (s *Owner) runOutbox(ctx context.Context) {
-	rows, err := s.store.LeaseDueErasureOutbox(ctx, time.Now().UTC(), erasureOutboxLease, erasureOutboxBatch)
-	if err != nil {
-		s.logger.Error("erasure outbox: lease failed", "error", err)
-		return
-	}
-	for _, row := range rows {
+	dueBefore := time.Now().UTC()
+	for i := 0; i < erasureOutboxBatch; i++ {
 		if ctx.Err() != nil {
 			return
 		}
+		rows, err := s.store.LeaseDueErasureOutbox(ctx, dueBefore, time.Now().UTC(), erasureOutboxLease, 1)
+		if err != nil {
+			s.logger.Error("erasure outbox: lease failed", "error", err)
+			return
+		}
+		if len(rows) == 0 {
+			return
+		}
+		row := rows[0]
 		out := s.deliverOutbox(ctx, row)
 		result := outboxResult(row, out, time.Now().UTC())
 		if err := s.store.SaveErasureOutboxResult(ctx, row.ID, result); err != nil {
@@ -101,7 +107,7 @@ func (s *Owner) runOutbox(ctx context.Context) {
 // outboxResult turns an outcome into the stored row state.
 func outboxResult(row store.ErasureOutboxWork, out outboxOutcome, now time.Time) store.ErasureOutboxResult {
 	r := store.ErasureOutboxResult{
-		State: store.ErasureOutboxPending, Attempts: row.Attempts, NextAt: now, LastError: out.err,
+		LeaseGeneration: row.LeaseGeneration, State: store.ErasureOutboxPending, Attempts: row.Attempts, NextAt: now, LastError: out.err,
 		ExternalID: row.ExternalID, StripeJobID: out.jobID, JobGeneration: row.JobGeneration, Split: out.split,
 	}
 	if out.externalIDs != nil {

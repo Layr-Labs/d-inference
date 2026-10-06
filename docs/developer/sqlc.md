@@ -1,6 +1,6 @@
 # Write store queries with sqlc
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-06
 
 How to add a Postgres query to the coordinator store with sqlc, how to move a
 hand-written store domain to sqlc (the api_keys domain is the worked
@@ -105,6 +105,7 @@ domain.
 | Expression result | Cast it, or sqlc types it `interface{}` | `COALESCE(SUM(cost_micro_usd), 0)::bigint AS total_micro_usd` returns `int64` |
 | Struct names | Generated from the table name, singular, with sqlc's default casing; there are no renames in `sqlc.yaml` | table `api_keys` becomes `storedb.ApiKey`; `limit_micro_usd` becomes `LimitMicroUsd` |
 | `SELECT *` | Allowed; sqlc expands it to the column list at generation time | `GetAPIKeyByHash` |
+| Lease result | Lock the row before checking current-time expiry; require the claim generation and an affected row before dependent writes | `LockErasureOutbox` then `SaveErasureOutboxResult :execrows` in `coordinator/store/postgres/queries/erasure.sql`; `erasure_outbox.go` inserts a manual split only after the fenced update succeeds |
 
 ## Verify
 

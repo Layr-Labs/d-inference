@@ -9,3 +9,7 @@ ALTER TABLE erasure_outbox ADD COLUMN IF NOT EXISTS stripe_job_id TEXT NOT NULL 
 ALTER TABLE erasure_outbox ADD COLUMN IF NOT EXISTS stripe_job_status TEXT NOT NULL DEFAULT '';
 ALTER TABLE erasure_outbox ADD COLUMN IF NOT EXISTS stripe_job_status_since TIMESTAMPTZ;
 ALTER TABLE erasure_outbox ADD COLUMN IF NOT EXISTS stripe_job_generation INTEGER NOT NULL DEFAULT 0;
+
+-- A delivery claim has its own generation so an expired worker cannot
+-- overwrite a later worker's job state or insert a duplicate split.
+ALTER TABLE erasure_outbox ADD COLUMN IF NOT EXISTS lease_generation BIGINT NOT NULL DEFAULT 0;

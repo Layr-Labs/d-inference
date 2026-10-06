@@ -286,7 +286,7 @@ func TestErasureOutboxLoopDeliversScrubRows(t *testing.T) {
 		t.Fatalf("checkout_sessions row = %v", c)
 	}
 	// The running job is not due again until the poll interval passes.
-	due, err := fx.st.LeaseDueErasureOutbox(context.Background(), time.Now().UTC(), time.Minute, 20)
+	due, err := fx.st.LeaseDueErasureOutbox(context.Background(), time.Now().UTC(), time.Now().UTC(), time.Minute, 20)
 	if err != nil || len(due) != 0 {
 		t.Fatalf("due rows after the pass = %+v, %v", due, err)
 	}

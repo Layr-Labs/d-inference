@@ -39,7 +39,7 @@ func TestExactCacheStatusCountsAgreeWithLifecycleAfterExpiry(t *testing.T) {
 		return status.Holders == 2
 	})
 
-	w.advance(11 * time.Minute) // the default holder TTL is ten minutes
+	w.advance(31 * time.Minute) // the default holder TTL is thirty minutes
 	status := w.waitStatus(func(status ExactCacheStatus) bool {
 		consistent(status)
 		return status.Holders == 0

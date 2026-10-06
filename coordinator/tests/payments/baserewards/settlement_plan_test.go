@@ -3,16 +3,19 @@ package baserewards_test
 import (
 	"context"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	production "github.com/eigeninference/d-inference/coordinator/payments/baserewards"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 type reallocatingEngineStore struct {
-	*engineStore
+	*machineEngineStore
 	plans [][]store.FloorDrawBatchItem
 	check func(plan, index, pass int)
 }
@@ -38,6 +41,28 @@ func rewardPlanAmounts(items []store.FloorDrawBatchItem) map[string]int64 {
 	return amounts
 }
 
+// assignCanonicalRewardOrder sorts providers in place and assigns their economics
+// in tie-break order, independent of the randomly generated machine IDs.
+func assignCanonicalRewardOrder(t *testing.T, reg *registry.Registry, providers []*registry.Provider, memory []int, earned []int64, at time.Time) []store.ProviderEarning {
+	t.Helper()
+	slices.SortFunc(providers, func(a, b *registry.Provider) int {
+		return strings.Compare(a.GetAppAttestServingAuthorization().MachineID, b.GetAppAttestServingAuthorization().MachineID)
+	})
+	earnings := make([]store.ProviderEarning, len(providers))
+	for i, p := range providers {
+		lease := p.GetAppAttestServingAuthorization()
+		lease.MemoryGB = memory[i]
+		p.Mu().Lock()
+		p.Hardware.MemoryGB = lease.MemoryGB
+		p.Mu().Unlock()
+		if !reg.GrantAppAttestServingAuthorization(p, lease) {
+			t.Fatal("cannot assign tie fixture hardware")
+		}
+		earnings[i] = organicEarning(p.PublicKey, p.AccountID, p.ID, earned[i], at)
+	}
+	return earnings
+}
+
 func TestRewardPlanReallocatesLateLossWithoutFreezingPartialOrZeroRows(t *testing.T) {
 	for _, test := range []struct {
 		name         string
@@ -56,16 +81,30 @@ func TestRewardPlanReallocatesLateLossWithoutFreezingPartialOrZeroRows(t *testin
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			epoch, start, end, clock := closedEpoch()
-			st := &reallocatingEngineStore{engineStore: newEngineStore()}
+			st := &reallocatingEngineStore{machineEngineStore: &machineEngineStore{engineStore: newEngineStore()}}
 			reg := registry.New(testLogger())
 			var rejected *registry.Provider
+			var providers []*registry.Provider
 			for i, key := range test.keys {
-				p := addProvider(reg, key, key, key, "Mac15,8", test.memory[i])
-				setSerial(p, key, "Mac15,8")
-				p.AccountID = test.accounts[i]
+				p, machine := addMachineRewardProvider(t, st.machineEngineStore, reg, key, key, test.accounts[i], "apple-"+key, protocol.Hardware{MachineModel: "Mac15,8", MemoryGB: test.memory[i]})
+				for _, amounts := range []map[string]int64{test.first, test.final} {
+					if amount, ok := amounts[key]; ok {
+						delete(amounts, key)
+						amounts[store.MachineFloorKey(machine)] = amount
+					}
+				}
 				st.sessions = append(st.sessions, fullUptimeSession(key, key, key, test.accounts[i], start, end))
 				st.earnings = append(st.earnings, organicEarning(key, test.accounts[i], key, test.earned[i], start.Add(time.Minute)))
 				rejected = p
+				providers = append(providers, p)
+			}
+			if test.name == "two-partial-grants" {
+				// Equal allocator scores use canonical identity as the tie-breaker.
+				// Assign the idle non-workhorse to the first key, as the original
+				// raw-key fixture did, so both initial grants remain partial.
+				st.earnings = assignCanonicalRewardOrder(t, reg, providers, test.memory, test.earned, start.Add(time.Minute))
+				test.final = map[string]int64{store.MachineFloorKey(providers[0].GetAppAttestServingAuthorization().MachineID): 1000}
+				rejected = providers[1]
 			}
 			if test.prior > 0 {
 				settlePriorFloor(t, st.inner, store.ProviderFloorDraw{ProviderKey: "historical", AccountID: "shared", EpochID: epoch, AmountMicroUSD: test.prior})
@@ -109,27 +148,23 @@ func TestRewardPlanReallocatesLateLossWithoutFreezingPartialOrZeroRows(t *testin
 
 func TestRewardPlanWithoutRejectionsPreservesAllocatorOutput(t *testing.T) {
 	epoch, start, end, clock := closedEpoch()
-	st := &reallocatingEngineStore{engineStore: newEngineStore()}
+	st := &reallocatingEngineStore{machineEngineStore: &machineEngineStore{engineStore: newEngineStore()}}
 	reg := registry.New(testLogger())
-	for i, key := range []string{"a-nonworkhorse", "z-workhorse"} {
-		mem := 32
-		earned := int64(0)
-		if i == 1 {
-			mem = 64
-			earned = 2016
-		}
-		p := addProvider(reg, key, key, key, "Mac15,8", mem)
-		setSerial(p, key, "Mac15,8")
-		p.AccountID = key
+	want := make(map[string]int64)
+	var providers []*registry.Provider
+	for _, key := range []string{"a-nonworkhorse", "z-workhorse"} {
+		p, machine := addMachineRewardProvider(t, st.machineEngineStore, reg, key, key, key, "apple-"+key)
+		providers = append(providers, p)
+		want[store.MachineFloorKey(machine)] = 500
 		st.sessions = append(st.sessions, fullUptimeSession(key, key, key, key, start, end))
-		st.earnings = append(st.earnings, organicEarning(key, key, key, earned, start.Add(time.Minute)))
 	}
+	// Keep the equal-score non-workhorse first in canonical key order.
+	st.earnings = assignCanonicalRewardOrder(t, reg, providers, []int{32, 64}, []int64{0, 2016}, start.Add(time.Minute))
 	e := newTestEngine(st, reg, clock, func(cfg *production.Config) {
 		cfg.PoolBudgetMicroUSD = 1000 * 8928
 		cfg.WorkhorseReserveFrac = .5
 	})
 	result, err := e.SettleEpoch(context.Background(), epoch)
-	want := map[string]int64{"a-nonworkhorse": 500, "z-workhorse": 500}
 	if err != nil || result.Settled != 2 || len(st.plans) != 1 || !reflect.DeepEqual(rewardPlanAmounts(st.plans[0]), want) {
 		t.Fatalf("normal allocations changed: %+v %+v %v", result, st.plans, err)
 	}

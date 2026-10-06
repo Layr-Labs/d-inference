@@ -11,11 +11,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const appAttestBuildDDL = `CREATE TABLE IF NOT EXISTS app_attest_build_qualifications (
- binary_hash TEXT PRIMARY KEY CHECK (binary_hash ~ '^[0-9a-f]{64}$'),
- record JSONB NOT NULL
-)`
-
 func (s *PostgresStore) ListAppAttestBuildQualifications(ctx context.Context) ([]store.AppAttestBuildQualification, error) {
 	rows, err := s.pool.Query(ctx, `SELECT record FROM app_attest_build_qualifications`)
 	if err != nil {

@@ -24,6 +24,7 @@ func TestAppAttestLeaseCannotSubstituteRewardHardware(t *testing.T) {
 func TestAppAttestRewardSnapshotRechecksAuthorizationAndHardware(t *testing.T) {
 	clock := &appAttestTestClock{}
 	r, p, lease := appAttestTestProvider(t, production.NewWithDependencies(testLogger(), production.Dependencies{AppAttestNow: clock.Now}))
+	lease.OSVersion = "28.0"
 	p.SetAttestationResult(&attestation.VerificationResult{Valid: true, SerialNumber: "claimed-serial", HardwareModel: "claimed-model"})
 	if !r.GrantAppAttestServingAuthorization(p, lease) {
 		t.Fatal("grant")
@@ -32,12 +33,12 @@ func TestAppAttestRewardSnapshotRechecksAuthorizationAndHardware(t *testing.T) {
 	if !found || !snapshot.AppAttestAuthorized || !snapshot.ServingAuthorized || snapshot.AccountID != lease.AccountID || snapshot.MachineID != lease.MachineID {
 		t.Fatalf("snapshot %+v", snapshot)
 	}
-	if snapshot.HardwareModel != lease.MachineModel || snapshot.MemoryGB != lease.MemoryGB {
+	if snapshot.HardwareModel != lease.MachineModel || snapshot.MemoryGB != lease.MemoryGB || snapshot.AppAttestOSVersion != lease.OSVersion {
 		t.Fatal("snapshot used unbound hardware")
 	}
 	clock.Store(lease.ValidUntil.Add(time.Second).UnixNano())
 	snapshot, _ = r.GetProviderRewardSnapshot(p.ID)
-	if snapshot.AppAttestAuthorized || snapshot.ServingAuthorized {
+	if snapshot.AppAttestAuthorized || snapshot.ServingAuthorized || snapshot.AppAttestOSVersion != "" {
 		t.Fatal("expired lease earned reward eligibility")
 	}
 	// A hybrid must not fall back to retained hardware flags after revocation.
@@ -48,7 +49,7 @@ func TestAppAttestRewardSnapshotRechecksAuthorizationAndHardware(t *testing.T) {
 	p.Mu().Unlock()
 	r.RevokeAppAttestCredential(lease.CredentialID)
 	snapshot, _ = r.GetProviderRewardSnapshot(p.ID)
-	if snapshot.ServingAuthorized {
+	if snapshot.ServingAuthorized || snapshot.AppAttestOSVersion != "" {
 		t.Fatal("revoked hybrid retained reward eligibility")
 	}
 }

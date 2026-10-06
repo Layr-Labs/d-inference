@@ -43,6 +43,9 @@ func (s *Service,
 	if s == nil || s.trustReuseCache == nil || provider == nil || resp == nil {
 		return false
 	}
+	if s.legacyMDMAllowed != nil && !s.legacyMDMAllowed(provider) {
+		return false
+	}
 	if blocked, _ := s.TrustSafetyStatus(); blocked {
 		return reject(trustreuse.TrustReuseReasonRevocationSafety)
 	}

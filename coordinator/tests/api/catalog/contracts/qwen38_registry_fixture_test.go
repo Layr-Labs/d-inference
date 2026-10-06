@@ -15,6 +15,7 @@ import (
 	inreq "github.com/eigeninference/d-inference/coordinator/api/inference/request"
 	"github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/attestation"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/coordinator/store/memory"
@@ -228,6 +229,12 @@ func TestQwen38RegistrySurfaceFixture(t *testing.T) {
 	conn := connectAndPrepareProvider(
 		t, ctx, ts.URL, reg, qwen38ConcreteModel, testkit.PublicKeyB64(), 18.0)
 	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	// Registration resets runtime verification before sending desired_models.
+	// Wait for that boundary before establishing the verified fixture state.
+	readDesiredModels(ctx, t, conn, func(protocol.DesiredModelsMessage) bool {
+		return true
+	}, "initial registration")
 
 	// The generic WebSocket helper intentionally does not manufacture runtime
 	// attestation. This fixture exercises the post-verification capacity surface,

@@ -1684,8 +1684,10 @@ and its state isolation and fresh-process gates.
 `Inference/Fixtures/TinyModelCheckpoint.swift` (`TinyModelCheckpoint`) creates
 seeded synthetic weights and tokenizer files in a temporary Hugging Face cache
 layout. It needs Apple Silicon, a working Metal runtime and the source-matched
-metallib, but no downloaded checkpoint. Its load-admission inputs are scripted;
-post-load headroom checks still read the actual machine. Run with `--no-parallel`:
+metallib, but no downloaded checkpoint. The owner's `GlobalKVCacheBudget`
+memory sample is scripted (`ScriptedProviderMemory`). The load admission and the
+post-load headroom checks read that sample, so the result does not depend on
+the free memory of the test machine. Run with `--no-parallel`:
 the shared `TinyModelLoadTests` suite is serialized, but that alone does not
 isolate the process-wide model-cache setting from other suites. Generated-token
 and cleanup assertions prove this tiny execution path, not trained-model output

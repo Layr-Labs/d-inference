@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-06
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -165,7 +165,7 @@ flowchart TD
     T -- refused --> R1
     Q -- refused --> R1
     Q -- accepted --> G[load weights; reduce typed claim as phases finish; build slot]
-    G --> H{KVHeadroomProbe.hasServeableKVHeadroom ≥ minimumLoadKVBytes?}
+    G --> H{"live KV headroom from the GlobalKVCacheBudget sample ≥ minimumLoadKVBytes?"}
     H -- no --> R2[unload, refuse: modelLoadFailed]
     H -- yes --> I[EngineV2Reslice grants; install slot; finishPendingLoad]
 ```
@@ -180,6 +180,9 @@ standalone server runs the same sequence in
   buffer cache) must satisfy `loadIsServeable` (≥ `minimumLoadKVBytes`) or the model is
   unloaded and the load rejected
   (`provider-swift/Sources/ProviderCore/Inference/Memory/KVHeadroomProbe.swift`).
+  In `ensureModelLoaded`, both owners read this headroom from one sample of
+  their `GlobalKVCacheBudget` (`postLoadKVHeadroomBytes`), the same memory
+  source as the load admission.
 - `EngineV2KVSizing` and `EngineV2Reslice` assign the admitted
   [KV slot grants](#kv-slot-grants). A paged build must also expose a backend
   ceiling at least `minimumLoadKVBytes`; empty segmented storage can satisfy
@@ -335,7 +338,7 @@ its use in admission are described once, in
 5. A load passes only if `weights × memoryOverheadFactor + activations +
    minimumLoadKVBytes ≤ freeForLoadGb` and, after loading, measured live KV
    headroom is ≥ `minimumLoadKVBytes` — `canLoad`, `loadIsServeable`,
-   `KVHeadroomProbe.hasServeableKVHeadroom`.
+   `KVHeadroomProbe.measuredLiveKVHeadroomBytes`.
 6. Load-time re-slicing refuses a newcomer if any resulting engine share falls
    below `minimumServiceableGrantBytes`; shrink preserves existing ownership —
    `EngineV2KVSizing.resliceMeetsServiceabilityFloor`, `AdmissionV2.updateBytesCapacity`.
@@ -349,7 +352,7 @@ its use in admission are described once, in
 |---|---|---|
 | `darkbloom start` exits: "At least … GB is needed to serve any model" | `hardware.memoryGb` below the RAM floor in [Constants](#constants) | `StartCommand+Preflight.swift` |
 | Start refused: Metal unavailable | `GPUEnforcement.requireMetal()` threw | `GPUEnforcement.swift` |
-| Load refused: "… need N GB to serve — unloaded" | Post-load `hasServeableKVHeadroom` false (live KV headroom below `minimumLoadKVBytes`) | `ProviderLoop+ModelLoading.swift`, `KVHeadroomProbe.swift` |
+| Load refused: "… need N GB to serve — unloaded" | Post-load live KV headroom (`postLoadKVHeadroomBytes`) below `minimumLoadKVBytes` | `ProviderLoop+ModelLoading.swift`, `KVHeadroomProbe.swift` |
 | Load refused with `no_kv_headroom` | Slot KV sizing overflowed or no serviceable grant during construction | `EngineV2Config.swift` (`EngineV2RefusalReason.noKVHeadroom`), `EngineV2SlotFactory.swift` |
 | Catalog says the tier fits, provider refuses | Static cap arithmetic passes but `freeForLoadGb` (real free minus `loadReserveBytes` and in-flight reservations) is below `requiredToLoadGb` | `ModelLoadAdmission.swift`, `ProviderLoop+ModelLoading.swift` |
 | New request cannot fit | Its complete request promise exceeds the slot grant, or live ownership/OS pressure leaves no process headroom | `AdmissionV2.swift`, `ProcessMemoryLedger.swift` |

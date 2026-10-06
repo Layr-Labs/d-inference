@@ -32,6 +32,18 @@ extension SSDBlockStore {
             && isRealDirectory(model)
     }
 
+    /// The name grammar of a block file alone: `<2 hex>/<32 hex>.<extension>`
+    /// with the stem starting with its fan-out. Says nothing about what is
+    /// on disk, so it cannot fail on an attribute that could not be read.
+    static func hasBlockFileName(_ url: URL) -> Bool {
+        let fanout = url.deletingLastPathComponent().lastPathComponent
+        let stem = url.deletingPathExtension().lastPathComponent
+        return url.pathExtension == fileExtension
+            && isLowerHex(stem, count: 32)
+            && isLowerHex(fanout, count: 2)
+            && stem.hasPrefix(fanout)
+    }
+
     static func isSafeBlockURL(_ url: URL, modelRoot: URL? = nil) -> Bool {
         let file = url.standardizedFileURL
         let root = (modelRoot ?? file.deletingLastPathComponent().deletingLastPathComponent())

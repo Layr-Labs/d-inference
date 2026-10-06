@@ -446,6 +446,192 @@ struct SSDBlockStoreTests {
         #expect(!ledger.hasSpeculativeRoom(bytes: 1, wholeRootKey: wholeRootKey, basis: .fixed(1 << 20)))
     }
 
+    @Test("a block-tier TTL sweep that drops an entry whose file it did not remove has made the cache root's occupancy unknown, and stopped the first-sight writes in flight under it, by the time it returns; a sweep that unlinks what it expires does not")
+    func blockTierSweepDropInvalidatesInOneStep() throws {
+        let parent = tempDir("block-tier-sweep")
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let modelRoot = parent.appendingPathComponent("cccccccccccc", isDirectory: true)
+        try SSDBlockStore.prepareModelRoot(dedicatedRoot: parent, modelRoot: modelRoot)
+        let ledger = SSDDiskBudget()
+        let wholeRootKey = SSDDiskBudget.wholeRootKey(ofModelRoot: modelRoot)
+        let kek = SymmetricKey(size: .bits256)
+        let cache = makeCache(dir: modelRoot, kek: kek, clock: ClockBox(10_000), diskBudget: ledger)
+        defer { cache.close() }
+        let roomy = SSDDiskBudgetBasis.fixed(1 << 20)
+        // An expired entry with a file behind it: the sweep unlinks the file
+        // and drops the entry together, which the ledger can account for.
+        let kept = SSDBlockStore.fileURL(root: modelRoot, tag16Hex: String(repeating: "cd", count: 16))
+        try SSDBlockStore.write(
+            to: kept, metadata: fixtureMetadata(sizes: [32]), chunks: [Data(repeating: 1, count: 32)], kekKey: kek)
+        let keptBytes = try #require(
+            try FileManager.default.attributesOfItem(atPath: kept.path)[.size] as? Int)
+        cache.index.insert(tag16: Data(repeating: 0xcd, count: 16), fileBytes: keptBytes, lastAccess: 0)
+        ledger.declareOccupancyKnown(wholeRootKey: wholeRootKey)
+        cache.sweepExpiredEntries()
+        #expect(cache.stats().ttlExpired == 1)
+        #expect(!FileManager.default.fileExists(atPath: kept.path))
+        #expect(cache.index.count == 0)
+        #expect(ledger.isOccupancyKnown(wholeRootKey: wholeRootKey))
+        // An expired entry with no file behind it: the sweep did not remove
+        // what is not there, so it cannot say what the entry stood for.
+        cache.index.insert(tag16: Data(repeating: 0xab, count: 16), fileBytes: 64, lastAccess: 0)
+        let inFlight = try #require(
+            ledger.reserveSpeculative(bytes: 1, keys: ["k"], wholeRootKey: wholeRootKey, basis: roomy))
+        cache.sweepExpiredEntries()
+        #expect(cache.index.count == 0)
+        // No ledger call has run since the sweep returned: the sweep is
+        // itself one, and the drop was absorbed before it released the lock.
+        #expect(!ledger.isOccupancyKnown(wholeRootKey: wholeRootKey))
+        #expect(inFlight.isRevoked)
+        #expect(cache.stats().ttlExpired == 1, "nothing more was unlinked")
+        ledger.release(inFlight, as: .discarded)
+    }
+
+    @Test("a block-tier TTL sweep unlinks and drops only while it holds the disk budget's lock, and decides what is expired once it has it")
+    func blockTierSweepRetiresUnderTheBudgetLock() throws {
+        let parent = tempDir("block-tier-sweep-lock")
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let modelRoot = parent.appendingPathComponent("cccccccccccc", isDirectory: true)
+        try SSDBlockStore.prepareModelRoot(dedicatedRoot: parent, modelRoot: modelRoot)
+        let ledger = SSDDiskBudget()
+        let wholeRootKey = SSDDiskBudget.wholeRootKey(ofModelRoot: modelRoot)
+        let kek = SymmetricKey(size: .bits256)
+        let cache = makeCache(dir: modelRoot, kek: kek, clock: ClockBox(10_000), diskBudget: ledger)
+        // Two expired entries, each with its file.
+        func expiredBlock(_ byte: UInt8) throws -> (tag: Data, url: URL) {
+            let tag = Data(repeating: byte, count: 16)
+            let url = SSDBlockStore.fileURL(root: modelRoot, tag16Hex: SSDLookupKeys.hex(tag))
+            try SSDBlockStore.write(
+                to: url, metadata: fixtureMetadata(sizes: [32]), chunks: [Data(repeating: 1, count: 32)], kekKey: kek)
+            cache.index.insert(tag16: tag, fileBytes: 64, lastAccess: 0)
+            return (tag, url)
+        }
+        let swept = try expiredBlock(0xc1)
+        let used = try expiredBlock(0xc2)
+        ledger.declareOccupancyKnown(wholeRootKey: wholeRootKey)
+        // Another caller holds the budget's lock, as a pass that is
+        // publishing or an eviction loop does.
+        let held = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let holderDone = DispatchSemaphore(value: 0)
+        let sweepDone = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            ledger.invalidateOccupancy(wholeRootKey: "another-root") {
+                held.signal()
+                release.wait()
+                return false
+            }
+            holderDone.signal()
+        }
+        guard held.wait(timeout: .now() + 10) == .success else {
+            Issue.record("the holder never got the budget lock")
+            return
+        }
+        DispatchQueue.global().async {
+            cache.sweepExpiredEntries()
+            sweepDone.signal()
+        }
+        // The sweep waits: nothing is unlinked and nothing leaves the index
+        // while the lock is held elsewhere.
+        #expect(sweepDone.wait(timeout: .now() + 0.5) == .timedOut)
+        #expect(FileManager.default.fileExists(atPath: swept.url.path))
+        #expect(FileManager.default.fileExists(atPath: used.url.path))
+        #expect(cache.index.count == 2)
+        // One of the two is used while the sweep waits.
+        cache.index.touch(tags16: [used.tag], now: 10_000)
+        release.signal()
+        guard sweepDone.wait(timeout: .now() + 10) == .success, holderDone.wait(timeout: .now() + 10) == .success else {
+            Issue.record("the sweep did not finish after the lock was released")
+            return
+        }
+        #expect(!FileManager.default.fileExists(atPath: swept.url.path))
+        #expect(FileManager.default.fileExists(atPath: used.url.path), "used while the sweep waited: not expired by it")
+        #expect(cache.index.count == 1)
+        #expect(cache.stats().ttlExpired == 1)
+        #expect(ledger.isOccupancyKnown(wholeRootKey: wholeRootKey), "the sweep unlinked what it dropped")
+        cache.close()
+    }
+
+    @Test("a whole-root removal under an active block cache drops the index entries that have no file behind them and leaves the cache root's occupancy unknown")
+    func blockTierDestructiveChangeInvalidatesOccupancy() throws {
+        let parent = tempDir("block-tier-destructive")
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let modelRoot = parent.appendingPathComponent("cccccccccccc", isDirectory: true)
+        try SSDBlockStore.prepareModelRoot(dedicatedRoot: parent, modelRoot: modelRoot)
+        let ledger = SSDDiskBudget()
+        let wholeRootKey = SSDDiskBudget.wholeRootKey(ofModelRoot: modelRoot)
+        let cache = makeCache(
+            dir: modelRoot, kek: SymmetricKey(size: .bits256), clock: ClockBox(10_000), diskBudget: ledger)
+        defer { cache.close() }
+        ledger.declareOccupancyKnown(wholeRootKey: wholeRootKey)
+        // Nothing indexed, nothing dropped, nothing changes.
+        #expect(ledger.performActiveDestructiveChange(root: modelRoot) {} == true)
+        #expect(ledger.isOccupancyKnown(wholeRootKey: wholeRootKey))
+        // The index holds an entry whose file the change took away.
+        cache.index.insert(tag16: Data(repeating: 0xab, count: 16), fileBytes: 64, lastAccess: 10_000)
+        #expect(ledger.performActiveDestructiveChange(root: modelRoot) {} == true)
+        #expect(cache.index.count == 0)
+        #expect(!ledger.isOccupancyKnown(wholeRootKey: wholeRootKey), "absorbed before the ledger call returns")
+    }
+
+    @Test("a block-tier start-up scan that cannot finish makes the cache root's occupancy unknown, and drops its index wherever the files may still be on disk (the fifth exit, a fan-out that is a symbolic link, is in activeSymlinkIOFailsClosed)",
+          arguments: [
+            "a model directory that cannot be listed", "a fan-out that cannot be listed",
+            "a block name that is not a plain file", "a model directory replaced by a symbolic link",
+          ].filter { getuid() != 0 || !$0.hasSuffix("cannot be listed") })
+    func blockTierScanExitsInvalidateOccupancy(exit: String) throws {
+        let parent = tempDir("block-tier-scan-exits")
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let manager = FileManager.default
+        let modelRoot = parent.appendingPathComponent("dddddddddddd", isDirectory: true)
+        try SSDBlockStore.prepareModelRoot(dedicatedRoot: parent, modelRoot: modelRoot)
+        let ledger = SSDDiskBudget()
+        let wholeRootKey = SSDDiskBudget.wholeRootKey(ofModelRoot: modelRoot)
+        let cache = makeCache(
+            dir: modelRoot, kek: SymmetricKey(size: .bits256), clock: ClockBox(10_000), diskBudget: ledger)
+        defer { cache.close() }
+        let fanout = modelRoot.appendingPathComponent("aa", isDirectory: true)
+        try manager.createDirectory(at: fanout, withIntermediateDirectories: true)
+        // An entry from before the scan, and a root whose occupancy is known.
+        cache.index.insert(tag16: Data(repeating: 0xaa, count: 16), fileBytes: 64, lastAccess: 10_000)
+        ledger.declareOccupancyKnown(wholeRootKey: wholeRootKey)
+        #expect(ledger.hasSpeculativeRoom(bytes: 1, wholeRootKey: wholeRootKey, basis: .fixed(1 << 20)))
+        var undo: () -> Void = {}
+        defer { undo() }
+        // Only a listing of the model directory itself that fails leaves the
+        // index as it was: nothing shows that its files moved.
+        var indexDropped = true
+        switch exit {
+        case "a model directory that cannot be listed":
+            try manager.setAttributes([.posixPermissions: 0o000], ofItemAtPath: modelRoot.path)
+            undo = { try? manager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: modelRoot.path) }
+            indexDropped = false
+        case "a fan-out that cannot be listed":
+            try manager.setAttributes([.posixPermissions: 0o000], ofItemAtPath: fanout.path)
+            undo = { try? manager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fanout.path) }
+        case "a block name that is not a plain file":
+            try manager.createDirectory(
+                at: fanout.appendingPathComponent(String(repeating: "a", count: 32) + ".dbk3", isDirectory: true),
+                withIntermediateDirectories: true)
+        default:
+            let moved = parent.appendingPathComponent("moved-away", isDirectory: true)
+            try manager.moveItem(at: modelRoot, to: moved)
+            try manager.createSymbolicLink(at: modelRoot, withDestinationURL: moved)
+        }
+        cache.scanOnDisk()
+        #expect(!ledger.isOccupancyKnown(wholeRootKey: wholeRootKey))
+        #expect(!ledger.hasSpeculativeRoom(bytes: 1, wholeRootKey: wholeRootKey, basis: .fixed(1 << 20)))
+        #expect(cache.index.count == (indexDropped ? 0 : 1))
+        let status = cache.prefixCacheModelStatus(base: PrefixCacheModelStatus(
+            modelId: "test-model",
+            backend: .contiguous,
+            replayStrategy: .direct,
+            state: .pending,
+            reason: .scanPending))
+        #expect(status.state == .error)
+        #expect(status.reason == .scanFailed)
+    }
+
     @Test("active cache I/O rejects symlinked root, model, and fanout paths")
     func activeSymlinkIOFailsClosed() throws {
         let parent = tempDir("active-symlinks")
@@ -504,6 +690,8 @@ struct SSDBlockStoreTests {
             clock: ClockBox(10_000),
             diskBudget: ledger)
         defer { cache.close() }
+        // An entry from before the scan: the failed scan drops it.
+        cache.index.insert(tag16: Data(repeating: 0xbb, count: 16), fileBytes: 64, lastAccess: 10_000)
         cache.scanOnDisk()
         #expect(cache.index.count == 0)
         // A scan that cannot finish accounts for none of this model's files,
@@ -1305,11 +1493,14 @@ struct SSDPrefixCacheLifecycleTests {
         let epochStore = try SSDCacheEpochStore(root: dir, binding: binding)
         let originalEpoch = try #require(epochStore.current)
         let clock = ClockBox(10_000)
+        let ledger = SSDDiskBudget()
+        let wholeRootKey = SSDDiskBudget.wholeRootKey(ofModelRoot: dir)
         let cache = makeCache(
             dir: dir,
             kek: SymmetricKey(size: .bits256),
             clock: clock,
             ttlSeconds: 900,
+            diskBudget: ledger,
             epochStore: epochStore)
         defer { cache.close() }
         cache.startBackgroundTasks(sweepIntervalSeconds: 3_600)
@@ -1324,11 +1515,17 @@ struct SSDPrefixCacheLifecycleTests {
         donateFixture(cache, tokens: fresh, seed: 2.0)
         #expect(await waitForIndexCount(cache, atLeast: 16))
 
-        // Exactly the older prefix crosses the sliding TTL.
+        // Exactly the older prefix crosses the sliding TTL. The writer is
+        // drained first, so its own deferred sweep has run before the clock
+        // moves and the sweep below is the one that expires them.
+        await cache.waitForWritesForTesting()
         clock.advance(840)
+        ledger.declareOccupancyKnown(wholeRootKey: wholeRootKey)
+        #expect(cache.index.count == 16)
         cache.sweepExpiredEntries()
         #expect(cache.stats().ttlExpired == 8)
         #expect(cache.index.count == 8)
+        #expect(ledger.isOccupancyKnown(wholeRootKey: wholeRootKey), "the sweep unlinked what it dropped")
         #expect(epochStore.current == originalEpoch)
         #expect(cache.prefixCacheV2Capability() == original)
         #expect(cache.takeNextPrefixCacheV2Sequence(expectedEpoch: originalEpoch) == 2)
@@ -1345,6 +1542,7 @@ struct SSDPrefixCacheLifecycleTests {
         #expect(cache.stats().corruptDropped == 1)
         #expect(cache.index.count == 7)
         #expect(!FileManager.default.fileExists(atPath: survivor.path))
+        #expect(ledger.isOccupancyKnown(wholeRootKey: wholeRootKey), "the cache unlinked the corrupt file itself")
         #expect(epochStore.current == originalEpoch)
         #expect(try SSDCacheEpochStore(root: dir, binding: binding).current == originalEpoch)
         #expect(cache.prefixCacheV2Capability() == original)
@@ -1413,12 +1611,17 @@ struct SSDPrefixCacheLifecycleTests {
         let kek = SymmetricKey(size: .bits256)
         let epochStore = try SSDCacheEpochStore(root: dir, binding: fixtureBinding())
         let epoch = try #require(epochStore.current)
-        let cache = makeCache(dir: dir, kek: kek, clock: ClockBox(10_000), epochStore: epochStore)
+        let ledger = SSDDiskBudget()
+        let wholeRootKey = SSDDiskBudget.wholeRootKey(ofModelRoot: dir)
+        let cache = makeCache(
+            dir: dir, kek: kek, clock: ClockBox(10_000), diskBudget: ledger, epochStore: epochStore)
         defer { cache.close() }
         let tokens = Array(0 ..< tokenCount)
         donateFixture(cache, tokens: tokens)
         #expect(await waitForIndexCount(cache, atLeast: 8))
         await cache.waitForWritesForTesting()
+        ledger.declareOccupancyKnown(wholeRootKey: wholeRootKey)
+        #expect(ledger.isOccupancyKnown(wholeRootKey: wholeRootKey))
 
         try FileManager.default.removeItem(
             at: blockFile(dir: dir, kek: kek, tokens: tokens, block: 4))
@@ -1433,6 +1636,81 @@ struct SSDPrefixCacheLifecycleTests {
         #expect(cache.stats().corruptDropped == 0)
         #expect(cache.index.count == 7)
         #expect(epochStore.current == epoch)
+        // The cache did not remove that file, so it cannot account for the
+        // entry it dropped: no first-sight write until a whole pass.
+        #expect(!ledger.isOccupancyKnown(wholeRootKey: wholeRootKey))
+    }
+
+    @Test("a block that cannot be read and that the cache could not unlink is dropped as corrupt and leaves the cache root's occupancy unknown")
+    func corruptBlockTheCacheCouldNotRemoveInvalidatesOccupancy() async throws {
+        let dir = tempDir("corrupt-not-removed")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let kek = SymmetricKey(size: .bits256)
+        let epochStore = try SSDCacheEpochStore(root: dir, binding: fixtureBinding())
+        let ledger = SSDDiskBudget()
+        let wholeRootKey = SSDDiskBudget.wholeRootKey(ofModelRoot: dir)
+        let cache = makeCache(
+            dir: dir, kek: kek, clock: ClockBox(10_000), diskBudget: ledger, epochStore: epochStore)
+        defer { cache.close() }
+        let tokens = Array(0 ..< tokenCount)
+        donateFixture(cache, tokens: tokens)
+        #expect(await waitForIndexCount(cache, atLeast: 8))
+        await cache.waitForWritesForTesting()
+        ledger.declareOccupancyKnown(wholeRootKey: wholeRootKey)
+        #expect(ledger.isOccupancyKnown(wholeRootKey: wholeRootKey))
+        // The block's path is there and is not a plain file: the read fails,
+        // it is not an absence, and the cache's unlink refuses it.
+        let victim = blockFile(dir: dir, kek: kek, tokens: tokens, block: 4)
+        try FileManager.default.removeItem(at: victim)
+        try FileManager.default.createDirectory(at: victim, withIntermediateDirectories: false)
+        _ = await cache.stage(requestID: "r-corrupt", promptTokens: tokens + [1], cacheScope: "")
+        cache.completeStaging(requestID: "r-corrupt")
+        #expect(cache.stats().corruptDropped == 1)
+        #expect(cache.index.count == 7)
+        #expect(FileManager.default.fileExists(atPath: victim.path), "it could not be removed")
+        #expect(!ledger.isOccupancyKnown(wholeRootKey: wholeRootKey))
+    }
+
+    @Test("an eviction and a retirement that the disk budget drives over a block-tier entry with no file behind it return, drop the entry and leave the cache root's occupancy unknown")
+    func ledgerDrivenRetirementOverAMissingBlockFile() throws {
+        let parent = tempDir("block-tier-ledger-retire")
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let modelRoot = parent.appendingPathComponent("eeeeeeeeeeee", isDirectory: true)
+        try SSDBlockStore.prepareModelRoot(dedicatedRoot: parent, modelRoot: modelRoot)
+        let ledger = SSDDiskBudget()
+        let wholeRootKey = SSDDiskBudget.wholeRootKey(ofModelRoot: modelRoot)
+        let cache = makeCache(
+            dir: modelRoot, kek: SymmetricKey(size: .bits256), clock: ClockBox(10_000), diskBudget: ledger)
+        let tag = Data(repeating: 0xee, count: 16)
+        let url = SSDBlockStore.fileURL(root: modelRoot, tag16Hex: SSDLookupKeys.hex(tag))
+        // The budget's lock is not recursive: a call that took it twice on
+        // one thread would never return. Each call runs on a helper thread
+        // with a deadline, so that shows as a failed test and not a hung run
+        // (the cache is then left open: closing it would wait on the lock).
+        func returns(_ call: @escaping @Sendable () -> Void) -> Bool {
+            let done = DispatchSemaphore(value: 0)
+            DispatchQueue.global().async { call(); done.signal() }
+            return done.wait(timeout: .now() + 10) == .success
+        }
+        // Eviction: the budget calls the cache under its own lock.
+        cache.index.insert(tag16: tag, fileBytes: 64, lastAccess: 10_000)
+        ledger.declareOccupancyKnown(wholeRootKey: wholeRootKey)
+        guard returns({ _ = ledger.enforce(budgetBytes: 0) }) else {
+            Issue.record("the eviction did not return")
+            return
+        }
+        #expect(cache.index.count == 0)
+        #expect(!ledger.isOccupancyKnown(wholeRootKey: wholeRootKey))
+        // Retirement by a pass, the same way.
+        cache.index.insert(tag16: tag, fileBytes: 64, lastAccess: 10_000)
+        ledger.declareOccupancyKnown(wholeRootKey: wholeRootKey)
+        guard returns({ _ = ledger.retireActiveEntries(root: modelRoot, urls: [url]) }) else {
+            Issue.record("the retirement did not return")
+            return
+        }
+        #expect(cache.index.count == 0)
+        #expect(!ledger.isOccupancyKnown(wholeRootKey: wholeRootKey))
+        cache.close()
     }
 
     @Test("a leading block unlinked behind the index is an absent miss, not corruption")

@@ -426,7 +426,15 @@ extension SSDHybridCheckpointStore {
                     // One step with the release of its record. A store that
                     // closed meanwhile keeps the file as before; its bytes
                     // are then counted as unowned.
-                    guard diskBudget.commitProven(claim, store: self, insert: insert) else {
+                    // Declined when its file is not a plain file any more.
+                    // Only a file shown to be missing is off the ledger: one
+                    // that could not be classified may still be on disk.
+                    let remains = {
+                        SSDBlockStore.indexedBlockFileStatus(at: url, under: self.config.root) != .missing
+                    }
+                    guard diskBudget.commitProven(
+                        claim, store: self, fileRemainsIfDeclined: remains, insert: insert)
+                    else {
                         result.outcome = .cacheEntryEvicted; return
                     }
                 }
@@ -501,9 +509,11 @@ extension SSDHybridCheckpointStore {
     /// before, and is counted as bytes no index owns.
     private func abandonPublishedFile(_ url: URL, speculative: Bool) -> SSDDiskReservation.Disposition {
         guard speculative else { return .abandonedOnDisk }
+        // Gone only if it is shown to be missing: a path that cannot be
+        // classified after a failed unlink may still hold the file.
         let gone = removalLock.withLock {
             _ = SSDBlockStore.removeItemIfSafe(at: url, under: config.root)
-            return SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) != .regular
+            return SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) == .missing
         }
         return gone ? .discarded : .abandonedOnDisk
     }

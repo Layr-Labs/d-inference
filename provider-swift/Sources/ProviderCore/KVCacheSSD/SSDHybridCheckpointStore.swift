@@ -51,8 +51,9 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
     let lock = NSLock()
     /// Serializes per-file removals (budget eviction, TTL expiry, corrupt
     /// drops, external reconciliation) with each other. Never held while
-    /// taking `lock` for anything but a state read; bodies do unlink + index
-    /// work only, so it nests safely inside `SSDDiskBudget`'s lock.
+    /// taking `lock` for anything but a state read or the write of
+    /// `unaccountedIndexDrop`; bodies do unlink + index work only and never
+    /// call the budget, so it nests safely inside `SSDDiskBudget`'s lock.
     let removalLock = NSLock()
     #if DEBUG
     /// Test-only: runs after a fresh checkpoint file is published and before

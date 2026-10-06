@@ -498,7 +498,8 @@ struct SSDDiskBudgetReservationTests {
     }
 
     @Test("a start-up scan that cannot finish drops its index with the files left on disk and makes occupancy unknown; the next whole pass counts those files as unowned and restores it",
-          arguments: ["a fan-out that is a symbolic link", "a fan-out that cannot be listed", "a model directory that cannot be listed", "a file whose name is not a tag"])
+          arguments: ["a fan-out that is a symbolic link", "a fan-out that cannot be listed", "a model directory that cannot be listed", "a file whose name is not a tag"]
+            .filter { getuid() != 0 || !$0.hasSuffix("cannot be listed") })
     func scanThatDropsItsIndexInvalidatesOccupancy(fault: String) async throws {
         let fixture = try SSDHybridCheckpointTestFixture(tokenCount: 2049)
         defer { fixture.remove() }
@@ -607,6 +608,137 @@ struct SSDDiskBudgetReservationTests {
         wholePass()
         #expect(ledger.isOccupancyKnown(wholeRootKey: key))
         await store.closeAndWait()
+    }
+
+    @Test("files removed under an active store by whole-root maintenance take their index entries with them and leave occupancy unknown until the next whole pass")
+    func destructiveChangeUnderAnActiveStoreInvalidates() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture(tokenCount: 2049)
+        defer { fixture.remove() }
+        let ledger = SSDDiskBudget()
+        let store = try fixture.makeStore(epoch: false, diskBudget: ledger, maxWriteBytesPerDay: 0)
+        defer { store.close() }
+        let key = SSDDiskBudget.rootKey(fixture.root)
+        #expect(try await donate(fixture, store, Self.coordinatorRepeat, receipt: 90, position: 256) == [256])
+        let file = fixture.file(store, position: 256)
+        #expect(ledger.isOccupancyKnown(wholeRootKey: key))
+        // A change that removes nothing drops nothing and changes nothing.
+        #expect(ledger.performActiveDestructiveChange(root: fixture.modelRoot) {} == true)
+        #expect(store.index.count == 1)
+        #expect(ledger.isOccupancyKnown(wholeRootKey: key))
+        // The body removes the file; the store did not.
+        #expect(ledger.performActiveDestructiveChange(root: fixture.modelRoot) {
+            try? FileManager.default.removeItem(at: file)
+        } == true)
+        #expect(store.index.count == 0)
+        #expect(!ledger.isOccupancyKnown(wholeRootKey: key), "absorbed before the ledger call returns")
+        _ = SSDWholeRootMaintainer().maintain(
+            root: fixture.root, ttlSeconds: 3600, nowSeconds: Int64(Date().timeIntervalSince1970),
+            budgetBytes: 1 << 30, budget: ledger)
+        #expect(ledger.isOccupancyKnown(wholeRootKey: key))
+        await store.closeAndWait()
+    }
+
+    @Test("invalidating one cache root's occupancy stops the first-sight writes in flight under that root and leaves another root's alone")
+    func unknownRootStopsOnlyItsOwnWrites() throws {
+        let budget = SSDDiskBudget()
+        let key = Self.wholeRootKey
+        let other = SSDDiskBudget.rootKey(URL(fileURLWithPath: "/tmp/darkbloom-ledger-other-\(UUID().uuidString)"))
+        let roomy = SSDDiskBudgetBasis.fixed(1 << 30)
+        budget.declareOccupancyKnown(wholeRootKey: key)
+        budget.declareOccupancyKnown(wholeRootKey: other)
+        let here = try #require(budget.reserveSpeculative(bytes: 5, keys: ["a"], wholeRootKey: key, basis: roomy))
+        let there = try #require(budget.reserveSpeculative(bytes: 5, keys: ["b"], wholeRootKey: other, basis: roomy))
+        budget.invalidateOccupancy(wholeRootKey: key)
+        #expect(here.isRevoked)
+        #expect(!there.isRevoked)
+        #expect(budget.isOccupancyKnown(wholeRootKey: other))
+        #expect(budget.mayPublishSpeculative(there, fileBytes: 5, basis: roomy))
+        #expect(!budget.mayPublishSpeculative(here, fileBytes: 5, basis: roomy))
+        budget.release(here, as: .discarded)
+        budget.release(there, as: .discarded)
+    }
+
+    @Test("a whole-root pass is disturbed only by what moves under the cache root it walks")
+    func passIsDisturbedOnlyByItsOwnRoot() throws {
+        let fixture = try SSDHybridCheckpointTestFixture(tokenCount: 2049)
+        defer { fixture.remove() }
+        let modelRoot = fixture.root.appendingPathComponent("111111111111", isDirectory: true)
+        try SSDBlockStore.prepareModelRoot(dedicatedRoot: fixture.root, modelRoot: modelRoot)
+        let file = SSDBlockStore.fileURL(root: modelRoot, tag16Hex: String(repeating: "1", count: 32))
+        let chunk = Data(repeating: 7, count: 4096)
+        try SSDBlockStore.write(
+            to: file,
+            metadata: SSDBlockMetadata(
+                lookupTag: String(repeating: "ab", count: 32), weightHash: "weight", layoutEpoch: "layout",
+                blockSize: 8, layerCount: 1,
+                chunks: [.init(layerIndex: 0, tensor: 0, shape: [1, 1, 1, 1], dtype: "float16")],
+                chunkPlaintextSizes: [chunk.count], createdAt: 1),
+            chunks: [chunk], kekKey: SymmetricKey(size: .bits256))
+        let ledger = SSDDiskBudget()
+        let key = SSDDiskBudget.rootKey(fixture.root)
+        let other = SSDDiskBudget.rootKey(URL(fileURLWithPath: "/tmp/darkbloom-other-root-\(UUID().uuidString)"))
+        let now = Int64(Date().timeIntervalSince1970)
+        // Another cache root on the same ledger moves during every walk.
+        let reads = Calls()
+        let walks = Calls()
+        let elsewhere = SSDWholeRootMaintainer(readAttributes: { url, keys in
+            reads.add()
+            ledger.invalidateOccupancy(wholeRootKey: other)
+            return try? url.resourceValues(forKeys: keys)
+        })
+        _ = elsewhere.maintain(root: fixture.root, ttlSeconds: 3600, nowSeconds: now, budget: ledger) {
+            walks.add()
+            return .fixed(1 << 30)
+        }
+        #expect(reads.count > 0, "the other root moved inside the walk")
+        #expect(walks.count == 1, "which did not make this pass walk again")
+        #expect(ledger.isOccupancyKnown(wholeRootKey: key))
+        // The same moves under this root leave it unknown after the last walk.
+        ledger.invalidateOccupancy(wholeRootKey: key)
+        let again = Calls()
+        let here = SSDWholeRootMaintainer(readAttributes: { url, keys in
+            ledger.invalidateOccupancy(wholeRootKey: key)
+            return try? url.resourceValues(forKeys: keys)
+        })
+        _ = here.maintain(root: fixture.root, ttlSeconds: 3600, nowSeconds: now, budget: ledger) {
+            again.add()
+            return .fixed(1 << 30)
+        }
+        #expect(again.count == 3)
+        #expect(!ledger.isOccupancyKnown(wholeRootKey: key))
+    }
+
+    @Test("a pass that is given an entry's attributes without its type has not seen everything",
+          arguments: ["model directory", "fan-out directory", "block file"])
+    func passWithoutAnEntrysTypeMakesOccupancyUnknown(untyped: String) throws {
+        let fixture = try SSDHybridCheckpointTestFixture(tokenCount: 2049)
+        defer { fixture.remove() }
+        let modelRoot = fixture.root.appendingPathComponent("111111111111", isDirectory: true)
+        try SSDBlockStore.prepareModelRoot(dedicatedRoot: fixture.root, modelRoot: modelRoot)
+        let file = SSDBlockStore.fileURL(root: modelRoot, tag16Hex: String(repeating: "1", count: 32))
+        let chunk = Data(repeating: 7, count: 4096)
+        try SSDBlockStore.write(
+            to: file,
+            metadata: SSDBlockMetadata(
+                lookupTag: String(repeating: "ab", count: 32), weightHash: "weight", layoutEpoch: "layout",
+                blockSize: 8, layerCount: 1,
+                chunks: [.init(layerIndex: 0, tensor: 0, shape: [1, 1, 1, 1], dtype: "float16")],
+                chunkPlaintextSizes: [chunk.count], createdAt: 1),
+            chunks: [chunk], kekKey: SymmetricKey(size: .bits256))
+        let ledger = SSDDiskBudget()
+        let key = SSDDiskBudget.rootKey(fixture.root)
+        let now = Int64(Date().timeIntervalSince1970)
+        let name = untyped == "model directory" ? modelRoot.lastPathComponent
+            : untyped == "fan-out directory" ? file.deletingLastPathComponent().lastPathComponent : file.lastPathComponent
+        // The read succeeds and returns no type for that one entry.
+        let blank = SSDWholeRootMaintainer(readAttributes: { url, keys in
+            url.lastPathComponent == name ? URLResourceValues() : try? url.resourceValues(forKeys: keys)
+        })
+        _ = blank.maintain(root: fixture.root, ttlSeconds: 3600, nowSeconds: now, budgetBytes: 1 << 30, budget: ledger)
+        #expect(!ledger.isOccupancyKnown(wholeRootKey: key))
+        _ = SSDWholeRootMaintainer().maintain(
+            root: fixture.root, ttlSeconds: 3600, nowSeconds: now, budgetBytes: 1 << 30, budget: ledger)
+        #expect(ledger.isOccupancyKnown(wholeRootKey: key))
     }
 
     @Test("a pass that cannot read an entry's attributes has not seen everything: occupancy becomes unknown until a pass that can",
@@ -744,12 +876,155 @@ struct SSDDiskBudgetReservationTests {
             at: link.deletingLastPathComponent(), withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: ours)
         #expect(SSDWholeRootMaintainer.header(of: link) == .notOwned)
-        // Present, a plain file, and not openable: the bytes are there and unseen.
+        #expect(SSDWholeRootMaintainer.isGone(file("3")))
+        #expect(!SSDWholeRootMaintainer.isGone(ours))
+        // Present, a plain file, and not openable: the bytes are there and
+        // unseen. A root user opens it whatever its mode.
+        guard getuid() != 0 else { return }
         try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: ours.path)
         defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: ours.path) }
         #expect(SSDWholeRootMaintainer.header(of: ours) == .unreadable)
-        #expect(SSDWholeRootMaintainer.isGone(file("3")))
-        #expect(!SSDWholeRootMaintainer.isGone(ours))
+    }
+
+    @Test("a header read that fails with an error that carries no error number leaves a present plain block file unread, not foreign; only its name, or what lstat shows of it and of the fan-out, model and cache directories above it, proves it is not ours")
+    func untypedHeaderFailureIsNotProofOfAForeignFile() throws {
+        let fixture = try SSDHybridCheckpointTestFixture(tokenCount: 2049)
+        defer { fixture.remove() }
+        let manager = FileManager.default
+        let modelName = "111111111111"
+        let modelRoot = fixture.root.appendingPathComponent(modelName, isDirectory: true)
+        try SSDBlockStore.prepareModelRoot(dedicatedRoot: fixture.root, modelRoot: modelRoot)
+        func block(_ digit: String, under root: URL = modelRoot) -> URL {
+            SSDBlockStore.fileURL(root: root, tag16Hex: String(repeating: digit, count: 32))
+        }
+        func plainFile(_ url: URL) throws {
+            try manager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("bytes on disk".utf8).write(to: url)
+        }
+        // What `readMetadataOnly` throws for a path it refuses and for a
+        // read that fails without an errno.
+        func outcome(_ url: URL) -> SSDWholeRootMaintainer.HeaderRead {
+            SSDWholeRootMaintainer.header(of: url) { _ in throw SSDBlockStoreError.ioFailure("injected") }
+        }
+        // A plain file under a block's name and real directories: the failed
+        // read says nothing about whose file it is.
+        let present = block("1")
+        try plainFile(present)
+        #expect(SSDBlockStore.isSafeBlockURL(present))
+        #expect(outcome(present) == .unreadable)
+        // The same file reached through a path that the path check refuses
+        // for a reason lstat does not show: a symbolic link above the cache
+        // root. A check that failed on an attribute it could not read is
+        // refused the same way.
+        let above = fixture.root.deletingLastPathComponent()
+        let alias = above.appendingPathComponent("darkbloom-header-alias-\(UUID().uuidString)", isDirectory: true)
+        try manager.createSymbolicLink(at: alias, withDestinationURL: above)
+        defer { try? manager.removeItem(at: alias) }
+        let throughAlias = block(
+            "1",
+            under: alias.appendingPathComponent(fixture.root.lastPathComponent, isDirectory: true)
+                .appendingPathComponent(modelName, isDirectory: true))
+        #expect(manager.fileExists(atPath: throughAlias.path))
+        #expect(!SSDBlockStore.isSafeBlockURL(throughAlias), "the path check refuses it")
+        #expect(outcome(throughAlias) == .unreadable, "and that is not proof that the file is foreign")
+        // A cache root that lstat shows is itself a symbolic link is proof.
+        let linkedRoot = above.appendingPathComponent("darkbloom-header-root-\(UUID().uuidString)", isDirectory: true)
+        try manager.createSymbolicLink(at: linkedRoot, withDestinationURL: fixture.root)
+        defer { try? manager.removeItem(at: linkedRoot) }
+        #expect(outcome(block("1", under: linkedRoot.appendingPathComponent(modelName, isDirectory: true))) == .notOwned)
+        // Not a block's name.
+        let stray = present.deletingLastPathComponent().appendingPathComponent("notes.txt")
+        try plainFile(stray)
+        #expect(outcome(stray) == .notOwned)
+        // A fan-out that lstat shows is a symbolic link.
+        let elsewhere = fixture.root.deletingLastPathComponent()
+            .appendingPathComponent("darkbloom-header-target-\(UUID().uuidString)", isDirectory: true)
+        try manager.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        defer { try? manager.removeItem(at: elsewhere) }
+        let underLink = block("2")
+        try manager.createSymbolicLink(at: underLink.deletingLastPathComponent(), withDestinationURL: elsewhere)
+        try Data("bytes on disk".utf8).write(to: elsewhere.appendingPathComponent(underLink.lastPathComponent))
+        #expect(outcome(underLink) == .notOwned)
+        // A model directory that lstat shows is a symbolic link.
+        let linkedModel = fixture.root.appendingPathComponent("222222222222", isDirectory: true)
+        try manager.createSymbolicLink(at: linkedModel, withDestinationURL: modelRoot)
+        #expect(outcome(block("1", under: linkedModel)) == .notOwned)
+        // Not a plain file, and gone.
+        let directory = block("3")
+        try manager.createDirectory(at: directory, withIntermediateDirectories: true)
+        #expect(outcome(directory) == .notOwned)
+        #expect(outcome(block("4")) == .gone)
+        // The classifier's own lstat fails for a reason other than "no such
+        // file" (here: a path component that is not a directory). Nothing is
+        // shown about the file, so it is not foreign and not gone.
+        #expect(outcome(stray.appendingPathComponent(present.lastPathComponent)) == .unreadable)
+        // Failures that do carry an error number, and any other error.
+        func typed(_ code: Int32) -> SSDWholeRootMaintainer.HeaderRead {
+            SSDWholeRootMaintainer.header(of: present) { _ in throw SSDBlockStoreError.posixFailure("injected", code: code) }
+        }
+        #expect(typed(ENOENT) == .gone)
+        #expect(typed(EACCES) == .unreadable)
+        #expect(typed(EIO) == .unreadable)
+        #expect(SSDWholeRootMaintainer.header(of: present) { _ in throw CocoaError(.fileReadUnknown) } == .unreadable)
+        #expect(SSDWholeRootMaintainer.header(of: block("4")) { _ in throw CocoaError(.fileReadUnknown) } == .gone)
+    }
+
+    @Test("a write whose published file is not indexed is off the ledger only if the file is shown to be missing: a path that is not a plain file, cannot be classified, or could not be unlinked keeps its bytes counted as unowned",
+          arguments: [
+            "proven, path replaced", "first sight, path replaced", "proven, file removed", "first sight, file removed",
+            "proven, fan-out unreadable", "first sight, fan-out unreadable", "first sight, unlink refused",
+          ].filter { getuid() != 0 || !($0.hasSuffix("unreadable") || $0.hasSuffix("refused")) })
+    func publishedFileThatIsNotIndexedStaysOnTheLedgerUnlessMissing(scenario: String) async throws {
+        let fixture = try SSDHybridCheckpointTestFixture(tokenCount: 2049)
+        defer { fixture.remove() }
+        let ledger = SSDDiskBudget()
+        let disk = DiskBudget()
+        let store = try fixture.makeStore(
+            epoch: false, diskBudget: ledger, maxWriteBytesPerDay: 0, diskBudgetBytes: { disk.bytes })
+        defer { store.close() }
+        let key = SSDDiskBudget.rootKey(fixture.root)
+        #expect(ledger.isOccupancyKnown(wholeRootKey: key))
+        #expect(ledger.unownedBytesSnapshot(wholeRootKey: key) == 0)
+        let file = fixture.file(store, position: 256)
+        let fanout = file.deletingLastPathComponent()
+        let stored = try storedBytes(fixture, store, position: 256)
+        let firstSight = scenario.hasPrefix("first sight")
+        let manager = FileManager.default
+        defer { try? manager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fanout.path) }
+        // After the file is published and before it is indexed, something
+        // happens to its path. A first-sight write is then refused at its
+        // commit check, because its room is gone.
+        store.lock.withLock {
+            store.beforeWriteIndexForTesting = { url, _ in
+                guard url == file else { return }
+                switch scenario.split(separator: ", ").last {
+                case "path replaced":
+                    try? FileManager.default.removeItem(at: url)
+                    try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+                case "file removed":
+                    try? FileManager.default.removeItem(at: url)
+                case "fan-out unreadable":
+                    // The file is there; its directory cannot be opened.
+                    try? FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: fanout.path)
+                default:
+                    // The file is there and plain; its directory refuses the unlink.
+                    try? FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: fanout.path)
+                }
+                if firstSight { disk.bytes = 0 }
+            }
+        }
+        #expect(try await donate(fixture, store, firstSight ? Self.firstSight : Self.coordinatorRepeat, receipt: 91, position: 256).isEmpty)
+        #expect(store.index.count == 0)
+        #expect(ledger.reservedBytesSnapshot == 0)
+        try? manager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fanout.path)
+        if scenario.hasSuffix("file removed") {
+            #expect(ledger.unownedBytesSnapshot(wholeRootKey: key) == 0, "a file shown to be missing is off the ledger")
+        } else {
+            #expect(ledger.unownedBytesSnapshot(wholeRootKey: key) == stored,
+                    "what is at the path was not shown to be gone: its stored size is counted once as bytes no index owns")
+            if !scenario.hasSuffix("path replaced") { #expect(exists(file), "the file is still on disk") }
+        }
+        await store.closeAndWait()
     }
 
     @Test("a whole pass that ends disturbed with the root still unknown walks again, a bounded number of times, and does not lower the figure or make the root known while it stays disturbed")
@@ -788,7 +1063,8 @@ struct SSDDiskBudgetReservationTests {
             return .fixed(1 << 30)
         }
         _ = maintainer.maintain(root: fixture.root, ttlSeconds: 3600, nowSeconds: now, budget: ledger, basis: disturbing)
-        #expect(walks.count == SSDWholeRootMaintainer.maximumWalksPerPass)
+        #expect(walks.count == 3)
+        #expect(SSDWholeRootMaintainer.maximumWalksPerPass == 3)
         #expect(!ledger.isOccupancyKnown(wholeRootKey: key))
         #expect(ledger.unownedBytesSnapshot(wholeRootKey: key) == unloadedBytes, "a disturbed walk cannot lower it")
         // Disturbed once: the second walk of the same pass makes it known.
@@ -1996,6 +2272,7 @@ struct SSDDiskBudgetReservationTests {
     }
 
     @Test("a pass that cannot list a directory does not lower the bytes a first-sight checkpoint is held to, and admits none until a pass can",
+          .enabled(if: getuid() != 0, "a root user can list a directory whatever its mode"),
           arguments: ["fan-out directory", "model directory"])
     func passThatCannotListADirectoryRaisesOnly(unlistable: String) async throws {
         let fixture = try SSDHybridCheckpointTestFixture(tokenCount: 2049)

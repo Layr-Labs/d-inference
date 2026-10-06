@@ -575,7 +575,7 @@ What speculation can cost proven writes
   is a wait for the cache's disk-budget lock before its first byte and
   again at its index step (the file is published but not yet indexed while
   it waits); a block-tier write pays the same for each block. An eviction
-  loop, a whole-root retirement or a reconcile in another store can hold
+  loop, a whole-root retirement, a reconcile or a block-tier TTL sweep in another store can hold
   that lock. The
   remaining limits (a budget reading that is out of date, an unowned-bytes
   figure that is too high or too low, the free figure) are in limit 10.
@@ -609,7 +609,9 @@ file's attributes or header, after a start-up scan that failed, or after a
 cache file was found missing or left behind by a failed unlink, the provider
 declines every first-sight write under that root; `write_speculative_limited`
 then grows with no write or disk pressure, the provider's log (category
-`ssd_disk_budget`) says the occupancy of the cache root is unknown and why,
+`ssd_disk_budget`) says the occupancy of the cache root is unknown (with the
+reason only for a root that was known before, and never naming the
+directory, file or header that stopped a pass),
 and the next whole pass (at most 60 seconds later) restores first sight
 unless the fault persists. A directory or cache file that stays unreadable
 keeps first sight off for every model under that cache root until it is

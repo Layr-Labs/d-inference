@@ -59,10 +59,17 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
         return lstat(url.path, &status) != 0 && errno == ENOENT
     }
 
-    static func header(of url: URL) -> HeaderRead {
-        do {
+    /// `reading` is replaceable in tests; it reads the header and throws
+    /// what `SSDBlockStore.readMetadataOnly` throws.
+    static func header(
+        of url: URL,
+        reading: (URL) throws -> Void = {
             _ = try SSDBlockStore.readMetadataOnly(
-                from: url, maximumMetadataBytes: 1 << 20, maximumWrappedDEKBytes: 60)
+                from: $0, maximumMetadataBytes: 1 << 20, maximumWrappedDEKBytes: 60)
+        }
+    ) -> HeaderRead {
+        do {
+            try reading(url)
             return .owned
         } catch let error as SSDBlockStoreError {
             switch error {
@@ -72,17 +79,31 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
             case .posixFailure(_, let code):
                 return code == ENOENT ? .gone : .unreadable
             case .ioFailure:
-                // Thrown for a path that is not a plain file under real
-                // directories, and for a file that could not be read. Only
-                // what `lstat` itself shows is taken as proof of the former.
-                var status = stat()
-                guard lstat(url.path, &status) == 0 else { return errno == ENOENT ? .gone : .unreadable }
-                guard status.st_mode & S_IFMT == S_IFREG else { return .notOwned }
-                return SSDBlockStore.isSafeBlockURL(url) ? .unreadable : .notOwned
+                return afterUntypedFailure(url)
             }
         } catch {
             return isGone(url) ? .gone : .unreadable
         }
+    }
+
+    /// `ioFailure` is thrown for a path that is not a plain file under real
+    /// directories, and for a file that could not be read. The former is
+    /// taken as proved only by the name and by what `lstat` shows of the
+    /// file and of the fan-out, model and cache directories above it. A
+    /// path check that failed because an attribute could not be read, or
+    /// for any reason `lstat` does not show, proves nothing: the file is
+    /// there and its bytes are unseen.
+    private static func afterUntypedFailure(_ url: URL) -> HeaderRead {
+        var status = stat()
+        guard lstat(url.path, &status) == 0 else { return errno == ENOENT ? .gone : .unreadable }
+        guard status.st_mode & S_IFMT == S_IFREG, SSDBlockStore.hasBlockFileName(url) else { return .notOwned }
+        var directory = url
+        for _ in 0..<3 {
+            directory = directory.deletingLastPathComponent()
+            guard lstat(directory.path, &status) == 0 else { return isGone(url) ? .gone : .unreadable }
+            guard status.st_mode & S_IFMT == S_IFDIR else { return .notOwned }
+        }
+        return .unreadable
     }
 
     private struct OwnedFile {
@@ -108,8 +129,8 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
         var blocks: [OwnedFile] = []
         var tempFiles: [OwnedTempFile] = []
         /// False when the root, a model directory or a fan-out could not be
-        /// listed, or an entry's attributes or size could not be read: the
-        /// walk then saw less than is on disk.
+        /// listed, or an entry's attributes, type, size or block header
+        /// could not be read: the walk then saw less than is on disk.
         var complete = true
     }
 
@@ -173,10 +194,11 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
     /// active entries through it, learns from it which temp and not-yet-
     /// indexed files belong to in-flight speculative writes, and publishes to
     /// it the bytes that no registered index counts. `basis` resolves the
-    /// budget; it is called once the pass holds its lock and its observation
-    /// window is open, so a speculative write whose bytes are in that reading
-    /// of the volume is known to the window even if it is gone before the
-    /// walk reaches its directory.
+    /// budget; it is called once per walk (a pass walks up to
+    /// `maximumWalksPerPass` times), after the pass holds its lock and that
+    /// walk's observation window is open, so a speculative write whose bytes
+    /// are in that reading of the volume is known to the window even if it
+    /// is gone before the walk reaches its directory.
     @discardableResult
     func maintain(
         root: URL,
@@ -383,6 +405,8 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
             // with files in it: the walk has then not seen everything.
             guard let modelValues = readAttributes(modelDir, [.isDirectoryKey, .isSymbolicLinkKey])
             else { if !Self.isGone(modelDir) { contents.complete = false }; continue }
+            // A type that was not returned is a type that was not read.
+            if modelValues.isDirectory == nil { contents.complete = false }
             guard modelValues.isDirectory == true, modelValues.isSymbolicLink != true else { continue }
             guard let fanouts = try? fm.contentsOfDirectory(
                 at: modelDir,
@@ -394,6 +418,7 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
                 guard SSDBlockStore.isLowerHex(fanout.lastPathComponent, count: 2) else { continue }
                 guard let fanoutValues = readAttributes(fanout, [.isDirectoryKey, .isSymbolicLinkKey])
                 else { if !Self.isGone(fanout) { contents.complete = false }; continue }
+                if fanoutValues.isDirectory == nil { contents.complete = false }
                 guard fanoutValues.isDirectory == true, fanoutValues.isSymbolicLink != true else { continue }
                 guard let entries = try? fm.contentsOfDirectory(
                     at: fanout,
@@ -403,6 +428,7 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
                 for url in entries {
                     guard let values = readAttributes(url, keys)
                     else { if !Self.isGone(url) { contents.complete = false }; continue }
+                    if values.isRegularFile == nil { contents.complete = false }
                     guard values.isRegularFile == true, values.isSymbolicLink != true else { continue }
                     // Counted as empty below; its real size is not known.
                     if values.fileSize == nil { contents.complete = false }

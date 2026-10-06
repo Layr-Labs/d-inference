@@ -305,7 +305,9 @@ final class SSDDiskReservation: @unchecked Sendable {
 /// Enforcement runs only on the (serial, utility-QoS) write-behind
 /// consumers. The byte total is read under the same lock when a speculative
 /// checkpoint is offered (`hasSpeculativeRoom`), on the engine's
-/// publication path, so such an offer can wait for an enforcement pass.
+/// publication path, so such an offer can wait for an enforcement pass, and
+/// for a block cache's TTL sweep, which holds this lock across its unlinks
+/// on the consumer and on its periodic task.
 ///
 /// The budget also keeps the ledger that makes a speculative (first-sight)
 /// write safe to admit: reservations for the complete stored size of every
@@ -321,8 +323,9 @@ final class SSDDiskReservation: @unchecked Sendable {
 /// no volume is queried under it. A store's state lock and a write-behind's
 /// queue lock are taken under this lock as leaves (`ownsEvictionRoot`,
 /// `queuedWriteBytes`, `takeUnaccountedIndexDrop`, the closure of
-/// `registerProven`, the closure of `invalidateOccupancy`): their holders
-/// never call the budget.
+/// `registerProven`, the closure of `invalidateOccupancy`, and the flag a
+/// store sets when a reconcile inside a ledger call drops an entry): their
+/// holders never call the budget.
 ///
 /// What the ledger assumes of its callers, as both factories arrange it: the
 /// stores on one budget share one whole root when the budget moves with the
@@ -333,10 +336,11 @@ final class SSDDiskReservation: @unchecked Sendable {
 /// occupancy of its whole root is known: a pass that listed every directory
 /// and read every attribute has published the unowned bytes, and nothing has
 /// invalidated that figure since. A root no pass has published, a pass that
-/// could not see everything and a start-up scan that dropped index entries
-/// whose files are still on disk all leave it unknown, and every speculative
-/// write there is declined until a whole pass restores it. Proven writes
-/// are not affected.
+/// could not see everything, a start-up scan that could not finish and an
+/// index entry dropped anywhere else without its file (by a reader, a
+/// corrupt drop, a TTL sweep, a reconcile or a whole-root removal) all leave
+/// it unknown, and every speculative write there is declined until a whole
+/// pass restores it. Proven writes are not affected.
 final class SSDDiskBudget: @unchecked Sendable {
 
     static let shared = SSDDiskBudget()
@@ -382,7 +386,11 @@ final class SSDDiskBudget: @unchecked Sendable {
     /// reading taken before such a release may not have those bytes on it,
     /// while the ledger no longer counts them as still to land; a
     /// speculative write's publish and commit checks subtract what was
-    /// settled since their reading.
+    /// settled since their reading. The mark is taken just before the
+    /// reading and whole records are subtracted, so a record that settled in
+    /// that span with its bytes already on the volume is taken off although
+    /// the reading has it: the check is then too strict by up to half of
+    /// that record and can decline a write that would have fitted.
     private var settledBytes: UInt64 = 0
 
     struct WholeRootObservation {
@@ -472,6 +480,21 @@ final class SSDDiskBudget: @unchecked Sendable {
             }) else { return nil }
             defer { absorbUnaccountedDropsLocked() }
             return owner.store.retireOwnedEntries(urls)
+        }
+    }
+
+    /// Runs a store's own retirement of entries (its TTL sweep) under the
+    /// budget lock, as an eviction or a pass's retirement runs. No pass can
+    /// then publish between a file's unlink and the removal of its entry,
+    /// and an entry the store drops without having removed its file is
+    /// absorbed before this returns. `body` may take what a removal takes (a
+    /// store's removal lock, then its state lock, its epoch store's locks
+    /// and its index lock) and may unlink files; it must not call the budget
+    /// or wait for a file lease.
+    func performStoreRetirement<T>(_ body: () -> T) -> T {
+        lock.withLock {
+            defer { absorbUnaccountedDropsLocked() }
+            return body()
         }
     }
 
@@ -645,14 +668,18 @@ final class SSDDiskBudget: @unchecked Sendable {
     /// that index is no longer summed and the file's bytes are counted as
     /// unowned instead; a nil `store` is one that is gone if `storeIsKnown`,
     /// and otherwise a writer with no store behind it (tests). Returns what
-    /// `insert` returned.
+    /// `insert` returned. When `insert` declines, the write's bytes are off
+    /// the ledger only if its file is gone: `fileRemainsIfDeclined` says
+    /// whether it may still be on disk (anything but a file shown to be
+    /// missing), and its bytes are then counted as unowned.
     func commitProven(
         _ reservation: SSDDiskReservation, store: SSDEvictableStore?, storeIsKnown: Bool = false,
+        fileRemainsIfDeclined: () -> Bool = { false },
         insert: () -> Bool
     ) -> Bool {
         lock.withLock {
             guard insert() else {
-                releaseLocked(reservation, as: .discarded)
+                releaseLocked(reservation, as: fileRemainsIfDeclined() ? .abandonedOnDisk : .discarded)
                 return false
             }
             let registered = store.map { stores[ObjectIdentifier($0)] != nil } ?? !storeIsKnown

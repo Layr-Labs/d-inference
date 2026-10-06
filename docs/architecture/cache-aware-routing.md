@@ -1281,7 +1281,7 @@ the same room. The rule, with its constants, is in the
   does wait for is the budget lock, before its first byte and again at its
   index step (the file is published but not yet indexed while it waits); a
   block-tier job takes it for each block. An eviction loop, a whole-root
-  retirement or a reconcile in another store can hold that lock. The
+  retirement, a reconcile or a block-tier TTL sweep in another store can hold that lock. The
   registration asks the volume for its free bytes only while a first-sight
   write is in flight; the low-disk check before the write reads the volume
   as before. The pass after the write now reads it inside the pass, and the
@@ -1299,7 +1299,10 @@ the same room. The rule, with its constants, is in the
   file stays on disk unindexed and its bytes are counted as unowned). Both
   checks read the volume outside the budget lock and take off that reading
   the bytes other writers settled on disk before the lock was taken, so a
-  proven write that lands and is indexed in between cannot make them pass. At the
+  proven write that lands and is indexed in between cannot make them pass
+  (whole records settled since just before the reading are taken off, so a
+  record already on the volume at the reading makes the check too strict by
+  up to half of its bytes and can decline a write that would have fitted). At the
   last two points, as at the grant, the room must also hold the proven work
   queued in every store on the budget, which has no reservation yet. Each of
   the three settles `write_speculative_limited`, except that a published
@@ -1508,7 +1511,9 @@ Limits:
       could not list a directory, read an entry's attributes or size, or
       open a block file's header (a file that is there and could not be
       read, as opposed to one whose header was read and is not ours, or
-      that went away since it was listed); after a start-up scan that could
+      that went away since it was listed; a read that fails with an error
+      that carries no error number counts as not read unless the file's
+      name or `lstat` shows it is not a block file of this cache); after a start-up scan that could
       not finish; and after an index entry was dropped whose file its store
       did not remove in the same step (a file found missing by a reader or
       by the reconcile that follows a pass, a corrupt file that was already
@@ -1517,7 +1522,10 @@ Limits:
       flight is told to stop and is not published or indexed; proven writes
       are not affected. The next whole, undisturbed pass counts the files as
       unowned and restores it; a whole pass that ends disturbed with the
-      root still unknown walks again, at most three times in one pass. The
+      root still unknown walks again, at most three times in one pass;
+      writers and a model load wait behind those walks, and once a waiting
+      store's queue is full further proven donations to it settle
+      `write_queue_full`. The
       provider logs each change between known and unknown. A known figure
       can still miss files that arrived from outside the provider since the
       last pass, and block files whose header was read and is not ours,

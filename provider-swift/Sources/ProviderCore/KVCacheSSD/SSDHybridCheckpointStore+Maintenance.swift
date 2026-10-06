@@ -59,8 +59,9 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
         guard !removed.isEmpty else { return }
         // Their files went without this store removing them, or could not be
         // classified: what the last pass published may no longer be enough.
-        // Set before the drop and again after it, so that neither a check
-        // nor a pass that reads the flag in between is the last to see it.
+        // Every caller in the provider holds the budget lock, which absorbs
+        // this flag before it is released. It is set before the drop as
+        // well as after it only as a backstop for a caller that does not.
         lock.withLock { unaccountedIndexDrop = true }
         performIndexReconciliation { removed.forEach { _ = self.index.remove(tag16: $0) } }
         lock.withLock { unaccountedIndexDrop = true }

@@ -1798,6 +1798,9 @@ public final class SSDPrefixCache:
         retireIndexedEntries(urls).removed
     }
 
+    /// Every caller holds the budget lock: the budget's eviction and
+    /// retirement call in under it, and the TTL sweep takes it through
+    /// `performStoreRetirement`.
     private func retireIndexedEntries(_ urls: [URL]) -> SSDOwnedEntryRetirement.Result {
         let result: SSDOwnedEntryRetirement.Result? = removalLock.withLock {
             guard hasSafeRoot, ownsEvictionRoot else { return nil }
@@ -1815,8 +1818,9 @@ public final class SSDPrefixCache:
         guard !removed.isEmpty else { return }
         // Their files went without this cache removing them, or could not be
         // classified: what the last pass published may no longer be enough.
-        // Set before the drop and again after it, so that neither a check
-        // nor a pass that reads the flag in between is the last to see it.
+        // Every caller in the provider holds the budget lock, which absorbs
+        // this flag before it is released. It is set before the drop as
+        // well as after it only as a backstop for a caller that does not.
         lock.withLock { unaccountedIndexDrop = true }
         performIndexReconciliation {
             for tag16 in removed {
@@ -1892,10 +1896,19 @@ public final class SSDPrefixCache:
     /// older than the sliding TTL.
     func sweepExpiredEntries() {
         guard hasSafeRoot else { return }
-        let expired = index.expired(now: config.nowSeconds(), ttlSeconds: config.ttlSeconds)
-        guard !expired.isEmpty else { return }
-        let urls = expired.map { SSDBlockStore.fileURL(root: config.root, tag16Hex: SSDLookupKeys.hex($0)) }
-        let removed = retireIndexedEntries(urls).removed.count
+        // A sweep with nothing to expire never takes the budget lock.
+        guard !index.expired(now: config.nowSeconds(), ttlSeconds: config.ttlSeconds).isEmpty else { return }
+        // Under the budget lock, as an eviction is: a whole-root pass cannot
+        // publish between a file's unlink and the removal of its entry, and
+        // an entry dropped without its file changes the occupancy of its
+        // cache root before the lock is released. What is expired is read
+        // again once the lock is held, so an entry used while the sweep
+        // waited for it is kept.
+        let removed = diskBudget.performStoreRetirement {
+            let expired = index.expired(now: config.nowSeconds(), ttlSeconds: config.ttlSeconds)
+            let urls = expired.map { SSDBlockStore.fileURL(root: config.root, tag16Hex: SSDLookupKeys.hex($0)) }
+            return retireIndexedEntries(urls).removed.count
+        }
         if removed > 0 { statsBox.add(ttlExpired: removed) }
     }
 

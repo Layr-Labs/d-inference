@@ -30,6 +30,7 @@ import "time"
 //   - verified identity's durable state restoration has completed
 //   - private-only admission (a private-only box is excluded unless allowPrivate)
 //   - legacy hardware-trust floor, or current qualified App Attest lease
+//     (App Attest-only connections require the lease even at TrustNone)
 //   - runtime verified
 //   - private-text (E2E) support
 //   - current legacy challenge, or current App Attest lease
@@ -38,7 +39,8 @@ import "time"
 // private-only machine. Callers relax BOTH (minTrust=TrustNone, allowPrivate=
 // true) for a caller's own self-route to a personal (un-enrolled) Mac; every
 // privacy-critical gate (runtime, private-text, challenge freshness) still
-// applies, so plaintext is never exposed and only the genuinely-signed provider
+// applies, as does an App Attest-only connection's lease requirement, so
+// plaintext is never exposed and only the genuinely-signed provider
 // binary serves. This is exactly the set of gates publiclyRoutableLocked
 // enforces. Caller holds r.mu and p.mu.
 func (r *Registry) providerLivenessGateLocked(p *Provider, minTrust TrustLevel, allowPrivate bool, now time.Time) bool {

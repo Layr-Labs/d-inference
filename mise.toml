@@ -1,6 +1,6 @@
 [tools]
-# Coordinator (Go control plane). Source of truth: go.mod `go 1.25.0`.
-go = "1.25.0"
+# Coordinator (Go control plane). Source of truth: go.mod `go 1.25.7`.
+go = "1.25.7"
 
 # Prompt-contract sidecar. CI and the coordinator container use the same
 # release so Cargo.lock resolution and language semantics stay reproducible.

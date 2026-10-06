@@ -97,11 +97,8 @@ func (s *MemoryStore) GetProviderToken(token string) (*store.ProviderToken, erro
 
 	h := store.HashKey(token)
 	pt, ok := s.providerTokens[h]
-	if !ok {
-		return nil, errors.New("provider token not found")
-	}
-	if !pt.Active {
-		return nil, errors.New("provider token is revoked")
+	if !ok || !pt.Active {
+		return nil, store.ErrProviderTokenInvalid
 	}
 	copy := *pt
 	return &copy, nil

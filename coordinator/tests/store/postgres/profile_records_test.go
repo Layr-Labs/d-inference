@@ -89,9 +89,6 @@ func TestRequestProfileColumnsStayAligned(t *testing.T) {
 			t.Fatalf("duplicate request_profiles column %q", col)
 		}
 		seen[col] = true
-		if !strings.Contains(profilesql.RequestTableDDL, "\n\t\t\t"+col+" ") {
-			t.Errorf("request_profiles DDL lacks column %q", col)
-		}
 	}
 	if want := reflect.TypeOf(r).NumField(); len(profilesql.RequestColumns) != want {
 		t.Fatalf("request_profiles has %d columns but RequestProfileRecord has %d fields", len(profilesql.RequestColumns), want)
@@ -111,9 +108,6 @@ func TestRequestProfileColumnsStayAligned(t *testing.T) {
 			t.Fatalf("duplicate fleet_snapshots column %q", col)
 		}
 		seen[col] = true
-		if !strings.Contains(profilesql.FleetTableDDL, "\n\t\t\t"+col+" ") {
-			t.Errorf("fleet_snapshots DDL lacks column %q", col)
-		}
 	}
 	if want := reflect.TypeOf(f).NumField(); len(profilesql.FleetColumns) != want {
 		t.Fatalf("fleet_snapshots has %d columns but FleetSnapshotRow has %d fields", len(profilesql.FleetColumns), want)
@@ -132,6 +126,26 @@ func TestRequestProfileColumnsStayAligned(t *testing.T) {
 		tag := strings.Split(ft.Field(i).Tag.Get("json"), ",")[0]
 		if tag != profilesql.FleetColumns[i] {
 			t.Errorf("FleetSnapshotRow.%s json tag %q != column %q", ft.Field(i).Name, tag, profilesql.FleetColumns[i])
+		}
+	}
+}
+
+// Projection columns must exist after all migrations, including additive versions.
+func TestProfileProjectionColumnsExistInMigratedSchema(t *testing.T) {
+	s := testPostgresStore(t)
+	for table, columns := range map[string][]string{
+		"request_profiles": profilesql.RequestColumns,
+		"fleet_snapshots":  profilesql.FleetColumns,
+	} {
+		actual := queryLines(t, s.pool, "SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = '"+table+"'")
+		available := make(map[string]bool, len(actual))
+		for _, column := range actual {
+			available[column] = true
+		}
+		for _, column := range columns {
+			if !available[column] {
+				t.Errorf("migrated %s lacks projection column %q", table, column)
+			}
 		}
 	}
 }
@@ -208,10 +222,9 @@ func TestPostgresPruneTelemetryRespectsBatch(t *testing.T) {
 func TestPostgresProfilerMigrationIdempotent(t *testing.T) {
 	s := testPostgresStore(t)
 	ctx := context.Background()
-	// openPostgresFixture already ran migrate once; a restart runs it again.
-	if err := s.reopen(ctx); err != nil {
-		t.Fatalf("re-running migrate: %v", err)
-	}
+	// openPostgresFixture already ran the migrations once; replaying them on
+	// the migrated database must change nothing.
+	replayMigrations(t, s)
 	for _, idx := range []string{
 		"idx_request_profiles_created", "idx_request_profiles_coord", "idx_request_profiles_provider",
 		"request_profiles_request_id_attempt_key",

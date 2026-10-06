@@ -18,6 +18,14 @@
 - The scrub removes emails, labels, serial numbers, MDA chains, locations, raw logs, App Attest proofs, referrer codes, Stripe IDs and the named wallet addresses in one checked transaction, forfeits the balance with an `erasure_forfeit` ledger entry, and queues the deletion of every Stripe account and recipient the account used. Rows of a Secure Enclave or App Attest key another account shares are kept. IDs and financial records stay.
 - The confirm call repeats the account ID and the planned wallet list. A Stripe payout paid within 30 days still blocks erasure. After the scrub, any late credit is kept out of the balance and listed for review as `refused_credits`. Stripe deletions stay manual until the outbox worker ships.
 
+## Unreleased — personal data in coordinator logs
+
+- Stop writing email addresses, IP addresses, device serial numbers and MDA UDIDs to coordinator process logs, which are forwarded to Datadog. Log lines name accounts by `account_id` (`user_id` in the access log) and providers by `provider_id`; the access log no longer has a `remote` field and the MDM webhook debug line no longer includes a body preview. Logs written before this change are not affected.
+
+## Unreleased — system tool output readers
+
+- Fix a hang in provider code that runs a system tool and reads its output, such as hardware detection for `darkbloom beta`, `autoupdate` and `models location`. When every Swift concurrency thread waited for a tool at the same time, the output readers got no thread, so the wait did not end. With a timeout, the call failed as timed out. Each output reader now has its own serial queue.
+
 ## Unreleased — generated API-key queries
 
 - Generate the coordinator's API-key queries with sqlc from the checked-in schema; `make sqlc-check` fails CI when the generated code or the schema file is stale. API-key behaviour does not change.
@@ -33,6 +41,7 @@
 - Prepare account erasure: add `deleted_at` to users, API keys, provider records and provider tokens, hide soft-deleted rows from every live read, let a Privy user sign up again after erasure, index the erase paths, and cascade referrer code changes to referrals. Nothing sets `deleted_at` yet. After this release runs, roll back only to coordinator images built with goose.
 
 - Exclude soft-deleted users from small-model interest exports before pagination, and exclude deleted users and provider records from initial legacy MDM cohort qualification. Repeated cohort reads preserve the frozen snapshot.
+- Suppress stale registry-supplied provider locations in memory-store usage flows when the stored provider record is soft-deleted.
 
 ## Unreleased — Stripe refund clock skew
 
@@ -97,6 +106,12 @@
 
 - Wait for launchd to confirm removal of the previous provider service before installing or starting its replacement. Preserve stop/uninstall intent and report failed or timed-out removal without starting another service.
 - Treat bootstrap operation-in-progress errors as failures instead of reporting a successful start.
+
+## Unreleased — DevNet
+
+- An installer served by a coordinator other than production (for example dev) now writes that coordinator's `[coordinator] url` into `~/.config/darkbloom/provider.toml` and keeps the file's other settings, so `darkbloom start`, `login`, `update`, the LaunchAgent and the watchdog connect to it instead of production. The production installer removes that `url` line (and creates no file), so a Mac bound to dev returns to the production default. A running provider changes coordinator at its next `darkbloom start`.
+- Add `coordinator/cmd/devnet-seed`, which fills an empty dev database with fake accounts, API keys, provider sessions, usage, ledger entries and balances. It refuses a database whose `users` table has rows.
+- The dev VM boot path now sets `EIGENINFERENCE_IPAPI_KEY`, as `deploy/gcp/refresh-env.sh` already did.
 
 ## Unreleased — leaderboard availability
 
@@ -268,6 +283,7 @@
 
 ## Unreleased — CI and contributor workflow
 
+- Report coordinator statement coverage from the e2e tests as its own job-summary row, and keep the lane data as the `coordinator-e2e-coverage` artifact. The e2e lanes instrument the production coordinator packages only, as the coordinator test runner does, and both coverage reports use `scripts/coordinator-statement-coverage.sh`. The tests and their pass/fail rules do not change.
 - Explicitly enable SSD caching for the exact-cache E2E development checkpoint and establish repeat demand before expecting a donation. The gate now requires exact cached output, account isolation and recovery to pass; CI no longer ignores its failure.
 - Set up Homebrew in the macOS integration and benchmark workflows with `scripts/setup-macos-homebrew.sh` instead of the `Homebrew/actions/setup-homebrew` action. The organization Actions policy does not allow that action, so both workflows stopped at startup. The script uses an installed `brew` or installs Homebrew from a pinned, checksum-verified installer.
 - Run provider unit, SDK and prompt-parity checks on independent workers with compatible build caches, retaining MiMo fixture preparation and isolated native gates.

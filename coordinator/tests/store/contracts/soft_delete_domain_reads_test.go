@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
 	"github.com/eigeninference/d-inference/coordinator/store/postgres"
 	"github.com/eigeninference/d-inference/coordinator/tests/internal/erasurefixture"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -38,6 +39,53 @@ func softDeleteFixtureExec(t *testing.T, query string, args ...any) {
 	defer pool.Close()
 	if _, err := pool.Exec(ctx, query, args...); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestUsageFlowsOmitDeletedProviderWithRegistryLocation(t *testing.T) {
+	for name, s := range storeBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			now := time.Now().UTC()
+			location := &store.ProviderLocation{City: "Provider", CountryCode: "US"}
+			p := store.ProviderRecord{ID: "flow-provider", AccountID: "owner", Location: location,
+				Hardware: json.RawMessage(`{}`), Models: json.RawMessage(`[]`), LastSeen: now}
+			if err := s.UpsertProvider(ctx, p); err != nil {
+				t.Fatal(err)
+			}
+			s.RecordUsage(store.UsageRecord{ProviderID: p.ID, ConsumerKey: "consumer", RequestID: "flow-request", Model: "model",
+				PromptTokens: 1, CompletionTokens: 1, RequestLocation: &store.ProviderLocation{City: "Consumer", CountryCode: "US"}})
+			registryLocations := map[string]*store.ProviderLocation{p.ID: location}
+			rows, err := s.UsageFlowBuckets(now.Add(-time.Hour), registryLocations)
+			if err != nil || len(rows) != 1 || rows[0].ProviderCity != location.City || rows[0].Requests != 1 {
+				t.Fatalf("live provider flows = %+v, %v; want one flow", rows, err)
+			}
+
+			p.DeletedAt = &now
+			if err := s.UpsertProvider(ctx, p); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := s.(*postgres.PostgresStore); ok {
+				softDeleteFixtureExec(t, `UPDATE providers SET deleted_at=$1 WHERE id=$2`, p.DeletedAt, p.ID)
+			}
+			// A registry snapshot captured before deletion must not override the tombstone.
+			rows, err = s.UsageFlowBuckets(now.Add(-time.Hour), registryLocations)
+			if err != nil || len(rows) != 0 {
+				t.Fatalf("deleted provider flows = %+v, %v; want none", rows, err)
+			}
+		})
+	}
+}
+
+func TestMemoryUsageFlowsIncludeUnpersistedRegistryProvider(t *testing.T) {
+	s := memory.NewMemory(store.Config{})
+	s.RecordUsage(store.UsageRecord{ProviderID: "unpersisted", RequestID: "flow-request",
+		RequestLocation: &store.ProviderLocation{City: "Consumer", CountryCode: "US"}})
+	rows, err := s.UsageFlowBuckets(time.Time{}, map[string]*store.ProviderLocation{
+		"unpersisted": {City: "Provider", CountryCode: "US"},
+	})
+	if err != nil || len(rows) != 1 || rows[0].ProviderCity != "Provider" || rows[0].Requests != 1 {
+		t.Fatalf("unpersisted provider flows = %+v, %v; want one registry flow", rows, err)
 	}
 }
 

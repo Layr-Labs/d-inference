@@ -175,7 +175,6 @@ func (s *Service,
 	s.logger.Info("trust-reuse granted hardware without live MDM or APNs",
 		"provider_id", providerID,
 		"decision", result.Decision,
-		"mda_udid", result.Record.MdaUDID,
 	)
 	return true
 }

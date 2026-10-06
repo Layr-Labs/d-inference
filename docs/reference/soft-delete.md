@@ -86,6 +86,12 @@ methods are in `coordinator/store/memory/apikey.go`.
 | `FreezeLegacyMDMCohort` (initial qualification) | `coordinator/store/postgres/legacy_mdm_cohort.go` | `coordinator/store/memory/legacy_mdm_cohort.go` | cannot qualify for the initial frozen cohort |
 | `BackfillMachineInventory` | `coordinator/store/postgres/machine_inventory_backfill.go` | — (Postgres only) | not backfilled |
 
+`MemoryStore.UsageFlowBuckets` checks the stored provider record for a tombstone
+before using the supplied registry location map. A soft-deleted record suppresses
+both the stored location and any stale registry-supplied location, so its usage
+does not contribute a flow bucket (`coordinator/store/memory/analytics.go`).
+Without a tombstone, registry locations still take precedence over stored locations.
+
 `FreezeLegacyMDMCohort` applies these filters only when it first constructs the
 cohort. Later calls read the persisted snapshot without recomputing membership;
 see [frozen legacy authorization](../architecture/security/enrollment.md#frozen-legacy-authorization-cohort).

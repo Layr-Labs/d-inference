@@ -26,6 +26,9 @@ jobs:
     # download overhead: ~3m warm, but a cold runner pays the full Swift
     # provider build, the cargo sidecar build, and the gpt-oss-20b (~12 GB)
     # + gemma-4 snapshot downloads — budget 25m. 50m + 25m = 75m.
+    # Coverage: each lane builds its test binary with `-cover`, and a report
+    # and upload step runs at the end. That adds about a minute, which fits in
+    # the 25m overhead budget. The per-lane test timeouts do not change.
     timeout-minutes: 75
     env:
       LC_ALL: en_US.UTF-8
@@ -90,6 +93,20 @@ jobs:
       - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
         with:
           go-version-file: go.mod
+      # Statement coverage of the coordinator code that the e2e tests run.
+      # The testbed serves the coordinator in the test process
+      # (e2e/testbed/suite.go calls api.NewServer), so `go test -coverpkg`
+      # counts it. The package list leaves out the test-only `tests`,
+      # `testkit` and `testdb` packages, as scripts/run-coordinator-tests.py
+      # does. Each lane runs with `-covermode=set`: it stores 1 per block and
+      # is the cheapest mode, so the TestProfile latency checks see the least
+      # extra work.
+      - name: Select e2e coverage packages
+        run: |
+          set -euo pipefail
+          packages=$(go list ./coordinator/... | grep -Ev '/(tests|testkit|testdb)(/|$)' | paste -sd, -)
+          test -n "$packages"
+          echo "E2E_COVER_PKG=$packages" >> "$GITHUB_ENV"
 
       - name: Build provider (Swift)
         id: provider-build
@@ -231,6 +248,7 @@ jobs:
       # Both paged lanes are blocking. Exact-cache runs separately because it
       # controls cold loading and donation before checking reuse.
       - name: Run integration + profile tests (paged @ 8 — BLOCKING gate)
+        id: paged
         env:
           DARKBLOOM_TESTBED_KV_BACKEND: paged
           DARKBLOOM_TESTBED_MAX_CONCURRENT: "8"
@@ -252,15 +270,20 @@ jobs:
                "DARKBLOOM_CBV2_PAGED_KV=<unset>"
           echo "Backend assertion armed: the testbed fails any suite whose" \
                "providers do not report kv_backend=$DARKBLOOM_TESTBED_EXPECT_KV_BACKEND."
+          covdir="$RUNNER_TEMP/e2e-coverage/paged"
+          mkdir -p "$covdir"
           go test ./e2e/ -count=1 -v -timeout 25m -p=1 \
+            -cover -covermode=set -coverpkg="$E2E_COVER_PKG" \
             -run 'TestIntegration|TestProfile' \
-            -skip '^TestIntegrationExactCacheRouting$'
+            -skip '^TestIntegrationExactCacheRouting$' \
+            -args -test.gocoverdir="$covdir"
 
       # Use the same pinned e2b artifact and assert exact cached output. The
       # fixture explicitly enables SSD caching and establishes repeat demand
       # before requiring a donation. No pre-warm assertion here: the test owns
       # loading order, while the explicit paged TOML keeps the backend pinned.
       - name: Run exact-cache routing (paged @ 8 — BLOCKING gate)
+        id: exact_cache
         env:
           DARKBLOOM_TESTBED_KV_BACKEND: paged
           DARKBLOOM_TESTBED_MAX_CONCURRENT: "8"
@@ -274,8 +297,12 @@ jobs:
             exit 1
           fi
           echo "Exact-cache gate: cold, donation, reuse, isolation and recovery must pass."
+          covdir="$RUNNER_TEMP/e2e-coverage/exact-cache"
+          mkdir -p "$covdir"
           go test ./e2e/ -count=1 -v -timeout 15m -p=1 \
-            -run '^TestIntegrationExactCacheRouting$'
+            -cover -covermode=set -coverpkg="$E2E_COVER_PKG" \
+            -run '^TestIntegrationExactCacheRouting$' \
+            -args -test.gocoverdir="$covdir"
 
       # Default-posture lane. The steps above are the only ones that pin a
       # backend, so without this NOTHING would still exercise what a stock
@@ -312,6 +339,7 @@ jobs:
       # (50m of test allowances plus cold setup overhead) lives on
       # `timeout-minutes` at the top of the job.
       - name: Run default-posture smoke (.auto = contiguous — BLOCKING gate)
+        id: smoke
         env:
           DARKBLOOM_TESTBED_EXPECT_KV_BACKEND: contiguous
         run: |
@@ -327,8 +355,70 @@ jobs:
                ".auto resolves contiguous as of v0.8.1)"
           echo "Backend assertion armed: a stock install that resolves paged" \
                "fails this gate via DARKBLOOM_TESTBED_EXPECT_KV_BACKEND=contiguous."
+          covdir="$RUNNER_TEMP/e2e-coverage/smoke"
+          mkdir -p "$covdir"
           go test ./e2e/ -count=1 -v -timeout 10m -p=1 \
-            -run '^TestIntegration_(NonStreaming|Streaming)Inference$'
+            -cover -covermode=set -coverpkg="$E2E_COVER_PKG" \
+            -run '^TestIntegration_(NonStreaming|Streaming)Inference$' \
+            -args -test.gocoverdir="$covdir"
+
+      # Report-only. A low number never fails the job. The step fails when a
+      # lane passed but wrote no coverage data, because then the flags above
+      # were lost, and when the merged data has no coordinator total. A lane
+      # that failed or was skipped is listed and left out. The unit-test
+      # number comes from a different workflow (ci.yml) on a Linux runner, so
+      # this row is reported on its own and not merged.
+      - name: Report e2e coverage
+        if: ${{ !cancelled() }}
+        env:
+          PAGED_OUTCOME: ${{ steps.paged.outcome }}
+          EXACT_CACHE_OUTCOME: ${{ steps.exact_cache.outcome }}
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/e2e-coverage"
+          inputs=()
+          lanes=""
+          missing=0
+          for entry in "paged:$PAGED_OUTCOME" "exact-cache:$EXACT_CACHE_OUTCOME" "smoke:$SMOKE_OUTCOME"; do
+            lane="${entry%%:*}"
+            outcome="${entry#*:}"
+            if compgen -G "$root/$lane/covcounters.*" >/dev/null; then
+              inputs+=("$root/$lane")
+              lanes="${lanes:+$lanes, }$lane ($outcome)"
+            elif [ "$outcome" = "success" ]; then
+              echo "::error::lane $lane passed but wrote no coverage data"
+              missing=1
+            else
+              echo "Lane $lane has no coverage data (step outcome: ${outcome:-not run})"
+            fi
+          done
+          if [ "${#inputs[@]}" -eq 0 ]; then
+            echo "No e2e coverage data to report."
+            exit "$missing"
+          fi
+          merged="$root/e2e-coverage.out"
+          go tool covdata textfmt -i="$(IFS=,; echo "${inputs[*]}")" -o "$merged"
+          statements=$(scripts/coordinator-statement-coverage.sh \
+            "$merged" "$root/e2e-coverage-coordinator.out")
+          echo "Coordinator (Go) e2e statement coverage: $statements"
+          {
+            echo "| Component | Statements or Lines | Regions or Branches | Functions | Target |"
+            echo "|---|---|---|---|---|"
+            echo "| Coordinator (Go), e2e | $statements statements | not reported | not reported | none (report-only) |"
+            echo
+            echo "Denominator: statements in the \`coordinator/...\` production packages that the \`e2e\` test binary links. The \`coordinator/tests/...\` packages and their helpers are not instrumented, and packages the binary does not link (for example \`cmd/...\`) are not counted. Lanes merged: $lanes."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$missing"
+
+      - name: Upload e2e coverage profile
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coordinator-e2e-coverage
+          path: ${{ runner.temp }}/e2e-coverage/
+          if-no-files-found: warn
+          retention-days: 14
 
   # The E2E Benchmarks job used to live here as a second job. It is gated on
   # the approval-required `benchmarks` environment, which is created on every

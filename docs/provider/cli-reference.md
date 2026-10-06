@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-06
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -750,6 +750,11 @@ Output includes:
 - `Inference memory` is the nominal hardware budget, **not** live free RAM.
 - Schedule state (active/inactive).
 - Live daemon PID, uptime, trust verdict, and last model-load error.
+- App Attest serving authorization and local MDM-removal guidance. Removal is
+  offered only for an installed Darkbloom profile with current coordinator
+  approval. An unenrolled Mac reports no action needed; organization management
+  profiles must stay installed. Serving authorization has separate
+  [base-reward eligibility checks](../reference/pricing-model.md#base-rewards).
 - `Memory when idle`: the idle-memory policy in force (`always ready` or
   `free after N idle`). Advertised models without a resident engine are
   separated into `Startup preload pending`, `Not loaded (loads on request)`,
@@ -1189,6 +1194,12 @@ darkbloom enroll [--coordinator <url>] [--no-open]
 ## `darkbloom unenroll`
 
 Without a flag, ask whether to fully exit Darkbloom or remove only MDM and keep serving with App Attest. Enter or closed input cancels without changing anything. The App Attest option requires macOS 27 or later and fresh coordinator removal approval; an unsupported/unqualified choice never falls back to cleanup.
+
+Option 2 is only needed when a Darkbloom MDM profile is installed. After current
+authorization is confirmed, an unenrolled Mac reports that no action is needed
+and the provider should keep running. Keep any organization management profiles
+installed. Code: `provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift`
+(`prepareMDMRemovalWhileServing`).
 
 Full exit stops the launchd provider and disables its automatic restart before profile-removal guidance and a separate local cleanup confirmation. If a foreground provider is still running, cleanup is refused. The cleanup removes the current (v2) Secure Enclave signing key; a leftover v1 keychain item is neither read nor removed. Model downloads and server-side account history remain intact.
 

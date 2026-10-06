@@ -17,6 +17,8 @@ import Testing
         #expect(output.contains { $0.contains("Fully exit Darkbloom") })
         #expect(output.contains { $0.contains("Remove only Darkbloom MDM") })
         #expect(output.contains { $0.contains("macOS 27 or later") && $0.contains("coordinator approval") })
+        #expect(output.contains { $0.contains("Option 2 is only needed if a Darkbloom MDM profile is installed") })
+        #expect(output.contains { $0.contains("Keep any organization management profiles installed") })
         var operations: [String] = []
         try await Unenroll.performUnenrollment(
             mode: mode, stopProvider: { operations.append("stop") },

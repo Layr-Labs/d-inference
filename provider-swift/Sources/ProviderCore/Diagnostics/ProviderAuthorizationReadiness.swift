@@ -22,26 +22,50 @@ public enum ProviderAuthorizationReadiness {
         return authorization
     }
 
+    /// Checks current coordinator approval. Removal also requires local enrollment
+    /// and an exact Darkbloom profile match from `DarkbloomMDMRemoval`.
     public static func removalReady(_ authorization: ProviderAuthorizationStatus?, now: Double) -> Bool {
         guard let authorization else { return false }
         return authorization.mdmRemovalReady
             && authorization.hasCurrentAppAttestAuthorization(now: now)
     }
 
+    /// Called only after confirming current App Attest authorization. Coordinator
+    /// approval cannot establish which profiles are installed on this Mac.
+    private static func removalAdvice(
+        _ authorization: ProviderAuthorizationStatus, enrollment: MDMEnrollmentState
+    ) -> String {
+        switch enrollment {
+        case .enrolledDarkbloom:
+            return authorization.mdmRemovalReady
+                ? "Darkbloom MDM removal is available: run darkbloom unenroll and choose option 2. Keep any organization management profiles installed."
+                : "The coordinator has not enabled Darkbloom MDM removal. Keep the Darkbloom MDM profile installed."
+        case .enrolledOtherMDM(let serverURL):
+            return "No Darkbloom MDM profile is installed. This Mac is managed by another MDM "
+                + "(\(serverURL)); keep that profile installed."
+        case .notEnrolled:
+            return "No Darkbloom MDM profile is installed, so no action is needed. Keep the provider running."
+        case .checkFailed:
+            return "The installed management profiles could not be read, so no removal guidance is offered; "
+                + "keep existing profiles installed."
+        }
+    }
+
+    /// - Parameter enrollment: This Mac's observed `checkMDMEnrollment` result.
     public static func summary(
-        _ authorization: ProviderAuthorizationStatus?, now: Double,
+        _ authorization: ProviderAuthorizationStatus?, enrollment: MDMEnrollmentState, now: Double,
         macOSMajorVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
     ) -> String {
         guard let authorization else {
             return "App Attest authorization is unconfirmed; keep any existing management profiles installed until this running provider receives fresh coordinator readiness."
         }
         if authorization.hasCurrentAppAttestAuthorization(now: now) {
-            return "App Attest authorizes this connection. " + (authorization.mdmRemovalReady
-                ? "Darkbloom MDM removal is available: run darkbloom unenroll and choose App Attest."
-                : "Darkbloom MDM removal is not enabled for this machine yet.")
+            return "App Attest authorizes this connection. "
+                + removalAdvice(authorization, enrollment: enrollment)
+                + " Base rewards have separate eligibility checks."
         }
         if authorization.path == "legacy" {
-            return "Serving through legacy verification; keep the Darkbloom MDM profile."
+            return "Serving through legacy verification; keep the Darkbloom MDM profile. Legacy verification alone does not qualify for base rewards."
         }
         if authorization.appAttestAvailable {
             return "The coordinator supports App Attest, but this connection is not currently qualified. "

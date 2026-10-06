@@ -11,6 +11,7 @@ enum DoctorRunner {
         coordinatorURL: String
     ) async -> [Diagnostic] {
         var out: [Diagnostic] = []
+        let enrollment = checkMDMEnrollment(coordinatorURL: coordinatorURL)
         let now = Date().timeIntervalSince1970
         let state = DaemonStateFile.read()
         let daemonUp = doctorDaemonProcessMatches(daemonState: state)
@@ -57,7 +58,8 @@ enum DoctorRunner {
         if let authorization {
             out.append(Diagnostic(section: .trust, name: "serving authorization",
                                   level: appAttestAuthorized || authorization.path == "legacy" ? .pass : .warn,
-                                  message: ProviderAuthorizationReadiness.summary(authorization, now: now),
+                                  message: ProviderAuthorizationReadiness.summary(
+                                      authorization, enrollment: enrollment, now: now),
                                   fix: nil))
         } else if let state, let trust = state.trust, daemonUp, !state.isStale(now: now) {
             let advice = TrustReasonCatalog.advice(level: trust.trustLevel, status: trust.status, reason: trust.reason)
@@ -91,7 +93,6 @@ enum DoctorRunner {
         if !alreadyHardwareTrusted && !appAttestAuthorized {
             let liveTrustLevel = stateFresh ? state?.trust?.trustLevel : nil
             let liveStatus = stateFresh ? state?.trust?.status : nil
-            let enrollment = checkMDMEnrollment(coordinatorURL: snapshot.config.coordinator.url)
             if let diag = MDMTrustDiagnosis.diagnose(trustLevel: liveTrustLevel, status: liveStatus, enrollment: enrollment) {
                 out.append(diag)
             }

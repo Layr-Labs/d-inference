@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased - provider authorization guidance
+
+- Offer Darkbloom MDM removal in `darkbloom status` and `doctor` only when a Darkbloom profile is installed and current App Attest authorization permits removal. Macs without that profile get explicit no-action guidance, Macs managed by another organization are told to keep that profile, and unreadable enrollment gets no removal advice.
+- Explain when `darkbloom unenroll` option 2 is needed and separate serving authorization from base-reward eligibility, including the legacy-only reward restriction.
+
 ## Unreleased — coordinator schema migrations
 
 - Apply the coordinator's Postgres schema as numbered goose migrations instead of re-running every DDL statement at each boot. The first boot applies and records the existing schema as version 1; later boots apply only new versions. SQL migration statements stop waiting for a lock after 3 seconds and make up to three attempts, and coordinators that start together take turns on an advisory lock.

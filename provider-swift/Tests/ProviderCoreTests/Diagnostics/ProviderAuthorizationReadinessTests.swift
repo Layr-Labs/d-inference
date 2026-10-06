@@ -98,7 +98,8 @@ import Testing
     }
 
     @Test func expiredStatusNeverClaimsThatRemovalIsAvailable() {
-        let description = ProviderAuthorizationReadiness.summary(status(expiresAt: 100), now: 100)
+        let description = ProviderAuthorizationReadiness.summary(
+            status(expiresAt: 100), enrollment: .enrolledDarkbloom(serverURL: darkbloomServerURL), now: 100)
         #expect(!description.contains("removal is available"))
         #expect(description.contains("not currently qualified"))
     }
@@ -106,9 +107,92 @@ import Testing
     @Test func disabledCoordinatorLeavesMacOS27SetupPendingWithoutMDMFallback() {
         var disabled = status(path: "none")
         disabled.appAttestAvailable = false
-        let summary = ProviderAuthorizationReadiness.summary(disabled, now: 100, macOSMajorVersion: 27)
+        let summary = ProviderAuthorizationReadiness.summary(
+            disabled, enrollment: .enrolledDarkbloom(serverURL: darkbloomServerURL), now: 100,
+            macOSMajorVersion: 27)
         #expect(summary.contains("setup remains pending"))
         #expect(!summary.contains("enrollment is still required"))
         #expect(!ProviderAuthorizationReadiness.removalReady(disabled, now: 100))
+    }
+
+    // MARK: - Local enrollment guidance
+
+    private let darkbloomServerURL = "https://api.darkbloom.dev/mdm/connect"
+    private let otherMDMServerURL = "https://mdm.example.org/mdm/commands"
+
+    private func summary(_ enrollment: MDMEnrollmentState) -> String {
+        ProviderAuthorizationReadiness.summary(status(), enrollment: enrollment, now: 100)
+    }
+
+    @Test func removalIsOfferedOnlyWhenTheDarkbloomProfileIsInstalled() {
+        let description = summary(.enrolledDarkbloom(serverURL: darkbloomServerURL))
+        #expect(description.contains("App Attest authorizes this connection."))
+        #expect(description.contains("Darkbloom MDM removal is available: run darkbloom unenroll and choose option 2."))
+        #expect(description.contains("Keep any organization management profiles installed."))
+        #expect(description.contains("Base rewards have separate eligibility checks."))
+    }
+
+    @Test func otherMDMIsNeverToldToRemoveManagement() {
+        let description = summary(.enrolledOtherMDM(serverURL: otherMDMServerURL))
+        #expect(description.contains("App Attest authorizes this connection."))
+        #expect(description.contains("No Darkbloom MDM profile is installed"))
+        #expect(description.contains("keep that profile installed"))
+        #expect(description.contains(otherMDMServerURL))
+        #expect(!description.contains("removal is available"))
+        #expect(!description.contains("darkbloom unenroll"))
+    }
+
+    @Test func unenrolledMacIsNotOfferedARemovalItCannotPerform() {
+        let none = summary(.notEnrolled)
+        #expect(none.contains("App Attest authorizes this connection."))
+        #expect(none.contains("no action is needed"))
+        #expect(none.contains("Keep the provider running."))
+        #expect(none.contains("Base rewards have separate eligibility checks."))
+        #expect(!none.contains("removal is available"))
+        #expect(!none.contains("darkbloom unenroll"))
+    }
+
+    @Test func unreadableProfileInventoryWithholdsRemovalGuidance() {
+        let unknown = summary(.checkFailed)
+        #expect(unknown.contains("could not be read"))
+        #expect(unknown.contains("keep existing profiles installed"))
+        #expect(!unknown.contains("removal is available"))
+        #expect(!unknown.contains("darkbloom unenroll"))
+    }
+
+    @Test func rolloutFlagStillGatesEnrolledDarkbloomMachines() {
+        var notEnabled = status()
+        notEnabled.mdmRemovalReady = false
+        let summary = ProviderAuthorizationReadiness.summary(
+            notEnabled, enrollment: .enrolledDarkbloom(serverURL: darkbloomServerURL), now: 100)
+        #expect(summary.contains("coordinator has not enabled Darkbloom MDM removal"))
+        #expect(summary.contains("Keep the Darkbloom MDM profile installed."))
+        #expect(!summary.contains("removal is available"))
+        #expect(!summary.contains("darkbloom unenroll"))
+    }
+
+    @Test func noEnrollmentStateAdvertisesRemovalWithoutACurrentLease() {
+        for enrollment: MDMEnrollmentState in [
+            .enrolledDarkbloom(serverURL: darkbloomServerURL), .enrolledOtherMDM(serverURL: otherMDMServerURL),
+            .notEnrolled, .checkFailed,
+        ] {
+            let expired = ProviderAuthorizationReadiness.summary(
+                status(expiresAt: 100), enrollment: enrollment, now: 100)
+            #expect(!expired.contains("removal is available"))
+            #expect(!expired.contains("darkbloom unenroll"))
+            let missing = ProviderAuthorizationReadiness.summary(
+                nil, enrollment: enrollment, now: 100)
+            #expect(!missing.contains("removal is available"))
+            #expect(!missing.contains("darkbloom unenroll"))
+        }
+    }
+
+    @Test func legacyServingDoesNotImplyBaseRewardEligibility() {
+        let description = ProviderAuthorizationReadiness.summary(
+            status(path: "legacy"), enrollment: .enrolledDarkbloom(serverURL: darkbloomServerURL), now: 100)
+        #expect(description.contains("Serving through legacy verification"))
+        #expect(description.contains("keep the Darkbloom MDM profile"))
+        #expect(description.contains("Legacy verification alone does not qualify for base rewards."))
+        #expect(!description.contains("darkbloom unenroll"))
     }
 }

@@ -1,0 +1,237 @@
+name: Deploy Dev Coordinator
+
+# Swaps the master head onto the dev coordinator VM d-inference-dev with
+# deploy/gcp/dev/deploy.sh: it waits for the SUCCESS dev-build Cloud Build of
+# the commit (deploy/gcp/cloudbuild-prod.yaml, only _IMAGE changed), then runs
+# deploy/gcp/dev/swap.sh, the steps of docs/operations/coordinator-deploy.md.
+# The job passes only when the public /health reports the commit. Production
+# stays human-only. Runbook: docs/operations/dev-environment.md.
+#
+# Pause: push runs start only when vars.DEV_DEPLOY_PAUSED is "false".
+# deploy.sh reads the same variable on every run, a dispatch included, and
+# stops with exit 3 unless it is "false". This workflow never overrides the
+# pause; only a human can.
+#
+# The WIF provider github-d-inference (Layr-Labs/darkbloom-devnet-infra
+# terraform/iam/github_wif.tf) gives a token only to this file, on
+# refs/heads/master, for push or workflow_dispatch. Do not rename the file, do
+# not add a job environment (it changes the token subject) and do not add a
+# pull request trigger.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'coordinator/**'
+      - 'deploy/gcp/**'
+      - 'deploy/environments/prod.env'
+      - 'go.mod'
+      - 'go.sum'
+      - '.dockerignore'
+      - '.github/workflows/deploy-dev.yml'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'deploy = swap to the master head; rollback = restore the image and env of the last verified swap'
+        type: choice
+        options: [deploy, rollback]
+        default: deploy
+      migrate_only:
+        description: 'Run coordinator --migrate-only before the drain'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false
+
+env:
+  PROJECT: darkbloom-dev
+  WIF_PROVIDER: projects/907319144169/locations/global/workloadIdentityPools/github-pool/providers/github-d-inference
+  DEPLOY_SA: d-inference-dev-deploy@darkbloom-dev.iam.gserviceaccount.com
+  HEALTH_WAIT_S: '300'    # Caddy health interval 30 s, plus margin
+
+jobs:
+  deploy:
+    name: Deploy dev coordinator
+    if: github.event_name == 'workflow_dispatch' || vars.DEV_DEPLOY_PAUSED == 'false'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 45   # 20 min build wait in deploy.sh + 75 s stop + checks
+    permissions:
+      contents: read
+      id-token: write   # WIF token
+      actions: write    # dispatch release-swift.yml on a provider version bump
+    env:
+      MODE: ${{ inputs.mode || 'deploy' }}
+    steps:
+      - name: Record start
+        run: echo "T0=$(date +%s)" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            coordinator/api
+            deploy
+            scripts
+
+      - name: Read the dev host name
+        run: |
+          domain=$(awk -F= '$1 == "DOMAIN" { print $2; exit }' deploy/gcp/dev/env-overrides)
+          [[ "$domain" =~ ^[a-z0-9.-]+$ ]] || { echo "::error::no DOMAIN in deploy/gcp/dev/env-overrides"; exit 1; }
+          echo "COORD=https://$domain" >> "$GITHUB_ENV"
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOY_SA }}
+
+      - name: Check for preinstalled gcloud
+        id: gcloud
+        run: |
+          if command -v gcloud >/dev/null; then echo "present=true"; else echo "present=false"; fi >> "$GITHUB_OUTPUT"
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          skip_install: ${{ steps.gcloud.outputs.present }}
+
+      - name: Read attached providers before the swap
+        id: before
+        run: |
+          n=$(curl -fsS --max-time 10 "$COORD/v1/stats" | jq -r '.active_providers // 0') || n=unknown
+          echo "providers=$n" >> "$GITHUB_OUTPUT"
+
+      - name: Build wait, step 1 and swap (deploy/gcp/dev/deploy.sh)
+        id: deploy
+        env:
+          DEV_DEPLOY_PAUSED: ${{ vars.DEV_DEPLOY_PAUSED }}
+          # Test the event first: on push, inputs.migrate_only is null, and null == false.
+          MIGRATE_ONLY: ${{ (github.event_name == 'workflow_dispatch' && !inputs.migrate_only) && '0' || '1' }}
+          ON_SUPERSEDED: skip
+        run: |
+          # One key per run. gcloud adds it to the OS Login profile of the deploy
+          # account with --ssh-key-expire-after=1h. The cleanup step removes it.
+          ssh-keygen -q -t ed25519 -N '' -C "deploy-dev-${GITHUB_RUN_ID}" -f "$RUNNER_TEMP/deploy_key"
+          SSH_KEY_FILE="$RUNNER_TEMP/deploy_key" deploy/gcp/dev/deploy.sh "$MODE" 2>&1 | tee "$RUNNER_TEMP/deploy.log"
+          echo "T_SWAP_END=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Hard gate, public /health
+        id: health
+        if: steps.deploy.outputs.deployed == 'true'
+        run: |
+          if [ "$MODE" = deploy ]; then
+            V=$(awk -F'"' '/^var LatestProviderVersion =/ { print $2 }' coordinator/api/server.go)
+            want=".status == \"ok\" and (.draining // false) == false and .build_commit == \"$GITHUB_SHA\" and .version == \"$V\""
+          else
+            want='.status == "ok" and (.draining // false) == false and (.build_commit | test("^[0-9a-f]{40}$"))'
+          fi
+          deadline=$(( $(date +%s) + HEALTH_WAIT_S ))
+          while :; do
+            body=$(curl -fsS --max-time 5 "$COORD/health" 2>/dev/null) || body=""
+            if [ -n "$body" ] && jq -e "$want" <<< "$body" >/dev/null 2>&1; then break; fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::public /health does not pass after $HEALTH_WAIT_S s: ${body:-no answer}"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "T_HEALTHY=$(date +%s)" >> "$GITHUB_ENV"
+          echo "HEALTH_COMMIT=$(jq -r .build_commit <<< "$body")" >> "$GITHUB_ENV"
+          echo "healthy: $body"
+
+      - name: Check providers re-attached (notify only)
+        id: after
+        if: steps.health.outcome == 'success'
+        continue-on-error: true
+        env:
+          BEFORE_N: ${{ steps.before.outputs.providers }}
+        run: |
+          n=unknown
+          for _ in $(seq 1 24); do
+            n=$(curl -fsS --max-time 5 "$COORD/v1/stats" | jq -r '.active_providers // 0') || n=unknown
+            echo "providers=$n" > "$RUNNER_TEMP/after"
+            if [[ "$BEFORE_N" =~ ^[0-9]+$ && "$n" =~ ^[0-9]+$ && "$n" -ge "$BEFORE_N" ]]; then exit 0; fi
+            sleep 5
+          done
+          echo "::warning::providers before=$BEFORE_N after=$n after 120 s"
+          exit 1
+
+      # No API_KEY: the workflow has no secrets, so smoke-dev.sh skips the
+      # authenticated chat test.
+      - name: Smoke test (notify only)
+        id: smoke
+        if: steps.health.outcome == 'success'
+        continue-on-error: true
+        run: scripts/smoke-dev.sh
+
+      - name: Dispatch dev provider release on a version bump
+        id: pair
+        if: github.event_name == 'push' && steps.health.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          read_version() { grep -E '^var LatestProviderVersion = ' | cut -d'"' -f2; }
+          now=$(read_version < coordinator/api/server.go)
+          if [[ "$BEFORE" =~ ^0+$ ]]; then echo "result=no base commit" >> "$GITHUB_OUTPUT"; exit 0; fi
+          git fetch --no-tags --depth=1 origin "$BEFORE"
+          was=$(git show "$BEFORE:coordinator/api/server.go" | read_version)
+          if [ "$now" = "$was" ]; then echo "result=not needed ($now)" >> "$GITHUB_OUTPUT"; exit 0; fi
+          gh workflow run release-swift.yml --repo "$GITHUB_REPOSITORY" --ref master -f environment=dev
+          echo "result=dispatched release-swift.yml environment=dev for $was -> $now" >> "$GITHUB_OUTPUT"
+
+      - name: Remove the OS Login key
+        if: always() && steps.deploy.outcome != 'skipped'
+        continue-on-error: true
+        run: gcloud compute os-login ssh-keys remove --key-file="$RUNNER_TEMP/deploy_key.pub"
+
+      - name: Job summary
+        if: always()
+        env:
+          HEAD_TS: ${{ github.event.head_commit.timestamp }}
+          BEFORE_N: ${{ steps.before.outputs.providers }}
+          DEPLOYED: ${{ steps.deploy.outputs.deployed }}
+          REATTACH: ${{ steps.after.outcome }}
+          SMOKE: ${{ steps.smoke.outcome }}
+          PAIR: ${{ steps.pair.outputs.result }}
+        run: |
+          d() { if [ -n "${1:-}" ] && [ -n "${2:-}" ]; then echo "$(( $2 - $1 )) s"; else echo "n/a"; fi; }
+          MERGE=$(date -d "$HEAD_TS" +%s 2>/dev/null || true)
+          LOG="$RUNNER_TEMP/deploy.log"
+          BUILD_ID=$(sed -n 's/^build=\([^ ]*\) image=.*/\1/p' "$LOG" 2>/dev/null | tail -n 1 || true)
+          BUILD_TIMES=""
+          if [ -n "$BUILD_ID" ]; then
+            BUILD_TIMES=$(gcloud builds describe "$BUILD_ID" --project="$PROJECT" \
+              --format='value(createTime,finishTime)' 2>/dev/null | tr '\t' ' ' || true)
+          fi
+          RESULT=$(grep -E '^(OK|FAIL) ' "$LOG" 2>/dev/null | tail -n 1 || true)
+          AFTER_N=$(cut -d= -f2 "$RUNNER_TEMP/after" 2>/dev/null || echo n/a)
+          {
+            echo "### Dev deploy \`${GITHUB_SHA::7}\`, mode ${MODE}, deployed: ${DEPLOYED:-n/a}"
+            echo
+            echo "| Stage | Time |"
+            echo "|---|---|"
+            echo "| Merge to job start | $(d "$MERGE" "${T0:-}") |"
+            echo "| dev-build ${BUILD_ID:-n/a} create, finish | ${BUILD_TIMES:-n/a} |"
+            echo "| Job start to swap result (deploy.sh, with the build wait) | $(d "${T0:-}" "${T_SWAP_END:-}") |"
+            echo "| Swap result to public /health | $(d "${T_SWAP_END:-}" "${T_HEALTHY:-}") |"
+            echo "| **Merge to healthy** | **$(d "$MERGE" "${T_HEALTHY:-}")** |"
+            echo
+            echo "Public /health build_commit: \`${HEALTH_COMMIT:-n/a}\`"
+            echo
+            echo "Swap result: ${RESULT:-n/a}"
+            echo
+            echo "Providers attached: before ${BEFORE_N:-n/a}, after ${AFTER_N} (check: ${REATTACH:-skipped})"
+            echo
+            echo "Smoke: ${SMOKE:-skipped}. Provider release: ${PAIR:-skipped}."
+            echo
+            echo '<details><summary>REPORT lines</summary>'
+            echo
+            echo '```'
+            grep -E '^REPORT ' "$LOG" 2>/dev/null || true
+            echo '```'
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"

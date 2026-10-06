@@ -269,6 +269,8 @@ curl https://api.darkbloom.dev/health
 Dev coordinator deploy (Google Cloud): see `docs/operations/dev-environment.md`.
 Dev runs the same swap steps with `deploy/gcp/dev/swap.sh`; a runbook change to a
 swap step also changes that script.
+`.github/workflows/deploy-dev.yml` runs that swap after each eligible `master` push;
+it passes `vars.DEV_DEPLOY_PAUSED` to `deploy.sh` and never overrides the pause.
 
 ## Important Sync Points
 

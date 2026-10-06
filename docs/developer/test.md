@@ -2461,7 +2461,10 @@ of `deploy/gcp/prod/required-env-keys.txt` has no dev source (overlay, release
 default or `prod.env`). It runs `deploy/gcp/dev/seed-env.sh` against stub `gcloud`
 and metadata commands, and proves that the `--check`, `--dry-run` and preflight
 paths, a paused deploy and a refused project make no state-changing call: every
-such command is a stub that records its arguments.
+such command is a stub that records its arguments. It also reads
+`.github/workflows/deploy-dev.yml`: the deploy step must pass
+`vars.DEV_DEPLOY_PAUSED` to `deploy.sh`, and the file must not contain
+`--override-pause`, a job environment, a pull request trigger or a secret.
 
 For GPT-OSS profiling, first build a release benchmark binary and identify its
 loaded Metal library and the exact downloaded model snapshot. Run on an idle

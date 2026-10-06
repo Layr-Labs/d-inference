@@ -13,6 +13,7 @@ production (`darkbloom-mainnet`).
 - The first host setup and the first deploy of the dev coordinator (Linear
   DBLM-559).
 - A manual deploy or rollback of the dev coordinator.
+- The automatic deploys from `master` (`deploy-dev.yml`), and their pause.
 - A change of a dev secret or a dev setting.
 - A dev provider release, a dev Mac, or synthetic data in the dev database.
 
@@ -233,10 +234,57 @@ Then set `DEV_DEPLOY_PAUSED` to `false` when automatic deploys may start.
 
 ### 7. Automatic deploys
 
-A workflow `deploy-dev.yml` (DBLM-569, not in this repository yet) will run
-`deploy.sh` on each `master` push that changes the coordinator. It must pass
-`DEV_DEPLOY_PAUSED: ${{ vars.DEV_DEPLOY_PAUSED }}` and must not use
-`--override-pause`. The sample workflow and its runbook (runbook 09) are in
+[`.github/workflows/deploy-dev.yml`](../../.github/workflows/deploy-dev.yml)
+runs `deploy.sh` from GitHub Actions. It gets a Google token for
+`d-inference-dev-deploy@darkbloom-dev.iam.gserviceaccount.com` through the WIF
+provider `github-d-inference`. The provider accepts only this file, on
+`master`, for the events `push` and `workflow_dispatch`. Do not rename the
+file. Do not add a job environment or a pull request trigger.
+
+Triggers:
+
+- A `push` to `master` that changes `coordinator/**`, `deploy/gcp/**`,
+  `deploy/environments/prod.env`, `go.mod`, `go.sum`, `.dockerignore` or
+  `deploy-dev.yml`. The job starts only when `DEV_DEPLOY_PAUSED` is `false`.
+  Otherwise GitHub shows the run as skipped.
+- `workflow_dispatch` with the inputs `mode` (`deploy` or `rollback`) and
+  `migrate_only` (default `true`).
+
+The deploy step passes `DEV_DEPLOY_PAUSED: ${{ vars.DEV_DEPLOY_PAUSED }}` to
+`deploy.sh`, so the pause rule of "Deploy pause" applies to each run, a
+dispatch included. A dispatch while the pause is on fails with exit code 3,
+and nothing changes. The workflow never uses `--override-pause`.
+`scripts/test-dev-deploy.py` fails if that changes.
+
+What one run does:
+
+1. `deploy.sh` waits for the SUCCESS `dev-build` of the commit (up to 20
+   minutes), does step 1 and runs `swap.sh` over IAP SSH with a key for this
+   run. A commit that is no longer the `master` head stops with
+   `deployed=false`; the newer run deploys.
+2. Hard gate: the public `/health` reports `status` `ok`, `draining` `false`,
+   `version` = `LatestProviderVersion` and the 40-character commit (for a
+   rollback, a 40-character commit).
+3. Notify only: providers attach again within 120 s, and
+   `scripts/smoke-dev.sh`. The workflow has no secrets, so the authenticated
+   chat test does not run.
+4. When a push changes the `var LatestProviderVersion` line, the job starts
+   `release-swift.yml` with `environment=dev` on `master`. It does not wait
+   for that run.
+5. It removes the SSH key from the OS Login profile and writes the job
+   summary: the time from merge to healthy, the `dev-build` times, the swap
+   result line and the `REPORT` lines.
+
+Manual runs (always `--ref master`; WIF refuses other branches):
+
+```bash
+gh workflow run deploy-dev.yml -R Layr-Labs/d-inference --ref master                      # deploy the master head
+gh workflow run deploy-dev.yml -R Layr-Labs/d-inference --ref master -f migrate_only=false
+gh workflow run deploy-dev.yml -R Layr-Labs/d-inference --ref master -f mode=rollback      # last verified swap
+```
+
+After a pause, set `DEV_DEPLOY_PAUSED` to `false`, then dispatch a deploy:
+pushes during the pause did not deploy. The setup runbook (runbook 09) is in
 [darkbloom-devnet-infra](https://github.com/Layr-Labs/darkbloom-devnet-infra).
 
 ### 8. Change a setting or a secret
@@ -349,7 +397,7 @@ provider is attached and a model is registered. Its fixture checks are in
 | Case | Action |
 |---|---|
 | A deploy failed a hard check | Nothing. `swap.sh` rolled back and printed `FAIL ...; rolled back to ...`. The container log is in `/var/lib/darkbloom-deploy/failed-coordinator-<UTC>.log` on the VM (root only) |
-| A deploy passed, but the commit is bad | `deploy/gcp/dev/deploy.sh rollback` from a clean `origin/master` checkout (add `--override-pause "<reason>"` while paused). It restores the image and env file of the last verified swap. Then revert the commit on `master` |
+| A deploy passed, but the commit is bad | Dispatch `deploy-dev.yml` with `-f mode=rollback` (step 7), or run `deploy/gcp/dev/deploy.sh rollback` from a clean `origin/master` checkout (add `--override-pause "<reason>"` while paused). It restores the image and env file of the last verified swap. Then revert the commit on `master` |
 | The first deploy is bad (no previous image) | `"${SSH[@]}" --command='sudo docker stop -t 75 coordinator && sudo docker rm coordinator'` |
 | A bad reseed | Copy `/etc/d-inference/env.pre-reseed.<UTC>` back to `/etc/d-inference/env`, then deploy |
 | A bad provider bundle | Deactivate the release (`scripts/admin.sh releases deactivate <version>`), then `deploy/provider-fleet/update-fleet.sh dev`; see [`provider-release.md`](provider-release.md) |
@@ -376,7 +424,8 @@ These steps need a person with the right access:
 1. DBLM-555: apply the darkbloom-devnet-infra roots.
 2. DBLM-558: the secret values and DNS. Confirm the console host name.
 3. DBLM-559: steps 1 to 6 of this page.
-4. DBLM-569: the workflow `deploy-dev.yml` for automatic deploys (step 7).
+4. DBLM-569: after steps 1 to 6 pass, set `DEV_DEPLOY_PAUSED` to `false`, so
+   that `deploy-dev.yml` deploys each eligible `master` push (step 7).
 5. Ask Stripe for Redaction Jobs access on the dev account, so that account
    erasure can be tested against Stripe.
 6. Enrol at least one dev Mac (step 11). Run `devnet-seed` (step 12).

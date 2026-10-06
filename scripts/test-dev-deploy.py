@@ -21,6 +21,7 @@ SEED = DEV / "seed-env.sh"
 OVERRIDES = DEV / "env-overrides"
 REQUIRED = ROOT / "deploy/gcp/prod/required-env-keys.txt"
 DEFAULTS = ROOT / "deploy/gcp/prod/release-env-defaults"
+WORKFLOW = ROOT / ".github/workflows/deploy-dev.yml"
 PROD_ENV = ROOT / "deploy/environments/prod.env"
 COMMIT = "a" * 40
 DIGEST = "sha256:" + "b" * 64
@@ -147,7 +148,7 @@ class DevEnvContractTests(unittest.TestCase):
         api, console = overlay["DOMAIN"], overlay["EIGENINFERENCE_CONSOLE_URL"]
         self.assertRegex(api, r"^[a-z0-9.-]+$")
         self.assertTrue(console.startswith("https://"))
-        files = [*DEV.glob("*.sh"), ROOT / "deploy/gcp/host-setup.sh", ROOT / "scripts/smoke-dev.sh"]
+        files = [*DEV.glob("*.sh"), ROOT / "deploy/gcp/host-setup.sh", ROOT / "scripts/smoke-dev.sh", WORKFLOW]
         for path in files:
             self.assertNotIn(api, path.read_text(), path)
             self.assertNotIn(console.removeprefix("https://"), path.read_text(), path)
@@ -482,6 +483,26 @@ class ZeroMutationTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("not darkbloom-dev", result_file.read_text())
         self.assertEqual([c[0] for c in box.calls()], ["id", "curl"])
+
+
+
+class DeployWorkflowTests(unittest.TestCase):
+    """deploy-dev.yml leaves the pause decision to deploy.sh on every run."""
+
+    def setUp(self):
+        self.text = WORKFLOW.read_text()
+
+    def test_workflow_never_overrides_the_pause(self):
+        self.assertFalse("--override-pause" in self.text, "deploy-dev.yml names --override-pause")
+
+    def test_deploy_step_passes_the_pause_variable(self):
+        step = self.text.split("        id: deploy\n", 1)[1].split("\n      - ", 1)[0]
+        self.assertIn("deploy/gcp/dev/deploy.sh", step)
+        self.assertIn("          DEV_DEPLOY_PAUSED: ${{ vars.DEV_DEPLOY_PAUSED }}\n", step)
+
+    def test_token_subject_rules_of_the_wif_provider(self):
+        for banned in ("environment:", "pull_request", "secrets."):
+            self.assertFalse(banned in self.text, f"deploy-dev.yml has {banned}")
 
 
 if __name__ == "__main__":

@@ -273,10 +273,12 @@ before emitting those receipts. Old coordinators ignore the optional capability
 field and omit the echo: registration continues, local reuse can work, and this
 format teaches no coordinator holder. A granted scope also carries
 `cache_repeated_prefix_tokens`, an integer count: the coordinator's observed
-fleet-wide repeat demand or, under [first sight](#first-sight), a new prompt's
-own deepest 1,024-stride boundary. The provider uses it to gate
+fleet-wide repeat demand. The provider uses it to gate
 complete-checkpoint donations
-([observed demand](#observed-demand-and-soft-prefix-affinity)). None
+([observed demand](#observed-demand-and-soft-prefix-affinity)). Under
+[first sight](#first-sight) a new prompt's own deepest 1,024-stride boundary
+travels in a second integer count, `cache_first_sight_tokens`, never in the
+repeat count. None
 of these fields changes the signed
 attestation or status canonical payload (`coordinator/protocol/messages.go`,
 `coordinator/internal/inference/providerwire/provider_wire.go`; `coordinator/attestation/attestation.go`,
@@ -832,9 +834,9 @@ fixed cap (`MaxStatuses = 16` statuses or
 `coordinator/internal/registry/cachepolicy/eligibility.go`), duplicate
 model/outcome keys, or a blank/non-canonical status model ID drops that whole
 optional snapshot (`SanitizeStatuses`, `SanitizeDonationOutcomes`). Donation aggregation has
-exactly 23 known buckets (`PrefixCacheDonationOutcomes`, including
-`skipped_novel`); the raw cap reserves
-9 entries for future outcomes, which are filtered individually.
+exactly 24 known buckets (`PrefixCacheDonationOutcomes`, including
+`skipped_novel` and `write_speculative_limited`); the raw cap reserves
+8 entries for future outcomes, which are filtered individually.
 A dropped/present status snapshot becomes authoritative empty and clears stale
 status; a dropped donation snapshot preserves the prior monotonic counter
 baseline. Field omission preserves the prior mixed-version behavior.
@@ -1024,13 +1026,13 @@ no prompt text or token IDs and grants no cache credit. `RepeatedPrefixTokens`
 means that an earlier plan shared a sampled boundary; it is not a hit, proof of
 ownership, or a complete census of repeated traffic. Expiry, sampling, planning
 limits, and bounded eviction can all hide repeats. The prepared v2 frame
-forwards `Plan.RetainedPrefixTokens`
+forwards `Plan.RepeatedPrefixTokens`
 (`coordinator/internal/registry/cacheplan/value.go`) to the provider as
 `cache_repeated_prefix_tokens` (`CacheAttemptSnapshot.ApplyTo`,
-`coordinator/registry/cache_attempt_ownership.go`). That value is
-`RepeatedPrefixTokens`, or `FirstSightTokens` for a plan that
-[first sight](#first-sight) prepared: 0 means fleet-novel and not prepared,
-absent means no granted scope; the row is in
+`coordinator/registry/cache_attempt_ownership.go`): 0 means fleet-novel,
+absent means no granted scope. A plan that [first sight](#first-sight)
+prepared keeps that count at 0 and sends `Plan.FirstSightTokens` beside it as
+`cache_first_sight_tokens`. Both rows are in
 [`../reference/protocol-messages.md`](../reference/protocol-messages.md#inference_request).
 
 When candidates tie within the first-content band and whole-Mac service work, `selectRoutingCandidateWithAffinity` uses a stable
@@ -1074,7 +1076,7 @@ values from its own demand boundaries (`Plan.ObserveRouteDemand`,
 
 | Value | Source | Use |
 |---|---|---|
-| `Plan.FirstSightTokens` | The plan's deepest boundary on the 1,024-token stride; a 7,000-token prompt gets 6,144 | Sent to the provider as `cache_repeated_prefix_tokens` in place of 0 (`Plan.RetainedPrefixTokens`, `coordinator/internal/registry/cacheplan/value.go`). The provider reads it as it reads a repeat: the donor's fork target is the 1,024-aligned boundary at or below it ([retention](prefix-cache.md#streamed-complete-checkpoints)), and `SSDCheckpointDemand.admitsWrite` admits the request's complete checkpoints because the value is at least 1,024 |
+| `Plan.FirstSightTokens` | The plan's deepest boundary on the 1,024-token stride; a 7,000-token prompt gets 6,144 | Sent to the provider as `cache_first_sight_tokens`, beside a `cache_repeated_prefix_tokens` of 0 (`Snapshot.MetadataMessage`, `coordinator/internal/registry/cacheattempt/owner.go`). It names the 1,024-aligned boundary to keep for the follow-up ([retention](prefix-cache.md#streamed-complete-checkpoints)). The count is speculative: nothing was observed twice, so the provider may decline the write |
 | Affinity key | The key of the plan's deepest boundary that is a power-of-two multiple of 1,024 tokens | The key a follow-up that extends this prompt derives from its matched boundaries (`Tracker.Observe`), so both requests rank equivalent candidates the same way. The equality relies on every plan with a stride boundary containing the 1,024 rung. A plan without a rung falls back to its deepest stride boundary, while the tracker falls back to the deepest matched boundary of any kind, so those two keys can differ |
 
 A plan shorter than the minimum, or with no boundary on the stride, takes
@@ -1083,10 +1085,41 @@ more than 1,024 tokens: the sidecar emits a boundary only for a complete block
 below the prompt length, so a prompt of exactly 1,024 tokens ends at the 768
 boundary and has no stride boundary to keep.
 
-`cache_repeated_prefix_tokens` then carries the first-sight boundary although
-the prompt is novel. `Plan.RepeatedPrefixTokens` stays 0, so
-`opportunity_repeated_prefix_tokens` adds nothing for the request and the
-opportunity funnel below still reports it as `no_repeat_observed`.
+The wire keeps the two counts apart. `cache_repeated_prefix_tokens` carries an
+observed repeat and nothing else, so on a first-sight request it is 0 and
+`cache_first_sight_tokens` carries the boundary; a request with any observed
+repeat carries the repeat and no first-sight count
+(`Plan.ObserveDemand`, `prepareFirstSight`). Both are token counts that carry
+no content-derived value, and a revoked or retired attempt sends neither
+(`Owner.ApplyTo`). The provider can therefore tell a speculative request from
+a proven repeat and give speculative writes a lower claim on its write budget.
+`Plan.RepeatedPrefixTokens` stays 0, so `opportunity_repeated_prefix_tokens`
+adds nothing for the request and the opportunity funnel below still reports it
+as `no_repeat_observed`. The first-sight count appears on no status, metric or
+consumer-visible surface; only the plan count `activation.first_sight` does.
+
+A provider that does not understand `cache_first_sight_tokens` ignores it. It
+reads a repeat count of 0, settles the request's checkpoints as
+`skipped_novel` and writes nothing, exactly as with first sight off. The
+affinity key is coordinator-side and still applies, so the follow-up prefers
+the same provider among equivalent candidates, reports the repeat and is
+written there; the third request is then the first that can hit. First sight
+changes what is written only on a provider release that understands the field.
+
+On a provider that understands the field, a first-sight request's checkpoints
+form a third write class, `speculative`, beside the two existing ones (a tag
+the store saw before, and everything else that passed the demand gate). A
+request is speculative only when its repeat count is below the 1,024-token
+floor, its first-sight count reaches the floor and it did not restore a
+checkpoint from that store; a request with an observed repeat, or one that
+restored, keeps today's class. A speculative write is admitted only while it
+leaves both write buckets within the headroom H of full, where H is one cache
+lifetime of refill (`cap x TTL / 86,400`, 2.08% of the daily cap at the
+30-minute TTL and never more than the novel share), only when no other
+checkpoint write is in flight or queued on that store, and only when it fits
+the disk budget without an eviction. Any of the three pressures refuses it
+before file I/O, charges nothing and settles `write_speculative_limited`
+([SSD write policy](../reference/ssd-kv-cache.md#size-and-eviction-rules)).
 
 The scheduler treats a first-sight key as it treats a repeat's key: a tie-break
 among candidates equal in the first-content band and in whole-Mac service work,
@@ -1114,8 +1147,9 @@ Limits:
 2. **Only a prompt with no earlier shared boundary qualifies.** A new
    conversation that begins with an already-seen opening of at least 1,024
    tokens is a repeat, not a first sight. Its provider still writes its deepest
-   stride boundary, because the repeat value it is sent is at least 1,024, but
-   its affinity key is the shared opening's, not its own.
+   stride boundary, because the repeat count it is sent is at least 1,024, but
+   its affinity key is the shared opening's, not its own, and its frame carries
+   no first-sight count.
 3. **A novel request's scan now takes the per-candidate locks.** A plan without
    an affinity key and without holder hints skips them
    (`applyCacheRoutingCost`, `coordinator/registry/scheduler.go`). A first-sight
@@ -1133,15 +1167,39 @@ Limits:
    `EIGENINFERENCE_CACHE_ROUTING_FIRST_SIGHT_MIN_TOKENS` exits the coordinator
    even with `EIGENINFERENCE_CACHE_ROUTING_MODE=off`.
 
-The cost is provider writes. A first-sight request passes the provider's demand
-gate, so the complete checkpoints its donor retains are written where a novel
-request's were skipped; per-model file sizes are in
+6. **The headroom bounds harm, not volume.** At any moment speculation has
+   taken at most H from each bucket, so a proven write sees at least its
+   balance without speculation minus H; that cost is not zero. H does not cap
+   what speculation writes per day: a store with little proven traffic can
+   spend its spare refill on files that are never read.
+7. **The write queue.** While a speculative file is being written one proven
+   write can queue behind it; a second proven arrival in that window settles
+   `write_queue_full`.
+8. **Speculative capacity is first come, first served** across accounts on a
+   store, and an account that repeats a shared 1,024-token opening is a proven
+   repeat for every checkpoint, exactly as with first sight off.
+9. **Per store, forgotten at restart.** The buckets start full when a store is
+   built, so a restart or rebuild grants a fresh headroom. A shorter TTL
+   shrinks H in proportion, a write cap of 0 leaves only the idle-writer and
+   disk conditions, and at a small cap a large checkpoint never fits in H.
+
+`activation.first_sight` keeps its meaning, requests asked to keep a prefix.
+`lifecycle.donation_outcomes.write_speculative_limited` is how many of those
+offered checkpoints yielded to pressure, counted per offered checkpoint (a
+request offers up to two). `write_priority_limited`, `write_rate_limited` and
+`write_queue_full` no longer include first-sight offers, so together they
+show proven writes that were refused.
+
+The cost is provider writes, on providers that understand the field. The
+complete checkpoints a first-sight request's donor retains can be written
+where a novel request's were skipped; per-model file sizes are in
 [`prefix-cache.md`](prefix-cache.md#streamed-complete-checkpoints). The bytes are
-charged to the provider's existing daily write budget, and a tag the provider
-has not seen before draws on the novel share of that budget
-([SSD write policy](../reference/ssd-kv-cache.md#size-and-eviction-rules)), so
-exhaustion appears as donation outcome `write_priority_limited`. Watch that
-outcome and raise the minimum token count if it grows; the procedure is in the
+charged to the provider's existing daily write budget
+([SSD write policy](../reference/ssd-kv-cache.md#size-and-eviction-rules)). A
+first-sight write is speculative, so a provider under write-budget, writer or
+disk pressure declines it before spending bytes or budget and reports donation
+outcome `write_speculative_limited`. Watch that outcome and raise the minimum
+token count if it grows; the procedure is in the
 [rollout runbook](../operations/cache-routing-rollout.md#first-sight-minimum).
 
 The existing once-only cache terminal event now emits per-model
@@ -1319,8 +1377,8 @@ back are operator procedures, kept in the runbook
 | Holders vanish for one provider | Disconnect or live-connection replacement, capability/contract/aggregate-hash change, verified miss or corruption, a hit below a recorded boundary, TTL, cap eviction | Removal counted under one of the eight `CacheRoutingLifecycleStatus` reasons (`coordinator/registry/cache_routing.go`) |
 | `/v1/cache/status` shows a provider's models as `unreported` | Status array beyond `MaxStatuses`, duplicate keys, a blank model ID, or a status contradicting the v2 capability | `cachepolicy.SanitizeStatuses` and `ReconcileStatuses` sanitize optional status (`coordinator/internal/registry/cachepolicy/eligibility.go`); `CacheSnapshotUpdater.Apply` publishes it without weakening routing capability (`coordinator/registry/cache_snapshot.go`) |
 | A cached provider loses to a cold one | Residual prefill, full staging, age, queue or hardware costs outweigh its benefit; or an explicit limit clips it | First-content band and whole-Mac service work decide; there is no hard affinity |
-| A new conversation's second request misses | [First sight](#first-sight) is set to `0`, the first prompt was shorter than the configured minimum or had no more than 1,024 tokens, the conversation opened with an already-seen prefix of at least 1,024 tokens (a repeat, routed by the shared opening's key), the provider refused the write (`write_priority_limited`, `write_rate_limited`), or the follow-up ran on another machine because affinity only breaks ties | The second request runs cold, reports the repeat and is written; the third can hit |
-| `donation_outcomes.write_priority_limited` grows with first sight on | First-sight writes exhaust providers' novel write share | The provider skips those writes and requests complete normally; raise `EIGENINFERENCE_CACHE_ROUTING_FIRST_SIGHT_MIN_TOKENS` or set it to `0` |
+| A new conversation's second request misses | [First sight](#first-sight) is set to `0`, the first prompt was shorter than the configured minimum or had no more than 1,024 tokens, the conversation opened with an already-seen prefix of at least 1,024 tokens (a repeat, routed by the shared opening's key), the provider release does not understand `cache_first_sight_tokens`, the provider refused the write (`write_speculative_limited`, `write_priority_limited`, `write_rate_limited`), or the follow-up ran on another machine because affinity only breaks ties | The second request runs cold, reports the repeat and is written; the third can hit |
+| `donation_outcomes.write_speculative_limited` grows with first sight on | Providers are under write-budget, writer or disk pressure, so first-sight writes yield | The provider skips those writes before spending bytes or budget and requests complete normally; raise `EIGENINFERENCE_CACHE_ROUTING_FIRST_SIGHT_MIN_TOKENS` or set it to `0` |
 
 Receipt rejection telemetry distinguishes invalid shape, missing/expired attempt,
 request/connection/capability changes, prior rejection fencing, duplicate or stale
@@ -1358,7 +1416,7 @@ and `coordinator/api/observation/cache_model_telemetry.go`.
 | Resident proof/publication and unique receipt correlation | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/ResidentPrefixCacheEvidence.swift` — `ResidentPrefixCacheEvidence`, `ResidentPrefixCachePromptProof`; `PrefixCacheEvidenceSequencer.swift` |
 | Per-tier holders, lifetime and lookup | `coordinator/registry/cache_tiers.go` (`cacheTierBoundaryKey`, `receiptTTL`); `coordinator/registry/cache_routing_hints.go` (`CacheHintQuery.Query`, `MatchBoundaries`, `CacheHintsForMatches`); `coordinator/internal/registry/cachetracker/matching.go` (`Tracker.MatchBoundaries`) |
 | Observed demand | `coordinator/registry/cache_demand.go` (`observeCacheDemand`); `coordinator/internal/registry/cachedemand/tracker.go` (`Tracker.Observe`, `Tracker.Restore`); `coordinator/internal/registry/cachedemand/anchors.go` (`Anchors`, `AffinityRung`); `coordinator/internal/registry/cachehistory/index.go` (`Index`) |
-| First sight | `coordinator/registry/config.go` (`CacheRoutingConfig.FirstSightMinTokens`, `cacheRoutingFirstSightMinTokensFromEnv`, `Check`); `coordinator/registry/cache_routing.go` (`defaultCacheRoutingFirstSightMinTokens`); `coordinator/internal/registry/cachedemand/first_sight.go` (`FirstSight`); `coordinator/internal/registry/cacheplan/demand.go` (`ObserveRouteDemand`); `coordinator/internal/registry/cacheplan/value.go` (`FirstSightTokens`, `RetainedPrefixTokens`); `coordinator/internal/registry/cacheactivation/gate.go` (`RecordPlanned`) |
+| First sight | `coordinator/registry/config.go` (`CacheRoutingConfig.FirstSightMinTokens`, `cacheRoutingFirstSightMinTokensFromEnv`, `Check`); `coordinator/registry/cache_routing.go` (`defaultCacheRoutingFirstSightMinTokens`); `coordinator/internal/registry/cachedemand/first_sight.go` (`FirstSight`); `coordinator/internal/registry/cacheplan/demand.go` (`ObserveRouteDemand`); `coordinator/internal/registry/cacheplan/value.go` (`FirstSightTokens`); `coordinator/internal/registry/cacheattempt/owner.go` (`Metadata.FirstSightTokens`, `Snapshot.MetadataMessage`, `Owner.ApplyTo`); `coordinator/protocol/messages.go` (`InferenceRequestMessage.CacheFirstSightTokens`); `coordinator/internal/registry/cacheactivation/gate.go` (`RecordPlanned`) |
 | Route keys and scopes | `coordinator/registry/cache_route_keys.go` |
 | Receipts, v2 proof acceptance, legacy cache-bust key | `coordinator/registry/cache_receipts.go` (`PrepareCacheAttempt`); `coordinator/registry/cache_receipts_v2.go` (`ApplyPrefixCacheLookupV2`, `ApplyPrefixCacheReadyV2`); `coordinator/registry/cache_quarantine.go` (`CacheQuarantine.Apply`, `CacheQuarantineCommit.Apply`); `coordinator/internal/registry/cachetracker/receipt_lookup.go` (`ApplyLookupV2`), `coordinator/internal/registry/cachetracker/receipt_ready.go` (`ApplyReadyV2`) |
 | Bounded proof fence and plan-scoped invalidation | `coordinator/registry/cache_proof_fence.go` (`capabilityRejected`, `rejectCapability`, `invalidateProviderPlan`); `coordinator/registry/cache_model_changes.go` (`reconcileFences`); `coordinator/internal/registry/cachetracker/proofs.go` (`Proofs`); `coordinator/internal/registry/cachetracker/lifecycle.go` (`InvalidateProviderPlan`) |

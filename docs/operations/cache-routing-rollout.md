@@ -425,7 +425,9 @@ Roll either value back by restoring its previous line and restarting.
 [First sight](../architecture/cache-aware-routing.md#first-sight) lets the
 second request of a new conversation hit instead of the third: the first
 request is placed by the affinity key its follow-up will use, and its provider
-is asked to write its checkpoints. It is on by default: with
+is asked to keep the checkpoint that follow-up restores. The request travels
+in its own frame count, `cache_first_sight_tokens`; the repeat count
+`cache_repeated_prefix_tokens` stays 0 for it. It is on by default: with
 `EIGENINFERENCE_CACHE_ROUTING_FIRST_SIGHT_MIN_TOKENS` unset the coordinator
 uses a minimum of 1,024 tokens
 ([configuration.md](../reference/configuration.md#routing-admission-and-ttft)),
@@ -434,16 +436,50 @@ applies once routing is `on` and the coordinator binary includes first sight
 (`.activation.first_sight` is present in `GET /v1/cache/status`). Use this
 procedure to raise the minimum or to turn first sight off with `0`.
 
-What it costs, measured on one provider (Gemma 26B, three six-turn
-conversations with a unique 2,500-token prompt after every request): with the
-SSD write budget not binding, one more request hits per conversation and the
-provider writes about 2.5 times the bytes (12.7 GB against 5.1 GB), and each
-novel request waits for its own checkpoint write (about 160 ms more at this
-size). With a write cap that binds, first-sight writes took the share before
-the conversations' deeper checkpoints were written: one more request hit, but
-prompt tokens reused fell from 69% to 60% and 17 writes were refused. After
-enabling, watch `donation_outcomes.write_priority_limited` against
-`donated`: if the refused share grows, raise the minimum before anything
+First sight writes only on a provider release that understands
+`cache_first_sight_tokens`. A provider without it ignores the field: it reads
+a repeat count of 0, settles the novel request's checkpoints as
+`skipped_novel` and writes nothing, as with first sight off, so the third
+request of a conversation is again the first that can hit. The coordinator
+still places such a request by its affinity key and still counts it in
+`.activation.first_sight`, so that count alone does not show the fleet is
+writing. Coordinator and providers can be upgraded in either order; a mixed
+fleet gets the second-request hit only on upgraded providers.
+
+How a provider treats a first-sight request. Its checkpoints are speculative:
+nothing was observed twice, so they are last in line for the provider's SSD
+write budget. A speculative write is admitted only when all three hold:
+
+- it leaves both write buckets (the whole daily cap and the 90% novel share)
+  within the headroom of full. The headroom is one cache lifetime of refill,
+  `cap x TTL / 86,400`: 2.08% of the daily cap at the 30-minute TTL, 15.6 GB
+  at the 750 GB default;
+- no other checkpoint write is in flight or queued on that store (it never
+  waits in the write queue);
+- the write fits the cache's disk budget without evicting anything.
+
+Otherwise it is refused before any file I/O, charges nothing and is counted
+as `donation_outcomes.write_speculative_limited`; the request completes
+normally and its follow-up is written as a proven repeat. Proven writes (a
+prefix the coordinator saw repeated, a tag the store saw before, or a request
+that restored a checkpoint from that store) keep the budget rules they had
+before first sight: `write_priority_limited`, `write_rate_limited` and
+`write_queue_full` keep their meaning and no longer include first-sight
+writes. The headroom bounds what speculation can take from other writes at
+any moment (at most the headroom from each bucket), not how much it writes in
+a day: a store with little proven traffic can spend its spare refill on
+first-sight files. No measurement of this policy exists yet.
+
+Operational couplings: a shorter cache TTL shrinks the headroom in proportion;
+a write cap of `0` (unlimited) removes the budget condition and leaves the
+idle-writer and disk conditions; at a small cap a large checkpoint never fits
+in the headroom. The buckets are per store and start full, so a provider
+restart or store rebuild forgets pressure and grants a fresh headroom. On a
+provider release that does not understand `cache_first_sight_tokens`, first
+sight changes only placement (affinity) and writes nothing.
+
+After enabling, watch `donation_outcomes.write_speculative_limited` against
+`donated`: if the declined share grows, raise the minimum before anything
 else.
 
 The cost is provider writes, charged to each provider's daily write budget
@@ -458,9 +494,9 @@ Watch three readings of `GET /v1/cache/status`, as changes over equal windows:
 
 | Reading | Meaning | Limit |
 |---|---|---|
-| `.activation.first_sight` | Requests that were asked to keep a prefix; a subset of `.activation.planned` | It does not show that the provider wrote the prefix. `.lifecycle.donation_outcomes` shows what was written or skipped, and a provider whose own minimum is above the kept boundary skips it |
+| `.activation.first_sight` | Requests that were asked to keep a prefix; a subset of `.activation.planned` | It does not show that the provider wrote the prefix. `.lifecycle.donation_outcomes` shows what was written or skipped; a provider whose own minimum is above the kept boundary skips it, and so does a provider release that does not understand `cache_first_sight_tokens` (`skipped_novel`) |
 | `.lifecycle.ssd_hits` per `.lifecycle.ssd_lookups` | Share of lookups that hit | First sight applies only to a prompt with no earlier shared boundary. A new conversation that begins with an already-seen opening of at least 1,024 tokens is a repeat: its provider still writes its deepest boundary, but its affinity key is the shared opening's |
-| `.lifecycle.donation_outcomes.write_priority_limited` | Writes refused because the provider's novel write share is exhausted | Growth means the minimum is too low for the fleet's write budget |
+| `.lifecycle.donation_outcomes.write_speculative_limited` | First-sight writes a provider declined under write-budget, writer or disk pressure; no bytes or budget were spent | Growth means the minimum is too low for the fleet's write budget. It is reported only by a provider release that understands `cache_first_sight_tokens` |
 
 Three more limits
 ([details](../architecture/cache-aware-routing.md#first-sight)):
@@ -486,6 +522,7 @@ Three more limits
        ssd_lookups: .lifecycle.ssd_lookups,
        ssd_hits: .lifecycle.ssd_hits,
        skipped_novel: (.lifecycle.donation_outcomes.skipped_novel // 0),
+       write_speculative_limited: (.lifecycle.donation_outcomes.write_speculative_limited // 0),
        write_priority_limited: (.lifecycle.donation_outcomes.write_priority_limited // 0),
        write_rate_limited: (.lifecycle.donation_outcomes.write_rate_limited // 0)}'
    }
@@ -496,6 +533,7 @@ Three more limits
        hits_per_lookup: (if $b.ssd_lookups > $a.ssd_lookups
          then ($b.ssd_hits - $a.ssd_hits) / ($b.ssd_lookups - $a.ssd_lookups) else null end),
        skipped_novel: ($b.skipped_novel - $a.skipped_novel),
+       write_speculative_limited: ($b.write_speculative_limited - $a.write_speculative_limited),
        write_priority_limited: ($b.write_priority_limited - $a.write_priority_limited),
        write_rate_limited: ($b.write_rate_limited - $a.write_rate_limited)}'
    }
@@ -543,7 +581,8 @@ Three more limits
    | `first_sight` | Lower than the baseline but above zero: one count per planned novel prompt of at least the new minimum | Zero |
    | `hits_per_lookup` | At or slightly below the baseline; a clear fall means the minimum now excludes prompts whose follow-ups were hitting | Lower than the baseline: a new conversation's second request runs cold again |
    | `skipped_novel` | Higher than the baseline, because fewer novel requests are written | Higher than the baseline |
-   | `write_priority_limited` | Growing more slowly than the baseline; if not, raise the minimum again with steps 2–3 | Growing more slowly than the baseline |
+   | `write_speculative_limited` | Growing more slowly than the baseline; if not, raise the minimum again with steps 2–3 | Not growing |
+   | `write_priority_limited` | Not growing faster than the baseline | Not growing faster than the baseline |
    | `write_rate_limited` | Not growing faster than the baseline | Not growing faster than the baseline; if it still grows, providers' whole daily budget is exhausted by other writes |
 
    Also check first-content latency as in [Verification](#verification);

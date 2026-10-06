@@ -443,8 +443,10 @@ coordinator's `cache_repeated_prefix_tokens` at or above the effective-token
 floor, or a prior local sighting of the tag; fleet-novel checkpoints settle
 `skipped_novel` without touching disk. A coordinator with
 [first sight](cache-aware-routing.md#first-sight) on, its default, sends a novel
-prompt's own boundary in that field, so the same rule admits the write although
-the prompt is novel. Older coordinators and local serving
+prompt's own boundary in a separate count, `cache_first_sight_tokens`, and
+leaves the repeat count at 0: a provider that understands the field may write
+that checkpoint as a speculative one, and a provider that does not ignores it
+and settles `skipped_novel`. Older coordinators and local serving
 write unconditionally (`SSDCheckpointDemand.admitsWrite`; policy in the
 [SSD reference](../reference/ssd-kv-cache.md#size-and-eviction-rules)). Qwen includes attention KV, recurrent state and normalized typed
 MTP history. Historical attention includes exact owning full rows and the

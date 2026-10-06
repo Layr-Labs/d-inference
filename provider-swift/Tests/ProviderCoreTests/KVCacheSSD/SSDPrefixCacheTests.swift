@@ -497,6 +497,9 @@ struct SSDBlockStoreTests {
         let wholeRootKey = SSDDiskBudget.wholeRootKey(ofModelRoot: modelRoot)
         let kek = SymmetricKey(size: .bits256)
         let cache = makeCache(dir: modelRoot, kek: kek, clock: ClockBox(10_000), diskBudget: ledger)
+        // Registered first, so it runs last: the cache is closed on every
+        // exit, after the lock holder below has been let go.
+        defer { cache.close() }
         ledger.declareOccupancyKnown(wholeRootKey: wholeRootKey)
         // Another caller holds the budget's lock, as a pass that is
         // publishing or an eviction loop does.
@@ -552,7 +555,11 @@ struct SSDBlockStoreTests {
         }
         // The sweep waits: nothing is unlinked and nothing leaves the index
         // while the lock is held elsewhere.
-        #expect(sweepDone.wait(timeout: .now() + 0.5) == .timedOut)
+        let waited = sweepDone.wait(timeout: .now() + 0.5) == .timedOut
+        #expect(waited)
+        // A sweep that did not wait has used up its signal; put it back so
+        // that the checks below report what it did and not a second timeout.
+        if !waited { sweepDone.signal() }
         #expect(FileManager.default.fileExists(atPath: swept.url.path))
         #expect(FileManager.default.fileExists(atPath: used.url.path))
         #expect(cache.index.count == 2)
@@ -568,7 +575,6 @@ struct SSDBlockStoreTests {
         #expect(cache.index.count == 1)
         #expect(cache.stats().ttlExpired == 1)
         #expect(ledger.isOccupancyKnown(wholeRootKey: wholeRootKey), "the sweep unlinked what it dropped")
-        cache.close()
     }
 
     @Test("a whole-root removal under an active block cache drops the index entries that have no file behind them and leaves the cache root's occupancy unknown")

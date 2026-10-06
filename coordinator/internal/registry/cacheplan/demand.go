@@ -51,12 +51,15 @@ func (p *Plan) ObserveRouteDemand(generation *Generation, history *cachedemand.T
 		}
 	}
 	p.ObserveDemand(history, boundaries, now)
-	return p.observeFirstSight(boundaries, firstSightMinTokens)
+	return p.prepareFirstSight(boundaries, firstSightMinTokens)
 }
 
-// observeFirstSight leaves RepeatedPrefixTokens at 0: the request is still
-// reported as novel.
-func (p *Plan) observeFirstSight(boundaries []cachedemand.Boundary, minTokens int) bool {
+// prepareFirstSight gives a plan that observed no repeat the boundary to keep
+// and the affinity key its follow-up will derive, both read from its own
+// boundaries. It applies only when minTokens is positive, the prompt holds at
+// least that many tokens and the plan has a stride boundary. It leaves
+// RepeatedPrefixTokens at 0: the request is still reported as novel.
+func (p *Plan) prepareFirstSight(boundaries []cachedemand.Boundary, minTokens int) bool {
 	if minTokens <= 0 || p.RepeatedPrefixTokens != 0 || p.PromptTokenCount < minTokens {
 		return false
 	}

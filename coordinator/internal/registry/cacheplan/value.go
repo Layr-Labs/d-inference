@@ -21,8 +21,8 @@ type Plan struct {
 	PromptTokenCount     int
 	Boundaries           []protocol.PrefixCacheAnchor
 	// FirstSightTokens is the boundary a novel prompt asks its provider to
-	// keep for a follow-up. It is set only while
-	// RepeatedPrefixTokens is 0 and is never evidence of a repeat.
+	// keep for a follow-up. It is set only while RepeatedPrefixTokens is 0
+	// and is never evidence of a repeat.
 	FirstSightTokens int
 }
 
@@ -70,6 +70,8 @@ func PlanFromSidecar(g *Generation, identity Identity, sidecar promptcontract.Pl
 
 // ObserveDemand records the real derived boundaries before updating advisory
 // metadata. The actual bounded history remains the sole owner of repetition.
+// It clears FirstSightTokens, which described the plan before this observation
+// and must not outlive a repeat.
 func (p *Plan) ObserveDemand(history *cachedemand.Tracker, boundaries []cachedemand.Boundary, now time.Time) {
 	p.RepeatedPrefixTokens, p.affinityKey = history.Observe(boundaries, now)
 	p.FirstSightTokens = 0

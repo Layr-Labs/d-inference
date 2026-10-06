@@ -222,7 +222,8 @@ func (r *Registry) PlanCacheRouteWithResult(
 			Outcome: cacheactivation.CachePlanInvalid, PlanLatency: latency, SidecarCalled: true,
 		}
 	}
-	activation.RecordPlanned(tracker.observeCacheDemand(&plan, keys.route, time.Now()))
+	firstSight := tracker.observeCacheDemand(&plan, keys.route, time.Now())
+	activation.RecordPlanned(firstSight)
 	return CachePlanResult{Plan: plan, PromptWork: work, Outcome: cacheactivation.CachePlanPlanned, PlanLatency: latency, SidecarCalled: true}
 }
 

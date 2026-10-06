@@ -127,7 +127,9 @@ func (g *Gate) refillLocked(now time.Time) {
 	g.last = now
 }
 
-// RecordPlan records only the bounded outcome, never request identity or content.
+// RecordPlan records only the bounded outcome, never request identity or
+// content. A planned request is counted by RecordPlanned instead, which also
+// takes its first-sight flag.
 func (g *Gate) RecordPlan(outcome CachePlanOutcome) {
 	if g == nil {
 		return
@@ -135,8 +137,6 @@ func (g *Gate) RecordPlan(outcome CachePlanOutcome) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	switch outcome {
-	case CachePlanPlanned:
-		g.planned++
 	case CachePlanColdOnly:
 		g.coldOnly++
 	case CachePlanNoBoundaries:

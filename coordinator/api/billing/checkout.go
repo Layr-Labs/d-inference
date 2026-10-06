@@ -2,6 +2,7 @@ package billing
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
@@ -80,6 +81,10 @@ func (s *Owner) HandleStripeCreateSession(w http.ResponseWriter, r *http.Request
 
 	billingSession.ExternalID = stripeResp.SessionID
 	if err := s.billing.Store().CreateBillingSession(billingSession); err != nil {
+		if errors.Is(err, store.ErrErasureConflict) {
+			httpx.WriteJSON(w, http.StatusConflict, httpx.ErrorResponse("account_deleted", "Checkout is unavailable for a deleted account"))
+			return
+		}
 		s.logger.Error("stripe: save billing session failed", "error", err)
 		httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorResponse("billing_error", "Could not save Checkout. Please try again."))
 		return

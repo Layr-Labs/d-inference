@@ -148,9 +148,10 @@ type MemoryStore struct {
 	erasureRequests map[string]*memoryErasureRequest
 	erasureOutbox   []store.ErasureOutboxItem
 	// Erased accounts refuse credits; refused ones are kept for review.
-	erasedAccounts        map[string]bool
-	erasureRefusedCredits []store.ErasureRefusedCredit
-	erasureRefusedSeq     int64
+	erasedAccounts           map[string]bool
+	erasureRefusedCredits    []store.ErasureRefusedCredit
+	erasureRefusedSeq        int64
+	erasureRefusedIdentities map[refusedCreditIdentity]bool
 }
 
 // NewMemory creates a new MemoryStore. If adminKey is non-empty it is

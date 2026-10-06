@@ -95,8 +95,8 @@ CREATE FUNCTION public.erasure_refuse_ledger_credit() RETURNS trigger
     AS $$
 BEGIN
     IF erasure_account_erased(NEW.account_id) THEN
-        INSERT INTO erasure_refused_credits (account_id, entry_type, amount_micro_usd, reference)
-        VALUES (NEW.account_id, NEW.entry_type, NEW.amount_micro_usd,
+        INSERT INTO erasure_refused_credits (account_id, entry_type, amount_micro_usd, reference_hash, reference)
+        VALUES (NEW.account_id, NEW.entry_type, NEW.amount_micro_usd, encode(sha256(convert_to(NEW.reference, 'UTF8')), 'hex'),
                 CASE WHEN NEW.entry_type IN ('admin_credit', 'admin_reward') THEN NEW.entry_type
                      WHEN NEW.reference LIKE 'stripe:%' THEN 'stripe:erased'
                      ELSE NEW.reference END);
@@ -561,6 +561,7 @@ CREATE TABLE public.erasure_refused_credits (
     account_id text NOT NULL,
     entry_type text NOT NULL,
     amount_micro_usd bigint NOT NULL,
+    reference_hash text NOT NULL,
     reference text DEFAULT ''::text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );

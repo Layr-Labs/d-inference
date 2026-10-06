@@ -54,12 +54,35 @@ func (s *PostgresStore) execInferenceRouteInsert(rows []*store.InferenceRouteRec
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
+	tx, err := beginErasureObservation(ctx, s.pool)
+	if err != nil {
+		return err
+	}
+	defer rollbackErasureTx(tx)
+	hashes, providers := make([]string, 0, len(rows)), make([]string, 0, len(rows))
+	for _, r := range rows {
+		hashes = append(hashes, r.ConsumerKeyHash)
+		providers = append(providers, r.ProviderID)
+	}
+	erasedConsumers, erasedProviders, err := erasedObservationOwners(ctx, tx, hashes, providers)
+	if err != nil {
+		return err
+	}
 	args := make([]any, 0, len(rows)*routesql.InsertParamCount)
 	for _, r := range rows {
-		args = routesql.InsertArgs(args, r, time.Now().UTC())
+		rec := *r
+		if erasedConsumers[rec.ConsumerKeyHash] {
+			rec.ConsumerRegion = ""
+		}
+		if erasedProviders[rec.ProviderID] {
+			rec.ProviderRegion = ""
+		}
+		args = routesql.InsertArgs(args, &rec, time.Now().UTC())
 	}
-	_, err := s.pool.Exec(ctx, routesql.InsertSQL(len(rows)), args...)
-	return err
+	if _, err := tx.Exec(ctx, routesql.InsertSQL(len(rows)), args...); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // UpdateInferenceRouteOutcome updates the attempt with final outcome data

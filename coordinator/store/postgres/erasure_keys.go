@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strings"
 
 	"github.com/eigeninference/d-inference/coordinator/internal/store/erasure"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -36,7 +37,11 @@ func collectErasureKeys(ctx context.Context, q *storedb.Queries, accountID, stri
 	if err != nil {
 		return nil, err
 	}
-	k.ProviderIDs = erasure.SortedUnique(k.ProviderIDs)
+	historicalIDs, err := q.ListAccountHistoricalProviderIDs(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	k.ProviderIDs = erasure.SortedUnique(append(k.ProviderIDs, historicalIDs...))
 	k.SEKeys = erasure.SortedUnique(seKeys)
 	k.Serials = erasure.SortedUnique(append(append(serials, sessionSerials...), logSerials...))
 	if len(k.SEKeys) > 0 {
@@ -90,6 +95,24 @@ func collectErasureKeys(ctx context.Context, q *storedb.Queries, accountID, stri
 	if k.GlobalRecipientTombstone, err = json.Marshal(store.GlobalRecipient{ID: uuid.NewString(), AccountID: accountID}); err != nil {
 		return nil, err
 	}
+
+	staged, err := q.ListStagedErasureObjects(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range staged {
+		switch store.ErasureTarget(item.Target) {
+		case store.ErasureTargetStripeAccount:
+			k.StripeAccountIDs = append(k.StripeAccountIDs, item.ExternalID)
+		case store.ErasureTargetGlobalRecipient:
+			k.RecipientIDs = append(k.RecipientIDs, item.ExternalID)
+		case store.ErasureTargetCheckoutSessions:
+			k.CheckoutSessionIDs = append(k.CheckoutSessionIDs, strings.Split(item.ExternalID, ",")...)
+		}
+	}
+	k.StripeAccountIDs = erasure.SortedUnique(k.StripeAccountIDs)
+	k.RecipientIDs = erasure.SortedUnique(k.RecipientIDs)
+	k.CheckoutSessionIDs = erasure.SortedUnique(k.CheckoutSessionIDs)
 
 	if len(k.Serials) > 0 {
 		digests := make([]string, 0, len(k.Serials))

@@ -47,6 +47,7 @@ type ErasureRefusedCredit struct {
 	AccountID      string
 	EntryType      string
 	AmountMicroUsd int64
+	ReferenceHash  string
 	Reference      string
 	CreatedAt      time.Time
 }

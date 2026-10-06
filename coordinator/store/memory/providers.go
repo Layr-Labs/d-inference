@@ -12,6 +12,9 @@ import (
 func (s *MemoryStore) UpsertProvider(_ context.Context, p store.ProviderRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.accountAdmissionLocked(p.AccountID); err != nil {
+		return err
+	}
 
 	s.upsertProviderRecordLocked(p)
 	return nil

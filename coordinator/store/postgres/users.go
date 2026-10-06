@@ -76,6 +76,21 @@ func (s *PostgresStore) SetUserStripeAccount(accountID, stripeAccountID, status,
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer rollbackErasureTx(tx)
+	deleted, _, err := fenceErasureExternalObject(ctx, tx, accountID, store.ErasureTargetStripeAccount, stripeAccountID)
+	if err != nil {
+		return err
+	}
+	if deleted {
+		if err := tx.Commit(ctx); err != nil {
+			return err
+		}
+		return store.ErrErasureConflict
+	}
 	countryClause := ""
 	args := []any{accountID, stripeAccountID, status, destinationType, destinationLast4, instantEligible}
 	switch {
@@ -89,7 +104,7 @@ func (s *PostgresStore) SetUserStripeAccount(accountID, stripeAccountID, status,
 		countryClause = ", stripe_account_country = ''"
 	}
 
-	tag, err := s.pool.Exec(ctx,
+	tag, err := tx.Exec(ctx,
 		fmt.Sprintf(`UPDATE users SET
 			stripe_account_id = $2,
 			stripe_account_status = $3,
@@ -104,6 +119,12 @@ func (s *PostgresStore) SetUserStripeAccount(accountID, stripeAccountID, status,
 	}
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("user with account ID %q not found", accountID)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if deleted {
+		return store.ErrErasureConflict
 	}
 	return nil
 }

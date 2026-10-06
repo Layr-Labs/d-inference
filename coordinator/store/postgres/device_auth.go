@@ -87,7 +87,15 @@ func (s *PostgresStore) CreateProviderToken(pt *store.ProviderToken) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := s.pool.Exec(ctx,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer rollbackErasureTx(tx)
+	if err := lockAccountAdmission(ctx, tx, pt.AccountID); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx,
 		`INSERT INTO provider_tokens (token_hash, account_id, label, active)
 		 VALUES ($1, $2, $3, $4)`,
 		pt.TokenHash, pt.AccountID, pt.Label, pt.Active,
@@ -95,7 +103,7 @@ func (s *PostgresStore) CreateProviderToken(pt *store.ProviderToken) error {
 	if err != nil {
 		return fmt.Errorf("store: create provider token: %w", err)
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 func (s *PostgresStore) GetProviderToken(token string) (*store.ProviderToken, error) {

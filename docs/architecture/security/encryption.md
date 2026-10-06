@@ -145,6 +145,7 @@ This table is the privacy statement. [`../../consumer/privacy-expectations.md`](
 | Sealed requests never trigger remote-media fetching (no coordinator egress derived from sealed content) | `coordinator/api/inference/sender_encryption.go` (`isSealedRequest`) |
 | Session private key and memoized shared key are dropped at request end | `coordinator/internal/inference/chunkkeys/chunk_key_cache.go` (`Forget`) |
 | Process logs carry no email address, IP address (`RemoteAddr` or `X-Forwarded-For`), device serial number or UDID; log lines name accounts by `account_id` (`user_id` in the access log) and providers by `provider_id`. Logs go to Datadog, so erasing a store row would not erase them | `coordinator/tests/api/log_personal_data_test.go` |
+| Outbound HTTP errors that reach process logs carry no request URL and no upstream response body. Transport errors from the ip-api lookup, MicroMDM raw commands and APNs pushes drop the URL that `http.Client` adds, which holds a provider IP address and the ip-api key, an MDM UDID or an APNs device token. Privy, MicroMDM and Stripe Checkout error responses are reduced to their status code | `coordinator/internal/httperror/without_url.go` (`WithoutURL`); `coordinator/auth/privy.go`; `coordinator/mdm/command_transport.go`; `coordinator/billing/stripe.go`; `coordinator/tests/api/log_privy_response_test.go` |
 
 ## Invariants
 

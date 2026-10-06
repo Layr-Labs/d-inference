@@ -150,8 +150,8 @@ func TestRequestDeviceAttestationFailuresReleaseTheWaiter(t *testing.T) {
 	const udid = "UDID-FAIL"
 
 	_, err := c.RequestDeviceAttestation(context.Background(), udid, "", time.Second, nil)
-	if err == nil || !strings.Contains(err.Error(), "status 500") || !strings.Contains(err.Error(), "queue unavailable") {
-		t.Fatalf("err = %v, want the MicroMDM status and body", err)
+	if err == nil || !strings.Contains(err.Error(), "status 500") || strings.Contains(err.Error(), "queue unavailable") {
+		t.Fatalf("err = %v, want the MicroMDM status without the body", err)
 	}
 	fake.mu.Lock()
 	pushes := len(fake.pushes)

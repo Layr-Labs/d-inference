@@ -1,6 +1,6 @@
 # Provider attestation
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 The evidence checks behind legacy MDM/APNs verification and qualified App
 Attest authorization. The [provider trust overview](provider-trust.md) owns the
@@ -357,7 +357,8 @@ error body's `reason` mapped to the closed set `BadDeviceToken`,
 `Unregistered`, `TooManyRequests`, `DeviceTokenNotForTopic`,
 `ExpiredProviderToken`, `InternalServerError`, `ServiceUnavailable` or
 `other` (`ParseReason`; non-JSON bodies are `other`) and whether an `apns-id`
-came back; `SendCodeChallenge` keeps its exact error. Every push increments
+came back; `SendCodeChallenge` keeps its exact error. A transport error does
+not include the push URL, which holds the device token. Every push increments
 `code_attest.push{outcome}` (and `code_attest_push_total` at
 `/v1/admin/metrics`) with `sent_ok`, `throttled` (APNs 429 or local
 Retry-After backoff), `transport_error`, `not_sent` (local failure before a

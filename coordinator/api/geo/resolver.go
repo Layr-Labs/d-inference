@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/httperror"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -132,7 +133,7 @@ func (g *ipAPIGeoResolver) lookupIPAPI(ip net.IP) *store.ProviderLocation {
 	resp, err := client.Do(req)
 	if err != nil {
 		if g.logger != nil {
-			g.logger.Debug("ip-api lookup failed", "pro", g.apiKey != "", "error", err)
+			g.logger.Debug("ip-api lookup failed", "pro", g.apiKey != "", "error", httperror.WithoutURL(err))
 		}
 		return nil
 	}

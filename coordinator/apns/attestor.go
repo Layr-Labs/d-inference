@@ -38,6 +38,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
+	"github.com/eigeninference/d-inference/coordinator/internal/httperror"
 )
 
 // Mode selects the APNs delivery characteristics.
@@ -228,7 +229,7 @@ func (a *APNsPushAttestor) SendCodeChallengeResult(ctx context.Context, deviceTo
 
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return PushResult{Transport: true}, fmt.Errorf("apns: send: %w", err)
+		return PushResult{Transport: true}, fmt.Errorf("apns: send: %w", httperror.WithoutURL(err))
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))

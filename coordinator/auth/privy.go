@@ -15,7 +15,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -179,8 +178,7 @@ func (p *PrivyAuth) fetchUserDetails(privyUserID string) (*privyUserDetails, err
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("privy: API returned %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("privy: API returned %d", resp.StatusCode)
 	}
 
 	var userResp privyUserResponse
@@ -225,8 +223,7 @@ func (p *PrivyAuth) InitEmailOTP(email string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return fmt.Errorf("privy: OTP init returned %d: %s", resp.StatusCode, string(respBody))
+		return fmt.Errorf("privy: OTP init returned %d", resp.StatusCode)
 	}
 
 	return nil
@@ -258,8 +255,7 @@ func (p *PrivyAuth) VerifyEmailOTP(email, code string) (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return "", fmt.Errorf("privy: OTP verify returned %d: %s", resp.StatusCode, string(respBody))
+		return "", fmt.Errorf("privy: OTP verify returned %d", resp.StatusCode)
 	}
 
 	var result struct {

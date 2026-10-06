@@ -3,6 +3,7 @@
 ## Unreleased — personal data in coordinator logs
 
 - Stop writing email addresses, IP addresses, device serial numbers and MDA UDIDs to coordinator process logs, which are forwarded to Datadog. Log lines name accounts by `account_id` (`user_id` in the access log) and providers by `provider_id`; the access log no longer has a `remote` field and the MDM webhook debug line no longer includes a body preview. Logs written before this change are not affected.
+- Keep request URLs and upstream response bodies out of coordinator errors that reach the logs. Transport errors from the ip-api lookup, MicroMDM raw commands and APNs pushes no longer include the request URL, which holds a provider IP address and the ip-api key, an MDM UDID or an APNs device token. Privy, MicroMDM and Stripe Checkout error responses are reported by status code only. The admin OTP endpoints keep their status codes and error codes, but the error message no longer repeats the Privy response body.
 
 ## Unreleased — system tool output readers
 

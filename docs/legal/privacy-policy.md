@@ -1,6 +1,6 @@
 # Darkbloom Privacy Policy
 
-> Last updated: 2026-08-25
+> Last updated: 2026-10-06
 
 Updated: June 16, 2026
 
@@ -77,7 +77,7 @@ MDM enrollment is configured for security verification. Darkbloom requests only 
 **2.6 Technical and log information.** When you use the Services, we may automatically collect:
 
 - IP address and network information;
-- request logs, including route, response status, duration, and remote address;
+- request logs, including route, response status, and duration;
 - device, browser, and operating system information exposed to us;
 - local storage or similar client-side state used to support the Services, such as stored API keys, preferred coordinator URL, theme preference, verification mode preference, and dismissed UI state;
 - cookies, SDK storage, or similar session technologies used by our authentication or wallet partners.
@@ -126,7 +126,7 @@ Because Darkbloom is an inference platform, Content handling is central to how t
 
 **5.2 Coordinator access.** The current service architecture requires our coordinator to process request payloads in plaintext on a transient basis for routing, compatibility, metering, and operation of the Services. You should not treat the current architecture as guaranteeing that the coordinator is technically incapable of accessing request payloads in every service path.
 
-**5.3 Logging.** Our coordinator code is designed not to log prompt content in ordinary request logs. However, we do log operational metadata such as request path, status, duration, and remote address. We also retain operational and routing telemetry about each request and about requests we decline, as described under "Operational and routing telemetry" above; this telemetry is limited to metadata — such as counts, timings, routing decisions, hashed identifiers, machine characteristics, and coarse geographic region — and never includes prompt text, message or input content, generated responses or completions, tool-call arguments or results, image or audio bytes, or raw client IP addresses. Content may also be disclosed to us if you intentionally provide it in support requests, bug reports, or other communications.
+**5.3 Logging.** Our coordinator code is designed not to log prompt content in ordinary request logs. However, we do log operational metadata such as request path, status, and duration. We also retain operational and routing telemetry about each request and about requests we decline, as described under "Operational and routing telemetry" above; this telemetry is limited to metadata — such as counts, timings, routing decisions, hashed identifiers, machine characteristics, and coarse geographic region — and never includes prompt text, message or input content, generated responses or completions, tool-call arguments or results, image or audio bytes, or raw client IP addresses. Content may also be disclosed to us if you intentionally provide it in support requests, bug reports, or other communications.
 
 **5.4 Selected providers.** To fulfill inference requests, we disclose relevant Content to the provider selected to process the request. If you operate provider software, that means customer requests may be routed to your device subject to the Services' security and attestation controls.
 

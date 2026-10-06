@@ -6,10 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/httperror"
 	command "github.com/eigeninference/d-inference/coordinator/internal/mdm/command"
 	"github.com/google/uuid"
 )
@@ -129,14 +129,13 @@ func (c *Client) sendDeviceAttestationWithNonce(
 	resp, err := c.client.Do(req)
 	if err != nil {
 		c.exchanges.ConsumeCommand(cmdUUID, time.Now())
-		return "", fmt.Errorf("mdm send DeviceInformation with nonce failed: %w", err)
+		return "", fmt.Errorf("mdm send DeviceInformation with nonce failed: %w", httperror.WithoutURL(err))
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
 		c.exchanges.ConsumeCommand(cmdUUID, time.Now())
-		respBody, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("mdm raw command failed (status %d): %s", resp.StatusCode, string(respBody))
+		return "", fmt.Errorf("mdm raw command failed (status %d)", resp.StatusCode)
 	}
 
 	// Push to trigger device check-in (best-effort; command is already queued).

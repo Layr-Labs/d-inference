@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -72,6 +72,7 @@ components for the specific invariant:
 | Sidecar identity, protocol, artifacts, catalog/preload and endpoint lowering | `coordinator/internal/promptcontract/` |
 | Remote media policy, read budgets and reference grouping | `coordinator/internal/mediafetch/` |
 | Frame scanning and decoding | `coordinator/internal/wire/` |
+| Request URL removal from outbound HTTP client errors before they are logged | `coordinator/internal/httperror/without_url.go` (`WithoutURL`); used by the ip-api lookup, MicroMDM raw commands and APNs pushes |
 | Command bodies: coordinator lifecycle, payout audit and DevNet seed data | `coordinator/internal/command/coordinator/`, `payoutaudit/`, `devnetseed/`; each `coordinator/cmd/<name>/main.go` is a thin entry point |
 
 Application assembly supplies the same registry/store/ledger/read-cache instances

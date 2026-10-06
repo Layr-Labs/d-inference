@@ -113,7 +113,7 @@ func (p *StripeProcessor) CreateCheckoutSession(req CheckoutSessionRequest) (*Ch
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("stripe: API error (status %d): %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("stripe: API error (status %d)", resp.StatusCode)
 	}
 
 	var session struct {
@@ -266,7 +266,7 @@ func (p *StripeProcessor) RetrieveSession(sessionID string) (*CheckoutSessionEve
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("stripe: API error (status %d): %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("stripe: API error (status %d)", resp.StatusCode)
 	}
 
 	var data CheckoutSessionEvent
